@@ -35,12 +35,24 @@ import type {
 } from "./types.js";
 
 export async function createArtifactStore(config: ArtifactStoreConfig): Promise<ArtifactStore> {
+  if (config.blobStore !== undefined) {
+    // The store-id fingerprint pairing (layer 2 of §3.0) is currently only
+    // implemented against a local filesystem sentinel in blobDir. Accepting an
+    // arbitrary BlobStore would let two differently-pathed stores share the
+    // same remote backend without tripping the pairing check — a data-loss
+    // foot-gun. Plan 5 adds a sentinel hook to the BlobStore interface and
+    // lifts this restriction for S3 + other remote backends.
+    throw new Error(
+      "ArtifactStoreConfig.blobStore is not supported in Plan 2 — use the default FS backend via blobDir. Plan 5 (#1922) adds pluggable backends with remote-backend sentinel pairing.",
+    );
+  }
+
   const releaseLock = acquireLock(config.dbPath);
 
   let db: Database | undefined;
   try {
     db = openDatabase(config);
-    const blobStore: BlobStore = config.blobStore ?? createFilesystemBlobStore(config.blobDir);
+    const blobStore: BlobStore = createFilesystemBlobStore(config.blobDir);
     await ensureStoreIdPair({ db, blobDir: config.blobDir, blobStore });
 
     // Startup recovery: resolve blob_ready=0 rows and stale pending_blob_puts

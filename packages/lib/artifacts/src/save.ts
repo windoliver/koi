@@ -29,6 +29,8 @@ const DEFAULT_MAX_ARTIFACT_BYTES = 100 * 1024 * 1024;
 interface TxResult {
   readonly idempotentArtifactId?: string;
   readonly insertedId?: string;
+  readonly resumeArtifactId?: string;
+  readonly resumeIntentId?: string;
   readonly needsRePut?: boolean;
 }
 
@@ -92,6 +94,25 @@ export function createSaveArtifact(args: {
         return { idempotentArtifactId: latest.id };
       }
 
+      // Resume-in-flight: if the latest row has matching hash but blob_ready=0
+      // AND there's an existing intent bound to it, the caller is retrying a
+      // save whose previous post-commit repair failed. Complete the existing
+      // row's repair rather than creating a new version.
+      if (latest && latest.content_hash === hash && latest.blob_ready === 0) {
+        const existingIntent = args.db
+          .query("SELECT intent_id FROM pending_blob_puts WHERE artifact_id = ? AND hash = ?")
+          .get(latest.id, hash) as { readonly intent_id: string } | null;
+        if (existingIntent) {
+          // Retire the intent we just journaled — we're going to reuse the
+          // existing intent (and row) instead.
+          args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intentId);
+          return {
+            resumeArtifactId: latest.id,
+            resumeIntentId: existingIntent.intent_id,
+          };
+        }
+      }
+
       // Observe tombstone claim state + reclaim
       const tomb = args.db
         .query("SELECT claimed_at FROM pending_blob_deletes WHERE hash = ?")
@@ -142,10 +163,36 @@ export function createSaveArtifact(args: {
       return { ok: true, value: rowToArtifact(row) };
     }
 
+    // Resume-in-flight path: finish the existing row's repair instead of
+    // creating a duplicate. Falls through to the same post-commit repair loop.
+    if (committed.resumeArtifactId && committed.resumeIntentId) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (await args.blobStore.has(hash)) break;
+        await args.blobStore.put(input.data);
+      }
+      const updateResult = args.db
+        .query("UPDATE artifacts SET blob_ready = 1 WHERE id = ? AND blob_ready = 0")
+        .run(committed.resumeArtifactId);
+      if (updateResult.changes === 0) {
+        // Row was reaped between the tx and the UPDATE — treat as lost and
+        // surface as a caller-retriable error.
+        throw new Error(
+          `saveArtifact: resume target ${committed.resumeArtifactId} was reaped; retry`,
+        );
+      }
+      args.db
+        .query("DELETE FROM pending_blob_puts WHERE intent_id = ?")
+        .run(committed.resumeIntentId);
+      const row = args.db
+        .query(`SELECT ${ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?`)
+        .get(committed.resumeArtifactId) as ArtifactRow;
+      return { ok: true, value: rowToArtifact(row) };
+    }
+
     const newId = committed.insertedId;
     if (!newId) {
-      // Unreachable — tx returns either idempotentArtifactId or insertedId.
-      throw new Error("saveArtifact: transaction returned neither path");
+      // Unreachable — tx returns idempotent | resume | insertedId.
+      throw new Error("saveArtifact: transaction returned no path");
     }
 
     // Step 7: post-commit repair

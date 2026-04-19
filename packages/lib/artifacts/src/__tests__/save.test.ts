@@ -97,6 +97,56 @@ describe("saveArtifact", () => {
     expect(result.error.kind).toBe("invalid_input");
   });
 
+  test("resume-in-flight: second save of same bytes after a simulated repair failure returns existing row, not v2", async () => {
+    const { Database } = await import("bun:sqlite");
+    // First save normally
+    const input = {
+      sessionId: sessionId("sess_a"),
+      name: "retry.txt",
+      data: new TextEncoder().encode("resume-me"),
+      mimeType: "text/plain",
+    };
+    const r1 = await store.saveArtifact(input);
+    if (!r1.ok) throw new Error("first save failed");
+    const originalId = r1.value.id;
+
+    // Simulate the "post-commit repair failed" state: reset blob_ready to 0
+    // and re-inject a bound pending_blob_puts intent (as if crash+retry).
+    await store.close();
+    const db = new Database(dbPath);
+    db.exec(`UPDATE artifacts SET blob_ready = 0 WHERE id = '${originalId}'`);
+    const intentId = `intent_${crypto.randomUUID()}`;
+    db.exec(
+      `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
+       VALUES ('${intentId}', '${r1.value.contentHash}', '${originalId}', ${Date.now()})`,
+    );
+    db.close();
+    // Reopen — startup recovery will see the blob is present (we never
+    // deleted it) and promote. So before re-testing, re-inject the
+    // blob_ready=0 state AGAIN after open.
+    store = await createArtifactStore({ dbPath, blobDir });
+    const db2 = new Database(dbPath);
+    db2.exec(`UPDATE artifacts SET blob_ready = 0 WHERE id = '${originalId}'`);
+    db2.exec(
+      `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
+       VALUES ('${intentId}_v2', '${r1.value.contentHash}', '${originalId}', ${Date.now()})`,
+    );
+    db2.close();
+    // Second save with same bytes — must resume the existing row, not create v2
+    const r2 = await store.saveArtifact(input);
+    if (!r2.ok) throw new Error("second save failed");
+    expect(r2.value.id).toBe(originalId);
+    expect(r2.value.version).toBe(1); // Same version, not bumped
+  });
+
+  test("rejects custom blobStore with Plan 5 pointer", async () => {
+    const { createFilesystemBlobStore } = await import("@koi/blob-cas");
+    const customBlobStore = createFilesystemBlobStore(blobDir);
+    await expect(
+      createArtifactStore({ dbPath: "/tmp/fake.db", blobDir, blobStore: customBlobStore }),
+    ).rejects.toThrow(/blobStore is not supported in Plan 2/);
+  });
+
   test("pending_blob_puts is empty after successful save (intent retired)", async () => {
     // Access the underlying DB via a raw path — we don't export it publicly.
     // We'll instead save and verify the behavior indirectly: a subsequent save
