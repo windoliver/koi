@@ -1419,6 +1419,56 @@ describe("task_output — matches_only", () => {
     expect(r.stderr).toBe("buffered stderr");
   });
 
+  test("matches_only with malformed cursor sequence returns validation_failed", async () => {
+    // Regression: parseCursor previously returned NaN for non-numeric s= values,
+    // producing a silently empty result. Now output-buffer throws "cursor sequence"
+    // error; task_output surfaces it as validation_failed. We simulate the buffer
+    // throw here (L2→L2 import is prohibited); the unit tests in @koi/tools-bash
+    // cover parseCursor directly.
+    const sequenceErrorBuffer: import("@koi/core").TaskOutputReader = {
+      snapshot() {
+        return { stdout: "out", stderr: "", truncated: false };
+      },
+      queryMatches(q) {
+        if (q.offset !== undefined) {
+          throw new Error(
+            `cursor sequence is not a non-negative integer: ${JSON.stringify(q.offset)}`,
+          );
+        }
+        return {
+          kind: "matches",
+          entries: [makeEntry("ready", "stdout", "server ready")],
+          cursor: "s=1&e=ready&r=stdout",
+          dropped_before_cursor: 0,
+          truncated: false,
+        };
+      },
+    };
+
+    const store2 = createMemoryTaskBoardStore();
+    const resultsDir2 = await freshResultsDir();
+    const board2 = await createManagedTaskBoard({ store: store2, resultsDir: resultsDir2 });
+    const tools2 = createNamedTaskTools({
+      board: board2,
+      agentId: agentId("agent-1"),
+      bufferReader: () => sequenceErrorBuffer,
+    });
+
+    const rc = await exec(tools2.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools2.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools2.output, {
+      task_id: id,
+      matches_only: true,
+      event: "ready",
+      stream: "stdout",
+      match_offset: "s=abc&e=ready&r=stdout",
+    })) as { kind: string; reason: string };
+    expect(r.kind).toBe("validation_failed");
+    expect(r.reason).toMatch(/sequence/i);
+  });
+
   test("matches_only with a stale cross-filter cursor returns validation_failed", async () => {
     // Use a buffer that throws on cursor mismatch, mimicking parseCursor in output-buffer.ts
     const throwingBuffer: import("@koi/core").TaskOutputReader = {

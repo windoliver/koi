@@ -139,6 +139,15 @@ function parseCursor(cursor: string, q: MatchQuery): number {
       `cursor filter mismatch: cursor encodes event="${parts.get("e") ?? ""}" stream="${parts.get("r") ?? ""}" but query has event="${expectedEvent}" stream="${expectedStream}"`,
     );
   }
-  const raw = parts.get("s") ?? "0";
-  return Number.parseInt(raw, 10);
+  const rawSeq = parts.get("s");
+  if (rawSeq === undefined) {
+    throw new Error("cursor missing sequence component");
+  }
+  const seq = Number.parseInt(rawSeq, 10);
+  // Reject NaN, negative, non-integer, and inputs with extra characters that parseInt silently
+  // accepts (e.g. "5.5" → 5, "5abc" → 5, leading-zero "007" → 7 preserved but string diverges).
+  if (!Number.isFinite(seq) || seq < 0 || !Number.isInteger(seq) || String(seq) !== rawSeq) {
+    throw new Error(`cursor sequence is not a non-negative integer: ${JSON.stringify(rawSeq)}`);
+  }
+  return seq;
 }

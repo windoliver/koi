@@ -140,4 +140,36 @@ describe("BashOutputBuffer — matches side-buffer", () => {
     expect(r.dropped_before_cursor).toBe(0);
     expect(r.truncated).toBe(false);
   });
+
+  test("malformed cursor sequence throws cursor validation error", () => {
+    const b = createBashOutputBuffer({ maxBytes: 1_000 });
+    b.recordMatch(mkEntry("ready", "stdout"));
+    // Cursor has matching event/stream but non-numeric sequence — sequence check fires.
+    expect(() =>
+      b.queryMatches({ event: "ready", stream: "stdout", offset: "s=abc&e=ready&r=stdout" }),
+    ).toThrow(/cursor sequence/i);
+  });
+
+  test("negative cursor sequence rejected", () => {
+    const b = createBashOutputBuffer({ maxBytes: 1_000 });
+    // Cursor includes matching filter components so sequence check fires (not filter mismatch).
+    expect(() =>
+      b.queryMatches({ event: "ready", stream: "stdout", offset: "s=-1&e=ready&r=stdout" }),
+    ).toThrow();
+  });
+
+  test("cursor missing sequence component throws", () => {
+    const b = createBashOutputBuffer({ maxBytes: 1_000 });
+    // Cursor has matching event/stream but no s= — missing sequence check fires.
+    expect(() =>
+      b.queryMatches({ event: "ready", stream: "stdout", offset: "e=ready&r=stdout" }),
+    ).toThrow(/missing sequence/i);
+  });
+
+  test("float string cursor sequence rejected (parseInt partial accept)", () => {
+    const b = createBashOutputBuffer({ maxBytes: 1_000 });
+    b.recordMatch(mkEntry("ready", "stdout"));
+    // parseInt("5.5") returns 5 but String(5) !== "5.5" — must reject
+    expect(() => b.queryMatches({ offset: "s=5.5" })).toThrow(/cursor sequence/i);
+  });
 });
