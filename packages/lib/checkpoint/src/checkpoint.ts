@@ -307,6 +307,16 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     const fileOps = state.turnBuffers.get(turnKey) ?? [];
     state.turnBuffers.delete(turnKey);
 
+    // #1638 / stop-gate: skip snapshot capture for non-normal turn
+    // completions (activity-timeout aborts, stop-gate vetoes). Writing a
+    // SnapshotStatus "complete" here would advance the rewind chain head
+    // to a partial/interrupted turn, so a subsequent rewind could land on
+    // corrupted state. The buffered fileOps are already discarded above,
+    // so the partial work is not rolled forward.
+    if (ctx.stopBlocked === true) {
+      return;
+    }
+
     // User-turn boundary detection. A single user prompt that invokes tools
     // typically produces two engine turns:
     //   engine turn N   — model call → tool call(s) → fileOps populated

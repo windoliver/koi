@@ -163,6 +163,39 @@ describe("checkpoint middleware", () => {
     expect(head.value?.data.fileOps).toEqual([]);
   });
 
+  test("onAfterTurn skips snapshot when ctx.stopBlocked === true (#1638)", async () => {
+    // Activity-timeout aborts and stop-gate vetoes arrive with stopBlocked.
+    // Writing a "complete" snapshot for a non-normal completion would
+    // advance the rewind chain head onto partial state — a subsequent
+    // /rewind could land on a corrupted snapshot. The guard fails closed
+    // by skipping the write entirely; any buffered fileOps are discarded.
+    const session = makeSession();
+    const normalCtx = makeTurn(session, 0);
+    const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0 completes normally — head advances with turnIndex: 0.
+    await onAfter(normalCtx);
+    const afterNormal = rig.store.head(chainId(String(session.sessionId)));
+    expect(afterNormal.ok).toBe(true);
+    if (!afterNormal.ok || afterNormal.value === undefined) {
+      throw new Error("expected turn 0 snapshot");
+    }
+    const turn0NodeId = afterNormal.value.nodeId;
+    expect(afterNormal.value.data.turnIndex).toBe(0);
+
+    // Turn 1 is stopBlocked — onAfterTurn should NOT advance the chain.
+    await onAfter(blockedCtx);
+    const afterBlocked = rig.store.head(chainId(String(session.sessionId)));
+    expect(afterBlocked.ok).toBe(true);
+    if (!afterBlocked.ok || afterBlocked.value === undefined) {
+      throw new Error("expected preserved head");
+    }
+    // Head unchanged — still points at turn 0.
+    expect(afterBlocked.value.nodeId).toBe(turn0NodeId);
+    expect(afterBlocked.value.data.turnIndex).toBe(0);
+  });
+
   test("fs_write that creates a new file is captured as a create record", async () => {
     const session = makeSession();
     const ctx = makeTurn(session);
