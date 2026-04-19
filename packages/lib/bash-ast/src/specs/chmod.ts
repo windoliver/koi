@@ -1,3 +1,4 @@
+import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, SpecResult } from "./types.js";
 
@@ -7,11 +8,11 @@ const CHMOD_ALLOW = {
 } as const satisfies FlagAllowlist;
 
 export function specChmod(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "chmod") {
+  if (!matchesCommand("chmod", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specChmod dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "chmod"`,
+      detail: `specChmod dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "chmod"`,
     };
   }
 

@@ -3,6 +3,7 @@ import { specChown } from "./chown.js";
 import { specCp } from "./cp.js";
 import { specCurl } from "./curl.js";
 import { specMv } from "./mv.js";
+import { posixBasename } from "./posix-basename.js";
 import { specRm } from "./rm.js";
 import { specScp } from "./scp.js";
 import { specSsh } from "./ssh.js";
@@ -67,4 +68,24 @@ export function createSpecRegistry(): Map<string, CommandSpec> {
  */
 export function registerSpec(reg: Map<string, CommandSpec>, name: string, fn: CommandSpec): void {
   reg.set(name, fn);
+}
+
+/**
+ * Look up a spec for `argv[0]` honoring path-qualified invocations.
+ * Walker output preserves the literal command token, so `/bin/rm` and
+ * `rm` both need to dispatch to `specRm`. Strips any leading directory
+ * segments via POSIX basename before consulting `reg`.
+ *
+ * Returns `undefined` if argv[0] is missing, basename derivation fails
+ * (e.g. argv[0] is `""` or `/`), or no spec is registered for the
+ * resolved name.
+ */
+export function lookupSpec(
+  reg: ReadonlyMap<string, CommandSpec>,
+  argv0: string | undefined,
+): CommandSpec | undefined {
+  if (argv0 === undefined) return undefined;
+  const base = posixBasename(argv0);
+  if (!base.ok) return undefined;
+  return reg.get(base.value);
 }

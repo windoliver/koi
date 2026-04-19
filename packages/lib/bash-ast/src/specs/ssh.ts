@@ -1,13 +1,14 @@
+import { matchesCommand } from "./dispatch-name.js";
 import type { SpecResult } from "./types.js";
 
 const TRUST_BOUNDARY_PREFIXES = ["-o", "-F", "-J", "-D", "-L", "-R"] as const;
 
 export function specSsh(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "ssh") {
+  if (!matchesCommand("ssh", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specSsh dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "ssh"`,
+      detail: `specSsh dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "ssh"`,
     };
   }
 

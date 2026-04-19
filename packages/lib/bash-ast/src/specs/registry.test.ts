@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BUILTIN_SPECS, createSpecRegistry, registerSpec } from "./registry.js";
+import { BUILTIN_SPECS, createSpecRegistry, lookupSpec, registerSpec } from "./registry.js";
 import type { CommandSpec } from "./types.js";
 
 const EXPECTED_BUILTINS: readonly string[] = [
@@ -92,5 +92,36 @@ describe("registerSpec", () => {
     const myFn: CommandSpec = () => ({ kind: "refused", cause: "parse-error", detail: "x" });
     registerSpec(reg, "git", myFn);
     expect(reg.get("rm")).toBeDefined();
+  });
+});
+
+describe("lookupSpec", () => {
+  test("matches bare command name", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "rm")).toBeDefined();
+  });
+
+  test("matches absolute path-qualified command (regression)", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "/bin/rm")).toBeDefined();
+    expect(lookupSpec(BUILTIN_SPECS, "/usr/local/bin/curl")).toBeDefined();
+  });
+
+  test("matches relative path-qualified command", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "./bin/tar")).toBeDefined();
+  });
+
+  test("returns the SAME function whether bare or path-qualified", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "/bin/rm")).toBe(lookupSpec(BUILTIN_SPECS, "rm"));
+  });
+
+  test("returns undefined for unregistered command", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "git")).toBeUndefined();
+  });
+
+  test("returns undefined for argv0 = '/' (no basename)", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "/")).toBeUndefined();
+  });
+
+  test("returns undefined for argv0 = undefined", () => {
+    expect(lookupSpec(BUILTIN_SPECS, undefined)).toBeUndefined();
   });
 });

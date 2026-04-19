@@ -1,3 +1,4 @@
+import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, SpecResult } from "./types.js";
 
@@ -7,11 +8,11 @@ const CHOWN_ALLOW = {
 } as const satisfies FlagAllowlist;
 
 export function specChown(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "chown") {
+  if (!matchesCommand("chown", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specChown dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "chown"`,
+      detail: `specChown dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "chown"`,
     };
   }
 

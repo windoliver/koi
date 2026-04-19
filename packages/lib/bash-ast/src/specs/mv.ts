@@ -1,4 +1,5 @@
 import { deriveBasenames } from "./derive-basenames.js";
+import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, SpecResult } from "./types.js";
 
@@ -8,11 +9,11 @@ const MV_ALLOW = {
 } as const satisfies FlagAllowlist;
 
 export function specMv(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "mv") {
+  if (!matchesCommand("mv", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specMv dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "mv"`,
+      detail: `specMv dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "mv"`,
     };
   }
 

@@ -1,3 +1,4 @@
+import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, SpecResult } from "./types.js";
 
@@ -9,11 +10,11 @@ const RM_ALLOW = {
 const RECURSIVE_FLAGS = ["r", "R", "d"] as const;
 
 export function specRm(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "rm") {
+  if (!matchesCommand("rm", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specRm dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "rm"`,
+      detail: `specRm dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "rm"`,
     };
   }
 

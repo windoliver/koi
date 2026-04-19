@@ -1,13 +1,14 @@
+import { matchesCommand } from "./dispatch-name.js";
 import type { SpecResult } from "./types.js";
 
 const TRUST_BOUNDARY_PREFIXES = ["-o", "-F", "-J"] as const;
 
 export function specScp(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "scp") {
+  if (!matchesCommand("scp", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specScp dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "scp"`,
+      detail: `specScp dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "scp"`,
     };
   }
 

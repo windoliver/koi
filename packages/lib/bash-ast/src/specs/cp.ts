@@ -1,4 +1,5 @@
 import { deriveBasenames } from "./derive-basenames.js";
+import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, SpecResult } from "./types.js";
 
@@ -10,11 +11,11 @@ const CP_ALLOW = {
 const RECURSIVE_FLAGS = ["r", "R", "a"] as const;
 
 export function specCp(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "cp") {
+  if (!matchesCommand("cp", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specCp dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "cp"`,
+      detail: `specCp dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "cp"`,
     };
   }
 

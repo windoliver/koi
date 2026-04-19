@@ -1,3 +1,4 @@
+import { matchesCommand } from "./dispatch-name.js";
 import type { FlagAllowlist } from "./parse-flags.js";
 import { parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, SpecResult } from "./types.js";
@@ -9,21 +10,6 @@ const TAR_ALLOW = {
 
 const MODE_FLAGS = ["x", "c", "t"] as const;
 
-/**
- * Tar's idiomatic bundled forms mix bool mode flags with the `-f`/`-C`
- * value flags. The bundle has shape `-<bools><valueFlag><attachedValue?>`:
- * everything before the first value-flag char is bool flags, the value-flag
- * char itself takes a value, and any chars after it are that value attached.
- *
- *   `-cf`         → `-c -f`              (no attached value; -f consumes next argv)
- *   `-zcf`        → `-zc -f`
- *   `-cfout.tar`  → `-c -fout.tar`       (attached value form)
- *   `-fout.tar`   → `-fout.tar`          (already attached; passthrough)
- *   `-CDIR`       → `-CDIR`              (passthrough)
- *
- * If no value flag is present, the bundle is left untouched for parseFlags
- * to handle via its normal bool-bundle path.
- */
 /**
  * For tar `-c` (create) mode: ordered scan of an already-bundle-expanded argv
  * that pairs each positional file operand with the most recent `-C DIR`
@@ -92,6 +78,21 @@ function rebase(operand: string, base: string | undefined): string {
   return `${base}/${operand}`;
 }
 
+/**
+ * Tar's idiomatic bundled forms mix bool mode flags with the `-f`/`-C`
+ * value flags. The bundle has shape `-<bools><valueFlag><attachedValue?>`:
+ * everything before the first value-flag char is bool flags, the value-flag
+ * char itself takes a value, and any chars after it are that value attached.
+ *
+ *   `-cf`         → `-c -f`              (no attached value; -f consumes next argv)
+ *   `-zcf`        → `-zc -f`
+ *   `-cfout.tar`  → `-c -fout.tar`       (attached value form)
+ *   `-fout.tar`   → `-fout.tar`          (already attached; passthrough)
+ *   `-CDIR`       → `-CDIR`              (passthrough)
+ *
+ * Tokens after `--` are passed through verbatim (they are positionals,
+ * not flag bundles).
+ */
 function expandTarBundles(argv: readonly string[]): readonly string[] {
   const out: string[] = [];
   let cutoff = false;
@@ -129,11 +130,11 @@ function expandTarBundles(argv: readonly string[]): readonly string[] {
 }
 
 export function specTar(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "tar") {
+  if (!matchesCommand("tar", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specTar dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "tar"`,
+      detail: `specTar dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "tar"`,
     };
   }
 

@@ -1,3 +1,4 @@
+import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, NetworkAccess, SpecResult } from "./types.js";
 
@@ -7,11 +8,11 @@ const WGET_ALLOW = {
 } as const satisfies FlagAllowlist;
 
 export function specWget(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "wget") {
+  if (!matchesCommand("wget", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specWget dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "wget"`,
+      detail: `specWget dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "wget"`,
     };
   }
 
