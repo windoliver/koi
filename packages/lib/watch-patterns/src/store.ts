@@ -27,7 +27,10 @@ export function createPendingMatchStore(): PendingMatchStore {
     const view: CoalescedMatch[] = [];
     const idsByKey = new Map<string, readonly number[]>();
     for (const [key, s] of currentWindow) {
-      const firstId = Math.min(...s.records.keys());
+      let firstId = Number.POSITIVE_INFINITY;
+      for (const id of s.records.keys()) {
+        if (id < firstId) firstId = id;
+      }
       const firstMatch = s.records.get(firstId);
       if (firstMatch === undefined) continue;
       view.push({
