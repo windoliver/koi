@@ -86,29 +86,32 @@ describe("evaluateBashCommand — redirects merged into semantics", () => {
   });
 });
 
-describe("evaluateBashCommand — path-qualified argv[0]", () => {
-  test("accepts /bin/rm via basename normalization (consumer must pre-verify identity)", () => {
+describe("evaluateBashCommand — path-qualified argv[0] is REFUSED (consumer must pre-canonicalize)", () => {
+  test("refuses /bin/rm (even trusted path; consumer must rewrite to bare name)", () => {
     const result = evaluateBashCommand(input(["/bin/rm", "foo"]), BUILTIN_SPECS);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
-    expect(result.semantics.writes).toEqual(["foo"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("parse-error");
+    expect(result.detail).toMatch(/bare command name/);
   });
 
-  test("accepts /usr/local/bin/curl via basename normalization", () => {
-    const result = evaluateBashCommand(
-      input(["/usr/local/bin/curl", "https://example.com/"]),
-      BUILTIN_SPECS,
-    );
-    expect(result.kind).toBe("complete");
+  test("refuses /tmp/rm (untrusted path — would be wrapper)", () => {
+    const result = evaluateBashCommand(input(["/tmp/rm", "foo"]), BUILTIN_SPECS);
+    expect(result.kind).toBe("refused");
   });
 
-  test("refuses argv[0] with no derivable basename ('/')", () => {
+  test("refuses ./rm (relative path)", () => {
+    const result = evaluateBashCommand(input(["./rm", "foo"]), BUILTIN_SPECS);
+    expect(result.kind).toBe("refused");
+  });
+
+  test("refuses argv[0] = '/' (no basename)", () => {
     const result = evaluateBashCommand(input(["/"]), BUILTIN_SPECS);
     expect(result.kind).toBe("refused");
   });
 
-  test("refuses unknown command name even after basename strip", () => {
-    const result = evaluateBashCommand(input(["/bin/git", "status"]), BUILTIN_SPECS);
+  test("refuses unknown bare command name", () => {
+    const result = evaluateBashCommand(input(["git", "status"]), BUILTIN_SPECS);
     expect(result.kind).toBe("refused");
   });
 });

@@ -1,4 +1,3 @@
-import { posixBasename } from "./posix-basename.js";
 import type { CommandSemantics, CommandSpec, SpecResult } from "./types.js";
 
 /**
@@ -15,13 +14,14 @@ import type { CommandSemantics, CommandSpec, SpecResult } from "./types.js";
  * so any `complete` result from the raw spec would be unsound.
  *
  * Behavior:
- *   - `argv[0]` is normalized to its POSIX basename before registry
- *     lookup, so both `rm` and `/bin/rm` dispatch to specRm. **The
- *     consumer MUST verify executable identity (canonicalize symlinks,
- *     allowlist trusted paths) BEFORE calling this function** — the
- *     basename strip alone does not distinguish `/bin/rm` from
- *     `/tmp/rm` (a wrapper).
- *   - Basename not in `registry` → `refused`, `cause: "parse-error"`.
+ *   - `argv[0]` MUST be a bare command name. Path-qualified executables
+ *     (`/bin/rm`, `/tmp/rm`, `./rm`) are REFUSED. The spec layer cannot
+ *     distinguish `/bin/rm` from `/tmp/rm` (a wrapper) by basename alone,
+ *     so emitting builtin semantics for an arbitrary path is unsafe.
+ *     **Consumers MUST verify executable identity (canonicalize symlinks,
+ *     resolve against a vetted PATH/allowlist) BEFORE calling this
+ *     function and pass the bare name (or rewrite `argv[0]`).**
+ *   - `argv[0]` not in `registry` → `refused`, `cause: "parse-error"`.
  *   - Spec returns `refused` → propagated.
  *   - Spec returns `complete` or `partial`:
  *       - Merge **modeled** redirects (`>`, `>>`, `<`, `&>`, `&>>`,
@@ -58,26 +58,28 @@ export function evaluateBashCommand(
   cmd: EvaluateInput,
   registry: ReadonlyMap<string, CommandSpec>,
 ): SpecResult {
-  // The consumer is responsible for verifying executable identity
-  // (canonicalizing symlinks, allowlisting trusted paths) BEFORE calling
-  // this function. After that gate, we accept path-qualified `argv[0]`
-  // by stripping to its POSIX basename for registry lookup. Both `rm`
-  // and `/bin/rm` (post-canonicalization) dispatch to specRm.
+  // Bare command names only. Path-qualified `argv[0]` is refused so the
+  // spec layer never silently authorizes an arbitrary executable as a
+  // builtin. Consumers MUST canonicalize the executable identity and
+  // pass the bare name (see docstring).
   const head = cmd.argv[0];
-  const baseName = head === undefined ? undefined : commandBasename(head);
-  const spec = baseName === undefined ? undefined : registry.get(baseName);
+  if (head === undefined || head === "" || head.includes("/")) {
+    return {
+      kind: "refused",
+      cause: "parse-error",
+      detail: `evaluateBashCommand requires a bare command name; got "${head ?? "<empty>"}". Consumer must canonicalize executable identity and pass the bare basename.`,
+    };
+  }
+  const spec = registry.get(head);
   if (spec === undefined) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `no spec registered for command "${head ?? "<empty>"}"`,
+      detail: `no spec registered for command "${head}"`,
     };
   }
-  // Pass the spec the canonicalized argv (basename in argv[0]) so the
-  // spec's own dispatch check (which is bare-name only) sees a match.
-  const normalizedArgv = baseName === head ? cmd.argv : [baseName, ...cmd.argv.slice(1)];
 
-  const raw = spec(normalizedArgv);
+  const raw = spec(cmd.argv);
   if (raw.kind === "refused") return raw;
 
   const redirectReads: string[] = [];
@@ -110,19 +112,4 @@ export function evaluateBashCommand(
     return { kind: "partial", semantics: merged, reason: reasons.join(";") };
   }
   return { kind: "complete", semantics: merged };
-}
-
-/**
- * POSIX basename of `argv0` for registry lookup. Returns `undefined` if
- * the input has no usable basename (`""`, `/`, etc.). The consumer is
- * required to verify executable identity (canonicalize symlinks,
- * allowlist trusted paths) BEFORE calling `evaluateBashCommand`; this
- * helper just strips the path so lookup can match the registry's bare
- * command keys.
- */
-function commandBasename(argv0: string): string | undefined {
-  if (argv0.length === 0) return undefined;
-  if (!argv0.includes("/")) return argv0;
-  const base = posixBasename(argv0);
-  return base.ok ? base.value : undefined;
 }
