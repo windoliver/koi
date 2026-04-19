@@ -136,6 +136,17 @@ export interface BashBackgroundToolConfig {
    */
   readonly getWatchStore?: (() => PendingMatchStore | undefined) | undefined;
   /**
+   * Called when a background task enters a terminal state (completed, failed, or aborted).
+   *
+   * Use to remove the per-task output buffer from the session's buffer map, preventing
+   * unbounded memory accumulation in long-running sessions. Each background task retains
+   * ~1 MB + match entries until this callback is invoked.
+   *
+   * Invoked from `runBackground`'s `finally` block, exactly once per task launch,
+   * after matcher cleanup completes.
+   */
+  readonly releaseOutputBuffer?: ((taskId: TaskItemId) => void) | undefined;
+  /**
    * Live-output buffer per task — when provided, stdout/stderr bytes are mirrored
    * here so `task_output` can return partial output while a task is running and
    * matched-line retrieval (matches_only=true) works after capture truncation.
@@ -419,6 +430,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
         matcher,
         store,
         callbacks,
+        config.releaseOutputBuffer,
       ).finally(() => onSubprocessEnd?.());
 
       return {
@@ -457,6 +469,7 @@ async function runBackground(
   matcher: LineBufferedMatcher | undefined,
   store: PendingMatchStore | undefined,
   callbacks: SpawnBashCallbacks | undefined,
+  releaseOutputBuffer: ((taskId: TaskItemId) => void) | undefined,
 ): Promise<void> {
   const fullCommand = `set -euo pipefail\n${command}`;
   try {
@@ -554,6 +567,10 @@ async function runBackground(
         /* cancel errors must not break teardown */
       }
     }
+    // Release the per-task output buffer now that the task is in a terminal state.
+    // This prevents ~1 MB + match entries per task from accumulating indefinitely
+    // in long-running sessions.
+    releaseOutputBuffer?.(id);
   }
 }
 

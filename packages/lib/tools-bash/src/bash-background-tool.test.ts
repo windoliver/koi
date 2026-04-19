@@ -226,6 +226,30 @@ describe("bash_background — watch_patterns functional", () => {
     expect(store.pending()).toBe(0);
   });
 
+  test("releaseOutputBuffer is called when task enters terminal state", async () => {
+    const released: TaskItemId[] = [];
+    const tool = createBashBackgroundTool(
+      minimalConfig({
+        releaseOutputBuffer: (id) => {
+          released.push(id);
+        },
+      }),
+    );
+
+    const result = await tool.execute({ command: "echo hi" }, {});
+    expect(isStarted(result)).toBe(true);
+    if (!isStarted(result)) throw new Error("expected started");
+    const taskId = result.taskId as TaskItemId;
+
+    // Poll until the subprocess exits and releaseOutputBuffer fires.
+    // Timeout: 40 × 50ms = 2 seconds.
+    for (let i = 0; i < 40 && released.length === 0; i++) {
+      await new Promise<void>((r) => setTimeout(r, 50));
+    }
+
+    expect(released).toContain(taskId);
+  });
+
   test("matched lines are written to outputBuffer's side-buffer for task_output(matches_only)", async () => {
     const store = createPendingMatchStore();
     const buffer = createBashOutputBuffer({ maxBytes: 1_000_000 });

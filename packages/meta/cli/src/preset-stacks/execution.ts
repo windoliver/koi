@@ -438,6 +438,9 @@ export const executionStack: PresetStack = {
                 home: effectiveHome,
                 getWatchStore: () => watchPatternStoreRef.current,
                 getOutputBuffer: (id) => getOrCreateBuffer(id),
+                releaseOutputBuffer: (id) => {
+                  bashOutputBuffersRef.current.delete(id);
+                },
                 ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
               }),
           })
