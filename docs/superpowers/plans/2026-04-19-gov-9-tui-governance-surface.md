@@ -150,7 +150,7 @@ The bridge subscribes to `@koi/governance-core` callbacks:
 - `add_governance_violation { violation: GovernanceViolation }`
 - `clear_governance_alerts` (fired by `/governance reset`)
 - `set_governance_rules { rules: readonly RuleDescriptor[] }` — once at startup
-- `set_governance_capabilities { capabilities: CapabilityFragment }` — once at startup
+- `set_governance_capabilities { capabilities: readonly CapabilityFragmentLite[] }` — once at startup
 
 ## Persistence
 
