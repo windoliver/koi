@@ -219,7 +219,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
             {(text, index) => (
               <box flexDirection="column">
                 <text fg={COLORS.blueAccent}>
-                  <b>{index() === 0 ? "You (queued):" : "You (queued next):"}</b>
+                  <b>You:</b>
                 </text>
                 <box paddingLeft={2}>
                   <text fg={COLORS.textSecondary}>{text}</text>

@@ -110,7 +110,7 @@ describe("ConversationView — rendering", () => {
     );
     await renderOnce();
     const frame = captureCharFrame();
-    expect(frame).toContain("You (queued):");
+    expect(frame).toContain("You:");
     expect(frame).toContain("first");
     expect(frame).toContain("Press up to edit queued messages");
     renderer.destroy();
