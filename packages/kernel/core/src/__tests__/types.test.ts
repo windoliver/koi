@@ -20,6 +20,7 @@ import type {
   EngineEvent,
   EngineInput,
   EngineStopReason,
+  GovernanceBackend,
   GovernanceCheck,
   GovernanceSnapshot,
   KoiError,
@@ -39,6 +40,7 @@ import type {
   Resolver,
   Result,
   RevocationRegistry,
+  RuleDescriptor,
   RunId,
   ScopeChecker,
   SessionId,
@@ -1780,4 +1782,38 @@ describe("ToolRequest.signal", () => {
     };
     expect(req.signal).toBeDefined();
   });
+});
+
+// ---------------------------------------------------------------------------
+// RuleDescriptor + GovernanceBackend.describeRules (gov-9)
+// ---------------------------------------------------------------------------
+
+test("RuleDescriptor has required fields", () => {
+  const r: RuleDescriptor = {
+    id: "deny-prod-writes",
+    description: "Deny writes to production paths",
+    effect: "deny",
+    pattern: "/prod/**",
+  };
+  expect(r.id).toBe("deny-prod-writes");
+  expect(r.effect).toBe("deny");
+});
+
+test("GovernanceBackend.describeRules is optional", () => {
+  const b: GovernanceBackend = {
+    evaluator: { evaluate: async () => ({ allowed: true }) },
+  };
+  expect(b.describeRules).toBeUndefined();
+});
+
+test("GovernanceBackend.describeRules can be implemented", async () => {
+  const b: GovernanceBackend = {
+    evaluator: { evaluate: async () => ({ allowed: true }) },
+    describeRules: () => [
+      { id: "r1", description: "test", effect: "advise" } satisfies RuleDescriptor,
+    ],
+  };
+  const rules = await b.describeRules?.();
+  expect(rules).toHaveLength(1);
+  expect(rules?.[0]?.id).toBe("r1");
 });
