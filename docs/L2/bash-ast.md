@@ -127,6 +127,83 @@ interface SimpleCommand {
 }
 ```
 
+## Per-command semantics
+
+> See [`docs/superpowers/specs/2026-04-18-bash-ast-command-specs-design.md`](../superpowers/specs/2026-04-18-bash-ast-command-specs-design.md) for the full design + soundness contract.
+
+The package exports per-command semantic specs that map a resolved
+`argv: readonly string[]` (produced by the existing walker) to a
+`SpecResult` discriminated union describing reads, writes, network
+access, and env mutations. Covers ten commands: `rm`, `cp`, `mv`,
+`chmod`, `chown`, `curl`, `wget`, `tar`, `scp`, `ssh`.
+
+### Public API
+
+```typescript
+import {
+  type CommandSemantics,
+  type CommandSpec,
+  type NetworkAccess,
+  type SpecResult,
+  BUILTIN_SPECS,
+  createSpecRegistry,
+  registerSpec,
+  specRm, specCp, specMv, specChmod, specChown,
+  specCurl, specWget, specTar, specScp, specSsh,
+} from "@koi/bash-ast";
+```
+
+### `SpecResult` contract
+
+| `kind` | Argv-aware rules (`Read`/`Write`/`Network`) | `Run(...)` rules |
+|---|---|---|
+| `complete` | use `semantics` freely | optional; prefix or exact, consumer's choice |
+| `partial` | use `semantics` only paired with an exact-argv `Run(...)` co-rule | **must be exact-argv-match only** for this argv |
+| `refused` | MUST NOT use; no semantics produced | **must be exact-argv-match only** for this argv |
+
+`partial` carries `reason` (e.g., `"recursive-subtree-root"`,
+`"cp-mv-dest-may-be-directory"`, `"wget-follows-redirects"`,
+`"curl-follows-redirects"`, `"curl-O-derived-basename"`,
+`"tar-extract-targets-in-archive"`).
+
+`refused` carries `cause` (`"parse-error"` or `"unsupported-form"`)
+and `detail` (free-form audit string).
+
+### Universal exact-argv `Run(...)` guard
+
+Bash rule matchers in this repo accept argv-prefix rules. A broad
+allow like `Run(curl)` or `Run(ssh prod)` would otherwise re-authorize
+forms the spec marked `partial` or `refused`, defeating their
+fail-closed intent. **Consumers MUST reject or promote prefix-shaped
+`Run(...)` rules whenever any argv they would match yields
+`kind: "partial" | "refused"`.** This guard is consumer-side; the
+spec cannot enforce it alone.
+
+### Per-command flag allowlists
+
+| Command | Recognized flags | Returns `kind: "refused"` on |
+|---|---|---|
+| `rm` | `-r`/`-R`, `-f`, `-i`, `-d`, `-v`, `--` | unknown flag, missing positional |
+| `cp` | `-r`/`-R`, `-f`, `-i`, `-p`, `-a`, `-v`, `-t DIR`, `-T`, `--` | unknown flag, missing source/dest |
+| `mv` | `-f`, `-i`, `-n`, `-v`, `-t DIR`, `-T`, `--` | unknown flag, missing source/dest |
+| `chmod` | `-R`, `-v`, `-f`, `--` + mode + path | unknown flag, missing mode or path |
+| `chown` | `-R`, `-v`, `-f`, `--` + owner + path | unknown flag, missing owner or path |
+| `curl` | `-o`/`--output FILE`, `-O`, `-L`, `-X METHOD`, `-d`/`--data`, `-H`, `-s`, `-i`, URL(s) | `--config`/`-K`, `--next`, `-T`, unknown flag, unsupported URL scheme |
+| `wget` | `-O FILE`, `-q`, `-c`, `-N`, URL(s) | `-i`/`--input-file`, unknown flag, non-http/ftp scheme |
+| `tar` | `-x`/`-c`/`-t` (exactly one); `-f FILE`, `-z`/`-j`, `-C DIR`, `-v`, `--`, file list | conflicting mode flags, no `-f`, unknown flag |
+| `scp` | n/a — always `refused` | every argv (default ssh_config exposure) |
+| `ssh` | n/a — always `refused` | every argv (default ssh_config exposure) |
+
+### This PR ships specs only
+
+No package consumes the specs as of this commit. The follow-up
+consumer issue MUST land all three of: (a) a consumer that calls
+into specs, (b) the rule-evaluator change that promotes/rejects
+prefix `Run(...)` rules whenever any matched argv yields
+`kind: "partial" | "refused"`, (c) the golden query proving the
+end-to-end deny path. Splitting (a) from (b) opens a fail-open
+window. See the design doc for the full bundling rationale.
+
 ## Too-Complex Category Taxonomy
 
 `AstAnalysis.too-complex.primaryCategory` is a stable closed enum that
