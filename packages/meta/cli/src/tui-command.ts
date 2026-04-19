@@ -1087,7 +1087,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 2. TUI state setup (P2-A: show TUI immediately, before runtime assembly)
   // ---------------------------------------------------------------------------
 
-  const store = createStore(createInitialState());
+  const store = createStore(createInitialState(modelName));
   // Persistent approval store — gracefully degrade if DB can't be opened
   // (corrupt file, permissions issue, etc.). TUI still works without it.
   // let: approvalStore is conditionally set based on DB availability
