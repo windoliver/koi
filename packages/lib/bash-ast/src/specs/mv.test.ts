@@ -14,6 +14,14 @@ describe("specMv — -T form (complete)", () => {
     expect(specMv(["mv", "-T", "a"]).kind).toBe("refused");
     expect(specMv(["mv", "-T", "a", "b", "c"]).kind).toBe("refused");
   });
+
+  test("conflicting -T and -t DIR refused (regression)", () => {
+    const result = specMv(["mv", "-T", "-t", "/restricted", "src", "dst"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("parse-error");
+    expect(result.detail).toMatch(/mutually exclusive/);
+  });
 });
 
 describe("specMv — -t DIR form (complete)", () => {

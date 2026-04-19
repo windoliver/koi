@@ -25,6 +25,14 @@ export function specMv(argv: readonly string[]): SpecResult {
   const tValue = parsed.flags.get("t");
   const hasT = parsed.flags.has("T");
 
+  if (hasT && typeof tValue === "string") {
+    return {
+      kind: "refused",
+      cause: "parse-error",
+      detail: "mv -T and -t DIR are mutually exclusive",
+    };
+  }
+
   if (hasT) {
     if (parsed.positionals.length !== 2) {
       return {
