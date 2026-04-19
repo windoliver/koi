@@ -6,22 +6,23 @@
  * so the host (TUI command dispatch) can mutate `box.current` mid-session
  * without rebuilding the middleware chain.
  *
- * When `initialModel === box.current` the middleware is a pure pass-through
- * (calls `next(request)`) so the downstream model-router's fallback chain
- * continues to operate unchanged on unmodified sessions.
+ * Always pass-through: we call `next({ ...request, model: box.current })`
+ * so downstream observe-phase middleware (session-transcript, systemPrompt,
+ * goal, plan, trace wrappers) runs normally for every turn. Bypassing
+ * `next()` would skip those observers and silently drop transcript entries
+ * and telemetry spans for switched-model turns.
  *
- * When `box.current !== initialModel` the user has explicitly picked a model
- * mid-session. The router's target list is frozen at startup and would
- * otherwise override `request.model` with its configured target, so the
- * middleware short-circuits: it streams directly from a freshly-built adapter
- * for `box.current`, bypassing any downstream router. Fallback chains are
- * skipped intentionally — the user's explicit choice wins.
+ * Interaction with model-router: when `KOI_FALLBACK_MODEL` is set, the
+ * downstream model-router picks from its frozen target list and overrides
+ * `request.model` with the target's configured model id. In that case the
+ * user's picked model will NOT propagate to the HTTP call — document this
+ * limitation at the call site and consider disabling the picker, or
+ * rebuilding the router on switch, as a follow-up.
  */
 
 import type {
   CapabilityFragment,
   KoiMiddleware,
-  ModelAdapter,
   ModelChunk,
   ModelRequest,
   ModelStreamHandler,
@@ -41,15 +42,8 @@ export interface CurrentModelMiddleware {
  * Build a middleware that rewrites `request.model` to `box.current` on every
  * model stream call. Mutate `box.current` to change the model used on the
  * next turn.
- *
- * @param initialModel  The startup model id (baseline; pass-through until changed).
- * @param adapterFactory Builds a fresh `ModelAdapter` for the given model id.
- *                       Called only when the user has picked a different model.
  */
-export function createCurrentModelMiddleware(
-  initialModel: string,
-  adapterFactory: (model: string) => ModelAdapter,
-): CurrentModelMiddleware {
+export function createCurrentModelMiddleware(initialModel: string): CurrentModelMiddleware {
   const box: CurrentModelBox = { current: initialModel };
 
   const middleware: KoiMiddleware = {
@@ -59,12 +53,8 @@ export function createCurrentModelMiddleware(
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      if (box.current === initialModel) {
-        return next(request);
-      }
-      const adapter = adapterFactory(box.current);
       const rewritten: ModelRequest = { ...request, model: box.current };
-      return adapter.stream(rewritten);
+      return next(rewritten);
     },
     describeCapabilities: (): CapabilityFragment | undefined => undefined,
   };

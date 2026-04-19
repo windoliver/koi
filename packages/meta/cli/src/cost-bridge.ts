@@ -47,11 +47,19 @@ export interface CostBridgeConfig {
 }
 
 export interface CostBridge {
-  /** Feed cost data from an engine "done" event's metrics. */
+  /**
+   * Feed cost data from an engine "done" event's metrics.
+   *
+   * `metrics.modelName` lets the caller attribute this recording to the
+   * model that actually served the turn — snapshot at turn-start, not
+   * mutable bridge state at turn-end. If omitted, the bridge's current
+   * `modelName` is used (backwards-compatible; races with mid-turn switches).
+   */
   readonly recordEngineDone: (metrics: {
     readonly inputTokens: number;
     readonly outputTokens: number;
     readonly costUsd?: number | undefined;
+    readonly modelName?: string | undefined;
   }) => void;
   /** Force-push the current breakdown to the TUI store (skips debounce). */
   readonly flushBreakdown: () => void;
@@ -128,19 +136,23 @@ export async function createCostBridge(config: CostBridgeConfig): Promise<CostBr
 
   return {
     recordEngineDone(metrics): void {
+      // Prefer the caller-provided turn-snapshot model name. Without it we
+      // fall back to the bridge's current value, which races with mid-turn
+      // `setModelName()` calls from the picker.
+      const effectiveModel = metrics.modelName ?? modelName;
       // Compute cost if not provided by the engine
       const costUsd =
         metrics.costUsd ??
-        calculator.calculateDetailed?.(modelName, {
+        calculator.calculateDetailed?.(effectiveModel, {
           inputTokens: metrics.inputTokens,
           outputTokens: metrics.outputTokens,
         }) ??
-        calculator.calculate(modelName, metrics.inputTokens, metrics.outputTokens);
+        calculator.calculate(effectiveModel, metrics.inputTokens, metrics.outputTokens);
 
       const entry: CostEntry = {
         inputTokens: metrics.inputTokens,
         outputTokens: metrics.outputTokens,
-        model: modelName,
+        model: effectiveModel,
         costUsd,
         timestamp: Date.now(),
         provider,

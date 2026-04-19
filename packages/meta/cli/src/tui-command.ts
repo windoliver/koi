@@ -1097,16 +1097,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // freshly picked model without rebuilding the runtime. Composed OUTER
   // of `modelRouterMiddleware` so any fallback chain sees the latest
   // host-picked model id.
-  const { middleware: currentModelMiddleware, box: currentModelBox } = createCurrentModelMiddleware(
-    modelName,
-    (pickedModel) =>
-      createOpenAICompatAdapter({
-        apiKey,
-        ...(baseUrl !== undefined ? { baseUrl } : {}),
-        model: pickedModel,
-        ...reasoningCompat,
-      }),
-  );
+  const { middleware: currentModelMiddleware, box: currentModelBox } =
+    createCurrentModelMiddleware(modelName);
 
   // Persistent approval store — gracefully degrade if DB can't be opened
   // (corrupt file, permissions issue, etc.). TUI still works without it.
@@ -3932,6 +3924,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const inputBefore = cm.inputTokens;
         const outputBefore = cm.outputTokens;
         const costBefore = cm.costUsd;
+        // Snapshot the active model at turn-start for per-turn cost
+        // attribution. If the user switches mid-turn via the picker, the
+        // bridge's live `modelName` would race with the HTTP call that's
+        // still in flight; pin to this value for this turn's recording.
+        const modelAtTurnStart = currentModelBox.current;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;
@@ -3982,6 +3979,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             inputTokens: deltaInput,
             outputTokens: deltaOutput,
             costUsd: deltaCost,
+            modelName: modelAtTurnStart,
           });
         }
 
