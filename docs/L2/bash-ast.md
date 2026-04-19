@@ -169,16 +169,31 @@ executable identity (resolve symlinks, allowlist trusted paths) and pass
 the **bare basename** to the spec or `lookupSpec`. The spec layer
 intentionally does not perform that trust check — it is the consumer's job.
 
-### Known limitations of this v1 API (deferred to follow-ups)
+### Blessed public API for consumers — `evaluateBashCommand`
 
-- **`SimpleCommand.redirects` is not consumed.** `curl https://x > /tmp/out`
-  redirects stdout to a file the spec does not see; consumers MUST merge
-  redirect-derived writes/reads into the result before applying argv-aware
-  rules. A v2 API may take `SimpleCommand` instead of `argv`.
-- **`SimpleCommand.envVars` is not consumed.** Command-local env like
-  `HTTPS_PROXY=…`, `HOME=…`, `CURLOPT_*` can change egress hosts and read
-  paths. Consumers MUST treat any non-empty `envVars` on a spec'd command
-  as a signal to require an exact-argv `Run(...)` rule.
+Raw `spec*(argv)` functions only see argv. Walker output also carries
+`redirects` and `envVars`, both of which materially change what a command
+reads / writes / hits on the network. **Consumers SHOULD use
+`evaluateBashCommand(simpleCommand, registry)` as the public entry
+point** — it:
+
+1. Looks up the spec by bare basename of `argv[0]`.
+2. Calls the spec with `argv`.
+3. Merges **modeled** redirects (`>`, `>>`, `<`, `<<<`, `&>`, `&>>`,
+   `>|`) into `semantics.writes` / `semantics.reads`.
+4. Downgrades `complete` → `partial` with a reason when:
+   - command-local env vars are set (`command-local-env-set`);
+   - FD-duplication or other unmodeled redirect ops are present
+     (`shell-redirect-fd-or-unknown-op`).
+
+A `complete` return from `evaluateBashCommand` is authoritative across
+argv + redirects + env. A `partial` return still requires a `Run(...)`
+co-rule per the existing soundness contract.
+
+Raw `spec*(argv)` exports remain available for tests and custom
+pipelines that don't have `SimpleCommand` in hand, but consumers
+enforcing permissions MUST use `evaluateBashCommand` to avoid dropping
+redirect/env effects.
 
 
 ### `SpecResult` contract
