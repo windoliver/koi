@@ -103,6 +103,13 @@
       "name": "@koi/bash-security",
       "version": "0.0.0",
     },
+    "packages/lib/blob-cas": {
+      "name": "@koi/blob-cas",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -1240,6 +1247,8 @@
     "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
+
+    "@koi/blob-cas": ["@koi/blob-cas@workspace:packages/lib/blob-cas"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
