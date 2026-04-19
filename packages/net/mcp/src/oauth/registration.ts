@@ -65,8 +65,12 @@ export async function registerDynamicClient(
     token_endpoint_auth_method: "none",
   };
 
+  // Network-level failures (DNS, connection refused, AbortSignal
+  // timeout) are transient — operator action cannot fix them; the next
+  // attempt may succeed.
+  let response: Response;
   try {
-    const response = await fetch(registrationEndpoint, {
+    response = await fetch(registrationEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -75,28 +79,49 @@ export async function registerDynamicClient(
       body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(REGISTRATION_TIMEOUT_MS),
     });
+  } catch {
+    return { ok: false, terminal: false, reason: "network or timeout error" };
+  }
 
-    if (!response.ok) {
-      // 4xx = terminal (AS rejected our registration request). 5xx =
-      // transient (try later). The body may carry a richer reason but
-      // we don't need to parse it for classification.
-      const terminal = response.status < 500;
-      return {
-        ok: false,
-        terminal,
-        reason: `registration endpoint returned ${response.status}`,
-      };
-    }
-
-    const data = (await response.json()) as {
-      readonly client_id?: unknown;
-      readonly client_secret?: unknown;
-      readonly token_endpoint_auth_method?: unknown;
-      readonly redirect_uris?: unknown;
-      readonly registration_client_uri?: unknown;
-      readonly registration_access_token?: unknown;
+  if (!response.ok) {
+    // 5xx = transient (server-side hiccup). 429 and other retryable
+    // throttling responses also stay transient — they typically clear
+    // on retry without operator intervention. Other 4xx (400, 401,
+    // 403, 422 validation) = terminal: the AS rejected our request
+    // shape and we cannot succeed by retrying.
+    const isThrottled = response.status === 429;
+    const terminal = response.status < 500 && !isThrottled;
+    return {
+      ok: false,
+      terminal,
+      reason: `registration endpoint returned ${response.status}`,
     };
+  }
 
+  // Once we have a 2xx, malformed JSON or missing fields are TERMINAL —
+  // the AS replied successfully but with an unusable payload. Retrying
+  // will not change that without operator/server-side fix. Without this
+  // distinction, a broken-payload server would loop forever as
+  // transient with handleUnauthorized never firing onReauthNeeded.
+  let data: {
+    readonly client_id?: unknown;
+    readonly client_secret?: unknown;
+    readonly token_endpoint_auth_method?: unknown;
+    readonly redirect_uris?: unknown;
+    readonly registration_client_uri?: unknown;
+    readonly registration_access_token?: unknown;
+  };
+  try {
+    data = (await response.json()) as typeof data;
+  } catch {
+    return {
+      ok: false,
+      terminal: true,
+      reason: "registration response was not valid JSON",
+    };
+  }
+
+  try {
     if (typeof data.client_id !== "string" || data.client_id.length === 0) {
       return {
         ok: false,
@@ -173,9 +198,10 @@ export async function registerDynamicClient(
       },
     };
   } catch {
-    // Network error, AbortSignal timeout, malformed JSON — transient.
-    // Operator action cannot fix these; the next attempt may succeed.
-    return { ok: false, terminal: false, reason: "network or parsing error" };
+    // Defensive: by this point we have a 2xx + parsed JSON, so any
+    // further throw is a bug or unexpected runtime error, not a
+    // network/transient issue. Treat as terminal so we don't loop.
+    return { ok: false, terminal: true, reason: "unexpected error after registration" };
   }
 }
 

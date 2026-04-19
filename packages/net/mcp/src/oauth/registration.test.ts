@@ -365,6 +365,69 @@ describe("registerDynamicClient", () => {
     expect(deleteCalled).toBe(true);
   });
 
+  test("classifies malformed 2xx JSON as terminal (so dead sessions can clear)", async () => {
+    // A server that returns 201 with broken JSON cannot be recovered
+    // by retry. The refresh path needs `terminal: true` so token.ts
+    // clears expired tokens and onReauthNeeded fires, instead of
+    // looping forever on a transient classification.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("{not json", { status: 201 })),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    if (!info.ok) expect(info.terminal).toBe(true);
+  });
+
+  test("classifies 429 (rate limit) as transient (so retries don't destroy state)", async () => {
+    // Throttling clears on its own. Treating it as terminal would
+    // delete a perfectly recoverable session and force operators
+    // through a fresh re-auth on every transient rate-limit.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("retry later", { status: 429 })),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    if (!info.ok) expect(info.terminal).toBe(false);
+  });
+
+  test("classifies 500 (server error) as transient", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("oops", { status: 502 })),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    if (!info.ok) expect(info.terminal).toBe(false);
+  });
+
+  test("classifies 400 (validation) as terminal", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("invalid_redirect_uri", { status: 400 })),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    if (!info.ok) expect(info.terminal).toBe(true);
+  });
+
   test("returns undefined when fetch throws", async () => {
     globalThis.fetch = mock(() => Promise.reject(new Error("network"))) as unknown as typeof fetch;
 
