@@ -3,6 +3,7 @@ import type {
   GovernanceVerdict,
   PolicyRequest,
   PolicyRequestKind,
+  RuleDescriptor,
   Violation,
   ViolationSeverity,
 } from "@koi/core/governance-backend";
@@ -125,6 +126,25 @@ function violationFromRule(rule: PatternRule, idx: number): Violation {
   };
 }
 
+function describeMatch(match: PatternMatch): string {
+  const selectors: string[] = [];
+  if (match.toolId !== undefined) selectors.push(`toolId=${match.toolId}`);
+  if (match.model !== undefined) selectors.push(`model=${match.model}`);
+  if (match.kind !== undefined) {
+    return selectors.length === 0 ? match.kind : `${match.kind}:${selectors.join(",")}`;
+  }
+  return selectors.length === 0 ? "*" : selectors.join(",");
+}
+
+function ruleToDescriptor(rule: PatternRule, idx: number): RuleDescriptor {
+  return {
+    id: rule.rule ?? `pattern.${idx}`,
+    description: rule.message ?? rule.rule ?? "(no description)",
+    effect: rule.decision,
+    pattern: describeMatch(rule.match),
+  };
+}
+
 export function createPatternBackend(config: PatternBackendConfig): GovernanceBackend {
   const { rules, defaultDeny = false } = config;
 
@@ -168,5 +188,21 @@ export function createPatternBackend(config: PatternBackendConfig): GovernanceBa
     return GOVERNANCE_ALLOW;
   }
 
-  return { evaluator: { evaluate } };
+  function describeRules(): readonly RuleDescriptor[] {
+    const out = rules.map((r, i) => ruleToDescriptor(r, i));
+    if (defaultDeny) {
+      return [
+        ...out,
+        {
+          id: "default-deny",
+          description: "no rule matched and defaultDeny is enabled",
+          effect: "deny",
+          pattern: "*",
+        },
+      ];
+    }
+    return out;
+  }
+
+  return { evaluator: { evaluate }, describeRules };
 }
