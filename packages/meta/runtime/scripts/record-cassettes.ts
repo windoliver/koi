@@ -10,6 +10,7 @@
  *   tool-use         — add_numbers tool call, permissions bypass, hooks fire
  *   glob-use         — Glob builtin tool call, permissions bypass
  *   permission-deny       — permissions default mode denies add_numbers
+ *   permission-soft-deny — soft-deny fs_write; model gets synthetic tool_result and adapts (#1650)
  *   denial-escalation    — repeated execution-time denials trigger auto-deny escalation
  *   hook-blocked         — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
  *   hook-redaction       — agent hook on tool.succeeded, forwardRawPayload + default redaction
@@ -30,6 +31,7 @@
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
+import { createAgentSummary } from "@koi/agent-summary";
 import type {
   Agent,
   AuditEntry,
@@ -50,7 +52,13 @@ import type {
   Result,
   SpawnFn,
 } from "@koi/core";
-import { createSingleToolProvider, memoryRecordId, sessionId, transcriptEntryId } from "@koi/core";
+import {
+  createSingleToolProvider,
+  memoryRecordId,
+  sessionId,
+  taskItemId,
+  transcriptEntryId,
+} from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -75,9 +83,17 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
+  createPlanPersistMiddleware,
+  PLAN_LOAD_TOOL_NAME,
+  PLAN_SAVE_TOOL_NAME,
+} from "@koi/middleware-plan-persist";
+import { createPlanMiddleware, WRITE_PLAN_DESCRIPTOR } from "@koi/middleware-planning";
+import {
   createRetrySignalBroker,
   createSemanticRetryMiddleware,
 } from "@koi/middleware-semantic-retry";
+import { createStrictAgenticMiddleware } from "@koi/middleware-strict-agentic";
+import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
 import {
@@ -345,6 +361,46 @@ const taskBoardToolProviders = taskBoardTools.map((tool) =>
     createTool: () => tool,
   }),
 );
+
+// ---------------------------------------------------------------------------
+// @koi/middleware-task-anchor — pre-seeded board for reminder injection query
+// ---------------------------------------------------------------------------
+
+const taskAnchorBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+{
+  const addResult = await taskAnchorBoard.addAll([
+    { id: taskItemId("ta-1"), description: "Audit authentication code" },
+    { id: taskItemId("ta-2"), description: "Migrate session model" },
+  ]);
+  if (!addResult.ok) {
+    console.error(`task-anchor pre-seed: ${addResult.error.message}`);
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// @koi/middleware-plan-persist + @koi/middleware-planning — full restart-
+// safe write_plan flow. Planning provides koi_plan_write; plan-persist
+// hooks onPlanUpdate to mirror every commit to a per-session journal AND
+// exposes koi_plan_save / koi_plan_load tools. Wired here at module scope
+// so the plan-persist-flow query below can attach both bundles.
+// ---------------------------------------------------------------------------
+
+const { mkdtempSync: mkdtempSyncForPlanPersist } = await import("node:fs");
+const { tmpdir: tmpDirForPlanPersist } = await import("node:os");
+const { join: joinForPlanPersist } = await import("node:path");
+const planPersistTmpDir = mkdtempSyncForPlanPersist(
+  joinForPlanPersist(tmpDirForPlanPersist(), "koi-golden-plan-persist-"),
+);
+const planPersistBundle = createPlanPersistMiddleware({
+  cwd: planPersistTmpDir,
+  baseDir: ".koi/plans",
+});
+const planningBundle = createPlanMiddleware({
+  onPlanUpdate: planPersistBundle.onPlanUpdate,
+});
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -1744,7 +1800,170 @@ const modelRouter = createModelRouter(
 );
 const modelRouterMiddleware = createModelRouterMiddleware(modelRouter);
 
+// ---------------------------------------------------------------------------
+// @koi/agent-summary afterRecord helper
+//
+// Loads the freshly-recorded ATIF trajectory, extracts the single user turn +
+// model response into a 2-entry TranscriptLoadResult, calls summarizeSession
+// with a real OpenRouter modelCall, and writes the envelope as a sidecar at
+// <fixtures>/<name>.summary.json.
+//
+// Uses OpenAI's strict-JSON-schema response format for deterministic recording.
+// ---------------------------------------------------------------------------
+
+const AGENT_SUMMARY_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["goal", "status", "actions", "outcomes", "errors", "learnings"],
+  properties: {
+    goal: { type: "string" },
+    status: { type: "string", enum: ["succeeded", "partial", "failed"] },
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "name", "paths", "detail"],
+        properties: {
+          kind: { type: "string", enum: ["tool_call", "edit", "decision"] },
+          name: { type: "string" },
+          paths: { type: ["array", "null"], items: { type: "string" } },
+          detail: { type: ["string", "null"] },
+        },
+      },
+    },
+    outcomes: { type: "array", items: { type: "string" } },
+    errors: { type: "array", items: { type: "string" } },
+    learnings: { type: "array", items: { type: "string" } },
+  },
+} as const;
+
+async function recordAgentSummarySidecar(fixtures: string, name: string): Promise<void> {
+  const trajPath = `${fixtures}/${name}.trajectory.json`;
+  const trajectory = (await Bun.file(trajPath).json()) as {
+    readonly session_id: string;
+    readonly steps: readonly {
+      readonly source: string;
+      readonly message?: string;
+      readonly observation?: {
+        readonly results?: readonly { readonly content: string }[];
+      };
+    }[];
+  };
+
+  const agentStep = trajectory.steps.find((s) => s.source === "agent");
+  if (!agentStep) {
+    throw new Error(`agent-summary afterRecord: no agent step in ${name}.trajectory.json`);
+  }
+  const userMsg = agentStep.message ?? "";
+  const assistantMsg = agentStep.observation?.results?.[0]?.content ?? "";
+
+  const entries = [
+    {
+      id: "u1",
+      role: "user" as const,
+      content: userMsg,
+      timestamp: 1,
+    },
+    {
+      id: "a1",
+      role: "assistant" as const,
+      content: assistantMsg,
+      timestamp: 2,
+    },
+  ];
+  const transcript = {
+    load: () => ({ ok: true, value: { entries, skipped: [] } }),
+    loadPage: () => ({
+      ok: true,
+      value: { entries: [], total: 0, hasMore: false },
+    }),
+    compact: () => ({ ok: true, value: { preserved: 0 } }),
+  };
+
+  const summarizer = createAgentSummary({
+    // biome-ignore lint/suspicious/noExplicitAny: unsafe cast — recording-only script
+    transcript: transcript as any,
+    modelCall: async (req) => {
+      const apiKey = Bun.env.OPENROUTER_API_KEY;
+      if (!apiKey) {
+        throw new Error("OPENROUTER_API_KEY required for agent-summary sidecar");
+      }
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: req.messages,
+          max_tokens: req.maxTokens,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "session_summary",
+              strict: true,
+              schema: AGENT_SUMMARY_JSON_SCHEMA,
+            },
+          },
+        }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`openrouter ${resp.status}: ${body}`);
+      }
+      const json = (await resp.json()) as {
+        choices: { message: { content: string } }[];
+      };
+      return { text: json.choices[0]?.message?.content ?? "" };
+    },
+  });
+
+  // biome-ignore lint/suspicious/noExplicitAny: unsafe cast — recording-only script
+  const r = await summarizer.summarizeSession(trajectory.session_id as any, {
+    granularity: "medium",
+  });
+  if (!r.ok) {
+    throw new Error(`agent-summary afterRecord failed: ${r.error.code} ${r.error.message}`);
+  }
+  await Bun.write(
+    `${fixtures}/${name}.summary.json`,
+    JSON.stringify(
+      {
+        trajectorySessionId: trajectory.session_id,
+        recordedFrom: `${name}.trajectory.json`,
+        envelope: r.value,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 const queries: readonly QueryConfig[] = [
+  // strict-agentic: exercises @koi/middleware-strict-agentic onBeforeStop gate.
+  // Tool call → classifier → action → continue. Proves the middleware is installed
+  // and does not block a normal tool-using turn.
+  {
+    name: "strict-agentic",
+    prompt:
+      "Use the add_numbers tool to compute 4 + 6. After getting the result, " +
+      "respond with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
+  },
+
   // 1. simple-text: text response, no tools
   {
     name: "simple-text",
@@ -1839,7 +2058,73 @@ const queries: readonly QueryConfig[] = [
     ],
   },
 
-  // 5. denial-escalation: repeated execution-time denials trigger auto-deny escalation
+  // 5. permission-soft-deny: soft-deny — agent receives synthetic tool_result and adapts (#1650)
+  //
+  // The rule carries `on_deny: "soft"` so the middleware returns a synthetic
+  // `tool_result` instead of throwing. The model sees the error text and
+  // continues the agent loop (no exception, no loop termination). The second
+  // model call proves the model adapted after reading the synthetic response.
+  {
+    name: "permission-soft-deny",
+    prompt:
+      'Please write "hello" to the file /tmp/koi-golden-soft/test.txt using the fs_write tool. After the tool call, tell me what happened.',
+    permissionMode: "default",
+    permissionRules: [
+      // Soft-deny all invocations of fs_write — model sees the tool, calls it,
+      // gets a synthetic error response, then adapts in a follow-up turn.
+      // Pattern is the bare tool name (resource = toolId, no namespace prefix).
+      {
+        pattern: "fs_write",
+        action: "*",
+        effect: "deny",
+        on_deny: "soft",
+        reason: "writes are sandboxed in this environment",
+        source: "policy" as const,
+      },
+      // Allow everything else
+      { pattern: "*", action: "*", effect: "allow", source: "user" as const },
+    ],
+    permissionDescription: "soft-deny fs_write — synthetic tool_result, loop continues",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "fs-write",
+        toolName: "fs_write",
+        createTool: () => {
+          const r = buildTool({
+            name: "fs_write",
+            description: "Write content to a file at the given path",
+            inputSchema: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Absolute file path to write" },
+                content: { type: "string", description: "Text content to write" },
+              },
+              required: ["path", "content"],
+            },
+            origin: "primordial",
+            execute: async (args: JsonObject): Promise<unknown> => {
+              await Bun.write(args.path as string, args.content as string);
+              return { ok: true, path: args.path };
+            },
+          });
+          if (!r.ok) throw new Error(`buildTool(fs_write) failed: ${r.error.message}`);
+          return r.value;
+        },
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 6. denial-escalation: repeated execution-time denials trigger auto-deny escalation
   //
   // Backend models a two-stage enterprise authorization: `checkBatch` is the
   // cheap catalog-advertising stage used at tool-filter time (answers "is this
@@ -1898,7 +2183,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 3,
   },
 
-  // 6. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
+  // 7. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
   {
     name: "hook-blocked",
     prompt: "What is 2+2?",
@@ -1917,7 +2202,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 7. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
+  // 8. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
   {
     name: "hook-once",
     prompt:
@@ -1968,6 +2253,44 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
+  // 8b. url-safety-block: @koi/tools-web routed through @koi/url-safety.
+  // Permissions bypass at the policy layer, so the request reaches the tool;
+  // the tool's DNS-free preflightBlockReason (BLOCKED_HOSTS lookup in
+  // @koi/url-safety) rejects `localhost` with a PERMISSION result. Locks in
+  // that the block reason flows through tool-preflight → tool → model.
+  {
+    name: "url-safety-block",
+    prompt:
+      'Use the web_fetch tool on "http://localhost:3000/admin" and copy the exact error message you receive back to me verbatim.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [webProvider],
+    maxTurns: 2,
+  },
+
+  // 8c. url-safety-dns-block: exercises the DEEPER defence line —
+  // createSafeFetcher's DNS-resolved IP check. `localtest.me` is a public
+  // DNS name that resolves to 127.0.0.1, so it passes the tool's DNS-free
+  // preflight (not in BLOCKED_HOSTS, not in BLOCKED_HOST_SUFFIXES, not an
+  // IP literal) but fails @koi/url-safety's isSafeUrl once DNS returns
+  // 127.0.0.1. Executor maps the rejection to PERMISSION with the
+  // "url-safety: Host <name> resolves to blocked IP <ip>" wording. Locks in
+  // that the DNS-rebind defence reaches the model verbatim — a regression
+  // that bypasses the resolved-IP check would let localtest.me succeed.
+  {
+    name: "url-safety-dns-block",
+    prompt:
+      'Use the web_fetch tool on "http://localtest.me/" and copy the exact error message you receive back to me verbatim.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [webProvider],
+    maxTurns: 2,
+  },
+
   // 9. task-board: @koi/tasks + @koi/task-tools exercised — create + list via real createTaskTools
   {
     name: "task-board",
@@ -1985,6 +2308,65 @@ const queries: readonly QueryConfig[] = [
       },
     ],
     providers: taskBoardToolProviders,
+    maxTurns: 3,
+  },
+
+  // 9b. task-anchor-reminder: @koi/middleware-task-anchor injects system-reminder after K
+  // idle turns with no task-tool activity. K=1 + non-task tool (add_numbers) forces the
+  // reminder to appear on the second model call, where the model should acknowledge the
+  // pre-seeded tasks ("Audit authentication code", "Migrate session model").
+  {
+    name: "task-anchor-reminder",
+    prompt:
+      "Use the add_numbers tool to compute 6 + 4. After you see the result, list the tasks currently on the board.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    extraMiddleware: [
+      createTaskAnchorMiddleware({
+        getBoard: () => taskAnchorBoard.snapshot(),
+        idleTurnThreshold: 1,
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // 9c. plan-persist-flow: @koi/middleware-plan-persist + @koi/middleware-planning
+  // Model writes a plan with two items, then checkpoints it via koi_plan_save.
+  // Exercises: planning's wrapToolCall (write_plan) → onPlanUpdate hook fires →
+  // plan-persist mirrors + writes _active journal → plan-persist's wrapToolCall
+  // (koi_plan_save) reads mirror, writes <ts>-<slug>.md via exclusive link commit.
+  {
+    name: "plan-persist-flow",
+    prompt:
+      "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) " +
+      "and `koi_plan_save` (persists the latest plan to disk under a slug).\n" +
+      "Step 1: Call `koi_plan_write` with plan = " +
+      "[{content:'Audit auth code', status:'pending'}, " +
+      "{content:'Design new session model', status:'pending'}].\n" +
+      "Step 2: Call `koi_plan_save` with slug='auth-refactor'.\n" +
+      "Step 3: Report the saved file path returned by koi_plan_save.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-plan-tool",
+        cmd: ["echo", "plan-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [...planningBundle.providers, ...planPersistBundle.providers],
+    extraMiddleware: [planningBundle.middleware, planPersistBundle.middleware],
     maxTurns: 3,
   },
 
@@ -3565,6 +3947,23 @@ const queries: readonly QueryConfig[] = [
       }).middleware,
     ],
   },
+
+  // @koi/agent-summary: records a real agent turn, then afterRecord runs
+  // summarizeSession() with a real OpenRouter call against the recorded
+  // user+assistant pair. Produces:
+  //   - agent-summary.trajectory.json — ATIF v1.6 agent-loop trajectory
+  //   - agent-summary.cassette.json — ModelChunk cassette (raw LLM response)
+  //   - agent-summary.summary.json — SummaryOk envelope from agent-summary
+  {
+    name: "agent-summary",
+    prompt: "List three advantages of using TypeScript over plain JavaScript, one sentence each.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    afterRecord: recordAgentSummarySidecar,
+  },
 ];
 
 // =========================================================================
@@ -3912,6 +4311,52 @@ await recordCassette("plan-mode", () =>
       todoToolForCassette.descriptor,
       exitPlanModeToolForCassette.descriptor,
       createGlobTool({ cwd: process.cwd() }).descriptor,
+    ],
+  }),
+);
+
+await recordCassette("plan-persist-flow", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) " +
+              "and `koi_plan_save` (persists the latest plan to disk under a slug).\n" +
+              "Step 1: Call `koi_plan_write` with plan = " +
+              "[{content:'Audit auth code', status:'pending'}, " +
+              "{content:'Design new session model', status:'pending'}].\n" +
+              "Step 2: Call `koi_plan_save` with slug='auth-refactor'.\n" +
+              "Step 3: Report the saved file path returned by koi_plan_save.",
+          },
+        ],
+      },
+    ],
+    tools: [
+      WRITE_PLAN_DESCRIPTOR,
+      {
+        name: PLAN_SAVE_TOOL_NAME,
+        description:
+          "Persist the latest write_plan output to disk under .koi/plans/<timestamp>-<slug>.md. " +
+          "Optional `slug` controls the filename suffix.",
+        inputSchema: {
+          type: "object",
+          properties: { slug: { type: "string" } },
+        },
+      },
+      {
+        name: PLAN_LOAD_TOOL_NAME,
+        description: "Read a previously persisted plan from disk and return its items.",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
     ],
   }),
 );

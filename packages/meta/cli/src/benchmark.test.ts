@@ -183,6 +183,12 @@ describe("startup-latency probe (#1637) — production-purity contract", () => {
       "void",
       "resolve",
       "setTimeout",
+      // Post-spawn SIGUSR1 newborn-kill branch (#1906 R8/R9).
+      // Same lazy-import reason — not on measured paths.
+      "shouldKillNewbornChild",
+      "try",
+      "catch",
+      "kill", // proc.kill("SIGKILL")
     ]);
 
     // Extract identifiers from the post-fast-path region. Simple

@@ -17,7 +17,7 @@ import type { ApprovalHandler, KoiMiddleware, ModelAdapter } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { MiddlewareRegistry, UnknownManifestMiddlewareError } from "./middleware-registry.js";
 import { RequiredMiddlewareError } from "./required-middleware.js";
-import { createKoiRuntime, MAX_TRAJECTORY_STEPS } from "./runtime-factory.js";
+import { createKoiRuntime, MAX_TRAJECTORY_STEPS, resolveMaxDurationMs } from "./runtime-factory.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,6 +67,90 @@ afterEach(async () => {
     await runtimeHandle.runtime.dispose();
     runtimeHandle = null;
   }
+});
+
+describe("resolveMaxDurationMs — KOI_MAX_DURATION_MS coercion", () => {
+  const ORIGINAL = process.env.KOI_MAX_DURATION_MS;
+  const DEFAULT = 1_800_000;
+  const MAX_SAFE = 2_147_483_647;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.KOI_MAX_DURATION_MS;
+    else process.env.KOI_MAX_DURATION_MS = ORIGINAL;
+  });
+
+  test("unset env → default 30m cap", () => {
+    delete process.env.KOI_MAX_DURATION_MS;
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("empty string → default (not disable-cap)", () => {
+    process.env.KOI_MAX_DURATION_MS = "";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("whitespace → default (not disable-cap)", () => {
+    process.env.KOI_MAX_DURATION_MS = "   ";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("literal '0' → disabled (clamped to setTimeout int32 max)", () => {
+    process.env.KOI_MAX_DURATION_MS = "0";
+    expect(resolveMaxDurationMs()).toBe(MAX_SAFE);
+  });
+
+  test("large value → passed through (within safe range)", () => {
+    process.env.KOI_MAX_DURATION_MS = "3600000";
+    expect(resolveMaxDurationMs()).toBe(3_600_000);
+  });
+
+  test("value above setTimeout safe range → clamped", () => {
+    process.env.KOI_MAX_DURATION_MS = String(Number.MAX_SAFE_INTEGER);
+    expect(resolveMaxDurationMs()).toBe(MAX_SAFE);
+  });
+
+  test("invalid (NaN) → default", () => {
+    process.env.KOI_MAX_DURATION_MS = "abc";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("negative → default", () => {
+    process.env.KOI_MAX_DURATION_MS = "-1000";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("host default passed in overrides the built-in fallback", () => {
+    // `koi start` passes 300_000 so automation gets a tighter cap
+    // than the interactive TUI default.
+    delete process.env.KOI_MAX_DURATION_MS;
+    expect(resolveMaxDurationMs(300_000)).toBe(300_000);
+  });
+
+  test("env var still wins over host default when valid", () => {
+    process.env.KOI_MAX_DURATION_MS = "60000";
+    expect(resolveMaxDurationMs(300_000)).toBe(60_000);
+  });
+
+  test("env var falling back uses host default, not built-in fallback", () => {
+    process.env.KOI_MAX_DURATION_MS = "abc";
+    expect(resolveMaxDurationMs(300_000)).toBe(300_000);
+  });
+
+  test("zero-equivalent aliases do NOT disable the cap", () => {
+    // `Number("00")`, `Number("+0")`, `Number("-0")`, `Number("0.0")`,
+    // `Number("0e0")` all return 0 — without strict integer matching
+    // every one would flip the cap off and force an immediate timeout.
+    for (const raw of ["00", "+0", "-0", "0.0", "0e0", "0x0"]) {
+      process.env.KOI_MAX_DURATION_MS = raw;
+      expect(resolveMaxDurationMs()).toBe(DEFAULT);
+    }
+  });
+
+  test("decimal / floating forms → default", () => {
+    for (const raw of ["1.5", "1e3", "+1000"]) {
+      process.env.KOI_MAX_DURATION_MS = raw;
+      expect(resolveMaxDurationMs()).toBe(DEFAULT);
+    }
+  });
 });
 
 describe("createKoiRuntime — assembly", () => {

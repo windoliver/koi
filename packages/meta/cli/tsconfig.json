@@ -8,6 +8,7 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../kernel/engine" },
+    { "path": "../../lib/agent-summary" },
     { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/channel-cli" },
     { "path": "../../lib/harness" },
@@ -17,6 +18,7 @@
     { "path": "../../lib/query-engine" },
     { "path": "../../mm/middleware-extraction" },
     { "path": "../../lib/middleware-otel" },
+    { "path": "../../lib/middleware-task-anchor" },
     { "path": "../runtime" },
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-ndjson" },

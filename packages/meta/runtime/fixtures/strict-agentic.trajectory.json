@@ -1,0 +1,688 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "strict-agentic",
+  "agent": {
+    "name": "golden-strict-agentic",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "add_numbers",
+        "description": "Add two numbers together"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.354Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.355Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-17T06:32:40.369Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the add_numbers tool to compute 4 + 6. After getting the result, respond with just the number.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 203,
+        "completion_tokens": 7
+      },
+      "duration_ms": 549,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "5e75af3b6b3a9cb43f9d705248d1a5a1eadd6d189aed96986fb6166afc085009",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-17T06:32:40.926Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_add_numbers_3",
+          "function_name": "add_numbers",
+          "arguments": {
+            "a": 4,
+            "b": 6
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_add_numbers_3",
+            "content": "{\"result\":10}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.927Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 553.2953749999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1776407560925,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.932Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "add_numbers({\"a\":4,\"b\":6})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.8405410000000302,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "add_numbers",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.933Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 552.0162500000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776407560924,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.934Z",
+      "model_name": "middleware:permissions",
+      "message": "add_numbers({\"a\":4,\"b\":6})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.5509999999999309,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "add_numbers",
+            "toolInput": "{\"a\":4,\"b\":6}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776407560931,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.935Z",
+      "model_name": "middleware:strict-agentic",
+      "duration_ms": 551.3519590000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "strict-agentic",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 410,
+        "nextCalled": true,
+        "_original_timestamp": 1776407560923,
+        "__koi": {
+          "identifier": "middleware:strict-agentic"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.936Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 550.8627079999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776407560922,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.937Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 550.765834,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the add_numbers tool to compute 4 + 6. After getting the result, respond with just the number.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the add_numbers tool to compute 4 + 6. After getting the result, respond with just the number."
+          }
+        ],
+        "_original_timestamp": 1776407560921,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.938Z",
+      "model_name": "middleware:goal",
+      "message": "add_numbers({\"a\":4,\"b\":6})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.9255829999997331,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776407560930,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.939Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 550.5512079999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776407560920,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.940Z",
+      "model_name": "middleware:hooks",
+      "message": "add_numbers({\"a\":4,\"b\":6})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.9125829999998132,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "add_numbers",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776407560929,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.941Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 550.2727499999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776407560919,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:40.942Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "add_numbers({\"a\":4,\"b\":6})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.6257080000000315,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776407560928,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "agent",
+      "timestamp": "2026-04-17T06:32:40.943Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"result\":10}",
+      "observation": {
+        "results": [
+          {
+            "content": "10\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 198,
+        "completion_tokens": 3
+      },
+      "duration_ms": 510,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "add_numbers",
+            "description": "Add two numbers together"
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "5e75af3b6b3a9cb43f9d705248d1a5a1eadd6d189aed96986fb6166afc085009",
+        "turnIndex": 1,
+        "_original_timestamp": 1776407560934
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.451Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 521.081584,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.452Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 521.0706670000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776407561450,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.453Z",
+      "model_name": "middleware:strict-agentic",
+      "duration_ms": 521.038333,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "strict-agentic",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 410,
+        "nextCalled": true,
+        "_original_timestamp": 1776407561449,
+        "__koi": {
+          "identifier": "middleware:strict-agentic"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.454Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 521.0006250000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776407561448,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.455Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 520.9907499999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776407561447,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.456Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 520.980125,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776407561446,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.457Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 520.9429580000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776407561445,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.458Z",
+      "model_name": "middleware:strict-agentic",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.05499999999983629,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "strict-agentic",
+        "hook": "onBeforeStop",
+        "phase": "intercept",
+        "priority": 410,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1776407561453,
+        "__koi": {
+          "identifier": "middleware:strict-agentic"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-17T06:32:41.459Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.04712500000005093,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1776407561454,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

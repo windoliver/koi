@@ -22,6 +22,21 @@ export interface DenialRecord {
   readonly source: DenialSource;
   /** Cache key scoping the query context. Used to scope escalation per-context. */
   readonly queryKey?: string | undefined;
+  /**
+   * #1650: soft vs hard disposition of this recorded deny. Present on
+   * post-#1650 records. Absent for pre-#1650 records still in memory — callers
+   * treat absence as `"hard"` (backward compat).
+   */
+  readonly softness?: "soft" | "hard" | undefined;
+  /**
+   * #1650: origin of the record. `"native"` for normal denies produced by the
+   * rule evaluator, user approval deny, fail-closed, or pre-existing
+   * escalation. `"soft-conversion"` for records produced when the per-turn
+   * soft-deny cap or unkeyable fail-closed path promotes a soft candidate to
+   * hard. Mechanism A's escalation prefilter excludes `"soft-conversion"`
+   * records so per-turn cap events do NOT feed session-wide escalation.
+   */
+  readonly origin?: "native" | "soft-conversion" | undefined;
 }
 
 export interface DenialTracker {

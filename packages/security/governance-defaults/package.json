@@ -1,0 +1,29 @@
+{
+  "name": "@koi/governance-defaults",
+  "description": "Out-of-box GovernanceController + GovernanceBackend + pricing defaults for @koi/governance-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/governance-core": "workspace:*"
+  }
+}

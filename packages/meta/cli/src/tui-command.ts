@@ -32,15 +32,20 @@ import { writeSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import type { SummaryOk } from "@koi/agent-summary";
+import { createAgentSummary } from "@koi/agent-summary";
 import { microcompact } from "@koi/context-manager";
 import type {
   AuditEntry,
+  ContentBlock,
   EngineEvent,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
+  TranscriptEntry,
+  TranscriptEntryId,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
@@ -48,7 +53,7 @@ import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
-import { createApprovalStore } from "@koi/middleware-permissions";
+import { createApprovalStore, createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import {
   createModelRouter,
@@ -83,12 +88,19 @@ import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
-import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
+import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
+import {
+  createSigusr1Handler,
+  generateTuiStartupHint,
+  removeStoredEarlySigusr1Handler,
+  SIGUSR1_EXIT_CODE,
+  SIGUSR1_SUPPORTED,
+} from "./tui-sigusr1.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -136,6 +148,56 @@ const SESSION_PREVIEW_MAX = 80;
  */
 function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
+}
+
+// ---------------------------------------------------------------------------
+// /summarize helpers — map InboundMessage[] → TranscriptEntry[] + render envelope
+// ---------------------------------------------------------------------------
+
+function inferRole(senderId: string): TranscriptEntry["role"] {
+  if (senderId === "user") return "user";
+  if (senderId.startsWith("tool:")) return "tool_result";
+  if (senderId.startsWith("system")) return "system";
+  return "assistant";
+}
+
+function flattenContentBlocks(blocks: readonly ContentBlock[]): string {
+  const out: string[] = [];
+  for (const b of blocks) {
+    if (b.kind === "text") out.push(b.text);
+    else if (b.kind === "file") out.push(`[file: ${b.name ?? b.url}]`);
+    else if (b.kind === "image") out.push(`[image: ${b.alt ?? b.url}]`);
+    else if (b.kind === "button") out.push(`[button: ${b.label}]`);
+    else out.push(`[${b.kind}]`);
+  }
+  return out.join(" ");
+}
+
+function renderSummaryEnvelope(env: SummaryOk): string {
+  if (env.kind === "clean") {
+    const s = env.summary;
+    return [
+      `[Summary (${s.meta.granularity}) — ${s.status}]`,
+      `  Goal: ${s.goal}`,
+      ...(s.outcomes.length > 0 ? [`  Outcomes: ${s.outcomes.join("; ")}`] : []),
+      ...(s.errors.length > 0 ? [`  Errors: ${s.errors.join("; ")}`] : []),
+      ...(s.learnings.length > 0 ? [`  Learnings: ${s.learnings.join("; ")}`] : []),
+    ].join("\n");
+  }
+  if (env.kind === "degraded") {
+    const s = env.partial;
+    return [
+      `[Summary — DEGRADED (dropped ${env.droppedTailTurns} turn${env.droppedTailTurns === 1 ? "" : "s"}, ${env.skipped.length} skipped rows)]`,
+      `  Goal: ${s.goal}`,
+      `  Status: ${s.status}`,
+    ].join("\n");
+  }
+  const s = env.derived;
+  return [
+    `[Summary — COMPACTED (${env.compactionEntryCount} compaction prefix${env.compactionEntryCount === 1 ? "" : "es"}, range origin post-compaction)]`,
+    `  Goal: ${s.goal}`,
+    `  Status: ${s.status}`,
+  ].join("\n");
 }
 
 /** Render a displayable transcript as a Markdown document for /export. */
@@ -1338,6 +1400,108 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let mcpViewGeneration = 0;
   // Per-server in-flight auth guard — prevents overlapping OAuth flows
   const mcpAuthInFlight = new Set<string>();
+  const yoloPermissionBackend = flags.yolo
+    ? createPatternPermissionBackend({ rules: { allow: ["*"], deny: [], ask: [] } })
+    : undefined;
+
+  // ---------------------------------------------------------------------------
+  // Shutdown latch — declared here (hoisted from its original position at
+  // line ~2274) so the interim SIGUSR1 teardown below and the full
+  // `shutdown()` further down share ONE idempotence flag (#1906 R4 review).
+  // Without a shared latch, SIGUSR1 during bootstrap kicks off interim
+  // teardown but bootstrap continues forward; a subsequent SIGUSR1 or
+  // graceful path would race the interim teardown. Consolidating to a
+  // single sentinel means the first shutdown request wins and every later
+  // signal — interim, full, or /quit — is a no-op.
+  // ---------------------------------------------------------------------------
+  // let: justified — set once on first shutdown request, shared across
+  // interim teardown, full shutdown, and section 4b upgrade.
+  let shutdownStarted = false;
+
+  // ---------------------------------------------------------------------------
+  // Interim SIGUSR1 handler (#1906 R1/R2/R4) — covers the window from this
+  // point through section 4b where the full `shutdown()` handler installs.
+  // SIGUSR1 during runtime/MCP bootstrap runs an ASYNC, ordered teardown
+  // (matching the normal shutdown sequencing: SIGTERM background tasks
+  // → await runtime.dispose → dispose filesystem backend → flush OTel →
+  // close approvals → dispose batcher → process.exit) with a 6s hard-exit
+  // failsafe so a wedged dispose cannot strand the user. Upgraded to the
+  // full handler at section 4b once `shutdown` is defined.
+  // ---------------------------------------------------------------------------
+  // Interim hard-exit failsafe: shorter than the full shutdown's 8s because
+  // there is strictly less to tear down this early in bootstrap.
+  const INTERIM_SHUTDOWN_HARD_EXIT_MS = 6_000;
+  // let: justified — set once, then cleared when the full handler takes over.
+  let interimSigusr1Handler: (() => void) | null = null;
+  if (SIGUSR1_SUPPORTED) {
+    const interimTeardown = async (exitCode: number): Promise<void> => {
+      // Use the shared `shutdownStarted` latch so a second SIGUSR1 during
+      // interim teardown — or an accidental later call from the full
+      // shutdown path — is a no-op. Flipping it before the first async step
+      // also means bootstrap code that later checks `shutdownStarted` can
+      // short-circuit instead of racing the teardown.
+      if (shutdownStarted) return;
+      shutdownStarted = true;
+      // Arm the hard-exit failsafe FIRST so even if an awaited step wedges
+      // we are not stranded. Unref'd so natural completion still lets
+      // the explicit process.exit below run when everything finishes.
+      const hardExit = setTimeout(() => {
+        process.exit(exitCode);
+      }, INTERIM_SHUTDOWN_HARD_EXIT_MS);
+      if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
+        (hardExit as { unref: () => void }).unref();
+      }
+      // Ref'd keepalive — mirror the full `shutdown()` pattern (line ~2326).
+      // Bun drops pending microtasks once the last real handle disappears,
+      // so without this interval the first `await runtime.dispose()` can
+      // let the event loop exit before the continuation resumes, skipping
+      // every subsequent cleanup step and the final `process.exit`. The
+      // hard-exit failsafe still guards against a wedged await.
+      const keepAlive = setInterval(() => {
+        /* ref'd keepalive only */
+      }, 1000);
+      try {
+        // Kick background-task SIGTERM synchronously so stubborn subprocesses
+        // start dying before we begin the async dispose chain.
+        try {
+          runtimeHandle?.shutdownBackgroundTasks();
+        } catch {}
+        try {
+          if (runtimeHandle !== null) {
+            await runtimeHandle.runtime.dispose();
+          }
+        } catch {}
+        try {
+          await resolvedFilesystemBackend?.dispose?.();
+        } catch {}
+        try {
+          await otelHandle?.shutdown();
+        } catch {}
+        try {
+          approvalStore?.close();
+        } catch {}
+        try {
+          batcher.dispose();
+        } catch {}
+      } finally {
+        clearInterval(keepAlive);
+        process.exit(exitCode);
+      }
+    };
+    interimSigusr1Handler = createSigusr1Handler({
+      shutdown: (code) => {
+        void interimTeardown(code);
+      },
+      write: (msg) => {
+        try {
+          process.stderr.write(msg);
+        } catch {}
+      },
+    });
+    removeStoredEarlySigusr1Handler();
+    process.on("SIGUSR1", interimSigusr1Handler);
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1345,6 +1509,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
     cwd: process.cwd(),
     systemPrompt,
+    ...(yoloPermissionBackend !== undefined
+      ? {
+          permissionBackend: yoloPermissionBackend,
+          permissionsDescription: "koi tui --yolo (auto-allow all tools)",
+          bashElicitAutoApprove: true,
+        }
+      : {}),
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
     // TUI opts out of engine loop detection explicitly: the
     // per-submit iteration budget reset + governance caps below
@@ -1408,6 +1579,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.
     ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
+    // KOI_PLANNING_ENABLED=true opts into @koi/middleware-planning.
+    // Default off because plan state is ephemeral across resume until
+    // durable persistence (#1842) lands. Hosts that accept the
+    // limitation can opt in today.
+    ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
@@ -1452,6 +1628,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
   }).then((handle) => {
+    // If an interim SIGUSR1 teardown started while createKoiRuntime was
+    // in flight (#1906 R10), the teardown couldn't dispose `handle`
+    // because it wasn't assigned yet. Dispose it here directly and do
+    // NOT assign `runtimeHandle` — otherwise the rest of bootstrap
+    // (transcript priming, /mcp refresh) would run against an
+    // already-disposed runtime.
+    if (shutdownStarted) {
+      handle.shutdownBackgroundTasks();
+      void handle.runtime.dispose().catch(() => {
+        /* best effort — hard-exit failsafe will still fire */
+      });
+      return;
+    }
     runtimeHandle = handle;
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
@@ -1491,14 +1680,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       summary: handle.pluginSummary,
     });
 
-    // Surface plugin status as inline TUI notice (#1728).
+    // Surface plugin status as inline TUI notice (#1728, #1887).
     // UI-only — not injected into the model transcript to avoid a trust
     // boundary issue (plugin descriptions are untrusted metadata).
     // Agent awareness comes through the /plugins view and startup log.
     //
+    // #1887: suppress the banner on the happy path (plugins loaded cleanly,
+    // no errors) — users who configured those plugins already know they
+    // loaded, and `/plugins` is the canonical way to inspect them. Only
+    // render when there are errors to surface, so failures are never
+    // silent. Include the loaded list alongside errors for context.
+    //
     // Plugin-derived strings are sanitized to strip ANSI escape sequences
     // and control characters before display.
-    if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
+    if (handle.pluginSummary.errors.length > 0) {
       // Strip ANSI escapes and control characters from untrusted plugin text.
       // Constructor form avoids `noControlCharactersInRegex` (hex escapes in
       // literal regex still trip the rule). The `useRegexLiterals` warning on
@@ -1516,16 +1711,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           .join("\n");
         parts.push(`[Loaded Plugins]\n${pluginLines}`);
       }
-      if (handle.pluginSummary.errors.length > 0) {
-        const errorLines = handle.pluginSummary.errors
-          .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
-          .join("\n");
-        parts.push(`[Plugin Load Errors]\n${errorLines}`);
-      }
+      const errorLines = handle.pluginSummary.errors
+        .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
+        .join("\n");
+      parts.push(`[Plugin Load Errors]\n${errorLines}`);
+
+      // Route through `add_info` so the notice renders as a system block
+      // rather than being attributed to "You:", and stays out of the
+      // JSONL transcript + next-submit model context.
       store.dispatch({
-        kind: "add_user_message",
-        id: `plugin-status-${String(Date.now())}`,
-        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+        kind: "add_info",
+        message: parts.join("\n\n"),
       });
     }
 
@@ -1850,6 +2046,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — incremented per turn, reset on each boundary shift.
   let postClearTurnCount = 0;
 
+  // #1884: separate from `postClearTurnCount` which is gated on
+  // `rewindBoundaryActive` (only armed on --resume, /clear, /new). A
+  // fresh launch never arms it, so `postClearTurnCount` stays 0 even
+  // after many successful turns — unsuitable for detecting "did any
+  // turn produce a transcript this process". Track that explicitly
+  // here so the post-quit resume hint only suppresses when truly
+  // nothing was written to disk.
+  // let: justified — set on the first settled (non-aborted) turn.
+  let anyTurnPersistedThisProcess = false;
+
+  // #1884: true once the in-app session picker (`onSessionSelect`) has
+  // successfully rebound `tuiSessionId` to an already-persisted session.
+  // That transcript exists on disk independent of startup `--resume` and
+  // of any new turns — its id must still print as a resume hint even
+  // when the user picks it and quits without submitting.
+  // let: justified — set on successful picker rebind.
+  let pickedExistingSession = false;
+
   // The session id the user is currently VIEWING. Starts as
   // `tuiSessionId` (the startup session), gets rotated to the
   // picked session id after a successful `onSessionSelect`, and
@@ -2169,8 +2383,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // wedges. The failsafe is unref'd, so natural cleanup completion before
   // the timer fires still lets the process exit cleanly via `process.exit`.
   const SHUTDOWN_HARD_EXIT_MS = 8000;
-  // let: justified — set once on first shutdown call
-  let shutdownStarted = false;
+  // `shutdownStarted` is hoisted to the pre-createKoiRuntime block so
+  // interim SIGUSR1 teardown and this full shutdown share one latch
+  // (#1906 R4 review).
   const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
@@ -2299,27 +2514,35 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // that left the session empty. `rewindBoundaryActive`
           // also flips on `--resume`, which must still print a
           // hint for inspection-only opens.
-          const sessionIsEmpty = clearedThisProcess && postClearTurnCount === 0;
-          if (clearPersistFailed) {
-            writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
-          } else if (sessionIsEmpty) {
-            writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
-          } else if (tuiSessionId === viewedSessionId) {
-            // Non-picker (or picker-of-self) case: both ids agree.
-            // Print the single normal hint.
-            writeSync(1, formatResumeHint(tuiSessionId));
-          } else {
-            // Picker mode: `tuiSessionId` is the writable startup
-            // session where any work done this process landed on
-            // disk; `viewedSessionId` is the read-only archive the
-            // user was inspecting when they quit. Print BOTH so
-            // the user can choose — otherwise the hint would
-            // strand one handle. Without this, a user who did
-            // work in the startup session, opened the picker to
-            // inspect an older archive, and quit would only see
-            // the archive id and might conclude their recent
-            // work is lost.
-            writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
+          const decision = decideResumeHint({
+            clearPersistFailed,
+            clearedThisProcess,
+            resumedFromFlag: flags.resume !== undefined,
+            pickedExistingSession,
+            postClearTurnCount,
+            anyTurnPersistedThisProcess,
+            tuiSessionId,
+            viewedSessionId,
+          });
+          switch (decision.kind) {
+            case "clear-persist-failed":
+              writeSync(
+                2,
+                "koi tui: session clear did not persist — NOT printing a resume hint.\n",
+              );
+              break;
+            case "cleared-empty":
+              writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
+              break;
+            case "never-persisted":
+              // #1884: silent — no JSONL on disk, nothing to advertise.
+              break;
+            case "normal":
+              writeSync(1, formatResumeHint(tuiSessionId));
+              break;
+            case "picker":
+              writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
+              break;
           }
         } catch {
           // stdout may be closed during abnormal teardown — swallow.
@@ -2352,6 +2575,44 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(exitCode);
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // 4b. Upgrade SIGUSR1 to the FULL graceful-shutdown handler (#1906 R10/R11)
+  // ---------------------------------------------------------------------------
+  //
+  // Progressive handler upgrade:
+  //   1. bin.ts inline early handler: bare `process.exit()` (process-start → runTuiCommand entry).
+  //   2. interim teardown handler: tears down what exists so far — runtime,
+  //      filesystem backend, otel, approvals, batcher — but cannot touch
+  //      appHandle, resetBarrier, abortActiveStream because they are not
+  //      declared yet. Installed right before createKoiRuntime.
+  //   3. Full handler (THIS section): routes into `shutdown()` which adds
+  //      abortActiveStream, resetBarrier wait, appHandle.stop, run-report,
+  //      resume hint, SIGKILL-escalation wait.
+  //
+  // Swap the interim handler out by reference so an embedding host's own
+  // SIGUSR1 listeners (if any) are not trampled. The interim teardown is
+  // no-longer reachable from here; the full handler supersedes it.
+  const onProcessSigusr1 = createSigusr1Handler({
+    shutdown: (code, reason) => {
+      void shutdown(code, reason);
+    },
+    write: (msg) => {
+      process.stderr.write(msg);
+    },
+  });
+  if (SIGUSR1_SUPPORTED && !shutdownStarted) {
+    // Skip the upgrade if the interim teardown is already in flight —
+    // installing the full handler now would let a fresh SIGUSR1 enter
+    // `shutdown()` concurrently with the interim teardown. The shared
+    // `shutdownStarted` latch makes `shutdown()` a no-op in that case,
+    // but there is no reason to wire up the listener at all.
+    if (interimSigusr1Handler !== null) {
+      process.removeListener("SIGUSR1", interimSigusr1Handler);
+      interimSigusr1Handler = null;
+    }
+    process.on("SIGUSR1", onProcessSigusr1);
+  }
 
   // ---------------------------------------------------------------------------
   // 5. Initialize tree-sitter for markdown rendering
@@ -2526,6 +2787,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const handleAtQuery = createFileCompletionHandler(process.cwd(), (results) =>
     store.dispatch({ kind: "set_at_results", results }),
   );
+
+  // If an interim SIGUSR1 teardown already flipped the shutdown latch
+  // during bootstrap, do not create the TUI app or start the renderer
+  // (#1906 R5). The interim teardown + hard-exit failsafe will terminate
+  // the process shortly; creating the TUI would just allocate more state
+  // for the teardown to race.
+  if (shutdownStarted) {
+    // Wait for the interim teardown's hard-exit failsafe (6s) to fire.
+    await new Promise<void>((resolve) => setTimeout(resolve, INTERIM_SHUTDOWN_HARD_EXIT_MS + 500));
+    // If for some reason we're still alive (teardown wedged, failsafe
+    // didn't fire), fall through to process.exit as a last resort.
+    process.exit(SIGUSR1_EXIT_CODE);
+  }
 
   const result = createTuiApp({
     store,
@@ -3318,6 +3592,71 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             );
           })();
           break;
+        case "agent:summarize":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SUMMARIZE_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
+            if (snapshot.length === 0) {
+              dispatchNotice(store, "summarize-info", "[Summarize: conversation is empty]");
+              return;
+            }
+            const entries = snapshot.map((m, i) => ({
+              id: `t${i}` as TranscriptEntryId,
+              role: inferRole(m.senderId),
+              content: flattenContentBlocks(m.content),
+              timestamp: m.timestamp,
+            }));
+            const activeSessionId = sessionId(runtimeHandle.runtime.sessionId);
+            // Read-only adapter over the in-memory transcript. summarizeSession
+            // only calls load(); the other methods are stubs required by the
+            // SessionTranscript contract but never invoked on this path.
+            const transcript = {
+              load: () => ({ ok: true, value: { entries, skipped: [] } }),
+              loadPage: () => ({
+                ok: true,
+                value: { entries: [], total: 0, hasMore: false },
+              }),
+            } as unknown as SessionTranscript;
+            const summarizer = createAgentSummary({
+              transcript,
+              modelCall: async (req) => {
+                const resp = await modelAdapter.complete({
+                  messages: req.messages.map(
+                    (msg): InboundMessage => ({
+                      content: [{ kind: "text", text: msg.content }],
+                      senderId: msg.role === "system" ? "system:summarize" : "user",
+                      timestamp: Date.now(),
+                    }),
+                  ),
+                  model: modelName,
+                  maxTokens: req.maxTokens,
+                });
+                return { text: resp.content };
+              },
+            });
+            dispatchNotice(store, "summarize-info", "[Summarize: generating…]");
+            const r = await summarizer.summarizeSession(activeSessionId, {
+              granularity: "medium",
+              modelHint: "cheap",
+            });
+            if (!r.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SUMMARIZE_FAILED",
+                message: `Summarize failed: ${r.error.code} ${r.error.message}`,
+              });
+              return;
+            }
+            dispatchNotice(store, "summarize-info", renderSummaryEnvelope(r.value));
+          })();
+          break;
         case "session:export":
           void (async (): Promise<void> => {
             if (runtimeHandle === null) {
@@ -3598,6 +3937,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // rebind above.
           tuiSessionId = targetSid;
           viewedSessionId = targetSid;
+          // #1884: the picked session's JSONL exists on disk — keep its
+          // id resumable via the post-quit hint even if the user quits
+          // without submitting a new turn in this process.
+          pickedExistingSession = true;
           rewindBoundaryActive = true;
           clearedThisProcess = false;
           postClearTurnCount = 0;
@@ -3884,6 +4227,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
         }
+        // #1884: unconditional "this process wrote something" marker.
+        // Set on every settled, uninterrupted turn — not gated on the
+        // rewind boundary — so the post-quit hint suppression knows
+        // whether a JSONL transcript was actually produced.
+        if (drainOutcome === "settled" && !controller.signal.aborted) {
+          anyTurnPersistedThisProcess = true;
+        }
 
         // Feed the cost bridge with this turn's token delta.
         const cmAfter = store.getState().cumulativeMetrics;
@@ -3971,6 +4321,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const onProcessSigint = (): void => {
+    // Once any shutdown path (SIGUSR1, SIGTERM, SIGHUP, /quit) has flipped
+    // `shutdownStarted`, drop further SIGINTs. Without this, a Ctrl+C that
+    // lands during the 8 s cooperative shutdown window can re-enter the
+    // SIGINT state machine's `onForce`, kick a concurrent background-task
+    // teardown, and overwrite the in-flight shutdown's exit code. The
+    // SIGUSR1 handler relies on this invariant to preserve exit code 158
+    // (#1906).
+    if (shutdownStarted) return;
     sigintHandler.handleSignal();
   };
   // SIGTERM is a separate termination cause (supervisor/OOM/operator kill)
@@ -3985,27 +4343,39 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSighup = (): void => {
     void shutdown(129, "SIGHUP received (terminal hangup)");
   };
+  // SIGUSR1 (#1906): the full handler was already installed in section 4b
+  // so a signal during bootstrap (before this section runs) goes through
+  // `shutdown` instead of a bare process.exit. See 4b for the rationale.
   // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
   // the fd fires 'close'. Does NOT require resume() (avoids perturbing
   // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
   // prevent false triggers in test/pipe contexts. Uses exit code 129
   // (same as SIGHUP) because PTY close IS a hangup — using a generic
   // error code would mask the real termination cause for supervisors.
+  //
+  // Corroborate with stdout: tmux can transiently close stdin under load
+  // (send-keys + capture-pane while a child like `bun test` spawns) while
+  // the pane's stdout is still writable. A real terminal hangup tears down
+  // both. Only shutdown if stdout is also broken — otherwise rely on
+  // SIGHUP (which tmux sends on real session kill) as the primary signal.
+  //
   // let: justified — set to false when done() resolves, preventing the
   // stdin close handler from force-exiting during external/host teardown.
   let tuiRunning = false;
   const onStdinClose = (): void => {
-    // Only treat stdin close as a hangup when the TUI is actively
-    // running AND no orderly shutdown is in progress. In embedded/test
-    // callers the host may close stdin during normal teardown — that
-    // should not force process.exit(129).
-    if (tuiRunning && !shutdownStarted) {
-      void shutdown(129, "stdin closed (parent terminal gone)");
+    if (!tuiRunning || shutdownStarted) return;
+    // Probe stdout: if still writable, this is a transient tmux flicker —
+    // SIGHUP will fire on real terminal loss. If stdout is already dead,
+    // the terminal is truly gone and we should shut down immediately.
+    if (process.stdout.writable && !process.stdout.destroyed) {
+      return;
     }
+    void shutdown(129, "stdin closed (parent terminal gone)");
   };
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
+  // SIGUSR1 is already armed from section 4b (#1906) — no install here.
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in
@@ -4013,6 +4383,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   tuiRunning = true;
   if (process.stdin.isTTY) {
     process.stdin.once("close", onStdinClose);
+  }
+
+  // Print the SIGUSR1 escape-hatch hint BEFORE start() takes over the
+  // terminal. OpenTUI enters the alternate screen buffer on start and
+  // restores the main buffer on exit, so the hint lands in the user's
+  // scrollback and is visible from any other terminal session that runs
+  // `ps` to recover the PID. See issue #1906. Skipped on Windows where
+  // SIGUSR1 does not exist (the hint would advertise a non-functional
+  // escape mechanism).
+  //
+  // Guarded: a stderr write failure (already-closed stream in an embedded
+  // caller or a detached test process) must not propagate, because the
+  // `try/finally` below is what removes the signal listeners installed
+  // above. Without this catch, a throw here would leak SIGINT/SIGTERM/
+  // SIGHUP/SIGUSR1 listeners into the host process.
+  if (SIGUSR1_SUPPORTED) {
+    try {
+      process.stderr.write(generateTuiStartupHint(process.pid));
+    } catch {
+      /* stderr unwritable — best-effort hint, never leak signal handlers */
+    }
   }
 
   try {
@@ -4035,7 +4426,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
     process.removeListener("SIGHUP", onProcessSighup);
+    process.removeListener("SIGUSR1", onProcessSigusr1);
     process.stdin.removeListener("close", onStdinClose);
+    // If `done()` resolved because `shutdown()` called `appHandle.stop()`,
+    // shutdown() is still mid-flight — it has more awaits (runtime.dispose,
+    // otel flush, resume hint) before reaching its final
+    // `process.exit(exitCode)`. Returning here would let bin.ts's
+    // `process.exit(0)` fire first, clobbering the intended SIGUSR1/SIGTERM
+    // exit code. Await a never-resolving promise so bin.ts cannot reach
+    // its own `process.exit` until shutdown completes (or the hard-exit
+    // failsafe fires — 8 s for the full path, 6 s for the interim).
+    if (shutdownStarted) {
+      await new Promise<never>(() => {
+        /* never resolves — shutdown() or its hard-exit failsafe owns the exit */
+      });
+    }
   }
 }
 

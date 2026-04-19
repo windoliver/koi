@@ -533,6 +533,56 @@ describe("createGovernanceController", () => {
     expect(r?.current).toBeCloseTo(0.008);
   });
 
+  test("cost_usd: rejects NaN from buggy calculator (falls back to per-token)", async () => {
+    const ctrl = createGovernanceController({
+      cost: { maxCostUsd: 1.0, costPerInputToken: 0.000003, costPerOutputToken: 0.000015 },
+    });
+    // Buggy calculator emits NaN; controller must not pollute accumulator
+    // (NaN makes >= comparisons permanently false → silently disables cap).
+    ctrl.record({
+      kind: "token_usage",
+      count: 1500,
+      inputTokens: 1000,
+      outputTokens: 500,
+      costUsd: Number.NaN,
+    });
+    const r = ctrl.reading(GOVERNANCE_VARIABLES.COST_USD);
+    expect(r?.current).toBeCloseTo(0.0105); // per-token fallback kicks in
+    expect(Number.isFinite(r?.current ?? 0)).toBe(true);
+  });
+
+  test("cost_usd: rejects negative costUsd (falls back to per-token)", () => {
+    const ctrl = createGovernanceController({
+      cost: { maxCostUsd: 1.0, costPerInputToken: 0.000003, costPerOutputToken: 0.000015 },
+    });
+    // Negative values would offset legitimate spend, creating capacity
+    // where none exists.
+    ctrl.record({
+      kind: "token_usage",
+      count: 1500,
+      inputTokens: 1000,
+      outputTokens: 500,
+      costUsd: -50,
+    });
+    const r = ctrl.reading(GOVERNANCE_VARIABLES.COST_USD);
+    expect(r?.current).toBeCloseTo(0.0105);
+  });
+
+  test("cost_usd: rejects Infinity costUsd (falls back to per-token)", () => {
+    const ctrl = createGovernanceController({
+      cost: { maxCostUsd: 1.0, costPerInputToken: 0.000003, costPerOutputToken: 0.000015 },
+    });
+    ctrl.record({
+      kind: "token_usage",
+      count: 1500,
+      inputTokens: 1000,
+      outputTokens: 500,
+      costUsd: Number.POSITIVE_INFINITY,
+    });
+    const r = ctrl.reading(GOVERNANCE_VARIABLES.COST_USD);
+    expect(r?.current).toBeCloseTo(0.0105);
+  });
+
   // -------------------------------------------------------------------------
   // Custom variable override
   // -------------------------------------------------------------------------

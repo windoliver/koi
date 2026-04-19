@@ -40,10 +40,31 @@ export function needsRepair(messages: readonly InboundMessage[]): boolean {
       // O(1) merge check first — avoids unnecessary hashing
       if (isMergeable(prev) && isMergeable(curr)) return true;
 
-      // Dedup check: hash comparison (only for non-mergeable same-sender pairs)
-      const prevHash = computeContentHash(prev.content);
-      const currHash = computeContentHash(curr.content);
-      if (prevHash === currHash) return true;
+      // Dedup check: hash comparison. Identical user submits are a real
+      // retry pattern and must not be deduped — see `dedup` in
+      // repair-session.ts for rationale.
+      if (curr.senderId !== "user") {
+        const prevHash = computeContentHash(prev.content);
+        const currHash = computeContentHash(curr.content);
+        if (prevHash === currHash) return true;
+      }
+    }
+
+    // Two consecutive non-pinned user messages → interrupt-repair
+    // phase needs to insert a separator for role alternation. Pinned
+    // pairs are intentional context stacking (manifest goals) and
+    // stay untouched. For real user→user pairs the separator carries
+    // the "fresh request" steer; for restored-context pairs (compaction
+    // summaries, resumedSystemRole entries) it's a neutral marker that
+    // only exists to keep strict-alternation providers (Anthropic)
+    // happy without telling the model to ignore restored context.
+    if (
+      prev.senderId === "user" &&
+      curr.senderId === "user" &&
+      prev.pinned !== true &&
+      curr.pinned !== true
+    ) {
+      return true;
     }
   }
 

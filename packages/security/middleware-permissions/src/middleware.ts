@@ -9,6 +9,7 @@
  * and denial tracking.
  */
 
+import { canonicalPrefix, classifyCommand, UNSAFE_PREFIX } from "@koi/bash-classifier";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type {
@@ -33,8 +34,9 @@ import {
   KoiRuntimeError,
   swallowError,
 } from "@koi/errors";
+import { computeStringHash } from "@koi/hash";
 // fnv1a no longer used for cache keys (collision-unsafe for security decisions)
-// isDefaultDeny no longer used — forged-tool bypass removed in v2
+import { isDefaultDeny } from "./classifier.js";
 import type {
   ApprovalCacheConfig,
   PermissionCacheConfig,
@@ -47,8 +49,11 @@ import {
   DEFAULT_CACHE_CONFIG,
   DEFAULT_DENIAL_ESCALATION_THRESHOLD,
   DEFAULT_DENIAL_ESCALATION_WINDOW_MS,
+  DEFAULT_SOFT_DENY_PER_TURN_CAP,
 } from "./config.js";
 import { createDenialTracker, type DenialTracker } from "./denial-tracker.js";
+import { createSoftDenyLog, type SoftDenyLog } from "./soft-deny-log.js";
+import { createTurnSoftDenyCounter, type TurnSoftDenyCounter } from "./turn-soft-deny-counter.js";
 
 // ---------------------------------------------------------------------------
 // Internal cache types
@@ -318,14 +323,18 @@ function computeApprovalCacheKey(
   context: string | undefined,
   requestMeta: unknown,
   approvalReason: string,
+  // For bash-like tools, includes the derived bash grant key so a
+  // cached one-off allow in one execution context cannot replay in
+  // another. For non-bash tools, `grantKey === toolId` and this has
+  // no effect on cache key identity.
+  grantKey: string,
 ): string | undefined {
   if (context === undefined) return undefined;
   const sorted = safeSerializeInput(input);
   if (sorted === undefined) return undefined;
   const reqMeta = requestMeta !== undefined ? safeStringify(requestMeta) : "";
   if (reqMeta === undefined) return undefined;
-  // Include approval reason so policy/risk changes invalidate cached approvals
-  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}\0${reqMeta}\0${approvalReason}`;
+  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${grantKey}\0${sorted}\0${context}\0${reqMeta}\0${approvalReason}`;
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
@@ -396,10 +405,31 @@ export interface PermissionsMiddlewareHandle extends KoiMiddleware {
    */
   readonly clearSessionApprovals: (sessionId: string) => void;
   /**
-   * Revoke a persistent always-allow grant. Returns true if a grant existed.
-   * No-op if no persistent store is configured.
+   * Revoke a persistent always-allow grant by its exact stored key.
+   * Returns true if a grant existed. No-op if no persistent store is
+   * configured.
+   *
+   * `grantKey` must match the key the grant was stored under. For bash
+   * tools with `resolveBashCommand` configured, grants are stored under
+   * `<toolId>:<prefix>:<16hex>` (exact-command hash). Callers can obtain
+   * the correct key in two ways:
+   *   1. `listPersistentApprovals()` — iterate stored grants.
+   *   2. `computeBashGrantKey(toolId, command)` — derive the key from
+   *      the raw command string, matching how the middleware stored it.
+   *
+   * For non-bash tools, `grantKey` is the plain tool id.
    */
-  readonly revokePersistentApproval: (userId: string, agentId: string, toolId: string) => boolean;
+  readonly revokePersistentApproval: (userId: string, agentId: string, grantKey: string) => boolean;
+  /**
+   * Derive the persistent grant key for a given bash tool invocation.
+   * Mirrors the internal hashing used when the middleware records a
+   * grant so callers can reliably construct the key that
+   * `revokePersistentApproval` expects.
+   *
+   * Returns the plain `toolId` when `resolveBashCommand` is not
+   * configured, or when the raw command is empty.
+   */
+  readonly computeBashGrantKey: (toolId: string, rawCommand: string, context?: string) => string;
   /**
    * Revoke all persistent always-allow grants.
    * No-op if no persistent store is configured.
@@ -422,6 +452,48 @@ export function createPermissionsMiddleware(
     persistentApprovals: persistentStore,
     persistentAgentId,
   } = config;
+
+  // Bash enrichment requires a backend that can distinguish default-deny
+  // from explicit deny so the dual-key merge doesn't silently hard-deny
+  // enriched bash calls via unmarked fall-through denies. The capability
+  // is part of the public `PermissionBackend` contract
+  // (`supportsDefaultDenyMarker`).
+  //
+  // Policy:
+  //  - Marker-aware backend → dual-key evaluation, prefix rules enforced.
+  //  - Legacy backend + no opt-in → fail closed at construction.
+  //    Preserves policy integrity; operator gets an immediate, clear
+  //    error instead of a silent downgrade or runtime surprise.
+  //  - Legacy backend + `allowLegacyBackendBashFallback: true` →
+  //    explicit opt-in to single-key evaluation. Operator has
+  //    acknowledged that prefix rules will not apply; middleware
+  //    still logs a warning so the weaker enforcement is visible.
+  const backendSupportsDualKey = config.backend.supportsDefaultDenyMarker === true;
+  if (config.resolveBashCommand !== undefined && !backendSupportsDualKey) {
+    if (config.allowLegacyBackendBashFallback !== true) {
+      throw new Error(
+        "createPermissionsMiddleware: `resolveBashCommand` requires a " +
+          "PermissionBackend with `supportsDefaultDenyMarker: true`. Without " +
+          "the marker, prefix rules like `allow: bash:git push` cannot be " +
+          "enforced — enabling dual-key evaluation anyway would silently " +
+          "hard-deny via unmarked fall-through denies. To mark your backend, " +
+          "set fall-through denies with the `IS_DEFAULT_DENY` symbol " +
+          "(exported from @koi/middleware-permissions) or a public " +
+          "`default: true` field, then set `supportsDefaultDenyMarker: true` " +
+          "on the backend object. To opt into single-key evaluation anyway " +
+          "(prefix rules will NOT be enforced), set " +
+          "`allowLegacyBackendBashFallback: true`.",
+      );
+    }
+    console.warn(
+      "[@koi/middleware-permissions] `resolveBashCommand` is configured but " +
+        "the backend does not set `supportsDefaultDenyMarker: true`. Running " +
+        "in single-key fallback mode (allowLegacyBackendBashFallback=true). " +
+        "Prefix rules like `allow: bash:git push` WILL NOT be enforced — only " +
+        "plain-tool-id rules apply. Mark your backend to enable full dual-key " +
+        "enrichment.",
+    );
+  }
   const originalSink = config.onApprovalStep;
   // Additive runtime sinks — each createRuntime registers its own dispatch relay.
   // Using an array allows a single permissions handle to be shared across runtimes.
@@ -533,6 +605,38 @@ export function createPermissionsMiddleware(
     return t;
   }
 
+  // Soft-deny logs scoped per session (#1650)
+  const softDenyLogsBySession = new Map<string, SoftDenyLog>();
+
+  function getSoftDenyLog(sessionId: string): SoftDenyLog {
+    let log = softDenyLogsBySession.get(sessionId);
+    if (log === undefined) {
+      log = createSoftDenyLog();
+      softDenyLogsBySession.set(sessionId, log);
+    }
+    return log;
+  }
+
+  // Per-turn soft-deny counters scoped per session (#1650)
+  const turnSoftDenyCountersBySession = new Map<string, TurnSoftDenyCounter>();
+
+  function getTurnSoftDenyCounter(sessionId: string): TurnSoftDenyCounter {
+    let counter = turnSoftDenyCountersBySession.get(sessionId);
+    if (counter === undefined) {
+      counter = createTurnSoftDenyCounter();
+      turnSoftDenyCountersBySession.set(sessionId, counter);
+    }
+    return counter;
+  }
+
+  // Planning-time cap-exhaustion recording dedup (#1650 loop round-3).
+  // Key: `${sessionId}\0${turnIndex}\0${cacheKey}`. Ensures DenialTracker is
+  // written to at most ONCE per (session, turn, cacheKey) when filterTools
+  // strips a tool because its per-turn soft-deny budget is exhausted.
+  // Without this, repeated planning passes in the same turn would evict
+  // native hard-deny history from the bounded-FIFO tracker.
+  const filterCapRecordedKeys = new Set<string>();
+
   // Denial escalation config
   const escalationEnabled =
     config.denialEscalation !== undefined && config.denialEscalation !== false;
@@ -554,6 +658,129 @@ export function createPermissionsMiddleware(
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Derive the canonical permission resource key for a tool call. When
+   * `resolveBashCommand` is configured and returns a non-empty command
+   * string, the key is `<toolId>:<prefix>` (e.g. `bash:git push`). Returns
+   * the plain tool name otherwise.
+   */
+  /**
+   * Shared derivation for both policy and grant keys. Returns `null`
+   * when bash enrichment is not applicable (no resolver, empty
+   * command, or unresolvable prefix) so callers can fall back to the
+   * plain tool id — matches storage semantics for unenriched grants.
+   */
+  /**
+   * Combine the plain-tool decision with the enriched-resource decision.
+   *
+   * Default-deny on EITHER side is treated as "no opinion" — the
+   * operator did not write a rule at that granularity, so the other
+   * side's explicit rule should take effect. Preserves legacy plain
+   * rules like `allow: ["bash"]` / `ask: ["group:runtime"]` when no
+   * enriched rule matches, and still enforces fine-grained prefix
+   * rules when the plain side is silent. When both are explicit,
+   * deny > ask > allow.
+   */
+  /**
+   * Backend-tolerant default-deny check. Recognizes both the
+   * built-in pattern backend's internal symbol marker and a public
+   * `default: true` field that custom backends can set on their
+   * fall-through denies. Custom backends that set neither are
+   * treated as explicit deny (backward compat with backends that
+   * have no notion of default-deny — their denies ARE authoritative).
+   */
+  function isDefaultDenyLike(d: PermissionDecision): boolean {
+    if (d.effect !== "deny") return false;
+    if (isDefaultDeny(d)) return true;
+    const withFlag = d as Record<string, unknown>;
+    return withFlag.default === true || withFlag.defaultDeny === true;
+  }
+
+  function strictestDecision(
+    plain: PermissionDecision,
+    enriched: PermissionDecision,
+  ): PermissionDecision {
+    const plainOpinion = !(plain.effect === "deny" && isDefaultDenyLike(plain));
+    const enrichedOpinion = !(enriched.effect === "deny" && isDefaultDenyLike(enriched));
+
+    // Neither side opined — fall-through deny from either is fine.
+    if (!plainOpinion && !enrichedOpinion) return plain;
+    // Only one side opined — use it.
+    if (!plainOpinion) return enriched;
+    if (!enrichedOpinion) return plain;
+
+    // Both explicit: deny beats ask beats allow.
+    if (plain.effect === "deny") return plain;
+    if (enriched.effect === "deny") return enriched;
+    if (plain.effect === "ask") return plain;
+    if (enriched.effect === "ask") return enriched;
+    return plain;
+  }
+
+  function deriveBashKeys(
+    toolId: string,
+    rawCommand: string,
+    context?: string,
+  ): { readonly policy: string; readonly grant: string } | null {
+    const trimmed = rawCommand.trim();
+    if (trimmed.length === 0) return null;
+    const p = canonicalPrefix(trimmed);
+    if (p.length === 0) return null;
+    const danger = classifyCommand(trimmed);
+    const dangerous = danger.severity === "critical" || danger.severity === "high";
+    // Hash covers the execution context (cwd / repo root / tenant)
+    // in addition to the command text. Without context-binding,
+    // approving `git push` in one repo silently authorizes the same
+    // text in a different repo/checkout/tenant. When the caller
+    // cannot supply stable context (undefined), hash degrades to
+    // command-only scope — documented as a caveat for deployments
+    // where approvals MUST be context-scoped.
+    const hashInput = context !== undefined ? `${context}\0${trimmed}` : trimmed;
+    const hash = computeStringHash(hashInput).slice(0, 16);
+    // POLICY key for `!complex` is stable (no hash) so denial
+    // tracking and soft-deny escalation aggregate across distinct
+    // compound commands. An agent spamming different `bash -c` /
+    // pipeline / redirection variants hits the same bucket and
+    // trips the per-session retry cap predictably.
+    const policy = p === UNSAFE_PREFIX ? `${toolId}:${UNSAFE_PREFIX}` : `${toolId}:${p}`;
+    // GRANT key: always includes the hash, and escalates to `!complex`
+    // for dangerous forms so an approval for `python -c "print(1)"`
+    // does NOT cover a later `python -c "os.system('rm')"`. Same
+    // deterministic discriminator as policy for structurally complex
+    // commands.
+    const grantPrefix = p === UNSAFE_PREFIX || dangerous ? UNSAFE_PREFIX : p;
+    const grant = `${toolId}:${grantPrefix}:${hash}`;
+    return { policy, grant };
+  }
+
+  /**
+   * Compute two distinct resource keys for a tool call:
+   *
+   *   `policy`  — `<toolId>:<prefix>` for non-`!complex` commands, or
+   *               `<toolId>:!complex:<hash>` for complex/dangerous forms.
+   *               Used for backend rule matching and denial-tracker
+   *               escalation.
+   *   `grant`   — `<toolId>:<effectivePrefix>:<hash>` (always includes
+   *               an exact-command hash). Used for session and
+   *               persistent `always-allow` grants and approval audit.
+   *
+   * When `resolveBashCommand` is unconfigured or returns nothing, both
+   * keys fall back to the plain tool id.
+   */
+  function enrichResource(
+    toolId: string,
+    input: JsonObject | undefined,
+  ): { readonly policy: string; readonly grant: string } {
+    if (config.resolveBashCommand === undefined || input === undefined) {
+      return { policy: toolId, grant: toolId };
+    }
+    const raw = config.resolveBashCommand(toolId, input);
+    if (raw === undefined) return { policy: toolId, grant: toolId };
+    const execContext = config.resolveBashContext?.(toolId, input);
+    const derived = deriveBashKeys(toolId, raw, execContext);
+    return derived ?? { policy: toolId, grant: toolId };
+  }
 
   function queryForTool(
     ctx: TurnContext,
@@ -770,6 +997,8 @@ export function createPermissionsMiddleware(
           .filter(
             (r) =>
               r.source === "policy" &&
+              r.softness !== "soft" &&
+              r.origin !== "soft-conversion" &&
               r.timestamp >= cutoff &&
               (r.queryKey === undefined || r.queryKey === cacheKey),
           );
@@ -848,6 +1077,8 @@ export function createPermissionsMiddleware(
           .filter(
             (r) =>
               r.source === "policy" &&
+              r.softness !== "soft" &&
+              r.origin !== "soft-conversion" &&
               r.timestamp >= cutoff &&
               (r.queryKey === undefined || r.queryKey === cacheKey),
           );
@@ -972,15 +1203,155 @@ export function createPermissionsMiddleware(
 
     const sessionTracker = getTracker(ctx.session.sessionId as string);
 
+    // #1650 loop round-9: capture the FINAL enforced decision per tool so
+    // reportDecision's filteredTools summary reflects what was actually
+    // emitted (hardened reason for soft→hard conversions), not the
+    // pre-conversion soft decision.
+    const enforcedDecisionByIndex = new Map<number, PermissionDecision>();
+
+    // Tools whose per-command policy is enforced at wrapToolCall via
+    // bash prefix enrichment — keep visible at model-time so the
+    // execution-time prefix rules are reachable UNLESS the operator
+    // has explicitly denied the plain tool id. An explicit deny
+    // (non-default-deny) on `bash` must still filter the tool out so
+    // operators can turn off bash wholesale via policy.
+    const bashVisibleSet = new Set(config.bashVisibleTools ?? []);
+    const bypassFilter = (toolName: string, decision: PermissionDecision): boolean => {
+      if (config.resolveBashCommand === undefined) return false;
+      if (!bashVisibleSet.has(toolName)) return false;
+      // Explicit deny overrides the visibility bypass. Default-deny
+      // (no rule matches) does NOT — that's exactly the case
+      // bashVisibleTools exists to accommodate.
+      if (decision.effect === "deny" && !isDefaultDenyLike(decision)) return false;
+      return true;
+    };
+
     const filtered = tools.filter((tool, i) => {
       // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
       const decision = decisions[i]!;
-      if (auditSink !== undefined) {
-        auditFilterDecision(ctx, tool.name, decision, auditSink);
-      }
       // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
-      void ctx.dispatchPermissionDecision?.(queries[i]!, decision);
+      const query = queries[i]!;
+      const sid = ctx.session.sessionId as string;
+
+      if (bypassFilter(tool.name, decision)) {
+        // Pass through. Record an allow decision for observability so
+        // reporting/audit still see the tool was offered to the model.
+        enforcedDecisionByIndex.set(i, { effect: "allow" });
+        return true;
+      }
+
+      // #1650 loop round-4: audit/dispatch fire AFTER the hard-conversion
+      // checks so observers see the FINAL decision shape, not the original
+      // soft decision that was about to be hard-converted. Keeps audit sinks
+      // consistent with what was actually enforced.
+      const emit = (finalDecision: PermissionDecision): void => {
+        enforcedDecisionByIndex.set(i, finalDecision);
+        if (auditSink !== undefined) {
+          auditFilterDecision(ctx, tool.name, finalDecision, auditSink);
+        }
+        void ctx.dispatchPermissionDecision?.(query, finalDecision);
+      };
+
       if (decision.effect === "deny") {
+        const dispositionIsSoft = (decision.disposition ?? "hard") === "soft";
+        if (dispositionIsSoft) {
+          const cacheKey = decisionCacheKey(query);
+          // #1650 loop round-3/4: unkeyable context → hard-convert (mirror
+          // execute-time fail-closed). Record in DenialTracker with
+          // origin: "soft-conversion" (same vocabulary as execute-time) so
+          // observers see a consistent hard denial trail.
+          if (cacheKey === undefined) {
+            const hardened: PermissionDecision = {
+              ...decision,
+              disposition: "hard",
+              reason: `${decision.reason} (unkeyable context — failing closed)`,
+            };
+            // #1650 loop round-9: dedup unkeyable filter-time records per
+            // (session, turn, toolId). Repeated planning passes in the same
+            // turn with unkeyable context would otherwise churn the 1024-entry
+            // DenialTracker FIFO and evict native hard-deny history.
+            const unkeyableRecordKey = `${sid}\0${ctx.turnIndex}\0unkeyable\0${tool.name}`;
+            if (!filterCapRecordedKeys.has(unkeyableRecordKey)) {
+              filterCapRecordedKeys.add(unkeyableRecordKey);
+              sessionTracker.record({
+                toolId: tool.name,
+                reason: decision.reason,
+                timestamp: clock(),
+                principal: ctx.session.agentId,
+                turnIndex: ctx.turnIndex,
+                source: denialSource(decision),
+                queryKey: undefined,
+                softness: "hard",
+                origin: "soft-conversion",
+              });
+            }
+            emit(hardened);
+            return false;
+          }
+          // #1650 loop round-2/6: if the soft-deny counter is ALREADY at or
+          // over cap for this tool in the current turn, stop advertising the
+          // tool so the model doesn't burn iterations on guaranteed-hard
+          // failures.
+          //
+          // Trade-off (loop rounds 6→9): previously used a tool-identity
+          // prefix peek to catch path-sensitive cap exhaustion, but that
+          // over-stripped tools for unrelated intents (different paths) whose
+          // future call would have been allowed. Reverting to exact-key peek
+          // — path-sensitive cap exhaustion is invisible at planning time;
+          // execute-time still enforces (hard-throws on the Nth+1 exact-key
+          // deny) and the outer engine max-iterations bounds the worst case.
+          // For tools WITHOUT a resolveToolPath callback, filter-time keys
+          // match execute-time exactly and this check strips correctly.
+          const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
+          const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
+          const currentCount = getTurnSoftDenyCounter(sid).peek(turnScopedKey);
+          if (currentCount >= cap) {
+            // #1650 loop round-3: record DenialTracker ONCE per (session, turn,
+            // cacheKey). Repeated planning passes in the same turn would
+            // otherwise evict native hard-deny history from the bounded FIFO.
+            const capRecordKey = `${sid}\0${ctx.turnIndex}\0${cacheKey}`;
+            if (!filterCapRecordedKeys.has(capRecordKey)) {
+              filterCapRecordedKeys.add(capRecordKey);
+              sessionTracker.record({
+                toolId: tool.name,
+                reason: decision.reason,
+                timestamp: clock(),
+                principal: ctx.session.agentId,
+                turnIndex: ctx.turnIndex,
+                source: denialSource(decision),
+                queryKey: cacheKey,
+                softness: "hard",
+                origin: "soft-conversion",
+              });
+            }
+            // Always emit the hardened decision so audit/observers see the
+            // final enforced shape (even if tracker dedup suppressed the
+            // record-write above).
+            const hardened: PermissionDecision = {
+              ...decision,
+              disposition: "hard",
+              reason: `${decision.reason} (soft-deny retry cap ${cap} exceeded this turn)`,
+            };
+            emit(hardened);
+            return false;
+          }
+          // Soft-deny → keep tool visible. Record in isolated SoftDenyLog so
+          // high-volume soft denies don't evict native hard-deny history from
+          // the shared DenialTracker budget. Emit the ORIGINAL soft decision
+          // (this is what actually happens at planning time — the tool stays
+          // visible).
+          getSoftDenyLog(sid).record({
+            toolId: tool.name,
+            reason: decision.reason,
+            timestamp: clock(),
+            principal: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            queryKey: cacheKey,
+          });
+          emit(decision);
+          return true;
+        }
+        // Hard-deny: existing behavior — record with softness+origin, emit, strip.
         sessionTracker.record({
           toolId: tool.name,
           reason: decision.reason,
@@ -988,18 +1359,30 @@ export function createPermissionsMiddleware(
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           source: denialSource(decision),
-          // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
-          queryKey: decisionCacheKey(queries[i]!),
+          queryKey: decisionCacheKey(query),
+          softness: "hard",
+          origin: "native",
         });
+        emit(decision);
         return false;
       }
+      // allow/ask — emit the original decision so audit/observer chain sees it.
+      emit(decision);
       return true;
     });
 
     const filteredCount = tools.length - filtered.length;
     if (filteredCount > 0) {
+      // #1650 loop round-9: prefer the enforced (possibly hardened) decision
+      // captured during emit over the raw backend decision, so filteredTools
+      // reflects the final reason ("unkeyable context — failing closed" /
+      // "soft-deny retry cap N exceeded this turn") rather than the original
+      // soft-policy reason.
       const filteredDetails = tools
-        .map((t, i) => ({ name: t.name, decision: decisions[i] }))
+        .map((t, i) => {
+          const decision = enforcedDecisionByIndex.get(i) ?? decisions[i];
+          return { name: t.name, decision };
+        })
         .filter(
           (
             d,
@@ -1048,6 +1431,15 @@ export function createPermissionsMiddleware(
     approvalCachesBySession.get(sid)?.clear();
     approvalCachesBySession.delete(sid);
     alwaysAllowedBySession.delete(sid);
+    // #1650: evict soft-deny session state so a reused session id does not
+    // inherit the previous turn's counter or soft-deny log.
+    softDenyLogsBySession.get(sid)?.clear();
+    softDenyLogsBySession.delete(sid);
+    turnSoftDenyCountersBySession.get(sid)?.clear();
+    turnSoftDenyCountersBySession.delete(sid);
+    for (const key of filterCapRecordedKeys) {
+      if (key.startsWith(`${sid}\0`)) filterCapRecordedKeys.delete(key);
+    }
     // Evict all in-flight approval coalesce entries for this session so that
     // a stale dialog approval resolved after reset cannot re-populate the cache
     // or cause new callers to coalesce onto an old pending promise.
@@ -1087,6 +1479,15 @@ export function createPermissionsMiddleware(
       approvalCachesBySession.get(sid)?.clear();
       approvalCachesBySession.delete(sid);
       alwaysAllowedBySession.delete(sid);
+      // #1650: evict soft-deny session state so long-lived runtimes do not
+      // retain per-session log/counter objects after session teardown.
+      softDenyLogsBySession.get(sid)?.clear();
+      softDenyLogsBySession.delete(sid);
+      turnSoftDenyCountersBySession.get(sid)?.clear();
+      turnSoftDenyCountersBySession.delete(sid);
+      for (const key of filterCapRecordedKeys) {
+        if (key.startsWith(`${sid}\0`)) filterCapRecordedKeys.delete(key);
+      }
     },
 
     async wrapModelCall(
@@ -1118,38 +1519,287 @@ export function createPermissionsMiddleware(
       // the in-flight dedup key. (#1759 review round 6)
       // Resolve file path for fs tools so permission rules can match on context.path.
       const resolvedPath = config.resolveToolPath?.(request.toolId, request.input);
-      const query = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
+      const { policy: enrichedResource, grant: grantKey } = enrichResource(
+        request.toolId,
+        request.input,
+      );
+      const enrichedQuery = queryForTool(ctx, enrichedResource, request.metadata, resolvedPath);
       const startMs = clock();
-      const decision = await resolveDecision(query, ctx.session.sessionId as string);
+      // Dual-key evaluation: when the enriched resource differs from
+      // the plain tool id, consult the backend for BOTH and take the
+      // stricter decision. The "effective" resource/query carries
+      // forward whichever side won so denial tracking, soft-deny
+      // caps, and audit records aggregate under the right bucket —
+      // a plain `deny: bash` must aggregate across all subcommand
+      // variants, not fragment into per-prefix buckets.
+      // `resource` is the observable identity — used for audit,
+      // reportDecision, and approval-step payloads. It stays on the
+      // enriched form so per-command governance is visible even
+      // when a legacy plain-tool rule ultimately produced the
+      // decision.
+      //
+      // `trackingResource` is the denial-tracker + soft-deny bucket.
+      // When a plain-tool deny wins, it aggregates subcommand
+      // variants under the plain id so retry caps and escalation
+      // fire consistently. When the enriched decision wins it uses
+      // the enriched resource for per-prefix fidelity.
+      // Dual-key merge (marker-aware backends): issue both enriched and
+      // plain queries, merge via `strictestDecision`. Unmarked
+      // fall-through denies on one key yield to an explicit allow/ask
+      // on the other, preserving legacy plain-tool rules while
+      // honoring per-prefix policy.
+      //
+      // Single-key fallback (legacy backends without the marker flag):
+      // use only the plain tool id. Safe — avoids hard-denying via
+      // unmarked fall-through. Construction emitted a warning so
+      // operators know enrichment isn't enforced.
+      const resource = enrichedResource;
+      let trackingResource = enrichedResource;
+      let query = enrichedQuery;
+      let decision: PermissionDecision;
+      if (!backendSupportsDualKey && enrichedResource !== request.toolId) {
+        const plainQuery = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
+        query = plainQuery;
+        trackingResource = request.toolId;
+        decision = await resolveDecision(query, ctx.session.sessionId as string);
+      } else {
+        decision = await resolveDecision(query, ctx.session.sessionId as string);
+        if (enrichedResource !== request.toolId) {
+          const plainQuery = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
+          const plain = await resolveDecision(plainQuery, ctx.session.sessionId as string);
+          const combined = strictestDecision(plain, decision);
+          if (combined === plain) {
+            trackingResource = request.toolId;
+            query = plainQuery;
+          }
+          decision = combined;
+        }
+      }
+      // Structural-complexity ratchet: `!complex` covers compound
+      // commands, redirections, subshells, command substitution, env
+      // -S, and anything canonicalPrefix could not safely reduce. A
+      // broad `allow: bash:*` must NOT silently authorize these —
+      // they can hide side effects or nested dangerous payloads.
+      //
+      // But operators who INTENTIONALLY whitelist compound forms
+      // (`allow: ["bash:!complex*"]`) should be honored. Disambiguate
+      // by probing with a nonsense resource that a wildcard would
+      // still match but an explicit `bash:!complex*` rule would not.
+      // If the probe also allows, the original allow came from a
+      // wildcard — ratchet to ask. If the probe denies, the operator
+      // has an explicit `!complex` rule — honor it.
+      if (
+        decision.effect === "allow" &&
+        enrichedResource !== request.toolId &&
+        enrichedResource === `${request.toolId}:${UNSAFE_PREFIX}`
+      ) {
+        // Probe under the PLAIN tool id so ONLY truly broad
+        // wildcards like `bash:*` match it. Narrower rules
+        // (`bash:!complex*`, `bash:sudo*`, `bash:python*`) do not
+        // match this probe shape, so operators who explicitly
+        // whitelist specific prefixes are honored.
+        const probeQuery = queryForTool(
+          ctx,
+          `${request.toolId}:__broad_wildcard_probe__`,
+          request.metadata,
+          resolvedPath,
+        );
+        const probe = await resolveDecision(probeQuery, ctx.session.sessionId as string);
+        const fromWildcard = probe.effect === "allow";
+        if (fromWildcard) {
+          decision = {
+            effect: "ask",
+            reason: "complex/unparseable shell form requires review",
+          };
+        }
+      }
+      // Dangerous-command ratchet: if the raw command matches ANY
+      // DANGEROUS_PATTERN and the combined decision is "allow",
+      // upgrade to "ask" so a human reviews it. Broad allow rules
+      // like `allow: bash:*` cannot silently authorize
+      // structural-danger forms.
+      //
+      // BUT: operators who explicitly allow a dangerous prefix
+      // (e.g. `allow: bash:sudo`, `allow: bash:python*`,
+      // `allow: bash:chmod*`) have opted in deliberately — typically
+      // for headless/non-interactive automation. Probe under the
+      // plain tool id so ONLY truly broad wildcards match the probe.
+      if (decision.effect === "allow" && config.resolveBashCommand !== undefined) {
+        const raw = config.resolveBashCommand(request.toolId, request.input);
+        if (raw !== undefined && raw.trim().length > 0) {
+          const danger = classifyCommand(raw.trim());
+          if (danger.severity !== null) {
+            const probeQuery = queryForTool(
+              ctx,
+              `${request.toolId}:__broad_wildcard_probe__`,
+              request.metadata,
+              resolvedPath,
+            );
+            const probe = await resolveDecision(probeQuery, ctx.session.sessionId as string);
+            const fromWildcard = probe.effect === "allow";
+            if (fromWildcard) {
+              const categories = Array.from(new Set(danger.matchedPatterns.map((p) => p.category)));
+              decision = {
+                effect: "ask",
+                reason: `dangerous command pattern matched (${categories.join(", ")})`,
+              };
+            }
+          }
+        }
+      }
       const durationMs = clock() - startMs;
 
-      if (auditSink !== undefined) {
-        auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
+      // Non-deny paths: audit + dispatch here. Deny paths handle their own
+      // audit, dispatch, and report inside the deny branch (Task 10 of #1650)
+      // so that soft vs hard-converted decisions use the correct final decision object.
+      if (decision.effect !== "deny") {
+        if (auditSink !== undefined) {
+          auditDecision(ctx, resource, decision, durationMs, auditSink);
+        }
+        // Allow/ask: fire-and-forget dispatch here.
+        void ctx.dispatchPermissionDecision?.(query, decision);
+        ctx.reportDecision?.({
+          phase: "execute",
+          toolId: request.toolId,
+          resource,
+          toolInput: safePreviewJson(request.input, 300),
+          action: decision.effect,
+          durationMs,
+          ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
+          source: denialSource(decision),
+        });
       }
-      void ctx.dispatchPermissionDecision?.(query, decision);
-
-      // Report the permission decision for trace recording
-      ctx.reportDecision?.({
-        phase: "execute",
-        toolId: request.toolId,
-        toolInput: safePreviewJson(request.input, 300),
-        action: decision.effect,
-        durationMs,
-        ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
-        source: denialSource(decision),
-      });
 
       if (decision.effect === "deny") {
-        getTracker(ctx.session.sessionId as string).record({
-          toolId: request.toolId,
+        const source = denialSource(decision);
+        const disposition = decision.disposition ?? "hard";
+
+        const isSoftCandidate =
+          disposition === "soft" &&
+          source !== "approval" &&
+          !isFailClosed(decision) &&
+          !isEscalated(decision); // IS_CACHED does NOT set IS_ESCALATED — cached replays stay soft-eligible
+
+        const sessionId = ctx.session.sessionId as string;
+
+        type DenyDecision = Extract<PermissionDecision, { readonly effect: "deny" }>;
+
+        const hardConvertedDecision = (suffix: string): DenyDecision => ({
+          ...decision,
+          disposition: "hard" as const,
+          reason: `${decision.reason} (${suffix})`,
+        });
+
+        const emitDenyAudit = (finalDecision: DenyDecision): void => {
+          if (auditSink !== undefined) {
+            auditDecision(ctx, resource, finalDecision, durationMs, auditSink);
+          }
+          void ctx.dispatchPermissionDecision?.(query, finalDecision);
+          ctx.reportDecision?.({
+            phase: "execute",
+            toolId: request.toolId,
+            resource,
+            toolInput: safePreviewJson(request.input, 300),
+            action: "deny",
+            durationMs,
+            reason: finalDecision.reason,
+            source: denialSource(finalDecision),
+          });
+        };
+
+        if (isSoftCandidate) {
+          const cacheKey = decisionCacheKey(query);
+
+          if (cacheKey === undefined) {
+            // Unkeyable context — cannot scope the soft-deny counter safely → fail closed.
+            const hardened = hardConvertedDecision("unkeyable context — failing closed");
+            getTracker(sessionId).record({
+              toolId: trackingResource,
+              reason: decision.reason,
+              timestamp: clock(),
+              principal: ctx.session.agentId,
+              turnIndex: ctx.turnIndex,
+              source,
+              queryKey: undefined,
+              softness: "hard",
+              origin: "soft-conversion",
+            });
+            emitDenyAudit(hardened);
+            throw new KoiRuntimeError({
+              code: "PERMISSION",
+              message: hardened.reason,
+              retryable: false,
+            });
+          }
+
+          // Per-turn cap check. Prefix the counter key with turnIndex so
+          // overlapping turns in the same session cannot reset or share each
+          // other's budget. Loop round-5 fix.
+          const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
+          const counter = getTurnSoftDenyCounter(sessionId);
+          const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
+          if (counter.countAndCap(turnScopedKey, cap) === "over_cap") {
+            const hardened = hardConvertedDecision(`soft-deny retry cap ${cap} exceeded this turn`);
+            getTracker(sessionId).record({
+              toolId: trackingResource,
+              reason: decision.reason,
+              timestamp: clock(),
+              principal: ctx.session.agentId,
+              turnIndex: ctx.turnIndex,
+              source,
+              queryKey: cacheKey,
+              softness: "hard",
+              origin: "soft-conversion",
+            });
+            emitDenyAudit(hardened);
+            throw new KoiRuntimeError({
+              code: "PERMISSION",
+              message: hardened.reason,
+              retryable: false,
+            });
+          }
+
+          // Soft path: record in isolated SoftDenyLog (NOT DenialTracker).
+          getSoftDenyLog(sessionId).record({
+            toolId: trackingResource,
+            reason: decision.reason,
+            timestamp: clock(),
+            principal: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            queryKey: cacheKey,
+          });
+          emitDenyAudit(decision);
+          // Trust-boundary: output contains only toolId, never decision.reason.
+          // `blockedByHook: true` is the canonical downstream marker honored
+          // by event-trace, middleware-report, and session-transcript to
+          // classify this response as a non-execution rather than a successful
+          // tool call. Loop round-10 fix.
+          // `permissionDenied: true` is the specific signal for #1650 soft-deny.
+          return {
+            output: `Permission denied for tool "${request.toolId}". This tool is not available in the current scope.`,
+            metadata: {
+              isError: true,
+              blockedByHook: true,
+              permissionDenied: true,
+              hookName: "permissions",
+              toolId: request.toolId,
+            },
+          };
+        }
+
+        // Native hard path: record with origin: "native", dispatch original decision, throw.
+        getTracker(sessionId).record({
+          toolId: trackingResource,
           reason: decision.reason,
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
-          source: denialSource(decision),
+          source,
           queryKey: decisionCacheKey(query),
+          softness: "hard",
+          origin: "native",
         });
-
+        emitDenyAudit(decision);
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: decision.reason,
@@ -1160,13 +1810,26 @@ export function createPermissionsMiddleware(
       if (decision.effect === "ask") {
         // Pass a dispatch callback so each approval path fires the outcome
         // BEFORE calling next(request) — ensures recording even if the tool throws.
-        return handleAskDecision(ctx, request, next, decision, (d) => {
+        return handleAskDecision(ctx, request, resource, grantKey, next, decision, (d) => {
           void ctx.dispatchPermissionDecision?.(query, d);
         });
       }
 
       // allow
       return next(request);
+    },
+
+    async onBeforeTurn(_ctx: TurnContext): Promise<void> {
+      // #1650 loop round-5/loop-2 round-1: counter keys are already
+      // turn-scoped via `${turnIndex}\0${cacheKey}` prefix, so they don't
+      // collide across turns. Intentionally NO reaping here — reaping
+      // older turns by relative distance would wipe the budget of a
+      // long-running/stalled turn that has since been overtaken by newer
+      // turns, letting a late tool call from the older turn accrue a fresh
+      // cap. Memory bound comes from:
+      //   - The counter's fail-closed ceiling (see turn-soft-deny-counter.ts)
+      //   - clearSessionApprovals / onSessionEnd, which evict the whole map
+      // filterCapRecordedKeys is similarly retained until session end.
     },
   };
 
@@ -1179,13 +1842,27 @@ export function createPermissionsMiddleware(
       };
     },
     clearSessionApprovals,
-    revokePersistentApproval(userId: string, agentId: string, toolId: string): boolean {
+    revokePersistentApproval(userId: string, agentId: string, grantKey: string): boolean {
       if (persistentStore === undefined) return false;
+      // `grantKey` must match the exact-command key that was stored
+      // (`<toolId>:<prefix>:<16hex>` when bash enrichment is on). Use
+      // `computeBashGrantKey` or `listPersistentApprovals` to derive it.
       // Removes the durable row only. Active sessions retain their own
-      // session-scoped bypass until session end — the in-memory set does not
-      // encode user identity or grant source, so clearing it would break
-      // unrelated session-only approvals. New sessions will prompt again.
-      return persistentStore.revoke(userId, agentId, toolId);
+      // session-scoped bypass until session end — the in-memory set does
+      // not encode user identity or grant source, so clearing it would
+      // break unrelated session-only approvals.
+      return persistentStore.revoke(userId, agentId, grantKey);
+    },
+    computeBashGrantKey(toolId: string, rawCommand: string, context?: string): string {
+      // Shares the exact key-derivation helper with enrichResource so
+      // that dangerous-pattern escalation, `!complex` remapping, and
+      // context-scoping are applied identically. Callers that need to
+      // revoke context-scoped grants must supply the same `context`
+      // value the middleware used when storing the grant (typically
+      // the return value of `resolveBashContext` for the active turn).
+      if (config.resolveBashCommand === undefined) return toolId;
+      const derived = deriveBashKeys(toolId, rawCommand, context);
+      return derived?.grant ?? toolId;
     },
     revokeAllPersistentApprovals(): void {
       // Same rationale: only clear durable state. Session-scoped grants
@@ -1196,6 +1873,15 @@ export function createPermissionsMiddleware(
       if (persistentStore === undefined) return [];
       return persistentStore.list();
     },
+    // Internal test hooks — NOT part of the public API surface.
+    // Used only in unit tests to inspect per-session state that cannot be
+    // observed through the public interface without adding new public API.
+    __getSoftDenyLogForTesting(sessionId: string): SoftDenyLog {
+      return getSoftDenyLog(sessionId);
+    },
+    __getDenialTrackerForTesting(sessionId: string): DenialTracker {
+      return getTracker(sessionId);
+    },
   }) as PermissionsMiddlewareHandle;
 
   // -----------------------------------------------------------------------
@@ -1205,6 +1891,8 @@ export function createPermissionsMiddleware(
   async function handleAskDecision(
     ctx: TurnContext,
     request: ToolRequest,
+    resource: string,
+    grantKey: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
     dispatchApprovalOutcome?: (d: PermissionDecision) => void,
@@ -1231,10 +1919,39 @@ export function createPermissionsMiddleware(
     const persistentAid = persistentAgentId ?? ctx.session.agentId;
     if (persistentStore !== undefined && persistentUserId !== undefined) {
       try {
-        if (persistentStore.has(persistentUserId, persistentAid, request.toolId)) {
+        // Key persistent grants by `grantKey` (exact-command hash) so
+        // approving `bash:git status` does not auto-approve the stricter
+        // `bash:git status --short` or the materially different
+        // `bash:git push --force`. Distinct argv → distinct hash → fresh
+        // prompt.
+        //
+        // Legacy fallback is OFF by default: a blanket `bash` grant
+        // stored before prefix enrichment must not retroactively
+        // authorize newly-scoped commands. Operators migrating from
+        // pre-enrichment deployments can opt in via
+        // `legacyBashGrantFallback: true` to preserve existing grants
+        // during a rollout window. Even with the flag, `!complex`
+        // structural forms and dangerous-pattern matches always force
+        // a fresh approval.
+        const hasExact = persistentStore.has(persistentUserId, persistentAid, grantKey);
+        let hasLegacy = false;
+        if (
+          !hasExact &&
+          config.legacyBashGrantFallback === true &&
+          grantKey !== request.toolId &&
+          persistentStore.has(persistentUserId, persistentAid, request.toolId)
+        ) {
+          const rawForLegacy = config.resolveBashCommand?.(request.toolId, request.input) ?? "";
+          const isComplexForm = resource === `${request.toolId}:${UNSAFE_PREFIX}`;
+          const isDangerous =
+            rawForLegacy.trim().length > 0 &&
+            classifyCommand(rawForLegacy.trim()).severity !== null;
+          hasLegacy = !isComplexForm && !isDangerous;
+        }
+        if (hasExact || hasLegacy) {
           const persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({
-            toolId: request.toolId,
+            toolId: resource,
             reason: `auto-approved (persistent always-allow grant, agent: ${ctx.session.agentId})`,
             timestamp: persistentStartMs,
             principal: ctx.session.agentId,
@@ -1251,7 +1968,7 @@ export function createPermissionsMiddleware(
           if (auditSink !== undefined) {
             auditApprovalOutcome(
               ctx,
-              request.toolId,
+              resource,
               { kind: "always-allow", scope: "always" },
               request.input,
               clock() - persistentStartMs,
@@ -1270,16 +1987,17 @@ export function createPermissionsMiddleware(
     }
 
     // Check always-allowed set (from prior "always-allow" decisions).
-    // This is a per-tool session bypass — intentionally matches Claude Code's "a" key
-    // behavior where pressing "a" approves ALL future calls to that tool in the session.
-    // The user explicitly opted in by choosing "always-allow" over single "allow".
-    // Keyed by agentId+toolId so child/sub-agents cannot inherit a parent's approval.
-    const alwaysAllowKey = `${ctx.session.agentId}\0${request.toolId}`;
+    // Session bypass is keyed by agentId + grantKey (exact-command
+    // hash). A user's "a" press approves THIS command + argv, not every
+    // later invocation of the same prefix. When enrichment is off,
+    // grantKey falls back to the plain tool id, preserving the original
+    // one-approve-per-tool behavior.
+    const alwaysAllowKey = `${ctx.session.agentId}\0${grantKey}`;
     const sessionAlwaysAllowed = alwaysAllowedBySession.get(ctx.session.sessionId as string);
     if (sessionAlwaysAllowed?.has(alwaysAllowKey)) {
       const alwaysAllowStartMs = clock();
       getTracker(ctx.session.sessionId as string).record({
-        toolId: request.toolId,
+        toolId: resource,
         reason: `auto-approved (always-allow session rule, agent: ${ctx.session.agentId})`,
         timestamp: alwaysAllowStartMs,
         principal: ctx.session.agentId,
@@ -1313,6 +2031,7 @@ export function createPermissionsMiddleware(
         ctxStr,
         request.metadata,
         decision.reason,
+        grantKey,
       );
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
@@ -1336,6 +2055,7 @@ export function createPermissionsMiddleware(
       dedupCtx,
       request.metadata,
       decision.reason,
+      grantKey,
     );
 
     // Coalesce concurrent identical asks onto a single pending approval
@@ -1377,7 +2097,7 @@ export function createPermissionsMiddleware(
         if (result !== undefined && auditSink !== undefined) {
           auditApprovalOutcome(
             ctx,
-            request.toolId,
+            resource,
             result,
             request.input,
             coalescedDurationMs,
@@ -1543,7 +2263,7 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditApprovalOutcome(
           ctx,
-          request.toolId,
+          resource,
           approvalResult,
           request.input,
           approvalDurationMs,
@@ -1555,7 +2275,7 @@ export function createPermissionsMiddleware(
 
       if (approvalResult.kind === "deny") {
         getTracker(ctx.session.sessionId as string).record({
-          toolId: request.toolId,
+          toolId: resource,
           reason: approvalResult.reason,
           timestamp: clock(),
           principal: ctx.session.agentId,
@@ -1571,9 +2291,12 @@ export function createPermissionsMiddleware(
         });
       }
 
-      // Handle "always-allow" — add tool to session's always-allowed set.
-      // Keyed by agentId+toolId so sub-agents cannot inherit a parent's approval.
-      // For scope "always", also persist to durable storage (SQLite).
+      // Handle "always-allow" — add to session's always-allowed set.
+      // Keyed by agentId + grantKey (exact-command hash) so an approval
+      // covers THIS command + argv only. A different argv of the same
+      // prefix (e.g. `git push --force`) must prompt again. For scope
+      // "always", also persist to durable storage (SQLite) under the
+      // same exact-command grant key.
       if (approvalResult.kind === "always-allow") {
         const sid = ctx.session.sessionId as string;
         let allowed = alwaysAllowedBySession.get(sid);
@@ -1581,8 +2304,8 @@ export function createPermissionsMiddleware(
           allowed = new Set();
           alwaysAllowedBySession.set(sid, allowed);
         }
-        const grantKey = `${ctx.session.agentId}\0${request.toolId}`;
-        allowed.add(grantKey);
+        const sessionGrantKey = `${ctx.session.agentId}\0${grantKey}`;
+        allowed.add(sessionGrantKey);
 
         // Persist to durable storage if scope is "always", store is configured,
         // and a real user identity exists. Anonymous sessions cannot create durable
@@ -1597,14 +2320,14 @@ export function createPermissionsMiddleware(
           grantUserId !== undefined
         ) {
           try {
-            persistentStore.grant(grantUserId, grantAgentId, request.toolId, clock());
+            persistentStore.grant(grantUserId, grantAgentId, grantKey, clock());
           } catch {
             // Approval was given — execute the tool. Permanence just wasn't recorded.
           }
         }
 
         getTracker(sid).record({
-          toolId: request.toolId,
+          toolId: resource,
           reason: `always-allow granted (scope: ${approvalResult.scope})`,
           timestamp: clock(),
           principal: ctx.session.agentId,
@@ -1640,6 +2363,7 @@ export function createPermissionsMiddleware(
           ctxStr,
           request.metadata,
           decision.reason,
+          grantKey,
         );
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }

@@ -26,6 +26,7 @@ import type {
   KoiMiddleware,
   ProcessAccounter,
   ProcessId,
+  RunId,
   SessionId,
   SpawnInheritanceConfig,
   SpawnLedger,
@@ -45,6 +46,7 @@ import type {
 } from "@koi/engine-compose";
 import type { GovernanceConfig } from "@koi/engine-reconcile";
 import type { AssemblyConflict } from "./agent-entity.js";
+import type { SessionRegistry } from "./session-registry.js";
 
 // ---------------------------------------------------------------------------
 // Live forge resolution
@@ -195,6 +197,37 @@ export interface CreateKoiOptions {
   readonly groupId?: AgentGroupId | undefined;
   /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */
   readonly debug?: DebugInstrumentationConfig | undefined;
+  /**
+   * Optional shared session registry for programmatic interrupt.
+   *
+   * When provided, each `run()` registers its AbortController under
+   * `runtime.sessionId` at entry and unregisters on completion. External
+   * callers can then call `sessionRegistry.interrupt(sessionId)` to abort
+   * the run without holding a direct reference to the runtime.
+   *
+   * Leave undefined for runtimes that do not need programmatic cancel
+   * (e.g. short-lived test runtimes, CLI hosts that already own the
+   * AbortController via `EngineInput.signal`).
+   *
+   * See docs/L2/interrupt.md and issue #1682.
+   */
+  readonly sessionRegistry?: SessionRegistry;
+}
+
+/**
+ * Return type of `runtime.run(input)`. In addition to being iterable, the
+ * handle carries the `runId` assigned to this invocation and a run-scoped
+ * `.interrupt(reason?)` that can only abort THIS run — not a later run on
+ * the same runtime. Use this instead of `runtime.interrupt()` when a host
+ * stores the cancel callback and may fire it across run generations (e.g.
+ * watchdogs, pending HTTP cancels, parent-agent timeouts).
+ */
+export interface RunHandle extends AsyncIterable<EngineEvent> {
+  readonly runId: RunId;
+  /** Abort this specific run. Returns `true` on the first abort, `false`
+   *  when the run has already completed or been aborted. Safe to call after
+   *  the run completes — becomes a no-op rather than hitting a later run. */
+  readonly interrupt: (reason?: string) => boolean;
 }
 
 export interface KoiRuntime {
@@ -202,10 +235,20 @@ export interface KoiRuntime {
   readonly agent: Agent;
   /** The session ID assigned to this runtime instance. */
   readonly sessionId: string;
+  /** RunId of the active run, or `undefined` between runs. Callers can
+   *  cache this at run-start and pass it to `sessionRegistry.interrupt(
+   *  sid, reason, runId)` to ensure cross-generation safety — a late
+   *  cancel for a finished run will be a no-op rather than hitting a
+   *  subsequent run on the same sessionId. */
+  readonly currentRunId: RunId | undefined;
   /** Component key conflicts detected during assembly. Empty when no keys collide. */
   readonly conflicts: readonly AssemblyConflict[];
-  /** Run the agent with the given input. Returns an async iterable of engine events. */
-  readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
+  /** Run the agent with the given input. Returns a {@link RunHandle} — an async
+   *  iterable of engine events that also carries a run-scoped `.interrupt()` and
+   *  the `runId` assigned to this invocation. Use the handle's `.interrupt()`
+   *  instead of `runtime.interrupt()` when storing the cancel callback across
+   *  run generations (watchdogs, pending HTTP cancels, parent-agent timeouts). */
+  readonly run: (input: EngineInput) => RunHandle;
   /**
    * Cycle session-scoped middleware state without disposing the runtime.
    *
@@ -240,6 +283,33 @@ export interface KoiRuntime {
    * undefined.
    */
   readonly rebindSessionId?: (id: string) => void;
+  /**
+   * Cancel whatever run is currently active on this runtime (session-scoped).
+   *
+   * Equivalent to calling `sessionRegistry.interrupt(runtime.sessionId, reason,
+   * currentRunId)` when a registry was supplied to createKoi, or aborting the
+   * internal AbortController directly otherwise.
+   *
+   * Returns `true` if the abort was the first one for the active run
+   * (signal.aborted was false before the call). Returns `false` when no
+   * run is active or the run is already aborted.
+   *
+   * Idempotent — safe to call multiple times.
+   *
+   * NOTE: this does NOT guarantee cross-generation safety — if a caller
+   * captures this method during run A, stores it in a callback, and the
+   * callback fires after A completes and B has started, it will cancel B.
+   * For watchdogs / stored cancel callbacks, prefer the per-run
+   * `RunHandle.interrupt` returned from `run()`.
+   */
+  readonly interrupt: (reason?: string) => boolean;
+  /**
+   * True iff the active run's composite AbortSignal is aborted — i.e. either
+   * `runtime.interrupt()` / `sessionRegistry.interrupt()` was called, OR the
+   * caller's `EngineInput.signal` was aborted externally. Returns `false`
+   * when no run is active.
+   */
+  readonly isInterrupted: () => boolean;
   /** Dispose the runtime and release resources. */
   readonly dispose: () => Promise<void>;
   /** Debug instrumentation accessors. Only present when `debug.enabled` is true. */

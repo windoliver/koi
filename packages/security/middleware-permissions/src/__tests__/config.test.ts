@@ -271,9 +271,154 @@ describe("validatePermissionsConfig", () => {
     if (!result.ok) expect(result.error.message).toContain("onApprovalStep");
   });
 
+  // softDenyPerTurnCap config (#1650)
+  test("softDenyPerTurnCap defaults to 3 when omitted", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.softDenyPerTurnCap).toBe(undefined);
+    }
+  });
+
+  test("softDenyPerTurnCap caller-provided value is preserved", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: 5,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.softDenyPerTurnCap).toBe(5);
+    }
+  });
+
+  test("rejects zero softDenyPerTurnCap", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("softDenyPerTurnCap");
+  });
+
+  test("rejects negative softDenyPerTurnCap", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: -1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("softDenyPerTurnCap");
+  });
+
+  test("accepts positive softDenyPerTurnCap", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: 10,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.softDenyPerTurnCap).toBe(10);
+    }
+  });
+
   test("all validation errors are non-retryable", () => {
     const result = validatePermissionsConfig(null);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.retryable).toBe(false);
+  });
+
+  // resolveBashCommand
+  test("accepts resolveBashCommand function with marker-aware backend", () => {
+    const result = validatePermissionsConfig({
+      backend: { ...validBackend, supportsDefaultDenyMarker: true },
+      resolveBashCommand: () => undefined,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-function resolveBashCommand", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      resolveBashCommand: "not-a-function",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("resolveBashCommand");
+  });
+
+  // legacyBashGrantFallback
+  test("accepts boolean legacyBashGrantFallback", () => {
+    for (const v of [true, false]) {
+      const result = validatePermissionsConfig({
+        backend: validBackend,
+        legacyBashGrantFallback: v,
+      });
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  test("rejects non-boolean legacyBashGrantFallback (string)", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      legacyBashGrantFallback: "true",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("legacyBashGrantFallback");
+  });
+
+  test("rejects non-boolean legacyBashGrantFallback (number)", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      legacyBashGrantFallback: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("legacyBashGrantFallback");
+  });
+
+  // allowLegacyBackendBashFallback
+  test("accepts boolean allowLegacyBackendBashFallback", () => {
+    for (const v of [true, false]) {
+      const result = validatePermissionsConfig({
+        backend: validBackend,
+        allowLegacyBackendBashFallback: v,
+      });
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  test("rejects non-boolean allowLegacyBackendBashFallback", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      allowLegacyBackendBashFallback: "yes",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("allowLegacyBackendBashFallback");
+  });
+
+  // Cross-field: resolveBashCommand + legacy backend invariant
+  test("rejects resolveBashCommand with legacy backend and no fallback opt-in", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend, // no supportsDefaultDenyMarker
+      resolveBashCommand: () => undefined,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("supportsDefaultDenyMarker");
+  });
+
+  test("accepts resolveBashCommand with marker-aware backend", () => {
+    const result = validatePermissionsConfig({
+      backend: { ...validBackend, supportsDefaultDenyMarker: true },
+      resolveBashCommand: () => undefined,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts resolveBashCommand with legacy backend when opt-in flag is set", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      resolveBashCommand: () => undefined,
+      allowLegacyBackendBashFallback: true,
+    });
+    expect(result.ok).toBe(true);
   });
 });

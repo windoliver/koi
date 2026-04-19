@@ -227,12 +227,16 @@ export function createTaskUpdateTool(
     descriptor: {
       name: "task_update",
       description:
-        "Update a task's status, description, or progress text. " +
-        "Set status to 'in_progress' when starting work (only one task may be in_progress at a time). " +
-        "Set status to 'completed' with an output summary when done. " +
-        "Set status to 'failed' with a reason if the task errored. " +
-        "Set status to 'killed' to cancel. " +
-        "Update active_form to change the live progress text shown in the spinner.",
+        "Update a task's status, description, or progress text. Drive the plan in real time — " +
+        "flip tasks to 'in_progress' BEFORE starting work, and to 'completed' IMMEDIATELY after finishing (do not batch at the end). " +
+        "\n\nStatus transitions: " +
+        "'in_progress' = start working (EXACTLY ONE task may be in_progress at a time — complete the current one first); " +
+        "'completed' = done (provide a short output summary of what you accomplished); " +
+        "'failed' = errored (provide a reason); " +
+        "'killed' = cancel. " +
+        "\n\nKeep tasks 'in_progress' if you hit an unresolved blocker — do not mark completed when tests still fail, " +
+        "implementation is partial, or you could not find needed files. Create a follow-up task instead. " +
+        "\n\nUpdate active_form mid-run to reflect what you are currently doing (spinner text).",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },

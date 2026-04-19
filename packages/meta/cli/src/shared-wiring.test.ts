@@ -11,6 +11,7 @@ import {
   loadUserMcpSetup,
   loadUserRegisteredHooks,
   mergeUserAndPluginHooks,
+  resolveWebCacheTtlMs,
 } from "./shared-wiring.js";
 
 function mkTempCwd(): string {
@@ -167,6 +168,46 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).toContain("fs-read");
     expect(names).toContain("fs-write");
     expect(names).toContain("fs-edit");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveWebCacheTtlMs — web_fetch response cache wiring (issue #1903)
+// ---------------------------------------------------------------------------
+
+describe("resolveWebCacheTtlMs", () => {
+  test("defaults to 60_000ms when env var unset", () => {
+    expect(resolveWebCacheTtlMs({})).toBe(60_000);
+  });
+
+  test("honors a valid non-negative integer override", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "5000" })).toBe(5000);
+  });
+
+  test("allows explicit 0 to disable caching", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "0" })).toBe(0);
+  });
+
+  test("empty string falls back to the default (unset semantics)", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "" })).toBe(60_000);
+  });
+
+  test("throws on non-numeric values (fail loudly, don't mask typos)", () => {
+    expect(() => resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "abc" })).toThrow(
+      /Invalid KOI_WEB_CACHE_TTL_MS/,
+    );
+  });
+
+  test("throws on negative values", () => {
+    expect(() => resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "-1" })).toThrow(
+      /Invalid KOI_WEB_CACHE_TTL_MS/,
+    );
+  });
+
+  test("throws on non-integer (fractional) values", () => {
+    expect(() => resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "1.5" })).toThrow(
+      /Invalid KOI_WEB_CACHE_TTL_MS/,
+    );
   });
 });
 

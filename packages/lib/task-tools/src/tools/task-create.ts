@@ -33,8 +33,14 @@ export function createTaskCreateTool(board: ManagedTaskBoard): Tool {
     descriptor: {
       name: "task_create",
       description:
-        "Create a new task on the task board. Returns the created task. " +
-        "Use task_list to see all tasks, task_update to mark progress.",
+        "Create a task on the task board. Use PROACTIVELY to plan multi-step work — do not wait for the user to ask. " +
+        "\n\nUse when: the user's request needs 3+ distinct steps, spans multiple files, or benefits from visible progress (e.g. " +
+        "'refactor X and run tests', 'rename Y across the codebase', 'add feature Z with tests and docs'). " +
+        "Create one task per concrete step BEFORE starting the first step. Each subject should be short and imperative " +
+        "('Add JSDoc to math.ts'); pair with active_form for the spinner ('Adding JSDoc to math.ts'). " +
+        "\n\nDo NOT use for: single-file edits, 1-2 step work, pure Q&A, or informational requests. " +
+        "\n\nAfter creating the plan, task_update the first task to 'in_progress' (only ONE may be in_progress at a time), " +
+        "do the work, task_update it to 'completed' immediately, then start the next. Use task_list to review progress.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },

@@ -106,3 +106,21 @@ describe("parseTuiFlags — --until-pass / --max-iter (#1624)", () => {
     expect(withFlag.allowSideEffects).toBe(true);
   });
 });
+
+describe("parseTuiFlags — --yolo / --dangerously-skip-permissions", () => {
+  test("no flag → yolo is false", () => {
+    expect(parseTuiFlags([]).yolo).toBe(false);
+  });
+
+  test("--yolo sets yolo to true", () => {
+    expect(parseTuiFlags(["--yolo"]).yolo).toBe(true);
+  });
+
+  test("--dangerously-skip-permissions sets yolo to true (CC parity alias)", () => {
+    expect(parseTuiFlags(["--dangerously-skip-permissions"]).yolo).toBe(true);
+  });
+
+  test("both flags together → yolo is still true", () => {
+    expect(parseTuiFlags(["--yolo", "--dangerously-skip-permissions"]).yolo).toBe(true);
+  });
+});

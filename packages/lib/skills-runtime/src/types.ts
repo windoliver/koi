@@ -48,6 +48,16 @@ export interface ValidatedFrontmatter {
   readonly metadata?: Readonly<Record<string, string>>;
   /** Execution mode: "inline" (context injection) or "fork" (sub-agent spawn). */
   readonly executionMode?: SkillExecutionMode | undefined;
+  /**
+   * Tier 2 reference allowlist (issue #1642, review round 4).
+   *
+   * Each entry is a relative POSIX path inside the skill directory that
+   * `SkillsRuntime.loadReference()` will hand to callers on demand. A skill
+   * that does not declare `references:` cannot surface any file via
+   * Tier 2 — the API fails closed. This narrows Tier 2 from "any file in
+   * the skill subtree" to "only the files the author declared."
+   */
+  readonly references?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -58,8 +68,14 @@ export interface ValidatedFrontmatter {
  * Metadata for a discovered skill, derived from frontmatter only.
  * Available after discover() without needing to call load().
  * Extends ValidatedFrontmatter with source and location information.
+ *
+ * `references` is intentionally omitted here (review #1896 round 6). The
+ * Tier 2 allowlist is a trust-boundary detail that must not leak through
+ * Tier 0 (`discover()` / `query()`) into model context. Consumers that
+ * need to authorize a Tier 2 read should call `loadReference()`, which
+ * re-parses the frontmatter from disk.
  */
-export interface SkillMetadata extends ValidatedFrontmatter {
+export interface SkillMetadata extends Omit<ValidatedFrontmatter, "references"> {
   /** Which tier this skill came from. */
   readonly source: SkillSource;
   /** Absolute path to the skill directory (or URI for non-filesystem sources). */
@@ -101,6 +117,25 @@ export interface SkillQuery {
 }
 
 // ---------------------------------------------------------------------------
+// Progressive disclosure telemetry (issue #1642)
+// ---------------------------------------------------------------------------
+
+/** Fired by SkillsRuntime.load() on every successful resolution. */
+export interface SkillLoadedEvent {
+  readonly name: string;
+  readonly source: SkillSource;
+  readonly bodyBytes: number;
+  /** True if the body came from the LRU cache; false on first load or reload. */
+  readonly cacheHit: boolean;
+}
+
+/** Fired when a cached body is evicted. */
+export interface SkillEvictedEvent {
+  readonly name: string;
+  readonly reason: "lru" | "invalidate" | "external-refresh";
+}
+
+// ---------------------------------------------------------------------------
 // Runtime config
 // ---------------------------------------------------------------------------
 
@@ -135,6 +170,19 @@ export interface SkillsRuntimeConfig {
    * Use this for logging or telemetry.
    */
   readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
+  /**
+   * Maximum number of loaded skill bodies to retain in the LRU cache (issue #1642).
+   * When the cache exceeds this bound, the least-recently-used entry is evicted
+   * and `onSkillEvicted` fires with `reason: "lru"`.
+   * Default: `Infinity` (unbounded; preserves legacy behavior).
+   */
+  readonly cacheMaxBodies?: number;
+  /** Called after discover() with the count of skills admitted to the Tier 0 listing. */
+  readonly onMetadataInjected?: (count: number) => void;
+  /** Called on every successful load() — distinguishes first-load from cache hits. */
+  readonly onSkillLoaded?: (event: SkillLoadedEvent) => void;
+  /** Called when a cached body is evicted (LRU, invalidate, or external refresh). */
+  readonly onSkillEvicted?: (event: SkillEvictedEvent) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +227,20 @@ export interface SkillsRuntime {
    * Multi-tag filter uses AND semantics (skill must have ALL specified tags).
    */
   readonly query: (filter?: SkillQuery) => Promise<Result<readonly SkillMetadata[], KoiError>>;
+
+  /**
+   * Tier 2 — reads a file inside the skill directory on demand (issue #1642).
+   *
+   * `refPath` is a relative path resolved against the skill's directory. The
+   * realpath of the result must stay inside the skill directory or the call
+   * returns `VALIDATION` with `context.errorKind === "PATH_TRAVERSAL"`. Not
+   * cached — reference fetches are one-shot.
+   *
+   * Error codes:
+   * - NOT_FOUND  — skill not in discovered set, or reference file missing
+   * - VALIDATION — empty / absolute / traversing / null-byte path
+   */
+  readonly loadReference: (name: string, refPath: string) => Promise<Result<string, KoiError>>;
 
   /**
    * Invalidates cached skill data.

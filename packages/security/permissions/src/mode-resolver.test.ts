@@ -103,6 +103,7 @@ describe("resolveMode", () => {
       expect(resolveMode("plan", discoverQuery, denyDiscoverRules)).toEqual({
         effect: "deny",
         reason: "hidden",
+        disposition: "hard",
       });
     });
 
@@ -135,6 +136,7 @@ describe("resolveMode", () => {
       expect(resolveMode("plan", etcReadQuery, denyReadRules)).toEqual({
         effect: "deny",
         reason: "system files",
+        disposition: "hard",
       });
     });
 
@@ -170,6 +172,7 @@ describe("resolveMode", () => {
       expect(resolveMode("auto", writeQuery, denyRules)).toEqual({
         effect: "deny",
         reason: "locked",
+        disposition: "hard",
       });
     });
 

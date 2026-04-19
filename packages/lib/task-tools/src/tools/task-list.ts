@@ -34,9 +34,11 @@ export function createTaskListTool(board: ManagedTaskBoard): Tool {
     descriptor: {
       name: "task_list",
       description:
-        "List tasks on the board with optional status or assignee filters. " +
-        "Returns TaskSummary objects (use task_get for full details including metadata and timestamps). " +
-        "Results are ordered: in_progress first, then pending, then terminal states.",
+        "List tasks on the board. Primarily an internal progress check — use between steps to confirm the plan is still on track " +
+        "and pick the next pending task. Also used when the user asks to review open work. " +
+        "\n\nOptional filters: status (pending/in_progress/completed/failed/killed), assignee, updated_since. " +
+        "Returns TaskSummary objects (use task_get for full details). " +
+        "Results ordered: in_progress first, then pending, then terminal states.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },

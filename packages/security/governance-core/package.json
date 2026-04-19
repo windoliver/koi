@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
-    "@koi/validation": "workspace:*"
+    "@koi/errors": "workspace:*"
   }
 }

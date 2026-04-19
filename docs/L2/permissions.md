@@ -162,3 +162,46 @@ L2 @koi/permissions
 - Tracking issue: #1185
 - This sub-issue: #1235
 - Middleware + classifier: #1236
+
+---
+
+## Soft Deny (#1650)
+
+Rules may opt into recoverable denials via `on_deny: "soft"`. The rule schema (both the TypeScript `PermissionRule` interface and the Zod `permissionRuleSchema` in `rule-loader.ts`) accepts an optional `on_deny: "hard" | "soft"` field. When omitted the effective disposition is `"hard"` — zero change from pre-#1650 behavior for every existing rule.
+
+The evaluator (`rule-evaluator.ts`) maps a matched deny rule to an L0 `PermissionDecision` with `disposition` set from `rule.on_deny ?? "hard"`. Hard disposition still terminates the tool call (throws). Soft disposition causes the permissions middleware (`@koi/middleware-permissions`) to return a synthetic `ToolResponse` so the agent loop can adapt — see `docs/L2/middleware-permissions.md` for the execute-time path, per-turn retry cap, and observability semantics.
+
+**Key points for rule authors:**
+
+- `on_deny: "soft"` is an explicit opt-in per rule. No rule silently changes behavior.
+- Soft behavior is independent of the rule `source` tier (policy/project/local/user) — tier only controls precedence, not hard-vs-soft.
+- Loader round-trips the field across every source tier. A config-file rule with `on_deny: "soft"` is preserved end-to-end.
+
+Example:
+
+```yaml
+rules:
+  - pattern: "/tmp/scratch/**"
+    action: "*"
+    effect: "deny"
+    on_deny: "soft"          # recoverable — agent receives synthetic error and adapts
+  - pattern: "/etc/**"
+    action: "write"
+    effect: "deny"
+                              # default hard — unchanged from pre-#1650
+```
+
+---
+
+## Dual-key backend marker (#1881)
+
+`createPermissionBackend()` deliberately does NOT set `supportsDefaultDenyMarker` on its returned backend.
+
+The L0 `PermissionBackend` contract defines an optional `supportsDefaultDenyMarker` flag that callers like `@koi/middleware-permissions` use to gate dual-key evaluation (e.g. bash prefix enrichment via `resolveBashCommand`). A marker-aware backend must distinguish *matched* rule outcomes from *fall-through* outcomes so the dual-key merge can treat unmatched branches as "no opinion" rather than authoritative decisions.
+
+This backend's fall-through is `{ effect: "ask" }`, not a marked default-deny. The middleware's `strictestDecision` treats every `ask` as an explicit opinion, so an unmatched enriched `ask` would override a matched plain `allow` — regressing existing plain-tool policies into fresh prompts. Opting into the marker without fixing the ask-side ambiguity is unsafe.
+
+Deployments that enable `resolveBashCommand` with this backend must either:
+
+1. Set `allowLegacyBackendBashFallback: true` on the middleware config — single-key evaluation; prefix rules are NOT enforced (plain-tool rules still apply), OR
+2. Use `createPatternPermissionBackend` from `@koi/middleware-permissions` — marker-aware, supports full dual-key semantics.

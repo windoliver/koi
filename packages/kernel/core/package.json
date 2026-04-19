@@ -61,6 +61,10 @@
       "types": "./dist/event-backend.d.ts",
       "import": "./dist/event-backend.js"
     },
+    "./governance": {
+      "types": "./dist/governance.d.ts",
+      "import": "./dist/governance.js"
+    },
     "./governance-backend": {
       "types": "./dist/governance-backend.d.ts",
       "import": "./dist/governance-backend.js"

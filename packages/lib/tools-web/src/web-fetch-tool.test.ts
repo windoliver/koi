@@ -135,9 +135,99 @@ describe("createWebFetchTool", () => {
       expect(result.code).toBe("VALIDATION");
       expect(result.error).toContain("format");
     });
+
+    test("rejects non-boolean noCache", async () => {
+      const result = (await tool.execute({
+        url: "https://example.com",
+        noCache: "yes",
+      })) as { error: string; code: string };
+      expect(result.code).toBe("VALIDATION");
+      expect(result.error).toContain("noCache");
+    });
+  });
+
+  describe("noCache flag", () => {
+    test("forwards noCache=true to the executor", async () => {
+      let captured: { readonly noCache: boolean | undefined } | undefined;
+      const executor: WebExecutor = {
+        fetch: async (_url, options) => {
+          captured = { noCache: options?.noCache };
+          return successResponse("ok", "text/plain");
+        },
+        search: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "n/a", retryable: false },
+        }),
+      };
+      const tool = createWebFetchTool(executor, "web", POLICY);
+      await tool.execute({ url: "https://example.com", noCache: true });
+      expect(captured?.noCache).toBe(true);
+    });
+
+    test("omits noCache when caller does not set it (executor default applies)", async () => {
+      let captured: { readonly noCache: boolean | undefined } | undefined;
+      const executor: WebExecutor = {
+        fetch: async (_url, options) => {
+          captured = { noCache: options?.noCache };
+          return successResponse("ok", "text/plain");
+        },
+        search: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "n/a", retryable: false },
+        }),
+      };
+      const tool = createWebFetchTool(executor, "web", POLICY);
+      await tool.execute({ url: "https://example.com" });
+      expect(captured?.noCache).toBe(false);
+    });
+
+    test("descriptor advertises noCache property", () => {
+      const tool = createWebFetchTool(
+        mockExecutor(successResponse("ok", "text/plain")),
+        "web",
+        POLICY,
+      );
+      const schema = tool.descriptor.inputSchema as {
+        properties: Record<string, { type: string }>;
+      };
+      expect(schema.properties.noCache).toBeDefined();
+      expect(schema.properties.noCache?.type).toBe("boolean");
+    });
+
+    test("noCache does NOT upgrade HTTP 500 into a transport error", async () => {
+      // Contract nail-down for #1903 review: `noCache` controls cache
+      // behavior only. A 500/429/404 origin response still comes back
+      // as a normal successful fetch so the caller can inspect status
+      // and body — the caller decides whether to treat it as an error.
+      // Transport failures (network, timeout, SSRF block) still flow
+      // through the usual {error, code} shape.
+      const response: Result<WebFetchResult, KoiError> = {
+        ok: true,
+        value: {
+          status: 500,
+          statusText: "Internal Server Error",
+          headers: { "content-type": "text/plain" },
+          body: "upstream exploded",
+          truncated: false,
+          finalUrl: "https://example.com",
+          cached: false,
+        },
+      };
+      const tool = createWebFetchTool(mockExecutor(response), "web", POLICY);
+      const result = (await tool.execute({
+        url: "https://example.com",
+        noCache: true,
+      })) as { status: number; body: string; error?: string };
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(500);
+      expect(result.body).toBe("upstream exploded");
+    });
   });
 
   describe("SSRF protection", () => {
+    // The tool runs a DNS-free pre-flight using @koi/url-safety's static
+    // constants. Even if the injected executor is mocked / swapped / future-
+    // refactored, the tool still rejects obvious SSRF targets on its own.
     const tool = createWebFetchTool(
       mockExecutor(successResponse("ok", "text/plain")),
       "web",
@@ -152,10 +242,18 @@ describe("createWebFetchTool", () => {
       expect(result.code).toBe("PERMISSION");
     });
 
-    test("blocks AWS metadata endpoint", async () => {
+    test("blocks AWS metadata endpoint (IP literal)", async () => {
       const result = (await tool.execute({
         url: "http://169.254.169.254/latest/meta-data/",
       })) as { error: string; code: string };
+      expect(result.code).toBe("PERMISSION");
+    });
+
+    test("blocks .internal reserved suffix", async () => {
+      const result = (await tool.execute({ url: "http://service.internal/api" })) as {
+        error: string;
+        code: string;
+      };
       expect(result.code).toBe("PERMISSION");
     });
   });

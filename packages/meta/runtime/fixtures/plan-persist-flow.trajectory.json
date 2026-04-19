@@ -1,0 +1,1173 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "plan-persist-flow",
+  "agent": {
+    "name": "golden-plan-persist-flow",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "koi_plan_write",
+        "description": "Create or update a structured plan for multi-step tasks. Replaces the entire plan atomically. Call at most once per response."
+      },
+      {
+        "name": "koi_plan_save",
+        "description": "Persist the latest write_plan output to disk under .koi/plans/<timestamp>-<slug>.md. Use to checkpoint a long-running plan that should survive a session restart. Optional `slug` controls the filename suffix; sluggified human-readable string recommended."
+      },
+      {
+        "name": "koi_plan_load",
+        "description": "Read a previously persisted plan from disk and return its items. After receiving the items call write_plan with them to hydrate this session's plan state."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:38.289Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:38.290Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-18T04:49:38.306Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) and `koi_plan_save` (persists the latest plan to disk under a slug).\nStep 1: Call `koi_plan_write` with plan = [{content:'Audit auth code', status:'pending'}, {content:'Design new session model', status:'pending'}].\nStep 2: Call `koi_plan_save` with slug='auth-refactor'.\nStep 3: Report the saved file path returned by koi_plan_save.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 579,
+        "completion_tokens": 19
+      },
+      "duration_ms": 839,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "koi_plan_write",
+            "description": "Create or update a structured plan for multi-step tasks. Replaces the entire plan atomically. Call at most once per response."
+          },
+          {
+            "name": "koi_plan_save",
+            "description": "Persist the latest write_plan output to disk under .koi/plans/<timestamp>-<slug>.md. Use to checkpoint a long-running plan that should survive a session restart. Optional `slug` controls the filename suffix; sluggified human-readable string recommended."
+          },
+          {
+            "name": "koi_plan_load",
+            "description": "Read a previously persisted plan from disk and return its items. After receiving the items call write_plan with them to hydrate this session's plan state."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "0bdc98700fd4857d4d72469f12beda05fb268fef95baee0abad6d52aebf22b33",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.158Z",
+      "model_name": "hook:on-plan-tool",
+      "message": "tool.succeeded → on-plan-tool",
+      "duration_ms": 4.758082999999715,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-plan-tool",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-plan-tool"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.159Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 846.96425,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779153,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.162Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "koi_plan_write({\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"status\":\"pending\",\"content\":\"Design new session model\"}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.871542000000773,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "koi_plan_write",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.163Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 845.0770000000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 3,
+            "allowedCount": 3,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776487779152,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.164Z",
+      "model_name": "middleware:permissions",
+      "message": "koi_plan_write({\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"status\":\"pending\",\"content\":\"Design new session model\"}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.31445800000074,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "koi_plan_write",
+            "toolInput": "{\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"status\":\"pending\",\"content\":\"Design new session model\"}]}",
+            "action": "allow",
+            "durationMs": 1,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776487779161,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.165Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 842.9003750000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779151,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.166Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 842.7648330000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) and `koi_plan_save` (persists the la",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) and `koi_plan_save` (persists the la"
+          }
+        ],
+        "_original_timestamp": 1776487779150,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.167Z",
+      "model_name": "middleware:goal",
+      "message": "koi_plan_write({\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"status\":\"pending\",\"content\":\"Design new session model\"}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.18304199999966,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779160,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.168Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 842.3974589999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776487779149,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.169Z",
+      "model_name": "middleware:hooks",
+      "message": "koi_plan_write({\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"status\":\"pending\",\"content\":\"Design new session model\"}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.162917000000562,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "koi_plan_write",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          },
+          {
+            "event": "tool.succeeded",
+            "toolId": "koi_plan_write",
+            "toolOutput": "\"Plan updated: 2 items (2 pending, 0 in progress, 0 completed)\"",
+            "aggregated": "continue",
+            "hooks": [
+              {
+                "name": "on-plan-tool",
+                "decision": "continue",
+                "durationMs": 4.758082999999715
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1776487779159,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.170Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 842.0220420000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779148,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.171Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "koi_plan_write({\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"status\":\"pending\",\"content\":\"Design new session model\"}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.9274590000004537,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779155,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.172Z",
+      "model_name": "middleware:plan",
+      "duration_ms": 841.7207920000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "plan",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 450,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779147,
+        "__koi": {
+          "identifier": "middleware:plan"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.173Z",
+      "model_name": "middleware:plan",
+      "message": "koi_plan_write({\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"status\":\"pending\",\"content\":\"Design new session model\"}]})",
+      "observation": {
+        "results": [
+          {
+            "content": "blocked"
+          }
+        ]
+      },
+      "duration_ms": 2.837040999999772,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "plan",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 450,
+        "nextCalled": false,
+        "_original_timestamp": 1776487779154,
+        "__koi": {
+          "identifier": "middleware:plan"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "agent",
+      "timestamp": "2026-04-18T04:49:39.174Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Plan updated: 2 items (2 pending, 0 in progress, 0 completed)",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 629,
+        "completion_tokens": 10
+      },
+      "duration_ms": 507,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "koi_plan_write",
+            "description": "Create or update a structured plan for multi-step tasks. Replaces the entire plan atomically. Call at most once per response."
+          },
+          {
+            "name": "koi_plan_save",
+            "description": "Persist the latest write_plan output to disk under .koi/plans/<timestamp>-<slug>.md. Use to checkpoint a long-running plan that should survive a session restart. Optional `slug` controls the filename suffix; sluggified human-readable string recommended."
+          },
+          {
+            "name": "koi_plan_load",
+            "description": "Read a previously persisted plan from disk and return its items. After receiving the items call write_plan with them to hydrate this session's plan state."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "0bdc98700fd4857d4d72469f12beda05fb268fef95baee0abad6d52aebf22b33",
+        "turnIndex": 1,
+        "_original_timestamp": 1776487779166
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.684Z",
+      "model_name": "hook:on-plan-tool",
+      "message": "tool.succeeded → on-plan-tool",
+      "duration_ms": 1.8042919999998048,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-plan-tool",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-plan-tool"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.685Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 508.33637499999986,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779680,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.688Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "koi_plan_save({\"slug\":\"auth-refactor\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 4.249000000000706,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "koi_plan_save",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.689Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 508.302584,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 3,
+            "allowedCount": 3,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776487779679,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.690Z",
+      "model_name": "middleware:permissions",
+      "message": "koi_plan_save({\"slug\":\"auth-refactor\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 4.11279100000047,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "koi_plan_save",
+            "toolInput": "{\"slug\":\"auth-refactor\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776487779687,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.691Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 508.1078749999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779678,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.692Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 508.08950000000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779677,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.693Z",
+      "model_name": "middleware:goal",
+      "message": "koi_plan_save({\"slug\":\"auth-refactor\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 4.005959000000075,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779686,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.694Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 508.07645799999955,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776487779676,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.695Z",
+      "model_name": "middleware:hooks",
+      "message": "koi_plan_save({\"slug\":\"auth-refactor\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 3.996749999999338,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "koi_plan_save",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          },
+          {
+            "event": "tool.succeeded",
+            "toolId": "koi_plan_save",
+            "toolOutput": "{\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-plan-persist-aAEYw0/.koi/plans/20260418-044939-auth-refactor.md\",\"items\":[{\"content\":\"Audit auth code\",\"status\":\"pending\"},{\"content\":\"Design new session model\",\"status\":\"pending\"}]}",
+            "aggregated": "continue",
+            "hooks": [
+              {
+                "name": "on-plan-tool",
+                "decision": "continue",
+                "durationMs": 1.8042919999998048
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1776487779685,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.696Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 507.998208,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779675,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 29,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.697Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "koi_plan_save({\"slug\":\"auth-refactor\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.999166999999943,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779683,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 30,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.698Z",
+      "model_name": "middleware:plan",
+      "duration_ms": 507.9832499999993,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "plan",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 450,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779674,
+        "__koi": {
+          "identifier": "middleware:plan"
+        }
+      }
+    },
+    {
+      "step_id": 31,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.699Z",
+      "model_name": "middleware:plan",
+      "message": "koi_plan_save({\"slug\":\"auth-refactor\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.9872079999995549,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "plan",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 450,
+        "nextCalled": true,
+        "_original_timestamp": 1776487779682,
+        "__koi": {
+          "identifier": "middleware:plan"
+        }
+      }
+    },
+    {
+      "step_id": 32,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:39.700Z",
+      "model_name": "middleware:plan-persist",
+      "message": "koi_plan_save({\"slug\":\"auth-refactor\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "blocked"
+          }
+        ]
+      },
+      "duration_ms": 1.9563750000006621,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "plan-persist",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 470,
+        "nextCalled": false,
+        "_original_timestamp": 1776487779681,
+        "__koi": {
+          "identifier": "middleware:plan-persist"
+        }
+      }
+    },
+    {
+      "step_id": 33,
+      "source": "agent",
+      "timestamp": "2026-04-18T04:49:39.701Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"path\":\"/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-plan-persist-aAEYw0/.koi/plans/20260418-044939-auth-refactor.md\",\"items\":[{\"content\":\"Audit auth code\",\"status\":\"pending\"},{\"content\":\"Design new session model\",\"status\":\"pending\"}]}",
+      "observation": {
+        "results": [
+          {
+            "content": "The plan has been saved to `/var/folders/76/l4bh9ngs72s0jbpybj1ckhzh0000gn/T/koi-golden-plan-persist-aAEYw0/.koi/plans/20260418-044939-auth-refactor.md`.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 750,
+        "completion_tokens": 81
+      },
+      "duration_ms": 810,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 7,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "koi_plan_write",
+            "description": "Create or update a structured plan for multi-step tasks. Replaces the entire plan atomically. Call at most once per response."
+          },
+          {
+            "name": "koi_plan_save",
+            "description": "Persist the latest write_plan output to disk under .koi/plans/<timestamp>-<slug>.md. Use to checkpoint a long-running plan that should survive a session restart. Optional `slug` controls the filename suffix; sluggified human-readable string recommended."
+          },
+          {
+            "name": "koi_plan_load",
+            "description": "Read a previously persisted plan from disk and return its items. After receiving the items call write_plan with them to hydrate this session's plan state."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "0bdc98700fd4857d4d72469f12beda05fb268fef95baee0abad6d52aebf22b33",
+        "turnIndex": 2,
+        "_original_timestamp": 1776487779690
+      }
+    },
+    {
+      "step_id": 34,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.507Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 818.6252910000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 35,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.508Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 818.5991249999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 3,
+            "allowedCount": 3,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776487780506,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 36,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.509Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 818.4330840000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776487780505,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 37,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.510Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 818.4102499999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776487780504,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 38,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.511Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 818.3898330000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776487780503,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 39,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.512Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 818.1873329999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776487780502,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 40,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.513Z",
+      "model_name": "middleware:plan",
+      "duration_ms": 818.1666249999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "plan",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 450,
+        "nextCalled": true,
+        "_original_timestamp": 1776487780501,
+        "__koi": {
+          "identifier": "middleware:plan"
+        }
+      }
+    },
+    {
+      "step_id": 41,
+      "source": "system",
+      "timestamp": "2026-04-18T04:49:40.514Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.11999999999989086,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1776487780509,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

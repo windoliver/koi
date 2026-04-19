@@ -73,3 +73,68 @@ export function formatPickerModeResumeHint(
     `  koi tui --resume ${viewed}     # viewed archive (read-only)\n`
   );
 }
+
+/**
+ * Decide what to do at post-quit time:
+ *
+ * - `clear-persist-failed`: write stderr warning, skip hint
+ * - `cleared-empty`: write stderr note ("session was cleared"), skip hint
+ * - `never-persisted`: silently skip — the session never wrote a JSONL
+ *   file and advertising the id would point at a nonexistent transcript (#1884)
+ * - `normal`: print the single-session hint
+ * - `picker`: print the two-line picker hint
+ *
+ * Extracted from `tui-command.ts` so the branching logic can be unit-tested
+ * without spinning up the whole TUI.
+ */
+export type ResumeHintDecision =
+  | { readonly kind: "clear-persist-failed" }
+  | { readonly kind: "cleared-empty" }
+  | { readonly kind: "never-persisted" }
+  | { readonly kind: "normal" }
+  | { readonly kind: "picker" };
+
+export interface ResumeHintDecisionInput {
+  readonly clearPersistFailed: boolean;
+  readonly clearedThisProcess: boolean;
+  readonly resumedFromFlag: boolean;
+  /** True iff this process rebound `tuiSessionId` to an already-persisted
+   *  session via the in-app session picker (`onSessionSelect`). The picked
+   *  session's JSONL already exists on disk independent of startup
+   *  `--resume` and of any new turns — it must still be resumable even
+   *  when the user switches and quits without submitting. #1884. */
+  readonly pickedExistingSession: boolean;
+  /** Turns counted since the rewind boundary was last armed. Only
+   *  advances when `rewindBoundaryActive` is true (i.e. on --resume,
+   *  /clear, or /new). A fresh launch's counter stays at 0 even after
+   *  many successful turns — use `anyTurnPersistedThisProcess` to
+   *  detect "any turn happened". */
+  readonly postClearTurnCount: number;
+  /** True iff at least one turn completed (settled, uninterrupted)
+   *  this process — regardless of the rewind boundary. Signals that
+   *  a JSONL transcript was written to disk. #1884. */
+  readonly anyTurnPersistedThisProcess: boolean;
+  readonly tuiSessionId: SessionId;
+  readonly viewedSessionId: SessionId;
+}
+
+export function decideResumeHint(input: ResumeHintDecisionInput): ResumeHintDecision {
+  if (input.clearPersistFailed) return { kind: "clear-persist-failed" };
+
+  const sessionIsEmpty = input.clearedThisProcess && input.postClearTurnCount === 0;
+  if (sessionIsEmpty) return { kind: "cleared-empty" };
+
+  // #1884: suppress the hint when no JSONL transcript was produced.
+  // A fresh launch that never committed a turn writes no file, so
+  // advertising the session id points at a nonexistent path. Preserve
+  // the hint when a backing transcript exists on disk — either opened
+  // at startup via --resume, or rebound mid-process via the in-app
+  // session picker (both point at real JSONL files).
+  const hasBackingTranscript =
+    input.resumedFromFlag || input.pickedExistingSession || input.anyTurnPersistedThisProcess;
+  const neverPersisted = !input.clearedThisProcess && !hasBackingTranscript;
+  if (neverPersisted) return { kind: "never-persisted" };
+
+  if (input.tuiSessionId === input.viewedSessionId) return { kind: "normal" };
+  return { kind: "picker" };
+}

@@ -289,8 +289,23 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
  */
 function explainNonCompletedStop(stopReason: string, metadata: unknown): string {
   const meta =
-    (metadata as { readonly source?: string; readonly message?: string } | undefined) ?? undefined;
-  const detail = meta?.message !== undefined ? ` — ${meta.message}` : "";
+    (metadata as
+      | {
+          readonly source?: string;
+          readonly message?: string;
+          readonly providerDetail?: { readonly error?: { readonly message?: string } | string };
+        }
+      | undefined) ?? undefined;
+  // Prefer explicit message, fall back to provider error message so users
+  // see the upstream 400 (e.g. "tool_use without tool_result") instead of
+  // a generic "Turn failed".
+  const providerMsg = (() => {
+    const pd = meta?.providerDetail?.error;
+    if (typeof pd === "string") return pd;
+    return pd?.message;
+  })();
+  const effectiveMsg = meta?.message ?? providerMsg;
+  const detail = effectiveMsg !== undefined ? ` — ${effectiveMsg}` : "";
   const source = meta?.source !== undefined ? ` (${meta.source})` : "";
   switch (stopReason) {
     case "max_turns":

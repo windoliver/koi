@@ -9,7 +9,7 @@ Wraps HTTP fetching and web search as 2 Koi Tool components: `web_fetch` and `we
 Agents that research, browse, or verify information need live web access. Raw `fetch` calls are unstructured, lack SSRF protection, and bypass the middleware chain. There's no standard way to plug web operations into Koi's interposition layer.
 
 `@koi/tools-web` solves this by wrapping HTTP behind a typed `WebExecutor` interface with:
-- **SSRF protection** — Pre-request and post-redirect blocking of private/internal URLs
+- **SSRF protection** — Two-tier defence via `@koi/url-safety` (L0u): a DNS-free preflight at the tool boundary plus a full `createSafeFetcher` (isSafeUrl against resolved IPs + per-hop redirect revalidation) inside the executor
 - **Response caching** — LRU + TTL cache for repeated fetches
 - **Content conversion** — HTML → markdown or plain text
 - **Pluggable search** — Inject any search backend (Brave, Google, SerpAPI)
@@ -134,45 +134,57 @@ LLM decides: "call web_fetch
   in next turn's messages[]
 ```
 
-### SSRF Protection: Pre-Request + Post-Redirect
+### SSRF Protection: Two Defence Lines via `@koi/url-safety`
+
+Both block paths live in `@koi/url-safety` (L0u). `@koi/tools-web` wires them
+at two depths — each reason string reaches the tool result and the model
+verbatim:
 
 ```
-Agent calls web_fetch("http://169.254.169.254/metadata")
+Line 1 — DNS-free tool preflight (fast, no network)
+═══════════════════════════════════════════════════════
+Agent calls web_fetch("http://localhost:3000/admin")
         │
         ▼
-  ┌─────────────────┐
-  │ SSRF Pre-Check   │──▶ ❌ BLOCKED (AWS metadata endpoint)
-  │ isBlockedUrl()   │      Returns: { code: "PERMISSION",
-  └─────────────────┘                 error: "URL blocked: ..." }
-                                                     │
-                                                     ▼
-                                              LLM receives error
+  ┌──────────────────────────┐
+  │ preflightBlockReason(url) │── uses @koi/url-safety's
+  │                           │   BLOCKED_HOSTS, BLOCKED_HOST_SUFFIXES,
+  │                           │   isBlockedIp (IP literals only)
+  │                           │── ❌ BLOCKED — "Blocked host localhost"
+  └──────────────────────────┘
+                   │
+                   ▼
+         { error: "Access blocked: Blocked host localhost",
+           code: "PERMISSION" }
 
 
-Agent calls web_fetch("https://legit-looking.com/redirect")
-        │
-        ▼
-  ┌─────────────────┐   ┌──────────┐   ┌──────────────────┐
-  │ SSRF Pre-Check   │──▶│ HTTP GET │──▶│ 302 Redirect to  │
-  │ ✅ OK            │   │ (fetch)  │   │ http://10.0.0.1  │
-  └─────────────────┘   └──────────┘   └────────┬─────────┘
-                                                 │
-                                                 ▼
-                                   ┌─────────────────┐
-                                   │ SSRF Post-Check  │
-                                   │ isBlockedUrl()   │
-                                   │ ❌ BLOCKED       │
-                                   └─────────────────┘
-                                                 │
-                                                 ▼
-                                   { code: "PERMISSION",
-                                     error: "Redirect to private
-                                             URL blocked" }
+Line 2 — executor createSafeFetcher (DNS-resolved + per-hop redirect)
+═══════════════════════════════════════════════════════
+Agent calls web_fetch("http://localtest.me/")   ── passes preflight
+        │                                          (public name,
+        ▼                                           not in blocklists)
+  ┌──────────────────────────────┐
+  │ createSafeFetcher(opts).fetch │
+  │ ├─ isSafeUrl (pre-request)    │── strict-authoritative DNS:
+  │ ├─ fetch with redirect:manual │   localtest.me → 127.0.0.1
+  │ ├─ isSafeUrl on every hop     │── ❌ isBlockedIp(127.0.0.1)
+  │ └─ HTTP IP-pinning for http   │   throws url-safety: …
+  └──────────────────────────────┘
+                   │
+                   ▼
+  executor wraps → { code: "PERMISSION",
+                     message: "url-safety: Host localtest.me
+                               resolves to blocked IP 127.0.0.1" }
 
-Blocked patterns:
-  localhost, 127.*, 10.*, 172.16-31.*, 192.168.*,
-  169.254.* (link-local/AWS), ::1, 0.0.0.0,
-  *.internal, *.local
+Blocked classes (centralised in @koi/url-safety):
+  Host names      localhost, 0.0.0.0, metadata[.google.internal], instance-data
+  Reserved TLDs   .internal, .local
+  IPv4 CIDRs      RFC1918 (10/8, 172.16/12, 192.168/16), 127/8, 169.254/16,
+                  100.64/10 (CGNAT), 224/4 (multicast), documentation ranges
+  IPv6            ::1, fc00::/7 (ULA), fe80::/10 (link-local), ff00::/8,
+                  IPv4-mapped/compat (::ffff:*, ::/96), NAT64 (64:ff9b::/96,
+                  64:ff9b:1::/48), Teredo (2001::/32), 6to4 (2002::/16 →
+                  embedded v4 re-checked)
 ```
 
 ### Response Caching
@@ -210,9 +222,55 @@ Cache properties:
   ● LRU eviction (oldest entry removed when full)
   ● TTL expiry (stale entries removed on access)
   ● GET/HEAD only (POST/PUT/DELETE bypass cache)
+  ● Bodies on GET/HEAD disable the cache for that call (logical inequality
+    of two GETs with different payloads — avoids cross-contamination)
+  ● Custom request headers disable the cache (representation would differ)
   ● Search results cached by query + maxResults
   ● Configurable: cacheTtlMs (0 = off), maxCacheEntries (100)
 ```
+
+**Admission policy (status + origin directives, #1903):**
+Only HTTP 200 responses are stored, and only when the origin has not asked
+for revalidation. The following are all treated as non-cacheable and
+populate no entry:
+
+- `Cache-Control: no-store | no-cache | private`
+- `Cache-Control: must-revalidate | proxy-revalidate`
+- `Cache-Control: max-age=0` (or `s-maxage=0`)
+- `Pragma: no-cache`
+- `Expires` date in the past at receive time
+- Any `Vary` header (the key is just `METHOD:URL`; we cannot honor Vary
+  without widening the key, so we conservatively skip the cache)
+- Anything that isn't status 200 — 206 Partial Content, 3xx, 4xx, and
+  5xx stay out so transient failures can't become sticky
+
+**Per-entry TTL (origin freshness cap, #1903):**
+The cache LRU accepts a per-entry TTL override. On a cacheable write the
+entry's lifetime is `min(cacheTtlMs, remainingOriginFreshness)`, where
+`remainingOriginFreshness` is derived per RFC 7234 from
+`max-age - max(Age, now - Date)` (falling back to the `Expires`/`Date`
+delta). `s-maxage` is intentionally ignored — this is a private
+per-process cache, not a shared one, so a response that says
+`max-age=60, s-maxage=3600` expires at 60 s locally. Responses that arrive
+already stale (`Age >= max-age`) are not cached at all.
+
+**Forced-fresh (`noCache` option, #1903):**
+`WebFetchOptions.noCache = true` and the `web_fetch` tool's `noCache`
+argument both opt into "do not serve stale, period" semantics:
+
+- The pre-existing entry (if any) is evicted before the live request,
+  so concurrent default readers during the refresh RTT miss cache and
+  hit origin themselves (instead of being handed the known-to-be-
+  revalidating stale value).
+- A successful cacheable response writes through, but only if the key is
+  still absent — if a concurrent writer already repopulated the key, the
+  slower `noCache` response is dropped rather than overwriting a newer
+  entry and rolling the cache backwards (CDN skew, blue/green rollout).
+- Any failure (non-cacheable response, transport error, timeout, SSRF
+  block) returns the error and leaves the key empty. The next default
+  fetch hits origin. `noCache` is explicitly not a stale-on-error
+  fallback primitive — callers that want graceful degradation simply
+  don't set it.
 
 ---
 
@@ -225,23 +283,23 @@ Cache properties:
 │  @koi/tools-web  (L2)                                 │
 │                                                       │
 │  constants.ts              ← operations, system prompt│
-│  url-policy.ts             ← SSRF blocking rules      │
 │  strip-html.ts             ← HTML → plain text        │
 │  html-to-markdown.ts       ← HTML → Markdown          │
-│  web-executor.ts           ← WebExecutor + factory    │
+│  web-executor.ts           ← WebExecutor (uses        │
+│                              createSafeFetcher)       │
 │  web-component-provider.ts ← ComponentProvider        │
+│  web-fetch-tool.ts         ← web_fetch + DNS-free     │
+│                              preflightBlockReason     │
+│  web-search-tool.ts        ← web_search tool          │
 │  index.ts                  ← public API surface       │
-│                                                       │
-│  tools/                                               │
-│    web-fetch.ts            ← web_fetch tool           │
-│    web-search.ts           ← web_search tool          │
-│                                                       │
-├───────────────────────────────────────────────────────┤
+└───────────────────────────────────────────────────────┤
 │  External deps: NONE (uses platform fetch API)        │
-│                                                       │
 ├───────────────────────────────────────────────────────┤
 │  Internal deps                                        │
 │  ● @koi/core (L0) — Tool, ComponentProvider, KoiError │
+│  ● @koi/url-safety (L0u) — isSafeUrl, isBlockedIp,    │
+│      createSafeFetcher, BLOCKED_HOSTS,                │
+│      BLOCKED_HOST_SUFFIXES                            │
 │                                                       │
 │  Dev-only                                             │
 │  ● @koi/engine (L1) — createKoi (E2E tests only)     │
@@ -260,7 +318,8 @@ L0  @koi/core ──────────────────────
                                                         │
                                                         ▼
 L2  @koi/tools-web ◄────────────────────────────────┘
-    imports from L0 only (runtime)
+    imports from L0 + L0u only (runtime)
+    ✓ depends on @koi/url-safety (L0u) for all SSRF defence
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages
     ✗ zero external npm dependencies
@@ -573,7 +632,6 @@ const runtime = await createKoi({
 
 ```
 packages/tools-web/src/
-  url-policy.test.ts             SSRF blocking rules (10 tests)
   strip-html.test.ts             HTML → plain text (12 tests)
   html-to-markdown.test.ts       HTML → Markdown (16 tests)
   web-executor.test.ts           Executor: fetch, search, cache, errors (21 tests)
@@ -667,8 +725,8 @@ E2E_TESTS=1 BRAVE_API_KEY=BSA... bun test packages/tools-web/src/__tests__/e2e-f
 | `WebExecutor` interface (not direct `fetch`) | Enables mock injection in tests; same interface for real HTTP and test doubles |
 | ComponentProvider pattern | Tools attach via ECS — any engine adapter discovers them with zero engine changes |
 | Both tools use same trust tier | Web fetch and search are both read-only operations; configurable per-deployment |
-| SSRF checks at two points | Pre-request catches obvious private URLs; post-redirect catches open-redirect attacks to internal services |
-| Regex-based URL blocking (no DNS) | Zero dependencies, deterministic, no DNS resolution latency. Covers RFC 1918, link-local, localhost, AWS metadata |
+| SSRF defence centralised in `@koi/url-safety` | Removing the local `url-policy.ts` eliminates two-source drift. Both `web-fetch-tool` (DNS-free preflight) and `web-executor` (full `createSafeFetcher` with DNS + per-hop redirect revalidation) call the same L0u primitives. Block-reason wording flows to the model verbatim, locked by the `url-safety-block` / `url-safety-dns-block` golden queries |
+| Two defence lines, different trade-offs | Preflight = zero-latency reject for obvious SSRF (host/suffix/IP-literal); `createSafeFetcher` = strict-authoritative DNS + per-hop revalidation + HTTP IP-pinning for the full DNS-rebind class. Preflight fires first when applicable; the executor check is the authoritative wall |
 | LRU + TTL cache (not external) | No Redis/Memcached dependency. Cache is per-executor instance, GC-friendly. Set `cacheTtlMs: 0` to disable |
 | `searchFn` is injectable | Decouples search backend from web tools. Brave, Google, SerpAPI, or any custom backend plug in via config |
 | `@koi/search-brave` is separate L2 | Avoids L2→L2 dependency. `tools-web` never imports `search-brave`. User wires them at config time |
@@ -691,7 +749,8 @@ L0  @koi/core ──────────────────────
                                                         │
                                                         ▼
 L2  @koi/tools-web ◄────────────────────────────────┘
-    imports from L0 only (runtime)
+    imports from L0 + L0u only (runtime)
+    ✓ depends on @koi/url-safety (L0u) for SSRF primitives
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages (including @koi/search-brave)
     ✗ zero external npm dependencies

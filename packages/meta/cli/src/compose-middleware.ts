@@ -49,6 +49,23 @@ export interface MiddlewareCompositionInput {
   /** Goal reminder middleware — injected when the host supplies objectives. */
   readonly goal?: KoiMiddleware | undefined;
   /**
+   * Planning middleware — injects `write_plan` tool semantics. Composed
+   * INSIDE permissions so its prompt-visibility gate sees the final
+   * filtered tool list; if permissions removed write_plan, planning's
+   * wrapModelCall sees the empty/filtered tools and skips the system
+   * prompt instead of steering the model toward a denied tool.
+   */
+  readonly plan?: KoiMiddleware | undefined;
+  /**
+   * Plan-persist middleware — file-backed persistence layered on top
+   * of planning. Sits adjacent to `plan` so they share the same
+   * composition zone: plan-persist intercepts `koi_plan_save` /
+   * `koi_plan_load`, and the planning bundle's `onPlanUpdate` hook
+   * (wired at construction) mirrors every `koi_plan_write` commit to
+   * disk. Optional and only meaningful when `plan` is also set.
+   */
+  readonly planPersist?: KoiMiddleware | undefined;
+  /**
    * Preset / plugin middleware contributed by stack activation. Appended
    * after the checkpoint layer so presets can observe the core stack
    * without interleaving with it. Order within the preset list is
@@ -135,6 +152,8 @@ export function composeRuntimeMiddleware(
     // Zone C-bottom — optional innermost layers.
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
     ...(input.goal !== undefined ? [input.goal] : []),
+    ...(input.plan !== undefined ? [input.plan] : []),
+    ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.sessionTranscript !== undefined ? [input.sessionTranscript] : []),
   ];
@@ -161,7 +180,21 @@ export function composeRuntimeMiddleware(
  * know their manifest policy does not apply to delegated work.
  *
  * Order mirrors the parent chain structure minus zone B:
- *   permissions → exfiltration-guard → hook → systemPrompt?
+ *   permissions → exfiltration-guard → hook → plan? → systemPrompt?
+ *
+ * `plan` sits BEFORE `systemPrompt` to match the parent chain's
+ * Zone C-bottom order (see composeRuntimeMiddleware). That keeps
+ * system-instruction precedence identical between parent and child
+ * runs — the host's systemPrompt remains the innermost/latest
+ * instruction layer in both.
+ *
+ * Planning middleware IS inherited: the parent advertises the
+ * `write_plan` tool through its provider, and inherited-component-
+ * provider copies that tool descriptor into the child. Without the
+ * middleware in the child chain, `write_plan` would fall through to
+ * the provider's throwing fallback. Sharing the parent's middleware
+ * instance is safe because its state is keyed by sessionId — parent
+ * and child have distinct sessionIds, so they never alias.
  *
  * Exports / lifecycle / optional innermost (modelRouter, goal,
  * sessionTranscript) are NOT inherited — they are per-runtime state
@@ -176,11 +209,15 @@ export function buildInheritedMiddlewareForChildren(input: {
   readonly exfiltrationGuard: KoiMiddleware;
   readonly hook: KoiMiddleware;
   readonly systemPrompt?: KoiMiddleware | undefined;
+  readonly plan?: KoiMiddleware | undefined;
+  readonly planPersist?: KoiMiddleware | undefined;
 }): readonly KoiMiddleware[] {
   return [
     input.permissions,
     input.exfiltrationGuard,
     input.hook,
+    ...(input.plan !== undefined ? [input.plan] : []),
+    ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
   ];
 }

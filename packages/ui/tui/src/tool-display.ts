@@ -49,6 +49,25 @@ const SUBTITLE_KEYS = [
 
 const MAX_CHIPS = 3;
 const MAX_SUBTITLE_LENGTH = 80;
+const MAX_CHIP_VALUE_LENGTH = 40;
+
+/**
+ * Arg keys that carry bulky body content and must never surface as chips.
+ * A chip renders on one line as `key=value` with no truncation — dumping a
+ * multi-line `content` arg here floods the conversation view and stalls
+ * auto-scroll. Bodies belong in the expanded result pane, not the header.
+ */
+const BULKY_ARG_KEYS: ReadonlySet<string> = new Set([
+  "content",
+  "text",
+  "body",
+  "old_string",
+  "new_string",
+  "oldText",
+  "newText",
+  "edits",
+  "source",
+]);
 
 interface ToolDisplayEntry {
   /** Static title string, or a function for input-sensitive titles. */
@@ -146,7 +165,15 @@ function extractChips(
   for (const [key, value] of Object.entries(args)) {
     if (chips.length >= MAX_CHIPS) break;
     if (consumed.has(key)) continue;
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    if (BULKY_ARG_KEYS.has(key)) continue;
+    if (typeof value === "string") {
+      // Single-line + length-capped: chips render inline and cannot break
+      // onto multiple lines without tearing the status row.
+      const flat = value.replace(/\s+/g, " ");
+      const capped =
+        flat.length > MAX_CHIP_VALUE_LENGTH ? `${flat.slice(0, MAX_CHIP_VALUE_LENGTH - 1)}…` : flat;
+      chips.push(`${key}=${capped}`);
+    } else if (typeof value === "number" || typeof value === "boolean") {
       chips.push(`${key}=${String(value)}`);
     }
   }

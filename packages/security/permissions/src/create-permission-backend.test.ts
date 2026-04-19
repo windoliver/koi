@@ -38,7 +38,11 @@ describe("createPermissionBackend", () => {
       action: "read",
       resource: "/etc/passwd",
     };
-    expect(await backend.check(query)).toEqual({ effect: "deny", reason: "system files" });
+    expect(await backend.check(query)).toEqual({
+      effect: "deny",
+      reason: "system files",
+      disposition: "hard",
+    });
   });
 
   test("check returns ask when no rule matches", async () => {
@@ -62,7 +66,11 @@ describe("createPermissionBackend", () => {
     expect(decisions).toBeDefined();
     expect(decisions).toHaveLength(2);
     expect(decisions?.[0]).toEqual({ effect: "allow" });
-    expect(decisions?.[1]).toEqual({ effect: "deny", reason: "system files" });
+    expect(decisions?.[1]).toEqual({
+      effect: "deny",
+      reason: "system files",
+      disposition: "hard",
+    });
   });
 
   test("dispose is callable without error", async () => {

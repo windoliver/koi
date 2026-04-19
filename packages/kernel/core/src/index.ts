@@ -271,6 +271,23 @@ export type { ServiceProviderConfig } from "./create-service-provider.js";
 export { createServiceProvider } from "./create-service-provider.js";
 export type { SingleToolProviderConfig } from "./create-single-tool-provider.js";
 export { createSingleToolProvider } from "./create-single-tool-provider.js";
+// daemon — OS-process supervisor + worker backend contracts
+export type {
+  Supervisor,
+  SupervisorConfig,
+  WorkerBackend,
+  WorkerBackendKind,
+  WorkerEvent,
+  WorkerHandle,
+  WorkerId,
+  WorkerRestartPolicy,
+  WorkerSpawnRequest,
+} from "./daemon.js";
+export {
+  DEFAULT_WORKER_RESTART_POLICY,
+  validateSupervisorConfig,
+  workerId,
+} from "./daemon.js";
 // data source — auto-discovered data source descriptors
 export type { DataSourceDescriptor, DataSourceProtocol } from "./data-source.js";
 // debug — runtime debugging with breakpoints, step/pause, inspection

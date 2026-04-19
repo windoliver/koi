@@ -1,0 +1,130 @@
+import { describe, expect, test } from "bun:test";
+import {
+  DEFAULT_STRICT_AGENTIC_CONFIG,
+  resolveStrictAgenticConfig,
+  validateStrictAgenticConfig,
+} from "./config.js";
+
+describe("validateStrictAgenticConfig", () => {
+  test("accepts empty object and returns defaults applied", () => {
+    const result = validateStrictAgenticConfig({});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.enabled).toBe(true);
+    expect(result.value.maxFillerRetries).toBe(2);
+  });
+
+  test("accepts full config", () => {
+    const result = validateStrictAgenticConfig({
+      enabled: false,
+      maxFillerRetries: 10,
+      feedbackMessage: "custom",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.enabled).toBe(false);
+    expect(result.value.maxFillerRetries).toBe(10);
+    expect(result.value.feedbackMessage).toBe("custom");
+  });
+
+  test("rejects maxFillerRetries < 1", () => {
+    // 0 would trip the breaker on the first filler and silently disable
+    // blocking. Negative values are obviously invalid.
+    for (const bad of [-1, 0]) {
+      const result = validateStrictAgenticConfig({ maxFillerRetries: bad });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("rejects non-boolean enabled", () => {
+    const result = validateStrictAgenticConfig({ enabled: "yes" });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects non-integer maxFillerRetries", () => {
+    const result = validateStrictAgenticConfig({ maxFillerRetries: 2.5 });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects non-object input", () => {
+    expect(validateStrictAgenticConfig(null).ok).toBe(false);
+    expect(validateStrictAgenticConfig("string").ok).toBe(false);
+    expect(validateStrictAgenticConfig(42).ok).toBe(false);
+  });
+
+  test("rejects non-function isUserQuestion", () => {
+    const result = validateStrictAgenticConfig({ isUserQuestion: "not-a-function" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects non-function isExplicitDone", () => {
+    const result = validateStrictAgenticConfig({ isExplicitDone: 42 });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("resolveStrictAgenticConfig", () => {
+  test("fills unspecified fields with defaults", () => {
+    const resolved = resolveStrictAgenticConfig({});
+    expect(resolved.enabled).toBe(DEFAULT_STRICT_AGENTIC_CONFIG.enabled);
+    expect(resolved.maxFillerRetries).toBe(DEFAULT_STRICT_AGENTIC_CONFIG.maxFillerRetries);
+    expect(typeof resolved.isUserQuestion).toBe("function");
+    expect(typeof resolved.isExplicitDone).toBe("function");
+  });
+
+  test("default isUserQuestion matches trimmed trailing ?", () => {
+    const { isUserQuestion } = resolveStrictAgenticConfig({});
+    expect(isUserQuestion("Should I proceed?")).toBe(true);
+    expect(isUserQuestion("Should I proceed?   ")).toBe(true);
+    expect(isUserQuestion("I will proceed.")).toBe(false);
+    expect(isUserQuestion("")).toBe(false);
+  });
+
+  test("default isExplicitDone matches done/completed/finished", () => {
+    const { isExplicitDone } = resolveStrictAgenticConfig({});
+    expect(isExplicitDone("All tests pass — done.")).toBe(true);
+    expect(isExplicitDone("Task completed successfully.")).toBe(true);
+    expect(isExplicitDone("The feature is finished.")).toBe(true);
+    expect(isExplicitDone("No further action required.")).toBe(true);
+    expect(isExplicitDone("I will proceed.")).toBe(false);
+  });
+
+  test("default isExplicitDone rejects negated completion phrases", () => {
+    const { isExplicitDone } = resolveStrictAgenticConfig({});
+    expect(isExplicitDone("I am not done yet")).toBe(false);
+    expect(isExplicitDone("Not yet completed")).toBe(false);
+    expect(isExplicitDone("I have not finished")).toBe(false);
+    expect(isExplicitDone("The task isn't done")).toBe(false);
+    expect(isExplicitDone("We haven't completed step 2 yet, please wait")).toBe(false);
+  });
+
+  test("default isExplicitDone rejects mid-progress status with trailing future work", () => {
+    const { isExplicitDone } = resolveStrictAgenticConfig({});
+    // Completion keyword in an earlier clause, last clause is future work.
+    expect(isExplicitDone("Analysis completed. Next I will edit the file.")).toBe(false);
+    expect(isExplicitDone("The migration is finished; now I will apply the patch.")).toBe(false);
+    expect(isExplicitDone("Step 1 done. Moving on to step 2.")).toBe(false);
+    // Same-clause future-work word disqualifies even when keyword is present.
+    expect(isExplicitDone("I completed step 1 and will proceed to step 2")).toBe(false);
+    expect(isExplicitDone("Finished the plan, will now continue")).toBe(false);
+  });
+
+  test("default isUserQuestion rejects whitespace-only input", () => {
+    const { isUserQuestion } = resolveStrictAgenticConfig({});
+    expect(isUserQuestion("   ")).toBe(false);
+    expect(isUserQuestion("\t\n")).toBe(false);
+  });
+
+  test("custom predicates override defaults", () => {
+    const resolved = resolveStrictAgenticConfig({
+      isUserQuestion: () => true,
+      isExplicitDone: () => false,
+    });
+    expect(resolved.isUserQuestion("anything")).toBe(true);
+    expect(resolved.isExplicitDone("done.")).toBe(false);
+  });
+});

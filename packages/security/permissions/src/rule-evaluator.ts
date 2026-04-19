@@ -198,6 +198,15 @@ function hasNamespaceTraversal(resource: string): boolean {
 }
 
 /**
+ * Resolve the deny disposition for a matched deny rule.
+ * Explicit `on_deny` wins; else default to `"hard"` for every source tier.
+ * Hard-by-default means no existing rule silently softens on upgrade.
+ */
+function resolveDenyDisposition(rule: CompiledRule): "hard" | "soft" {
+  return rule.on_deny ?? "hard";
+}
+
+/**
  * Evaluate pre-compiled rules against a query. First matching rule wins.
  *
  * Resources are normalized before matching to prevent path traversal bypasses.
@@ -215,6 +224,7 @@ export function evaluateRules(
     return {
       effect: "deny",
       reason: "Resource path contains unresolvable traversal segments",
+      disposition: "hard",
     };
   }
 
@@ -223,6 +233,7 @@ export function evaluateRules(
     return {
       effect: "deny",
       reason: "Namespace resource contains path traversal segments",
+      disposition: "hard",
     };
   }
 
@@ -237,6 +248,13 @@ export function evaluateRules(
         return { effect: "allow" };
       }
       const reason = rule.reason ?? `Matched ${rule.source} rule: ${rule.pattern}`;
+      if (rule.effect === "deny") {
+        return {
+          effect: "deny",
+          reason,
+          disposition: resolveDenyDisposition(rule),
+        };
+      }
       return { effect: rule.effect, reason };
     }
   }

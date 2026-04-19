@@ -1,0 +1,540 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "permission-soft-deny",
+  "agent": {
+    "name": "golden-permission-soft-deny",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "fs_write",
+        "description": "Write content to a file at the given path"
+      },
+      {
+        "name": "Glob",
+        "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
+      },
+      {
+        "name": "Grep",
+        "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
+      },
+      {
+        "name": "ToolSearch",
+        "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:56.558Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:56.559Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-17T06:17:56.567Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Please write \"hello\" to the file /tmp/koi-golden-soft/test.txt using the fs_write tool. After the tool call, tell me what happened.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 538,
+        "completion_tokens": 18
+      },
+      "duration_ms": 969,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "fs_write",
+            "description": "Write content to a file at the given path"
+          },
+          {
+            "name": "Glob",
+            "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
+          },
+          {
+            "name": "Grep",
+            "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "cb046198872ad89ff7515233252b9212eb93f4c285d54af052e6b894c9543d73",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.542Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 973.1409160000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.544Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "fs_write({\"path\":\"/tmp/koi-golden-soft/test.txt\",\"content\":\"hello\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.6653329999999187,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "fs_write",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.545Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 971.898458,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776406677541,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.546Z",
+      "model_name": "middleware:permissions",
+      "message": "fs_write({\"path\":\"/tmp/koi-golden-soft/test.txt\",\"content\":\"hello\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "blocked"
+          }
+        ]
+      },
+      "duration_ms": 0.3732079999999769,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": false,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "fs_write",
+            "toolInput": "{\"path\":\"/tmp/koi-golden-soft/test.txt\",\"content\":\"hello\"}",
+            "action": "deny",
+            "durationMs": 0,
+            "reason": "writes are sandboxed in this environment",
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776406677543,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.547Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 970.5606249999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776406677540,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.548Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 970.4537499999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Please write \"hello\" to the file /tmp/koi-golden-soft/test.txt using the fs_write tool. After the tool call, tell me wha",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Please write \"hello\" to the file /tmp/koi-golden-soft/test.txt using the fs_write tool. After the tool call, tell me wha"
+          }
+        ],
+        "_original_timestamp": 1776406677539,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.549Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 970.223083,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776406677538,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:57.550Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 969.9534160000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776406677537,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "agent",
+      "timestamp": "2026-04-17T06:17:57.551Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Permission denied for tool \"fs_write\". This tool is not available in the current scope.",
+      "observation": {
+        "results": [
+          {
+            "content": "The fs_write tool was called to write \"hello\" to the file /tmp/koi-golden-soft/test.txt. However, the tool returned \"Permission denied\". This indicates that I do not have the necessary permissions to execute this tool."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 551,
+        "completion_tokens": 52
+      },
+      "duration_ms": 1018,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 4,
+        "tools": [
+          {
+            "name": "fs_write",
+            "description": "Write content to a file at the given path"
+          },
+          {
+            "name": "Glob",
+            "description": "Fast file pattern matching. Returns matching file paths sorted by modification time (most recent first)."
+          },
+          {
+            "name": "Grep",
+            "description": "Content search powered by ripgrep (with native fallback). Supports regex, file type filtering, multiline matching, context lines, and paginated output."
+          },
+          {
+            "name": "ToolSearch",
+            "description": "Search available tools by keyword or fetch exact tools by name. Use \"select:Name1,Name2\" for exact lookup, or keywords for fuzzy search."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "cb046198872ad89ff7515233252b9212eb93f4c285d54af052e6b894c9543d73",
+        "turnIndex": 1,
+        "_original_timestamp": 1776406677546
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:58.570Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 1025.0993330000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:58.571Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 1025.089083,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 4,
+            "allowedCount": 4,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776406678569,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:58.572Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 1025.0004589999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776406678568,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:58.573Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 1024.9907499999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776406678567,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:58.574Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 1024.9787090000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776406678566,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:58.575Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 1024.9134580000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776406678565,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-17T06:17:58.576Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.049250000000029104,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1776406678572,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

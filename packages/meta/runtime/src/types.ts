@@ -27,6 +27,7 @@ import type {
 } from "@koi/core";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import type { SpawnPolicy } from "@koi/engine-compose";
+import type { GovernanceMiddlewareConfig } from "@koi/governance-core";
 import type { LspClient, LspProviderConfig, LspServerFailure } from "@koi/lsp";
 import type { MemoryStore, MemoryStoreConfig } from "@koi/memory-fs";
 import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
@@ -376,6 +377,16 @@ export interface RuntimeConfig {
         readonly redactRequestBodies?: boolean | undefined;
       }
     | undefined;
+
+  /**
+   * Governance middleware configuration. When provided, wires `@koi/governance-core`
+   * into the middleware chain at priority 150 (between permissions=100 and audit=300).
+   *
+   * Skipped if a middleware named "koi:governance-core" is already in `middleware`.
+   *
+   * When omitted, no governance middleware is installed.
+   */
+  readonly governance?: GovernanceMiddlewareConfig | undefined;
 
   /**
    * Browser tool provider configuration. When provided, wires `@koi/tool-browser`

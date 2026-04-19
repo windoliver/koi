@@ -14,7 +14,11 @@ import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { For, Show } from "solid-js";
 import { COLORS } from "../theme.js";
-import { createScrollableList, handleSelectOverlayKey } from "./select-overlay-helpers.js";
+import {
+  consumeSelectOverlayKey,
+  createScrollableList,
+  handleSelectOverlayKey,
+} from "./select-overlay-helpers.js";
 
 export { handleSelectOverlayKey };
 
@@ -54,7 +58,7 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
 
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
-    handleSelectOverlayKey(key, {
+    consumeSelectOverlayKey(key, {
       onClose: props.onClose,
       onSelect: (): void => {
         const item = props.items[list.selectedIdx()];

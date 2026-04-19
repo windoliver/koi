@@ -167,4 +167,36 @@ describe("fail-closed — fast-check fuzz", () => {
       { numRuns: 500 },
     );
   });
+
+  // Hard-deny invariants: the two categories whose raw source
+  // provably cannot be reconciled with bash's effective argv must
+  // always be injection-blocked by classifyBashCommand.
+  test("shell-escape primaryCategory hard-denies via classifyBashCommand", () => {
+    const r = classifyBashCommand("cat \\/etc\\/passwd");
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.category).toBe("injection");
+    expect(r.reason).toContain("shell-escape");
+  });
+
+  // parse-error is explicitly askable, NOT hard-deny: the docs
+  // note it is reachable from valid bash (e.g. `FOO=bar < in.txt`
+  // produces root.hasError on the currently vendored grammar).
+  // Hard-denying parser drift would be an availability regression.
+  test("parse-error primaryCategory falls through to regex/elicit, not injection hard-deny", () => {
+    const r = classifyBashCommand('echo "unterminated');
+    // Either the regex classifier passes it (ok=true) or blocks on
+    // its own pattern. What MUST NOT happen is the bash-ast
+    // walker-cannot-analyse hard-deny reason.
+    if (!r.ok) {
+      expect(r.reason).not.toContain("walker cannot safely analyse");
+    }
+  });
+
+  test("askable primaryCategory (control-flow) does not hard-deny via the fail-closed path", () => {
+    const r = classifyBashCommand("if true; then echo hi; fi");
+    if (!r.ok) {
+      expect(r.reason).not.toContain("walker cannot safely analyse");
+    }
+  });
 });

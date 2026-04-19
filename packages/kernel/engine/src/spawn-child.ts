@@ -24,6 +24,7 @@ import type {
   DelegationId,
   EngineEvent,
   EngineInput,
+  GovernanceController,
   SpawnChannelPolicy,
   Tool,
 } from "@koi/core";
@@ -34,7 +35,9 @@ import {
   DEFAULT_UNSANDBOXED_POLICY,
   DELEGATION,
   ENV,
+  GOVERNANCE,
   isAttachResult,
+  runId,
 } from "@koi/core";
 import { createStructuredOutputGuard } from "@koi/engine-compose";
 import { KoiRuntimeError } from "@koi/errors";
@@ -44,7 +47,7 @@ import { computeChildDelegationScope } from "./compute-delegation-scope.js";
 import { createInheritedChannel } from "./inherited-channel.js";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 import { createKoi } from "./koi.js";
-import type { KoiRuntime, SpawnChildOptions, SpawnChildResult } from "./types.js";
+import type { KoiRuntime, RunHandle, SpawnChildOptions, SpawnChildResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Noop child handle — used when no registry is provided
@@ -381,6 +384,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 
   const childPid = childRuntime.agent.pid;
 
+  // gov-8: resolve parent's GovernanceController (optional — engine works
+  // without one). Captured once here so both cleanup paths (terminated
+  // handler and dispose-override) read the same reference even if the
+  // parent is later disposed.
+  const parentGovController = options.parentAgent.component<GovernanceController>(GOVERNANCE);
+
   // 5. Register child in registry (if provided)
   if (options.registry !== undefined) {
     const childAgentType = childPid.type;
@@ -464,7 +473,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //    create-hook-spawn-fn) that still iterate via `for await` see the
   //    error at first iteration where they already have try/catch coverage,
   //    rather than at iterable-construction time.
-  function wrappedRun(input: EngineInput): AsyncIterable<EngineEvent> {
+  function wrappedRun(input: EngineInput): RunHandle {
     const composedSignal =
       input.signal !== undefined
         ? AbortSignal.any([input.signal, abortController.signal])
@@ -472,7 +481,11 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     try {
       return childRuntime.run({ ...input, signal: composedSignal });
     } catch (syncErr) {
-      const failingIterable: AsyncIterable<EngineEvent> = {
+      // Synchronous throw from childRuntime.run() — wrap in a RunHandle that
+      // rejects on first iteration. Callers have try/catch coverage there.
+      const failingHandle: RunHandle = {
+        runId: runId(crypto.randomUUID()),
+        interrupt: () => false,
         [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
           return {
             next(): Promise<IteratorResult<EngineEvent>> {
@@ -481,8 +494,60 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           };
         },
       };
-      return failingIterable;
+      return failingHandle;
     }
+  }
+
+  // gov-8: record spawn event against the parent's controller AFTER all
+  // throw-prone setup (createKoi, registry.register, delegation grant) has
+  // succeeded. This guarantees that if any earlier step throws, spawn_count
+  // is never incremented — preserving the spawn / spawn_release pairing
+  // invariant without requiring rollback on every failure path.
+  //
+  // Fire-and-forget (no `await`) so that:
+  //   1. A slow/hung GovernanceController.record() cannot block spawnChildAgent
+  //      from returning (which would leave the ledger slot acquired but the
+  //      cleanup wiring uninstalled, exhausting spawn capacity).
+  //   2. Synchronous throws inside record() are caught by .catch() — the
+  //      `Promise.resolve().then(...)` form catches BOTH sync and async errors.
+  //
+  // POLICY: governance bookkeeping fails OPEN. Governance is optional per
+  // the L0 contract (engine works without a controller); a buggy or slow
+  // controller MUST NOT break agent operation. Both record(spawn) and
+  // record(spawn_release) log on failure and continue.
+  //
+  // Tradeoffs (deliberate, deferred to L0/distributed-backend follow-up):
+  //   - record(spawn) fault → spawn_count under-represents live children,
+  //     weakening configured spawn limits.
+  //   - record(spawn_release) fault → spawn_count over-represents live
+  //     children, can produce false RATE_LIMIT until counter is reset
+  //     (e.g. iteration_reset / session_reset, or runtime restart).
+  //
+  // The default in-process controller (`createGovernanceController` from
+  // @koi/engine-reconcile) is sync and never fails on record(), so the
+  // in-tree path is unaffected by either tradeoff. Distributed/remote
+  // backends that need stronger guarantees should add an idempotent event
+  // protocol with durable IDs at L0 — out of scope for gov-8.
+  // See follow-ups: #1876 (TUI surface), #1877 (CLI flags), gov-14 (apportionment).
+  //
+  // The cleanup paths (terminated handler + dispose-override) ALWAYS attempt
+  // spawn_release regardless of whether spawn was actually recorded. The
+  // controller clamps spawn_count to 0 on over-release (see
+  // engine-reconcile/governance-controller.ts), so an unpaired release is
+  // safe. This makes pairing robust under partial-failure scenarios where
+  // record() may have applied the side effect even though it threw — strict
+  // gating on the success ack would skew counters in those cases.
+  //
+  // Depth payload is the child's depth, matching "a child was spawned at depth N".
+  if (parentGovController !== undefined) {
+    void Promise.resolve()
+      .then(() => parentGovController.record({ kind: "spawn", depth: childPid.depth }))
+      .catch((err: unknown) => {
+        console.error(
+          `[spawn-child] governance spawn record failed for child "${childPid.id}" — continuing without governance bookkeeping`,
+          err,
+        );
+      });
   }
 
   // 8. Create child handle for lifecycle monitoring + determine dispose override
@@ -510,6 +575,25 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
+        // gov-8: fire spawn_release unconditionally on cleanup. Sits inside the
+        // `released` guard so a double-terminated event cannot double-decrement
+        // spawn_count. The controller clamps spawn_count to 0 on over-release,
+        // so firing a release without a paired spawn (e.g. when the spawn
+        // record itself failed) is safe — and is the more robust choice for
+        // partial-failure scenarios where record(spawn) may have applied its
+        // side effect before throwing/rejecting. The
+        // `Promise.resolve().then(...)` form catches BOTH synchronous throws
+        // and rejected promises from record().
+        if (parentGovController !== undefined) {
+          void Promise.resolve()
+            .then(() => parentGovController.record({ kind: "spawn_release" }))
+            .catch((err: unknown) => {
+              console.error(
+                `[spawn-child] governance spawn_release failed for child "${childPid.id}"`,
+                err,
+              );
+            });
+        }
         void Promise.resolve(childRuntime.dispose()).catch((err: unknown) => {
           console.error(`[spawn-child] dispose failed for child "${childPid.id}"`, err);
         });
@@ -541,6 +625,22 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
+        // gov-8: fire spawn_release unconditionally in the no-registry path.
+        // Fire-and-forget (matching the registry handler) so a slow or hung
+        // governance backend cannot block originalDispose() — disposal must
+        // always run regardless of bookkeeping outcome. Controller clamps
+        // spawn_count to 0 on over-release, so firing without a paired spawn
+        // is safe.
+        if (parentGovController !== undefined) {
+          void Promise.resolve()
+            .then(() => parentGovController.record({ kind: "spawn_release" }))
+            .catch((err: unknown) => {
+              console.error(
+                `[spawn-child] governance spawn_release failed for child "${childPid.id}" (dispose path)`,
+                err,
+              );
+            });
+        }
       }
       await originalDispose();
     };

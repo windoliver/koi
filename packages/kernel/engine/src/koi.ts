@@ -67,7 +67,7 @@ import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
 import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { createTurnContext, generatePid, unrefTimer } from "./koi-helpers.js";
-import type { CreateKoiOptions, KoiRuntime } from "./types.js";
+import type { CreateKoiOptions, KoiRuntime, RunHandle } from "./types.js";
 
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
   // --- 0. Input validation at the factory boundary ---
@@ -334,6 +334,28 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable so cycleSession can rotate the identity
   let factorySessionId: SessionId =
     options.sessionId ?? sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  // let justified: tracks the active run's AbortController so runtime.interrupt()
+  // can operate without a registry. Set in streamEvents at the start of each
+  // run, cleared in finally. Undefined when no run is active.
+  let activeController: AbortController | undefined;
+  // let justified: tracks the composite runSignal (input.signal + internal controller)
+  // so runtime.isInterrupted() reflects external aborts too. Set inside try
+  // alongside activeController, cleared in finally.
+  let activeRunSignal: AbortSignal | undefined;
+  // #1682 + #1742 round 10: tracks the RunId of the currently active run so
+  // runtime.currentRunId exposes it for callers caching the id before passing
+  // it to sessionRegistry.interrupt(..., expectedRunId) for cross-generation
+  // safety. Undefined when no run is active.
+  let currentRunIdRef: RunId | undefined;
+  // #1682: sweeper for the state published synchronously in run() so
+  // cycleSession/dispose/stale-epoch paths can clean up pre-iteration
+  // state without waiting on a generator finally that may never fire
+  // (abandoned iterable: run() called but .next() never invoked).
+  // Populated in run(); cleared when the generator body actually takes
+  // ownership of cleanup (first line of the try block in streamEvents)
+  // OR when a lifecycle sweeper calls it.
+  // let justified: mutable pre-iteration cleanup reference.
+  let preIterationCleanup: (() => void) | undefined;
   /**
    * Eagerly compute the next session id under the host-configured
    * rotation strategy. Called at the top of `cycleSession()` BEFORE
@@ -406,6 +428,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   async function* streamEvents(
     input: EngineInput,
     expectedEpoch: number,
+    _abortController: AbortController,
+    runSignal: AbortSignal,
+    onAbort: () => void,
+    unregisterFromRegistry: (() => void) | undefined,
+    outerRunId: RunId,
   ): AsyncGenerator<EngineEvent> {
     // #1742 round 10: refuse to attach to a rotated session. If
     // cycleSession() bumped sessionEpoch between run() and the first
@@ -432,8 +459,48 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // iterable's). Clearing unconditionally would let a third run()
       // run concurrently with B.
       if (runningEpoch === expectedEpoch) {
+        // #1682: this stale iterable still owns the pre-iteration
+        // state published in run(). Run the sweeper before releasing
+        // the `running` latch so the registry + activeController don't
+        // outlive the rejected run.
+        preIterationCleanup?.();
+        preIterationCleanup = undefined;
         running = false;
         runningEpoch = undefined;
+      }
+      // #1682: if the stale iterable's own signal was aborted (i.e. the
+      // epoch was bumped by onAbort's pre-iteration self-clean rather than
+      // by cycleSession/dispose) AND no newer run has taken the latch,
+      // emit the terminal done instead of throwing. This preserves the
+      // pre-start interrupt short-circuit contract for consumers that
+      // iterate the abandoned iterable after an onAbort epoch bump, while
+      // still throwing when a newer run B is active (running + different
+      // runningEpoch guarantees that path is unreachable here since
+      // running would be true with runningEpoch !== expectedEpoch, and
+      // the latch guard above would have skipped cleanup).
+      if (
+        !disposed &&
+        !disposing &&
+        lifecycleInFlight === undefined &&
+        expectedEpoch !== sessionEpoch &&
+        runSignal.aborted &&
+        !running
+      ) {
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "interrupted",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+          },
+        } satisfies EngineEvent;
+        return;
       }
       const reason = disposed
         ? "Runtime has been disposed."
@@ -460,22 +527,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let currentTurnIndex = 0;
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
-
-    // AbortSignal: compose caller signal with internal controller
-    const abortController = new AbortController();
-    const runSignal =
-      input.signal !== undefined
-        ? AbortSignal.any([input.signal, abortController.signal])
-        : abortController.signal;
-
-    // Abort listener: immediate agent transition for external observers.
-    // The generator's finally block handles resource cleanup.
-    const onAbort = (): void => {
-      if (agent.state === "running") {
-        agent.transition({ kind: "complete", stopReason: "interrupted" });
-      }
-    };
-    runSignal.addEventListener("abort", onAbort, { once: true });
 
     // let justified: mutable forged descriptor cache, refreshed at turn boundaries
     let forgedDescriptorsCache: readonly ToolDescriptor[] = [];
@@ -508,7 +559,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: pending engine events emitted by terminal wrappers (e.g., discovery:miss)
     const pendingEngineEvents: EngineEvent[] = [];
 
-    const rid: RunId = runId(crypto.randomUUID());
+    const rid: RunId = outerRunId;
     const sessionCtx: SessionContext = {
       agentId: pid.id,
       sessionId: factorySessionId,
@@ -581,6 +632,36 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let unsubRegistryWatch: (() => void) | undefined;
 
     try {
+      // #1682: generator body is now executing — ownership of the
+      // pre-iteration cleanup transfers to the finally block below.
+      // Clear the sweeper so a concurrent cycleSession/dispose doesn't
+      // double-fire cleanup on state the finally will drain itself.
+      preIterationCleanup = undefined;
+
+      // #1682: pre-start interrupt short-circuit. A host that published
+      // a cancel before the consumer pulled the first event must not see
+      // session-start hooks, adapter setup, or any other side effects
+      // fire. Emit the terminal `done` immediately; finally still drains
+      // cleanup via the normal path.
+      if (runSignal.aborted) {
+        const interruptedDone: EngineEvent = {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "interrupted",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: Date.now() - sessionStartedAt,
+            },
+          },
+        };
+        yield interruptedDone;
+        return;
+      }
+
       // --- Run / session initialization ---
       // onSessionStart fires exactly once across the runtime's lifetime,
       // on the first run() call, with this run's sessionCtx (tests rely on
@@ -1445,13 +1526,29 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         agent.transition({ kind: "complete", stopReason: "interrupted" });
       }
 
-      // #1742: signal that this run has fully unwound so a queued
-      // cycleSession() / dispose() can safely proceed.
-      currentRunResolveSettled?.();
-      currentRunResolveSettled = undefined;
-      currentGenerator = undefined;
-      running = false;
-      runningEpoch = undefined;
+      // #1682: release the registry slot — per-run, safe to call unconditionally.
+      // The unregister closure is idempotent and per-run; calling it twice or
+      // after the registry has already shed the entry is a no-op.
+      unregisterFromRegistry?.();
+
+      // #1682 (this fix): factory-scoped refs may now belong to a NEWER run
+      // if this finally is firing late for a stale iterable that was aborted
+      // pre-iteration and is now being consumed after run B took ownership.
+      // Only clear them if THIS run still owns the slot — checked via
+      // `runningEpoch === expectedEpoch`. Otherwise run B's live state stays intact.
+      if (runningEpoch === expectedEpoch) {
+        activeController = undefined;
+        activeRunSignal = undefined;
+        currentRunIdRef = undefined;
+
+        // #1742: signal that this run has fully unwound so a queued
+        // cycleSession() / dispose() can safely proceed.
+        currentRunResolveSettled?.();
+        currentRunResolveSettled = undefined;
+        currentGenerator = undefined;
+        running = false;
+        runningEpoch = undefined;
+      }
 
       // #1742: onSessionEnd fires once from runtime.dispose, NOT at the end
       // of every run(). See factorySessionId block above.
@@ -1468,9 +1565,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     get sessionId(): string {
       return factorySessionId as string;
     },
+    /** #1682 + #1742 round 10: RunId of the active run, or undefined between
+     *  runs. Callers can cache this at run-start and pass it to
+     *  sessionRegistry.interrupt(sid, reason, runId) to ensure
+     *  cross-generation safety — a late cancel for a finished run will be a
+     *  no-op rather than hitting a subsequent run on the same sessionId. */
+    get currentRunId(): RunId | undefined {
+      return currentRunIdRef;
+    },
     conflicts,
 
-    run(input: EngineInput): AsyncIterable<EngineEvent> {
+    run(input: EngineInput): RunHandle {
       if (poisoned) {
         // #1742: a previous cycleSession()/dispose() hit the lifecycle
         // settle timeout — an in-flight tool ignored abort and the
@@ -1514,34 +1619,188 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (running) {
         throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
+
+      // #1682: create and publish the per-run cancel handle SYNCHRONOUSLY
+      // before marking `running`, so interrupt() works from the moment
+      // run() is externally observable as active — not only after the
+      // consumer issues its first .next(). A host that starts a run in
+      // the background and immediately issues a cancel must reach the
+      // registry/runtime, not fall through to false.
+      //
+      // Generate a per-run identity BEFORE creating the AbortController so
+      // currentRunIdRef is set as early as possible. Callers can cache this
+      // at run-start and pass it to sessionRegistry.interrupt(..., runId)
+      // to guard against cross-generation cancel hits.
+      const currentRid: RunId = runId(crypto.randomUUID());
+      currentRunIdRef = currentRid;
+      const abortController = new AbortController();
+      const runSignal =
+        input.signal !== undefined
+          ? AbortSignal.any([input.signal, abortController.signal])
+          : abortController.signal;
+      const onAbort = (): void => {
+        if (agent.state === "running") {
+          agent.transition({ kind: "complete", stopReason: "interrupted" });
+        }
+        // #1682: self-cleaning pre-iteration abort. If the host
+        // aborts before the consumer iterates — either by calling
+        // interrupt() immediately after run() or by passing an
+        // already-aborted input.signal — the generator body may
+        // never run. Without this, `running`, the registry slot,
+        // and the published controller/signal would leak until a
+        // later cycleSession/dispose sweep. Check `preIterationCleanup`
+        // as the invariant: it's set in run(), cleared as the first
+        // statement inside streamEvents' try block. If it's still
+        // set, the generator has NOT taken ownership of cleanup, so
+        // we do it here.
+        if (preIterationCleanup !== undefined) {
+          preIterationCleanup();
+          preIterationCleanup = undefined;
+          // #1682: ALSO invalidate the abandoned iterable. Without
+          // bumping sessionEpoch, a later consumer of the stale
+          // iterable passes the epoch check, re-enters streamEvents,
+          // and its finally would clobber shared globals belonging
+          // to a newer run B that started in the meantime. Bumping
+          // here forces the stale iterable to fail the epoch check
+          // and throw on first iteration, matching the invalidation
+          // semantics of cycleSession/dispose.
+          sessionEpoch += 1;
+          running = false;
+          runningEpoch = undefined;
+        }
+      };
+      runSignal.addEventListener("abort", onAbort, { once: true });
+
+      // Publish the handles for runtime.interrupt() / runtime.isInterrupted()
+      // and (optionally) register with the session registry. Registration
+      // runs BEFORE `running = true` so a throwing custom registry rolls
+      // back the listener and does not leave running latched.
+      activeController = abortController;
+      activeRunSignal = runSignal;
+      const registeredSessionId = factorySessionId;
+      // let justified: assigned under try so a throwing register unwinds cleanly.
+      let unregisterFromRegistry: (() => void) | undefined;
+      try {
+        unregisterFromRegistry = options.sessionRegistry?.register(
+          registeredSessionId,
+          currentRid,
+          abortController,
+          runSignal,
+        );
+      } catch (err) {
+        // #1682: a register() that threw may have partially mutated the
+        // registry (inserted the entry, then failed before returning the
+        // unregister closure). Best-effort evict any ghost entry so the
+        // sessionId isn't pinned for the process lifetime.
+        try {
+          options.sessionRegistry?.forceUnregister(registeredSessionId, currentRid);
+        } catch (_cleanupError: unknown) {
+          // forceUnregister failure is non-fatal; the original register error
+          // is what we surface to the caller.
+        }
+        activeController = undefined;
+        activeRunSignal = undefined;
+        currentRunIdRef = undefined;
+        runSignal.removeEventListener("abort", onAbort);
+        throw err;
+      }
+
+      // Populate the pre-iteration cleanup before marking `running`. If the
+      // consumer drops the returned iterable without iterating, this closure
+      // gets invoked by cycleSession/dispose/the stale-epoch path below so
+      // we don't leak the registry entry or the interrupt handles.
+      preIterationCleanup = () => {
+        try {
+          runSignal.removeEventListener("abort", onAbort);
+        } catch {
+          // Defensive: signal already removed is non-fatal.
+        }
+        unregisterFromRegistry?.();
+        activeController = undefined;
+        activeRunSignal = undefined;
+        currentRunIdRef = undefined;
+      };
       running = true;
       runningEpoch = sessionEpoch;
-      // #1742: currentRunSettled / currentRunResolveSettled are now
-      // initialized INSIDE streamEvents on its first iteration, not
-      // here. Round 9 review: setting them in run() synchronously meant
-      // an abandoned async iterable (caller called run() but never
-      // iterated) left a never-resolving promise behind, so the next
-      // cycleSession() / dispose() spent the full settle timeout
-      // waiting for a run that never started — and falsely poisoned
-      // the runtime.
-      //
-      // #1742 round 10: snapshot the current session epoch. The
-      // generator validates this on its first iteration so an iterable
-      // that crosses a `cycleSession()` boundary is rejected instead
-      // of attaching to the new session and running pre-clear input
-      // against freshly cleared state.
+
+      // #1682 + #1742 round 10: snapshot the epoch for this iterable BEFORE
+      // anything (most importantly the already-aborted onAbort fire) can
+      // mutate sessionEpoch. A later consumer of the iterable compares
+      // its captured runEpoch against the live sessionEpoch; capturing
+      // AFTER onAbort's bump would silently let the stale iterable pass
+      // the epoch check.
       const runEpoch = sessionEpoch;
+
+      // #1682: AbortSignal.addEventListener does NOT fire for an
+      // already-aborted signal. A caller who passes an already-aborted
+      // input.signal would otherwise never get self-cleanup. Fire
+      // onAbort manually AFTER preIterationCleanup and running are set,
+      // so onAbort's pre-iteration check can find and invoke the cleanup.
+      // The `{ once: true }` contract is honored by removing the listener
+      // first to prevent double-fire on a future abort event.
+      if (runSignal.aborted) {
+        runSignal.removeEventListener("abort", onAbort);
+        onAbort();
+      }
+      // #1742: currentRunSettled / currentRunResolveSettled are initialized
+      // INSIDE streamEvents on its first iteration, not here. Round 9 review:
+      // setting them in run() synchronously meant an abandoned async iterable
+      // (caller called run() but never iterated) left a never-resolving
+      // promise behind, so the next cycleSession() / dispose() spent the
+      // full settle timeout waiting for a run that never started — and
+      // falsely poisoned the runtime.
+      // Snapshot the session id and run id at run-start for the per-run
+      // interrupt closure. These are immutable for the lifetime of this
+      // particular run invocation, so the closure captures them by value.
+      const runSessionId = factorySessionId;
+      const runRid = currentRid;
+
+      // #1682: RunHandle is single-consumer. The first [Symbol.asyncIterator]
+      // call allocates the generator and caches it; subsequent calls throw.
+      // Without this, two iterators from the same handle could both enter the
+      // engine pipeline, duplicating side effects and racing cleanup.
+      // let justified: mutable gen cache — populated on first iterator request
+      let cachedGenerator: ReturnType<typeof streamEvents> | undefined;
       return {
-        [Symbol.asyncIterator]: () => {
+        runId: currentRid,
+        [Symbol.asyncIterator](): ReturnType<typeof streamEvents> {
+          if (cachedGenerator !== undefined) {
+            throw KoiRuntimeError.from(
+              "VALIDATION",
+              "RunHandle is single-consumer: [Symbol.asyncIterator]() can only be called once per run() invocation. Use the cached iterator or start a new run().",
+            );
+          }
           // #1742 loop-3 round 1: capture the generator so cycleSession()
           // / dispose() can call .return() to fast-path abandoned-after-
-          // iteration cleanup. The generator overwrites currentGenerator
-          // for itself on first iteration (via the same closure since
-          // we set it here at iterator creation, before any consumer
-          // .next() can race in).
-          const gen = streamEvents(input, runEpoch);
+          // iteration cleanup.
+          const gen = streamEvents(
+            input,
+            runEpoch,
+            abortController,
+            runSignal,
+            onAbort,
+            unregisterFromRegistry,
+            currentRid,
+          );
+          cachedGenerator = gen;
           currentGenerator = gen;
           return gen;
+        },
+        interrupt(reason?: string): boolean {
+          // Run-scoped interrupt: only aborts THIS run, identified by the
+          // runRid captured at run-start. If the run has already completed
+          // (currentRunIdRef !== runRid) or a later run B is active, this
+          // is a safe no-op — it will NOT hit run B.
+          if (options.sessionRegistry !== undefined) {
+            return options.sessionRegistry.interrupt(runSessionId, reason, runRid);
+          }
+          // Fallback (no registry). Verify we still own the active slot
+          // AND observe the composite signal for consistency with
+          // isInterrupted().
+          if (currentRunIdRef !== runRid) return false;
+          if (runSignal.aborted) return false;
+          abortController.abort(reason);
+          return true;
         },
       };
     },
@@ -1664,7 +1923,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             }
           } else if (running) {
             // No generator entry yet — nothing to wait for, just
-            // release the concurrent-run latch.
+            // release the concurrent-run latch. #1682: also sweep the
+            // pre-iteration interrupt handle + registry slot so the
+            // abandoned iterable doesn't leak stale state.
+            preIterationCleanup?.();
+            preIterationCleanup = undefined;
             running = false;
             runningEpoch = undefined;
           }
@@ -1811,6 +2074,37 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       sessionEpoch += 1;
     },
 
+    interrupt(reason?: string): boolean {
+      // #1682: fail closed when THIS runtime has no locally active run. A
+      // shared SessionRegistry can be keyed by a sessionId that another
+      // runtime owns (resume/rebind flows). Without this guard, an idle
+      // runtime could abort a sibling runtime's active run via the
+      // registry. The guard ensures interrupt() is strictly about the
+      // run this runtime owns.
+      if (currentRunIdRef === undefined) return false;
+      if (options.sessionRegistry !== undefined) {
+        // Pass currentRunIdRef so the registry enforces runId match — the
+        // call is rejected if another runtime has replaced the entry.
+        return options.sessionRegistry.interrupt(factorySessionId, reason, currentRunIdRef);
+      }
+      // Fallback path (no registry wired). Check the COMPOSITE signal so
+      // an external input.signal abort is reflected correctly — matches
+      // the contract exposed by isInterrupted() which also reads the
+      // composite signal.
+      if (activeController === undefined || activeRunSignal === undefined) return false;
+      if (activeRunSignal.aborted) return false;
+      activeController.abort(reason);
+      return true;
+    },
+    isInterrupted(): boolean {
+      // #1682: isInterrupted() reports state for THIS runtime's active run
+      // only. If this runtime is idle, return false even when a shared
+      // registry has an entry for this sessionId owned by a sibling
+      // runtime — reading sibling state would leak cross-runtime ownership.
+      if (activeRunSignal === undefined) return false;
+      return activeRunSignal.aborted;
+    },
+
     dispose: async (): Promise<void> => {
       // #1742 loop-3 round 2: split disposed/disposing so a timeout
       // during cleanup does NOT permanently latch the runtime as
@@ -1911,6 +2205,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             );
           }
         } else if (running) {
+          // #1682: sweep pre-iteration state for the same reason as cycleSession.
+          preIterationCleanup?.();
+          preIterationCleanup = undefined;
           running = false;
           runningEpoch = undefined;
         }
