@@ -321,6 +321,77 @@ describe("applyActivityTimeout", () => {
     }
   });
 
+  test("stall during tool-call argument streaming (before tool_call_end) still triggers idle", async () => {
+    // tool_call_start fires as soon as the model names the tool, well before
+    // execution. A stall between tool_call_start and tool_call_end is a real
+    // stuck-model stall — it MUST NOT be masked by tool-activity suppression.
+    const callId = toolCallId("streaming-stall");
+    let terminated = false;
+    const adapter: EngineAdapter = {
+      engineId: "stalled-streaming",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "text_delta", delta: "picking tool" };
+        yield { kind: "tool_call_start", toolName: "foo", callId };
+        // Model stalls forever (no tool_call_delta, no tool_call_end).
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, {
+      idleWarnMs: 25,
+      idleTerminateMs: 60,
+      onTerminated: () => {
+        terminated = true;
+      },
+    });
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    expect(terminated).toBe(true);
+    expect(out.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(true);
+  });
+
+  test("maxDurationMs: POSITIVE_INFINITY disables wall-clock backstop", async () => {
+    let terminated = false;
+    const wrapped = applyActivityTimeout(activeAdapter(10, 5), {
+      maxDurationMs: Number.POSITIVE_INFINITY,
+      onTerminated: () => {
+        terminated = true;
+      },
+    });
+    const events = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    expect(terminated).toBe(false);
+    expect(events.some((e) => isCustom(e, "activity.terminated.wall_clock"))).toBe(false);
+    expect(events.at(-1)?.kind).toBe("done");
+  });
+
+  test("finalization does not hang on a non-cooperative adapter that ignores abort", async () => {
+    // Adapter that ignores its signal and keeps yielding forever.
+    const adapter: EngineAdapter = {
+      engineId: "non-cooperative",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        while (true) {
+          await sleep(5);
+          yield { kind: "text_delta", delta: "." };
+        }
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, { maxDurationMs: 30 });
+    const start = Date.now();
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+    const elapsed = Date.now() - start;
+
+    // Wall-clock aborts at ~30ms; generator finalization must return promptly
+    // rather than blocking on the still-running pump.
+    expect(out.some((e) => isCustom(e, "activity.terminated.wall_clock"))).toBe(true);
+    expect(elapsed).toBeLessThan(500);
+  });
+
   test("long-running tool execution (silent gap between tool_call_end and tool_result) is not idle", async () => {
     const callId = toolCallId("long-running-tool");
     let terminated = false;

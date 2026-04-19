@@ -76,12 +76,24 @@ export function applyActivityTimeout(
 }
 
 function hasAnyTimeout(config: ActivityTimeoutConfig): boolean {
-  return config.idleWarnMs !== undefined || config.maxDurationMs !== undefined;
+  return isPositiveFinite(config.idleWarnMs) || isPositiveFinite(config.maxDurationMs);
 }
 
 function resolveTerminateMs(config: ActivityTimeoutConfig): number | undefined {
-  if (config.idleWarnMs === undefined) return undefined;
-  return config.idleTerminateMs ?? config.idleWarnMs * 2;
+  if (!isPositiveFinite(config.idleWarnMs)) return undefined;
+  const explicit = config.idleTerminateMs;
+  if (isPositiveFinite(explicit)) return explicit;
+  return config.idleWarnMs * 2;
+}
+
+/**
+ * `setTimeout(Infinity)` overflows to ~1ms in Node/Bun rather than disabling
+ * the timer, so non-finite durations must be treated as "no timer" — this is
+ * also the documented opt-out for callers who want no wall-clock cap:
+ * `maxDurationMs: Number.POSITIVE_INFINITY`.
+ */
+function isPositiveFinite(n: number | undefined): n is number {
+  return n !== undefined && Number.isFinite(n) && n > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +149,12 @@ async function* wrapStream(
   } finally {
     clearAll(timers);
     ctl.abort();
-    await pump.catch(() => {});
+    // Deliberately DO NOT await the pump: a non-cooperative adapter that
+    // ignores its abort signal would otherwise hang generator finalization
+    // forever. The pump promise already has a rejection handler attached
+    // (via the assignment sink in pumpInner's catch/finally), and its queue
+    // writes after this point are harmless — the consumer is gone.
+    pump.catch(() => {});
   }
 }
 
@@ -183,8 +200,8 @@ interface TimerDeps {
 
 function armTimers(deps: TimerDeps): Timers {
   const timers: Timers = { warnTimer: null, termTimer: null, wallTimer: null };
-  if (deps.warnMs !== undefined) scheduleWarn(timers, deps);
-  if (deps.maxMs !== undefined) scheduleWall(timers, deps);
+  if (isPositiveFinite(deps.warnMs)) scheduleWarn(timers, deps);
+  if (isPositiveFinite(deps.maxMs)) scheduleWall(timers, deps);
   return timers;
 }
 
@@ -198,7 +215,7 @@ function idleElapsed(state: WrapperState, now: () => number): number {
 }
 
 function scheduleWarn(timers: Timers, deps: TimerDeps): void {
-  if (deps.warnMs === undefined) return;
+  if (!isPositiveFinite(deps.warnMs)) return;
   const remaining = deps.warnMs - idleElapsed(deps.state, deps.now);
   const delay = Math.max(remaining, 0);
   timers.warnTimer = setTimeout(() => checkWarn(timers, deps), delay);
@@ -229,7 +246,7 @@ function checkWarn(timers: Timers, deps: TimerDeps): void {
 }
 
 function scheduleTerm(timers: Timers, deps: TimerDeps): void {
-  if (deps.terminateMs === undefined) return;
+  if (!isPositiveFinite(deps.terminateMs)) return;
   const remaining = deps.terminateMs - idleElapsed(deps.state, deps.now);
   const delay = Math.max(remaining, 0);
   timers.termTimer = setTimeout(() => checkTerm(timers, deps), delay);
@@ -257,7 +274,7 @@ function checkTerm(timers: Timers, deps: TimerDeps): void {
 }
 
 function scheduleWall(timers: Timers, deps: TimerDeps): void {
-  if (deps.maxMs === undefined) return;
+  if (!isPositiveFinite(deps.maxMs)) return;
   timers.wallTimer = setTimeout(() => {
     timers.wallTimer = null;
     if (deps.state.terminated !== null) return;
@@ -330,10 +347,11 @@ function recordActivity(state: WrapperState, ev: EngineEvent, now: () => number)
   //   [tool executes — can be many minutes of silence]
   //   tool_result                                         (turn-runner emits after execution)
   //
-  // The long silent gap is between tool_call_end and tool_result, so the
-  // pending-tools set must span tool_call_start..tool_result.
-  // tool_call_end is NOT a release signal — it only closes argument streaming.
-  if (ev.kind === "tool_call_start") {
+  // Only the post-tool_call_end execution gap is truly silent "useful work".
+  // Argument streaming (between tool_call_start and tool_call_end) produces
+  // events on every delta; a stall there is a real stuck stream and must NOT
+  // be masked by pendingTools. So the idle-free window is tool_call_end..tool_result.
+  if (ev.kind === "tool_call_end") {
     state.pendingTools.add(ev.callId);
   } else if (ev.kind === "tool_result") {
     state.pendingTools.delete(ev.callId);
