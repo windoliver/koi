@@ -465,6 +465,7 @@ export const executionStack: PresetStack = {
         ? createTaskTools({
             board: taskBoard,
             agentId,
+            legacyReadOwner: agentId,
             bufferReader: (id) => bashOutputBuffersRef.current.get(id),
           }).map((tool) =>
             createSingleToolProvider({

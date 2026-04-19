@@ -58,7 +58,10 @@ const schema = z.object({
 export function createTaskOutputTool(
   board: ManagedTaskBoard,
   agentId: AgentId,
-  config: Pick<TaskToolsConfig, "resultSchemas" | "outputReader" | "bufferReader">,
+  config: Pick<
+    TaskToolsConfig,
+    "resultSchemas" | "outputReader" | "bufferReader" | "legacyReadOwner"
+  >,
 ): Tool {
   return {
     descriptor: {
@@ -89,12 +92,17 @@ export function createTaskOutputTool(
       }
 
       // Read ACL: allow when caller is the creator or the current assignee.
-      // Tasks with createdBy === undefined (pre-migration persisted tasks) are denied
-      // by default — the task-board migration must backfill createdBy before they
-      // become readable via task_output.
+      // Legacy tasks (createdBy === undefined) are readable only by legacyReadOwner
+      // (defaults to the session agentId) — fail-closed otherwise so pre-migration
+      // records do not become universally readable in multi-agent sessions.
       const isCreator = task.createdBy === agentId;
       const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
-      if (!isCreator && !isAssignee) {
+      const legacyReadOwner = config.legacyReadOwner ?? agentId;
+      const isLegacyReadable =
+        task.createdBy === undefined &&
+        legacyReadOwner !== undefined &&
+        legacyReadOwner === agentId;
+      if (!isCreator && !isAssignee && !isLegacyReadable) {
         const deniedResponse: TaskOutputResponse = {
           kind: "permission_denied",
           reason: "Not authorized to read this task's output.",

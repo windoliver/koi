@@ -1150,14 +1150,68 @@ describe("task_output — ACL", () => {
       // createdBy intentionally omitted — simulates pre-migration persisted task
     });
 
-    // Any agent (neither creator nor assignee) must be denied
-    const anyTools = createNamedTaskTools({ board, agentId: agentId("agent-unrelated") });
+    // Any agent (neither creator nor assignee) must be denied when legacyReadOwner
+    // is explicitly set to a different agent.
+    const anyTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-unrelated"),
+      legacyReadOwner: agentId("agent-session"),
+    });
     const r = (await exec(anyTools.output, { task_id: "legacy-task-001" })) as {
       kind: string;
       reason: string;
     };
     expect(r.kind).toBe("permission_denied");
     expect(typeof r.reason).toBe("string");
+  });
+
+  test("legacy task with createdBy undefined: legacyReadOwner matching caller — read succeeds", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-002");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy2",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+
+    // legacyReadOwner matches the caller — read must succeed
+    const sessionTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-session"),
+      legacyReadOwner: agentId("agent-session"),
+    });
+    const r = (await exec(sessionTools.output, { task_id: "legacy-task-002" })) as { kind: string };
+    // pending (no status transition) — the important thing is it is NOT permission_denied
+    expect(r.kind).not.toBe("permission_denied");
+  });
+
+  test("legacy task with createdBy undefined: legacyReadOwner set to different agent — denied", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-003");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy3",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+
+    // legacyReadOwner is a DIFFERENT agent than the caller — must be denied
+    const callerTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-caller"),
+      legacyReadOwner: agentId("agent-session"),
+    });
+    const r = (await exec(callerTools.output, { task_id: "legacy-task-003" })) as { kind: string };
+    expect(r.kind).toBe("permission_denied");
   });
 });
 

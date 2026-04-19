@@ -135,6 +135,15 @@ export interface TaskToolsConfig {
    */
   readonly agentId: AgentId;
   /**
+   * Agent allowed to read tasks persisted before createdBy existed.
+   * Defaults to the session's main agentId. Set to a specific agent (or leave
+   * undefined to deny all legacy reads) in multi-agent sessions.
+   *
+   * Legacy tasks (createdBy === undefined) are readable ONLY by this agent.
+   * All other callers receive permission_denied even if legacyReadOwner is set.
+   */
+  readonly legacyReadOwner?: AgentId | undefined;
+  /**
    * Optional per-kind Zod schemas for validating TaskResult.results.
    * Key: task.metadata.kind (string). When a completed task's results
    * don't match its registered schema, task_output returns resultsValidationError.
