@@ -166,9 +166,11 @@ export function createSaveArtifact(args: {
     // Resume-in-flight path: finish the existing row's repair instead of
     // creating a duplicate. Falls through to the same post-commit repair loop.
     if (committed.resumeArtifactId && committed.resumeIntentId) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (await args.blobStore.has(hash)) break;
-        await args.blobStore.put(input.data);
+      const verified = await verifyBlobPresent(args.blobStore, hash, input.data);
+      if (!verified) {
+        throw new Error(
+          `saveArtifact: blob presence could not be verified after repair (hash=${hash}); row left at blob_ready=0, intent retained for recovery`,
+        );
       }
       const updateResult = args.db
         .query("UPDATE artifacts SET blob_ready = 1 WHERE id = ? AND blob_ready = 0")
@@ -195,15 +197,21 @@ export function createSaveArtifact(args: {
       throw new Error("saveArtifact: transaction returned no path");
     }
 
-    // Step 7: post-commit repair
+    // Step 7: post-commit repair. Verify blob presence positively before
+    // flipping blob_ready=1 — a row published without verified bytes would
+    // surface a corruption error on the next get, not a successful save.
     if (committed.needsRePut) {
       // Sweep has committed its claim; may delete blob at any moment.
       // Unconditional re-put here, before the verify loop.
       await args.blobStore.put(input.data);
     }
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (await args.blobStore.has(hash)) break;
-      await args.blobStore.put(input.data);
+    const verified = await verifyBlobPresent(args.blobStore, hash, input.data);
+    if (!verified) {
+      // Fail closed: leave row at blob_ready=0 + intent in place so startup
+      // recovery can either promote it (if the backend comes back) or reap it.
+      throw new Error(
+        `saveArtifact: blob presence could not be verified after repair (hash=${hash}); row ${newId} left at blob_ready=0 for recovery`,
+      );
     }
 
     const updateResult = args.db
@@ -221,4 +229,21 @@ export function createSaveArtifact(args: {
       .get(newId) as ArtifactRow;
     return { ok: true, value: rowToArtifact(row) };
   };
+}
+
+/**
+ * Attempts up to 2 put/has cycles, then does one final has() to confirm.
+ * Returns true iff has() returned true at any point; false means the backend
+ * never confirmed presence and the caller should NOT publish blob_ready=1.
+ */
+async function verifyBlobPresent(
+  blobStore: BlobStore,
+  hash: string,
+  data: Uint8Array,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (await blobStore.has(hash)) return true;
+    await blobStore.put(data);
+  }
+  return await blobStore.has(hash);
 }

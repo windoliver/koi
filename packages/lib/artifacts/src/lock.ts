@@ -14,7 +14,15 @@
  * file-based approach is sufficient for single-host deployments.
  */
 
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 
 const LOCK_SUFFIX = ".lock";
@@ -51,7 +59,14 @@ function tryRemoveStaleLock(lockPath: string): boolean {
   try {
     const content = readFileSync(lockPath, "utf8");
     const pid = parseLockPid(content);
-    if (pid === undefined) return false;
+    // Unparseable or empty lock contents mean the previous owner crashed
+    // mid-write (or someone corrupted the file). Treat as stale rather than
+    // blocking every future open — the lock-file mechanism only claims
+    // advisory single-writer semantics, not crash-proof forensics.
+    if (pid === undefined) {
+      unlinkSync(lockPath);
+      return true;
+    }
     if (pidIsAlive(pid)) return false;
     unlinkSync(lockPath);
     return true;
@@ -89,8 +104,19 @@ function acquireLockFile(lockPath: string): AcquiredLock {
     }
   }
   // Write the owner token (PID:UUID) so release can verify ownership before
-  // unlinking. The UUID ensures uniqueness even across PID reuse.
-  writeFileSync(fd, token);
+  // unlinking. The UUID ensures uniqueness even across PID reuse. fsync so
+  // a SIGKILL'd owner doesn't leave a zero-length file that would block
+  // future stale-lock recovery.
+  const tokenBytes = Buffer.from(token, "utf8");
+  let written = 0;
+  while (written < tokenBytes.byteLength) {
+    written += writeSync(fd, tokenBytes, written, tokenBytes.byteLength - written);
+  }
+  try {
+    fsyncSync(fd);
+  } catch {
+    /* best-effort — not all fs support fsync on the fd we just opened with wx */
+  }
   return { fd, token };
 }
 
