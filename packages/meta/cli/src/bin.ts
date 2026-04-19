@@ -35,6 +35,7 @@ Commands:
   stop [manifest]        Stop the service
   deploy [manifest]      Install/uninstall OS service
   plugin <subcommand>    Manage plugins (install, remove, enable, disable, update, list)
+  bg <subcommand>        Manage background agent sessions (ps, logs, kill, attach, detach)
 
 Global flags:
   --version, -V          Show version
@@ -80,6 +81,68 @@ if (!hasSubcommand) {
   if (wantsHelp) {
     process.stdout.write(HELP);
     process.exit(0);
+  }
+}
+
+// Early SIGUSR1 handler (#1906) — installed SYNCHRONOUSLY after the fast
+// path clears so the re-exec wrapper's forwarded SIGUSR1 cannot land on
+// the child before any handler is armed. The install itself runs inline:
+//
+//   * No static import of ./tui-sigusr1.js so the fast path above stays
+//     import-free (the module is still loaded later, lazily, through
+//     dispatch.ts or tui-command.ts).
+//   * No dynamic `await import()` either — the await would push the
+//     install behind a module-resolution round-trip and re-open the race
+//     the round-5 review flagged.
+//
+// Gate:
+//   1. `rawArgv[0] === "tui"` — this invocation is specifically the TUI
+//      command, not a `koi start`/`koi serve` that happens to have the
+//      browser marker in its environment (scope-leak flagged in round 9).
+//   2. `KOI_TUI_BROWSER_SOLID === "1"` — we are the re-exec child, not
+//      the parent wrapper. The parent has its own SIGUSR1 forwarding
+//      path in tui-reexec-signals.ts.
+//   3. `process.platform !== "win32"` — Windows does not deliver SIGUSR1.
+//
+// Exit code uses a platform map mirrored from tui-sigusr1.ts's
+// FALLBACK_SIGUSR1. Kept in sync by the SIGUSR1_EXIT_CODE test that
+// asserts `128 + expected[platform]` on every supported host.
+//
+// Handler reference is stashed on globalThis via Symbol.for so
+// runTuiCommand can locate and remove ONLY this specific listener
+// (not every SIGUSR1 listener — an embedding host may own others).
+if (
+  rawArgv[0] === "tui" &&
+  process.env.KOI_TUI_BROWSER_SOLID === "1" &&
+  process.platform !== "win32"
+) {
+  const p = process.platform;
+  const sigNum = p === "darwin" || p === "freebsd" || p === "netbsd" || p === "openbsd" ? 30 : 10;
+  const earlyHandler = (): void => {
+    process.exit(128 + sigNum);
+  };
+  const holder = globalThis as Record<symbol, unknown>;
+  holder[Symbol.for("koi:tui:sigusr1:early-handler")] = earlyHandler;
+  process.on("SIGUSR1", earlyHandler);
+  // Child-ready ack (#1906 residual) — notify the re-exec parent via
+  // SIGUSR2 that our SIGUSR1 handler is armed. The parent queues any
+  // pending SIGUSR1 forwards and drains them on receipt of this ack,
+  // closing the Bun-runtime-init race where a forwarded SIGUSR1 could
+  // otherwise land mid-module-loading and SIGTRAP-panic the child.
+  //
+  // Best-effort: wrapped in try/catch so a missing/exited parent (e.g.
+  // child spawned outside the wrapper path) doesn't abort startup.
+  // SIGUSR2 default disposition is "terminate" on POSIX, so the parent
+  // MUST have its own SIGUSR2 handler installed — tui-reexec-signals.ts
+  // arms one BEFORE Bun.spawn returns, so by the time this code runs
+  // (necessarily after spawn) the handler is guaranteed to be present.
+  try {
+    if (typeof process.ppid === "number" && process.ppid > 0) {
+      process.kill(process.ppid, "SIGUSR2");
+    }
+  } catch {
+    // Parent already gone or doesn't accept SIGUSR2 — ignore; the parent
+    // falls back to its 500ms delayed-replay heuristic.
   }
 }
 
@@ -131,6 +194,24 @@ switch (result.kind) {
         env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
       },
     );
+    // Re-check terminated AFTER spawn but BEFORE bind (#1906 R8/R9): a
+    // SIGUSR1 landing between the pre-spawn check and this point would
+    // otherwise let the child start the TUI bootstrap and hit the exact
+    // runtime-init race the pre-spawn-abort was meant to avoid. SIGKILL
+    // the newborn child synchronously — nothing to tear down gracefully.
+    //
+    // SIGUSR1 only: SIGTERM/SIGHUP MUST flow through bindChild →
+    // forwardToChild so the graceful SIGTERM-with-SIGKILL-escalation
+    // path runs; skipping it would turn an ordinary supervisor shutdown
+    // into an abrupt kill.
+    if (guard.terminated && guard.shouldKillNewbornChild) {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // Child may already be exiting.
+      }
+      process.exit(guard.terminatedExitCode);
+    }
     guard.bindChild(proc);
     const childExit = await proc.exited;
     // If the parent handled a SIGHUP, preserve that exit code instead
@@ -140,6 +221,9 @@ switch (result.kind) {
     break;
   }
   case "tui": {
+    // Early SIGUSR1 handler is already armed at the top of this file
+    // for the browser-build child (#1906). runTuiCommand swaps it for
+    // the full graceful-shutdown handler during bootstrap.
     const { runTuiCommand } = await import("./tui-command.js");
     await runTuiCommand(result.flags);
     process.exit(0);

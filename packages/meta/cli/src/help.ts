@@ -47,6 +47,14 @@ Options:
       --verifier-timeout <ms>      Per-iteration verifier timeout (default 120000)
       --allow-side-effects         Required with --until-pass (trust-boundary opt-in)
       --verifier-inherit-env       Forward parent env to verifier subprocess
+      --headless                   CI/CD mode: NDJSON stdout, auto-deny ask perms
+                                     exit 0=ok 1=agent-fail 2=perm-denied
+                                     3=budget 4=timeout 5=internal. Requires --prompt.
+      --allow-tool <name>          Whitelist a tool for auto-allow in --headless (repeatable)
+      --max-duration-ms <n>        Run deadline in ms + 10s teardown grace (--headless only).
+                                     Hard timeout: calls process.exit on expiry, so in-process
+                                     embedders should invoke via subprocess if they need to
+                                     survive the deadline.
   -h, --help                       Show this help
 `;
 
@@ -186,6 +194,27 @@ Options:
   -h, --help             Show this help
 `;
 
+const bgHelp = `koi bg — Manage background agent sessions
+
+Usage:
+  koi bg <subcommand> [worker-id] [options]
+
+Subcommands:
+  ps                     List background sessions
+  logs <id>              Tail a session's log file
+  kill <id>              Terminate a session (SIGTERM, then SIGKILL after 5s)
+  attach <id>            Attach to a session (read-only on subprocess backend)
+  detach                 Detach from an attached session (tmux backend only)
+
+Options:
+  -f, --follow           Keep tailing after printing existing log content (logs)
+      --json             Emit JSON instead of text (ps)
+      --registry-dir <p> Override the default registry directory
+  -h, --help             Show this help
+
+Default registry: $KOI_STATE_DIR/daemon/sessions, or ~/.koi/daemon/sessions.
+`;
+
 export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   init: initHelp,
   start: startHelp,
@@ -199,4 +228,5 @@ export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   deploy: deployHelp,
   mcp: mcpHelp,
   plugin: pluginHelp,
+  bg: bgHelp,
 };

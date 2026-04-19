@@ -74,6 +74,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/agent-summary": {
+      "name": "@koi/agent-summary",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/bash-ast": {
       "name": "@koi/bash-ast",
       "version": "0.0.0",
@@ -85,6 +94,10 @@
       "devDependencies": {
         "fast-check": "4.3.0",
       },
+    },
+    "packages/lib/bash-classifier": {
+      "name": "@koi/bash-classifier",
+      "version": "0.0.0",
     },
     "packages/lib/bash-security": {
       "name": "@koi/bash-security",
@@ -289,6 +302,14 @@
       },
       "peerDependencies": {
         "@opentelemetry/api": "^1.9.0",
+      },
+    },
+    "packages/lib/middleware-plan-persist": {
+      "name": "@koi/middleware-plan-persist",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/lib/middleware-planning": {
@@ -522,7 +543,12 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/url-safety": "workspace:*",
       },
+    },
+    "packages/lib/url-safety": {
+      "name": "@koi/url-safety",
+      "version": "0.0.0",
     },
     "packages/lib/validation": {
       "name": "@koi/validation",
@@ -541,6 +567,7 @@
       },
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/agent-summary": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -548,6 +575,7 @@
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
+        "@koi/daemon": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
@@ -569,6 +597,7 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -626,6 +655,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/agent-summary": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
@@ -645,6 +675,7 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/governance-core": "workspace:*",
+        "@koi/governance-defaults": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -663,6 +694,7 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -691,6 +723,7 @@
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
+        "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -841,6 +874,17 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/governance-defaults": {
+      "name": "@koi/governance-defaults",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/governance-core": "workspace:*",
+      },
+    },
     "packages/security/middleware-audit": {
       "name": "@koi/middleware-audit",
       "version": "0.0.0",
@@ -863,8 +907,10 @@
       "name": "@koi/middleware-permissions",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/bash-classifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/security/permissions": {
@@ -1161,11 +1207,15 @@
 
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
+    "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
+
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
 
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
+
+    "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
 
@@ -1217,6 +1267,8 @@
 
     "@koi/governance-core": ["@koi/governance-core@workspace:packages/security/governance-core"],
 
+    "@koi/governance-defaults": ["@koi/governance-defaults@workspace:packages/security/governance-defaults"],
+
     "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
@@ -1254,6 +1306,8 @@
     "@koi/middleware-otel": ["@koi/middleware-otel@workspace:packages/lib/middleware-otel"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
+
+    "@koi/middleware-plan-persist": ["@koi/middleware-plan-persist@workspace:packages/lib/middleware-plan-persist"],
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
 
@@ -1330,6 +1384,8 @@
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
 
     "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
+
+    "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 

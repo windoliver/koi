@@ -413,14 +413,14 @@ function sanitizeIndexValue(value: string): string {
     .trim();
 }
 
-/** Escapes Markdown link metacharacters in a title (brackets). */
+/** Escapes Markdown link metacharacters in a title (backslash + brackets). */
 function escapeTitle(value: string): string {
-  return value.replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+  return value.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
 }
 
-/** Unescapes Markdown link metacharacters in a title. */
+/** Unescapes Markdown link metacharacters in a title (backslash + brackets). */
 function unescapeTitle(value: string): string {
-  return value.replace(/\\\[/g, "[").replace(/\\\]/g, "]");
+  return value.replace(/\\([\[\]\\])/g, "$1");
 }
 
 /**

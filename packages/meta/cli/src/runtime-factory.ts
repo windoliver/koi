@@ -59,6 +59,7 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
@@ -192,11 +193,41 @@ export const TUI_WRITE_PLAN_ALLOW_RULE: SourcedRule = {
   source: "policy",
 };
 
+/**
+ * Auto-allow rules for `koi_plan_save` / `koi_plan_load` — installed
+ * alongside `TUI_WRITE_PLAN_ALLOW_RULE` only when planning is opted
+ * in. Both are no-side-effect-outside-baseDir by construction (the
+ * plan-persist adapter validates baseDir against cwd at construction
+ * and rejects path traversal at the tool boundary), so they are safe
+ * to auto-allow.
+ */
+export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
+  { pattern: "koi_plan_save", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "koi_plan_load", action: "invoke", effect: "allow", source: "policy" },
+];
+
 // ---------------------------------------------------------------------------
 // Config & return types
 // ---------------------------------------------------------------------------
 
 export interface KoiRuntimeConfig {
+  /**
+   * When true, skip loading `~/.koi/hooks.json`. Per-invocation config
+   * instead of the global KOI_DISABLE_HOOKS env var so concurrent
+   * runtimes in the same process don't interfere with each other's hook
+   * policy. `koi start --headless` sets this true by default (issue
+   * #1648); interactive hosts leave it undefined.
+   */
+  readonly disableUserHooks?: boolean | undefined;
+  /**
+   * When true, build the default local filesystem backend with
+   * `allowExternalPaths: false` so whitelisted `fs_*` tools cannot
+   * escape the workspace via absolute paths or `..` segments. Only
+   * applies when `config.filesystem` is not explicitly provided.
+   * `koi start --headless` sets this true by default to prevent a
+   * `--allow-tool fs_read` from reading `/etc/passwd` on a CI runner.
+   */
+  readonly workspaceOnlyFs?: boolean | undefined;
   /** Model HTTP adapter — its complete/stream terminals are exposed to middleware. */
   readonly modelAdapter: ModelAdapter;
   /** Model name for ATIF metadata. */
@@ -1038,8 +1069,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // For the default local backend (`name === "local"`), the checkpoint
   // stack skips both — the restore protocol treats absent/local ops as
   // direct local I/O, which is the existing behavior.
+  // Headless runs lock the default local backend to workspace-only
+  // semantics: with allowExternalPaths=true, a whitelisted `fs_read`
+  // could resolve `/etc/passwd` or `../../secrets.env` and exfiltrate
+  // CI-runner secrets. Headless's --allow-tool whitelist is meant to
+  // contain tool ACCESS, not broaden filesystem scope. Interactive hosts
+  // keep the relaxed default so operators can still reference files
+  // outside the project during a REPL session.
   const filesystemBackend: FileSystemBackend =
-    config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+    config.filesystem ??
+    createLocalFileSystem(cwd, {
+      allowExternalPaths: config.workspaceOnlyFs !== true,
+    });
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
@@ -1093,19 +1134,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // present without one. Prompt hooks (kind: "prompt") are supported via a
   // lightweight PromptModelCaller that delegates to the TUI's model adapter
   // for single-shot verification.
-  const loadedHooks = await loadUserRegisteredHooks({
-    filterAgentHooks: true,
-    onAgentHooksFiltered: (names) => {
-      console.warn(
-        `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
-      );
-    },
-    onLoadError: (message) => {
-      // Per-entry loader errors: surface each so operators see which entry
-      // broke the file instead of silently losing every hook (issue #1781).
-      console.warn(`[koi tui] hooks.json: ${message}`);
-    },
-  });
+  // Hooks gate: per-invocation config.disableUserHooks takes precedence,
+  // falling back to the legacy KOI_DISABLE_HOOKS env var for callers that
+  // haven't migrated yet. Per-invocation scoping means two runtimes in the
+  // same process don't interfere — the env-mutation path was racy under
+  // concurrent invocations (issue #1648 round 8).
+  const hooksDisabled = config.disableUserHooks === true || process.env.KOI_DISABLE_HOOKS === "1";
+  const loadedHooks = hooksDisabled
+    ? []
+    : await loadUserRegisteredHooks({
+        filterAgentHooks: true,
+        onAgentHooksFiltered: (names) => {
+          console.warn(
+            `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
+          );
+        },
+        onLoadError: (message) => {
+          // Per-entry loader errors: surface each so operators see which entry
+          // broke the file instead of silently losing every hook (issue #1781).
+          console.warn(`[koi tui] hooks.json: ${message}`);
+        },
+      });
   // Merge plugin hooks (session tier) with user hooks (user tier).
   // Plugin hooks run first within their tier; user hooks in the next tier phase.
   const allHooks = mergeUserAndPluginHooks(loadedHooks, pluginComponents.hooks, {
@@ -1154,7 +1203,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // a third-party same-named tool silently approved.
   const tuiAllowRules: readonly SourcedRule[] = [
     ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true ? [TUI_WRITE_PLAN_ALLOW_RULE] : []),
+    ...(config.planningEnabled === true
+      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+      : []),
     {
       pattern: "fs_read",
       action: "invoke",
@@ -1181,12 +1232,36 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     });
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
+  // Bash prefix enrichment (#1881). Feeds the raw command to
+  // @koi/middleware-permissions so it can derive a stable
+  // `<toolId>:<prefix>` resource for policy evaluation. Enables the
+  // `!complex` structural ratchet and dangerous-command ratchet on
+  // the decision path regardless of the backend's prefix-rule
+  // support — those fire on any allow decision that resolves a
+  // compound or known-unsafe command.
+  //
+  // Tool id matches case-insensitively: the builtin bash tool
+  // registers as "Bash" (capital) while some adapters still use
+  // "bash". Resolver only kicks in when `input.command` is a string,
+  // so non-bash tools and malformed inputs fall through to the
+  // plain tool id.
+  //
+  // `allowLegacyBackendBashFallback: true` opts into single-key
+  // evaluation for the TUI's default `createPermissionBackend`,
+  // which is not marker-aware (see docs/L2/permissions.md). The
+  // pattern backend used by `koi start` advertises the marker and
+  // gets full dual-key enrichment automatically.
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
     ...(config.approvalTimeoutMs !== undefined
       ? { approvalTimeoutMs: config.approvalTimeoutMs }
       : {}),
+    resolveBashCommand: (toolId, input) =>
+      toolId.toLowerCase() === "bash" && typeof input.command === "string"
+        ? input.command
+        : undefined,
+    allowLegacyBackendBashFallback: true,
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
@@ -1243,14 +1318,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? createGoalMiddleware({ objectives: config.goals })
       : undefined;
 
-  // --- @koi/middleware-planning: write_plan tool for structured multi-step tracking ---
-  // Opt-in via `config.planningEnabled` — default off until durable
-  // plan persistence lands (#1842). Without persistence, plan state
-  // is ephemeral: `koi tui --resume` silently drops the committed
-  // plan while the rest of the conversation survives, which would
-  // make a multi-step task continue against stale state. Hosts that
-  // explicitly accept the limitation can opt in.
-  const planBundle = config.planningEnabled === true ? createPlanMiddleware() : undefined;
+  // --- @koi/middleware-planning + @koi/middleware-plan-persist ---
+  // Opt-in via `config.planningEnabled`. When on, both bundles are
+  // wired together: plan-persist's `onPlanUpdate` is plugged into
+  // planning's commit hook so every successful `koi_plan_write` is
+  // mirrored to `<cwd>/.koi/plans/_active/<sha256(sessionId)>.md` and
+  // `koi_plan_save` / `koi_plan_load` tools become available to the
+  // model. The journal makes plan checkpoints survive process
+  // restart; the model can also explicitly checkpoint with a slug for
+  // git-diffable / cross-session named plans (#1842).
+  //
+  // Note: plan-persist hydrates its own mirror but cannot reach
+  // planning's in-process `currentPlan` (no public setter), so a
+  // restart's prior plan is recoverable via the save/load tools but
+  // is NOT auto-injected into the model's prompt. Hosts that want
+  // that behavior can call `planPersist.restoreFromJournal(sessionId)`
+  // and inject the items into a system reminder.
+  const planPersistBundle =
+    config.planningEnabled === true ? createPlanPersistMiddleware({ cwd }) : undefined;
+  const planBundle =
+    config.planningEnabled === true
+      ? createPlanMiddleware({
+          ...(planPersistBundle !== undefined
+            ? { onPlanUpdate: planPersistBundle.onPlanUpdate }
+            : {}),
+        })
+      : undefined;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -1462,8 +1555,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // needs the middleware to intercept the tool call. Otherwise
       // the call falls through to the provider's throwing fallback.
       // The middleware is session-keyed, so sharing with children is
-      // safe — parent and child have distinct sessionIds.
+      // safe — parent and child have distinct sessionIds. The same
+      // logic applies to plan-persist: when planning is on, children
+      // inherit koi_plan_save/koi_plan_load and need the middleware
+      // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -1827,6 +1924,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // gate — if permissions removes write_plan from request.tools,
       // planning must see the filtered list, not the pre-filter one.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
       // presetExtras includes the code-owned stack middleware and
       // main's env-var-gated audit preset extras (from
       // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`). Zone B manifest
@@ -1928,6 +2026,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...coreProviders,
         ...stackContribution.providers,
         ...(planBundle !== undefined ? planBundle.providers : []),
+        ...(planPersistBundle !== undefined ? planPersistBundle.providers : []),
       ],
       approvalHandler,
       userId: userInfo().username,

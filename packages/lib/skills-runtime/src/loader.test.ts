@@ -14,6 +14,8 @@ import type { KoiError, Result } from "@koi/core";
 import { createScanner } from "@koi/skill-scanner";
 import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
+import type { BodyCache } from "./lru-cache.js";
+import { createBodyCache } from "./lru-cache.js";
 import type { SkillDefinition } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -27,7 +29,7 @@ async function writeTempSkill(root: string, name: string, content: string): Prom
 }
 
 function makeCtx(
-  cache: Map<string, Result<SkillDefinition, KoiError>>,
+  cache: BodyCache<Result<SkillDefinition, KoiError>>,
   skillsRoot: string,
   overrides?: Partial<LoaderContext>,
 ): LoaderContext {
@@ -96,7 +98,9 @@ describe("loadSkill", () => {
 
   test("loads a clean skill successfully", async () => {
     const dirPath = await writeTempSkill(tmpRoot, "clean-skill", CLEAN_SKILL_MD);
-    const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+    const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+      max: Number.POSITIVE_INFINITY,
+    });
     const ctx = makeCtx(cache, tmpRoot);
 
     const result = await loadSkill("clean-skill", dirPath, "user", ctx);
@@ -117,7 +121,9 @@ describe("loadSkill", () => {
         "Cached.",
       ),
     );
-    const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+    const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+      max: Number.POSITIVE_INFINITY,
+    });
     const ctx = makeCtx(cache, tmpRoot);
 
     const first = await loadSkill("cached-skill", dirPath, "user", ctx);
@@ -131,7 +137,9 @@ describe("loadSkill", () => {
   // Decision 11A: scan blocking
   test("blocks skill with CRITICAL/HIGH findings (Decision 11A)", async () => {
     const dirPath = await writeTempSkill(tmpRoot, "bad-skill", MALICIOUS_SKILL_MD);
-    const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+    const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+      max: Number.POSITIVE_INFINITY,
+    });
     const ctx = makeCtx(cache, tmpRoot);
 
     const result = await loadSkill("bad-skill", dirPath, "user", ctx);
@@ -148,7 +156,9 @@ describe("loadSkill", () => {
       "high-skill",
       MALICIOUS_SKILL_MD.replace("bad-skill", "high-skill"),
     );
-    const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+    const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+      max: Number.POSITIVE_INFINITY,
+    });
     const ctx = makeCtx(cache, tmpRoot, {
       config: { blockOnSeverity: "CRITICAL" },
     });
@@ -163,7 +173,9 @@ describe("loadSkill", () => {
   // Issue 8A: deterministic sub-threshold onSecurityFinding test
   test("calls onSecurityFinding for sub-threshold findings (Issue 8A)", async () => {
     const dirPath = await writeTempSkill(tmpRoot, "exfil-skill", EXFILTRATION_SKILL_MD);
-    const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+    const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+      max: Number.POSITIVE_INFINITY,
+    });
     const calledWith: Array<{ name: string; count: number }> = [];
 
     const ctx = makeCtx(cache, tmpRoot, {
@@ -191,7 +203,9 @@ describe("loadSkill", () => {
 
   test("returns NOT_FOUND when SKILL.md does not exist", async () => {
     const dirPath = join(tmpRoot, "nonexistent-skill");
-    const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+    const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+      max: Number.POSITIVE_INFINITY,
+    });
     const ctx = makeCtx(cache, tmpRoot);
 
     const result = await loadSkill("nonexistent-skill", dirPath, "user", ctx);
@@ -213,7 +227,9 @@ describe("loadSkill", () => {
           "Escape.",
         ),
       );
-      const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+      const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+        max: Number.POSITIVE_INFINITY,
+      });
       const ctx = makeCtx(cache, tmpRoot); // skillsRoot is tmpRoot, not outsideRoot
 
       const result = await loadSkill("escape-skill", dirPath, "user", ctx);
@@ -235,7 +251,9 @@ description: Missing name field.
 Body.
 `;
     const dirPath = await writeTempSkill(tmpRoot, "invalid-skill", badFrontmatterMd);
-    const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+    const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+      max: Number.POSITIVE_INFINITY,
+    });
     const ctx = makeCtx(cache, tmpRoot);
     const result = await loadSkill("invalid-skill", dirPath, "user", ctx);
     expect(result.ok).toBe(false);

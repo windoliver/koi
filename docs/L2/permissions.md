@@ -190,3 +190,18 @@ rules:
     effect: "deny"
                               # default hard — unchanged from pre-#1650
 ```
+
+---
+
+## Dual-key backend marker (#1881)
+
+`createPermissionBackend()` deliberately does NOT set `supportsDefaultDenyMarker` on its returned backend.
+
+The L0 `PermissionBackend` contract defines an optional `supportsDefaultDenyMarker` flag that callers like `@koi/middleware-permissions` use to gate dual-key evaluation (e.g. bash prefix enrichment via `resolveBashCommand`). A marker-aware backend must distinguish *matched* rule outcomes from *fall-through* outcomes so the dual-key merge can treat unmatched branches as "no opinion" rather than authoritative decisions.
+
+This backend's fall-through is `{ effect: "ask" }`, not a marked default-deny. The middleware's `strictestDecision` treats every `ask` as an explicit opinion, so an unmatched enriched `ask` would override a matched plain `allow` — regressing existing plain-tool policies into fresh prompts. Opting into the marker without fixing the ask-side ambiguity is unsafe.
+
+Deployments that enable `resolveBashCommand` with this backend must either:
+
+1. Set `allowLegacyBackendBashFallback: true` on the middleware config — single-key evaluation; prefix rules are NOT enforced (plain-tool rules still apply), OR
+2. Use `createPatternPermissionBackend` from `@koi/middleware-permissions` — marker-aware, supports full dual-key semantics.

@@ -926,6 +926,50 @@ export interface CoreProvidersConfig {
 }
 
 /**
+ * Default TTL for the web_fetch LRU response cache (issue #1903).
+ *
+ * `@koi/tools-web` ships with `DEFAULT_CACHE_TTL_MS = 0` — a deliberately
+ * opt-in L2 contract. The CLI opts in here: back-to-back identical GETs
+ * within a session should hit the in-memory cache instead of re-issuing
+ * live network calls (and re-running SSRF validation) for every turn.
+ */
+const DEFAULT_CLI_WEB_CACHE_TTL_MS = 60_000;
+
+/**
+ * Resolve the web_fetch response-cache TTL from the CLI's environment.
+ *
+ * Reads `KOI_WEB_CACHE_TTL_MS` and accepts any non-negative integer,
+ * including `0` (explicit opt-out). Falls back to
+ * `DEFAULT_CLI_WEB_CACHE_TTL_MS` when the variable is unset or empty.
+ *
+ * **Throws** on malformed values (non-integer, negative, non-numeric).
+ * An operator trying to disable caching during an incident with a typo
+ * deserves a loud startup failure, not a silent 60-second stale-read
+ * window they have to notice by inspecting tool-result `cached` flags.
+ *
+ * Exported for unit testing; production call sites always pass `process.env`.
+ */
+export function resolveWebCacheTtlMs(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.KOI_WEB_CACHE_TTL_MS;
+  if (raw === undefined || raw === "") return DEFAULT_CLI_WEB_CACHE_TTL_MS;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid KOI_WEB_CACHE_TTL_MS="${raw}": must be a non-negative integer (milliseconds). ` +
+        `Unset to use the ${DEFAULT_CLI_WEB_CACHE_TTL_MS}ms default, or set to 0 to disable the web_fetch cache.`,
+    );
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(
+      `Invalid KOI_WEB_CACHE_TTL_MS="${raw}": must be a non-negative integer (milliseconds). ` +
+        `Unset to use the ${DEFAULT_CLI_WEB_CACHE_TTL_MS}ms default, or set to 0 to disable the web_fetch cache.`,
+    );
+  }
+  return parsed;
+}
+
+/**
  * Build the core `ComponentProvider[]` both hosts consume.
  *
  * Order matters for debug/telemetry grouping, not for runtime semantics —
@@ -990,7 +1034,15 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   }
 
   if (includeWeb) {
-    const webExecutor = createWebExecutor({ allowHttps: true });
+    const webExecutor = createWebExecutor({
+      allowHttps: true,
+      cacheTtlMs: resolveWebCacheTtlMs(process.env),
+      // Keep search caching off. `KOI_WEB_CACHE_TTL_MS` is documented as a
+      // `web_fetch` response-cache knob; search staleness has different
+      // operator semantics (incidents, fast-moving topics) and shouldn't
+      // be silently enabled just because fetch caching is.
+      searchCacheTtlMs: 0,
+    });
     providers.push(
       createWebProvider({
         executor: webExecutor,

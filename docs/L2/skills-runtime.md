@@ -17,11 +17,45 @@ createSkillsRuntime(config)
   └── invalidate(name?) ← cache control (name = body only, no arg = full reset)
 ```
 
-### Progressive Loading (two-phase)
+### Progressive Loading (three-tier)
+
+Per-access tiers, not per-skill classification — every skill participates in all three:
+
+| Tier | API | What reaches the model | Cost |
+|------|-----|------------------------|------|
+| 0 — metadata | `discover()` / `query()` | Name + description + tags (one line per skill) | ~1 line × N skills; injected turn-1 |
+| 1 — full body | `load(name)` (or `Skill` tool from `@koi/skill-tool`) | Full SKILL.md body + resolved includes | Pay only when agent decides to use skill |
+| 2 — reference | `loadReference(name, refPath)` | Single file inside the skill directory | Pay only when the skill body asks for a specific file |
 
 `discover()` reads YAML frontmatter and runs the security scanner on each skill's SKILL.md body before inserting it into the registry. Returns `SkillMetadata` with name, description, tags, allowedTools, source, and dirPath for each skill that passes the scan. Skills that produce findings at or above `blockOnSeverity` are excluded from the returned map (and from `query()` / `describeCapabilities()`) so that malicious skills never reach the model — they remain visible via `loadAll()` as `PERMISSION` errors for operator observability.
 
-`load(name)` promotes a discovered skill to `SkillDefinition` by reading the full body, resolving includes, and running the security scanner. Results are cached.
+`load(name)` promotes a discovered skill to `SkillDefinition` by reading the full body, resolving includes, and running the security scanner. Results are cached in a bounded LRU (`cacheMaxBodies`, default `Infinity`). On eviction the runtime invokes `onSkillEvicted` so operators can observe cache pressure.
+
+`loadReference(name, refPath)` reads a single file inside the skill's own directory. `refPath` is a relative POSIX path with a supported extension (`references/rules.md`, `scripts/helper.ts`). Five guardrails apply — identical in spirit to the Tier 1 gate so a benign SKILL.md cannot defer malicious content to a `references/*.md` file:
+
+1. **Frontmatter allowlist (asymmetric revoke / expand)** — every surface-able path must be declared in SKILL.md's `references:` list (see below). A Tier 2 read is authorized only if the path appears in **both**:
+   - The discovery-time snapshot (frozen until the next successful `discover()`), and
+   - The current on-disk list (re-read on every call).
+   This gives immediate revocation — remove a path from SKILL.md and the next read is denied — while allowlist *expansions* require a full rediscovery so additions go through the normal discovery / security pipeline instead of becoming live on a file edit. Denied reads return a uniform `PERMISSION` error that does not disclose the declared list (no enumeration oracle).
+1a. **Extension allowlist** — only formats the skill-scanner can meaningfully inspect are served: Markdown (`.md`, `.mdx`) and JS/TS sources (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`). Config formats (JSON/YAML/TOML), plain `.txt`, shell / Python / Ruby / etc. are rejected with `VALIDATION` / `errorKind === "REFERENCE_UNSUPPORTED_EXTENSION"`. Widening the list is a trust-boundary change and must be paired with scanner coverage for the new format.
+2. **Path hygiene** — realpath-resolved; `..`, absolute paths, or escape-via-symlink return `VALIDATION` / `errorKind === "PATH_TRAVERSAL"`. Parent-directory symlinks are rejected before `open()` so they cannot become existence/size/type oracles for out-of-tree files.
+3. **Bounded read** — `handle.read()` is capped at `maxBytes + 1` (default 256 KB via `DEFAULT_MAX_REFERENCE_BYTES`). Files that grow in place after `fstat` still hit the cap at read time and return `VALIDATION` / `errorKind === "REFERENCE_SIZE_LIMIT"`.
+4. **Binary guard** — a NUL byte in the leading 1 KB flags the file as binary and returns `VALIDATION` / `errorKind === "REFERENCE_BINARY"`. Tier 2 is a text channel for the model.
+5. **Security scan (extension-aware)** — `.ts`/`.tsx`/`.mts`/`.cts`/`.js`/`.jsx`/`.mjs`/`.cjs` files go through `scanner.scan()` so AST rules fire on whole-file source; everything else goes through `scanner.scanSkill()`. The runtime's `blockOnSeverity` threshold (default `"HIGH"`) decides; blocking findings return `PERMISSION`, sub-threshold findings route to `onSecurityFinding`.
+
+Tier 2 results are **not** cached: reference files are loaded lazily at the moment the agent asks for them and are expected to be one-shot.
+
+```yaml
+---
+name: my-skill
+description: Does a thing.
+references:
+  - references/rules.md
+  - scripts/helper.ts
+---
+```
+
+Paths in `references` must be relative POSIX paths with no `..` segments (validated at parse time). Any undeclared path returned by `loadReference()` is a `PERMISSION` error.
 
 ### Concurrency Safety
 
@@ -76,6 +110,32 @@ interface SkillsRuntimeConfig {
   readonly onShadowedSkill?: (name: string, shadowedBy: SkillSource) => void;
   /** Called when a skill passes security scan but has findings below the block threshold. */
   readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
+  /**
+   * Maximum number of loaded skill bodies to retain in the LRU cache.
+   * When the cache exceeds this bound, the least-recently used entry is evicted
+   * and `onSkillEvicted` fires with `reason: "lru"`.
+   * Default: `Infinity` (unbounded; preserves legacy behavior).
+   */
+  readonly cacheMaxBodies?: number;
+  /** Called after discover() with the count of skills admitted to the Tier 0 listing. */
+  readonly onMetadataInjected?: (count: number) => void;
+  /** Called on every successful load() — distinguishes first-load from cache hits. */
+  readonly onSkillLoaded?: (event: SkillLoadedEvent) => void;
+  /** Called when a cached body is evicted (LRU, invalidate, or external refresh). */
+  readonly onSkillEvicted?: (event: SkillEvictedEvent) => void;
+}
+
+interface SkillLoadedEvent {
+  readonly name: string;
+  readonly source: SkillSource;
+  readonly bodyBytes: number;
+  /** True when the body came from the LRU cache; false on first load or reload. */
+  readonly cacheHit: boolean;
+}
+
+interface SkillEvictedEvent {
+  readonly name: string;
+  readonly reason: "lru" | "invalidate" | "external-refresh";
 }
 ```
 
@@ -87,6 +147,16 @@ interface SkillsRuntime {
   readonly load: (name: string) => Promise<Result<SkillDefinition, KoiError>>;
   readonly loadAll: () => Promise<Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>>;
   readonly query: (filter?: SkillQuery) => Promise<Result<readonly SkillMetadata[], KoiError>>;
+  /**
+   * Tier 2 — reads a file inside the skill directory on demand.
+   *
+   * `refPath` is a relative POSIX path. The resolved absolute path must remain
+   * inside the skill's directory or the call returns VALIDATION with
+   * `context.errorKind === "PATH_TRAVERSAL"`. Not cached.
+   *
+   * Error codes: NOT_FOUND (skill or file missing), VALIDATION (path escape).
+   */
+  readonly loadReference: (name: string, refPath: string) => Promise<Result<string, KoiError>>;
   readonly invalidate: (name?: string) => void;
   readonly registerExternal: (skills: readonly SkillMetadata[]) => void;
 }

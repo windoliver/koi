@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@koi/agent-runtime": "workspace:*",
+    "@koi/agent-summary": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/checkpoint": "workspace:*",
@@ -27,6 +28,7 @@
     "@koi/fs-nexus": "workspace:*",
     "@koi/fs-scoped": "workspace:*",
     "@koi/governance-core": "workspace:*",
+    "@koi/governance-defaults": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/loop": "workspace:*",
@@ -43,6 +45,7 @@
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/dream": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
+    "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
@@ -77,6 +80,7 @@
     "@koi/tool-notebook": "workspace:*",
     "@koi/lsp": "workspace:*",
     "@koi/tools-web": "workspace:*",
+    "@koi/url-safety": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   },

@@ -531,6 +531,28 @@ describe("formatMemoryIndexEntry / parseMemoryIndexEntry (adversarial)", () => {
     const formatted = formatMemoryIndexEntry(entry);
     expect(defined(formatted).split("\n")).toHaveLength(1);
   });
+
+  test("roundtrips title ending with backslash", () => {
+    const entry: MemoryIndexEntry = {
+      title: "path slash\\",
+      filePath: "safe.md",
+      hook: "keeps trailing slash in title",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
+    expect(parsed).toEqual(entry);
+  });
+
+  test("roundtrips title containing backslash before closing bracket", () => {
+    const entry: MemoryIndexEntry = {
+      title: "literal \\] sequence",
+      filePath: "safe.md",
+      hook: "keeps escaped-bracket-like text",
+    };
+    const formatted = formatMemoryIndexEntry(entry);
+    const parsed = parseMemoryIndexEntry(defined(formatted));
+    expect(parsed).toEqual(entry);
+  });
 });
 
 // ---------------------------------------------------------------------------

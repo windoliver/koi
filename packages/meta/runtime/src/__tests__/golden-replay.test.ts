@@ -823,6 +823,181 @@ describe("Golden: @koi/middleware-planning", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-plan-persist (2 standalone queries)
+// No-LLM tests that exercise the file-backed persistence surface from the
+// runtime consumer boundary. Catches re-export regressions and proves the
+// public bundle wiring matches what runtime hosts will see.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-plan-persist", () => {
+  test("middleware bundle saves a mirrored plan to disk and loads it back", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME, PLAN_SAVE_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-golden-`);
+    try {
+      const bundle = createPlanPersistMiddleware({
+        cwd: tmpRoot,
+        baseDir: ".koi/plans",
+        now: () => Date.UTC(2026, 3, 17, 10, 0, 0),
+        rand: () => 0.5,
+      });
+      expect(bundle.middleware.name).toBe("plan-persist");
+      expect(bundle.providers).toHaveLength(2);
+
+      // Mirror a plan via the OnPlanUpdate hook (the path the planning MW uses).
+      await bundle.onPlanUpdate(
+        [
+          { content: "First", status: "pending" },
+          { content: "Second", status: "in_progress" },
+        ],
+        {
+          sessionId: "golden-sess",
+          epoch: 1,
+          turnIndex: 0,
+          signal: new AbortController().signal,
+        },
+      );
+
+      const session = {
+        agentId: "plan-persist-golden",
+        sessionId: sessionId("golden-sess"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+
+      const passthrough = async (req: {
+        readonly toolId: string;
+      }): Promise<{ readonly output: unknown }> => ({
+        output: { passthrough: req.toolId },
+      });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const saved = await wrap(
+        ctx,
+        { toolId: PLAN_SAVE_TOOL_NAME, input: { slug: "golden-flow" } },
+        passthrough,
+      );
+      const savedOut = saved.output as { readonly path: string };
+      expect(savedOut.path.endsWith("20260417-100000-golden-flow.md")).toBe(true);
+
+      const loaded = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: savedOut.path } },
+        passthrough,
+      );
+      const loadedOut = loaded.output as {
+        readonly items: readonly { readonly content: string; readonly status: string }[];
+      };
+      expect(loadedOut.items).toEqual([
+        { content: "First", status: "pending" },
+        { content: "Second", status: "in_progress" },
+      ]);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("middleware bundle rejects path traversal at the load tool boundary", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-traversal-`);
+    try {
+      const bundle = createPlanPersistMiddleware({ cwd: tmpRoot });
+      const session = {
+        agentId: "plan-persist-traversal",
+        sessionId: sessionId("trav"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+      const passthrough = async (): Promise<{ readonly output: unknown }> => ({ output: {} });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const res = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: "/etc/passwd" } },
+        passthrough,
+      );
+      const out = res.output as { readonly error?: string };
+      expect(out.error).toBe("path outside baseDir");
+      expect(res.metadata?.planPersistError).toBe(true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("trajectory fixture proves plan + plan-persist composed end-to-end and the saved checkpoint reached the model", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/plan-persist-flow.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("plan-persist-flow");
+
+    // Both middlewares wired and BOTH intercept their target tool (planning
+    // owns koi_plan_write, plan-persist owns koi_plan_save), so each must
+    // fire at least one wrapToolCall span where nextCalled is false — the
+    // signal that the middleware handled the call itself instead of
+    // delegating downstream. wrapModelStream spans pass through (nextCalled
+    // true) because neither MW short-circuits the model loop.
+    const planToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    const persistToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan-persist" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    expect(planToolSpans.length).toBeGreaterThan(0);
+    expect(persistToolSpans.length).toBeGreaterThan(0);
+    expect(planToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+    expect(persistToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+
+    // The save tool's path response must reach the model. The trajectory's
+    // final agent observation contains the absolute path returned by
+    // koi_plan_save — proves: write_plan committed → onPlanUpdate fired →
+    // mirror populated → koi_plan_save read mirror → wrote checkpoint →
+    // path was surfaced back to the LLM in the next turn.
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalResponse = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse).toMatch(/\.koi\/plans\/\d{8}-\d{6}-auth-refactor\.md/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/middleware-goal callback-mode (detectCompletions via onAfterTurn)
 // ---------------------------------------------------------------------------
 
@@ -1924,6 +2099,104 @@ describe("web-fetch ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// url-safety-block trajectory: @koi/tools-web routed through @koi/url-safety.
+// Locks in the end-to-end block flow: web_fetch targets localhost, the tool's
+// createSafeFetcher rejects it, the executor maps the rejection to a
+// PERMISSION tool result, and the verbatim url-safety block wording reaches
+// the model. Any regression in this chain (renamed error codes, swallowed
+// block reason, retryable misclassification) flips at least one of these.
+// ---------------------------------------------------------------------------
+
+describe("url-safety-block ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web_fetch in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-block.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("web_fetch tool step returns PERMISSION with verbatim url-safety block reason", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-block.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly url?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.[0]?.function_name === "web_fetch",
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const firstCall = toolSteps[0]?.tool_calls?.[0];
+    expect(firstCall?.arguments.url).toBe("http://localhost:3000/admin");
+
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Verbatim block-reason wording produced by @koi/url-safety's BLOCKED_HOSTS
+    // check must reach the tool result — this is the contract the model sees.
+    expect(content).toContain("Blocked host localhost");
+    expect(content).toContain("PERMISSION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// url-safety-dns-block trajectory: exercises @koi/url-safety's DNS-resolved
+// IP check (the deeper defence line behind the DNS-free tool preflight).
+// `localtest.me` is a public DNS name that resolves to 127.0.0.1 — it
+// passes the tool's preflightBlockReason (not in BLOCKED_HOSTS / suffixes /
+// IP literals) but fails isSafeUrl once DNS returns the loopback address.
+// Locks in that the DNS-rebind defence reaches the model verbatim.
+// ---------------------------------------------------------------------------
+
+describe("url-safety-dns-block ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web_fetch in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("web_fetch tool step surfaces createSafeFetcher's resolved-IP rejection", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly url?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.[0]?.function_name === "web_fetch",
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.tool_calls?.[0]?.arguments.url).toBe("http://localtest.me/");
+
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Verbatim wording produced by createSafeFetcher wrapping isSafeUrl's
+    // resolved-IP rejection. The "url-safety:" prefix comes from
+    // safe-fetcher.ts; the "Host X resolves to blocked IP Y" template
+    // comes from safe-url.ts. Both must flow to the tool result unchanged.
+    expect(content).toContain("url-safety:");
+    expect(content).toContain("Host localtest.me resolves to blocked IP 127.0.0.1");
+    expect(content).toContain("PERMISSION");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/permissions (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -2334,7 +2607,9 @@ describe("Golden: @koi/channel-cli", () => {
 
 describe("Golden: @koi/tools-web", () => {
   test("SSRF protection blocks private IPs", async () => {
-    const { isBlockedIp } = await import("@koi/tools-web");
+    // isBlockedIp moved from @koi/tools-web to the shared @koi/url-safety
+    // L0u package during the url-policy migration.
+    const { isBlockedIp } = await import("@koi/url-safety");
 
     expect(isBlockedIp("127.0.0.1")).toBe(true);
     expect(isBlockedIp("10.0.0.1")).toBe(true);
@@ -2349,6 +2624,64 @@ describe("Golden: @koi/tools-web", () => {
     const result = htmlToMarkdown("<h1>Hello</h1><p>World</p>");
     expect(result).toContain("Hello");
     expect(result).toContain("World");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/url-safety — SSRF/blocklist validator (standalone)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/url-safety", () => {
+  test("isSafeUrl blocks localhost/private hosts and IP literals, allows public", async () => {
+    const { isSafeUrl } = await import("@koi/url-safety");
+
+    // Host-name blocklist
+    const localhost = await isSafeUrl("http://localhost:3000/admin");
+    expect(localhost.ok).toBe(false);
+    if (!localhost.ok) {
+      expect(localhost.reason).toContain("Blocked host localhost");
+    }
+
+    // Loopback IP literal
+    const loopbackIp = await isSafeUrl("http://127.0.0.1/");
+    expect(loopbackIp.ok).toBe(false);
+
+    // RFC1918 IP literal
+    const rfc1918 = await isSafeUrl("http://10.0.0.1/");
+    expect(rfc1918.ok).toBe(false);
+
+    // Cloud metadata IP literal (169.254.169.254) — highest-risk SSRF target
+    const metadata = await isSafeUrl("http://169.254.169.254/latest/meta-data/");
+    expect(metadata.ok).toBe(false);
+
+    // Non-HTTP protocol
+    const fileUrl = await isSafeUrl("file:///etc/passwd");
+    expect(fileUrl.ok).toBe(false);
+  });
+
+  test("isBlockedIp classifies IPv4 + IPv6 SSRF ranges correctly", async () => {
+    const { isBlockedIp } = await import("@koi/url-safety");
+
+    // IPv4 — private, loopback, link-local, CGNAT, metadata
+    expect(isBlockedIp("127.0.0.1")).toBe(true);
+    expect(isBlockedIp("10.0.0.1")).toBe(true);
+    expect(isBlockedIp("192.168.1.1")).toBe(true);
+    expect(isBlockedIp("169.254.169.254")).toBe(true);
+    expect(isBlockedIp("100.64.0.1")).toBe(true);
+
+    // IPv4 — public (Google DNS, Cloudflare DNS)
+    expect(isBlockedIp("8.8.8.8")).toBe(false);
+    expect(isBlockedIp("1.1.1.1")).toBe(false);
+
+    // IPv6 — loopback, link-local, ULA, IPv4-mapped loopback, NAT64
+    expect(isBlockedIp("::1")).toBe(true);
+    expect(isBlockedIp("fe80::1")).toBe(true);
+    expect(isBlockedIp("fc00::1")).toBe(true);
+    expect(isBlockedIp("::ffff:127.0.0.1")).toBe(true);
+    expect(isBlockedIp("64:ff9b::a00:1")).toBe(true);
+
+    // IPv6 — public (Google public DNS v6)
+    expect(isBlockedIp("2001:4860:4860::8888")).toBe(false);
   });
 });
 
@@ -10574,6 +10907,53 @@ describe("Golden: @koi/governance-core", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-defaults (2 queries)
+//
+// Standalone — no cassette replay. Exercises the out-of-box
+// createInMemoryController + createPatternBackend + DEFAULT_PRICING helpers
+// that ship as the stock GovernanceController / GovernanceBackend / pricing
+// table for createGovernanceMiddleware. These defaults are what `koi tui`
+// wires up when no platform-specific backend is supplied.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-defaults", () => {
+  test("withGovernanceDefaults produces a valid, middleware-ready config", async () => {
+    const { withGovernanceDefaults } = await import("@koi/governance-defaults");
+    const { validateGovernanceConfig, createGovernanceMiddleware } = await import(
+      "@koi/governance-core"
+    );
+
+    const config = withGovernanceDefaults({
+      controllerConfig: { costUsdLimit: 0.5, turnCountLimit: 3 },
+      rules: [{ match: { toolId: "Bash" }, decision: "deny", rule: "no-shell" }],
+    });
+
+    const validation = validateGovernanceConfig(config);
+    expect(validation.ok).toBe(true);
+
+    // Middleware construction should not throw.
+    const mw = createGovernanceMiddleware(config);
+    expect(mw.name).toBe("koi:governance-core");
+  });
+
+  test("in-memory controller enforces setpoint after record()", async () => {
+    const { createInMemoryController } = await import("@koi/governance-defaults");
+    const controller = createInMemoryController({ tokenUsageLimit: 100 });
+
+    await controller.record({ kind: "token_usage", count: 50 });
+    const underLimit = await controller.checkAll();
+    expect(underLimit).toEqual({ ok: true });
+
+    await controller.record({ kind: "token_usage", count: 80 });
+    const overLimit = await controller.checkAll();
+    expect(overLimit.ok).toBe(false);
+    if (!overLimit.ok) {
+      expect(overLimit.variable).toBe("token_usage");
+    }
+  });
+});
+
 describe("Golden: @koi/daemon", () => {
   test("supervisor starts and shuts down a subprocess worker", async () => {
     const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
@@ -10670,5 +11050,198 @@ describe("Golden: @koi/middleware-strict-agentic", () => {
     }));
     const result = await middleware.onBeforeStop?.(turn);
     expect(result?.kind).toBe("continue");
+  });
+});
+
+describe("Golden: @koi/agent-summary", () => {
+  test("createAgentSummary returns both session and range APIs", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "hello",
+              timestamp: 1,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "greet",
+          status: "succeeded",
+          actions: [],
+          outcomes: [],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    expect(typeof summary.summarizeSession).toBe("function");
+    expect(typeof summary.summarizeRange).toBe("function");
+  });
+
+  test("summarizeSession produces kind: clean envelope with correct identity", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "please",
+              timestamp: 1,
+            },
+            {
+              id: "a1" as never,
+              role: "assistant" as const,
+              content: "ok",
+              timestamp: 2,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "test",
+          status: "succeeded",
+          actions: [],
+          outcomes: ["done"],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    const r = await summary.summarizeSession("sess-golden" as never);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(`${r.value.summary.sessionId}`).toBe("sess-golden");
+      expect(r.value.summary.meta.rangeOrigin).toBe("raw");
+      expect(r.value.summary.meta.hasCompactionPrefix).toBe(false);
+    } else {
+      throw new Error("expected kind: clean");
+    }
+  });
+
+  test.each([
+    "high",
+    "medium",
+    "detailed",
+  ] as const)("replays recorded cassette (%s granularity) — real LLM output parses + validates", async (granularity) => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const cassetteRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", `agent-summary-${granularity}.cassette.json`),
+      "utf8",
+    );
+    const cassette = JSON.parse(cassetteRaw) as {
+      readonly transcript: {
+        readonly entries: readonly {
+          readonly id: string;
+          readonly role: string;
+          readonly content: string;
+          readonly timestamp: number;
+        }[];
+        readonly skipped: readonly unknown[];
+      };
+      readonly modelResponse: { readonly text: string };
+      readonly summary: {
+        readonly goal: string;
+        readonly status: "succeeded" | "partial" | "failed";
+      };
+    };
+
+    const transcript = {
+      load: () => ({ ok: true, value: cassette.transcript }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({ text: cassette.modelResponse.text }),
+    });
+    const r = await summary.summarizeSession(`replay-${granularity}` as never, { granularity });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(r.value.summary.goal).toBeTruthy();
+      expect(r.value.summary.status).toBe(cassette.summary.status);
+      expect(r.value.summary.goal).toBe(cassette.summary.goal);
+    } else {
+      throw new Error(`expected kind: clean; got ${r.ok ? r.value.kind : r.error.code}`);
+    }
+  });
+
+  test("ATIF trajectory + summary sidecar are well-formed (from record-cassettes.ts afterRecord)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const trajRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(trajRaw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly { readonly source: string }[];
+    };
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("agent-summary");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    const sidecarRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.summary.json"),
+      "utf8",
+    );
+    const sidecar = JSON.parse(sidecarRaw) as {
+      readonly trajectorySessionId: string;
+      readonly recordedFrom: string;
+      readonly envelope: {
+        readonly kind: "clean" | "degraded" | "compacted";
+        readonly summary?: {
+          readonly sessionId: string;
+          readonly goal: string;
+          readonly status: "succeeded" | "partial" | "failed";
+        };
+      };
+    };
+    expect(sidecar.trajectorySessionId).toBe(trajectory.session_id);
+    expect(sidecar.recordedFrom).toBe("agent-summary.trajectory.json");
+    expect(sidecar.envelope.kind).toBe("clean");
+    if (sidecar.envelope.kind === "clean" && sidecar.envelope.summary) {
+      expect(sidecar.envelope.summary.sessionId).toBe(trajectory.session_id);
+      expect(sidecar.envelope.summary.goal).toBeTruthy();
+      expect(sidecar.envelope.summary.status).toBe("succeeded");
+    }
   });
 });
