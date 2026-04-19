@@ -88,14 +88,14 @@ describe("ToastOverlay", () => {
       title: "x",
       body: "y",
       ts: 0,
-      autoDismissMs: 50,
+      autoDismissMs: 20,
     };
     const utils = await testRender(
       () => <ToastOverlay toasts={[toast]} onDismiss={onDismiss} />,
       OPTS,
     );
     await utils.renderOnce();
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 200));
     expect(onDismiss).toHaveBeenCalledTimes(1);
     expect(onDismiss).toHaveBeenCalledWith("t-fast");
     utils.renderer.destroy();

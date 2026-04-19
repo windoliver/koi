@@ -52,6 +52,19 @@ interface ToastRowProps {
   readonly onDismiss: (id: string) => void;
 }
 
+/**
+ * Single toast row with its own auto-dismiss timer.
+ *
+ * Lifecycle invariant: each new toast object dispatched into the store MUST
+ * have a fresh `id`. Solid's `<For>` reconciles by object identity, so a
+ * new `Toast` reference at the same array index causes a remount — the
+ * old `onCleanup` clears the previous timer, then `onMount` arms a fresh
+ * one. The reducer's fold-merge enforces this by replacing toasts of the
+ * same `key` with new objects (each carrying the latest `id`/`body`).
+ *
+ * If this contract were ever broken (e.g., reducer mutated in place and
+ * preserved `id`), the row would not remount and the timer would not reset.
+ */
 const ToastRow: Component<ToastRowProps> = (props) => {
   onMount(() => {
     const ms = props.toast.autoDismissMs ?? DEFAULT_AUTO_DISMISS_MS;
