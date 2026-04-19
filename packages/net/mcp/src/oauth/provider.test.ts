@@ -1584,6 +1584,127 @@ describe("createOAuthAuthProvider", () => {
     expect(exchangeCalls).toBe(1);
   });
 
+  test("retries authorization without resource when authorize() throws (legacy AS rejects at auth endpoint)", async () => {
+    // Some legacy ASes reject the unknown `resource` query parameter
+    // at the authorization endpoint itself, before the redirect ever
+    // happens. The host's runtime.authorize then rejects with a
+    // browser error. The provider must retry once without `resource`
+    // to give the same login a chance to succeed.
+    const storage = createMockStorage();
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+    };
+
+    const seenAuthUrls: string[] = [];
+    const runtime: OAuthRuntime = {
+      authorize: mock(async (authUrl: string) => {
+        seenAuthUrls.push(authUrl);
+        const url = new URL(authUrl);
+        if (url.searchParams.has("resource")) {
+          throw new Error("authorization endpoint rejected resource");
+        }
+        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      }),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "auth-endpoint-rejects",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        clientId: "static",
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime,
+      storage,
+    });
+
+    const ok = await provider.startAuthFlow();
+    expect(ok).toBe(true);
+    expect(seenAuthUrls.length).toBe(2);
+    expect(new URL(seenAuthUrls[0] ?? "").searchParams.has("resource")).toBe(true);
+    expect(new URL(seenAuthUrls[1] ?? "").searchParams.has("resource")).toBe(false);
+  });
+
+  test("re-discovers metadata before declaring DCR terminally unavailable", async () => {
+    // First discovery call returns valid metadata WITHOUT
+    // registration_endpoint (degraded rollout / partial outage).
+    // Without re-discovery, the cached snapshot would force every
+    // subsequent refresh into terminal classification and brick
+    // the session for the lifetime of the provider. The fix forces
+    // a fresh discovery before returning terminal so the AS gets a
+    // chance to recover in-process.
+    const storage = createMockStorage();
+    const { computeServerKey } = await import("./tokens.js");
+    await storage.set(
+      computeServerKey("recovers", "https://mcp.example.com"),
+      JSON.stringify({
+        accessToken: "expired",
+        refreshToken: "rt",
+        expiresAt: Date.now() - 1000,
+      }),
+    );
+
+    let discoveryCalls = 0;
+    let endpointPresent = false;
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        discoveryCalls += 1;
+        // First call: degraded — registration_endpoint missing.
+        // Second call (forced by re-discovery on terminal path):
+        // recovered.
+        const md: Record<string, string> = {
+          issuer: "https://auth.example.com",
+          authorization_endpoint: "https://auth.example.com/authorize",
+          token_endpoint: "https://auth.example.com/token",
+        };
+        if (endpointPresent) {
+          md.registration_endpoint = "https://auth.example.com/register";
+        }
+        endpointPresent = true; // recovered for next call
+        return Promise.resolve(new Response(JSON.stringify(md), { status: 200 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "recovers",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    // token() triggers refresh → DCR resolution → re-discovery before
+    // terminal. Re-discovery returns the recovered metadata, so the
+    // resolver returns transient instead of terminal. Tokens preserved.
+    expect(await provider.token()).toBeUndefined();
+    // Both discovery calls fired (initial + forced refresh).
+    expect(discoveryCalls).toBeGreaterThanOrEqual(2);
+    // Tokens MUST still be there — the recovery path saved them.
+    expect(
+      await storage.get(computeServerKey("recovers", "https://mcp.example.com")),
+    ).toBeDefined();
+  });
+
   test("retries exchange without resource on invalid_target (legacy-AS compatibility)", async () => {
     // Mirror of the refresh-path RFC 8707 shim. A legacy AS that
     // rejects `resource` with invalid_target on initial auth should

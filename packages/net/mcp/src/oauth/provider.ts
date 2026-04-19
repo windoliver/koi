@@ -19,6 +19,7 @@ import {
 import type {
   AuthServerMetadata,
   McpOAuthConfig,
+  OAuthCallbackResult,
   OAuthClientInfo,
   OAuthFailureReason,
   OAuthRuntime,
@@ -99,6 +100,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     if (cachedMetadata !== undefined) return cachedMetadata;
     cachedMetadata = await discoverAuthServer(serverUrl, oauthConfig);
     return cachedMetadata;
+  }
+
+  /**
+   * Force a re-discovery, dropping any cached metadata first. Used
+   * before classifying a session as terminal `dcr_unavailable` — the
+   * cached document may have been a partial-rollout snapshot that
+   * omitted `registration_endpoint`, and the AS could have recovered
+   * since. Without this, a transient discovery degradation would
+   * become a permanent terminal logout until process restart.
+   */
+  async function refreshMetadata(): Promise<AuthServerMetadata | undefined> {
+    cachedMetadata = undefined;
+    return getMetadata();
   }
 
   /**
@@ -249,6 +263,15 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         const md = await getMetadata();
         if (md === undefined) return { kind: "transient" };
         if (oauthConfig.clientId === undefined && md.registrationEndpoint === undefined) {
+          // Before declaring terminal, force a re-discovery — the cached
+          // document may have been a partial-rollout snapshot that
+          // omitted registration_endpoint, and the AS could have
+          // recovered since. Only return terminal if even a fresh
+          // discovery still lacks registration_endpoint.
+          const fresh = await refreshMetadata();
+          if (fresh?.registrationEndpoint !== undefined) {
+            return { kind: "transient" };
+          }
           return { kind: "terminal" };
         }
         if (lastDcrTerminal) {
@@ -326,22 +349,51 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
     const pkce = createPkceChallenge();
 
-    // Build authorization URL (RFC 6749 + RFC 7636 PKCE + RFC 8707 resource)
-    const authUrl = new URL(metadata.authorizationEndpoint);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("client_id", client.clientId);
-    authUrl.searchParams.set("redirect_uri", redirectUri);
-    authUrl.searchParams.set("code_challenge", pkce.challenge);
-    authUrl.searchParams.set("code_challenge_method", pkce.method);
-    if (resourceIndicator !== undefined) {
-      authUrl.searchParams.set("resource", resourceIndicator);
-    }
+    // Build authorization URL with `resource` (when enabled). If the
+    // authorization endpoint itself rejects RFC 8707 (legacy AS that
+    // rejects the unknown query parameter before redirecting back), the
+    // runtime.authorize promise typically rejects with a browser
+    // error. We retry once with `resource` stripped — mirrors the
+    // token-exchange shim so legacy ASes don't hard-fail every login.
+    const buildAuthUrl = (state: string, includeResource: boolean): URL => {
+      const url = new URL(metadata.authorizationEndpoint);
+      url.searchParams.set("response_type", "code");
+      url.searchParams.set("client_id", client.clientId);
+      url.searchParams.set("redirect_uri", redirectUri);
+      url.searchParams.set("code_challenge", pkce.challenge);
+      url.searchParams.set("code_challenge_method", pkce.method);
+      if (includeResource && resourceIndicator !== undefined) {
+        url.searchParams.set("resource", resourceIndicator);
+      }
+      url.searchParams.set("state", state);
+      return url;
+    };
+
     // Generate a random state parameter for CSRF protection
     const state = crypto.randomUUID();
-    authUrl.searchParams.set("state", state);
 
-    // Delegate to runtime for browser interaction
-    const callbackResult = await runtime.authorize(authUrl.toString(), redirectUri);
+    let callbackResult: OAuthCallbackResult;
+    try {
+      callbackResult = await runtime.authorize(buildAuthUrl(state, true).toString(), redirectUri);
+    } catch (firstErr: unknown) {
+      // Authorization-endpoint failure with `resource` enabled — try
+      // once without it before failing closed. A retry without
+      // `resource` cannot succeed if `resource` was disabled to begin
+      // with, so only retry when we actually sent it.
+      if (resourceIndicator === undefined) {
+        throw firstErr;
+      }
+      try {
+        callbackResult = await runtime.authorize(
+          buildAuthUrl(state, false).toString(),
+          redirectUri,
+        );
+      } catch {
+        // Both attempts failed — surface the original error so the
+        // caller's diagnostics still point at the real cause.
+        throw firstErr;
+      }
+    }
 
     // Validate state parameter to prevent CSRF attacks
     if (callbackResult.state !== state) {
