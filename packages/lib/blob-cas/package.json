@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./contract": {
+      "types": "./dist/contract.d.ts",
+      "import": "./dist/contract.js"
     }
   },
   "scripts": {
@@ -15,9 +19,6 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check --vcs-enabled=false src/",
     "test": "bun test"
-  },
-  "dependencies": {
-    "@koi/core": "workspace:*"
   },
   "koi": {}
 }
