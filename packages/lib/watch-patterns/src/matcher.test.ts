@@ -123,19 +123,32 @@ describe("createLineBufferedMatcher", () => {
 });
 
 describe("createLineBufferedMatcher — long lines", () => {
-  test("16 KB sliding window: match in last 8 KB is still detected", () => {
+  // NOTE: this test REPLACES the old "16 KB sliding window: match in last 8 KB is still detected"
+  // test. Under the new design, once a line overflows we suppress ALL further matches on that
+  // logical line (announced via __watch_overflow__). The old test asserted incorrect behaviour.
+  test("16 KB overflow: match BEFORE the trim fires once; match AFTER the trim is suppressed until next newline", () => {
     const seen: PatternMatch[] = [];
     const m = buildMatcher([{ pattern: "NEEDLE", event: "needle" }], (x) => {
       seen.push(x);
     });
-    const filler = " ".repeat(32 * 1024);
-    m.writeStdout(TASK, filler);
+
+    // Emit 32 KB of filler — triggers overflow + suppression.
+    m.writeStdout(TASK, " ".repeat(32 * 1024));
+    // Emit "NEEDLE" after the trim — should NOT fire because we're in overflow mode.
+    m.writeStdout(TASK, "NEEDLE");
+    const duringOverflow = seen.filter((s) => s.event === "needle");
+    expect(duringOverflow).toHaveLength(0);
+
+    // Newline ends the logical line and resets overflow mode.
+    m.writeStdout(TASK, "\n");
+
+    // Now a new line with NEEDLE should match.
     m.writeStdout(TASK, "NEEDLE\n");
-    const needle = seen.find((s) => s.event === "needle");
-    expect(needle).toBeDefined();
+    const afterReset = seen.filter((s) => s.event === "needle");
+    expect(afterReset).toHaveLength(1);
   });
 
-  test("first trim emits __watch_overflow__ exactly once per task", () => {
+  test("first trim emits __watch_overflow__ exactly once per logical line", () => {
     const seen: PatternMatch[] = [];
     const m = buildMatcher([{ pattern: "x", event: "x" }], (x) => {
       seen.push(x);
@@ -161,6 +174,50 @@ describe("createLineBufferedMatcher — long lines", () => {
     );
     expect(stdoutOverflows).toHaveLength(1);
     expect(stderrOverflows).toHaveLength(1);
+  });
+
+  test("oversized newline-free line does not double-count the same match", () => {
+    const seen: PatternMatch[] = [];
+    const m = buildMatcher([{ pattern: "marker", event: "m" }], (x) => {
+      seen.push(x);
+    });
+
+    // Write "marker" early, then a lot of filler, then a final newline.
+    // With the old bug, the marker would match ONCE when the buffer trimmed and AGAIN on the final newline.
+    // Under the new design: the entire oversized partial is dropped on overflow, so NO match fires
+    // for that logical line (it was announced lost via __watch_overflow__). Zero matches — not two.
+    m.writeStdout(TASK, "marker ");
+    m.writeStdout(TASK, " ".repeat(32 * 1024));
+    m.writeStdout(TASK, "\n");
+
+    const matches = seen.filter((s) => s.event === "m");
+    expect(matches).toHaveLength(0); // dropped by overflow — not double-counted
+  });
+
+  test("overflow emits __watch_overflow__ once; lineNumber does NOT advance on trim", () => {
+    const seen: PatternMatch[] = [];
+    const m = buildMatcher([{ pattern: "x", event: "x" }], (x) => {
+      seen.push(x);
+    });
+
+    // First write normal line.
+    m.writeStdout(TASK, "x\n");
+    // Then trigger overflow.
+    m.writeStdout(TASK, " ".repeat(32 * 1024));
+    m.writeStdout(TASK, "\n");
+    // Then another normal line.
+    m.writeStdout(TASK, "x\n");
+
+    const overflows = seen.filter((s) => s.event === "__watch_overflow__");
+    expect(overflows).toHaveLength(1);
+
+    const xMatches = seen.filter((s) => s.event === "x");
+    expect(xMatches).toHaveLength(2);
+    // lineNumbers: first regular "x" was line 1. The trim did NOT advance lineNumber.
+    // The newline after overflow resets overflowMode but does NOT count as a line
+    // (suppressed). The final "x" is line 2.
+    expect(xMatches[0]?.lineNumber).toBe(1);
+    expect(xMatches[1]?.lineNumber).toBe(2);
   });
 });
 

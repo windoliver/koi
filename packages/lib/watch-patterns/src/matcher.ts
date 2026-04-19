@@ -2,7 +2,6 @@ import type { PatternMatch, TaskItemId } from "@koi/core";
 import type { CompiledPattern } from "./compile.js";
 
 const LINE_CAP_BYTES = 16 * 1024;
-const TRIM_KEEP_BYTES = 8 * 1024;
 
 /** Per-stream line-buffered matcher. Stdout and stderr have independent buffers. */
 export interface LineBufferedMatcher {
@@ -18,6 +17,9 @@ interface StreamState {
   buffer: string;
   lineNumber: number;
   overflowEmitted: boolean;
+  /** True while the current logical line has exceeded LINE_CAP_BYTES — suppress
+   *  further matches until the next real newline resets this flag. */
+  overflowMode: boolean;
 }
 
 export function createLineBufferedMatcher(
@@ -31,8 +33,18 @@ export function createLineBufferedMatcher(
   ) => void,
 ): LineBufferedMatcher {
   let cancelled = false;
-  const stdout: StreamState = { buffer: "", lineNumber: 0, overflowEmitted: false };
-  const stderr: StreamState = { buffer: "", lineNumber: 0, overflowEmitted: false };
+  const stdout: StreamState = {
+    buffer: "",
+    lineNumber: 0,
+    overflowEmitted: false,
+    overflowMode: false,
+  };
+  const stderr: StreamState = {
+    buffer: "",
+    lineNumber: 0,
+    overflowEmitted: false,
+    overflowMode: false,
+  };
 
   function scanLine(
     taskId: TaskItemId,
@@ -108,16 +120,21 @@ export function createLineBufferedMatcher(
     while (newlineIdx !== -1) {
       const rawLine = state.buffer.slice(0, newlineIdx);
       state.buffer = state.buffer.slice(newlineIdx + 1);
-      state.lineNumber += 1;
-      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-      scanLine(taskId, stream, line, state.lineNumber);
+      if (!state.overflowMode) {
+        state.lineNumber += 1;
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+        scanLine(taskId, stream, line, state.lineNumber);
+      }
+      // Reset overflow mode and guard on every real newline — next logical line starts fresh.
+      state.overflowMode = false;
+      state.overflowEmitted = false;
       newlineIdx = state.buffer.indexOf("\n");
     }
-    if (state.buffer.length > LINE_CAP_BYTES) {
+    // Oversized partial line — signal once, drop buffer, suppress further matches for this logical line.
+    if (!state.overflowMode && state.buffer.length > LINE_CAP_BYTES) {
       emitOverflow(taskId, stream, state);
-      state.lineNumber += 1;
-      scanLine(taskId, stream, state.buffer, state.lineNumber);
-      state.buffer = state.buffer.slice(-TRIM_KEEP_BYTES);
+      state.overflowMode = true;
+      state.buffer = "";
     }
   }
 
@@ -134,11 +151,12 @@ export function createLineBufferedMatcher(
         ["stdout", stdout],
         ["stderr", stderr],
       ] as const) {
-        if (state.buffer.length > 0) {
+        if (state.buffer.length > 0 && !state.overflowMode) {
           state.lineNumber += 1;
           scanLine(taskId, stream, state.buffer, state.lineNumber);
-          state.buffer = "";
         }
+        state.buffer = "";
+        state.overflowMode = false;
       }
     },
     cancel: () => {
