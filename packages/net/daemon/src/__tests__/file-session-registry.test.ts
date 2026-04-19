@@ -411,4 +411,25 @@ describe("createFileSessionRegistry", () => {
     const fetched = await reg.get(workerId("w-1"));
     expect(fetched?.signaledAt).toBe(at);
   });
+
+  it("update with clearSignaledAt drops a prior signaledAt from the record", async () => {
+    const reg = createFileSessionRegistry({ dir });
+    await reg.register(makeRecord());
+    // Plant an operator-intent stamp.
+    await reg.update(workerId("w-1"), {
+      status: "terminating",
+      signaledAt: Date.now(),
+    });
+    // Clear it via a subsequent patch — simulates the bg-kill claim
+    // path defending against stale stamps from a prior aborted kill.
+    const cleared = await reg.update(workerId("w-1"), {
+      status: "terminating",
+      clearSignaledAt: true,
+    });
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) return;
+    expect(cleared.value.signaledAt).toBeUndefined();
+    const fetched = await reg.get(workerId("w-1"));
+    expect(fetched?.signaledAt).toBeUndefined();
+  });
 });

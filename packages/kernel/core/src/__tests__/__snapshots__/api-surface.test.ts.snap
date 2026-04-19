@@ -1081,6 +1081,16 @@ interface BackgroundSessionUpdate {
      * after a stranded \`terminating\` claim is treated as a genuine crash.
      */
     readonly signaledAt?: number;
+    /**
+     * When true, drops any previously-stored \`signaledAt\` from the record
+     * during merge. Symmetric to \`clearTerminal\` for the intent marker:
+     * required when claiming a fresh \`terminating\` status (so a stale
+     * stamp from a prior kill attempt cannot keep the freshness window
+     * open under ESRCH / fail-closed paths that skip stamping) and on
+     * start/restart transitions (any prior kill intent is obsoleted by
+     * a fresh process).
+     */
+    readonly clearSignaledAt?: boolean;
 }
 /**
  * Discriminated union of registry change events. Emitted by \`watch()\`.

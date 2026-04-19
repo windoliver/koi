@@ -83,7 +83,7 @@ export function attachRegistry(config: AttachRegistryConfig): RegistryBridge {
     const mapped = mapEvent(event);
     if (mapped === undefined) return;
     let { status } = mapped;
-    const { id, endedAt, exitCode, pid, startedAt, clearTerminal } = mapped;
+    const { id, endedAt, exitCode, pid, startedAt, clearTerminal, clearSignaledAt } = mapped;
     // Bridge-layer operator-intent correction. The subprocess backend
     // classifies any non-zero exit it didn't initiate itself as
     // `crashed` — which is correct from the supervisor's POV but
@@ -127,6 +127,7 @@ export function attachRegistry(config: AttachRegistryConfig): RegistryBridge {
       ...(pid !== undefined && { pid }),
       ...(startedAt !== undefined && { startedAt }),
       ...(clearTerminal === true && { clearTerminal: true }),
+      ...(clearSignaledAt === true && { clearSignaledAt: true }),
     });
     if (!result.ok) {
       lastErr = result.error;
@@ -256,6 +257,7 @@ interface MappedEvent {
   readonly pid?: number;
   readonly startedAt?: number;
   readonly clearTerminal?: boolean;
+  readonly clearSignaledAt?: boolean;
 }
 
 function mapEvent(event: WorkerEvent): MappedEvent | undefined {
@@ -272,11 +274,20 @@ function mapEvent(event: WorkerEvent): MappedEvent | undefined {
       // `clearTerminal: true` drops any endedAt/exitCode the previous
       // exit left behind so a restarted "running" worker doesn't carry
       // misleading terminal metadata (e.g. status=running + exitCode=137).
+      //
+      // `clearSignaledAt: true` invalidates any stranded operator-kill
+      // intent from a prior kill attempt. Without this, a fresh start
+      // under the same workerId inherits the old `signaledAt`; a later
+      // genuine crash that lands inside the freshness window would be
+      // incorrectly downgraded to `exited` even though the current
+      // process is a completely new one whose death has no connection
+      // to the prior kill.
       return {
         id: event.workerId,
         status: "running",
         startedAt: event.at,
         clearTerminal: true,
+        clearSignaledAt: true,
         ...(event.pid !== undefined && { pid: event.pid }),
       };
     case "exited":

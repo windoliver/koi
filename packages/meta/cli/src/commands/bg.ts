@@ -245,15 +245,19 @@ async function runKill(
   // rely on (a) the lockfile-serialized claim to prove registry state
   // is current, and (b) post-signal identity re-verification before
   // any SIGKILL escalation.
-  // Claim identity WITHOUT stamping `signaledAt`. Operator-intent
-  // freshness is deferred to the post-SIGTERM stamp below — stamping
-  // here would let any pre-signal failure (fingerprint drift, `ps`
-  // unavailable, caller crash) leave a fresh "intent" marker on a
-  // record where no signal was ever sent. The bridge would then
-  // downgrade a later genuine crash to `exited` within the 30s
-  // window, silently masking real faults.
+  // Claim identity AND drop any stale `signaledAt` from a prior kill
+  // attempt. Operator-intent freshness is deferred to the post-SIGTERM
+  // stamp below — stamping here would let any pre-signal failure
+  // (fingerprint drift, `ps` unavailable, caller crash) leave a fresh
+  // "intent" marker on a record where no signal was ever sent. And
+  // without the explicit `clearSignaledAt` flag, the registry's
+  // merge-style update semantics would silently preserve any prior
+  // stamp left behind by an earlier aborted kill — so a subsequent
+  // ESRCH (no-op) kill could still keep that stale stamp alive inside
+  // the freshness window, defeating the downgrade guard entirely.
   const claim = await registry.update(workerId(id), {
     status: "terminating",
+    clearSignaledAt: true,
     expectedVersion: record.version ?? 0,
     expectedPid: record.pid,
   });
@@ -530,10 +534,19 @@ async function runKill(
     await Bun.sleep(RESPAWN_POLL_INTERVAL_MS);
     const check = await registry.get(workerId(id));
     if (check === undefined) continue;
-    if (check.pid !== record.pid && (check.status === "running" || check.status === "starting")) {
+    // Any pid drift from the originally-killed process is respawn
+    // evidence. A previous narrower check (`status === running/starting`
+    // only) dropped fast-crash respawns: if the restart policy spun up
+    // a replacement that crashed before our next poll tick, we'd see
+    // `status: "crashed"` with a fresh pid and silently skip the
+    // warning — leaving the operator with false confidence that the
+    // kill stuck. Include current status in the message so the
+    // operator knows whether the replacement is still running or
+    // already died on them.
+    if (check.pid !== record.pid) {
       process.stderr.write(
         `Note: session ${id} was respawned by the supervisor's restart policy ` +
-          `(new pid ${check.pid}). \`koi bg kill\` signals a single process; ` +
+          `(new pid ${check.pid}, status=${check.status}). \`koi bg kill\` signals a single process; ` +
           `to prevent respawn, configure the supervisor with a 'temporary' restart policy ` +
           `or stop the supervisor itself.\n`,
       );

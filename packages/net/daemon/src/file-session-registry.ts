@@ -630,15 +630,24 @@ export function createFileSessionRegistry(config: FileSessionRegistryConfig): Fi
               },
             };
           }
-          // Build the merged record. When `clearTerminal` is set we drop
-          // the prior terminal fields FIRST so a later `endedAt`/`exitCode`
-          // in the same patch still wins (unusual, but well-defined).
-          const base: BackgroundSessionRecord = patch.clearTerminal
-            ? (() => {
-                const { endedAt: _e, exitCode: _c, ...rest } = existing;
-                return rest;
-              })()
-            : existing;
+          // Build the merged record. `clearTerminal` and
+          // `clearSignaledAt` drop their respective fields FIRST so a
+          // later value in the same patch still wins (unusual, but
+          // well-defined). Without `clearSignaledAt`, merge-style
+          // updates would silently carry forward a stale operator-intent
+          // stamp from a prior kill attempt — letting the bridge
+          // misclassify a later genuine crash as `exited` within the
+          // freshness window. Kill claims and restart events must both
+          // invalidate any prior stamp to prevent that carryover.
+          let base: BackgroundSessionRecord = existing;
+          if (patch.clearTerminal) {
+            const { endedAt: _e, exitCode: _c, ...rest } = base;
+            base = rest;
+          }
+          if (patch.clearSignaledAt) {
+            const { signaledAt: _s, ...rest } = base;
+            base = rest;
+          }
           const merged: BackgroundSessionRecord = {
             ...base,
             ...(patch.status !== undefined && { status: patch.status }),

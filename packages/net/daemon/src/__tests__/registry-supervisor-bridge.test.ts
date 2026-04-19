@@ -395,6 +395,74 @@ describe("attachRegistry", () => {
     await bridge.close();
   });
 
+  it("clears stale signaledAt on started event so restarts don't inherit kill intent", async () => {
+    // A restarted worker under the same workerId must not inherit a
+    // prior kill's `signaledAt`: otherwise a genuine crash of the
+    // fresh process within the freshness window would be misclassified
+    // as operator-initiated `exited`. The bridge writes
+    // `clearSignaledAt: true` on every `started` event to enforce this.
+    const { backend, crash } = createFakeBackend();
+    const supResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 1000,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "transient",
+        maxRestarts: 5,
+        maxRestartWindowMs: 10_000,
+        backoffBaseMs: 10,
+        backoffCeilingMs: 100,
+      },
+    });
+    if (!supResult.ok) return;
+    const supervisor = supResult.value;
+
+    const registry = createFileSessionRegistry({ dir });
+    const bridge = attachRegistry({ supervisor, registry });
+
+    const id = workerId("w-stale-clear");
+    await registry.register({
+      workerId: id,
+      agentId: agentId("a"),
+      pid: 1,
+      status: "starting",
+      startedAt: Date.now(),
+      logPath: "",
+      command: ["noop"],
+      backendKind: "in-process",
+    });
+
+    await supervisor.start({
+      workerId: id,
+      agentId: agentId("a"),
+      command: ["noop"],
+    });
+    await waitForStatus(registry, id, "running");
+
+    // Plant a fresh signaledAt + terminating claim, as if from a prior
+    // kill attempt that finalized but the bridge hasn't yet seen a
+    // started event since.
+    await registry.update(id, {
+      status: "terminating",
+      signaledAt: Date.now(),
+    });
+
+    // Now crash it; bridge sees crashed → transient restart fires →
+    // started event clears signaledAt on the registry record.
+    crash(id);
+    await waitForStatus(registry, id, "running"); // Wait for restart.
+
+    const afterRestart = await registry.get(id);
+    expect(afterRestart?.signaledAt).toBeUndefined();
+
+    // Second crash (fresh process, no operator intent) must stay crashed.
+    crash(id);
+    await waitForStatus(registry, id, "crashed");
+
+    await supervisor.shutdown("test-done");
+    await bridge.close();
+  });
+
   it("surfaces errors for unregistered workers without throwing", async () => {
     const { backend, exit } = createFakeBackend();
     const supResult = createSupervisor({
