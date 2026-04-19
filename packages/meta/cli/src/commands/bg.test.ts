@@ -223,6 +223,9 @@ describe("bg kill", () => {
     }
   });
 
+  // Timeout is bumped because `bg kill` runs an 8-second respawn-detection
+  // poll after finalize; the subprocess exits quickly but the CLI waits
+  // its bounded poll window.
   it("terminates a live subprocess and marks it exited", async () => {
     // Spawn a long-running child we can legitimately kill.
     const proc = Bun.spawn(["bun", "-e", "setTimeout(() => {}, 60_000)"], {
@@ -259,5 +262,5 @@ describe("bg kill", () => {
         /* already gone */
       }
     }
-  });
+  }, 15_000);
 });

@@ -339,7 +339,7 @@ async function runKill(
   }
 
   const signaled = sendSignal(record.pid, "SIGTERM");
-  if (!signaled.ok) {
+  if (signaled.kind === "error") {
     process.stderr.write(`Failed to signal pid ${record.pid}: ${signaled.error}\n`);
     // We set `terminating` but never signaled — best-effort revert so the
     // record doesn't strand. If the revert races the bridge it'll fail
@@ -356,25 +356,34 @@ async function runKill(
     return ExitCode.FAILURE;
   }
 
-  // Stamp `signaledAt` NOW — after we've actually sent SIGTERM. The bridge
-  // uses this as a bounded freshness marker: any `crashed` event it
-  // observes within the freshness window with a recent stamp is
-  // downgraded to `exited` (operator-initiated). Stamping here (rather
-  // than in the initial claim) guarantees a failed pre-signal path
-  // never leaves an intent marker on a record where no signal was sent.
-  // A CAS conflict here is harmless — it means the bridge already wrote
-  // a terminal state, which the finalize CAS below will correctly
-  // preserve. There is a tiny window between SIGTERM and this stamp
-  // where a near-instant crash could beat us and be recorded as
-  // `crashed` instead of `exited`; that is the fail-safe direction
-  // (reporting a kill as a crash is noisy but never silently masks a
-  // real fault).
-  const stamp = await registry.update(workerId(id), {
-    signaledAt: Date.now(),
-    expectedVersion: claimedVersion,
-    expectedPid: record.pid,
-  });
-  const stampedVersion = stamp.ok ? (stamp.value.version ?? 0) : claimedVersion;
+  // Stamp `signaledAt` ONLY when SIGTERM was actually delivered. The
+  // `gone` case (ESRCH: process vanished between the fingerprint
+  // re-check and this syscall) means no signal reached anyone — writing
+  // an operator-intent marker anyway would let the bridge downgrade a
+  // later genuine crash to `exited` within the freshness window, which
+  // is exactly what this whole machinery is supposed to prevent.
+  //
+  // When `kind === "gone"` the worker is already dead; skip the stamp
+  // and let the finalize CAS below either (a) observe the bridge's
+  // classification (exited/crashed) and preserve it or (b) write
+  // `exited` against the unchanged claim version. Either is correct for
+  // a process that died on its own.
+  let stampedVersion = claimedVersion;
+  if (signaled.kind === "delivered") {
+    // CAS conflict here is harmless — it means the bridge already wrote
+    // a terminal state, which the finalize CAS below will correctly
+    // preserve. There is a tiny window between SIGTERM and this stamp
+    // where a near-instant crash could beat us and be recorded as
+    // `crashed` instead of `exited`; that is the fail-safe direction
+    // (reporting a kill as a crash is noisy but never silently masks a
+    // real fault).
+    const stamp = await registry.update(workerId(id), {
+      signaledAt: Date.now(),
+      expectedVersion: claimedVersion,
+      expectedPid: record.pid,
+    });
+    if (stamp.ok) stampedVersion = stamp.value.version ?? 0;
+  }
 
   // Give the process a short window to exit cleanly. If it doesn't respond
   // within the deadline, escalate to SIGKILL so operators never wait
@@ -432,10 +441,13 @@ async function runKill(
         return ExitCode.FAILURE;
       }
       const killed = sendSignal(record.pid, "SIGKILL");
-      if (!killed.ok) {
+      if (killed.kind === "error") {
         process.stderr.write(`Failed to SIGKILL pid ${record.pid}: ${killed.error}\n`);
         return ExitCode.FAILURE;
       }
+      // `delivered` and `gone` are both acceptable: the former means we
+      // killed it; the latter means it died between our check and the
+      // syscall. Fall through to the post-SIGKILL liveness verification.
       // After SIGKILL, confirm the process is actually gone before
       // claiming success — SIGKILL can be ignored (kernel protection,
       // zombie parent) and we must not report a false kill.
@@ -500,17 +512,18 @@ async function runKill(
   // the operator so they don't walk away thinking the session is dead.
   //
   // Poll structure: bounded loop with early exit on respawn detection.
-  // The budget is sized to cover the default supervisor backoff
+  // The budget covers the default supervisor's exponential backoff
   // (`DEFAULT_WORKER_RESTART_POLICY.backoffBaseMs` = 1000ms) through
-  // a second exponential attempt (backoff = 2000ms at `attempts=1`),
-  // because a worker whose previous crash already consumed one retry
-  // would otherwise respawn AFTER the CLI had exited without a warning
-  // — which the round-12 review surfaced as a user-visible safety
-  // regression on unstable workers, not just on custom policies.
-  // Longer backoffs (attempt 2+ = 4s+, or operator-tuned ceilings) are
-  // still out of scope; this is a warning, not a guarantee, and
-  // operators should cross-check with `koi bg ps`.
-  const RESPAWN_POLL_BUDGET_MS = 4_000;
+  // `restartAttempts = 2` (backoff = 1s, 2s, 4s — cumulative 7s), so
+  // unstable workers that have already burned one or two restarts
+  // still get a warning on the next respawn. Higher attempt counts
+  // (3+ = 8s, 4+ = 16s, 5 = 30s under the default ceiling) are out
+  // of scope: polling 30s on every kill would be user-hostile, and
+  // the CLI has no way to read the supervisor's actual policy from
+  // the registry. This is explicitly a best-effort diagnostic —
+  // operators with deeply-flapping workers should cross-check with
+  // `koi bg ps`, which the L3 doc now calls out.
+  const RESPAWN_POLL_BUDGET_MS = 8_000;
   const RESPAWN_POLL_INTERVAL_MS = 250;
   const pollDeadline = Date.now() + RESPAWN_POLL_BUDGET_MS;
   while (Date.now() < pollDeadline) {
@@ -571,20 +584,31 @@ function runDetach(): Promise<ExitCode> {
 // Signal helpers
 // ---------------------------------------------------------------------------
 
-interface SignalResult {
-  readonly ok: boolean;
-  readonly error?: string;
-}
+/**
+ * Tri-state signal outcome. `delivered` means the signal was actually
+ * handed to the kernel for the target pid; `gone` means the pid was
+ * already dead (ESRCH) so no signal reached anyone; `error` is any other
+ * failure. Downstream consumers must not conflate `delivered` with
+ * `gone` — e.g. stamping operator-kill intent (`signaledAt`) on `gone`
+ * would let the bridge misclassify a later genuine crash as an
+ * operator-initiated exit.
+ */
+type SignalResult =
+  | { readonly kind: "delivered" }
+  | { readonly kind: "gone" }
+  | { readonly kind: "error"; readonly error: string };
 
 function sendSignal(pid: number, signal: "SIGTERM" | "SIGKILL"): SignalResult {
   try {
     process.kill(pid, signal);
-    return { ok: true };
+    return { kind: "delivered" };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    // ESRCH = process already gone; treat as success.
-    if (msg.includes("ESRCH")) return { ok: true };
-    return { ok: false, error: msg };
+    // ESRCH = process already gone. Surface this explicitly so callers
+    // can distinguish "we killed it" from "it was already dead"; they
+    // are semantically different for operator-intent tracking.
+    if (msg.includes("ESRCH")) return { kind: "gone" };
+    return { kind: "error", error: msg };
   }
 }
 
