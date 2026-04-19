@@ -110,13 +110,16 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
   const serializer = createRewindSerializer(tracker);
 
   /**
-   * Persist the fileOps of a stopBlocked turn whose compensating rollback
-   * did NOT fully complete. Writes an "incomplete" status snapshot so
-   * operators retain an audit trail; parentNodeId is intentionally not
-   * advanced, so the chain head stays at the last fully-complete snapshot
-   * and subsequent turns fork from there. Soft-fail on persistence error
-   * — we've already logged; another persistence error would be logged
-   * via console.error and is not fatal.
+   * Persist the fact that a stopBlocked turn's compensating rollback did
+   * NOT fully complete. The existing `incomplete` snapshot contract
+   * (soft-fail capture, restore/resume skip) requires empty `fileOps`,
+   * so we encode the mutation log in metadata instead — operators retain
+   * an audit trail; the restore/head/resume paths keep their existing
+   * "incomplete means non-restorable marker" semantics unchanged.
+   *
+   * parentNodeId is intentionally not advanced, so the live chain head
+   * stays at the last fully-complete snapshot and subsequent turns fork
+   * from there. Soft-fail on persistence error — we've already logged.
    */
   async function persistIncompleteStopBlocked(
     state: SessionState,
@@ -130,16 +133,23 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         turnIndex: ctx.turnIndex,
         userTurnIndex: state.userTurnCounter,
         sessionId: ctx.session.sessionId as unknown as string,
-        fileOps: [...fileOps],
+        fileOps: [], // empty — matches existing incomplete-snapshot contract
         driftWarnings: [],
         capturedAt: Date.now(),
       };
+      // Serialize the dropped ops into metadata for operators. `store.put`
+      // metadata is JSON; keep entries shape-stable so external tooling
+      // can parse without knowing the full FileOpRecord shape.
+      const droppedOps = fileOps.map((op) => {
+        return { kind: op.kind, path: op.path, eventIndex: op.eventIndex };
+      });
       const incompleteStatus: SnapshotStatus = "incomplete";
       await store.put(state.chainId, payload, parents, {
         [SNAPSHOT_STATUS_KEY]: incompleteStatus,
         koi_stop_blocked: true,
         koi_rollback_failed: true,
         koi_rollback_unsuccessful_count: unsuccessful.length,
+        koi_rollback_dropped_ops: droppedOps,
         ...(ctx.stopGateReason !== undefined ? { koi_stop_reason: ctx.stopGateReason } : {}),
       });
     } catch (e: unknown) {
