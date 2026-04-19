@@ -184,10 +184,22 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     category: "system",
   },
   {
+    id: "nav:governance",
+    label: "Governance",
+    description: "View sensor readings, alerts, rules, and middleware capabilities",
+    category: "navigation",
+  },
+  {
     id: "nav:mcp",
     label: "MCP Servers",
     description: "View MCP server connections and authentication status",
     category: "navigation",
+  },
+  {
+    id: "system:governance-reset",
+    label: "Governance reset",
+    description: "Clear per-session alert dedup so re-crossings re-fire",
+    category: "system",
   },
   {
     id: "system:quit",

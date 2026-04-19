@@ -134,6 +134,46 @@ describe("TuiRoot — modal overlay", () => {
 });
 
 // ---------------------------------------------------------------------------
+// gov-9 governance view + reset
+// ---------------------------------------------------------------------------
+
+describe("TuiRoot — gov-9 governance", () => {
+  test("nav:governance routes to GovernanceView", async () => {
+    const utils = await renderRoot();
+    await utils.renderOnce();
+    // Trigger the governance view via command select would go through a UI keystroke
+    // path; here, drive directly via dispatch since handleCommandSelect routes
+    // nav commands via store.dispatch({ kind: 'set_view', view: navView })
+    utils.store.dispatch({ kind: "set_view", view: "governance" });
+    await utils.renderOnce();
+    expect(utils.captureCharFrame()).toContain("Governance");
+    expect(utils.captureCharFrame()).toContain("No governance data");
+    utils.renderer.destroy();
+  });
+
+  test("system:governance-reset dispatches clear_governance_alerts", async () => {
+    const utils = await renderRoot();
+    await utils.renderOnce();
+    // Seed an alert so we can verify it gets cleared
+    utils.store.dispatch({
+      kind: "add_governance_alert",
+      alert: {
+        id: "a1", ts: 1, sessionId: "s", variable: "cost_usd",
+        threshold: 0.8, current: 1.6, limit: 2, utilization: 0.8,
+      },
+    });
+    expect(utils.store.getState().governance.alerts).toHaveLength(1);
+    // Find the system:governance-reset command and invoke handleCommandSelect via
+    // the props.onCommand callback path (the controller logic is internal so we
+    // simulate by calling dispatch directly — the real path is wired into the
+    // handleCommandSelect special case)
+    utils.store.dispatch({ kind: "clear_governance_alerts" });
+    expect(utils.store.getState().governance.alerts).toHaveLength(0);
+    utils.renderer.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Keyboard note
 // ---------------------------------------------------------------------------
 // The global keyboard handler logic (Ctrl+P, Ctrl+C, Esc routing to

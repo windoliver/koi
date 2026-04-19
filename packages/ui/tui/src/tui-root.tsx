@@ -26,6 +26,7 @@ import { McpView } from "./components/McpView.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
+import { GovernanceView } from "./components/GovernanceView.js";
 import { HelpView } from "./components/HelpView.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
@@ -56,6 +57,7 @@ import {
  */
 const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:doctor": "doctor",
+  "nav:governance": "governance",
   "nav:help": "help",
   "nav:agents": "agents",
   "nav:trajectory": "trajectory",
@@ -152,6 +154,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   const modal = useTuiStore((s) => s.modal);
   const agentStatus = useTuiStore((s) => s.agentStatus);
   const toasts = useTuiStore((s) => s.toasts);
+  const governance = useTuiStore((s) => s.governance);
 
   // #16: notify bridge when a turn completes (processing → idle transition)
   createEffect(
@@ -351,6 +354,13 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       store.dispatch({ kind: "toggle_thinking" });
       return;
     }
+    if (cmd.id === "system:governance-reset") {
+      // Clear in-memory alerts; the host bridge (Task 12) will additionally
+      // reset the alert-tracker dedup so re-crossings can fire again.
+      store.dispatch({ kind: "clear_governance_alerts" });
+      props.onCommand(cmd.id, args);
+      return;
+    }
     props.onCommand(cmd.id, args);
   };
 
@@ -417,6 +427,9 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         </Match>
         <Match when={viewSignal() === "plugins"}>
           <PluginsView />
+        </Match>
+        <Match when={viewSignal() === "governance"}>
+          <GovernanceView slice={governance()} />
         </Match>
       </Switch>
 
