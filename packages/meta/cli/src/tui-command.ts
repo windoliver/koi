@@ -1659,6 +1659,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         });
         // Seed up to 10 most-recent alerts from JSONL so /governance
         // shows context across sessions instead of starting empty.
+        // TODO(gov-9): replace per-alert dispatch with a `replay_persisted_alerts`
+        // bulk action once seed counts grow past ~10 to avoid N reducer runs.
         const recent = governanceBridge.loadRecentAlerts(10);
         for (const alert of recent) {
           store.dispatch({ kind: "add_governance_alert", alert });
