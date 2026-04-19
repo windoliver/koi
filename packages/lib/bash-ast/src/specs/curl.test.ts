@@ -63,6 +63,35 @@ describe("specCurl — http(s)", () => {
     if (result.kind !== "complete") return;
     expect(result.semantics.reads).toEqual([]);
   });
+
+  test("repeated -d @file accumulates all reads (regression)", () => {
+    const result = specCurl(["curl", "-d", "@secret.json", "-d", "@allowed.json", "https://api/x"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["secret.json", "allowed.json"]);
+  });
+
+  test("mixed -d and --data forms accumulate", () => {
+    const result = specCurl([
+      "curl",
+      "-d",
+      "@a.json",
+      "--data",
+      "@b.json",
+      "--data=@c.json",
+      "https://api/x",
+    ]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["a.json", "b.json", "c.json"]);
+  });
+
+  test("attached -d@file form (no space) accumulates", () => {
+    const result = specCurl(["curl", "-d@payload.bin", "https://api/x"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["payload.bin"]);
+  });
 });
 
 describe("specCurl — ftp(s)", () => {

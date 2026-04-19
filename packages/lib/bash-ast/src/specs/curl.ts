@@ -55,9 +55,11 @@ export function specCurl(argv: readonly string[]): SpecResult {
   const outFile = parsed.flags.get("o") ?? parsed.flags.get("output");
   if (typeof outFile === "string") writes.push(outFile);
 
-  for (const key of ["d", "data"] as const) {
-    const v = parsed.flags.get(key);
-    if (typeof v === "string" && v.startsWith("@")) reads.push(v.slice(1));
+  // -d / --data may appear multiple times; collapsing to parsed.flags.get(...)
+  // would under-report reads when multiple @file forms are passed. Scan argv
+  // directly to capture every occurrence.
+  for (const dataValue of collectDataValues(argv)) {
+    if (dataValue.startsWith("@")) reads.push(dataValue.slice(1));
   }
 
   const reasons: string[] = [];
@@ -70,6 +72,30 @@ export function specCurl(argv: readonly string[]): SpecResult {
     return { kind: "partial", semantics, reason: reasons.join(";") };
   }
   return { kind: "complete", semantics };
+}
+
+function collectDataValues(argv: readonly string[]): readonly string[] {
+  const out: string[] = [];
+  for (let i = 1; i < argv.length; i += 1) {
+    const tok = argv[i];
+    if (tok === undefined) continue;
+    if (tok === "-d" || tok === "--data") {
+      const next = argv[i + 1];
+      if (next !== undefined) {
+        out.push(next);
+        i += 1;
+      }
+      continue;
+    }
+    if (tok.startsWith("-d") && tok.length > 2 && !tok.startsWith("--")) {
+      out.push(tok.slice(2));
+      continue;
+    }
+    if (tok.startsWith("--data=")) {
+      out.push(tok.slice("--data=".length));
+    }
+  }
+  return out;
 }
 
 interface UrlDispatchOk {
