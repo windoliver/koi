@@ -1302,6 +1302,69 @@ describe("createKoi middleware hooks", () => {
     }).toThrow(/poisoned/i);
   }, 10_000);
 
+  test("#review-P11: lifecycleSettleTimeoutMs option shortens the poison window", async () => {
+    // Same wedged-adapter shape as the 5s test above, but with a custom
+    // 200ms settle timeout. cycleSession should reject in well under the
+    // default 5s so the option is demonstrably honored.
+    const adapter: EngineAdapter = {
+      engineId: "noncooperative-p11",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        const hang = new Promise<void>(() => {});
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            // let: mutable once-flag
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+            };
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      lifecycleSettleTimeoutMs: 200,
+    });
+
+    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
+    await iter.next();
+    const pendingNext = iter.next();
+    void pendingNext.catch(() => {});
+
+    const start = Date.now();
+    const result = await (async (): Promise<"rejected" | "fulfilled"> => {
+      try {
+        await runtime.cycleSession?.();
+        return "fulfilled";
+      } catch {
+        return "rejected";
+      }
+    })();
+
+    expect(result).toBe("rejected");
+    // Must have rejected in FAR less than the default 5s. Allow generous
+    // headroom (1.5s) for CI slowness.
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(150);
+    expect(elapsed).toBeLessThan(1500);
+  }, 10_000);
+
   test("#1742: cycleSession waits for an in-flight run to settle instead of throwing", async () => {
     // Hosts typically call cycleSession() right after aborting the active
     // run, while the run's finally block is still draining. cycleSession
@@ -4012,6 +4075,72 @@ describe("createKoi forge watch", () => {
     // but NOT again at turn boundaries because watch is active and dirty flag is false
     expect(toolDescriptors).toHaveBeenCalledTimes(1);
   });
+
+  test("concurrent watch events coalesce into bounded in-flight refreshes (#review-H10)", async () => {
+    // Previously a bursty watch source (e.g. MCP reconnect fan-out) fired
+    // one in-flight toolDescriptors() promise per event, racing to overwrite
+    // the descriptor cache in non-deterministic order. The coalescing guard
+    // allows at most one refresh at a time; queued events collapse to a
+    // single re-run so the last observed state always wins.
+    // let justified: mutable slow-refresh counter
+    let callIndex = 0;
+    // let justified: mutable watch listener ref
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+
+    const toolDescriptors = mock(async (): Promise<readonly ToolDescriptor[]> => {
+      callIndex++;
+      // Simulate a slow backend so overlapping events have a chance to race.
+      await new Promise((r) => setTimeout(r, 20));
+      return [];
+    });
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors,
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "coalesce-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (_input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Fire 50 watch events in a tight loop while the first refresh is
+          // still in flight. Without coalescing this would allocate 50
+          // in-flight toolDescriptors() promises.
+          for (let i = 0; i < 50; i++) {
+            watchListener?.({ kind: "saved", brickId: brickId(`t-${i}`) });
+          }
+          // Let all refreshes settle.
+          await new Promise((r) => setTimeout(r, 100));
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // Initial session-start refresh is call 1. The 50 bursty watch events
+    // collapse to AT MOST 2 additional refreshes (one in-flight + one
+    // queued re-run), regardless of how many events land during the await.
+    // Without the coalescing guard this would be 51.
+    expect(callIndex).toBeLessThanOrEqual(3);
+    expect(callIndex).toBeGreaterThanOrEqual(2); // initial + at least one from events
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4752,6 +4881,60 @@ describe("createKoi stop gate", () => {
 
     const turnEnds = events.filter((e) => e.kind === "turn_end");
     expect(turnEnds.length).toBe(DEFAULT_MAX_STOP_RETRIES);
+  });
+
+  test("accumulates block feedback across consecutive retries (#review-H5)", async () => {
+    // Two consecutive stop-gate blocks then continue. Verify that the THIRD
+    // adapter.stream call sees BOTH block messages — not just the most
+    // recent one. Previously the first block's feedback was silently dropped
+    // when a second block fired.
+    const { middleware } = blockingStopMiddleware(2);
+    const { adapter, streamCalls } = multiCallAdapter(
+      [
+        [{ kind: "done", output: doneOutput() }], // 1st stream: blocked
+        [{ kind: "done", output: doneOutput() }], // 2nd stream: blocked again
+        [{ kind: "done", output: doneOutput() }], // 3rd stream: unblocked
+      ],
+      { inject: false }, // force pendingStopInput path so we can inspect messages
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    expect(streamCalls.length).toBe(3);
+
+    const [, retry1, retry2] = streamCalls;
+    if (!retry1 || !retry2) throw new Error("unexpected streamCalls count");
+
+    /** Extract the text-block content of a message for concise asserts. */
+    const textOf = (msg: InboundMessage): string =>
+      msg.content.flatMap((c) => (c.kind === "text" ? [c.text] : [])).join("");
+
+    // First retry (after 1st block) carries: originalUser + blockMessage#1
+    expect(retry1.kind).toBe("messages");
+    if (retry1.kind === "messages") {
+      expect(retry1.messages).toHaveLength(2);
+      const first = retry1.messages[1];
+      if (!first) throw new Error("missing block message 1");
+      expect(textOf(first)).toContain("blocked attempt 1");
+    }
+
+    // Second retry (after 2nd block) must carry: originalUser + block#1 + block#2
+    // Prior to the fix this only had [originalUser, blockMessage#2] — losing #1.
+    expect(retry2.kind).toBe("messages");
+    if (retry2.kind === "messages") {
+      expect(retry2.messages).toHaveLength(3);
+      const first = retry2.messages[1];
+      const second = retry2.messages[2];
+      if (!first || !second) throw new Error("missing accumulated block messages");
+      expect(textOf(first)).toContain("blocked attempt 1");
+      expect(textOf(second)).toContain("blocked attempt 2");
+    }
   });
 
   test("onAfterTurn fires for stop-blocked turns", async () => {

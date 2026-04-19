@@ -15,13 +15,19 @@ import type { EngineMetrics, EngineStopReason } from "@koi/core";
 export type AgentLifecycle =
   | { readonly state: "created"; readonly createdAt: number }
   | { readonly state: "running"; readonly startedAt: number; readonly turnIndex: number }
-  | { readonly state: "waiting"; readonly reason: WaitReason; readonly since: number }
+  | {
+      readonly state: "waiting";
+      readonly reason: WaitReason;
+      readonly since: number;
+      readonly turnIndex: number;
+    }
   | {
       readonly state: "suspended";
       readonly suspendedAt: number;
       readonly reason: string;
+      readonly turnIndex: number;
     }
-  | { readonly state: "idle"; readonly idledAt: number }
+  | { readonly state: "idle"; readonly idledAt: number; readonly turnIndex: number }
   | {
       readonly state: "terminated";
       readonly stopReason: EngineStopReason;
@@ -93,11 +99,21 @@ export function transition(
     case "running": {
       switch (event.kind) {
         case "wait":
-          return { state: "waiting", reason: event.reason, since: now };
+          return {
+            state: "waiting",
+            reason: event.reason,
+            since: now,
+            turnIndex: current.turnIndex,
+          };
         case "suspend":
-          return { state: "suspended", suspendedAt: now, reason: event.reason };
+          return {
+            state: "suspended",
+            suspendedAt: now,
+            reason: event.reason,
+            turnIndex: current.turnIndex,
+          };
         case "idle":
-          return { state: "idle", idledAt: now };
+          return { state: "idle", idledAt: now, turnIndex: current.turnIndex };
         case "complete":
           return terminated(event.stopReason, now, event.metrics);
         case "error":
@@ -110,9 +126,14 @@ export function transition(
     case "waiting": {
       switch (event.kind) {
         case "resume":
-          return { state: "running", startedAt: now, turnIndex: 0 };
+          return { state: "running", startedAt: now, turnIndex: current.turnIndex };
         case "suspend":
-          return { state: "suspended", suspendedAt: now, reason: event.reason };
+          return {
+            state: "suspended",
+            suspendedAt: now,
+            reason: event.reason,
+            turnIndex: current.turnIndex,
+          };
         case "complete":
           return terminated(event.stopReason, now, event.metrics);
         case "error":
@@ -125,7 +146,7 @@ export function transition(
     case "suspended": {
       switch (event.kind) {
         case "resume":
-          return { state: "running", startedAt: now, turnIndex: 0 };
+          return { state: "running", startedAt: now, turnIndex: current.turnIndex };
         case "complete":
           return terminated(event.stopReason, now, event.metrics);
         case "error":
@@ -138,7 +159,7 @@ export function transition(
     case "idle": {
       switch (event.kind) {
         case "resume":
-          return { state: "running", startedAt: now, turnIndex: 0 };
+          return { state: "running", startedAt: now, turnIndex: current.turnIndex };
         case "complete":
           return terminated(event.stopReason, now, event.metrics);
         case "error":

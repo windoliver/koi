@@ -216,4 +216,62 @@ describe("inbox integration", () => {
     const peekedAgain = inbox.peek();
     expect(peekedAgain).toHaveLength(1);
   });
+
+  // -------------------------------------------------------------------------
+  // Regression: drain survives a throwing adapter.inject (#review-M12)
+  //
+  // Previously adapter.inject was called without a try/catch inside the inbox
+  // drain loop. A single throwing inject discarded every queued steer item
+  // (the thrown error unwound the outer for-loop). Now each item is wrapped
+  // individually: on failure the item is degraded to `followup` so a
+  // downstream middleware can still route it into the next turn context.
+  // -------------------------------------------------------------------------
+
+  test("drain degrades steer to followup when adapter.inject throws (#review-M12)", async () => {
+    // Use a larger steer capacity so two steer items can coexist in the
+    // drain pass — verifies that a first-item throw doesn't discard later
+    // items from the SAME drain iteration (the original bug).
+    const inbox = createInboxQueue({
+      policy: { collectCap: 20, followupCap: 50, steerCap: 5 },
+    });
+    const { adapter: baseAdapter } = createFakeEngine({
+      turns: [[{ kind: "text_delta", delta: "response" }]],
+    });
+
+    // Wrap the fake engine with an adapter whose inject throws on every
+    // call. We expect BOTH steer items to be attempted (not a single throw
+    // that unwinds the whole drain loop).
+    // let justified: mutable counter so the test can observe both attempts
+    let injectCalls = 0;
+    const adapter = {
+      ...baseAdapter,
+      inject: async (_msg: unknown): Promise<void> => {
+        injectCalls++;
+        throw new Error("simulated adapter.inject failure");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      providers: [createInboxProvider(inbox)],
+    });
+
+    expect(inbox.push(makeInboxItem({ id: "s-a", mode: "steer", content: "steer-a" }))).toBe(true);
+    expect(inbox.push(makeInboxItem({ id: "s-b", mode: "steer", content: "steer-b" }))).toBe(true);
+
+    await collectEvents(runtime.run({ kind: "text", text: "go" }));
+
+    // Both items attempted injection, proving the loop doesn't unwind on
+    // a single throw. Previously only the first was attempted.
+    expect(injectCalls).toBe(2);
+
+    // Both items were degraded to followup — still reachable for downstream
+    // middleware to route into the next turn's context.
+    const remaining = inbox.peek();
+    expect(remaining).toHaveLength(2);
+    for (const item of remaining) {
+      expect(item.mode).toBe("followup");
+    }
+  });
 });

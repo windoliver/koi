@@ -39,6 +39,7 @@ import {
   isAttachResult,
   runId,
 } from "@koi/core";
+import type { IterationLimits } from "@koi/engine-compose";
 import { createStructuredOutputGuard } from "@koi/engine-compose";
 import { KoiRuntimeError } from "@koi/errors";
 import { createAgentEnvProvider } from "./agent-env-provider.js";
@@ -359,6 +360,14 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           }),
         )
       : rawProviders;
+  // Apply fork recursion-guard cap at spawn-child.ts so direct callers of
+  // spawnChildAgent({ fork: true }) are bounded even when they don't route
+  // through create-agent-spawn-fn.ts. Previously the cap was only applied at
+  // the higher-level spawn factory, so `spawnChildAgent` with `fork: true`
+  // and no `limits.maxTurns` got an uncapped fork — contradicting the
+  // SpawnChildOptions.fork doc which promises DEFAULT_FORK_MAX_TURNS.
+  const effectiveLimits = computeEffectiveSpawnLimits(options.limits, isFork);
+
   let childRuntime: KoiRuntime;
   try {
     childRuntime = await createKoi({
@@ -371,7 +380,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       ...(childMiddleware.length > 0 ? { middleware: childMiddleware } : {}),
       ...(options.forge !== undefined ? { forge: options.forge } : {}),
       ...(options.registry !== undefined ? { registry: options.registry } : {}),
-      ...(options.limits !== undefined ? { limits: options.limits } : {}),
+      ...(effectiveLimits !== undefined ? { limits: effectiveLimits } : {}),
       ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
       ...(options.extensions !== undefined ? { extensions: options.extensions } : {}),
     });
@@ -703,6 +712,27 @@ export function applyForkMaxTurns(
 ): number | undefined {
   if (!isFork) return maxTurns;
   return maxTurns ?? DEFAULT_FORK_MAX_TURNS;
+}
+
+/**
+ * Compute the effective `limits` passed to `createKoi` for a child, applying
+ * the fork recursion cap when `isFork` is true and no explicit `maxTurns` was
+ * set. Returns `undefined` when the effective limits are empty so `createKoi`
+ * can fall back to its own defaults.
+ *
+ * @internal exported for unit testing
+ */
+export function computeEffectiveSpawnLimits(
+  baseLimits: Partial<IterationLimits> | undefined,
+  isFork: boolean,
+): Partial<IterationLimits> | undefined {
+  if (!isFork) return baseLimits;
+  const maxTurns = applyForkMaxTurns(baseLimits?.maxTurns, true);
+  const base: Partial<IterationLimits> = { ...(baseLimits ?? {}) };
+  if (maxTurns !== undefined) {
+    return { ...base, maxTurns };
+  }
+  return Object.keys(base).length > 0 ? base : undefined;
 }
 
 /** Tool names stripped from nonInteractive agents to prevent user-facing prompts. */

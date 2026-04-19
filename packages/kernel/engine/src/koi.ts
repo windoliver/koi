@@ -269,7 +269,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // recreate the runtime instead of submitting another turn into a
   // wedged session. 5 seconds is generous for cooperative cleanup but
   // short enough to keep the TUI responsive on /clear.
-  const LIFECYCLE_SETTLE_TIMEOUT_MS = 5000;
+  //
+  // #review-P11: exposed via CreateKoiOptions.lifecycleSettleTimeoutMs so
+  // hosts that run long-running cooperative tools (e.g. a 30s shell command
+  // that honors abort) can bump it without patching the engine. Values ≤ 0
+  // fall back to the 5s default.
+  const LIFECYCLE_SETTLE_TIMEOUT_MS =
+    options.lifecycleSettleTimeoutMs !== undefined && options.lifecycleSettleTimeoutMs > 0
+      ? options.lifecycleSettleTimeoutMs
+      : 5000;
   // let justified: mutable poison flag set on settle timeout
   let poisoned = false;
   // #1742 round 10: lifecycle mutex — single-flight gate for
@@ -912,21 +920,52 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // Initial forge state (descriptors + forged middleware)
         await refreshForgeState(cachedTerminals);
 
-        // Subscribe to forge push notifications for mid-session tool visibility
+        // Subscribe to forge push notifications for mid-session tool visibility.
+        //
+        // Under a bursty source (e.g. MCP server reconnect fan-out) the naive
+        // "fire `forge.toolDescriptors()` per event" pattern accumulated
+        // unbounded in-flight promises that raced to overwrite
+        // `forgedDescriptorsCache` in non-deterministic order. Coalesce to at
+        // most ONE in-flight refresh at a time; queued events just re-run the
+        // refresh once the current one settles, so the last observed state
+        // always wins. #review-H10.
         if (forge?.watch !== undefined) {
+          // let justified: mutable in-flight guard shared across watch events
+          let refreshInFlight = false;
+          // let justified: mutable "re-run needed" flag set when events land
+          // while a refresh is already running
+          let refreshPending = false;
+
+          const runRefresh = async (): Promise<void> => {
+            refreshInFlight = true;
+            try {
+              // Drain queued events by looping: a burst that sets
+              // `refreshPending` during this await will re-run exactly once.
+              do {
+                refreshPending = false;
+                try {
+                  const d = await forge.toolDescriptors();
+                  forgedDescriptorsCache = d;
+                  toolsAccessor?.updateForged(d);
+                } catch (err: unknown) {
+                  console.warn("[koi] forge descriptor refresh failed", err);
+                  break;
+                }
+              } while (refreshPending);
+            } finally {
+              refreshInFlight = false;
+            }
+          };
+
           unsubForgeChange = forge.watch((_event) => {
-            // Eagerly refresh descriptor cache (fire-and-forget)
-            void forge
-              .toolDescriptors()
-              .then((d) => {
-                forgedDescriptorsCache = d;
-                toolsAccessor?.updateForged(d);
-              })
-              .catch((err: unknown) => {
-                console.warn("[koi] forge descriptor refresh failed", err);
-              });
-            // Set dirty flag for turn-boundary middleware recomposition
+            // Dirty flag for turn-boundary middleware recomposition runs
+            // regardless of the eager-refresh gate.
             forgeStateDirty = true;
+            if (refreshInFlight) {
+              refreshPending = true;
+              return;
+            }
+            void runRefresh();
           });
         }
 
@@ -1013,6 +1052,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       const maxStopRetries = input.maxStopRetries ?? DEFAULT_MAX_STOP_RETRIES;
       // let justified: mutable deferred input for stop-gate retry (created after turn boundary)
       let pendingStopInput: EngineInput | undefined;
+      // let justified: mutable accumulator of prior stop-gate block feedback.
+      //
+      // Every stop-gate block synthesizes a `[Stop hook feedback]` message and
+      // includes it in the retry stream's `input.messages` alongside the
+      // user's original request. When two consecutive retries block (the
+      // model still ignores the first veto), the retry adapter must see BOTH
+      // block messages so the model can re-anchor on the full feedback
+      // history — not just the most recent one. Previously only the current
+      // block message was included, so the first veto's feedback was
+      // silently dropped on every subsequent retry (#review-H5). Reset at
+      // each completion / idle re-arm.
+      const priorBlockMessages: InboundMessage[] = [];
 
       while (true) {
         adapterIterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
@@ -1087,17 +1138,32 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // Steer items → adapter.inject() if available; degrade to followup otherwise.
           // Collect/followup items are pushed back so middleware (e.g., inbox-middleware
           // in L2) can route them into the next turn's context during onBeforeTurn hooks.
+          //
+          // #review-M12: if `adapter.inject` throws on item N of K, the remaining
+          // steer items (N+1..K) are NOT dropped. Each item is wrapped
+          // individually and on failure we degrade that item to `followup` so
+          // a downstream middleware can still route it into the next turn.
+          // Without the try/catch, a transient adapter failure silently
+          // discarded every queued steer message.
           const inboxComponent: InboxComponent | undefined = agent.component(INBOX);
           if (inboxComponent !== undefined && inboxComponent.depth() > 0) {
             const inboxItems: readonly InboxItem[] = inboxComponent.drain();
             for (const item of inboxItems) {
               if (item.mode === "steer") {
                 if (adapter.inject !== undefined) {
-                  await adapter.inject({
-                    senderId: item.from,
-                    content: [{ kind: "text", text: item.content }],
-                    timestamp: item.createdAt,
-                  });
+                  try {
+                    await adapter.inject({
+                      senderId: item.from,
+                      content: [{ kind: "text", text: item.content }],
+                      timestamp: item.createdAt,
+                    });
+                  } catch (injectErr: unknown) {
+                    console.warn(
+                      `[koi] adapter.inject failed for steer item from "${item.from}"; degrading to followup`,
+                      injectErr,
+                    );
+                    inboxComponent.push({ ...item, mode: "followup" });
+                  }
                 } else {
                   // Degrade steer → followup when adapter lacks inject (L0 contract)
                   inboxComponent.push({ ...item, mode: "followup" });
@@ -1253,14 +1319,27 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   // Uses originalUserMessages (snapshot at session start) because
                   // activeTurnMessages gets overwritten to [] at turn boundaries
                   // for text inputs.
+                  //
+                  // #review-H5: prepend every prior block message so multiple
+                  // consecutive retries see the full veto history, not just
+                  // the most recent feedback.
+                  // Pass the SAME `callHandlers` reference through so the
+                  // `tools` getter (defined via Object.defineProperties in
+                  // the outer scope) stays live on the retry path. Do NOT
+                  // spread `...effectiveInput.callHandlers` here — that
+                  // would invoke the getter and snapshot the tools array,
+                  // losing mid-session forge updates.
                   pendingStopInput = {
                     kind: "messages",
-                    messages: [...originalUserMessages, blockMessage],
+                    messages: [...originalUserMessages, ...priorBlockMessages, blockMessage],
                     ...(effectiveInput.callHandlers !== undefined
                       ? { callHandlers: effectiveInput.callHandlers }
                       : {}),
                     signal: runSignal,
                   };
+                  // Record this block so the NEXT retry (if another block
+                  // fires) carries the full history.
+                  priorBlockMessages.push(blockMessage);
                   // Clean up previous adapter iterator before retry
                   if (adapterIterator?.return !== undefined) {
                     try {
@@ -1321,8 +1400,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // Reset per-completion retry counter so subsequent idle-wake
                 // completions don't accumulate stale stop-gate retries. Likewise
                 // re-enable capability injection for the next completion's first
-                // call.
+                // call. Also drop accumulated block feedback — the next
+                // user-facing turn starts with a clean slate. #review-H5.
                 stopRetryCount = 0;
+                priorBlockMessages.length = 0;
                 bannerCached = false;
                 cachedCapabilityBanner = undefined;
                 yield normalizedDone;

@@ -16,12 +16,12 @@ function running(): AgentLifecycle {
   return { state: "running", startedAt: NOW, turnIndex: 0 };
 }
 
-function waiting(reason: WaitReason = "model_call"): AgentLifecycle {
-  return { state: "waiting", reason, since: NOW };
+function waiting(reason: WaitReason = "model_call", turnIndex = 0): AgentLifecycle {
+  return { state: "waiting", reason, since: NOW, turnIndex };
 }
 
-function suspended(): AgentLifecycle {
-  return { state: "suspended", suspendedAt: NOW, reason: "budget exceeded" };
+function suspended(turnIndex = 0): AgentLifecycle {
+  return { state: "suspended", suspendedAt: NOW, reason: "budget exceeded", turnIndex };
 }
 
 function terminated(): AgentLifecycle {
@@ -305,6 +305,81 @@ describe("state data correctness", () => {
     const result = transition(running(), { kind: "error", error: new Error("crash") }, 8000);
     if (result.state === "terminated") {
       expect(result.stopReason).toBe("error");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: turnIndex preserved across wait/resume/suspend/idle (#review-C2)
+//
+// compose-bridge.ts fires { kind: "resume" } after every model/tool call. If
+// resume reset turnIndex to 0, the lifecycle FSM's turnIndex would lie about
+// the agent's turn every time it waited on I/O. These tests lock in the
+// preservation invariant so a future refactor can't quietly regress it.
+// ---------------------------------------------------------------------------
+
+describe("turnIndex preservation across waits and resumes", () => {
+  test("running → waiting carries turnIndex", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 7 };
+    const result = transition(start, { kind: "wait", reason: "tool_call" }, 2000);
+    expect(result.state).toBe("waiting");
+    if (result.state === "waiting") {
+      expect(result.turnIndex).toBe(7);
+    }
+  });
+
+  test("waiting → running (resume) preserves turnIndex", () => {
+    const w: AgentLifecycle = { state: "waiting", reason: "tool_call", since: NOW, turnIndex: 7 };
+    const result = transition(w, { kind: "resume" }, 3000);
+    expect(result.state).toBe("running");
+    if (result.state === "running") {
+      expect(result.turnIndex).toBe(7);
+      expect(result.startedAt).toBe(3000);
+    }
+  });
+
+  test("running → waiting → running preserves turnIndex across the round-trip", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 42 };
+    const waited = transition(start, { kind: "wait", reason: "model_call" }, 2000);
+    const resumed = transition(waited, { kind: "resume" }, 3000);
+    expect(resumed.state).toBe("running");
+    if (resumed.state === "running") {
+      expect(resumed.turnIndex).toBe(42);
+    }
+  });
+
+  test("running → suspended → running preserves turnIndex", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 5 };
+    const suspendedLc = transition(start, { kind: "suspend", reason: "pause" }, 2000);
+    expect(suspendedLc.state).toBe("suspended");
+    if (suspendedLc.state === "suspended") {
+      expect(suspendedLc.turnIndex).toBe(5);
+    }
+    const resumed = transition(suspendedLc, { kind: "resume" }, 3000);
+    if (resumed.state === "running") {
+      expect(resumed.turnIndex).toBe(5);
+    }
+  });
+
+  test("running → idle → running preserves turnIndex", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 9 };
+    const idled = transition(start, { kind: "idle" }, 2000);
+    expect(idled.state).toBe("idle");
+    if (idled.state === "idle") {
+      expect(idled.turnIndex).toBe(9);
+    }
+    const resumed = transition(idled, { kind: "resume" }, 3000);
+    if (resumed.state === "running") {
+      expect(resumed.turnIndex).toBe(9);
+    }
+  });
+
+  test("waiting → suspended carries turnIndex through the bypass path", () => {
+    const w: AgentLifecycle = { state: "waiting", reason: "tool_call", since: NOW, turnIndex: 4 };
+    const result = transition(w, { kind: "suspend", reason: "budget" }, 2000);
+    expect(result.state).toBe("suspended");
+    if (result.state === "suspended") {
+      expect(result.turnIndex).toBe(4);
     }
   });
 });
