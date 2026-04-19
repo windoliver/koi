@@ -448,15 +448,18 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       metadata = postClientMetadata;
     }
 
-    const pkce = createPkceChallenge();
-
-    // Build authorization URL with `resource` (when enabled). If the
-    // authorization endpoint itself rejects RFC 8707 (legacy AS that
-    // rejects the unknown query parameter before redirecting back), the
-    // runtime.authorize promise typically rejects with a browser
-    // error. We retry once with `resource` stripped — mirrors the
-    // token-exchange shim so legacy ASes don't hard-fail every login.
-    const buildAuthUrl = (state: string, includeResource: boolean): URL => {
+    // Generate a fresh state + PKCE per browser attempt. Reusing
+    // them across the resource-rejected retry would let a stale
+    // callback from the first attempt (timed out, user cancelled,
+    // local listener errored) satisfy the second attempt — the
+    // delayed redirect would carry the same `state` and code that
+    // the second attempt is waiting for, binding the session to an
+    // unintended browser interaction.
+    const buildAuthAttempt = (
+      includeResource: boolean,
+    ): { url: string; state: string; verifier: string } => {
+      const pkce = createPkceChallenge();
+      const state = crypto.randomUUID();
       const url = new URL(metadata.authorizationEndpoint);
       url.searchParams.set("response_type", "code");
       url.searchParams.set("client_id", client.clientId);
@@ -467,11 +470,8 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         url.searchParams.set("resource", resourceIndicator);
       }
       url.searchParams.set("state", state);
-      return url;
+      return { url: url.toString(), state, verifier: pkce.verifier };
     };
-
-    // Generate a random state parameter for CSRF protection
-    const state = crypto.randomUUID();
 
     // runtime.authorize is host-implemented (browser launch + local
     // callback listener) and can fail for many reasons unrelated to
@@ -482,24 +482,23 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     // below.
     let callbackResult: OAuthCallbackResult | undefined;
     let lastAuthorizeError: unknown;
+    let attempt = buildAuthAttempt(true);
     try {
-      callbackResult = await runtime.authorize(buildAuthUrl(state, true).toString(), redirectUri);
+      callbackResult = await runtime.authorize(attempt.url, redirectUri);
     } catch (firstErr: unknown) {
       lastAuthorizeError = firstErr;
       // RFC 8707 compatibility: a legacy AS that rejects the unknown
       // `resource` query at the authorization endpoint surfaces here.
       // Retry once without `resource` only when we actually sent it.
+      // Use a FRESH state + PKCE so a delayed callback from the
+      // first browser flow cannot satisfy this retry.
       if (resourceIndicator !== undefined) {
+        attempt = buildAuthAttempt(false);
         try {
-          callbackResult = await runtime.authorize(
-            buildAuthUrl(state, false).toString(),
-            redirectUri,
-          );
+          callbackResult = await runtime.authorize(attempt.url, redirectUri);
           lastAuthorizeError = undefined;
         } catch (secondErr: unknown) {
           // Fall through; callbackResult stays undefined and we fail closed.
-          // Keep the FIRST error as the diagnostic (it's the one operators
-          // would see in their browser), but record the second too.
           void secondErr;
         }
       }
@@ -528,16 +527,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       return false;
     }
 
-    // Validate state parameter to prevent CSRF attacks
-    if (callbackResult.state !== state) {
+    // Validate state parameter to prevent CSRF attacks. Match against
+    // the WINNING attempt's state (each retry generated a fresh one).
+    if (callbackResult.state !== attempt.state) {
       reportFailure({ kind: "state_mismatch", serverName });
       return false;
     }
 
-    // Exchange authorization code for tokens
+    // Exchange authorization code for tokens. Use the winning
+    // attempt's PKCE verifier — it is the one whose challenge was
+    // sent on the authorize URL the AS actually accepted.
     let exchange = await exchangeCode(
       callbackResult.code,
-      pkce.verifier,
+      attempt.verifier,
       redirectUri,
       metadata.tokenEndpoint,
       client.clientId,
@@ -553,7 +555,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     if (!exchange.ok && exchange.resourceRejected && resourceIndicator !== undefined) {
       exchange = await exchangeCode(
         callbackResult.code,
-        pkce.verifier,
+        attempt.verifier,
         redirectUri,
         metadata.tokenEndpoint,
         client.clientId,

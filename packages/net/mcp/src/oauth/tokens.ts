@@ -209,8 +209,15 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       return undefined;
     }
 
-    // Capture the refresh token we used — needed for compare-and-swap below
+    // Capture the EXACT token state we observed for compare-and-swap.
+    // Refresh token equality alone is insufficient: many ASes do not
+    // rotate refresh tokens, so a concurrent successful refresh that
+    // rotates only the access token would still match `usedRefreshToken`
+    // and our terminal-failure delete could wipe it. Compare the full
+    // (accessToken, refreshToken) pair — accessToken is rotated by
+    // every successful refresh even when refreshToken is reused.
     const usedRefreshToken = tokens.refreshToken;
+    const usedAccessToken = tokens.accessToken;
 
     // Resolve clientId LAZILY here — never during the no-tokens probe
     // above. For DCR-backed configs this triggers registration only
@@ -300,31 +307,38 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       }
     }
 
-    // Compare-and-swap: under lock, check that the on-disk refresh token
-    // still matches what we used. If another process already refreshed and
-    // rotated the token, our result (or deletion) is stale — skip it.
+    // Compare-and-swap: under lock, check that the on-disk token set
+    // still matches the (accessToken, refreshToken) pair we read at
+    // the start. If another process refreshed in the meantime, our
+    // result/deletion is stale — skip it. accessToken is rotated by
+    // EVERY successful refresh, so non-rotating-refresh-token ASes
+    // are still detected as "newer write happened".
+    const isSameSnapshot = (current: OAuthTokens | undefined): boolean =>
+      current !== undefined &&
+      current.accessToken === usedAccessToken &&
+      current.refreshToken === usedRefreshToken;
+
     return storage.withLock(storageKey, async () => {
       const current = await getTokens();
 
       if (!refreshResult.ok) {
-        if (refreshResult.terminal && current?.refreshToken === usedRefreshToken) {
-          // Only clear if no one else has refreshed since we started
+        if (refreshResult.terminal && isSameSnapshot(current)) {
+          // Only clear if no one else has refreshed since we started.
           await storage.delete(storageKey);
         }
-        // If another process already refreshed, return their access token
+        // If another process already refreshed, return their access token.
         if (current !== undefined && !isExpired(current)) {
           return current.accessToken;
         }
         return undefined;
       }
 
-      // Another process may have already written a newer token set
-      if (current?.refreshToken !== undefined && current.refreshToken !== usedRefreshToken) {
-        // Someone else already refreshed — use theirs if valid
-        if (!isExpired(current)) return current.accessToken;
+      // Another process may have already written a newer token set.
+      if (current !== undefined && !isSameSnapshot(current) && !isExpired(current)) {
+        return current.accessToken;
       }
 
-      // Write our refreshed tokens
+      // Write our refreshed tokens.
       await storage.set(storageKey, JSON.stringify(refreshResult.tokens));
       return refreshResult.tokens.accessToken;
     });
