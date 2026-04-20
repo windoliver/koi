@@ -163,7 +163,42 @@ export interface ArtifactStoreConfig {
    * `expires_at` at save time; later policy changes never recompute it.
    */
   readonly policy?: LifecyclePolicy;
+  /**
+   * Background repair worker cadence (Plan 4 — spec §6.5 step 4). Controls
+   * the interval between worker iterations that drain `blob_ready = 0` rows
+   * and `pending_blob_deletes` tombstones.
+   *
+   * - Integer >= 100 (ms) — a `setInterval` is scheduled at that cadence.
+   * - `"manual"` — disables the interval entirely; only the `runOnce` path
+   *   (used by the close-barrier flush and by tests) triggers work.
+   *
+   * Default: 30_000 ms. The 100ms floor guards against pathological busy
+   * loops — a tighter cadence is almost always a misconfiguration and would
+   * starve save/get transactions with BEGIN IMMEDIATE contention. Fractional
+   * or non-finite values are rejected at construction (parity with
+   * `maxRepairAttempts` / `staleIntentGraceMs`).
+   */
+  readonly workerIntervalMs?: number | "manual";
   // Plan 5 (#1922) will add `blobStore: BlobStore` for pluggable backends —
   // still omitted from the public surface so the type never advertises a
   // field that would be rejected at runtime.
+}
+
+/**
+ * Result of one worker iteration. Totals are per-iteration — they reset at
+ * the start of each run. The `bytesReclaimed` field is 0 in Plan 4 (same
+ * known limitation as Plan 3: `list()` yields hashes only, we don't re-read
+ * blob bytes just to measure size).
+ */
+export interface WorkerStats {
+  /** Count of `blob_ready = 0` rows promoted to `blob_ready = 1`. */
+  readonly promoted: number;
+  /** Count of rows reaped after exhausting `maxRepairAttempts`. */
+  readonly terminallyDeleted: number;
+  /** Count of `has()` / `delete()` calls that threw (transient backend). */
+  readonly transientErrors: number;
+  /** Count of `pending_blob_deletes` rows drained this iteration. */
+  readonly tombstonesDrained: number;
+  /** Reserved; always 0 in Plan 4 (see interface docstring). */
+  readonly bytesReclaimed: number;
 }

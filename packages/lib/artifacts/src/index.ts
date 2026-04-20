@@ -8,4 +8,5 @@ export type {
   LifecyclePolicy,
   Result,
   SaveArtifactInput,
+  WorkerStats,
 } from "./types.js";

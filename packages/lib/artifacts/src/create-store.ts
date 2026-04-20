@@ -88,6 +88,17 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       );
     }
   }
+  if (config.workerIntervalMs !== undefined && config.workerIntervalMs !== "manual") {
+    if (
+      !Number.isFinite(config.workerIntervalMs) ||
+      !Number.isInteger(config.workerIntervalMs) ||
+      config.workerIntervalMs < 100
+    ) {
+      throw new Error(
+        `ArtifactStoreConfig.workerIntervalMs must be a finite integer >= 100 or the literal "manual"; got ${String(config.workerIntervalMs)}. Values below 100ms starve save/get transactions with BEGIN IMMEDIATE contention; fractional/NaN/negative values are rejected to surface misconfiguration at startup.`,
+      );
+    }
+  }
 
   // Reject non-memory SQLite URI paths. The advisory lock and mkdir logic
   // operate on filesystem paths; `file:/tmp/x.db?cache=shared` is a valid
