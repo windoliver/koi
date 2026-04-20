@@ -57,9 +57,9 @@ export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMon
       config,
       lastHeartbeatAt: now,
       deadlineAt: now + config.timeoutMs,
-      // Placeholder — overwritten immediately by armTimer
-      timer: 0 as unknown as ReturnType<typeof setTimeout>,
+      timer: setTimeout(() => undefined, 0),
     };
+    clearTimeout(entry.timer);
     entries.set(id, entry);
     armTimer(id, entry);
   };
