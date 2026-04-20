@@ -56,6 +56,7 @@ export function createRouter(deps: {
         await respondToAdminClearGrants({
           storage: deps.storage,
           fsm: deps.fsm,
+          request: { scope: frame.scope, origin: frame.origin },
           emitFrame: deps.emitFrame,
         });
         return;

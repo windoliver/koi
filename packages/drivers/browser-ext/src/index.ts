@@ -1,5 +1,9 @@
 export type { HostSelector } from "./discovery-client.js";
-export type { ExtensionDriverConfig, ReattachPolicy } from "./driver.js";
+export type {
+  ExtensionBrowserDriver,
+  ExtensionDriverConfig,
+  ReattachPolicy,
+} from "./driver.js";
 export { createExtensionBrowserDriver } from "./driver.js";
 export type {
   AdminClearGrantsAckFrame,

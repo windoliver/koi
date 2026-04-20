@@ -2,6 +2,7 @@ export interface InFlightAttach {
   readonly tabId: number;
   readonly clientId: string;
   readonly attachRequestId: string;
+  readonly leaseToken: string;
   readonly receivedAt: number;
   abandoned: boolean;
 }

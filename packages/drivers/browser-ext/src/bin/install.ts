@@ -11,7 +11,32 @@ import { DEFAULT_MANIFEST_HOST_NAME, writeNativeMessagingManifests } from "./nm-
 import { detectNodeBinary, type NodeDetectionResult } from "./node-detect.js";
 
 const PACKAGE_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const DEV_EXTENSION_ID = "nkehdfkafbjjooiopaegemamgjpaemhl";
+
+/**
+ * The extension ID is derived per-install from the local dev key pair under
+ * `extension/keys/` (gitignored — `build:extension` generates a fresh pair on
+ * first build). This keeps extension ↔ native-host trust bound to the
+ * installing machine instead of a globally-shared key in source control.
+ */
+async function readLocalExtensionId(packageRoot: string): Promise<string> {
+  const idPath = join(packageRoot, "extension", "keys", "dev.extension-id.txt");
+  try {
+    const content = (await readFile(idPath, "utf8")).trim();
+    if (!/^[a-p]{32}$/.test(content)) {
+      throw new Error(`extension id at ${idPath} has unexpected format`);
+    }
+    return content;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(
+        `Local extension id not found at ${idPath}. Run \`bun run build:extension\` in ` +
+          "@koi/browser-ext first — it generates a per-developer dev key and derives the id.",
+      );
+    }
+    throw err;
+  }
+}
 
 export interface InstallCommandOptions {
   readonly homeDir?: string;
@@ -40,6 +65,7 @@ export interface InstallCommandDependencies {
   readonly copyExtensionBundle?: (from: string, to: string) => Promise<void>;
   readonly getBrowserInstallTargets?: typeof getBrowserInstallTargets;
   readonly ensureExtensionBundle?: (dir: string) => Promise<void>;
+  readonly readLocalExtensionId?: (packageRoot: string) => Promise<string>;
 }
 
 async function defaultCopyExtensionBundle(from: string, to: string): Promise<void> {
@@ -81,6 +107,8 @@ export async function runInstallCommand(
   const verifyBundle = deps.ensureExtensionBundle ?? ensureExtensionBundle;
 
   await verifyBundle(extensionSourceDir);
+  const readExtensionId = deps.readLocalExtensionId ?? readLocalExtensionId;
+  const extensionId = await readExtensionId(packageRoot);
   const node = detectNode();
   const installId = await generateInstall(authDir);
   await writeAuth(authDir);
@@ -88,7 +116,7 @@ export async function runInstallCommand(
   const manifests = await writeManifests({
     targets: browserTargets,
     wrapperPath,
-    allowedOrigins: [`chrome-extension://${DEV_EXTENSION_ID}/`],
+    allowedOrigins: [`chrome-extension://${extensionId}/`],
     hostName: DEFAULT_MANIFEST_HOST_NAME,
   });
   await copyBundle(extensionSourceDir, extensionDeployDir);

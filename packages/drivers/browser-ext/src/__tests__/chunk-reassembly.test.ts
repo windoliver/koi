@@ -5,12 +5,26 @@ import type { NmFrame } from "../native-host/nm-frame.js";
 
 type Chunk = Extract<NmFrame, { kind: "chunk" }>;
 
-function encodeParts(parts: readonly string[]): string[] {
-  return parts.map((p) => Buffer.from(p, "utf-8").toString("base64"));
+/**
+ * Matches the real extension sender: encode the WHOLE payload to base64 first,
+ * then slice that base64 string into arbitrary chunks. NOT the same as encoding
+ * each utf-8 fragment independently, which would only work on 4-char-aligned
+ * cuts and silently corrupt most payloads.
+ */
+function chunkBase64WireFormat(payload: string, boundaries: readonly number[]): string[] {
+  const full = Buffer.from(payload, "utf-8").toString("base64");
+  const parts: string[] = [];
+  let prev = 0;
+  for (const boundary of boundaries) {
+    parts.push(full.slice(prev, boundary));
+    prev = boundary;
+  }
+  parts.push(full.slice(prev));
+  return parts;
 }
 
 describe("chunk-reassembly", () => {
-  test("reassembles three chunks into a cdp_result frame", () => {
+  test("reassembles three chunks into a cdp_result frame (wire-format)", () => {
     const frames: NmFrame[] = [];
     const buf = createChunkBuffer({
       events: {
@@ -25,8 +39,10 @@ describe("chunk-reassembly", () => {
       id: 1,
       result: { x: 1 },
     });
-    const slices = [payload.slice(0, 10), payload.slice(10, 40), payload.slice(40)];
-    const encoded = encodeParts(slices);
+    // Use NON-4-char-aligned boundaries to verify the reassembler joins
+    // base64 strings before decoding (rather than decoding each piece).
+    const encoded = chunkBase64WireFormat(payload, [13, 37]);
+    expect(encoded.length).toBe(3);
     for (let i = 0; i < encoded.length; i++) {
       const data = encoded[i];
       if (data === undefined) continue;

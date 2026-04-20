@@ -37,6 +37,14 @@ export interface DriverClient {
   readonly attach: (
     frame: Extract<DriverFrame, { kind: "attach" }>,
   ) => Promise<AttachAckOkFrame | AttachAckFailFrame>;
+  /**
+   * Send a `detach` frame for the given session. The host tears down the
+   * debugger attachment; driver receives `detach_ack` (routed separately).
+   * Resolves immediately after the frame is written — it does not wait for
+   * the ack (callers that need it should use setFrameHandler or compose a
+   * waitFor themselves).
+   */
+  readonly detach: (sessionId: string) => Promise<void>;
   readonly sendCdpFrame: (frame: CdpFrame) => Promise<void>;
   readonly setFrameHandler: (handler: ((frame: DriverFrame) => void) | null) => void;
   readonly setCloseHandler: (handler: (() => void) | null) => void;
@@ -62,7 +70,7 @@ export interface LoopbackWebSocketBridge {
 export interface LoopbackWebSocketBridgeOptions {
   readonly token: string;
   readonly sessionId: string;
-  readonly transport: Pick<DriverClient, "sendCdpFrame" | "setFrameHandler">;
+  readonly transport: Pick<DriverClient, "sendCdpFrame" | "setFrameHandler" | "detach">;
 }
 
 export interface LoopbackUpgradeSocket {
@@ -184,31 +192,40 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
       void startReader(activeSocket);
     },
     async hello(frame: HelloFrame): Promise<HelloAckOkFrame | HelloAckFailFrame> {
-      await writeFrame(frame);
-      return waitFor(
+      // Register the waiter BEFORE writing so a fast host reply cannot race
+      // past an un-registered listener and be dropped.
+      const waiter = waitFor(
         (candidate): candidate is HelloAckOkFrame | HelloAckFailFrame =>
           candidate.kind === "hello_ack",
       );
+      await writeFrame(frame);
+      return waiter;
     },
     async listTabs(): Promise<TabsFrame> {
+      const waiter = waitFor((candidate): candidate is TabsFrame => candidate.kind === "tabs");
       await writeFrame({ kind: "list_tabs" });
-      return waitFor((candidate): candidate is TabsFrame => candidate.kind === "tabs");
+      return waiter;
     },
     async adminClearGrants(frame: AdminClearGrantsFrame): Promise<AdminClearGrantsAckFrame> {
-      await writeFrame(frame as DriverFrame);
-      return waitFor(
+      const waiter = waitFor(
         (candidate): candidate is AdminClearGrantsAckFrame =>
           candidate.kind === "admin_clear_grants_ack",
       );
+      await writeFrame(frame as DriverFrame);
+      return waiter;
     },
     async attach(
       frame: Extract<DriverFrame, { kind: "attach" }>,
     ): Promise<AttachAckOkFrame | AttachAckFailFrame> {
-      await writeFrame(frame);
-      return waitFor(
+      const waiter = waitFor(
         (candidate): candidate is AttachAckOkFrame | AttachAckFailFrame =>
           candidate.kind === "attach_ack" && candidate.attachRequestId === frame.attachRequestId,
       );
+      await writeFrame(frame);
+      return waiter;
+    },
+    async detach(sessionId: string): Promise<void> {
+      await writeFrame({ kind: "detach", sessionId });
     },
     async sendCdpFrame(frame: CdpFrame): Promise<void> {
       await writeFrame(frame);
@@ -304,6 +321,11 @@ export function wireLoopbackWebSocketBridge(
       options.transport.setFrameHandler(null);
       activeSocket?.close();
       activeSocket = null;
+      // Send detach to the host so it tears down the debugger attachment and
+      // clears ownership. Without this, the host keeps the tab marked owned
+      // until the driver connection drops — which bounces `already_attached`
+      // on the next attach attempt.
+      void options.transport.detach(options.sessionId).catch(() => {});
     },
   };
 }

@@ -82,29 +82,48 @@ describe("runUninstallCommand", () => {
     );
 
     expect(result.clearedOrigins).toEqual(["https://example.com"]);
+    expect(result.onlineGrantClearanceCompleted).toBe(true);
+    // close() now runs before local cleanup (finally block on the client).
     expect(calls).toEqual([
       "connect",
       "hello",
       "admin_clear_grants",
+      "close",
       "rm-manifests:5",
       "wipe-auth",
       "rm-runtime",
-      "close",
     ]);
   });
 
-  test("fails closed when no live host is reachable", async () => {
-    await expect(
-      runUninstallCommand(
-        { homeDir: "/tmp/home" },
-        {
-          selectDiscoveryHost: async () =>
-            ({
-              code: "HOST_SPAWN_FAILED",
-              message: "missing",
-            }) as never,
+  test("offline host: removes local artifacts anyway (best-effort rollback)", async () => {
+    const calls: string[] = [];
+    const result = await runUninstallCommand(
+      { homeDir: "/tmp/home", platform: "linux" },
+      {
+        selectDiscoveryHost: async () =>
+          ({
+            code: "HOST_SPAWN_FAILED",
+            message: "missing",
+          }) as never,
+        removeNativeMessagingManifests: async (targets) => {
+          calls.push(`rm-manifests:${targets.length}`);
+          return targets.map(
+            (target) => `${target.nativeMessagingHostsDir}/com.koi.browser_ext.json`,
+          );
         },
-      ),
-    ).rejects.toThrow(/requires a live browser extension connection/);
+        wipeAuthFiles: async () => {
+          calls.push("wipe-auth");
+        },
+        removeRuntimeFiles: async () => {
+          calls.push("rm-runtime");
+          return [];
+        },
+      },
+    );
+
+    expect(result.onlineGrantClearanceCompleted).toBe(false);
+    expect(result.clearedOrigins).toEqual([]);
+    expect(calls).toEqual(["rm-manifests:5", "wipe-auth", "rm-runtime"]);
+    expect(result.removedManifestPaths.length).toBe(5);
   });
 });

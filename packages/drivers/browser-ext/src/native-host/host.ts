@@ -68,6 +68,15 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
   const inFlight = createInFlightMap();
   const drivers = new Map<string, { send: (frame: DriverFrame) => void; close: () => void }>();
   const driverRoles = new Map<string, "driver" | "admin">();
+  const driverLeases = new Map<string, string>();
+  const leasesInUse = new Set<string>();
+  /**
+   * Per-request routing maps. Required for tenant isolation: without these,
+   * any connected client would see every other client's tabs + CDP traffic.
+   */
+  const pendingListTabs: string[] = []; // FIFO queue of clientIds awaiting `tabs`
+  const pendingCdpRequests = new Map<string, string>(); // `${sessionId}:${id}` → clientId
+  const cdpKey = (sessionId: string, id: number): string => `${sessionId}:${id}`;
 
   const detach = createDetachCoordinator({
     ownership,
@@ -92,7 +101,25 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
   const chunkBuffer = createChunkBuffer({
     events: {
       onFrameReady: (frame) => {
-        for (const driver of drivers.values()) driver.send(frame as DriverFrame);
+        // Chunks reassemble into one of cdp_result / cdp_error / cdp_event.
+        // Route through the same handler as the non-chunked path for
+        // per-request tenant isolation.
+        if (frame.kind === "cdp_result" || frame.kind === "cdp_error") {
+          const requester = pendingCdpRequests.get(cdpKey(frame.sessionId, frame.id));
+          if (requester) {
+            pendingCdpRequests.delete(cdpKey(frame.sessionId, frame.id));
+            drivers.get(requester)?.send(frame as DriverFrame);
+          }
+          return;
+        }
+        if (frame.kind === "cdp_event") {
+          for (const [, owner] of ownership.entries()) {
+            if (owner.phase === "committed" && owner.sessionId === frame.sessionId) {
+              drivers.get(owner.clientId)?.send(frame as DriverFrame);
+              return;
+            }
+          }
+        }
       },
       onTimeout: () => {},
       onGroupDrop: () => {},
@@ -114,6 +141,11 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
 
   let extensionVersion: string | null = null;
   let selectedProtocol = 1;
+  let extensionBrowserSessionId: string | null = null;
+  let resolveExtensionHello: ((value: { browserSessionId: string }) => void) | null = null;
+  const extensionHelloReceived = new Promise<{ browserSessionId: string }>((resolve) => {
+    resolveExtensionHello = resolve;
+  });
   let done: () => void = () => {};
   const completion = new Promise<void>((r) => {
     done = r;
@@ -155,19 +187,35 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     }
     if (frame.kind === "extension_hello") {
       extensionVersion = frame.extensionVersion;
+      extensionBrowserSessionId = frame.browserSessionId;
       const negotiated = negotiateProtocol(
         [...frame.supportedProtocols],
         [...HOST_SUPPORTED_PROTOCOLS],
       );
-      if (negotiated.ok) {
-        selectedProtocol = negotiated.selectedProtocol;
+      if (!negotiated.ok) {
+        // Fail-closed: no shared protocol version. The NM control frame
+        // schema doesn't encode a failure mode for host_hello, so signal
+        // version skew by closing the port — the extension watchdog detects
+        // the disconnect and surfaces it to the user.
+        console.error(
+          `[browser-ext] protocol negotiation failed: extension supports ${JSON.stringify(
+            frame.supportedProtocols,
+          )}, host supports ${JSON.stringify(HOST_SUPPORTED_PROTOCOLS)}`,
+        );
+        done();
+        return;
       }
+      selectedProtocol = negotiated.selectedProtocol;
       sendNmControl({
         kind: "host_hello",
         hostVersion: HOST_VERSION,
         installId,
         selectedProtocol,
       });
+      if (resolveExtensionHello) {
+        resolveExtensionHello({ browserSessionId: frame.browserSessionId });
+        resolveExtensionHello = null;
+      }
     }
   }
 
@@ -211,26 +259,51 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         chunkBuffer.add(frame);
         return;
       case "cdp_result":
-      case "cdp_error":
-      case "cdp_event":
-      case "tabs":
-      case "abandon_attach_ack": {
-        for (const driver of drivers.values()) driver.send(frame as DriverFrame);
+      case "cdp_error": {
+        const requester = pendingCdpRequests.get(cdpKey(frame.sessionId, frame.id));
+        if (requester) {
+          pendingCdpRequests.delete(cdpKey(frame.sessionId, frame.id));
+          drivers.get(requester)?.send(frame as DriverFrame);
+        }
         return;
       }
+      case "cdp_event": {
+        // Route events to the session owner (ownership map tracks tabId →
+        // clientId). This avoids cross-tenant leakage of CDP event traffic.
+        for (const [, owner] of ownership.entries()) {
+          if (owner.phase === "committed" && owner.sessionId === frame.sessionId) {
+            drivers.get(owner.clientId)?.send(frame as DriverFrame);
+            return;
+          }
+        }
+        return;
+      }
+      case "tabs": {
+        const requester = pendingListTabs.shift();
+        if (requester) drivers.get(requester)?.send(frame as DriverFrame);
+        return;
+      }
+      case "abandon_attach_ack":
+        // NM-only: the extension acknowledges the host's abandon_attach. This
+        // is an internal host/extension handshake — not forwarded to drivers.
+        return;
       default:
         return;
     }
   }
 
-  const browserSessionId = `sess-${instanceId}`;
+  const helloTimeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("extension_hello not received within 10s")), 10_000),
+  );
+  const { browserSessionId } = await Promise.race([extensionHelloReceived, helloTimeout]);
+  void extensionBrowserSessionId;
   const quarantineJournal = await createQuarantineJournal({
     dir: config.quarantineDir,
     instanceId,
     browserSessionId,
   });
 
-  await runBootProbe({
+  const probeResult = await runBootProbe({
     sendNm,
     awaitAck: (requestId, timeoutMs) =>
       new Promise((resolve) => {
@@ -245,6 +318,11 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     writerSeq: 1,
     now: () => Date.now(),
   });
+  if (!probeResult.ok) {
+    throw new Error(
+      `Browser-ext host: boot probe failed (${probeResult.error ?? "unknown"}); refusing to publish discovery`,
+    );
+  }
 
   const server = await createSocketServer({
     socketPath: config.socketPath,
@@ -272,6 +350,18 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         } finally {
           drivers.delete(clientId);
           driverRoles.delete(clientId);
+          const lease = driverLeases.get(clientId);
+          if (lease !== undefined) {
+            leasesInUse.delete(lease);
+            driverLeases.delete(clientId);
+          }
+          // Clear any pending routing state owned by this client.
+          for (let i = pendingListTabs.length - 1; i >= 0; i--) {
+            if (pendingListTabs[i] === clientId) pendingListTabs.splice(i, 1);
+          }
+          for (const [k, c] of pendingCdpRequests) {
+            if (c === clientId) pendingCdpRequests.delete(k);
+          }
           attach.handleDriverDisconnect(clientId);
         }
       })();
@@ -279,8 +369,43 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
   });
 
   function handleDriverFrame(clientId: string, frame: DriverFrame): void {
+    // Auth gate: reject every frame except `hello` until the driver has
+    // successfully completed the token/lease handshake. Without this, an
+    // unauthenticated client could enumerate tabs via `list_tabs` or send
+    // CDP traffic without ever presenting the shared token.
+    if (frame.kind !== "hello" && !driverLeases.has(clientId)) {
+      drivers.get(clientId)?.close();
+      return;
+    }
     switch (frame.kind) {
       case "hello": {
+        if (driverLeases.has(clientId)) {
+          drivers.get(clientId)?.send({
+            kind: "hello_ack",
+            ok: false,
+            reason: "bad_lease_token",
+          });
+          return;
+        }
+        if (leasesInUse.has(frame.leaseToken)) {
+          drivers.get(clientId)?.send({
+            kind: "hello_ack",
+            ok: false,
+            reason: "lease_collision",
+          });
+          return;
+        }
+        // Validate the driver's advertised supportedProtocols against the
+        // host's selected protocol (already negotiated with the extension).
+        if (!frame.supportedProtocols.includes(selectedProtocol)) {
+          drivers.get(clientId)?.send({
+            kind: "hello_ack",
+            ok: false,
+            reason: "version_mismatch",
+            hostSupportedProtocols: [selectedProtocol],
+          });
+          return;
+        }
         const validation = validateHello(
           { token: frame.token, admin: frame.admin },
           { token: expectedToken, adminKey: expectedAdminKey },
@@ -290,6 +415,8 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           return;
         }
         driverRoles.set(clientId, validation.role);
+        driverLeases.set(clientId, frame.leaseToken);
+        leasesInUse.add(frame.leaseToken);
         drivers.get(clientId)?.send({
           kind: "hello_ack",
           ok: true,
@@ -302,18 +429,54 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         return;
       }
       case "list_tabs":
+        pendingListTabs.push(clientId);
         sendNm(frame);
         return;
-      case "attach":
+      case "attach": {
+        const pinnedLease = driverLeases.get(clientId);
+        if (pinnedLease === undefined || pinnedLease !== frame.leaseToken) {
+          drivers.get(clientId)?.send({
+            kind: "attach_ack",
+            ok: false,
+            tabId: frame.tabId,
+            leaseToken: frame.leaseToken,
+            attachRequestId: frame.attachRequestId,
+            reason: "no_permission",
+          });
+          return;
+        }
         attach.handleAttachFromDriver(clientId, frame);
         return;
-      case "detach":
-        detach.initiateHostDetach(findTabByOwner(clientId, frame.sessionId) ?? -1);
+      }
+      case "detach": {
+        const tab = findTabByOwner(clientId, frame.sessionId);
+        if (tab === undefined) {
+          drivers.get(clientId)?.send({
+            kind: "detach_ack",
+            sessionId: frame.sessionId,
+            ok: false,
+            reason: "not_attached",
+          });
+          return;
+        }
+        detach.initiateHostDetach(tab);
         return;
+      }
       case "cdp":
+        pendingCdpRequests.set(cdpKey(frame.sessionId, frame.id), clientId);
         sendNm(frame);
         return;
       case "admin_clear_grants":
+        // admin_clear_grants is single-flight per spec §8.7: reject overlapping
+        // requests with PERMISSION so retries don't race on the shared ack slot.
+        if (pendingAdminResolve !== undefined) {
+          drivers.get(clientId)?.send({
+            kind: "admin_clear_grants_ack",
+            ok: false,
+            reason: "PERMISSION",
+          });
+          return;
+        }
         void handleAdminClearGrants({
           role: driverRoles.get(clientId) ?? "driver",
           scope: frame.scope,

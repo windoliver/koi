@@ -55,26 +55,14 @@ export interface ExtensionDriverConfig {
   readonly connectSocketFactory?: ((socket: string) => Socket | Duplex) | undefined;
   /**
    * Optional delegate `BrowserDriver` that this extension driver forwards
-   * interaction methods (snapshot, navigate, click, type, …) to. The typical
-   * composition (performed by the L3 runtime, not this L2 package) is:
+   * interaction methods (snapshot, navigate, click, type, …) to. Caller owns
+   * its lifecycle — this driver does NOT dispose it. If omitted, interaction
+   * methods return a clear error explaining composition is required.
    *
-   *   1. Create an extension driver (this) for discovery + tabList + loopback
-   *      bridge plumbing.
-   *   2. Attach to a tab via the native host to obtain a CDP session.
-   *   3. Stand up a loopback WS endpoint (exposed via `attachLoopbackBridge`)
-   *      that bridges the CDP session from the extension.
-   *   4. Create a Playwright-backed driver via
-   *      `createPlaywrightBrowserDriver({ wsEndpoint, wsHeaders })`.
-   *   5. Pass that Playwright driver in here.
-   *
-   * `tabList` always goes through the native host directly — the MV3 extension
-   * is the source of truth for the live tab set, not Playwright.
-   *
-   * The caller owns the injected driver's lifecycle — this driver does NOT
-   * dispose it. If omitted, interaction methods return a clear error.
-   *
-   * Type-only reference (`BrowserDriver` is L0); this keeps `@koi/browser-ext`
-   * free of L2-to-L2 coupling to `@koi/browser-playwright`.
+   * Type-only reference (`BrowserDriver` is L0) — keeps `@koi/browser-ext`
+   * free of L2-to-L2 coupling to `@koi/browser-playwright`. Composition
+   * happens at L3 (runtime) or caller-side — see the composition recipe
+   * documented above `createExtensionBrowserDriver`.
    */
   readonly playwrightDriver?: BrowserDriver | undefined;
 }
@@ -85,6 +73,7 @@ const DEFAULT_TOKEN_PATH: string = join(homedir(), ".koi/browser-ext/token");
 interface RuntimeConnection {
   readonly socketPath: string;
   readonly client: ReturnType<typeof createDriverClient>;
+  readonly leaseToken: string;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -185,12 +174,14 @@ class ExtensionBrowserDriverRuntime {
       this.onTransportLost();
     });
 
+    const leaseToken = randomBytes(16).toString("hex");
+    const driverSupportedProtocols = [1];
     const hello = await client.hello({
       kind: "hello",
       token,
       driverVersion: "0.0.0",
-      supportedProtocols: [1],
-      leaseToken: randomBytes(16).toString("hex"),
+      supportedProtocols: driverSupportedProtocols,
+      leaseToken,
     });
 
     if (hello.ok !== true) {
@@ -202,9 +193,22 @@ class ExtensionBrowserDriverRuntime {
       );
     }
 
+    // Verify the host's selectedProtocol is one we actually advertised.
+    // Prevents silent protocol skew: the host should never pick a version
+    // we didn't offer.
+    if (!driverSupportedProtocols.includes(hello.selectedProtocol)) {
+      await client.close();
+      throw createExtensionError(
+        "HOST_SPAWN_FAILED",
+        `Browser extension host selected unsupported protocol ${hello.selectedProtocol}; driver advertised ${JSON.stringify(driverSupportedProtocols)}`,
+        { selectedProtocol: hello.selectedProtocol },
+      );
+    }
+
     const connection: RuntimeConnection = {
       socketPath: selected.socket,
       client,
+      leaseToken,
     };
     this.activeConnection = connection;
     return connection;
@@ -264,7 +268,7 @@ class ExtensionBrowserDriverRuntime {
       const attached = await connection.client.attach({
         kind: "attach",
         tabId,
-        leaseToken: randomBytes(16).toString("hex"),
+        leaseToken: connection.leaseToken,
         attachRequestId: randomUUID(),
         reattach,
       });
@@ -315,7 +319,42 @@ function isKoiError(error: unknown): error is KoiError {
   );
 }
 
-export function createExtensionBrowserDriver(options: ExtensionDriverConfig = {}): BrowserDriver {
+/**
+ * Extension driver augmented with the tab-attach primitive. Composing a
+ * fully-featured browser driver on top of this is a caller responsibility —
+ * typically done at L3 (runtime) with `@koi/browser-playwright`'s
+ * `createPlaywrightBrowserDriver`. See `composeExtensionBrowserDriver`.
+ */
+export interface ExtensionBrowserDriver extends BrowserDriver {
+  /**
+   * Attach to a tab via the native host; returns the `sessionId` of the new
+   * debugger session. Use this session id with `createLoopbackWebSocketBridge`
+   * (exported separately) to stand up a CDP WebSocket endpoint that Playwright
+   * can `connectOverCDP(wsEndpoint, { headers: wsHeaders })` against.
+   */
+  readonly attachLoopbackBridge: (
+    tabId: number,
+    origin: string,
+  ) => Promise<Result<string, KoiError>>;
+}
+
+/**
+ * **IMPORTANT — this is a PARTIAL BrowserDriver.**
+ *
+ * Without an injected `playwrightDriver` in `options`, every interaction
+ * method (snapshot, navigate, click, type, evaluate, etc.) returns a clear
+ * error — only `tabList()` and `attachLoopbackBridge()` work. This is by
+ * design: `@koi/browser-ext` (L2) must not depend directly on
+ * `@koi/browser-playwright` (also L2) — that would violate the layer
+ * architecture. Composition is therefore a CALLER RESPONSIBILITY, ideally
+ * done at L3 (runtime) via `composeExtensionBrowserDriver` below.
+ *
+ * Returns an `ExtensionBrowserDriver` (augmented `BrowserDriver` +
+ * `attachLoopbackBridge`). See the composition recipe documented above.
+ */
+export function createExtensionBrowserDriver(
+  options: ExtensionDriverConfig = {},
+): ExtensionBrowserDriver {
   const runtime = new ExtensionBrowserDriverRuntime(options);
   const pw = options.playwrightDriver;
 
@@ -434,5 +473,36 @@ export function createExtensionBrowserDriver(options: ExtensionDriverConfig = {}
     dispose(): Promise<void> {
       return runtime.dispose();
     },
+    attachLoopbackBridge(tabId, origin) {
+      return runtime.attachLoopbackBridge(tabId, origin);
+    },
   };
 }
+
+/**
+ * Composition pattern note — to build a fully-working browser driver from
+ * `@koi/browser-ext`, callers must wire both this package's extension driver
+ * and `@koi/browser-playwright` themselves. The canonical recipe:
+ *
+ * ```ts
+ * import { createExtensionBrowserDriver, createLoopbackWebSocketBridge, createDriverClient } from "@koi/browser-ext";
+ * import { createPlaywrightBrowserDriver } from "@koi/browser-playwright";
+ *
+ * const ext = createExtensionBrowserDriver({});
+ * const tabs = await ext.tabList();
+ * const sessionId = (await ext.attachLoopbackBridge(tabId, origin)).value;
+ * const client = createDriverClient(socketPath);
+ * const bridge = await createLoopbackWebSocketBridge({ token, sessionId, transport: client });
+ * const pw = createPlaywrightBrowserDriver({
+ *   wsEndpoint: bridge.endpoint,
+ *   wsHeaders: { Authorization: `Bearer ${token}` },
+ * });
+ * // Use `pw` for snapshot/navigate/click/type/etc. Use `ext.tabList()` for
+ * // authoritative tab enumeration.
+ * // On shutdown: await bridge.close(); await pw.dispose?.(); await ext.dispose();
+ * ```
+ *
+ * A single factory that auto-composes this is intentionally not exported —
+ * the wiring depends on caller-specific choices (initial tab selection, token
+ * generation, lifecycle ordering) that vary across runtime / CLI / test use.
+ */
