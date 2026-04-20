@@ -1362,11 +1362,41 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           }),
         ]).catch(async (err: unknown) => {
           if (timedOut) {
-            // Kill the execution context. navigation + snapshot invalidation
-            // guarantee the caller cannot observe partial state from the
-            // still-running script.
-            await page.goto("about:blank", { timeout: 1000 }).catch(() => undefined);
-            if (tabId) invalidateTabSnapshot(tabId);
+            // Kill the execution context so the still-running script cannot
+            // mutate state after we return an error. Escalate in three steps:
+            //   1. goto about:blank (cleanest — keeps the tab usable).
+            //   2. page.close() if (1) fails (beforeunload handler / wedged
+            //      renderer). The tab is gone; the caller must reopen.
+            //   3. If both fail, drop the tab from our map — the caller's
+            //      snapshot is invalidated below, and we refuse to hand back
+            //      this page on the next ensurePage() call (currentTabId gets
+            //      cleared further down).
+            let killed = false;
+            try {
+              await page.goto("about:blank", { timeout: 1000 });
+              killed = true;
+            } catch {
+              // goto failed — escalate to page.close().
+            }
+            if (!killed) {
+              try {
+                await page.close({ runBeforeUnload: false });
+                killed = true;
+              } catch {
+                // page.close() also failed — renderer is wedged. Best we can
+                // do is drop the page so the caller gets a fresh one on retry.
+              }
+            }
+            if (tabId) {
+              invalidateTabSnapshot(tabId);
+              if (!killed || tabs.has(tabId)) {
+                // Either kill failed OR we closed the page; remove from map
+                // so ensurePage() creates a fresh page next call.
+                tabs.delete(tabId);
+                tabConsoleLogs.delete(tabId);
+                if (currentTabId === tabId) currentTabId = null;
+              }
+            }
           }
           throw err;
         });
