@@ -158,19 +158,41 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     publishEvent,
     teardown: async (id, reason) => {
       if (stopRef === undefined) return;
-      // Preserve the Result — silent drop would let a zombie worker survive
-      // while observability already reported "crashed". We log via
-      // console.error so failures are visible in operator logs without
-      // double-counting the single timeout incident as two crashed events
-      // (the onDeadline path already published one). A proper recoverable
-      // state transition (quarantine with bounded retry) is a deeper
-      // supervisor refactor and is tracked as a follow-up.
       const result = await stopRef(id, reason);
       if (!result.ok) {
-        console.error(
-          `[koi/daemon] heartbeat-timeout teardown failed for worker ${id}: ` +
-            `${result.error.code} ${result.error.message} — worker may still be alive.`,
-        );
+        // Teardown failed — terminate + kill both exhausted their
+        // deadlines. The OS process may still be alive, so "timeout +
+        // teardown failed" is a distinct state from "timeout + cleanly
+        // terminated". Transition the worker to quarantine: drop the
+        // pool entry so capacity accounting is accurate, KEEP activeIds
+        // reserved to prevent a duplicate start() from colliding, and
+        // surface via a structured event so external observers see the
+        // degradation. Note: the onDeadline path already published one
+        // crashed event for the timeout itself — this second event has
+        // a distinct message so consumers can distinguish "timeout" from
+        // "timeout + stranded worker".
+        const entry = pool.get(id);
+        if (entry !== undefined) {
+          quarantined.set(id, {
+            backend: entry.backend,
+            agentId: entry.handle.agentId,
+            reason: "heartbeat-timeout-teardown-failed",
+          });
+          entry.resolveExited();
+          pool.delete(id);
+        }
+        publishEvent({
+          kind: "crashed",
+          workerId: id,
+          at: Date.now(),
+          error: {
+            code: "HEARTBEAT_TIMEOUT",
+            message:
+              `Heartbeat-timeout teardown failed for worker ${id}: ` +
+              `${result.error.code} ${result.error.message}. Worker quarantined (may still be alive).`,
+            retryable: false,
+          },
+        });
       }
     },
     now: Date.now,
@@ -745,11 +767,27 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           return;
         }
         // Post-loop guard: the watch iterator completed without yielding
-        // a terminal event. Defense-in-depth: even with the phase-4
-        // drain fix, a backend contract violation (e.g., a future custom
-        // adapter returning early) must not leak the pool entry. Route
-        // through the same watch-fault handler used by the catch path.
+        // a terminal event. Two paths:
+        //   1. EXPECTED — supervisor is shutting down OR the worker's
+        //      stop() is in progress. Watch completion here is a normal
+        //      consequence of cancellation, not a fault. Clean up quietly.
+        //   2. UNEXPECTED — backend contract violation (custom adapter
+        //      returned early). Route through the watch-fault handler to
+        //      confirm teardown and quarantine if needed.
         if (!terminalProcessed) {
+          const current = pool.get(request.workerId);
+          const stopping = current?.stopping === true;
+          if (shuttingDown || stopping) {
+            // Expected completion under cancellation. Tidy up without
+            // emitting crash telemetry or triggering restart.
+            healthMonitor.untrack(request.workerId);
+            if (current !== undefined) {
+              current.resolveExited();
+              pool.delete(request.workerId);
+            }
+            activeIds.delete(request.workerId);
+            return;
+          }
           throw new Error(
             `backend.watch(${request.workerId}) completed without yielding a terminal event`,
           );

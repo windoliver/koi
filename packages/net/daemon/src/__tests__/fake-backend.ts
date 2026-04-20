@@ -130,44 +130,60 @@ export function createFakeBackend(
     watch: async function* (id) {
       const s = workers.get(id);
       if (s === undefined) return;
-      // Cursor-based drain: we can't rely on for..of because the heartbeat
-      // replay introduces a yield pause during which a terminal event can
-      // be appended. See subprocess-backend for the full explanation.
-      let cursor = 0;
-      // Phase 1: drain existing lifecycle events.
-      while (cursor < s.events.length) {
-        const ev = s.events[cursor++];
-        if (ev === undefined) break;
-        yield ev;
-        if (ev.kind === "exited" || ev.kind === "crashed") return;
-      }
-      // Phase 2: replay latest heartbeat for attach-race resistance.
-      if (s.lastHeartbeat !== undefined) yield s.lastHeartbeat;
-      // Phase 3: re-drain — terminal event may have landed during the
-      // heartbeat yield pause.
-      while (cursor < s.events.length) {
-        const ev = s.events[cursor++];
-        if (ev === undefined) break;
-        yield ev;
-        if (ev.kind === "exited" || ev.kind === "crashed") return;
-      }
-      // Phase 4: always-drain-then-await. See subprocess-backend for
-      // the full rationale — avoids terminal-event loss when a crash
-      // lands during a heartbeat yield pause.
-      while (true) {
+      // See subprocess-backend for full rationale on cursor + cancellation.
+      let cancelResolve: (() => void) | undefined;
+      try {
+        let cursor = 0;
+        // Phase 1: drain existing lifecycle events.
         while (cursor < s.events.length) {
           const ev = s.events[cursor++];
           if (ev === undefined) break;
           yield ev;
           if (ev.kind === "exited" || ev.kind === "crashed") return;
         }
-        if (!s.alive) return;
-        const ev = await new Promise<WorkerEvent>((resolve) => {
-          s.listeners.push(resolve);
-        });
-        yield ev;
-        if (ev.kind !== "heartbeat") cursor++;
-        if (ev.kind === "exited" || ev.kind === "crashed") return;
+        // Phase 2: replay latest heartbeat for attach-race resistance.
+        if (s.lastHeartbeat !== undefined) yield s.lastHeartbeat;
+        // Phase 3: re-drain after heartbeat yield.
+        while (cursor < s.events.length) {
+          const ev = s.events[cursor++];
+          if (ev === undefined) break;
+          yield ev;
+          if (ev.kind === "exited" || ev.kind === "crashed") return;
+        }
+        // Phase 4: always-drain-then-await with cancellation.
+        while (true) {
+          while (cursor < s.events.length) {
+            const ev = s.events[cursor++];
+            if (ev === undefined) break;
+            yield ev;
+            if (ev.kind === "exited" || ev.kind === "crashed") return;
+          }
+          if (!s.alive) return;
+          let eventListener: ((ev: WorkerEvent) => void) | undefined;
+          const result = await new Promise<
+            { readonly kind: "event"; readonly ev: WorkerEvent } | { readonly kind: "cancel" }
+          >((resolve) => {
+            eventListener = (ev): void => resolve({ kind: "event", ev });
+            s.listeners.push(eventListener);
+            cancelResolve = (): void => resolve({ kind: "cancel" });
+          });
+          cancelResolve = undefined;
+          if (eventListener !== undefined) {
+            const idx = s.listeners.indexOf(eventListener);
+            if (idx !== -1) s.listeners.splice(idx, 1);
+          }
+          if (result.kind === "cancel") return;
+          const ev = result.ev;
+          yield ev;
+          if (ev.kind !== "heartbeat") cursor++;
+          if (ev.kind === "exited" || ev.kind === "crashed") return;
+        }
+      } finally {
+        if (cancelResolve !== undefined) {
+          const r = cancelResolve;
+          cancelResolve = undefined;
+          r();
+        }
       }
     },
   };

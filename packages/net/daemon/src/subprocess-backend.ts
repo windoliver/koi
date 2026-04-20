@@ -276,6 +276,13 @@ export function createSubprocessBackend(): WorkerBackend {
   const watch = async function* (id: WorkerId): AsyncIterable<WorkerEvent> {
     const state = workers.get(id);
     if (state === undefined) return;
+    // Cancellation wiring: iterator.return() (called by test helpers or
+    // the supervisor during shutdown) must unblock a parked await even
+    // when no backend events are arriving. The pattern: remember the
+    // current resolver and resolve it with a cancellation sentinel in
+    // the finally block. Without this, a stalled iterator could hang
+    // indefinitely on its next() promise while waiting for cancellation.
+    let cancelResolve: (() => void) | undefined;
     try {
       // We track our position in state.events explicitly (not via for..of)
       // because we need to re-drain after yielding the lastHeartbeat
@@ -354,12 +361,26 @@ export function createSubprocessBackend(): WorkerBackend {
           state.terminalDelivered = true;
           return;
         }
-        // Wait for next event. Non-heartbeat events are also in
-        // state.events (pushed by emit), so we advance the cursor after
-        // yield to avoid double-delivery on the next drain pass.
-        const ev = await new Promise<WorkerEvent>((resolve) => {
-          state.listeners.push(resolve);
+        // Wait for next event or cancellation. Non-heartbeat events are
+        // also appended to state.events (via emit), so we advance the
+        // cursor after yield to avoid double-delivery on the next drain.
+        let eventListener: ((ev: WorkerEvent) => void) | undefined;
+        const result = await new Promise<
+          { readonly kind: "event"; readonly ev: WorkerEvent } | { readonly kind: "cancel" }
+        >((resolve) => {
+          eventListener = (ev: WorkerEvent): void => resolve({ kind: "event", ev });
+          state.listeners.push(eventListener);
+          cancelResolve = (): void => resolve({ kind: "cancel" });
         });
+        cancelResolve = undefined;
+        // Remove our listener if cancellation won — otherwise the next
+        // emit would hit a dead resolver (harmless but leaky).
+        if (eventListener !== undefined) {
+          const idx = state.listeners.indexOf(eventListener);
+          if (idx !== -1) state.listeners.splice(idx, 1);
+        }
+        if (result.kind === "cancel") return;
+        const ev = result.ev;
         yield ev;
         if (ev.kind !== "heartbeat") cursor++;
         if (ev.kind === "exited" || ev.kind === "crashed") {
@@ -368,6 +389,14 @@ export function createSubprocessBackend(): WorkerBackend {
         }
       }
     } finally {
+      // Wake any parked Promise so iterator.return() can complete
+      // bounded. Without this, a consumer timing out and calling return
+      // would hang on a Promise that only resolves via a new event.
+      if (cancelResolve !== undefined) {
+        const r = cancelResolve;
+        cancelResolve = undefined;
+        r();
+      }
       // Prune the worker state once a watcher has drained it. The
       // fallback prune timer set in proc.exited.then is cleared here so
       // we don't double-delete or prune after a legitimate consumer.
