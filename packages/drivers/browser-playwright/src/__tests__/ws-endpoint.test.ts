@@ -209,6 +209,116 @@ describe("createPlaywrightBrowserDriver with wsEndpoint", () => {
     }
   });
 
+  test("post-navigation redirect check catches public URL that redirected to private address", async () => {
+    // Setup: page.goto() succeeds but page.url() returns a private-address URL
+    // (simulates a server-side 30x redirect to localhost).
+    const gotoSpy = mock(async () => undefined);
+    let currentUrl = "https://example.com/";
+    const existingContext = {
+      pages: () => [],
+      newPage: async () => ({
+        url: () => currentUrl,
+        title: async () => "",
+        on: () => {},
+        goto: async (target: string) => {
+          // Simulate redirect: first goto to a public URL ends up at localhost.
+          if (target === "https://example.com/") {
+            currentUrl = "http://127.0.0.1/admin"; // hostile redirect target
+          } else {
+            currentUrl = target;
+          }
+          await gotoSpy();
+        },
+        close: async () => {},
+      }),
+      close: async () => {},
+      addInitScript: async () => {},
+      route: async () => {},
+    };
+    const fakeBrowser = {
+      contexts: () => [existingContext],
+      newContext: async () => {
+        throw new Error("should not create new context");
+      },
+      close: async () => {},
+    } as unknown as Browser;
+
+    const original = chromium.connectOverCDP;
+    (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+      (async () => fakeBrowser) as unknown as typeof chromium.connectOverCDP;
+
+    try {
+      const driver = createPlaywrightBrowserDriver({
+        wsEndpoint: "ws://127.0.0.1:45678/x",
+      });
+      // Preflight passes (URL is public). Post-nav check rejects (url() is now 127.0.0.1).
+      const result = await driver.navigate("https://example.com/");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("PERMISSION");
+      }
+      // The page should have been parked at about:blank after the reject.
+      // gotoSpy is called at least twice: once for the initial navigate, once for about:blank cleanup.
+      expect(gotoSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+      await driver.dispose?.();
+    } finally {
+      (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+        original;
+    }
+  });
+
+  test("IPv6-mapped IPv4 literals like ::ffff:127.0.0.1 are blocked", async () => {
+    const gotoSpy = mock(async () => undefined);
+    const existingContext = {
+      pages: () => [],
+      newPage: async () => ({
+        url: () => "about:blank",
+        title: async () => "",
+        on: () => {},
+        goto: gotoSpy,
+        close: async () => {},
+      }),
+      close: async () => {},
+      addInitScript: async () => {},
+      route: async () => {},
+    };
+    const fakeBrowser = {
+      contexts: () => [existingContext],
+      newContext: async () => {
+        throw new Error("should not create new context");
+      },
+      close: async () => {},
+    } as unknown as Browser;
+
+    const original = chromium.connectOverCDP;
+    (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+      (async () => fakeBrowser) as unknown as typeof chromium.connectOverCDP;
+
+    try {
+      const driver = createPlaywrightBrowserDriver({
+        wsEndpoint: "ws://127.0.0.1:45678/x",
+      });
+      // IPv4-mapped IPv6 (::ffff:127.0.0.1) — standard bypass attempt.
+      const r1 = await driver.navigate("http://[::ffff:127.0.0.1]/");
+      expect(r1.ok).toBe(false);
+      // IPv4-mapped IPv6 to RFC1918.
+      const r2 = await driver.navigate("http://[::ffff:192.168.1.1]/");
+      expect(r2.ok).toBe(false);
+      // IPv6 link-local.
+      const r3 = await driver.navigate("http://[fe80::1]/");
+      expect(r3.ok).toBe(false);
+      // IPv6 loopback.
+      const r4 = await driver.navigate("http://[::1]/");
+      expect(r4.ok).toBe(false);
+      // None of these reached page.goto.
+      expect(gotoSpy).toHaveBeenCalledTimes(0);
+      await driver.dispose?.();
+    } finally {
+      (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+        original;
+    }
+  });
+
   test("driver-level guard is a no-op when blockPrivateAddresses: false is explicitly set", async () => {
     const gotoSpy = mock(async () => undefined);
     const existingContext = {

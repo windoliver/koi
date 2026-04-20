@@ -147,18 +147,48 @@ const CONSOLE_BUFFER_CAP = 200;
  *
  * Inlined here (not imported from @koi/tool-browser) to avoid L2 peer violations.
  */
-function isPrivateIp(ip: string): boolean {
+function isPrivateIpv4(ip: string): boolean {
   return (
     /^127\./.test(ip) ||
     /^10\./.test(ip) ||
     /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
     /^192\.168\./.test(ip) ||
     /^169\.254\./.test(ip) ||
-    ip === "::1" ||
-    ip.startsWith("fc") ||
-    ip.startsWith("fd") ||
     ip === "0.0.0.0"
   );
+}
+
+/** Decodes `::ffff:AABB:CCDD` (Node's normalized form of IPv4-mapped IPv6) to dotted-quad. */
+function ipv4FromMappedHex(lower: string): string | null {
+  // Expect `::ffff:XXXX:XXXX` with two 1-4 hex groups after ffff.
+  const m = /^::ffff:([\da-f]{1,4}):([\da-f]{1,4})$/.exec(lower);
+  if (!m || m[1] === undefined || m[2] === undefined) return null;
+  const hi = parseInt(m[1], 16);
+  const lo = parseInt(m[2], 16);
+  if (Number.isNaN(hi) || Number.isNaN(lo) || hi > 0xffff || lo > 0xffff) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+function isPrivateIp(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  // IPv4 direct
+  if (isPrivateIpv4(lower)) return true;
+  // IPv4-mapped IPv6 dotted-quad form — e.g. ::ffff:127.0.0.1
+  const mapped = /^::ffff:([\d.]+)$/.exec(lower);
+  if (mapped?.[1]) return isPrivateIpv4(mapped[1]);
+  // IPv4-mapped IPv6 hex form (Node's URL parser normalizes dotted to this) —
+  // e.g. ::ffff:7f00:1 (which represents 127.0.0.1).
+  const hexIpv4 = ipv4FromMappedHex(lower);
+  if (hexIpv4) return isPrivateIpv4(hexIpv4);
+  // Legacy IPv4-compatible IPv6 — e.g. ::127.0.0.1 (deprecated but still possible)
+  const compat = /^::([\d.]+)$/.exec(lower);
+  if (compat?.[1] && compat[1].includes(".")) return isPrivateIpv4(compat[1]);
+  // IPv6 loopback / link-local / unique local
+  if (lower === "::1") return true;
+  if (/^fe[89ab][\da-f]?:/.test(lower)) return true; // fe80::/10 link-local
+  if (/^f[cd][\da-f]{2}:/.test(lower)) return true; // fc00::/7 unique local
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // belt & suspenders for fc/fd prefix
+  return false;
 }
 
 /**
@@ -190,10 +220,12 @@ async function checkNavigationUrlAllowed(
     return null;
   }
   const hostname = url.hostname;
-  // Strip IPv6 brackets for isPrivateIp matching.
+  // URL.hostname strips IPv6 brackets already; handle raw-bracket case defensively.
   const bare =
     hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-  const isIpLiteral = /^[\d.:]+$/.test(bare);
+  // IP literal detection: IPv4 (digits + dots only) or IPv6 (contains a colon).
+  const isIpLiteral =
+    /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
   if (isIpLiteral) {
     if (isPrivateIp(bare)) {
       return permission(
@@ -707,10 +739,8 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         // of context ownership. Borrowed contexts (cdpEndpoint/wsEndpoint paths
         // where we reused the caller's default context) cannot have the route()
         // guard installed; this check covers them.
-        const guardErr = await checkNavigationUrlAllowed(
-          url,
-          config.blockPrivateAddresses !== false,
-        );
+        const blockPrivate = config.blockPrivateAddresses !== false;
+        const guardErr = await checkNavigationUrlAllowed(url, blockPrivate);
         if (guardErr) return { ok: false, error: guardErr };
 
         const page = await ensurePage();
@@ -731,6 +761,18 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           waitUntil: options?.waitUntil ?? "load",
           timeout: t.value,
         });
+
+        // Post-navigation redirect check — covers server-side 30x redirects
+        // to private addresses on borrowed contexts (where ctx.route() was
+        // skipped). On owned contexts this is defense-in-depth since
+        // ctx.route() already aborted the redirect request.
+        const finalUrlErr = await checkNavigationUrlAllowed(page.url(), blockPrivate);
+        if (finalUrlErr) {
+          // Park the page at about:blank so the private-address response is
+          // no longer reachable, then report the error.
+          await page.goto("about:blank", { timeout: 1000 }).catch(() => undefined);
+          return { ok: false, error: finalUrlErr };
+        }
 
         return {
           ok: true,
