@@ -1392,14 +1392,18 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
               if (cleanup !== "navigated") {
                 tabs.delete(tabId);
                 tabConsoleLogs.delete(tabId);
-                if (currentTabId === tabId) {
-                  // Promote another surviving tab (matches tabClose semantics).
-                  // Only fall back to null when no tabs remain — otherwise
-                  // ensurePage() would silently open a fresh blank tab, losing
-                  // continuity with the rest of the session.
-                  let lastKey: string | null = null;
-                  for (const k of tabs.keys()) lastKey = k;
-                  currentTabId = lastKey;
+                // When there are NO other tabs, null currentTabId so the next
+                // ensurePage() creates a fresh one (only path where that's safe).
+                // When other tabs exist, keep currentTabId pointing at the
+                // now-missing id — ensurePage() will throw a clear "no active
+                // tab" internal error, forcing the caller to explicitly tabFocus
+                // before continuing. This avoids two hazards:
+                //   (a) silent retarget to a surviving tab the caller didn't
+                //       choose (could cause writes/reads against the wrong page);
+                //   (b) silent new-blank-tab creation that orphans the rest of
+                //       the session.
+                if (currentTabId === tabId && tabs.size === 0) {
+                  currentTabId = null;
                 }
               }
             }
