@@ -38,7 +38,11 @@ import type { HostSelector } from "./discovery-client.js";
 import { selectDiscoveryHost } from "./discovery-client.js";
 import { createExtensionError } from "./errors.js";
 import { createReconnectController } from "./reconnect.js";
-import { createDriverClient } from "./unix-socket-transport.js";
+import {
+  createDriverClient,
+  createLoopbackWebSocketBridge,
+  type LoopbackWebSocketBridge,
+} from "./unix-socket-transport.js";
 
 export type ReattachPolicy = "consent_required_if_missing" | "prompt_if_missing";
 
@@ -54,17 +58,37 @@ export interface ExtensionDriverConfig {
     | undefined;
   readonly connectSocketFactory?: ((socket: string) => Socket | Duplex) | undefined;
   /**
-   * Optional delegate `BrowserDriver` that this extension driver forwards
+   * Optional delegate `BrowserDriver` the extension driver forwards
    * interaction methods (snapshot, navigate, click, type, …) to. Caller owns
-   * its lifecycle — this driver does NOT dispose it. If omitted, interaction
-   * methods return a clear error explaining composition is required.
-   *
-   * Type-only reference (`BrowserDriver` is L0) — keeps `@koi/browser-ext`
-   * free of L2-to-L2 coupling to `@koi/browser-playwright`. Composition
-   * happens at L3 (runtime) or caller-side — see the composition recipe
-   * documented above `createExtensionBrowserDriver`.
+   * its lifecycle — this driver does NOT dispose it. Takes precedence over
+   * `createPlaywrightDriver`. Type-only reference (`BrowserDriver` is L0) —
+   * avoids L2-to-L2 coupling to `@koi/browser-playwright`.
    */
   readonly playwrightDriver?: BrowserDriver | undefined;
+  /**
+   * Lazy factory callback the extension driver invokes on first interaction
+   * to produce a Playwright-backed delegate. When provided, the driver:
+   *   1. Auto-attaches to the first tab via the native host on first
+   *      interaction-method call (snapshot / navigate / click / …).
+   *   2. Stands up a loopback WS bridge over the attached CDP session.
+   *   3. Invokes this callback with `{ wsEndpoint, wsHeaders }` where
+   *      `wsHeaders = { Authorization: "Bearer <token>" }`.
+   *   4. Caches the returned driver and forwards all interaction methods.
+   *
+   * The callback is called exactly once per extension-driver lifetime. The
+   * returned driver is disposed on `driver.dispose()` — caller does not
+   * need to manage its lifecycle separately. Use this instead of
+   * `playwrightDriver` when you want the extension driver to own composition.
+   *
+   * Type-only reference to `BrowserDriver` keeps `@koi/browser-ext` free of
+   * direct `@koi/browser-playwright` dep.
+   */
+  readonly createPlaywrightDriver?:
+    | ((args: {
+        readonly wsEndpoint: string;
+        readonly wsHeaders: Readonly<Record<string, string>>;
+      }) => BrowserDriver | Promise<BrowserDriver>)
+    | undefined;
 }
 
 const DEFAULT_INSTANCES_DIR: string = join(homedir(), ".koi/browser-ext/instances");
@@ -150,6 +174,11 @@ class ExtensionBrowserDriverRuntime {
     this.activeConnection = null;
     this.connectionPromise = null;
     await connection?.client.close();
+  }
+
+  public async getTransport(): Promise<ReturnType<typeof createDriverClient>> {
+    const conn = await this.ensureConnection();
+    return conn.client;
   }
 
   private onTransportLost(): void {
@@ -356,122 +385,173 @@ export function createExtensionBrowserDriver(
   options: ExtensionDriverConfig = {},
 ): ExtensionBrowserDriver {
   const runtime = new ExtensionBrowserDriverRuntime(options);
-  const pw = options.playwrightDriver;
+
+  let cachedDelegate: BrowserDriver | null = options.playwrightDriver ?? null;
+  let cachedBridge: LoopbackWebSocketBridge | null = null;
+  let ownsDelegate = false;
+  let ensurePromise: Promise<BrowserDriver | null> | null = null;
+
+  async function ensureDelegate(): Promise<BrowserDriver | null> {
+    if (cachedDelegate !== null) return cachedDelegate;
+    if (!options.createPlaywrightDriver) return null;
+    if (ensurePromise) return ensurePromise;
+
+    ensurePromise = (async (): Promise<BrowserDriver | null> => {
+      try {
+        const tabsResult = await runtime.tabList();
+        if (!tabsResult.ok) return null;
+        const firstTab = tabsResult.value[0];
+        if (!firstTab) return null;
+        const numericTabId = Number(firstTab.tabId);
+        if (!Number.isFinite(numericTabId)) return null;
+
+        let origin = "about:blank";
+        try {
+          origin = new URL(firstTab.url).origin;
+        } catch {
+          // Unparseable tab URL (e.g. chrome internal) — attach still works;
+          // the tool layer enforces origin-based policy downstream.
+        }
+
+        const sessionResult = await runtime.attachLoopbackBridge(numericTabId, origin);
+        if (!sessionResult.ok) return null;
+
+        const token = randomBytes(16).toString("hex");
+        const transport = await runtime.getTransport();
+        const factory = options.createPlaywrightDriver;
+        if (!factory) return null;
+        const bridge = await createLoopbackWebSocketBridge({
+          token,
+          sessionId: sessionResult.value,
+          transport,
+        });
+
+        const delegate = await factory({
+          wsEndpoint: bridge.endpoint,
+          wsHeaders: { Authorization: `Bearer ${token}` },
+        });
+
+        cachedDelegate = delegate;
+        cachedBridge = bridge;
+        ownsDelegate = true;
+        return delegate;
+      } catch {
+        return null;
+      }
+    })();
+    return ensurePromise;
+  }
+
+  async function delegateOrError<T>(
+    op: string,
+    fn: (pw: BrowserDriver) => Result<T, KoiError> | Promise<Result<T, KoiError>>,
+  ): Promise<Result<T, KoiError>> {
+    const pw = await ensureDelegate();
+    if (!pw) return missingPlaywrightError(op);
+    return await fn(pw);
+  }
 
   return {
     name: "browser-ext",
-    snapshot(
-      opts?: BrowserSnapshotOptions,
-    ): Result<BrowserSnapshotResult, KoiError> | Promise<Result<BrowserSnapshotResult, KoiError>> {
-      return pw ? pw.snapshot(opts) : missingPlaywrightError("snapshot");
+    snapshot(opts?: BrowserSnapshotOptions): Promise<Result<BrowserSnapshotResult, KoiError>> {
+      return delegateOrError("snapshot", (pw) => pw.snapshot(opts));
     },
     navigate(
       url: string,
       opts?: BrowserNavigateOptions,
-    ): Result<BrowserNavigateResult, KoiError> | Promise<Result<BrowserNavigateResult, KoiError>> {
-      return pw ? pw.navigate(url, opts) : missingPlaywrightError("navigate");
+    ): Promise<Result<BrowserNavigateResult, KoiError>> {
+      return delegateOrError("navigate", (pw) => pw.navigate(url, opts));
     },
-    click(
-      ref: string,
-      opts?: BrowserActionOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.click(ref, opts) : missingPlaywrightError("click");
+    click(ref: string, opts?: BrowserActionOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("click", (pw) => pw.click(ref, opts));
     },
-    type(
-      ref: string,
-      value: string,
-      opts?: BrowserTypeOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.type(ref, value, opts) : missingPlaywrightError("type");
+    type(ref: string, value: string, opts?: BrowserTypeOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("type", (pw) => pw.type(ref, value, opts));
     },
     select(
       ref: string,
       value: string,
       opts?: BrowserActionOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.select(ref, value, opts) : missingPlaywrightError("select");
+    ): Promise<Result<void, KoiError>> {
+      return delegateOrError("select", (pw) => pw.select(ref, value, opts));
     },
     fillForm(
       fields: readonly BrowserFormField[],
       opts?: BrowserActionOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.fillForm(fields, opts) : missingPlaywrightError("fillForm");
+    ): Promise<Result<void, KoiError>> {
+      return delegateOrError("fillForm", (pw) => pw.fillForm(fields, opts));
     },
-    scroll(opts: BrowserScrollOptions): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.scroll(opts) : missingPlaywrightError("scroll");
+    scroll(opts: BrowserScrollOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("scroll", (pw) => pw.scroll(opts));
     },
     screenshot(
       opts?: BrowserScreenshotOptions,
-    ):
-      | Result<BrowserScreenshotResult, KoiError>
-      | Promise<Result<BrowserScreenshotResult, KoiError>> {
-      return pw ? pw.screenshot(opts) : missingPlaywrightError("screenshot");
+    ): Promise<Result<BrowserScreenshotResult, KoiError>> {
+      return delegateOrError("screenshot", (pw) => pw.screenshot(opts));
     },
-    wait(opts: BrowserWaitOptions): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.wait(opts) : missingPlaywrightError("wait");
+    wait(opts: BrowserWaitOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("wait", (pw) => pw.wait(opts));
     },
-    tabNew(
-      opts?: BrowserTabNewOptions,
-    ): Result<BrowserTabInfo, KoiError> | Promise<Result<BrowserTabInfo, KoiError>> {
-      return pw ? pw.tabNew(opts) : missingPlaywrightError("tabNew");
+    tabNew(opts?: BrowserTabNewOptions): Promise<Result<BrowserTabInfo, KoiError>> {
+      return delegateOrError("tabNew", (pw) => pw.tabNew(opts));
     },
-    tabClose(
-      tabId?: string,
-      opts?: BrowserTabCloseOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.tabClose(tabId, opts) : missingPlaywrightError("tabClose");
+    tabClose(tabId?: string, opts?: BrowserTabCloseOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("tabClose", (pw) => pw.tabClose(tabId, opts));
     },
     tabFocus(
       tabId: string,
       opts?: BrowserTabFocusOptions,
-    ): Result<BrowserTabInfo, KoiError> | Promise<Result<BrowserTabInfo, KoiError>> {
-      return pw ? pw.tabFocus(tabId, opts) : missingPlaywrightError("tabFocus");
+    ): Promise<Result<BrowserTabInfo, KoiError>> {
+      return delegateOrError("tabFocus", (pw) => pw.tabFocus(tabId, opts));
     },
     evaluate(
       script: string,
       opts?: BrowserEvaluateOptions,
-    ): Result<BrowserEvaluateResult, KoiError> | Promise<Result<BrowserEvaluateResult, KoiError>> {
-      return pw ? pw.evaluate(script, opts) : missingPlaywrightError("evaluate");
+    ): Promise<Result<BrowserEvaluateResult, KoiError>> {
+      return delegateOrError("evaluate", (pw) => pw.evaluate(script, opts));
     },
-    hover(
-      ref: string,
-      opts?: BrowserActionOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.hover(ref, opts) : missingPlaywrightError("hover");
+    hover(ref: string, opts?: BrowserActionOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("hover", (pw) => pw.hover(ref, opts));
     },
-    press(
-      key: string,
-      opts?: BrowserActionOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw ? pw.press(key, opts) : missingPlaywrightError("press");
+    press(key: string, opts?: BrowserActionOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("press", (pw) => pw.press(key, opts));
     },
     tabList(): Promise<Result<readonly BrowserTabInfo[], KoiError>> {
       return runtime.tabList();
     },
-    console(
-      opts?: BrowserConsoleOptions,
-    ): Result<BrowserConsoleResult, KoiError> | Promise<Result<BrowserConsoleResult, KoiError>> {
-      return pw ? pw.console(opts) : missingPlaywrightError("console");
+    console(opts?: BrowserConsoleOptions): Promise<Result<BrowserConsoleResult, KoiError>> {
+      return delegateOrError("console", (pw) => pw.console(opts));
     },
     upload(
       ref: string,
       files: readonly BrowserUploadFile[],
       opts?: BrowserUploadOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw?.upload ? pw.upload(ref, files, opts) : missingPlaywrightError("upload");
+    ): Promise<Result<void, KoiError>> {
+      return delegateOrError("upload", (pw) =>
+        pw.upload ? pw.upload(ref, files, opts) : missingPlaywrightError("upload"),
+      );
     },
-    traceStart(
-      opts?: BrowserTraceOptions,
-    ): Result<void, KoiError> | Promise<Result<void, KoiError>> {
-      return pw?.traceStart ? pw.traceStart(opts) : missingPlaywrightError("traceStart");
+    traceStart(opts?: BrowserTraceOptions): Promise<Result<void, KoiError>> {
+      return delegateOrError("traceStart", (pw) =>
+        pw.traceStart ? pw.traceStart(opts) : missingPlaywrightError("traceStart"),
+      );
     },
-    traceStop():
-      | Result<BrowserTraceResult, KoiError>
-      | Promise<Result<BrowserTraceResult, KoiError>> {
-      return pw?.traceStop ? pw.traceStop() : missingPlaywrightError("traceStop");
+    traceStop(): Promise<Result<BrowserTraceResult, KoiError>> {
+      return delegateOrError("traceStop", (pw) =>
+        pw.traceStop ? pw.traceStop() : missingPlaywrightError("traceStop"),
+      );
     },
-    dispose(): Promise<void> {
-      return runtime.dispose();
+    async dispose(): Promise<void> {
+      if (cachedBridge) {
+        await cachedBridge.close().catch(() => {});
+        cachedBridge = null;
+      }
+      if (cachedDelegate && ownsDelegate) {
+        await cachedDelegate.dispose?.();
+        cachedDelegate = null;
+        ownsDelegate = false;
+      }
+      await runtime.dispose();
     },
     attachLoopbackBridge(tabId, origin) {
       return runtime.attachLoopbackBridge(tabId, origin);
