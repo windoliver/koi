@@ -270,14 +270,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // wedged session. 5 seconds is generous for cooperative cleanup but
   // short enough to keep the TUI responsive on /clear.
   //
-  // #review-P11: exposed via CreateKoiOptions.lifecycleSettleTimeoutMs so
-  // hosts that run long-running cooperative tools (e.g. a 30s shell command
-  // that honors abort) can bump it without patching the engine. Values ≤ 0
-  // fall back to the 5s default.
-  const LIFECYCLE_SETTLE_TIMEOUT_MS =
-    options.lifecycleSettleTimeoutMs !== undefined && options.lifecycleSettleTimeoutMs > 0
-      ? options.lifecycleSettleTimeoutMs
-      : 5000;
+  // #review-P11 + round1-F3: exposed via CreateKoiOptions.lifecycleSettleTimeoutMs
+  // so hosts that run long-running cooperative tools can bump it without
+  // patching the engine. Validation:
+  //  - must be a finite positive integer number of milliseconds
+  //  - clamped to a safe 32-bit signed range so setTimeout doesn't overflow
+  //    (some JS runtimes treat delays > 2^31-1 as 0, which would flip the
+  //    option from "be patient" to "poison immediately")
+  //  - invalid / non-finite / ≤ 0 values fall back to the 5s default
+  const LIFECYCLE_SETTLE_DEFAULT_MS = 5000;
+  const LIFECYCLE_SETTLE_MAX_MS = 2_147_483_647; // 2^31 - 1, setTimeout safe range
+  const LIFECYCLE_SETTLE_TIMEOUT_MS = ((): number => {
+    const raw = options.lifecycleSettleTimeoutMs;
+    if (raw === undefined) return LIFECYCLE_SETTLE_DEFAULT_MS;
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+      return LIFECYCLE_SETTLE_DEFAULT_MS;
+    }
+    // Round down fractional millisecond values deterministically and cap
+    // to the setTimeout-safe range.
+    return Math.min(Math.floor(raw), LIFECYCLE_SETTLE_MAX_MS);
+  })();
   // let justified: mutable poison flag set on settle timeout
   let poisoned = false;
   // #1742 round 10: lifecycle mutex — single-flight gate for
@@ -561,6 +573,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: previous forge middleware ref for identity-based skip
     let previousForgedMw: readonly KoiMiddleware[] | undefined;
 
+    // #review-round1-F1: monotonic sequence number shared by BOTH refresh
+    // paths (watch-triggered `runRefresh` and turn-boundary
+    // `refreshForgeState`) so only the newest observed forge state commits
+    // to `forgedDescriptorsCache` / `toolsAccessor`. Without this, a
+    // turn-boundary refresh racing a watch refresh could last-write-wins
+    // with stale data. Each caller grabs a sequence at the start of its
+    // toolDescriptors() call and only commits when its sequence is still
+    // the newest completed.
+    // let justified: mutable sequence number incremented per refresh attempt
+    let forgeRefreshNextSeq = 0;
+    // let justified: mutable ref tracking the highest seq that has committed
+    let forgeRefreshLastCommittedSeq = 0;
+
     // let justified: tools accessor for cooperating adapters (set once at session start)
     let toolsAccessor: ReturnType<typeof createDedupedToolsAccessor> | undefined;
 
@@ -603,20 +628,44 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       activeStreamChain = chains.streamChain;
     }
 
+    /**
+     * Commit a refresh result only when its sequence is still the newest.
+     *
+     * Prevents a stale refresh (e.g. a long-running watch refresh whose
+     * `forge.toolDescriptors()` finished AFTER a later turn-boundary refresh
+     * already committed) from overwriting fresher state. Returns `true` when
+     * the caller won the race and committed, `false` when the result was
+     * superseded and must be discarded. #review-round1-F1.
+     */
+    function tryCommitForgeRefresh(mySeq: number, descriptors: readonly ToolDescriptor[]): boolean {
+      if (mySeq <= forgeRefreshLastCommittedSeq) return false;
+      forgeRefreshLastCommittedSeq = mySeq;
+      forgedDescriptorsCache = descriptors;
+      toolsAccessor?.updateForged(descriptors);
+      return true;
+    }
+
     /** Refresh forged descriptors and re-compose middleware if forge runtime is provided. */
     async function refreshForgeState(terminals: TerminalHandlers): Promise<void> {
       if (forge === undefined) return;
 
-      // Refresh forged tool descriptors
+      // Grab a sequence before the I/O so parallel refreshes are ordered by
+      // issue time. A newer call can still commit first; `tryCommitForgeRefresh`
+      // then blocks this older result when the await resolves.
+      const mySeq = ++forgeRefreshNextSeq;
       const prevDescCount = forgedDescriptorsCache.length;
-      forgedDescriptorsCache = await forge.toolDescriptors();
-      const newDescCount = forgedDescriptorsCache.length;
-      toolsAccessor?.updateForged(forgedDescriptorsCache);
+      const descriptors = await forge.toolDescriptors();
+      const committed = tryCommitForgeRefresh(mySeq, descriptors);
+      const newDescCount = committed ? descriptors.length : forgedDescriptorsCache.length;
 
-      // Re-compose middleware chains only when forged middleware actually changed
+      // Re-compose middleware chains only when forged middleware actually
+      // changed AND this refresh's descriptor commit was not superseded.
+      // Recomposing on a stale result would pair fresh descriptors (from a
+      // newer committed refresh) with older middleware, breaking the
+      // tools ↔ middleware invariant.
       // let justified: mutable flag tracking whether middleware was recomposed this refresh
       let middlewareRecomposed = false;
-      if (forge.middleware !== undefined) {
+      if (committed && forge.middleware !== undefined) {
         const forgedMw = await forge.middleware();
         if (forgedMw !== previousForgedMw) {
           middlewareRecomposed = true;
@@ -944,9 +993,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               do {
                 refreshPending = false;
                 try {
+                  // Grab a sequence so a racing turn-boundary refresh
+                  // that completes first cannot be clobbered by our older
+                  // result. #review-round1-F1.
+                  const mySeq = ++forgeRefreshNextSeq;
                   const d = await forge.toolDescriptors();
-                  forgedDescriptorsCache = d;
-                  toolsAccessor?.updateForged(d);
+                  tryCommitForgeRefresh(mySeq, d);
                 } catch (err: unknown) {
                   console.warn("[koi] forge descriptor refresh failed", err);
                   break;
@@ -1145,9 +1197,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // a downstream middleware can still route it into the next turn.
           // Without the try/catch, a transient adapter failure silently
           // discarded every queued steer message.
+          //
+          // #review-round1-F2: `inboxComponent.push` returns `false` when a
+          // per-mode cap is exceeded (followup items drop silently). Check
+          // the return value on every degraded/requeued item so overflow
+          // surfaces as a visible warning instead of a silent data loss.
           const inboxComponent: InboxComponent | undefined = agent.component(INBOX);
           if (inboxComponent !== undefined && inboxComponent.depth() > 0) {
             const inboxItems: readonly InboxItem[] = inboxComponent.drain();
+            /** Push with overflow warning so silent drops can't hide under load. */
+            const pushOrWarn = (item: InboxItem, reason: string): void => {
+              if (!inboxComponent.push(item)) {
+                console.warn(
+                  `[koi] inbox overflow on ${reason}: dropping item id="${item.id}" mode="${item.mode}" from="${item.from}" (cap exceeded)`,
+                );
+              }
+            };
             for (const item of inboxItems) {
               if (item.mode === "steer") {
                 if (adapter.inject !== undefined) {
@@ -1162,16 +1227,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                       `[koi] adapter.inject failed for steer item from "${item.from}"; degrading to followup`,
                       injectErr,
                     );
-                    inboxComponent.push({ ...item, mode: "followup" });
+                    pushOrWarn({ ...item, mode: "followup" }, "steer→followup degrade");
                   }
                 } else {
                   // Degrade steer → followup when adapter lacks inject (L0 contract)
-                  inboxComponent.push({ ...item, mode: "followup" });
+                  pushOrWarn({ ...item, mode: "followup" }, "steer→followup degrade (no inject)");
                 }
               } else {
                 // collect/followup items: push back for middleware to access in
                 // onBeforeTurn hooks (e.g., inbox-middleware in L2)
-                inboxComponent.push(item);
+                pushOrWarn(item, `${item.mode} requeue`);
               }
             }
           }
@@ -1257,6 +1322,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               currentTurnIndex = event.turnIndex + 1;
               outerCurrentTurnIndex = currentTurnIndex;
               pendingForgeRefresh = true;
+              // #review-round1-F4: advance the FSM's own turnIndex so
+              // `agent.lifecycle.turnIndex` observers see the real running
+              // turn. Before this, the FSM's turnIndex stayed at 0 forever.
+              agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
               const turnEndCtx = createTurnContext({
                 session: sessionCtx,
                 turnIndex: event.turnIndex,

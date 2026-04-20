@@ -5,7 +5,7 @@
  * provider to attach the inbox queue to the agent entity.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type {
   Agent,
   AttachResult,
@@ -226,6 +226,61 @@ describe("inbox integration", () => {
   // individually: on failure the item is degraded to `followup` so a
   // downstream middleware can still route it into the next turn context.
   // -------------------------------------------------------------------------
+
+  test("silent-drop on followup cap overflow is surfaced via console.warn (#review-round1-F2)", async () => {
+    // Combined stress: followup queue at cap + adapter.inject throws on a
+    // steer item. Previously the requeue silently dropped the degraded
+    // item because `inboxComponent.push` returned false and the engine
+    // ignored the result. The fix checks the return value and warns.
+    const inbox = createInboxQueue({
+      // Cap followup at 1 so the degraded steer overflow is forced.
+      policy: { collectCap: 20, followupCap: 1, steerCap: 5 },
+    });
+    const { adapter: baseAdapter } = createFakeEngine({
+      turns: [[{ kind: "text_delta", delta: "response" }]],
+    });
+
+    const adapter = {
+      ...baseAdapter,
+      inject: async (_msg: unknown): Promise<void> => {
+        throw new Error("simulated inject failure");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      providers: [createInboxProvider(inbox)],
+    });
+
+    // Pre-fill the followup queue to its cap.
+    expect(inbox.push(makeInboxItem({ id: "pre-fill", mode: "followup", content: "pre" }))).toBe(
+      true,
+    );
+    // Now queue a steer item that will be degraded-on-inject-throw and
+    // attempt to push as followup — which will overflow the cap.
+    expect(inbox.push(makeInboxItem({ id: "steer-overflow", mode: "steer", content: "x" }))).toBe(
+      true,
+    );
+
+    const warnSpy = mock(() => {});
+    const originalWarn = console.warn;
+    console.warn = warnSpy as unknown as typeof console.warn;
+    try {
+      await collectEvents(runtime.run({ kind: "text", text: "go" }));
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    // The overflow must have surfaced via a warn call that mentions
+    // overflow/cap semantics — not just the inject-failure warn. We assert
+    // loosely (any call) + contents containing "overflow" OR "cap exceeded".
+    const warnCalls = warnSpy.mock.calls.map((args) => args.map(String).join(" "));
+    const overflowSurfaced = warnCalls.some(
+      (msg) => msg.includes("inbox overflow") || msg.includes("cap exceeded"),
+    );
+    expect(overflowSurfaced).toBe(true);
+  });
 
   test("drain degrades steer to followup when adapter.inject throws (#review-M12)", async () => {
     // Use a larger steer capacity so two steer items can coexist in the

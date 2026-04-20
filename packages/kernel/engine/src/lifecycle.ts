@@ -47,6 +47,14 @@ export type LifecycleEvent =
   | { readonly kind: "resume" }
   | { readonly kind: "suspend"; readonly reason: string }
   | { readonly kind: "idle" }
+  /**
+   * Turn boundary advance. Fired by the engine after a `turn_end` event is
+   * observed. The `turnIndex` field is the NEW (post-advance) turn index
+   * — i.e. the turn that is about to begin. The FSM uses this to keep
+   * `agent.lifecycle.turnIndex` honest so observers can read the running
+   * turn without racing the internal `currentTurnIndex` counter.
+   */
+  | { readonly kind: "advance_turn"; readonly turnIndex: number }
   | {
       readonly kind: "complete";
       readonly stopReason: EngineStopReason;
@@ -114,6 +122,14 @@ export function transition(
           };
         case "idle":
           return { state: "idle", idledAt: now, turnIndex: current.turnIndex };
+        case "advance_turn":
+          // Engine observed a turn_end. Advance the lifecycle counter so
+          // `agent.lifecycle.turnIndex` reflects the turn that is about to
+          // begin. Reject retrograde advances defensively — the engine
+          // always advances forward; a decrement indicates a desync.
+          return event.turnIndex > current.turnIndex
+            ? { state: "running", startedAt: current.startedAt, turnIndex: event.turnIndex }
+            : current;
         case "complete":
           return terminated(event.stopReason, now, event.metrics);
         case "error":

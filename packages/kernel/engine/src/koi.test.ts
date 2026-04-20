@@ -1302,6 +1302,31 @@ describe("createKoi middleware hooks", () => {
     }).toThrow(/poisoned/i);
   }, 10_000);
 
+  test("#review-round1-F3: lifecycleSettleTimeoutMs rejects non-finite / negative / zero", async () => {
+    // The option is validated: Infinity, NaN, negative, zero, and
+    // non-number values all fall back to the 5s default. We assert the
+    // fallback path by passing junk and verifying construction succeeds
+    // — the option simply has no effect.
+    const junkValues: ReadonlyArray<number> = [
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      Number.NaN,
+      -1,
+      0,
+    ];
+    for (const v of junkValues) {
+      const runtime = await createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+        loopDetection: false,
+        lifecycleSettleTimeoutMs: v,
+      });
+      // Simply calling dispose should complete quickly — no timer
+      // overflow or immediate-fire behavior.
+      await runtime.dispose();
+    }
+  });
+
   test("#review-P11: lifecycleSettleTimeoutMs option shortens the poison window", async () => {
     // Same wedged-adapter shape as the 5s test above, but with a custom
     // 200ms settle timeout. cycleSession should reject in well under the
@@ -4076,6 +4101,81 @@ describe("createKoi forge watch", () => {
     expect(toolDescriptors).toHaveBeenCalledTimes(1);
   });
 
+  test("stale in-flight refresh doesn't clobber a newer committed refresh (#review-round1-F1)", async () => {
+    // Race: a slow refresh (state A) kicks off, then a faster refresh (state B)
+    // is issued later and commits first. When A's result finally returns, the
+    // monotonic sequence gate must reject it so the cache stays on B.
+    //
+    // Concretely: call 1 is the session-start refresh, call 2 is slow (A),
+    // call 3 is fast (B). With the sequence gate, B commits first (seq=3),
+    // then A's result (seq=2) is dropped on arrival.
+    const stateA: ToolDescriptor[] = [{ name: "tool-A", description: "stale", inputSchema: {} }];
+    const stateB: ToolDescriptor[] = [{ name: "tool-B", description: "fresh", inputSchema: {} }];
+
+    // let justified: mutable call counter
+    let call = 0;
+    // let justified: watch listener ref
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+    // let justified: captured at end-of-stream so we can assert final state
+    let capturedFinalTools: readonly ToolDescriptor[] = [];
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async (): Promise<readonly ToolDescriptor[]> => {
+        call++;
+        if (call === 1) return []; // session-start baseline
+        if (call === 2) {
+          // Slow refresh (state A) — returns LATE.
+          await new Promise((r) => setTimeout(r, 80));
+          return stateA;
+        }
+        // Fast refresh (state B) — returns FIRST at higher seq.
+        await new Promise((r) => setTimeout(r, 10));
+        return stateB;
+      }),
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "race-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (_input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Kick off the slow watch-triggered refresh first (state A).
+          watchListener?.({ kind: "saved", brickId: brickId("x") });
+          // Yield turn_end so the engine runs its turn-boundary refresh
+          // (state B) which SHOULD commit first.
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+          // Wait long enough for BOTH refreshes to fully settle.
+          await new Promise((r) => setTimeout(r, 150));
+          capturedFinalTools = _input.callHandlers?.tools ?? [];
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    const names = capturedFinalTools.map((t) => t.name);
+    expect(names).toContain("tool-B");
+    expect(names).not.toContain("tool-A");
+  });
+
   test("concurrent watch events coalesce into bounded in-flight refreshes (#review-H10)", async () => {
     // Previously a bursty watch source (e.g. MCP reconnect fan-out) fired
     // one in-flight toolDescriptors() promise per event, racing to overwrite
@@ -4881,6 +4981,35 @@ describe("createKoi stop gate", () => {
 
     const turnEnds = events.filter((e) => e.kind === "turn_end");
     expect(turnEnds.length).toBe(DEFAULT_MAX_STOP_RETRIES);
+  });
+
+  test("agent.lifecycle.turnIndex advances on every turn_end (#review-round1-F4)", async () => {
+    // Pin the invariant that FSM turnIndex tracks the real running turn.
+    // Before the fix, `agent.lifecycle.turnIndex` stayed 0 for the agent's
+    // entire lifetime regardless of how many turns executed.
+    const turns = [
+      [{ kind: "turn_end" as const, turnIndex: 0 }],
+      [{ kind: "turn_end" as const, turnIndex: 1 }],
+      [{ kind: "done" as const, output: doneOutput() }],
+    ];
+    const adapter = mockAdapter(turns.flat());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      limits: { maxTurns: 10 },
+    });
+
+    // Observe lifecycle.turnIndex after each event so we can assert
+    // progression, not just the final value.
+    const observedTurnIndices: number[] = [];
+    for await (const event of runtime.run({ kind: "text", text: "go" })) {
+      if (event.kind === "turn_end") {
+        const lc = runtime.agent.lifecycle;
+        observedTurnIndices.push(lc.state === "running" ? lc.turnIndex : -1);
+      }
+    }
+    expect(observedTurnIndices).toEqual([1, 2]);
   });
 
   test("accumulates block feedback across consecutive retries (#review-H5)", async () => {
