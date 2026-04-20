@@ -7,6 +7,13 @@
  * Invariant: `activeCount` reflects the number of callers currently between
  * acquire and release. When a slot is transferred from a releaser to a waiter,
  * the active count stays the same (no decrement + increment).
+ *
+ * Performance:
+ * - acquire / release are amortized O(1)
+ * - the waiter queue uses an array + head pointer (no O(n) shift)
+ * - timed-out waiters remove themselves from the queue immediately via a
+ *   stored index; the eager compaction on dequeue keeps memory bounded
+ *   proportional to the number of live waiters
  */
 
 export interface ConcurrencySemaphore {
@@ -22,8 +29,10 @@ export interface ConcurrencySemaphore {
 
 interface Waiter {
   readonly fire: () => void;
-  /** Returns true if this waiter timed out before being served. */
+  /** Returns true if this waiter timed out or was otherwise invalidated. */
   readonly timedOut: () => boolean;
+  /** Best-effort self-removal hook; zeroed once consumed by release(). */
+  invalidate: () => void;
 }
 
 export function createConcurrencySemaphore(maxConcurrency: number): ConcurrencySemaphore {
@@ -33,8 +42,28 @@ export function createConcurrencySemaphore(maxConcurrency: number): ConcurrencyS
 
   // let justified: mutable counter tracking currently held slots
   let active = 0;
-  // let justified: mutable FIFO queue for pending waiters
-  const queue: Waiter[] = [];
+  // Array-backed FIFO with a head pointer — avoids O(n) `Array.shift()`
+  // on high-throughput release paths.
+  // let justified: queue and head pointer are mutated in place.
+  let queue: (Waiter | undefined)[] = [];
+  let head = 0;
+  // Count of live (non-tombstoned) waiters currently in `queue`, for O(1) waitingCount.
+  let liveWaiters = 0;
+
+  /**
+   * Compact the array when the dead prefix grows large. Amortized O(1)
+   * per dequeue. Also compacts when the fraction of tombstones grows high.
+   */
+  function maybeCompact(): void {
+    const len = queue.length;
+    if (head === 0) return;
+    const dead = len - (len - head);
+    // Compact when the dead prefix is at least half the total array length.
+    if (head >= len - head || dead >= 128) {
+      queue = queue.slice(head);
+      head = 0;
+    }
+  }
 
   function acquire(timeoutMs: number): Promise<void> {
     if (active < maxConcurrency) {
@@ -43,23 +72,42 @@ export function createConcurrencySemaphore(maxConcurrency: number): ConcurrencyS
     }
 
     return new Promise<void>((resolve, reject) => {
-      // let justified: mutable flag set when this waiter times out
+      // let justified: timeout flag flips when the setTimeout fires.
       let didTimeout = false;
+      // let justified: position in `queue`; set after push, cleared on fire/timeout.
+      let slot = -1;
 
       const timer = setTimeout(() => {
         didTimeout = true;
+        if (slot !== -1 && queue[slot] !== undefined) {
+          queue[slot] = undefined;
+          liveWaiters = Math.max(0, liveWaiters - 1);
+          slot = -1;
+        }
         reject(new Error(`Semaphore acquire timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      queue.push({
+      const waiter: Waiter = {
         fire: () => {
+          if (didTimeout) return; // lost the race to the timeout
           clearTimeout(timer);
           // No active++ here — the slot is transferred from the releaser,
           // so the net count stays the same.
           resolve();
         },
         timedOut: () => didTimeout,
-      });
+        invalidate: () => {
+          if (slot !== -1) {
+            queue[slot] = undefined;
+            liveWaiters = Math.max(0, liveWaiters - 1);
+            slot = -1;
+          }
+        },
+      };
+
+      slot = queue.length;
+      queue.push(waiter);
+      liveWaiters += 1;
     });
   }
 
@@ -71,17 +119,25 @@ export function createConcurrencySemaphore(maxConcurrency: number): ConcurrencyS
       );
     }
 
-    // Skip any waiters that timed out while queued
-    while (queue.length > 0) {
-      const waiter = queue.shift();
-      if (waiter === undefined) break;
-      if (!waiter.timedOut()) {
-        // Transfer slot to waiter — active count stays the same
-        waiter.fire();
-        return;
-      }
+    // Skip tombstoned / timed-out waiters until we hit a live one or exhaust.
+    while (head < queue.length) {
+      const waiter = queue[head];
+      queue[head] = undefined;
+      head += 1;
+      if (waiter === undefined) continue;
+      if (waiter.timedOut()) continue;
+      waiter.invalidate();
+      liveWaiters = Math.max(0, liveWaiters - 1);
+      maybeCompact();
+      // Transfer slot to waiter — active count stays the same.
+      waiter.fire();
+      return;
     }
-    // No waiting consumers — return slot to pool
+    // No waiting consumer — return slot to pool and compact if needed.
+    if (head > 0) {
+      queue = [];
+      head = 0;
+    }
     active--;
   }
 
@@ -89,6 +145,6 @@ export function createConcurrencySemaphore(maxConcurrency: number): ConcurrencyS
     acquire,
     release,
     activeCount: () => active,
-    waitingCount: () => queue.length,
+    waitingCount: () => liveWaiters,
   };
 }

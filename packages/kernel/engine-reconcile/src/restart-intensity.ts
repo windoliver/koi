@@ -15,6 +15,13 @@ import type { Clock } from "./clock.js";
 export interface RestartIntensityTracker {
   /** Record a restart attempt for a child. */
   readonly record: (childName: string) => void;
+  /**
+   * Roll back the most recent restart attempt for a child.
+   *
+   * Used when a restart strategy recorded an attempt but the replacement
+   * spawn failed and the operation rolled back.
+   */
+  readonly unrecord: (childName: string) => void;
   /** Check if the restart budget is exhausted for a child. */
   readonly isExhausted: (childName: string) => boolean;
   /** Count restart attempts within the sliding window for a child. */
@@ -66,6 +73,15 @@ export function createRestartIntensityTracker(config: {
     }
   }
 
+  function unrecord(childName: string): void {
+    const buf = buffers.get(childName);
+    if (buf === undefined || buf.length === 0) return;
+    buf.pop();
+    if (buf.length === 0) {
+      buffers.delete(childName);
+    }
+  }
+
   function isExhausted(childName: string): boolean {
     if (maxRestarts <= 0) return true;
     return countInWindow(childName) >= maxRestarts;
@@ -79,5 +95,5 @@ export function createRestartIntensityTracker(config: {
     buffers.delete(childName);
   }
 
-  return { record, isExhausted, attemptsInWindow, reset };
+  return { record, unrecord, isExhausted, attemptsInWindow, reset };
 }

@@ -121,6 +121,42 @@ describe("CascadingTermination", () => {
     expect(registry.lookup(agentId("child"))?.status.phase).toBe("terminated");
   });
 
+  test("cycle guard: does not reprocess the same descendant", async () => {
+    const rootId = agentId("root");
+    const childId = agentId("child");
+    let childExpansionCalls = 0;
+
+    const cyclicTree: ProcessTree = {
+      parentOf: (_id: AgentId): AgentId | undefined => undefined,
+      childrenOf: (id: AgentId): readonly AgentId[] => {
+        if (id === rootId) return [childId];
+        if (id === childId) {
+          childExpansionCalls += 1;
+          // First expansion injects a back-edge to itself; second call (if any)
+          // means traversal reprocessed the same node.
+          return childExpansionCalls === 1 ? [childId] : [];
+        }
+        return [];
+      },
+      descendantsOf: (_id: AgentId): readonly AgentId[] => [],
+      depthOf: (_id: AgentId): number => 0,
+      size: (): number => 2,
+      lineage: (_id: AgentId): readonly AgentId[] => [],
+      async [Symbol.asyncDispose](): Promise<void> {},
+    };
+    await cascade[Symbol.asyncDispose]();
+    const guardedCascade = createCascadingTermination(registry, cyclicTree);
+    cascade = guardedCascade;
+
+    registry.register(entry("root", undefined, "running", 0));
+    registry.register(entry("child", "root", "terminated", 0));
+
+    registry.transition(rootId, "terminated", 0, { kind: "completed" });
+    await flush();
+
+    expect(childExpansionCalls).toBe(1);
+  });
+
   test("inactive after dispose", async () => {
     registry.register(entry("root", undefined, "running", 0));
     registry.register(entry("child", "root", "running", 0));
