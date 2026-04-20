@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { ChildLifecycleEvent, ProcessState, RegistryEntry } from "@koi/core";
+import type { AgentRegistry, ChildLifecycleEvent, ProcessState, RegistryEntry } from "@koi/core";
 import { AGENT_SIGNALS, agentId } from "@koi/core";
 import type { InMemoryRegistry } from "@koi/engine-reconcile";
 import { createInMemoryRegistry } from "@koi/engine-reconcile";
@@ -403,6 +403,139 @@ describe("createChildHandle signal dispatch", () => {
     // terminate should succeed (reads current generation)
     await handle.terminate();
     expect(registry.lookup(agentId("child-1"))?.status.phase).toBe("terminated");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: STOP / CONT CAS retry (#review-C1)
+//
+// STOP and CONT used to call registry.transition and discard the returned
+// Result, silently dropping signals under CAS contention. These tests lock in
+// the retry-once-on-CONFLICT contract that already existed for terminate().
+//
+// Test helper: a proxy registry that advances the real registry's generation
+// between the handle's lookup and transition calls, forcing a first-call
+// CAS conflict on the handle's path.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap a real registry so that the first call to `transition` is forced to
+ * fail with a CONFLICT. The handle's retry lookup then sees the real (now
+ * advanced) generation and succeeds.
+ */
+function withOneShotConflict(real: AgentRegistry): AgentRegistry {
+  // let justified: mutable flag flipped after the first conflict injection
+  let conflictInjected = false;
+  return {
+    ...real,
+    transition: async (id, target, expectedGen, reason) => {
+      if (!conflictInjected) {
+        conflictInjected = true;
+        return {
+          ok: false as const,
+          error: {
+            code: "CONFLICT" as const,
+            message: `simulated CAS conflict on transition to "${target}"`,
+            retryable: true,
+          },
+        };
+      }
+      return real.transition(id, target, expectedGen, reason);
+    },
+  };
+}
+
+describe("createChildHandle STOP/CONT CAS retry", () => {
+  let registry: InMemoryRegistry;
+
+  beforeEach(() => {
+    registry = createInMemoryRegistry();
+  });
+
+  afterEach(async () => {
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("stop retries once on CAS conflict and completes the transition", async () => {
+    registry.register(entry("child-1", "running", 0));
+
+    const handle = createChildHandle(agentId("child-1"), "worker-1", withOneShotConflict(registry));
+    const events: ChildLifecycleEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+
+    await handle.signal(AGENT_SIGNALS.STOP);
+
+    expect(registry.lookup(agentId("child-1"))?.status.phase).toBe("suspended");
+    expect(events.some((e) => e.kind === "error")).toBe(false);
+  });
+
+  test("cont retries once on CAS conflict and completes the transition", async () => {
+    registry.register(entry("child-1", "suspended", 0));
+
+    const handle = createChildHandle(agentId("child-1"), "worker-1", withOneShotConflict(registry));
+    const events: ChildLifecycleEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+
+    await handle.signal(AGENT_SIGNALS.CONT);
+
+    expect(registry.lookup(agentId("child-1"))?.status.phase).toBe("running");
+    expect(events.some((e) => e.kind === "error")).toBe(false);
+  });
+
+  test("stop surfaces error event on non-CONFLICT transition failure", async () => {
+    registry.register(entry("child-1", "running", 0));
+
+    // Fail with a non-retryable, non-CONFLICT code: VALIDATION.
+    const proxy: AgentRegistry = {
+      ...registry,
+      transition: async () => ({
+        ok: false as const,
+        error: {
+          code: "VALIDATION" as const,
+          message: "simulated validation failure",
+          retryable: false,
+        },
+      }),
+    };
+    const handle = createChildHandle(agentId("child-1"), "worker-1", proxy);
+    const events: ChildLifecycleEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+
+    await handle.signal(AGENT_SIGNALS.STOP);
+
+    const err = events.find((e) => e.kind === "error");
+    expect(err).toBeDefined();
+    if (err?.kind === "error") {
+      expect(String(err.cause)).toContain("VALIDATION");
+    }
+  });
+
+  test("stop surfaces error event when retry also conflicts", async () => {
+    registry.register(entry("child-1", "running", 0));
+
+    // Always return CONFLICT — retry also fails.
+    const proxy: AgentRegistry = {
+      ...registry,
+      transition: async () => ({
+        ok: false as const,
+        error: {
+          code: "CONFLICT" as const,
+          message: "persistent CAS conflict",
+          retryable: true,
+        },
+      }),
+    };
+    const handle = createChildHandle(agentId("child-1"), "worker-1", proxy);
+    const events: ChildLifecycleEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+
+    await handle.signal(AGENT_SIGNALS.STOP);
+
+    const err = events.find((e) => e.kind === "error");
+    expect(err).toBeDefined();
+    if (err?.kind === "error") {
+      expect(String(err.cause)).toContain("after retry");
+    }
   });
 });
 

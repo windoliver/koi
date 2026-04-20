@@ -140,12 +140,36 @@ export interface PermissionPromptData {
   readonly sequenceNumber?: number | undefined;
 }
 
+/** Entry describing a model available for selection in the model picker. */
+export interface ModelEntry {
+  readonly id: string;
+  readonly contextLength?: number | undefined;
+  readonly pricingIn?: number | undefined;
+  readonly pricingOut?: number | undefined;
+}
+
+/**
+ * Result of a provider `/models` fetch. Lives in L2 TUI types so the host
+ * (L3 CLI) can inject a fetch callback without creating a reverse
+ * dependency from @koi/tui to @koi-agent/cli.
+ */
+export type FetchModelsResult =
+  | { readonly ok: true; readonly models: readonly ModelEntry[] }
+  | { readonly ok: false; readonly error: string };
+
 /** Transient overlay that preserves the underlying view. */
 export type TuiModal =
   | { readonly kind: "command-palette"; readonly query: string }
   | { readonly kind: "permission-prompt"; readonly prompt: PermissionPromptData }
   | { readonly kind: "session-picker" }
-  | { readonly kind: "session-rename" };
+  | { readonly kind: "session-rename" }
+  | {
+      readonly kind: "model-picker";
+      readonly query: string;
+      readonly status: "loading" | "ready" | "error";
+      readonly models: readonly ModelEntry[];
+      readonly error?: string | undefined;
+    };
 
 // ---------------------------------------------------------------------------
 // Session & Metrics
@@ -430,6 +454,8 @@ export interface TuiState {
   readonly layoutTier: LayoutTier;
   readonly zoomLevel: number;
   // --- Status bar data ---
+  /** Currently selected model name. Empty string before the host sets it. */
+  readonly modelName: string;
   /** Set by the host on session start; null before first session. */
   readonly sessionInfo: SessionInfo | null;
   /** Cumulative metrics accumulated across all turns. */
@@ -747,4 +773,12 @@ export type TuiAction =
       readonly capabilities: readonly CapabilityFragmentLite[];
     }
   | { readonly kind: "add_toast"; readonly toast: Toast }
-  | { readonly kind: "dismiss_toast"; readonly id: string };
+  | { readonly kind: "dismiss_toast"; readonly id: string }
+  | { readonly kind: "model_picker_set_query"; readonly query: string }
+  | {
+      readonly kind: "model_picker_fetched";
+      readonly result:
+        | { readonly ok: true; readonly models: readonly ModelEntry[] }
+        | { readonly ok: false; readonly error: string };
+    }
+  | { readonly kind: "model_switched"; readonly model: string };

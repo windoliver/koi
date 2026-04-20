@@ -11,7 +11,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { composeModelChain, composeToolChain } from "./compose.js";
+import { composeModelChain, composeModelStreamChain, composeToolChain } from "./compose.js";
 
 const STUB_CTX = {} as TurnContext;
 
@@ -281,5 +281,84 @@ describe("concurrent observe — composeToolChain", () => {
 
     const result = await chain(STUB_CTX, toolRequest());
     expect(result.output).toBe("done");
+  });
+});
+
+describe("compose retry semantics", () => {
+  test("model retry middleware can call next() again after synchronous inner throw", async () => {
+    let attempts = 0;
+    const flaky: KoiMiddleware = {
+      name: "flaky-sync-model",
+      wrapModelCall(_ctx, req, next) {
+        attempts++;
+        if (attempts === 1) {
+          throw new Error("sync model failure");
+        }
+        return next(req);
+      },
+      describeCapabilities: () => undefined,
+    };
+
+    const retrier: KoiMiddleware = {
+      name: "model-retrier",
+      async wrapModelCall(_ctx, req, next) {
+        try {
+          return await next(req);
+        } catch {
+          return next(req);
+        }
+      },
+      describeCapabilities: () => undefined,
+    };
+
+    const terminal = mock(async () => STUB_MODEL_RESPONSE);
+    const chain = composeModelChain([retrier, flaky], terminal);
+    const result = await chain(STUB_CTX, modelRequest());
+
+    expect(result.content).toBe("ok");
+    expect(attempts).toBe(2);
+    expect(terminal).toHaveBeenCalledTimes(1);
+  });
+
+  test("stream retry middleware can call next() again after synchronous inner throw", async () => {
+    let attempts = 0;
+    const flaky: KoiMiddleware = {
+      name: "flaky-sync-stream",
+      wrapModelStream(_ctx, req, next) {
+        attempts++;
+        if (attempts === 1) {
+          throw new Error("sync stream failure");
+        }
+        return next(req);
+      },
+      describeCapabilities: () => undefined,
+    };
+
+    const retrier: KoiMiddleware = {
+      name: "stream-retrier",
+      wrapModelStream(_ctx, req, next) {
+        try {
+          return next(req);
+        } catch {
+          return next(req);
+        }
+      },
+      describeCapabilities: () => undefined,
+    };
+
+    const terminal = () => ({
+      async *[Symbol.asyncIterator]() {
+        yield { kind: "done" as const, response: STUB_MODEL_RESPONSE };
+      },
+    });
+
+    const chain = composeModelStreamChain([retrier, flaky], terminal);
+    const chunks: unknown[] = [];
+    for await (const chunk of chain(STUB_CTX, modelRequest())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toHaveLength(1);
+    expect(attempts).toBe(2);
   });
 });

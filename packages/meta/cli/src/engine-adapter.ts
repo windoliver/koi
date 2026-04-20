@@ -56,7 +56,7 @@ export interface TranscriptAdapterConfig {
    * (micro: truncate) and hardTriggerFraction (full: optimal-split truncate).
    * Set contextWindowSize or modelId so the registry can calibrate thresholds.
    */
-  readonly budgetConfig?: BudgetConfig;
+  readonly budgetConfig?: BudgetConfig | (() => BudgetConfig);
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,11 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         // otherwise fall back to naive message-count tail-slice.
         let contextMessages: readonly InboundMessage[];
         if (budgetConfig !== undefined) {
-          const budgetResult = await enforceBudget([...transcript], undefined, budgetConfig);
+          // Resolve per-turn so mid-session model switches pick up the new
+          // model's context window immediately on the next turn, without
+          // requiring the adapter to be rebuilt.
+          const resolvedBudget = typeof budgetConfig === "function" ? budgetConfig() : budgetConfig;
+          const budgetResult = await enforceBudget([...transcript], undefined, resolvedBudget);
           if (budgetResult.compaction !== "noop") {
             // Splice transcript in-place so future turns see the compacted history.
             transcript.splice(0, transcript.length, ...budgetResult.messages);

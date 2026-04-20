@@ -1345,6 +1345,105 @@ describe("reduce — permission_response", () => {
 });
 
 // ---------------------------------------------------------------------------
+// model picker actions
+// ---------------------------------------------------------------------------
+
+describe("reduce — model picker actions", () => {
+  test("model_picker_set_query updates query in open picker", () => {
+    const state: TuiState = {
+      ...createInitialState("anthropic/claude-sonnet-4-6"),
+      modal: { kind: "model-picker", query: "", status: "ready", models: [] },
+    };
+    const next = reduce(state, { kind: "model_picker_set_query", query: "opus" });
+    expect(next.modal).toEqual({
+      kind: "model-picker",
+      query: "opus",
+      status: "ready",
+      models: [],
+    });
+  });
+
+  test("model_picker_set_query is a no-op when a different modal is open", () => {
+    const state: TuiState = {
+      ...createInitialState(),
+      modal: { kind: "command-palette", query: "" },
+    };
+    const next = reduce(state, { kind: "model_picker_set_query", query: "opus" });
+    expect(next).toBe(state);
+  });
+
+  test("model_picker_fetched ok populates models and flips to ready", () => {
+    const state: TuiState = {
+      ...createInitialState(),
+      modal: { kind: "model-picker", query: "", status: "loading", models: [] },
+    };
+    const models = [{ id: "anthropic/claude-opus-4-7" }];
+    const next = reduce(state, { kind: "model_picker_fetched", result: { ok: true, models } });
+    expect(next.modal).toEqual({
+      kind: "model-picker",
+      query: "",
+      status: "ready",
+      models,
+    });
+  });
+
+  test("model_picker_fetched error flips to error with message", () => {
+    const state: TuiState = {
+      ...createInitialState(),
+      modal: { kind: "model-picker", query: "", status: "loading", models: [] },
+    };
+    const next = reduce(state, {
+      kind: "model_picker_fetched",
+      result: { ok: false, error: "timeout" },
+    });
+    expect(next.modal).toEqual({
+      kind: "model-picker",
+      query: "",
+      status: "error",
+      models: [],
+      error: "timeout",
+    });
+  });
+
+  test("model_switched updates state.modelName", () => {
+    const state = createInitialState("anthropic/claude-sonnet-4-6");
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.modelName).toBe("anthropic/claude-opus-4-7");
+  });
+
+  test("model_switched mirrors into sessionInfo.modelName when set", () => {
+    const state = stateWith({
+      modelName: "anthropic/claude-sonnet-4-6",
+      sessionInfo: {
+        modelName: "anthropic/claude-sonnet-4-6",
+        provider: "anthropic",
+        sessionName: "test",
+        sessionId: "abc123",
+      },
+    });
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.modelName).toBe("anthropic/claude-opus-4-7");
+    expect(next.sessionInfo?.modelName).toBe("anthropic/claude-opus-4-7");
+    expect(next.sessionInfo?.sessionId).toBe("abc123");
+  });
+
+  test("model_switched leaves null sessionInfo untouched", () => {
+    const state = createInitialState("anthropic/claude-sonnet-4-6");
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.sessionInfo).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // set_connection_status
 // ---------------------------------------------------------------------------
 

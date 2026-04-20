@@ -1,3 +1,4 @@
+import { closeSync, openSync } from "node:fs";
 import type {
   KoiError,
   Result,
@@ -72,26 +73,56 @@ export function createSubprocessBackend(): WorkerBackend {
       }
     }
 
+    // Stdio defaults are security- and correctness-conservative:
+    //   stdin: "ignore"  — workers do NOT inherit the supervisor's TTY.
+    //     A shared TTY would let any worker consume operator keystrokes
+    //     intended for the CLI/TUI and let a malicious child interfere
+    //     with interactive control. Opt-in stdio modes are a follow-up.
+    //   stdout/stderr: "ignore" by default — pipes would fill OS buffers
+    //     for chatty workers and deadlock them. When `backendHints.logPath`
+    //     is set, both streams share a single O_APPEND fd so stdout and
+    //     stderr interleave in arrival order without clobbering each other.
+    //     Bun.file() per-stream would truncate in both directions.
+    const logPath = resolveLogPath(request);
+    let logFd: number | undefined;
+    if (logPath !== undefined) {
+      try {
+        // Mode 0600: worker stdout/stderr may contain secrets, tokens, or
+        // PII. Default umask (022) would make new logs world-readable —
+        // unacceptable on shared hosts.
+        logFd = openSync(logPath, "a", 0o600);
+      } catch (e) {
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `Failed to open log file ${logPath}: ${e instanceof Error ? e.message : String(e)}`,
+            retryable: true,
+          },
+        };
+      }
+    }
     try {
-      // Stdio defaults are security- and correctness-conservative:
-      //   stdin: "ignore"  — workers do NOT inherit the supervisor's TTY.
-      //     A shared TTY would let any worker consume operator keystrokes
-      //     intended for the CLI/TUI and let a malicious child interfere
-      //     with interactive control. Opt-in stdio modes are a follow-up.
-      //   stdout/stderr: "ignore" — pipes would fill OS buffers for chatty
-      //     workers and deadlock them (writes block once buffer is full
-      //     and nothing drains it). "ignore" routes output to /dev/null.
-      //     A future config option will allow draining to logs/telemetry.
       const spawnOptions: Parameters<typeof Bun.spawn>[1] = {
         env,
         stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
+        stdout: logFd ?? "ignore",
+        stderr: logFd ?? "ignore",
       };
       if (request.cwd !== undefined) {
         spawnOptions.cwd = request.cwd;
       }
       const proc = Bun.spawn([...request.command], spawnOptions);
+      // The subprocess inherits the fd; the parent can drop its handle.
+      // The OS keeps the fd open for the child until it exits.
+      if (logFd !== undefined) {
+        try {
+          closeSync(logFd);
+        } catch {
+          // Best-effort — the child still has its dup of the fd.
+        }
+        logFd = undefined;
+      }
 
       const controller = new AbortController();
       const state: SubprocState = {
@@ -105,7 +136,15 @@ export function createSubprocessBackend(): WorkerBackend {
         pruneTimer: undefined,
       };
       workers.set(request.workerId, state);
-      emit(state, { kind: "started", workerId: request.workerId, at: Date.now() });
+      // Include pid so registry bridges can refresh the record's process
+      // identity on every respawn — without it, a restart leaves the
+      // registry pointing at the pre-restart PID.
+      emit(state, {
+        kind: "started",
+        workerId: request.workerId,
+        at: Date.now(),
+        pid: proc.pid,
+      });
 
       void proc.exited.then((code) => {
         state.alive = false;
@@ -154,6 +193,14 @@ export function createSubprocessBackend(): WorkerBackend {
       };
       return { ok: true, value: handle };
     } catch (e) {
+      // Bun.spawn threw before the child inherited the fd — close it ourselves.
+      if (logFd !== undefined) {
+        try {
+          closeSync(logFd);
+        } catch {
+          /* best-effort */
+        }
+      }
       return {
         ok: false,
         error: {
@@ -234,4 +281,15 @@ export function createSubprocessBackend(): WorkerBackend {
     isAlive,
     watch,
   };
+}
+
+/**
+ * Extract the log path from `backendHints.logPath`. Returns the string if
+ * present and non-empty, otherwise undefined (falls back to /dev/null stdio).
+ */
+function resolveLogPath(request: WorkerSpawnRequest): string | undefined {
+  const hints = request.backendHints;
+  if (hints === undefined) return undefined;
+  const value = hints.logPath;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

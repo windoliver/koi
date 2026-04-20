@@ -224,7 +224,17 @@ function composeOnion<Req, Res>(
           );
         }
         called = true;
-        const result = dispatch(i + 1, nextReq);
+        let result: Res;
+        try {
+          result = dispatch(i + 1, nextReq);
+        } catch (error: unknown) {
+          // Retry-enabled chains (model/modelStream) must allow next() to be
+          // called again when the inner chain throws synchronously.
+          if (wrapNextResult !== undefined) {
+            called = false;
+          }
+          throw error;
+        }
         if (wrapNextResult !== undefined) {
           return wrapNextResult(result, () => {
             called = false;

@@ -212,6 +212,20 @@ export interface CreateKoiOptions {
    * See docs/L2/interrupt.md and issue #1682.
    */
   readonly sessionRegistry?: SessionRegistry;
+  /**
+   * Upper bound (in ms) for how long `cycleSession()` and `dispose()` wait
+   * for an in-flight run to settle before poisoning the runtime and
+   * rejecting further lifecycle operations. Defaults to 5000ms.
+   *
+   * Hosts that run long-running cooperative tools (e.g. shell commands
+   * that honor abort but take tens of seconds to unwind) can raise this
+   * so a user-driven `/clear` doesn't prematurely wedge the runtime.
+   * Interactive hosts generally want it small (< 1s) for responsive
+   * feedback. Values ≤ 0 fall back to the 5000ms default.
+   *
+   * See `#review-P11` in the engine review.
+   */
+  readonly lifecycleSettleTimeoutMs?: number;
 }
 
 /**

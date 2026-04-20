@@ -79,6 +79,14 @@ export interface GovernanceSnapshot {
 
 export type GovernanceEvent =
   | { readonly kind: "turn" }
+  /**
+   * Refund one or more previously recorded turns.
+   *
+   * Useful when a host temporarily increments turn-count for internal
+   * orchestration work (tool wrappers, retries, delegated internal loops)
+   * that should not consume user-visible turn budget.
+   */
+  | { readonly kind: "turn_refund"; readonly count: number }
   | { readonly kind: "spawn"; readonly depth: number }
   | { readonly kind: "spawn_release" }
   | { readonly kind: "forge"; readonly toolName?: string | undefined }

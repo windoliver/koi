@@ -28,6 +28,7 @@ import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
 import { GovernanceView } from "./components/GovernanceView.js";
 import { HelpView } from "./components/HelpView.js";
+import { ModelPicker } from "./components/ModelPicker.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
 import { SessionRename } from "./components/SessionRename.js";
@@ -38,7 +39,13 @@ import { StatusBar } from "./components/StatusBar.js";
 import { ToastOverlay } from "./components/Toast.js";
 import { handleGlobalKey } from "./keyboard.js";
 import type { TuiStore } from "./state/store.js";
-import type { SessionSummary, TuiModal, TuiView } from "./state/types.js";
+import type {
+  FetchModelsResult,
+  ModelEntry,
+  SessionSummary,
+  TuiModal,
+  TuiView,
+} from "./state/types.js";
 import { copyToClipboard } from "./utils/clipboard.js";
 import {
   StoreContext,
@@ -152,6 +159,26 @@ export interface TuiRootProps {
    * Null signals the overlay was dismissed.
    */
   readonly onAtQuery?: ((query: string | null) => void) | undefined;
+  /**
+   * Called when the model picker opens. The host performs the provider
+   * `/models` fetch (L2 TUI has no network code) and resolves with the
+   * typed result. TuiRoot dispatches `model_picker_fetched` on resolve.
+   */
+  readonly onFetchModels?: (() => Promise<FetchModelsResult>) | undefined;
+  /**
+   * Called when the user selects a model in the picker. The host mutates
+   * the current-model middleware box so subsequent turns use the new model.
+   *
+   * The full `ModelEntry` is forwarded (not just the id) so the host can
+   * plumb per-model metadata — specifically `contextLength` — into the
+   * runtime's per-turn budget resolution for models absent from the local
+   * registry.
+   *
+   * Returns `true` when the switch was applied, `false` when the host
+   * refused (e.g. a run is still in flight). TuiRoot only dispatches
+   * `model_switched` and the success toast on a confirmed mutation.
+   */
+  readonly onModelSwitch?: ((model: ModelEntry) => boolean | void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +353,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:new");
         if (cmd !== undefined) handleCommandSelect(cmd);
       },
+      onOpenSessions: () => {
+        const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:sessions");
+        if (cmd !== undefined) handleCommandSelect(cmd);
+      },
     });
   });
 
@@ -338,6 +369,74 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   /** Open the session picker. The createEffect above auto-refreshes the list. */
   const openSessionPicker = (): void => {
     store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
+  };
+
+  // Cache the /models fetch so reopening the picker within the same process
+  // does not hammer the provider. Keyed by the callback identity — if the host
+  // swaps in a new fetcher (baseUrl/apiKey change), the cache naturally misses.
+  // `let`: justified — single-slot cache, updated on first fetch.
+  let cachedModelFetch:
+    | { readonly fetcher: () => Promise<FetchModelsResult>; readonly pending: Promise<FetchModelsResult> }
+    | null = null;
+
+  const openModelPicker = (initialQuery: string): void => {
+    store.dispatch({
+      kind: "set_modal",
+      modal: { kind: "model-picker", query: initialQuery, status: "loading", models: [] },
+    });
+    const fetcher = props.onFetchModels;
+    if (fetcher === undefined) {
+      store.dispatch({
+        kind: "model_picker_fetched",
+        result: { ok: false, error: "Model fetching is not configured." },
+      });
+      return;
+    }
+    let pending: Promise<FetchModelsResult>;
+    if (cachedModelFetch !== null && cachedModelFetch.fetcher === fetcher) {
+      pending = cachedModelFetch.pending;
+    } else {
+      pending = fetcher();
+      cachedModelFetch = { fetcher, pending };
+    }
+    // Capture the promise we committed to so a later invalidation (e.g. the
+    // user reopens the picker after the failure below landed) can't racily
+    // clobber a fresher attempt.
+    const settled = pending;
+    void settled
+      .then((result) => {
+        // Invalidate the cache on failure so reopening the picker retries —
+        // transient outages (timeouts, auth blips) shouldn't stick for the
+        // rest of the process.
+        if (!result.ok && cachedModelFetch?.pending === settled) {
+          cachedModelFetch = null;
+        }
+        store.dispatch({ kind: "model_picker_fetched", result });
+      })
+      .catch(() => {
+        if (cachedModelFetch?.pending === settled) {
+          cachedModelFetch = null;
+        }
+      });
+  };
+
+  const handleModelSelect = (model: ModelEntry): void => {
+    store.dispatch({ kind: "set_modal", modal: null });
+    // Host owns the authoritative in-flight signal (e.g. AbortController).
+    // `agentStatus` lags the submit→first-event gap, so we defer the
+    // refusal decision to the host and react to its boolean result.
+    // When the host returns `undefined` (older callers) we assume success
+    // for backwards compatibility.
+    const applied = props.onModelSwitch?.(model);
+    if (applied === false) {
+      store.dispatch({
+        kind: "add_info",
+        message: "[Cannot switch models while a turn is in flight — finish or Esc-interrupt first.]",
+      });
+      return;
+    }
+    store.dispatch({ kind: "model_switched", model: model.id });
+    store.dispatch({ kind: "add_info", message: `[Model switched to ${model.id}]` });
   };
 
   const handleCommandSelect = (cmd: CommandDef, args = ""): void => {
@@ -357,6 +456,13 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     // session:resume opens the session picker modal inline — host is not involved.
     if (cmd.id === "session:sessions") {
       openSessionPicker();
+      return;
+    }
+    // system:model-switch opens the model picker modal inline. The host
+    // performs the /models fetch via onFetchModels and mutates the current-
+    // model middleware box via onModelSwitch.
+    if (cmd.id === "system:model-switch") {
+      openModelPicker(args);
       return;
     }
     if (cmd.id === "session:rename") {
@@ -395,6 +501,12 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
 
   const handleSlashSelect = (cmd: SlashCommand, args: string): void => {
     store.dispatch({ kind: "set_slash_query", query: null });
+    // `/model <query>` with args opens the picker prefilled with the query.
+    // Bare `/model` falls through to `system:model` (info notice).
+    if (cmd.name === "model" && args.trim().length > 0) {
+      openModelPicker(args.trim());
+      return;
+    }
     const commandDef = findCommandBySlashName(cmd.name);
     if (commandDef !== undefined) {
       handleCommandSelect(commandDef, args);
@@ -479,6 +591,14 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       <Show when={modal()?.kind === "session-rename"}>
         <SessionRename
           onRename={handleRename}
+          onClose={dismissModal}
+          focused={true}
+        />
+      </Show>
+      {/* Model picker modal — fuzzy list of provider models. */}
+      <Show when={modal()?.kind === "model-picker"}>
+        <ModelPicker
+          onSelect={handleModelSelect}
           onClose={dismissModal}
           focused={true}
         />
