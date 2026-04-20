@@ -1392,7 +1392,15 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
               if (cleanup !== "navigated") {
                 tabs.delete(tabId);
                 tabConsoleLogs.delete(tabId);
-                if (currentTabId === tabId) currentTabId = null;
+                if (currentTabId === tabId) {
+                  // Promote another surviving tab (matches tabClose semantics).
+                  // Only fall back to null when no tabs remain — otherwise
+                  // ensurePage() would silently open a fresh blank tab, losing
+                  // continuity with the rest of the session.
+                  let lastKey: string | null = null;
+                  for (const k of tabs.keys()) lastKey = k;
+                  currentTabId = lastKey;
+                }
               }
             }
           }
