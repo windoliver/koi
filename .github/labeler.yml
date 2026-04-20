@@ -49,6 +49,7 @@
       - "packages/**/tools-core/**"
       - "packages/**/url-safety/**"
       - "packages/**/validation/**"
+      - "packages/**/watch-patterns/**"
 
 "layer:L3":
   - changed-files:
@@ -99,3 +100,4 @@
       - "!packages/**/tools-core/**"
       - "!packages/**/url-safety/**"
       - "!packages/**/validation/**"
+      - "!packages/**/watch-patterns/**"
