@@ -796,7 +796,14 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
               current.resolveExited();
               pool.delete(request.workerId);
             }
-            activeIds.delete(request.workerId);
+            // Preserve the activeIds reservation if a quarantine already
+            // claimed the id (e.g., stop() observed a teardown failure and
+            // moved the entry to quarantine before aborting the watch).
+            // The quarantine path in stop()/shutdown() releases activeIds
+            // only after a successful retry-teardown.
+            if (!quarantined.has(request.workerId)) {
+              activeIds.delete(request.workerId);
+            }
             return;
           }
           throw new Error(
@@ -978,6 +985,20 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
     // Deadline-bounded terminate/kill. See teardownWorker for semantics.
     const teardownResult = await teardownWorker(entry.backend, id, reason, entry.exitedPromise);
+    // On teardown failure, terminate + kill both exhausted their deadlines —
+    // the OS process may still be alive. Quarantine this entry BEFORE the
+    // abort below so the watch IIFE's tidy-cleanup branch preserves the
+    // activeIds reservation (the quarantine owns the id now, matching the
+    // existing watch-stream-fault path). Without this, abort-driven tidy
+    // cleanup would release activeIds and a subsequent start() could race
+    // a still-live worker into a duplicate spawn — split-brain.
+    if (!teardownResult.ok) {
+      quarantined.set(id, {
+        backend: entry.backend,
+        agentId: entry.handle.agentId,
+        reason: "stop-teardown-failed",
+      });
+    }
     // Belt-and-suspenders: abort the backend.watch AbortSignal AFTER teardown
     // so a backend that drops its watch stream without ever emitting a
     // terminal event (tmux, remote RPC, managed cluster) no longer leaks the

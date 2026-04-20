@@ -1955,6 +1955,80 @@ describe("supervisor watch AbortSignal plumbing", () => {
     expect(supervisor.value.list().length).toBe(0);
   });
 
+  it("stop() teardown failure quarantines the entry and preserves activeIds reservation", async () => {
+    // When terminate + kill both exhaust their deadlines, the OS process
+    // may still be alive. The supervisor must NOT release activeIds — a
+    // duplicate start() with the same workerId could otherwise race a
+    // still-live worker. Instead, quarantine the entry so stop()/shutdown()
+    // can retry teardown, and a duplicate start() rejects with CONFLICT.
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "unkillable",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill silently "succeed" but the worker stays alive —
+      // simulates a wedged backend whose signals never take effect.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        if (signal === undefined) {
+          await new Promise<void>(() => {});
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("unkillable-1"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    const stopped = await supervisor.value.stop(workerId("unkillable-1"), "test");
+    // teardownWorker fails (kill deadline expires while isAlive stays true).
+    expect(stopped.ok).toBe(false);
+    if (!stopped.ok) expect(stopped.error.code).toBe("INTERNAL");
+
+    // Duplicate start() MUST reject — activeIds reservation preserved via
+    // quarantine, even though abort triggered the IIFE's tidy-cleanup.
+    await new Promise((r) => setTimeout(r, 10));
+    const duplicate = await supervisor.value.start(makeRequest("unkillable-1"));
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.error.code).toBe("CONFLICT");
+
+    // Flip the worker dead and retry stop — quarantine path should clear.
+    const state = live.get(workerId("unkillable-1"));
+    if (state !== undefined) state.alive = false;
+    const retry = await supervisor.value.stop(workerId("unkillable-1"), "retry");
+    expect(retry.ok).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
   it("shutdown resolves within deadline even against a stalling backend", async () => {
     // Without AbortSignal plumbing, a backend whose watch stream never emits
     // a terminal event and never returns would leave shutdown() blocked on
