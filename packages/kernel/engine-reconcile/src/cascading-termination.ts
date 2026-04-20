@@ -79,12 +79,15 @@ async function cascadeTerminate(
   terminatedAgentId: AgentId,
 ): Promise<void> {
   const queue: AgentId[] = [...tree.childrenOf(terminatedAgentId)];
+  const visited = new Set<string>([terminatedAgentId]);
   let i = 0; // let justified: index pointer avoids O(n) shift per iteration
 
   while (i < queue.length) {
     // biome-ignore lint/style/noNonNullAssertion: i < queue.length guarantees element exists
     const childId = queue[i]!;
     i++;
+    if (visited.has(childId)) continue;
+    visited.add(childId);
 
     const terminated = await tryTerminateDescendant(registry, childId);
     if (terminated === "skip") continue;
@@ -94,7 +97,7 @@ async function cascadeTerminate(
     // someone else did, but its descendants still need the cascade).
     const grandchildren = tree.childrenOf(childId);
     for (const gc of grandchildren) {
-      queue.push(gc);
+      if (!visited.has(gc)) queue.push(gc);
     }
   }
 }

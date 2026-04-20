@@ -56,6 +56,7 @@ export interface SupervisionReconciler extends ReconciliationController {
 
 interface SupervisorState {
   readonly tracker: RestartIntensityTracker;
+  readonly spawnFailureTracker: RestartIntensityTracker;
   /** Maps child spec name → current AgentId (updated on restart). */
   readonly childMap: Map<string, AgentId>;
 }
@@ -83,6 +84,11 @@ export function createSupervisionReconciler(deps: {
 
   /** Tracks which supervisors have had their child maps populated. */
   const initializedSupervisors = new Set<string>();
+  const TERMINATE_CONFIRM_MAX_RETRIES = 3;
+  const TERMINATE_CONFIRM_TIMEOUT_MS = 5_000;
+  const REST_FOR_ONE_RETRY_BASE_MS = 250;
+  const REST_FOR_ONE_RETRY_CAP_MS = 8_000;
+  const REST_FOR_ONE_ROLLBACK_BUDGET_MS = 8_000;
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -94,6 +100,11 @@ export function createSupervisionReconciler(deps: {
 
     const state: SupervisorState = {
       tracker: createRestartIntensityTracker({
+        maxRestarts: config.maxRestarts,
+        windowMs: config.maxRestartWindowMs,
+        clock,
+      }),
+      spawnFailureTracker: createRestartIntensityTracker({
         maxRestarts: config.maxRestarts,
         windowMs: config.maxRestartWindowMs,
         clock,
@@ -189,6 +200,88 @@ export function createSupervisionReconciler(deps: {
       return true;
     }
     return result.ok;
+  }
+
+  function computeRestForOneRetryDelay(attempt: number): number {
+    const exponent = Math.max(0, attempt - 1);
+    return Math.min(REST_FOR_ONE_RETRY_BASE_MS * 2 ** exponent, REST_FOR_ONE_RETRY_CAP_MS);
+  }
+
+  async function awaitWithTimeout<T>(
+    value: T | Promise<T>,
+    timeoutMs: number,
+  ): Promise<{
+    readonly timedOut: boolean;
+    readonly rejected: boolean;
+    readonly value: T | undefined;
+  }> {
+    if (!isPromise(value)) return { timedOut: false, rejected: false, value };
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        value
+          .then((resolved) => ({
+            timedOut: false as const,
+            rejected: false as const,
+            value: resolved,
+          }))
+          .catch(() => ({
+            timedOut: false as const,
+            rejected: true as const,
+            value: undefined,
+          })),
+        new Promise<{
+          readonly timedOut: true;
+          readonly rejected: false;
+          readonly value: undefined;
+        }>((resolve) => {
+          timeout = setTimeout(
+            () => resolve({ timedOut: true, rejected: false, value: undefined }),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  async function terminateChildConfirmed(
+    childId: AgentId,
+    reason: TransitionReason,
+    deadlineAtMs: number,
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < TERMINATE_CONFIRM_MAX_RETRIES; attempt++) {
+      const remainingBudgetMs = deadlineAtMs - clock.now();
+      if (remainingBudgetMs <= 0) return false;
+      const timeoutMs = Math.max(1, Math.min(remainingBudgetMs, TERMINATE_CONFIRM_TIMEOUT_MS));
+
+      const lookup = await awaitWithTimeout(deps.registry.lookup(childId), timeoutMs);
+      if (lookup.timedOut || lookup.rejected) return false;
+      const entry = lookup.value;
+      if (entry === undefined) return true;
+      if (entry.status.phase === "terminated") return true;
+
+      const transitionRemainingMs = deadlineAtMs - clock.now();
+      if (transitionRemainingMs <= 0) return false;
+      const transitionTimeoutMs = Math.max(
+        1,
+        Math.min(transitionRemainingMs, TERMINATE_CONFIRM_TIMEOUT_MS),
+      );
+      const transition = await awaitWithTimeout(
+        deps.registry.transition(childId, "terminated", entry.status.generation, reason),
+        transitionTimeoutMs,
+      );
+      if (transition.timedOut || transition.rejected) return false;
+      const result = transition.value;
+      if (result === undefined) return false;
+      if (result.ok) return true;
+      if (result.error.code === "NOT_FOUND") return true;
+      if (result.error.code !== "CONFLICT") return false;
+    }
+    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -371,6 +464,9 @@ export function createSupervisionReconciler(deps: {
       if (state.tracker.isExhausted(spec.name)) {
         return escalate(parentId, spec.name);
       }
+      if (state.spawnFailureTracker.isExhausted(spec.name)) {
+        return escalate(parentId, spec.name);
+      }
       state.tracker.record(spec.name);
 
       const idx = indexByName.get(spec.name) ?? -1;
@@ -398,21 +494,96 @@ export function createSupervisionReconciler(deps: {
       });
     }
 
-    // Restart from earliestIdx onward in declaration order
-    // (rest_for_one preserves ordering — sequential spawn is intentional)
-    for (let i = earliestIdx; i < config.children.length; i++) {
-      const spec = config.children[i];
-      if (spec === undefined) continue;
-      await spawnAndTransition(
-        parentId,
-        spec,
-        manifest,
-        state,
-        "rest_for_one",
-        attemptOf(spec.name),
+    const restartedSpecs: ChildSpec[] = [];
+    let failedSpec: ChildSpec | undefined;
+    try {
+      // Restart from earliestIdx onward in declaration order
+      // (rest_for_one preserves ordering — sequential spawn is intentional)
+      for (let i = earliestIdx; i < config.children.length; i++) {
+        const spec = config.children[i];
+        if (spec === undefined) continue;
+        failedSpec = spec;
+        await spawnAndTransition(
+          parentId,
+          spec,
+          manifest,
+          state,
+          "rest_for_one",
+          attemptOf(spec.name),
+        );
+        restartedSpecs.push(spec);
+        failedSpec = undefined;
+      }
+      // Successful cycle clears spawn-failure streaks for this restart set.
+      for (const spec of restartedSpecs) {
+        state.spawnFailureTracker.reset(spec.name);
+      }
+      return { kind: "converged" };
+    } catch (err: unknown) {
+      console.error(
+        `[supervision-reconciler] rest_for_one restart cycle failed for supervisor "${parentId}"`,
+        err,
       );
+      // Roll back any partial rest_for_one restart set so the next reconcile
+      // starts from a consistent "all affected children terminated" state.
+      const rollbackDeadlineAt = clock.now() + REST_FOR_ONE_ROLLBACK_BUDGET_MS;
+      let rollbackConfirmed = true;
+      for (let i = restartedSpecs.length - 1; i >= 0; i--) {
+        if (clock.now() >= rollbackDeadlineAt) {
+          rollbackConfirmed = false;
+          break;
+        }
+        const spec = restartedSpecs[i];
+        if (spec === undefined) continue;
+        const restartedChildId = state.childMap.get(spec.name);
+        if (restartedChildId === undefined) continue;
+        const terminated = await terminateChildConfirmed(
+          restartedChildId,
+          {
+            kind: "restarted",
+            attempt: attemptOf(spec.name),
+            strategy: "rest_for_one",
+          },
+          rollbackDeadlineAt,
+        );
+        if (terminated) {
+          supervisedChildIds.delete(restartedChildId);
+        } else {
+          rollbackConfirmed = false;
+        }
+      }
+      if (!rollbackConfirmed) {
+        // This restart cycle did not converge and rollback is uncertain.
+        // Do not burn restart budget for triggering specs yet.
+        for (const spec of terminatedSpecs) {
+          state.tracker.unrecord(spec.name);
+        }
+        return {
+          kind: "retry",
+          afterMs: computeRestForOneRetryDelay(1),
+        };
+      }
+      // Roll back intensity accounting for triggering specs because the cycle
+      // did not converge to a stable replacement set.
+      for (const spec of terminatedSpecs) {
+        state.tracker.unrecord(spec.name);
+      }
+      if (failedSpec !== undefined) {
+        if (state.spawnFailureTracker.isExhausted(failedSpec.name)) {
+          return escalate(parentId, failedSpec.name);
+        }
+        state.spawnFailureTracker.record(failedSpec.name);
+        const failureAttempt = state.spawnFailureTracker.attemptsInWindow(failedSpec.name);
+        return {
+          kind: "retry",
+          afterMs: computeRestForOneRetryDelay(failureAttempt),
+        };
+      }
+      return {
+        kind: "retry",
+        afterMs: computeRestForOneRetryDelay(1),
+      };
     }
-    return { kind: "converged" };
   }
 
   /** Escalate: terminate the supervisor itself and remove its children from supervised set. */
