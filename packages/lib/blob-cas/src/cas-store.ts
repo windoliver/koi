@@ -22,6 +22,7 @@ import {
   openSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -155,9 +156,12 @@ export async function writeBlobFromFile(blobDir: string, sourcePath: string): Pr
   const hash = hasher.digest("hex");
 
   // CAS dedup: if the blob already exists, drop the tmp and return.
+  // Use sync unlink — `Bun.file(tmp).unlink()` returns a Promise whose
+  // rejection would escape the surrounding sync try/catch and surface as
+  // "Unhandled error between tests" in bun:test.
   if (hasBlob(blobDir, hash)) {
     try {
-      Bun.file(tmp).unlink?.();
+      unlinkSync(tmp);
     } catch {
       /* ignore */
     }
@@ -177,7 +181,7 @@ export async function writeBlobFromFile(blobDir: string, sourcePath: string): Pr
     // same hash). fsync the parent dir so our return is durable regardless
     // of whether the winner has already done it.
     try {
-      Bun.file(tmp).unlink?.();
+      unlinkSync(tmp);
     } catch {
       /* ignore */
     }
@@ -228,7 +232,7 @@ export async function writeBlobFromBytes(blobDir: string, data: Uint8Array): Pro
     // where rename-over-existing fails (Windows, some FUSE), recover by
     // checking the target and treating a hash-match as successful dedup.
     try {
-      Bun.file(tmp).unlink?.();
+      unlinkSync(tmp);
     } catch {
       /* ignore */
     }
