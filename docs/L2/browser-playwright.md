@@ -643,6 +643,10 @@ const driver = createPlaywrightBrowserDriver({
 - **Popup pages on borrowed contexts are NOT guarded.** The per-page guard is installed on pages the driver creates via `ctx.newPage()`. On borrowed contexts (cdpEndpoint/wsEndpoint paths reusing the caller's default context), any page the caller's code opens (via `window.open`, `target=_blank`, or its own `ctx.newPage()`) is outside our scope — we intentionally do NOT install route handlers on caller-created pages because that would mutate caller-visible state. The caller owns security policy for pages they create.
 - **Phase 2 plan**: Layer 1 interception via `Fetch.enable` at the CDP level will close both gaps by routing every request (subresources + popup navigations) through a single extension-side blocklist. Tracked separately from Phase 1 PRs.
 
+### Concurrent-call caveat
+
+The driver uses mutable global state (`currentTabId`) to track which tab is active. Under overlapping async tool calls — e.g. two simultaneous `browser.click` invocations while `browser.tabFocus` is in-flight — the global can shift between await points, causing `checkSnapshotId` / `getLocator` to validate refs against one tab while the action lands on another. This is a pre-existing v1 architecture concern that single-caller agents (the common case in Koi's tool-calling loop) do not hit. A targeted refactor to thread `tabId` through action methods is tracked as a follow-up; Phase 1 PRs preserve v1 behavior verbatim.
+
 ### Multi-Tab Workflow
 
 ```typescript

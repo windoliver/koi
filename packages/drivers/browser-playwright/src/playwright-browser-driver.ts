@@ -243,11 +243,16 @@ async function checkNavigationUrlAllowed(
     );
   }
   try {
-    const { address } = await dnsPromises.lookup(hostname);
-    if (isPrivateIp(address)) {
-      return permission(
-        `Navigation to private-address-resolving hostname blocked: ${hostname} → ${address}. Set blockPrivateAddresses: false to override.`,
-      );
+    // Resolve ALL addresses for the hostname. A hostname that publishes both
+    // public and private A/AAAA records must be denied — Node's single-address
+    // lookup is not guaranteed to match the address Chromium picks.
+    const addresses = await dnsPromises.lookup(hostname, { all: true, verbatim: true });
+    for (const { address } of addresses) {
+      if (isPrivateIp(address)) {
+        return permission(
+          `Navigation to private-address-resolving hostname blocked: ${hostname} → ${address}. Set blockPrivateAddresses: false to override.`,
+        );
+      }
     }
   } catch (err) {
     // DNS lookup failure → fail closed (consistent with the route() guard behavior).
@@ -306,10 +311,15 @@ async function installPageRebindingGuard(
         await route.abort("accessdenied");
         return;
       }
-      const { address } = await dnsPromises.lookup(bare);
-      if (isPrivateIp(address)) {
-        await route.abort("accessdenied");
-        return;
+      // Resolve ALL addresses. Multi-record hostnames with mixed public/private
+      // entries must be denied — Node's single-address lookup is not guaranteed
+      // to match the address Chromium picks.
+      const addresses = await dnsPromises.lookup(bare, { all: true, verbatim: true });
+      for (const { address } of addresses) {
+        if (isPrivateIp(address)) {
+          await route.abort("accessdenied");
+          return;
+        }
       }
     } catch {
       // DNS lookup failure → fail closed (consistent with fail-closed policy elsewhere).
