@@ -286,9 +286,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
       return LIFECYCLE_SETTLE_DEFAULT_MS;
     }
-    // Round down fractional millisecond values deterministically and cap
-    // to the setTimeout-safe range.
-    return Math.min(Math.floor(raw), LIFECYCLE_SETTLE_MAX_MS);
+    // Normalize to a strictly positive integer. #review-round2-F1: a raw
+    // value of `0.5` would `Math.floor` to 0 and collapse into
+    // `setTimeout(..., 0)` — immediate poison fire instead of "be patient".
+    // Clamp the minimum to 1ms and the maximum to the setTimeout-safe range.
+    const floored = Math.floor(raw);
+    return Math.min(Math.max(1, floored), LIFECYCLE_SETTLE_MAX_MS);
   })();
   // let justified: mutable poison flag set on settle timeout
   let poisoned = false;
@@ -663,11 +666,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // Recomposing on a stale result would pair fresh descriptors (from a
       // newer committed refresh) with older middleware, breaking the
       // tools ↔ middleware invariant.
+      //
+      // #review-round2-F2: a newer refresh may commit while the
+      // `forge.middleware()` await below is pending. Re-check freshness
+      // AFTER the await and skip recomposition if we've been superseded,
+      // so we don't apply stale middleware on top of the newer committed
+      // descriptor state.
       // let justified: mutable flag tracking whether middleware was recomposed this refresh
       let middlewareRecomposed = false;
       if (committed && forge.middleware !== undefined) {
         const forgedMw = await forge.middleware();
-        if (forgedMw !== previousForgedMw) {
+        if (mySeq === forgeRefreshLastCommittedSeq && forgedMw !== previousForgedMw) {
           middlewareRecomposed = true;
           previousForgedMw = forgedMw;
           applyRecomposition(forgedMw, previousDynamicMw ?? undefined, terminals);
@@ -1436,16 +1445,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   });
                   await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
                   debugInstrumentation?.onTurnEnd(blockedTurnIndex);
+
+                  // #review-round2-F3: advance the FSM turnIndex BEFORE the
+                  // yield so consumers that read `agent.lifecycle.turnIndex`
+                  // on the turn_end event observe the new value. Firing
+                  // after the yield would leak a stale turn index to any
+                  // observer since the consumer resumes on the old state.
+                  // This matches the ordering of the non-blocked turn_end
+                  // path further up.
+                  currentTurnIndex = blockedTurnIndex + 1;
+                  outerCurrentTurnIndex = currentTurnIndex;
+                  pendingForgeRefresh = true;
+                  agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
+
                   yield {
                     kind: "turn_end",
                     turnIndex: blockedTurnIndex,
                     stopBlocked: true,
                   } as EngineEvent;
-
-                  // Advance turn index for the retry turn
-                  currentTurnIndex = blockedTurnIndex + 1;
-                  outerCurrentTurnIndex = currentTurnIndex;
-                  pendingForgeRefresh = true;
 
                   // Continue the turn loop — don't yield done, don't return
                   break; // breaks inner while(true), continues turnLoop

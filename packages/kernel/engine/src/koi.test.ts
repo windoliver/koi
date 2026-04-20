@@ -1327,6 +1327,64 @@ describe("createKoi middleware hooks", () => {
     }
   });
 
+  test("#review-round2-F1: sub-millisecond lifecycleSettleTimeoutMs clamps to 1ms (not 0)", async () => {
+    // A raw 0.5 value would Math.floor to 0 and turn setTimeout into an
+    // immediate-fire — poisoning every lifecycle transition instantly.
+    // The clamp to 1ms preserves the "be patient for at least one tick"
+    // contract.
+    const adapter: EngineAdapter = {
+      engineId: "noncooperative-subms",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        const hang = new Promise<void>(() => {});
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+            };
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      // Sub-ms value must be clamped to 1ms, NOT collapse to 0.
+      lifecycleSettleTimeoutMs: 0.5,
+    });
+
+    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
+    await iter.next();
+    const pendingNext = iter.next();
+    void pendingNext.catch(() => {});
+
+    // The runtime should reject via TIMEOUT; the test confirms it
+    // completed (success or rejection) without hanging.
+    const result = await Promise.race([
+      runtime.cycleSession?.().then(
+        () => "ok" as const,
+        () => "rejected" as const,
+      ),
+      new Promise<"watchdog">((r) => setTimeout(() => r("watchdog"), 2000)),
+    ]);
+    expect(result).not.toBe("watchdog");
+  }, 5_000);
+
   test("#review-P11: lifecycleSettleTimeoutMs option shortens the poison window", async () => {
     // Same wedged-adapter shape as the 5s test above, but with a custom
     // 200ms settle timeout. cycleSession should reject in well under the
@@ -4981,6 +5039,39 @@ describe("createKoi stop gate", () => {
 
     const turnEnds = events.filter((e) => e.kind === "turn_end");
     expect(turnEnds.length).toBe(DEFAULT_MAX_STOP_RETRIES);
+  });
+
+  test("agent.lifecycle.turnIndex advances across stop-gate block retries (#review-round2-F3)", async () => {
+    // Stop-gate blocks emit a synthetic turn_end. Without the advance_turn
+    // call in the block path (or with the wrong ordering), the lifecycle
+    // turnIndex observed at the blocked turn_end lags behind reality.
+    //
+    // Only ONE turn_end event is emitted in this scenario — the blocked
+    // one. The retry's normal completion yields `done` without a second
+    // turn_end. Lock in that the lifecycle turnIndex read AT the blocked
+    // turn_end event matches the post-advance value.
+    const { middleware } = blockingStopMiddleware(1);
+    const { adapter } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    const snapshots: number[] = [];
+    for await (const event of runtime.run({ kind: "text", text: "hello" })) {
+      if (event.kind === "turn_end") {
+        const lc = runtime.agent.lifecycle;
+        snapshots.push(lc.state === "running" ? lc.turnIndex : -1);
+      }
+    }
+    // The single blocked turn_end must advance lifecycle turnIndex to 1
+    // BEFORE the yield so consumers see the post-advance value.
+    expect(snapshots).toEqual([1]);
   });
 
   test("agent.lifecycle.turnIndex advances on every turn_end (#review-round1-F4)", async () => {
