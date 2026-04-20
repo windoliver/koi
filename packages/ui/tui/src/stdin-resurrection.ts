@@ -41,8 +41,26 @@ export interface WireStdinResurrectionOptions {
 }
 
 export interface WireStdinResurrectionResult {
-  /** Detach the close-watcher. Idempotent; safe to call after a resurrection. */
-  readonly dispose: () => void;
+  /**
+   * Disable future resurrection without touching any replacement stream
+   * that is already open. Idempotent.
+   *
+   * Call this BEFORE `renderer.destroy()` during shutdown so a `'close'`
+   * event racing in between "shutdown started" and "renderer flagged
+   * destroyed" can't open a fresh `/dev/tty` mid-teardown. The replacement
+   * stream is left alive so OpenTUI's destroy — which calls
+   * `setRawMode(false)` + `removeListener` on `renderer.stdin` — can run
+   * against a live source.
+   */
+  readonly disarm: () => void;
+  /**
+   * Full teardown: `disarm()` + tear down any replacement stream (pause,
+   * destroy, clear raw mode). Idempotent.
+   *
+   * Call this AFTER `renderer.destroy()` during shutdown. Safe to call
+   * even if `disarm()` already ran — it's a no-op for the watcher side.
+   */
+  readonly close: () => void;
 }
 
 type StdinListener = (chunk: unknown) => void;
@@ -60,9 +78,19 @@ export function wireStdinResurrection(
   const openDevTty = options.openDevTty ?? defaultOpenDevTty;
   // let: flipped by dispose() to short-circuit a close that races teardown.
   let disposed = false;
+  // let: tracks the replacement stream so dispose() can tear it down. Without
+  // this, the fresh /dev/tty fd would outlive stop() — OpenTUI's destroy path
+  // only removes the data listener, it doesn't close/pause the underlying
+  // stream, so we'd leak a TTY handle per resurrection.
+  let replacement: ReplacementStream | undefined;
 
-  const onClose = (): void => {
+  const doResurrect = (): void => {
     if (disposed) return;
+    // Idempotent: if a prior call already opened a replacement, do NOT open
+    // a second `/dev/tty` fd. Can happen when `destroyed === true` at wire
+    // time AND a `'close'` event is still pending — we'd otherwise leak the
+    // first fd and silently attach a second live stream.
+    if (replacement !== undefined) return;
     if (rendererIsShuttingDown(renderer)) return;
 
     const listener = readStdinListener(renderer);
@@ -70,9 +98,9 @@ export function wireStdinResurrection(
 
     // let: assigned inside try/catch, read after. Declared outside so the
     // listener-rebind path can see the value set by the successful branch.
-    let replacement: Readable & { readonly setRawMode?: (raw: boolean) => void };
+    let fresh: ReplacementStream;
     try {
-      replacement = openDevTty();
+      fresh = openDevTty();
     } catch {
       // Can't open /dev/tty (not a controlling terminal, or ENXIO).
       // Give up quietly — the TUI will stay wedged, but that was the
@@ -81,27 +109,92 @@ export function wireStdinResurrection(
     }
 
     try {
-      replacement.setRawMode?.(true);
+      fresh.setRawMode?.(true);
     } catch {
       // setRawMode can fail on a fd that isn't actually a TTY in tests.
       // Keep going — the listener will still receive data even without
       // raw mode, which is strictly better than no input at all.
     }
 
-    Reflect.set(renderer, "stdin", replacement);
-    replacement.on("data", listener);
-    replacement.resume();
+    Reflect.set(renderer, "stdin", fresh);
+    fresh.on("data", listener);
+    fresh.resume();
+    replacement = fresh;
     options.onResurrect?.();
   };
 
-  watchStream.once("close", onClose);
+  // If the watched stream is already destroyed at wire time, its 'close'
+  // has already fired and the one-shot listener below will never run.
+  // This path matters for restart-after-wedge: `createTuiApp` is
+  // restartable (`stop()` → `start()` again), and a prior Bun
+  // `internalRead` EOF leaves `process.stdin` destroyed for the next
+  // instance. Resurrect up front so the new TUI has a live stream from
+  // its first keystroke.
+  if (isStreamDestroyed(watchStream)) {
+    doResurrect();
+  }
+
+  watchStream.once("close", doResurrect);
+
+  const disarm = (): void => {
+    disposed = true;
+    watchStream.removeListener("close", doResurrect);
+  };
 
   return {
-    dispose: (): void => {
-      disposed = true;
-      watchStream.removeListener("close", onClose);
+    disarm,
+    close: (): void => {
+      disarm();
+      if (replacement !== undefined) {
+        tearDownReplacement(replacement);
+        replacement = undefined;
+      }
     },
   };
+}
+
+/**
+ * True if the Readable is destroyed. Checks both the public `.destroyed`
+ * getter AND the internal `_readableState.destroyed` — issue #1915's live
+ * instrumentation actually observed the state transition on
+ * `_readableState.destroyed` first, and the public getter's equivalence in
+ * Bun's custom stdin is not a contract we can rely on blind. Belt +
+ * suspenders. Either field being `true` means the stream is dead.
+ */
+function isStreamDestroyed(stream: Readable): boolean {
+  if (Reflect.get(stream, "destroyed") === true) return true;
+  const rs: unknown = Reflect.get(stream, "_readableState");
+  if (rs !== null && typeof rs === "object" && Reflect.get(rs, "destroyed") === true) {
+    return true;
+  }
+  return false;
+}
+
+type ReplacementStream = Readable & {
+  readonly setRawMode?: (raw: boolean) => void;
+};
+
+/**
+ * Pause and destroy the resurrected stream. Best-effort: each step swallows
+ * errors so partial failure (e.g. setRawMode throws on a non-TTY in tests)
+ * can't block the rest of dispose().
+ */
+function tearDownReplacement(stream: ReplacementStream): void {
+  try {
+    stream.setRawMode?.(false);
+  } catch {
+    /* ignore — setRawMode on a closed or non-TTY fd is expected to fail */
+  }
+  try {
+    stream.pause();
+  } catch {
+    /* ignore */
+  }
+  try {
+    stream.destroy();
+  } catch {
+    /* ignore */
+  }
 }
 
 /** Read OpenTUI's private `stdinListener` without forking the dep. */
