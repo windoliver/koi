@@ -8,12 +8,15 @@
  *   6. COMMIT
  *   7. Post-commit blob repair: put + has + UPDATE blob_ready=1
  *
- * Plan 2 defers TTL stamping + quota admission + maxVersionsPerName to
- * Plan 3. expires_at is always NULL here.
+ * Plan 3 stamps `expires_at` at save time via `computeExpiresAt(now, policy)`
+ * — the value is frozen on the row and never recomputed from live policy on
+ * subsequent reads (freeze-at-save semantics, spec §4 / §6.1). When no policy
+ * or no `ttlMs` is configured, `expires_at` is persisted as NULL.
  */
 
 import type { Database } from "bun:sqlite";
 import type { BlobStore } from "@koi/blob-cas";
+import { computeExpiresAt } from "./policy.js";
 import { readSessionBytes } from "./quota.js";
 import { ARTIFACT_COLUMNS, type ArtifactRow, rowToArtifact } from "./row-mapping.js";
 import type {
@@ -41,7 +44,8 @@ export function createSaveArtifact(args: {
   readonly config: ArtifactStoreConfig;
 }): (input: SaveArtifactInput) => Promise<Result<Artifact, ArtifactError>> {
   const maxBytes = args.config.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
-  const maxSessionBytes = args.config.policy?.maxSessionBytes;
+  const policy = args.config.policy;
+  const maxSessionBytes = policy?.maxSessionBytes;
 
   return async (input) => {
     // Step 1: validate
@@ -147,7 +151,11 @@ export function createSaveArtifact(args: {
       // promotes the row to blob_ready=1. The intent is also updated to point
       // at this specific row's id so recovery can target it directly (not
       // collapse by hash — spec §6.1).
+      //
+      // expires_at is frozen at save time from the live policy. Later policy
+      // changes never recompute or resurrect this value (spec §4 / §6.1).
       const newId = `art_${crypto.randomUUID()}`;
+      const expiresAt = computeExpiresAt(now, policy);
       args.db
         .query(
           `INSERT INTO artifacts
@@ -164,7 +172,7 @@ export function createSaveArtifact(args: {
           hash,
           JSON.stringify(input.tags ?? []),
           now,
-          null, // Plan 3 stamps expires_at from policy.ttlMs
+          expiresAt,
         );
 
       // Bind the intent to the specific artifact row so recovery can target it.

@@ -226,6 +226,62 @@ describe("saveArtifact", () => {
     expect(row.n).toBe(0);
   });
 
+  test("no-policy save persists expires_at = NULL", async () => {
+    const r = await store.saveArtifact({
+      sessionId: sessionId("sess_noexp"),
+      name: "no-ttl.txt",
+      data: new TextEncoder().encode("forever"),
+      mimeType: "text/plain",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.expiresAt).toBeNull();
+  });
+
+  test("policy.ttlMs stamps expires_at = createdAt + ttlMs on save", async () => {
+    await store.close();
+    const ttlMs = 1000;
+    store = await createArtifactStore({ dbPath, blobDir, policy: { ttlMs } });
+    const r = await store.saveArtifact({
+      sessionId: sessionId("sess_ttl"),
+      name: "ttl.txt",
+      data: new TextEncoder().encode("soon gone"),
+      mimeType: "text/plain",
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("unreachable");
+    expect(r.value.expiresAt).not.toBeNull();
+    expect(r.value.expiresAt).toBe(r.value.createdAt + ttlMs);
+  });
+
+  test("two saves by same session at different clock ticks get different expires_at", async () => {
+    await store.close();
+    const ttlMs = 1000;
+    store = await createArtifactStore({ dbPath, blobDir, policy: { ttlMs } });
+    const sid = sessionId("sess_tick");
+    const r1 = await store.saveArtifact({
+      sessionId: sid,
+      name: "a",
+      data: new TextEncoder().encode("first"),
+      mimeType: "text/plain",
+    });
+    // Force a clock tick — Date.now() resolution is 1ms; sleep > 1ms.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const r2 = await store.saveArtifact({
+      sessionId: sid,
+      name: "b",
+      data: new TextEncoder().encode("second"),
+      mimeType: "text/plain",
+    });
+    if (!r1.ok || !r2.ok) throw new Error("both should succeed");
+    // Freeze semantics: expires_at = createdAt + ttlMs, computed per save.
+    expect(r1.value.expiresAt).toBe(r1.value.createdAt + ttlMs);
+    expect(r2.value.expiresAt).toBe(r2.value.createdAt + ttlMs);
+    // Different tick → different expiry.
+    expect(r2.value.createdAt).toBeGreaterThan(r1.value.createdAt);
+    expect(r2.value.expiresAt).not.toBe(r1.value.expiresAt);
+  });
+
   test("quota check is a no-op when policy.maxSessionBytes is undefined", async () => {
     // Default config has no policy — large save succeeds.
     const r = await store.saveArtifact({
