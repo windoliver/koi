@@ -5,7 +5,7 @@
  * provider to attach the inbox queue to the agent entity.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type {
   Agent,
   AttachResult,
@@ -215,5 +215,118 @@ describe("inbox integration", () => {
     // Peek again — same result
     const peekedAgain = inbox.peek();
     expect(peekedAgain).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: drain survives a throwing adapter.inject (#review-M12)
+  //
+  // Previously adapter.inject was called without a try/catch inside the inbox
+  // drain loop. A single throwing inject discarded every queued steer item
+  // (the thrown error unwound the outer for-loop). Now each item is wrapped
+  // individually: on failure the item is degraded to `followup` so a
+  // downstream middleware can still route it into the next turn context.
+  // -------------------------------------------------------------------------
+
+  test("silent-drop on followup cap overflow is surfaced via console.warn (#review-round1-F2)", async () => {
+    // Combined stress: followup queue at cap + adapter.inject throws on a
+    // steer item. Previously the requeue silently dropped the degraded
+    // item because `inboxComponent.push` returned false and the engine
+    // ignored the result. The fix checks the return value and warns.
+    const inbox = createInboxQueue({
+      // Cap followup at 1 so the degraded steer overflow is forced.
+      policy: { collectCap: 20, followupCap: 1, steerCap: 5 },
+    });
+    const { adapter: baseAdapter } = createFakeEngine({
+      turns: [[{ kind: "text_delta", delta: "response" }]],
+    });
+
+    const adapter = {
+      ...baseAdapter,
+      inject: async (_msg: unknown): Promise<void> => {
+        throw new Error("simulated inject failure");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      providers: [createInboxProvider(inbox)],
+    });
+
+    // Pre-fill the followup queue to its cap.
+    expect(inbox.push(makeInboxItem({ id: "pre-fill", mode: "followup", content: "pre" }))).toBe(
+      true,
+    );
+    // Now queue a steer item that will be degraded-on-inject-throw and
+    // attempt to push as followup — which will overflow the cap.
+    expect(inbox.push(makeInboxItem({ id: "steer-overflow", mode: "steer", content: "x" }))).toBe(
+      true,
+    );
+
+    const warnSpy = mock(() => {});
+    const originalWarn = console.warn;
+    console.warn = warnSpy as unknown as typeof console.warn;
+    try {
+      await collectEvents(runtime.run({ kind: "text", text: "go" }));
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    // The overflow must have surfaced via a warn call that mentions
+    // overflow/cap semantics — not just the inject-failure warn. We assert
+    // loosely (any call) + contents containing "overflow" OR "cap exceeded".
+    const warnCalls = warnSpy.mock.calls.map((args) => args.map(String).join(" "));
+    const overflowSurfaced = warnCalls.some(
+      (msg) => msg.includes("inbox overflow") || msg.includes("cap exceeded"),
+    );
+    expect(overflowSurfaced).toBe(true);
+  });
+
+  test("drain degrades steer to followup when adapter.inject throws (#review-M12)", async () => {
+    // Use a larger steer capacity so two steer items can coexist in the
+    // drain pass — verifies that a first-item throw doesn't discard later
+    // items from the SAME drain iteration (the original bug).
+    const inbox = createInboxQueue({
+      policy: { collectCap: 20, followupCap: 50, steerCap: 5 },
+    });
+    const { adapter: baseAdapter } = createFakeEngine({
+      turns: [[{ kind: "text_delta", delta: "response" }]],
+    });
+
+    // Wrap the fake engine with an adapter whose inject throws on every
+    // call. We expect BOTH steer items to be attempted (not a single throw
+    // that unwinds the whole drain loop).
+    // let justified: mutable counter so the test can observe both attempts
+    let injectCalls = 0;
+    const adapter = {
+      ...baseAdapter,
+      inject: async (_msg: unknown): Promise<void> => {
+        injectCalls++;
+        throw new Error("simulated adapter.inject failure");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      providers: [createInboxProvider(inbox)],
+    });
+
+    expect(inbox.push(makeInboxItem({ id: "s-a", mode: "steer", content: "steer-a" }))).toBe(true);
+    expect(inbox.push(makeInboxItem({ id: "s-b", mode: "steer", content: "steer-b" }))).toBe(true);
+
+    await collectEvents(runtime.run({ kind: "text", text: "go" }));
+
+    // Both items attempted injection, proving the loop doesn't unwind on
+    // a single throw. Previously only the first was attempted.
+    expect(injectCalls).toBe(2);
+
+    // Both items were degraded to followup — still reachable for downstream
+    // middleware to route into the next turn's context.
+    const remaining = inbox.peek();
+    expect(remaining).toHaveLength(2);
+    for (const item of remaining) {
+      expect(item.mode).toBe("followup");
+    }
   });
 });

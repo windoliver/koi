@@ -16,12 +16,12 @@ function running(): AgentLifecycle {
   return { state: "running", startedAt: NOW, turnIndex: 0 };
 }
 
-function waiting(reason: WaitReason = "model_call"): AgentLifecycle {
-  return { state: "waiting", reason, since: NOW };
+function waiting(reason: WaitReason = "model_call", turnIndex = 0): AgentLifecycle {
+  return { state: "waiting", reason, since: NOW, turnIndex };
 }
 
-function suspended(): AgentLifecycle {
-  return { state: "suspended", suspendedAt: NOW, reason: "budget exceeded" };
+function suspended(turnIndex = 0): AgentLifecycle {
+  return { state: "suspended", suspendedAt: NOW, reason: "budget exceeded", turnIndex };
 }
 
 function terminated(): AgentLifecycle {
@@ -306,6 +306,127 @@ describe("state data correctness", () => {
     if (result.state === "terminated") {
       expect(result.stopReason).toBe("error");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: turnIndex preserved across wait/resume/suspend/idle (#review-C2)
+//
+// compose-bridge.ts fires { kind: "resume" } after every model/tool call. If
+// resume reset turnIndex to 0, the lifecycle FSM's turnIndex would lie about
+// the agent's turn every time it waited on I/O. These tests lock in the
+// preservation invariant so a future refactor can't quietly regress it.
+// ---------------------------------------------------------------------------
+
+describe("turnIndex preservation across waits and resumes", () => {
+  test("running → waiting carries turnIndex", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 7 };
+    const result = transition(start, { kind: "wait", reason: "tool_call" }, 2000);
+    expect(result.state).toBe("waiting");
+    if (result.state === "waiting") {
+      expect(result.turnIndex).toBe(7);
+    }
+  });
+
+  test("waiting → running (resume) preserves turnIndex", () => {
+    const w: AgentLifecycle = { state: "waiting", reason: "tool_call", since: NOW, turnIndex: 7 };
+    const result = transition(w, { kind: "resume" }, 3000);
+    expect(result.state).toBe("running");
+    if (result.state === "running") {
+      expect(result.turnIndex).toBe(7);
+      expect(result.startedAt).toBe(3000);
+    }
+  });
+
+  test("running → waiting → running preserves turnIndex across the round-trip", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 42 };
+    const waited = transition(start, { kind: "wait", reason: "model_call" }, 2000);
+    const resumed = transition(waited, { kind: "resume" }, 3000);
+    expect(resumed.state).toBe("running");
+    if (resumed.state === "running") {
+      expect(resumed.turnIndex).toBe(42);
+    }
+  });
+
+  test("running → suspended → running preserves turnIndex", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 5 };
+    const suspendedLc = transition(start, { kind: "suspend", reason: "pause" }, 2000);
+    expect(suspendedLc.state).toBe("suspended");
+    if (suspendedLc.state === "suspended") {
+      expect(suspendedLc.turnIndex).toBe(5);
+    }
+    const resumed = transition(suspendedLc, { kind: "resume" }, 3000);
+    if (resumed.state === "running") {
+      expect(resumed.turnIndex).toBe(5);
+    }
+  });
+
+  test("running → idle → running preserves turnIndex", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 9 };
+    const idled = transition(start, { kind: "idle" }, 2000);
+    expect(idled.state).toBe("idle");
+    if (idled.state === "idle") {
+      expect(idled.turnIndex).toBe(9);
+    }
+    const resumed = transition(idled, { kind: "resume" }, 3000);
+    if (resumed.state === "running") {
+      expect(resumed.turnIndex).toBe(9);
+    }
+  });
+
+  test("waiting → suspended carries turnIndex through the bypass path", () => {
+    const w: AgentLifecycle = { state: "waiting", reason: "tool_call", since: NOW, turnIndex: 4 };
+    const result = transition(w, { kind: "suspend", reason: "budget" }, 2000);
+    expect(result.state).toBe("suspended");
+    if (result.state === "suspended") {
+      expect(result.turnIndex).toBe(4);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: advance_turn event wires turn progression into the FSM
+  // (#review-round1-F4)
+  //
+  // Before this event existed, `turnIndex` was preserved across waits but
+  // never advanced — it stayed at 0 for the agent's entire lifetime. Observers
+  // reading `agent.lifecycle.turnIndex` saw a permanent lie. The engine now
+  // fires { kind: "advance_turn", turnIndex } on every turn_end, and the FSM
+  // reducer moves `running.turnIndex` forward so the FSM value tracks the
+  // real running turn.
+  // -------------------------------------------------------------------------
+
+  test("running + advance_turn moves turnIndex forward", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 0 };
+    const after = transition(start, { kind: "advance_turn", turnIndex: 1 }, 2000);
+    expect(after.state).toBe("running");
+    if (after.state === "running") {
+      expect(after.turnIndex).toBe(1);
+      expect(after.startedAt).toBe(NOW); // startedAt preserved
+    }
+  });
+
+  test("advance_turn is idempotent when new index matches current", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 3 };
+    const after = transition(start, { kind: "advance_turn", turnIndex: 3 }, 2000);
+    expect(after).toBe(start); // same reference — no allocation
+  });
+
+  test("advance_turn rejects retrograde index (defensive)", () => {
+    const start: AgentLifecycle = { state: "running", startedAt: NOW, turnIndex: 5 };
+    const after = transition(start, { kind: "advance_turn", turnIndex: 2 }, 2000);
+    expect(after).toBe(start);
+  });
+
+  test("advance_turn on non-running states is a no-op", () => {
+    const w: AgentLifecycle = { state: "waiting", reason: "tool_call", since: NOW, turnIndex: 3 };
+    expect(transition(w, { kind: "advance_turn", turnIndex: 4 }, 2000)).toBe(w);
+    const s: AgentLifecycle = {
+      state: "suspended",
+      suspendedAt: NOW,
+      reason: "budget exceeded",
+      turnIndex: 3,
+    };
+    expect(transition(s, { kind: "advance_turn", turnIndex: 4 }, 2000)).toBe(s);
   });
 });
 
