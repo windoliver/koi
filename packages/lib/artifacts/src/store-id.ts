@@ -82,16 +82,29 @@ function writeSentinelToFs(blobDir: string, id: string): void {
     throw err;
   }
 
-  // fsync the parent directory so the rename itself is durable.
+  // fsync the parent directory so the rename itself is durable. Only swallow
+  // known-unsupported codes (ENOSYS/EINVAL on platforms that don't support
+  // dir fsync). Real I/O / permission errors propagate so bootstrap doesn't
+  // report a paired store_id when the sentinel rename isn't durable.
+  let dirFd: number;
   try {
-    const dirFd = openSync(blobDir, "r");
-    try {
-      fsyncSync(dirFd);
-    } finally {
-      closeSync(dirFd);
+    dirFd = openSync(blobDir, "r");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOSYS" || code === "EINVAL") return;
+    throw err;
+  }
+  try {
+    fsyncSync(dirFd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOSYS" || code === "EINVAL") {
+      // Platform doesn't support fsync on directories — tolerate.
+    } else {
+      throw err;
     }
-  } catch {
-    /* Windows doesn't support fsync on directories; tolerate. */
+  } finally {
+    closeSync(dirFd);
   }
 }
 

@@ -38,7 +38,13 @@ const HASH_SHARD_LEN = 2;
  * would let callers mark artifact metadata durable when the rename hasn't
  * actually landed on stable storage.
  */
-const DIR_FSYNC_UNSUPPORTED_CODES = new Set(["ENOSYS", "EINVAL", "EACCES", "EPERM", "EBADF"]);
+// Only swallow codes that genuinely indicate the kernel/filesystem doesn't
+// support fsync on a directory fd:
+//   - ENOSYS: syscall not implemented (rare, some minimal kernels)
+//   - EINVAL: some Linux filesystems return this for fsync(dir_fd)
+// EACCES/EPERM/EIO/ENOSPC etc. are REAL failures and must propagate so the
+// caller doesn't publish blob_ready=1 against a non-durable rename.
+const DIR_FSYNC_UNSUPPORTED_CODES = new Set(["ENOSYS", "EINVAL"]);
 
 function fsyncDirectory(dir: string): void {
   let fd: number;
