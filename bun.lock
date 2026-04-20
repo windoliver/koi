@@ -707,6 +707,7 @@
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
         "@koi/artifacts": "workspace:*",
+        "@koi/artifacts-s3": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
@@ -781,7 +782,11 @@
         "zod": "4.3.6",
       },
       "devDependencies": {
+        "@aws-sdk/client-s3": "3.1032.0",
+        "@koi/blob-cas": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
+        "@smithy/util-stream": "4.5.23",
+        "aws-sdk-client-mock": "4.1.0",
       },
     },
     "packages/mm/dream": {

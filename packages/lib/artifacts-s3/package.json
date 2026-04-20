@@ -16,9 +16,7 @@
     "lint": "biome check --vcs-enabled=false src/",
     "test": "bun test"
   },
-  "koi": {
-    "optional": true
-  },
+  "koi": {},
   "dependencies": {
     "@aws-sdk/client-s3": "3.1032.0",
     "@koi/blob-cas": "workspace:*",
