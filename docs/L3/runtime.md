@@ -353,3 +353,5 @@ createRuntime({
 | Batch | 300_000 (5 min) | 600_000 (10 min) | 14_400_000 (4h) |
 
 **Cooperative cancellation hint.** `onIdleWarn` is a synchronous observer callback; hosts wiring it through a middleware can inject a `<system-reminder>` on the next prompt ("you've been idle for N seconds, are you stuck?"). The core runtime does not ship such a middleware — it is a per-deployment choice.
+
+<!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->

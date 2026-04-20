@@ -685,3 +685,5 @@ CLI surface changes:
   wraps `createTranscriptAdapter` with `applyActivityTimeout` so the wrapper can be exercised manually via TUI / headless before the full runtime migration. A display wrapper above the timeout adapter injects a user-visible `text_delta` with the fallback message when the synthetic `done` carries `metadata.terminatedBy === "activity-timeout"` — mirroring the transcript adapter's own `explainNonCompletedStop` fallback, which does not run once the outer wrapper aborts the inner stream.
 
 See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`activity.idle.warning`, `activity.terminated.idle`, `activity.terminated.wall_clock`), and the `done.output.metadata` contract consumers can read.
+
+<!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
