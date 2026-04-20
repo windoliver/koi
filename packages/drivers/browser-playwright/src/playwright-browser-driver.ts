@@ -1333,6 +1333,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     ): Promise<Result<BrowserEvaluateResult, KoiError>> {
       try {
         const page = await ensurePage();
+        const tabId = currentTabId;
         const t = resolveTimeout(
           options?.timeout,
           EVALUATE_DEFAULT_MS,
@@ -1341,13 +1342,34 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         );
         if (!t.ok) return t;
 
-        // page.evaluate() has no native timeout option — wrap with a race to honour the validated timeout.
+        // page.evaluate() has no native timeout and no cancellation primitive.
+        // A Promise.race timeout leaves the page-side script running — side
+        // effects from the script can continue after the driver returns an
+        // error (double-submits, leaked mutations, inconsistent retries).
+        //
+        // On timeout, we INVALIDATE THE JS EXECUTION CONTEXT by navigating
+        // the page to about:blank. That forcibly terminates whatever the
+        // script was doing and surfaces `STALE_REF` / fresh-snapshot semantics
+        // to the caller via the existing invalidation path.
+        let timedOut = false;
         const value: unknown = await Promise.race([
           page.evaluate(script),
           new Promise<never>((_resolve, reject) => {
-            setTimeout(() => reject(new Error(`evaluate timed out after ${t.value}ms`)), t.value);
+            setTimeout(() => {
+              timedOut = true;
+              reject(new Error(`evaluate timed out after ${t.value}ms`));
+            }, t.value);
           }),
-        ]);
+        ]).catch(async (err: unknown) => {
+          if (timedOut) {
+            // Kill the execution context. navigation + snapshot invalidation
+            // guarantee the caller cannot observe partial state from the
+            // still-running script.
+            await page.goto("about:blank", { timeout: 1000 }).catch(() => undefined);
+            if (tabId) invalidateTabSnapshot(tabId);
+          }
+          throw err;
+        });
         return { ok: true, value: { value } };
       } catch (e: unknown) {
         return { ok: false, error: translatePlaywrightError("browser_evaluate", e) };
@@ -1387,6 +1409,18 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     async traceStart(options?: BrowserTraceOptions): Promise<Result<void, KoiError>> {
       try {
         const ctx = await ensureContext();
+        // Refuse on borrowed contexts — tracing captures every tab/page in the
+        // context, including ones the caller owns. Would exfiltrate unrelated
+        // browsing data when the driver is attached via cdpEndpoint/wsEndpoint
+        // to a live browser session.
+        if (borrowedContext) {
+          return {
+            ok: false,
+            error: permission(
+              "browser_trace_start refused on borrowed-context transports (cdpEndpoint/wsEndpoint). Tracing would capture caller-owned tabs. Use a driver-owned browser (launch mode) if tracing is needed.",
+            ),
+          };
+        }
         await ctx.tracing.start({
           snapshots: options?.snapshots ?? true,
           screenshots: true,
@@ -1402,6 +1436,14 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     async traceStop(): Promise<Result<BrowserTraceResult, KoiError>> {
       try {
         const ctx = await ensureContext();
+        if (borrowedContext) {
+          return {
+            ok: false,
+            error: permission(
+              "browser_trace_stop refused on borrowed-context transports. Tracing was never allowed to start on this transport.",
+            ),
+          };
+        }
         const tracePath = join(tmpdir(), `koi-trace-${Date.now()}.zip`);
         await ctx.tracing.stop({ path: tracePath });
         return { ok: true, value: { path: tracePath } };
