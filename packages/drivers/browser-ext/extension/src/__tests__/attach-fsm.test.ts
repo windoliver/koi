@@ -12,8 +12,67 @@ async function waitFor(condition: () => boolean): Promise<void> {
 }
 
 describe("attach FSM", () => {
-  test.skip("TODO(P4): same-client participants share one successful attach", async () => {
-    void waitFor;
+  test("participants coalesce: two attach frames share one successful attach", async () => {
+    const controller = installChromeStub();
+    controller.framesByTab.set(42, [
+      { parentFrameId: -1, documentId: "doc-1", url: "https://example.com/page" },
+    ]);
+    const storage = createExtensionStorage();
+    await storage.setAlwaysGrant("https://example.com", new Date().toISOString());
+
+    // Hold chrome.debugger.attach in flight so the second handleAttach races into
+    // the existing "attaching" state and becomes a participant.
+    let releaseAttach: () => void = () => {};
+    const attachGate = new Promise<void>((resolve) => {
+      releaseAttach = resolve;
+    });
+    controller.debuggerState.attachImpl = async (tabId: number): Promise<void> => {
+      controller.debuggerState.attachedTabs.add(tabId);
+      await attachGate;
+    };
+
+    const sentFrames: unknown[] = [];
+    const fsm = createAttachFsm({
+      storage,
+      consent: createConsentManager(storage),
+      sendFrame: (frame) => sentFrames.push(frame),
+    });
+
+    const leaseA = "a".repeat(32);
+    const leaseB = "b".repeat(32);
+    const reqA = "11111111-1111-4111-8111-111111111111";
+    const reqB = "22222222-2222-4222-8222-222222222222";
+
+    // Fire both attach frames — the second arrives while the first is still
+    // in "attaching" (attachPromise hasn't resolved because attachGate is held).
+    const firstAttach = fsm.handleAttach({
+      kind: "attach",
+      tabId: 42,
+      leaseToken: leaseA,
+      attachRequestId: reqA,
+    });
+    await waitFor(() => controller.debuggerState.attachedTabs.has(42));
+    const secondAttach = fsm.handleAttach({
+      kind: "attach",
+      tabId: 42,
+      leaseToken: leaseB,
+      attachRequestId: reqB,
+    });
+
+    releaseAttach();
+    await Promise.all([firstAttach, secondAttach]);
+
+    // Both participants should have received attach_ack {ok:true} with the
+    // SAME sessionId — one real chrome.debugger.attach call, two acks.
+    const acks = sentFrames.filter(
+      (f): f is { kind: string; ok: boolean; sessionId: string; attachRequestId: string } =>
+        typeof f === "object" && f !== null && (f as { kind?: string }).kind === "attach_ack",
+    );
+    expect(acks.length).toBe(2);
+    expect(acks.every((a) => a.ok === true)).toBe(true);
+    expect(acks[0]?.sessionId).toBe(acks[1]?.sessionId ?? "");
+    const reqIds = acks.map((a) => a.attachRequestId).sort();
+    expect(reqIds).toEqual([reqA, reqB].sort());
   });
 
   test("consent_required_if_missing fails without prompting", async () => {
