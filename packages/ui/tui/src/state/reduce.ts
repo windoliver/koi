@@ -692,6 +692,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages };
     }
 
+    case "enqueue_submit":
+      return { ...state, queuedSubmits: [...state.queuedSubmits, action.text] };
+
+    case "dequeue_submit":
+      return state.queuedSubmits.length === 0
+        ? state
+        : { ...state, queuedSubmits: state.queuedSubmits.slice(1) };
+
+    case "clear_submit_queue":
+      return state.queuedSubmits.length === 0 ? state : { ...state, queuedSubmits: [] };
+
     case "set_view":
       return action.view === state.activeView ? state : { ...state, activeView: action.view };
 
@@ -800,6 +811,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "clear_messages":
       if (
         state.messages.length === 0 &&
+        state.queuedSubmits.length === 0 &&
         state.agentStatus === "idle" &&
         state.planTasks === null &&
         state.expandedToolCallIds.size === 0 &&
@@ -811,6 +823,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return {
         ...state,
         messages: [],
+        queuedSubmits: [],
         agentStatus: "idle",
         planTasks: null,
         runningToolCount: 0,
