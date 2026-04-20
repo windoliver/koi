@@ -1,10 +1,10 @@
 /**
- * Phase A `sweepArtifacts()` — spec §6.3.
+ * `sweepArtifacts()` — spec §6.3.
  *
- * Single `BEGIN IMMEDIATE` transaction. Metadata only — NO blob I/O. Computes
- * the deletion set from the store's configured lifecycle policy, deletes the
- * rows (`ON DELETE CASCADE` drops share grants), and tombstones any
- * `content_hash` whose only references were inside the deletion set.
+ * Phase A: single `BEGIN IMMEDIATE` transaction. Metadata only — NO blob I/O.
+ * Computes the deletion set from the store's configured lifecycle policy,
+ * deletes the rows (`ON DELETE CASCADE` drops share grants), and tombstones
+ * any `content_hash` whose only references were inside the deletion set.
  *
  * Scanning is restricted to `blob_ready = 1` rows. In-flight saves
  * (`blob_ready = 0`) are never candidates; they are reclaimed exclusively by
@@ -16,13 +16,23 @@
  * surviving artifacts row that still points at the same hash keeps the
  * blob alive — no tombstone.
  *
- * Phase B (blob-on-disk reclamation via the tombstone journal) is Task 6.
- * This task returns `bytesReclaimed` as the sum of the deleted rows' `size`
- * columns — the metadata-level reclaim. Actual on-disk byte accounting
- * happens after Phase B deletes the blobs.
+ * Phase B: drain tombstones from `pending_blob_deletes` via the three-tx
+ * claim/delete/reconcile protocol. Blob I/O runs OUTSIDE any SQLite lock
+ * so a remote backend can take arbitrary time without blocking saves. See
+ * drain-tombstones.ts for the full protocol + resume-from-claimed rule.
+ * Plan 4 moves Phase B to a background worker; until then Phase B runs
+ * sequentially at the tail of every sweep call so a single public invocation
+ * leaves the store in the expected clean state.
+ *
+ * `bytesReclaimed` is the sum of the deleted rows' `size` columns — the
+ * metadata-level reclaim. Byte-level accounting for on-disk reclaim is not
+ * returned here because Phase B may drain tombstones enqueued by prior
+ * sweeps and sizes aren't journaled in the tombstone row.
  */
 
 import type { Database } from "bun:sqlite";
+import type { BlobStore } from "@koi/blob-cas";
+import { createDrainTombstones } from "./drain-tombstones.js";
 import type { LifecyclePolicy } from "./types.js";
 
 export interface SweepResult {
@@ -155,17 +165,21 @@ function hashStillReferenced(
 
 export function createSweepArtifacts(args: {
   readonly db: Database;
+  readonly blobStore: BlobStore;
   readonly policy?: LifecyclePolicy;
 }): () => Promise<SweepResult> {
   const policy = args.policy;
   const ttlMs = policy?.ttlMs;
   const maxSessionBytes = policy?.maxSessionBytes;
   const maxVersionsPerName = policy?.maxVersionsPerName;
+  const drainTombstones = createDrainTombstones({ db: args.db, blobStore: args.blobStore });
 
   return async () => {
-    // Fast exit if no policy configured — a sweep with nothing to do must
-    // not take the write lock or journal any side effects.
+    // Even when no policy is configured, Phase B must still drain tombstones
+    // left by prior sweeps, explicit deletes (§6.6), or startup recovery
+    // (§6.5). Phase A is the only no-op branch here.
     if (ttlMs === undefined && maxSessionBytes === undefined && maxVersionsPerName === undefined) {
+      await drainTombstones();
       return { deleted: 0, bytesReclaimed: 0 };
     }
 
@@ -234,6 +248,11 @@ export function createSweepArtifacts(args: {
       return { deleted: deletionById.size, bytesReclaimed };
     });
 
-    return tx();
+    const phaseA = tx();
+    // Phase B: drain the tombstone journal with blob I/O outside any DB
+    // lock. Runs on every sweep so callers don't have to wire up a separate
+    // API; Plan 4 relocates this to a background worker.
+    await drainTombstones();
+    return phaseA;
   };
 }

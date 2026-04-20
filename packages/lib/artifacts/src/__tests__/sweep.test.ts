@@ -15,7 +15,7 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionId } from "@koi/core";
@@ -31,6 +31,10 @@ function randDirs(): TestCtx {
   const blobDir = join(tmpdir(), `koi-art-sweep-${crypto.randomUUID()}`);
   mkdirSync(blobDir, { recursive: true });
   return { blobDir, dbPath: join(blobDir, "store.db") };
+}
+
+function blobExists(blobDir: string, hash: string): boolean {
+  return existsSync(join(blobDir, hash.slice(0, 2), hash));
 }
 
 async function save(
@@ -98,14 +102,16 @@ describe("sweepArtifacts Phase A", () => {
     const list = await store.listArtifacts({}, { sessionId: sessionId("sess_a") });
     expect(list).toHaveLength(0);
 
-    // Tombstone is enqueued for the unique hash.
+    // Phase A enqueued the tombstone and Phase B drained it in the same
+    // sweep call. End state: no tombstone, no blob on disk.
     await store.close();
     const db = new Database(ctx.dbPath);
     const tomb = db
       .query("SELECT hash FROM pending_blob_deletes WHERE hash = ?")
       .get(art.contentHash);
     db.close();
-    expect(tomb).toBeTruthy();
+    expect(tomb).toBeNull();
+    expect(blobExists(ctx.blobDir, art.contentHash)).toBe(false);
   });
 
   test("in-flight (blob_ready=0) rows are NEVER candidates", async () => {
@@ -243,10 +249,11 @@ describe("sweepArtifacts Phase A", () => {
     expect(tomb).toBeNull();
   });
 
-  test("hash referenced only by deleted rows IS tombstoned exactly once", async () => {
+  test("hash referenced only by deleted rows IS tombstoned and drained", async () => {
     // Two distinct rows with DIFFERENT hashes; both reaped by TTL.
-    // Both get tombstones. The uniqueness invariant on hash is enforced
-    // by the table's PRIMARY KEY/ON CONFLICT DO NOTHING.
+    // Both get tombstones which Phase B then drains in the same sweep call.
+    // The uniqueness invariant on hash is enforced by the table's PRIMARY
+    // KEY / ON CONFLICT DO NOTHING — a second sweep is a no-op.
     const store = await open(ctx, { ttlMs: 1 });
     const a = await save(store, "sess_a", "a.txt", "alpha");
     const b = await save(store, "sess_a", "b.txt", "beta");
@@ -255,8 +262,7 @@ describe("sweepArtifacts Phase A", () => {
     await new Promise<void>((r) => setTimeout(r, 10));
 
     await store.sweepArtifacts();
-
-    // Sweep again — should be a no-op; tombstones must not double up.
+    // Sweep again — should be a no-op; nothing left to reap or drain.
     await store.sweepArtifacts();
 
     await store.close();
@@ -265,9 +271,10 @@ describe("sweepArtifacts Phase A", () => {
       .query("SELECT hash FROM pending_blob_deletes ORDER BY hash")
       .all() as ReadonlyArray<{ readonly hash: string }>;
     db.close();
-    expect(rows).toHaveLength(2);
-    const hashes = rows.map((r) => r.hash).sort();
-    expect(hashes).toEqual([a.contentHash, b.contentHash].sort());
+    expect(rows).toHaveLength(0);
+    // Both blobs are gone from disk — Phase B did its job.
+    expect(blobExists(ctx.blobDir, a.contentHash)).toBe(false);
+    expect(blobExists(ctx.blobDir, b.contentHash)).toBe(false);
   });
 
   test("hash referenced by an in-flight pending_blob_puts intent is NOT tombstoned", async () => {

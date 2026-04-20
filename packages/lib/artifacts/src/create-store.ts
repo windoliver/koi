@@ -129,6 +129,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     const rawRevoke = createRevokeShare({ db });
     const rawSweep = createSweepArtifacts({
       db,
+      blobStore,
       ...(config.policy !== undefined ? { policy: config.policy } : {}),
     });
 
