@@ -17,7 +17,10 @@ const STATUS_COLORS: Record<AgentStatus, string> = {
   error: COLORS.danger,
 };
 
-function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
+function ModelChip(props: {
+  readonly info: SessionInfo | null;
+  readonly modelName: string;
+}): JSX.Element {
   // Short prefix keeps the footer compact while staying unique enough
   // for a human to correlate with the post-quit resume hint.
   const shortId = (): string => {
@@ -32,7 +35,7 @@ function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
       <box flexDirection="row">
         <text fg={COLORS.textMuted}>{shortId()}</text>
         <text fg={COLORS.textMuted}>{" · "}</text>
-        <text fg={COLORS.textSecondary}>{props.info?.modelName ?? ""}</text>
+        <text fg={COLORS.textSecondary}>{props.modelName}</text>
         <text fg={COLORS.textMuted}>{" · "}</text>
         <text fg={COLORS.textSecondary}>{props.info?.provider ?? ""}</text>
       </box>
@@ -75,6 +78,7 @@ export interface StatusBarProps {
 
 export function StatusBar(props: StatusBarProps): JSX.Element {
   const sessionInfo = useTuiStore((s) => s.sessionInfo);
+  const modelName = useTuiStore((s) => s.modelName);
   const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
   const agentStatus = useTuiStore((s) => s.agentStatus);
   const maxContextTokens = useTuiStore((s) => s.maxContextTokens);
@@ -129,7 +133,7 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
       paddingRight={1}
       gap={2}
     >
-      <ModelChip info={sessionInfo()} />
+      <ModelChip info={sessionInfo()} modelName={modelName()} />
       <Show when={showMetrics()}>
         <MetricsChip metrics={cumulativeMetrics()} />
       </Show>

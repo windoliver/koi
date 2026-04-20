@@ -70,11 +70,13 @@ User hits Ctrl-C on the TUI
 
 ```
 src/
-├── create-supervisor.ts    createSupervisor() factory — pool, lifecycle, restart, event fan-in
-├── subprocess-backend.ts   createSubprocessBackend() — Bun.spawn-based WorkerBackend
-├── signal-handlers.ts      registerSignalHandlers() — SIGTERM/SIGINT bridge to shutdown
-├── backoff.ts              computeBackoff() — exponential backoff helper
-└── index.ts                public re-exports
+├── create-supervisor.ts            createSupervisor() factory — pool, lifecycle, restart, event fan-in
+├── subprocess-backend.ts           createSubprocessBackend() — Bun.spawn-based WorkerBackend
+├── file-session-registry.ts        createFileSessionRegistry() — cross-process session registry
+├── registry-supervisor-bridge.ts   attachRegistry() — supervisor events → registry writes
+├── signal-handlers.ts              registerSignalHandlers() — SIGTERM/SIGINT bridge to shutdown
+├── backoff.ts                      computeBackoff() — exponential backoff helper
+└── index.ts                        public re-exports
 ```
 
 ### L0 Contracts Consumed
@@ -93,6 +95,12 @@ All of the following live in `@koi/core` and are consumed by this package:
 | `WorkerRestartPolicy` | restart (`RestartType` reused from `@koi/core/supervision`), maxRestarts, window, backoff |
 | `DEFAULT_WORKER_RESTART_POLICY` | `{ transient, 5, 60_000, 1000, 30_000 }` |
 | `validateSupervisorConfig` | Pure validator → `Result<SupervisorConfig, KoiError>` |
+| `BackgroundSessionRecord` | Persisted per-session metadata (pid, status, startedAt, logPath, command, …) |
+| `BackgroundSessionStatus` | `"starting" \| "running" \| "exited" \| "crashed" \| "detached"` |
+| `BackgroundSessionRegistry` | register / update / unregister / get / list / watch |
+| `BackgroundSessionEvent` | Discriminated union: registered / updated / unregistered |
+| `BackgroundSessionUpdate` | Partial update patch for mutable lifecycle fields |
+| `validateBackgroundSessionRecord` | Pure validator → `Result<BackgroundSessionRecord, KoiError>` |
 
 ---
 
@@ -165,6 +173,57 @@ Uses `Bun.spawn(command, { cwd, env, stdin: "inherit", stdout: "pipe", stderr: "
 - `crashed` (with `INTERNAL` KoiError, retryable=true) when code≠0
 - `crashed` (with `INTERNAL`, retryable=false) if the backend watch stream itself fails
 
+### createFileSessionRegistry
+
+File-backed cross-process session registry. One JSON file per worker under the
+configured directory; atomic writes via tmp+rename so concurrent readers never
+observe a half-written record. Consumers (CLI `koi bg ps`, admin dashboards,
+external tooling) read the registry directly from disk without contacting the
+supervisor.
+
+```typescript
+import { createFileSessionRegistry } from "@koi/daemon";
+
+const registry = createFileSessionRegistry({
+  dir: `${process.env.KOI_STATE_DIR}/daemon/sessions`,
+});
+
+await registry.register({
+  workerId: workerId("w-researcher-1"),
+  agentId: agentId("researcher"),
+  pid: 12345,
+  status: "starting",
+  startedAt: Date.now(),
+  logPath: "/var/log/koi/w-researcher-1.log",
+  command: ["bun", "worker.ts"],
+  backendKind: "subprocess",
+});
+
+await registry.update(workerId("w-researcher-1"), { status: "running" });
+const active = await registry.list();
+for await (const ev of registry.watch()) console.log(ev.kind, ev);
+```
+
+### attachRegistry
+
+Bridges supervisor lifecycle events into registry writes. Callers register a
+session BEFORE calling `supervisor.start()`; the bridge flips `status` from
+`starting` → `running` → `exited`/`crashed` and records `endedAt`/`exitCode`
+as the events fire.
+
+```typescript
+import { attachRegistry } from "@koi/daemon";
+
+const bridge = attachRegistry({
+  supervisor,
+  registry,
+  onError: (err, event) => log.warn("registry bridge", err, event),
+});
+
+// Later, during teardown:
+await bridge.close();
+```
+
 ### registerSignalHandlers
 
 ```typescript
@@ -234,6 +293,23 @@ When `SupervisorConfig.backends` registers multiple kinds, `start()` picks in th
 - `fake-backend.ts` test helper — in-memory `WorkerBackend` with synchronous crash/exit controls
 
 ---
+
+## CLI Integration — `koi bg`
+
+The CLI bundles a thin operator surface over the registry. Commands run in a
+separate process from the supervisor and talk to the registry directly on
+disk:
+
+| Command | Purpose |
+|---------|---------|
+| `koi bg ps` | List registered sessions (table by default, `--json` for structured output) |
+| `koi bg logs <id>` | Tail a session's log file; `--follow` keeps streaming while the session is live |
+| `koi bg kill <id>` | SIGTERM the session's PID; escalate to SIGKILL after 5 s if still alive; update the registry |
+| `koi bg attach <id>` | Interactive attach — subprocess backend falls back to read-only log tail; full bi-directional attach ships with the tmux backend (3b-6) |
+| `koi bg detach` | Operator notice — subprocess backend has no detachable session; tmux backend handles the flow |
+
+Default registry directory: `$KOI_STATE_DIR/daemon/sessions`; falls back to
+`~/.koi/daemon/sessions`. Override with `--registry-dir`.
 
 ## Limitations / Follow-Ups
 
