@@ -67,11 +67,6 @@ export async function runStartupRecovery(args: {
   await drainOrphanedHiddenRows({ ...args, maxAttempts });
 }
 
-interface OrphanRow {
-  readonly id: string;
-  readonly content_hash: string;
-}
-
 interface OrphanRowWithAttempts {
   readonly id: string;
   readonly content_hash: string;
