@@ -58,7 +58,7 @@ function readSentinelFromFs(blobDir: string): string | undefined {
 function writeSentinelToFs(blobDir: string, id: string): void {
   const target = join(blobDir, SENTINEL_FILENAME);
   const tmp = join(blobDir, `${SENTINEL_TMP_PREFIX}.${process.pid}.${crypto.randomUUID()}`);
-  const data = Buffer.from(id, "utf8");
+  const data = new TextEncoder().encode(id);
 
   const fd = openSync(tmp, "w");
   try {

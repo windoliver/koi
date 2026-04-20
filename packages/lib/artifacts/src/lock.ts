@@ -105,7 +105,7 @@ interface AcquiredLock {
  */
 function acquireLockFile(lockPath: string): AcquiredLock {
   const token = `${process.pid}:${crypto.randomUUID()}`;
-  const tokenBytes = Buffer.from(token, "utf8");
+  const tokenBytes = new TextEncoder().encode(token);
   const dir = dirname(lockPath);
   const tmpPath = join(dir, `.lock.tmp.${process.pid}.${crypto.randomUUID()}`);
 
