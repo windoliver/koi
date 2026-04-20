@@ -24,7 +24,7 @@ const makeFakeBrowser = (): Browser =>
   }) as unknown as Browser;
 
 describe("createPlaywrightBrowserDriver with wsEndpoint", () => {
-  test("wsEndpoint calls chromium.connectOverCDP with { wsEndpoint }", async () => {
+  test("wsEndpoint is passed as the first (positional) arg to connectOverCDP, not as a deprecated property", async () => {
     const fakeBrowser = makeFakeBrowser();
     const connectSpy = mock(async () => fakeBrowser);
     const original = chromium.connectOverCDP;
@@ -42,12 +42,38 @@ describe("createPlaywrightBrowserDriver with wsEndpoint", () => {
       expect(connectSpy).toHaveBeenCalledTimes(1);
       // @ts-expect-error — bun:test mock.calls typing reports empty tuple; runtime has entries
       const firstArg: unknown = connectSpy.mock.calls[0]?.[0];
-      // connectOverCDP is called with an object containing wsEndpoint (and timeout).
-      expect(firstArg).toEqual(
-        expect.objectContaining({ wsEndpoint: "ws://127.0.0.1:45678/devtools/browser/abcd" }),
-      );
+      // @ts-expect-error — same mock-calls typing issue
+      const secondArg: unknown = connectSpy.mock.calls[0]?.[1];
+      // Modern Playwright API: endpointURL is the POSITIONAL first arg (string), options is second.
+      expect(firstArg).toBe("ws://127.0.0.1:45678/devtools/browser/abcd");
+      expect(secondArg).toEqual(expect.objectContaining({ timeout: expect.any(Number) }));
 
       await driver.dispose?.();
+    } finally {
+      (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+        original;
+    }
+  });
+
+  test("wsHeaders forwarded to connectOverCDP — enables Authorization: Bearer for browser-ext bridge", async () => {
+    const fakeBrowser = makeFakeBrowser();
+    const connectSpy = mock(async () => fakeBrowser);
+    const original = chromium.connectOverCDP;
+    (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+      connectSpy as unknown as typeof chromium.connectOverCDP;
+
+    try {
+      const driver = createPlaywrightBrowserDriver({
+        wsEndpoint: "ws://127.0.0.1:45678/x",
+        wsHeaders: { Authorization: "Bearer test-token-abc" },
+        blockPrivateAddresses: false,
+      });
+      await driver.tabNew();
+      await driver.dispose?.();
+
+      // @ts-expect-error — mock-calls typing
+      const secondArg = connectSpy.mock.calls[0]?.[1] as { headers?: Record<string, string> };
+      expect(secondArg?.headers).toEqual({ Authorization: "Bearer test-token-abc" });
     } finally {
       (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
         original;
@@ -70,12 +96,10 @@ describe("createPlaywrightBrowserDriver with wsEndpoint", () => {
       await driver.tabNew();
       await driver.dispose?.();
 
-      // @ts-expect-error — bun:test mock.calls typing reports empty tuple; runtime has entries
+      // @ts-expect-error — mock-calls typing
       const firstArg: unknown = connectSpy.mock.calls[0]?.[0];
-      // Must be called with wsEndpoint, not cdpEndpoint string.
-      expect(firstArg).toEqual(expect.objectContaining({ wsEndpoint: "ws://127.0.0.1:45678/x" }));
-      // Ensure the cdpEndpoint string was NOT used as the first arg.
-      expect(typeof firstArg).toBe("object");
+      // Must be called with the wsEndpoint URL (not the cdpEndpoint one).
+      expect(firstArg).toBe("ws://127.0.0.1:45678/x");
     } finally {
       (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
         original;

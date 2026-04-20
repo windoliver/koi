@@ -78,8 +78,18 @@ export interface PlaywrightDriverConfig {
    * takes precedence over `cdpEndpoint`. Used by `@koi/browser-ext` to connect via a
    * loopback WebSocket bridged to a Chrome extension's chrome.debugger API through
    * a Koi native messaging host.
+   *
+   * Passed as the first argument to Playwright's `chromium.connectOverCDP(endpointURL, options)`
+   * — the modern non-deprecated form.
    */
   readonly wsEndpoint?: string;
+  /**
+   * Optional HTTP headers to send with the CDP WebSocket upgrade. Required when the
+   * target endpoint enforces auth (e.g. `@koi/browser-ext`'s loopback bridge requires
+   * `Authorization: Bearer <token>` per spec §7.1). Forwarded verbatim to Playwright's
+   * `connectOverCDP(..., { headers })` option.
+   */
+  readonly wsHeaders?: Readonly<Record<string, string>>;
   /** Run headless (default: true). Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided. */
   readonly headless?: boolean;
   /** Browser launch timeout in ms (default: 30000). Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided. */
@@ -336,9 +346,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           );
         }
         if (config.wsEndpoint) {
-          return chromium.connectOverCDP({
-            wsEndpoint: config.wsEndpoint,
+          // Use the modern string-first form — the object-form `wsEndpoint` property
+          // is deprecated (Playwright recommends `endpointURL` or positional arg).
+          return chromium.connectOverCDP(config.wsEndpoint, {
             timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+            ...(config.wsHeaders ? { headers: { ...config.wsHeaders } } : {}),
           });
         }
         if (config.cdpEndpoint) {
