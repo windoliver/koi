@@ -11006,6 +11006,74 @@ describe("Golden: @koi/daemon", () => {
 
     await supervisorResult.value.shutdown("test");
   });
+
+  test("heartbeat health — lastHeartbeatAt advances across emitted IPC heartbeats", async () => {
+    const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 2,
+      shutdownDeadlineMs: 1_000,
+      heartbeat: { intervalMs: 50, timeoutMs: 500 },
+      backends: { subprocess: createSubprocessBackend() },
+    });
+    expect(supervisorResult.ok).toBe(true);
+    if (!supervisorResult.ok) return;
+
+    const started = await supervisorResult.value.start({
+      workerId: workerId("golden-hb-1"),
+      agentId: agentId("agent-golden-hb-1"),
+      command: [
+        "bun",
+        "-e",
+        "let n=0; const iv=setInterval(()=>{ if(typeof process.send==='function'){process.send({koi:'heartbeat'})} if(++n>=4){clearInterval(iv);process.exit(0)} }, 40);",
+      ],
+      backendHints: { heartbeat: true },
+    });
+    expect(started.ok).toBe(true);
+
+    // Let a few heartbeats pump through before reading health.
+    await new Promise((r) => setTimeout(r, 150));
+    const first = supervisorResult.value.health();
+    const worker = first.workers.find((w) => w.workerId === workerId("golden-hb-1"));
+    expect(worker?.lastHeartbeatAt).toBeDefined();
+    expect(first.status).toBe("ok");
+    expect(first.metrics.maxWorkers).toBe(2);
+
+    await supervisorResult.value.shutdown("test");
+  });
+
+  test("heartbeat timeout — silent worker is cleaned from health()", async () => {
+    const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 2,
+      shutdownDeadlineMs: 1_000,
+      heartbeat: { intervalMs: 20, timeoutMs: 100 },
+      backends: { subprocess: createSubprocessBackend() },
+    });
+    if (!supervisorResult.ok) return;
+
+    const started = await supervisorResult.value.start({
+      workerId: workerId("golden-hb-silent"),
+      agentId: agentId("agent-golden-hb-silent"),
+      command: ["bun", "-e", "setTimeout(()=>{},2000)"],
+      backendHints: { heartbeat: true },
+    });
+    expect(started.ok).toBe(true);
+
+    // Wait past timeoutMs — supervisor should tear down the silent worker.
+    await new Promise((r) => setTimeout(r, 300));
+    const h = supervisorResult.value.health();
+    const stillThere = h.workers.some((w) => w.workerId === workerId("golden-hb-silent"));
+    expect(stillThere).toBe(false);
+    expect(supervisorResult.value.list().map((d) => d.agentId)).not.toContain(
+      agentId("agent-golden-hb-silent"),
+    );
+
+    await supervisorResult.value.shutdown("test");
+  });
 });
 
 describe("Golden: @koi/middleware-strict-agentic", () => {
