@@ -60,6 +60,7 @@ import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
+import { type ActivityTimeoutConfig, applyActivityTimeout } from "./apply-activity-timeout.js";
 import {
   createFileSystemProvider,
   createFileSystemTools,
@@ -256,7 +257,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...afterExfiltration, config.modelRouterMiddleware]
         : afterExfiltration;
 
-    const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+    const activityTimeoutConfig = resolveActivityTimeoutConfig(
+      config.activityTimeout,
+      config.streamTimeoutMs,
+    );
     // Filesystem: strict host opt-in only.
     // config.filesystem === false is a kill switch; undefined means no filesystem.
     // Manifest.filesystem exists in L0 for the full createKoi() assembly path
@@ -405,7 +409,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       activeStreamFinalizations,
       otelConfig,
     );
-    const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
+    const adapter = applyActivityTimeout(composedAdapter, activityTimeoutConfig);
 
     const debugInfo =
       config.debug === true
@@ -1743,7 +1747,11 @@ function composeMiddlewareIntoAdapter(
         async () => {
           // Deregister per-stream approval dispatch entry
           approvalDispatch?.delete(sid);
-          // Run lifecycle hooks on ALL middleware for session end
+          // Run lifecycle hooks on ALL middleware for session end.
+          // NB: onAfterTurn here is the stream-level catch-all — it fires
+          // for direct `runtime.adapter.stream()` consumers that do not
+          // sit behind an engine layer dispatching onAfterTurn per-turn.
+          // Middleware like checkpoint relies on this invocation.
           await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
           await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
         },
@@ -1952,25 +1960,30 @@ function resolveFilesystemInput(
   return resolveFileSystem(input, cwd ?? process.cwd());
 }
 
-function injectSignal(input: EngineInput, signal: AbortSignal): EngineInput {
-  switch (input.kind) {
-    case "text":
-      return { ...input, signal };
-    case "messages":
-      return { ...input, signal };
-    case "resume":
-      return { ...input, signal };
+/**
+ * Back-compat bridge for #1638: when the caller only supplies the legacy
+ * `streamTimeoutMs`, map it onto `activityTimeout.maxDurationMs` so existing
+ * behaviour (hard wall-clock kill) is preserved. When `activityTimeout` is
+ * provided, the deprecated field is ignored — but if the caller omitted
+ * `maxDurationMs` we still fill in the legacy `DEFAULT_STREAM_TIMEOUT_MS`
+ * (120s) rather than the larger recommended 4h bound. This keeps the
+ * migration path rollback-safe: a caller that adopts `activityTimeout`
+ * without picking an explicit wall-clock cap keeps the same hard-stop budget
+ * as before. Callers who want the recommended longer cap opt in explicitly:
+ *   maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS (4h)
+ * or pick their own value. `maxDurationMs: Number.POSITIVE_INFINITY` disables
+ * the wall-clock bound entirely.
+ */
+function resolveActivityTimeoutConfig(
+  activityTimeout: ActivityTimeoutConfig | undefined,
+  streamTimeoutMs: number | undefined,
+): ActivityTimeoutConfig {
+  const legacyWallClockMs = streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+  if (activityTimeout === undefined) {
+    return { maxDurationMs: legacyWallClockMs };
   }
-}
-
-function applyStreamTimeout(adapter: EngineAdapter, timeoutMs: number): EngineAdapter {
-  return {
-    ...adapter,
-    stream(input: EngineInput): AsyncIterable<EngineEvent> {
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
-      const composedSignal =
-        input.signal !== undefined ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
-      return adapter.stream(injectSignal(input, composedSignal));
-    },
-  };
+  if (activityTimeout.maxDurationMs === undefined) {
+    return { ...activityTimeout, maxDurationMs: legacyWallClockMs };
+  }
+  return activityTimeout;
 }

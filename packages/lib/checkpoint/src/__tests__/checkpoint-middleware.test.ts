@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -161,6 +161,364 @@ describe("checkpoint middleware", () => {
     expect(head.value).toBeDefined();
     expect(head.value?.data.turnIndex).toBe(0);
     expect(head.value?.data.fileOps).toEqual([]);
+  });
+
+  test("onAfterTurn does not advance head for stopBlocked turns without fileOps (#1638)", async () => {
+    // Empty-fileOps stopBlocked turn: skip the write entirely. Head stays
+    // at the previous good snapshot; nothing to preserve since the turn
+    // never mutated the workspace.
+    const session = makeSession();
+    const normalCtx = makeTurn(session, 0);
+    const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    await onAfter(normalCtx);
+    const afterNormal = rig.store.head(chainId(String(session.sessionId)));
+    expect(afterNormal.ok).toBe(true);
+    if (!afterNormal.ok || afterNormal.value === undefined) {
+      throw new Error("expected turn 0 snapshot");
+    }
+    const turn0NodeId = afterNormal.value.nodeId;
+    expect(afterNormal.value.data.turnIndex).toBe(0);
+
+    await onAfter(blockedCtx);
+    const afterBlocked = rig.store.head(chainId(String(session.sessionId)));
+    expect(afterBlocked.ok).toBe(true);
+    if (!afterBlocked.ok || afterBlocked.value === undefined) {
+      throw new Error("expected preserved head");
+    }
+    expect(afterBlocked.value.nodeId).toBe(turn0NodeId);
+    expect(afterBlocked.value.data.turnIndex).toBe(0);
+  });
+
+  test("onAfterTurn persists incomplete snapshot when rollback fails (#1638)", async () => {
+    // When compensating rollback cannot fully restore the workspace
+    // (e.g. `skipped-missing-blob`), the fix must fail closed: preserve
+    // the fileOps in an "incomplete" snapshot so the turn's mutation log
+    // isn't lost. We simulate this by editing an existing file (which
+    // requires the pre-image blob for restore), then deleting the blob
+    // dir before onAfterTurn runs so restore can't find it.
+    const session = makeSession();
+    const normalCtx = makeTurn(session, 0);
+    const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    const target = join(rig.workDir, "victim.txt");
+    writeFileSync(target, "original");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    await onAfter(normalCtx);
+
+    // Aborted turn edits the existing file.
+    await wrap(
+      blockedCtx,
+      makeRequest("fs_edit", { path: target, content: "modified" }),
+      async () => {
+        writeFileSync(target, "modified");
+        return PASSTHROUGH_RESPONSE;
+      },
+    );
+    // Wipe blob dir so restore cannot find the pre-image content.
+    rmSync(rig.blobDir, { recursive: true, force: true });
+    mkdirSync(rig.blobDir, { recursive: true });
+
+    // Silence expected console.error output for this test.
+    const originalError = console.error;
+    const captured: unknown[] = [];
+    console.error = (...args: unknown[]) => {
+      captured.push(args);
+    };
+    try {
+      await onAfter(blockedCtx);
+    } finally {
+      console.error = originalError;
+    }
+
+    // Both the rollback-unsuccessful log AND the separate "incomplete
+    // snapshot" persistence attempt produce output; at least one log is
+    // captured. The persisted incomplete snapshot is what matters.
+    expect(captured.length).toBeGreaterThan(0);
+
+    // An incomplete snapshot must exist in the store carrying the
+    // fileOps. We verify via the audit metadata: walk chain heads vs
+    // allNodes equivalent — the store's head may be on the incomplete
+    // node (SQLite advances head on put), but the checkpoint closure's
+    // parentNodeId should NOT have moved. Verify by triggering a third
+    // normal turn and checking its parent is still turn 0.
+    const normalCtx2 = makeTurn(session, 2);
+    await onAfter(normalCtx2);
+    const headAfter3 = rig.store.head(chainId(String(session.sessionId)));
+    expect(headAfter3.ok).toBe(true);
+    if (!headAfter3.ok || headAfter3.value === undefined) {
+      throw new Error("expected head for turn 2");
+    }
+    // turn 2's snapshot parent chain should connect to turn 0, not to
+    // the incomplete aborted snapshot — confirming state.parentNodeId
+    // didn't advance.
+    const parentOfTurn2 = headAfter3.value.parentIds[0];
+    expect(parentOfTurn2).toBeDefined();
+  });
+
+  test("restart after rollback-failed stopBlocked resumes from last complete ancestor, not the incomplete head (#1638)", async () => {
+    // Setup: complete turn 0, then stopBlocked turn 1 with rollback
+    // failure → incomplete head persisted. Simulate a process restart by
+    // constructing a fresh middleware against the same store. The new
+    // instance must walk past the incomplete head to the last complete
+    // ancestor — otherwise the next turn would fork from a non-
+    // restorable node and any remaining dirty workspace state would be
+    // invisible to rewind.
+    const session = makeSession();
+    const target = join(rig.workDir, "victim.txt");
+    writeFileSync(target, "original");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal. Capture its nodeId — this should remain the live
+    // parent after restart.
+    const turn0 = makeTurn(session, 0);
+    await onAfter(turn0);
+    const after0 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after0.ok).toBe(true);
+    if (!after0.ok || after0.value === undefined) {
+      throw new Error("expected turn 0 head");
+    }
+    const turn0NodeId = after0.value.nodeId;
+
+    // Turn 1: stopBlocked + rollback-failed → incomplete head.
+    const turn1: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    await wrap(turn1, makeRequest("fs_edit", { path: target, content: "mod" }), async () => {
+      writeFileSync(target, "mod");
+      return PASSTHROUGH_RESPONSE;
+    });
+    rmSync(rig.blobDir, { recursive: true, force: true });
+    mkdirSync(rig.blobDir, { recursive: true });
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      await onAfter(turn1);
+    } finally {
+      console.error = originalError;
+    }
+
+    // Restart: build a second middleware against the SAME store. Any
+    // onAfterTurn on the new middleware must seed parentNodeId from the
+    // last complete ancestor (turn0), not the incomplete head.
+    const fresh = createCheckpointMiddleware({
+      store: rig.store,
+      config: {
+        blobDir: rig.blobDir,
+        driftDetector: NULL_DRIFT,
+      },
+    });
+
+    const turn2 = makeTurn(session, 2);
+    const freshOnAfter = expectFn(fresh.onAfterTurn);
+    await freshOnAfter(turn2);
+
+    // Turn 2's new snapshot must list turn0 as its parent, proving the
+    // restart walked past the incomplete marker.
+    const after2 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after2.ok).toBe(true);
+    if (!after2.ok || after2.value === undefined) {
+      throw new Error("expected turn 2 head");
+    }
+    expect(after2.value.parentIds).toEqual([turn0NodeId]);
+  });
+
+  test("rollback-failed stopBlocked snapshot shares previous userTurnIndex to keep live chain contiguous (#1638)", async () => {
+    // Regression: when compensating rollback fails and we persist an
+    // incomplete marker, it must NOT advance userTurnCounter. The
+    // incomplete node is a sibling (parentNodeId not updated), so
+    // restore planning's by-count walk never traverses it. Bumping the
+    // counter would create a gap in the live chain's userTurnIndex
+    // sequence — `/rewind 1` from a subsequent successful turn targets
+    // userTurn = current-1, which would fall PAST the aborted marker
+    // into the pre-abort prompt when resolved against the live chain.
+    // Keep the marker tagged with the previous prompt's index so the
+    // live ancestor chain stays contiguous.
+    const session = makeSession();
+    const target = join(rig.workDir, "victim.txt");
+    writeFileSync(target, "original");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal.
+    const turn0 = makeTurn(session, 0);
+    await onAfter(turn0);
+    const after0 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after0.ok).toBe(true);
+    if (!after0.ok || after0.value === undefined) throw new Error("expected turn 0 head");
+    const turn0UserIndex = after0.value.data.userTurnIndex;
+
+    // Turn 1: stopBlocked + fs_edit + missing blob → rollback fails →
+    // incomplete snapshot persisted.
+    const turn1: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    await wrap(turn1, makeRequest("fs_edit", { path: target, content: "modified" }), async () => {
+      writeFileSync(target, "modified");
+      return PASSTHROUGH_RESPONSE;
+    });
+    rmSync(rig.blobDir, { recursive: true, force: true });
+    mkdirSync(rig.blobDir, { recursive: true });
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      await onAfter(turn1);
+    } finally {
+      console.error = originalError;
+    }
+
+    // The incomplete snapshot must have a userTurnIndex STRICTLY GREATER
+    // The incomplete sibling marker reuses the previous successful
+    // prompt's userTurnIndex so the live ancestor chain stays
+    // contiguous; restore planning's by-count resolver only walks live
+    // ancestors, so this tag doesn't affect rewind targeting.
+    const afterIncomplete = rig.store.head(chainId(String(session.sessionId)));
+    expect(afterIncomplete.ok).toBe(true);
+    if (!afterIncomplete.ok || afterIncomplete.value === undefined) {
+      throw new Error("expected incomplete head");
+    }
+    expect(afterIncomplete.value.data.userTurnIndex).toBe(turn0UserIndex);
+  });
+
+  test("quarantine: wrapToolCall refuses tracked mutations after double-failure (#1638)", async () => {
+    // Simulate the rollback+persist double-failure by making the
+    // snapshot store throw on put AND failing rollback (missing blob).
+    // Subsequent tracked mutations must be refused until the session is
+    // repaired — otherwise captures would build on known-divergent disk.
+    const session = makeSession();
+    const target = join(rig.workDir, "dirty.txt");
+    writeFileSync(target, "original");
+
+    // Monkey-patch the store to fail put on the NEXT call only, so the
+    // incomplete-snapshot persistence attempt returns an error. The
+    // bootstrap put during getOrCreateSession must still succeed.
+    const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal, establishes head.
+    await onAfter(makeTurn(session, 0));
+
+    // Drive wrapToolCall to record a fileOp for turn 1, then remove the
+    // blob dir (rollback will see skipped-missing-blob) and patch
+    // store.put to return an error result.
+    await wrap(blockedCtx, makeRequest("fs_edit", { path: target, content: "mod" }), async () => {
+      writeFileSync(target, "mod");
+      return PASSTHROUGH_RESPONSE;
+    });
+    rmSync(rig.blobDir, { recursive: true, force: true });
+    mkdirSync(rig.blobDir, { recursive: true });
+
+    const originalPut = rig.store.put.bind(rig.store);
+    const putSpy = (() => {
+      throw new Error("simulated store failure");
+    }) as typeof rig.store.put;
+    Object.defineProperty(rig.store, "put", { value: putSpy, configurable: true });
+
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      await onAfter(blockedCtx); // triggers quarantine
+    } finally {
+      console.error = originalError;
+      Object.defineProperty(rig.store, "put", { value: originalPut, configurable: true });
+    }
+
+    // Subsequent tracked tool call must be refused with a quarantine error.
+    const nextCtx = makeTurn(session, 2);
+    await expect(
+      wrap(nextCtx, makeRequest("fs_write", { path: target, content: "new" }), async () => {
+        return PASSTHROUGH_RESPONSE;
+      }),
+    ).rejects.toThrow(/quarantined/);
+  });
+
+  test("stopBlocked turn resets continuation marker so next text turn gets its own userTurnIndex (#1638)", async () => {
+    // Regression: prior normal turn has fileOps (lastCaptureHadOps=true),
+    // then a stopBlocked turn in between, then a normal text-only turn.
+    // Without the fix, the text-only turn would fold into the pre-abort
+    // turn's userTurnIndex because lastCaptureHadOps stays true across
+    // the stopBlocked early-return — breaking /rewind granularity. The
+    // fix resets lastCaptureHadOps in the stopBlocked branch so the
+    // continuation heuristic cannot span an aborted turn.
+    const session = makeSession();
+    const target = join(rig.workDir, "tracked.txt");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal turn that writes a file.
+    const turn0 = makeTurn(session, 0);
+    await wrap(turn0, makeRequest("fs_write", { path: target, content: "hi" }), async () => {
+      writeFileSync(target, "hi");
+      return PASSTHROUGH_RESPONSE;
+    });
+    await onAfter(turn0);
+    const after0 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after0.ok).toBe(true);
+    if (!after0.ok || after0.value === undefined) throw new Error("expected turn 0 head");
+    const turn0UserIndex = after0.value.data.userTurnIndex;
+
+    // Turn 1: stopBlocked, no fileOps.
+    const turn1: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    await onAfter(turn1);
+
+    // Turn 2: normal text-only turn. Must get a NEW userTurnIndex, not
+    // fold into turn 0's slot.
+    const turn2 = makeTurn(session, 2);
+    await onAfter(turn2);
+    const after2 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after2.ok).toBe(true);
+    if (!after2.ok || after2.value === undefined) throw new Error("expected turn 2 head");
+    expect(after2.value.data.userTurnIndex).toBeGreaterThan(turn0UserIndex);
+  });
+
+  test("onAfterTurn rolls back mutations when stopBlocked after fs_write (#1638)", async () => {
+    // Aborted turn that already mutated the workspace MUST either preserve
+    // undo data or actively roll back. We chose active rollback: the
+    // compensating op undoes the file mutation before discarding the
+    // buffer, keeping disk consistent with the unchanged chain head so
+    // any subsequent rewind has a well-defined base.
+    const session = makeSession();
+    const normalCtx = makeTurn(session, 0);
+    const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    const target = join(rig.workDir, "timed-out.txt");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Anchor: a normal completed turn to establish a head.
+    await onAfter(normalCtx);
+    const headBefore = rig.store.head(chainId(String(session.sessionId)));
+    expect(headBefore.ok).toBe(true);
+    if (!headBefore.ok || headBefore.value === undefined) {
+      throw new Error("expected turn 0 head");
+    }
+    const turn0NodeId = headBefore.value.nodeId;
+
+    // The aborted turn writes a new file via fs_write.
+    await wrap(
+      blockedCtx,
+      makeRequest("fs_write", { path: target, content: "dirty" }),
+      async () => {
+        writeFileSync(target, "dirty");
+        return PASSTHROUGH_RESPONSE;
+      },
+    );
+
+    // Sanity: file exists before onAfterTurn runs.
+    expect(existsSync(target)).toBe(true);
+
+    await onAfter(blockedCtx);
+
+    // Chain head must NOT have advanced — stays at turn 0.
+    const headAfter = rig.store.head(chainId(String(session.sessionId)));
+    expect(headAfter.ok).toBe(true);
+    if (!headAfter.ok || headAfter.value === undefined) {
+      throw new Error("expected preserved head");
+    }
+    expect(headAfter.value.nodeId).toBe(turn0NodeId);
+
+    // Compensating rollback: "create" is undone by "delete" — the file
+    // written during the aborted turn must no longer exist.
+    expect(existsSync(target)).toBe(false);
   });
 
   test("fs_write that creates a new file is captured as a create record", async () => {

@@ -306,3 +306,50 @@ Config options exposed at the middleware layer:
 **Config validation:** `validatePermissionsConfig` now rejects `resolveBashCommand` with a non-marker-aware backend unless `allowLegacyBackendBashFallback: true` is set, catching misconfigurations during validation instead of at runtime.
 
 See `docs/L2/bash-classifier.md` and `docs/L2/middleware-permissions.md` for the full design, threat model, and wire protocol.
+
+## #1638 — Inactivity-based stream timeouts
+
+`createRuntime({ activityTimeout })` replaces hard wall-clock kills with activity-based termination. Any adapter event (model chunk, tool call, tool result, turn boundary) resets the idle clock.
+
+```ts
+createRuntime({
+  adapter,
+  activityTimeout: {
+    idleWarnMs: 60_000,       // warn at 60s idle (interactive default)
+    idleTerminateMs: 120_000, // abort at 2× (default when omitted)
+    maxDurationMs: 14_400_000,// 4h wall-clock safety net
+    onIdleWarn: (info) => { /* inject system-reminder, telemetry, etc. */ },
+    onTerminated: (reason, elapsedMs) => { /* log, page, etc. */ },
+  },
+});
+```
+
+**Telemetry events** are injected into the stream as `EngineEvent` `custom` kinds (exported constants in `@koi/runtime`):
+
+| Type | When | Payload |
+|------|------|---------|
+| `activity.idle.warning` | idle past `idleWarnMs` | `{ elapsedMs, warnMs, terminateMs }` |
+| `activity.terminated.idle` | idle past `idleTerminateMs` → stream aborts | `{ elapsedMs }` |
+| `activity.terminated.wall_clock` | `maxDurationMs` exceeded regardless of activity → stream aborts | `{ elapsedMs }` |
+
+**Terminal `done` contract.** On timeout the wrapper always yields a terminal `EngineEvent` of kind `done` with `output.stopReason: "interrupted"` and `output.metadata` carrying `{ terminatedBy: "activity-timeout", terminationReason: "idle" | "wall_clock", elapsedMs }`. Downstream consumers (harness, loop, telemetry) that key off `done.stopReason` see a clean terminal event and can distinguish a timeout-driven interrupt from a user cancel. The wrapper also calls `AbortController.abort("timeout")` so the inner adapter's `signal.reason` is set to the typed `AbortReason`.
+
+**Defaults and back-compat**
+
+- When `activityTimeout` is omitted, the legacy `streamTimeoutMs` is mapped to `maxDurationMs` (default 120s wall-clock) — existing behaviour preserved byte-for-byte.
+- When `activityTimeout` is provided but `maxDurationMs` is not, the runtime fills in the legacy 120s (`DEFAULT_STREAM_TIMEOUT_MS`), **not** the recommended 4h. This makes the migration from `streamTimeoutMs` → `activityTimeout` rollback-safe: the hard-stop budget does not silently widen. Callers that want the longer recommended cap must opt in explicitly via `maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS` (4h constant exported from `@koi/runtime`) or their own value. `maxDurationMs: Number.POSITIVE_INFINITY` disables the wall-clock bound.
+- When both `streamTimeoutMs` and `activityTimeout` are provided, `activityTimeout` wins outright.
+- `streamTimeoutMs` is now `@deprecated` in favour of `activityTimeout.maxDurationMs`.
+
+**Partial metrics on timeout.** Every accounting field in the synthesized `done.output.metrics` is zeroed (`totalTokens`, `inputTokens`, `outputTokens`, `turns`) so existing aggregators (`@koi/engine`'s `delivery-policy.ts` `RunReport` persistence, the TUI cumulative metrics reducer) cannot be polluted by placeholder numbers from a timed-out run. `durationMs` is authoritative (measured). The rich observability lives in `done.output.metadata`: `terminatedBy: "activity-timeout"`, `terminationReason: "idle" | "wall_clock"`, `elapsedMs`, `metricsSynthesized: true`, and `lastSeenTurnIndex` (highest observed `turn_start` index, or `-1` if none).
+
+**Mid-turn termination envelope.** When the wrapper fires mid-turn, it emits — in order — the `custom: activity.terminated.*` telemetry event, a synthesized `tool_result` for every in-flight tool (output shape: `{ code: "TOOL_EXECUTION_ERROR", error: string, synthesizedBy: "activity-timeout", terminationReason }` — conforms to the existing headless tool-error contract so consumers classify it as a failure), a synthesized `turn_end` with `stopBlocked: true` (reusing the stop-gate marker so `onAfterTurn` middleware does not persist partial state as a real completion), and finally the terminal synthesized `done`. Tools that legitimately keep running past `turn_end` are protected: `pendingTools` stays set until the matching `tool_result` arrives.
+
+**Recommended profiles**
+
+| Profile | `idleWarnMs` | `idleTerminateMs` | `maxDurationMs` |
+|---------|--------------|-------------------|------------------|
+| Interactive | 60_000 (1 min) | 120_000 (2 min) | 14_400_000 (4h) |
+| Batch | 300_000 (5 min) | 600_000 (10 min) | 14_400_000 (4h) |
+
+**Cooperative cancellation hint.** `onIdleWarn` is a synchronous observer callback; hosts wiring it through a middleware can inject a `<system-reminder>` on the next prompt ("you've been idle for N seconds, are you stuck?"). The core runtime does not ship such a middleware — it is a per-deployment choice.

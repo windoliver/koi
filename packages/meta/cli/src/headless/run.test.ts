@@ -526,6 +526,45 @@ describe("runHeadless", () => {
     expect(exitCode).toBe(4);
   });
 
+  test("done with terminatedBy=activity-timeout → exit 4 (TIMEOUT) regardless of interrupted stopReason (#1638)", async () => {
+    // The runtime-level activity-timeout wrapper
+    // (packages/meta/runtime/src/apply-activity-timeout.ts) synthesizes a
+    // terminal done with stopReason "interrupted" and flags
+    // metadata.terminatedBy. Headless must surface this as TIMEOUT (4)
+    // rather than AGENT_FAILURE (1), so retry/automation logic can
+    // distinguish inactivity/wall-clock timeouts from user cancels.
+    const exitCode = await runAndEmit({
+      sessionId: "s",
+      prompt: "x",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "interrupted",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 120_000,
+            },
+            metadata: {
+              terminatedBy: "activity-timeout",
+              terminationReason: "idle",
+              elapsedMs: 120_000,
+              metricsSynthesized: true,
+            },
+          },
+        },
+      ]),
+    });
+    expect(exitCode).toBe(4);
+  });
+
   test("done event with stopReason=max_turns + timeout marker → exit 4 (not BUDGET)", async () => {
     // The engine catch path remaps KoiRuntimeError(TIMEOUT) to stopReason
     // "max_turns" and embeds the timeout message in metadata. Headless

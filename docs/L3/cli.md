@@ -666,3 +666,21 @@ and `docs/L2/tui.md` for the underlying changes.
 - **`koi start`** — uses `createPatternPermissionBackend` with the blanket `allow: ["*"]` rule (marker-aware). Dual-key evaluation engages automatically: the dangerous-command ratchet overrides allow with ask on sudo, `curl | sh`, `python -c`, `node -e`, etc., and the `!complex` structural ratchet fires on compound forms (redirects, pipelines, subshells, command substitution). This is a real hardening of `koi start` under the auto-allow policy.
 
 The resolver matches tool ids case-insensitively (`"Bash"` or `"bash"`). Non-bash tools and malformed inputs fall through to plain-tool evaluation. See `docs/L3/runtime.md` for the runtime wiring contract and `docs/L2/bash-classifier.md` / `docs/L2/middleware-permissions.md` for the library design and threat model.
+
+## #1638 — Activity-based stream timeouts (dev-only env hook)
+
+Integrates `@koi/checkpoint` (stopBlocked fail-closed rollback + quarantine on rollback/persist double-failure) and `@koi/loop` (budget treats synthesized metrics as unmetered) with the runtime-level activity-timeout wrapper.
+
+CLI surface changes:
+
+- **Headless exit classifier** (`packages/meta/cli/src/headless/run.ts`): a terminal `done` with `stopReason: "interrupted"` AND `metadata.terminatedBy === "activity-timeout"` now exits **4 (TIMEOUT)** instead of 1 (AGENT_FAILURE). Message distinguishes `idle` vs `wall_clock` reason.
+
+- **Interactive fallback message** (`packages/meta/cli/src/engine-adapter.ts` `explainNonCompletedStop`): timeout-synthesized done events render `[Turn interrupted by activity timeout (inactivity|wall-clock) after Ns.]` in the transcript instead of the generic `[Turn interrupted before the model produced a reply.]`.
+
+- **Dev-only env-var hook in `runtime-factory.ts`** (`TEMP #1638` — remove under #1459):
+  - `KOI_IDLE_WARN_MS` — idle warning threshold (ms)
+  - `KOI_IDLE_TERMINATE_MS` — idle termination threshold (ms)
+  - `KOI_WALL_CLOCK_MS` — absolute wall-clock cap (ms; `Infinity` disables)
+  wraps `createTranscriptAdapter` with `applyActivityTimeout` so the wrapper can be exercised manually via TUI / headless before the full runtime migration. A display wrapper above the timeout adapter injects a user-visible `text_delta` with the fallback message when the synthetic `done` carries `metadata.terminatedBy === "activity-timeout"` — mirroring the transcript adapter's own `explainNonCompletedStop` fallback, which does not run once the outer wrapper aborts the inner stream.
+
+See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`activity.idle.warning`, `activity.terminated.idle`, `activity.terminated.wall_clock`), and the `done.output.metadata` contract consumers can read.
