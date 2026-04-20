@@ -11616,4 +11616,65 @@ describe("Golden: @koi/artifacts", () => {
       rmSync(blobDir, { recursive: true, force: true });
     }
   });
+
+  test("artifacts-roundtrip trajectory: LLM saves + retrieves via real ArtifactStore", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/artifacts-roundtrip.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly tool_calls?: readonly {
+          readonly function_name?: string;
+          readonly arguments?: Record<string, unknown>;
+        }[];
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("artifacts-roundtrip");
+
+    const toolSteps = doc.steps.filter((s) => s.source === "tool");
+    const toolNames = toolSteps.flatMap((s) => s.tool_calls?.map((c) => c.function_name) ?? []);
+    expect(toolNames).toContain("artifact_save");
+    expect(toolNames).toContain("artifact_get");
+
+    // artifact_save returned a real artifact id + contentHash + size.
+    const saveStep = toolSteps.find((s) =>
+      s.tool_calls?.some((c) => c.function_name === "artifact_save"),
+    );
+    const savePayload = JSON.parse(saveStep?.observation?.results?.[0]?.content ?? "{}") as {
+      readonly ok?: boolean;
+      readonly id?: string;
+      readonly version?: number;
+      readonly size?: number;
+      readonly contentHash?: string;
+    };
+    expect(savePayload.ok).toBe(true);
+    expect(typeof savePayload.id).toBe("string");
+    expect(savePayload.version).toBe(1);
+    expect(savePayload.size).toBe(17); // "golden trajectory"
+    expect(typeof savePayload.contentHash).toBe("string");
+
+    // artifact_get echoes the id back with the original bytes.
+    const getStep = toolSteps.find((s) =>
+      s.tool_calls?.some((c) => c.function_name === "artifact_get"),
+    );
+    const getArgs = getStep?.tool_calls?.[0]?.arguments as { readonly id?: string } | undefined;
+    expect(getArgs?.id).toBe(savePayload.id);
+    const getPayload = JSON.parse(getStep?.observation?.results?.[0]?.content ?? "{}") as {
+      readonly ok?: boolean;
+      readonly content?: string;
+    };
+    expect(getPayload.ok).toBe(true);
+    expect(getPayload.content).toBe("golden trajectory");
+
+    // Final agent reply echoes the retrieved content (proves the LLM consumed
+    // the tool result — not just that the tools fired).
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalReply = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
+    expect(finalReply.toLowerCase()).toContain("golden trajectory");
+  });
 });
