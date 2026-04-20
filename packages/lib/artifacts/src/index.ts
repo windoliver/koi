@@ -5,6 +5,7 @@ export type {
   ArtifactFilter,
   ArtifactStore,
   ArtifactStoreConfig,
+  ArtifactStoreEvent,
   LifecyclePolicy,
   Result,
   SaveArtifactInput,
