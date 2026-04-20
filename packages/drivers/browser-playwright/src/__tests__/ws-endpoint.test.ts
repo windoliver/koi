@@ -237,6 +237,7 @@ describe("createPlaywrightBrowserDriver with wsEndpoint", () => {
       }),
       close: async () => {},
       addInitScript: async () => {},
+      on: () => {},
       route: async () => {},
     };
     const fakeBrowser = {

@@ -170,14 +170,24 @@ export function shutdownHarness(h: HostHarness, signal: NodeJS.Signals = "SIGTER
  * Returns once the host's socket is ready for drivers. Throws on timeout.
  */
 export async function bootHost(h: HostHarness): Promise<void> {
+  const harnessInstanceUuid = "11111111-1111-4111-8111-111111111111";
+  const harnessBrowserSessionUuid = "22222222-2222-4222-8222-222222222222";
   await h.extStdin.write(
     JSON.stringify({
       kind: "extension_hello",
       extensionId: "integration-test-ext",
       extensionVersion: "0.1.0",
       installId: HARNESS_INSTALL_ID,
-      browserSessionId: "integration-test-session",
+      browserSessionId: harnessBrowserSessionUuid,
       supportedProtocols: [1],
+      identity: {
+        instanceId: harnessInstanceUuid,
+        browserSessionId: harnessBrowserSessionUuid,
+        browserHint: "chrome",
+        name: "koi-browser-ext-test",
+      },
+      epoch: 1,
+      seq: 1,
     }),
   );
 
@@ -203,21 +213,31 @@ export async function bootHost(h: HostHarness): Promise<void> {
 
 export async function driverHello(
   socket: import("node:net").Socket,
-): Promise<{ reader: FrameQueue; writer: ReturnType<typeof createFrameWriter> }> {
+  leaseToken?: string,
+): Promise<{
+  reader: FrameQueue;
+  writer: ReturnType<typeof createFrameWriter>;
+  leaseToken: string;
+}> {
   const reader = new FrameQueue(createFrameReader(socket));
   const writer = createFrameWriter(socket);
+  // Random lease per connection — host rejects colliding leases across
+  // concurrent clients (each driver session must have a distinct lease).
+  const lease =
+    leaseToken ??
+    Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
   await writer.write(
     JSON.stringify({
       kind: "hello",
       token: HARNESS_TOKEN,
       driverVersion: "0.1.0",
       supportedProtocols: [1],
-      leaseToken: "f".repeat(32),
+      leaseToken: lease,
     }),
   );
   const ack = await reader.nextMatching((f) => f.kind === "hello_ack");
   if ((ack as { ok?: boolean }).ok !== true) {
     throw new Error(`hello_ack ok=false: ${JSON.stringify(ack)}`);
   }
-  return { reader, writer };
+  return { reader, writer, leaseToken: lease };
 }

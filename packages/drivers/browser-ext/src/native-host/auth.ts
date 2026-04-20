@@ -55,12 +55,18 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 export function validateHello(
   hello: HelloValidationInput,
-  expected: { readonly token: string; readonly adminKey: string },
+  expected: { readonly token: string; readonly adminKey: string | null },
 ): HelloValidationResult {
   if (!timingSafeEqual(hello.token, expected.token)) {
     return { ok: false, reason: "bad_token" };
   }
   if (hello.admin) {
+    // Fail-closed: if the host has no admin key material (file missing /
+    // unreadable), reject all admin-role hellos rather than degrading to
+    // an empty-string comparison.
+    if (expected.adminKey === null) {
+      return { ok: false, reason: "bad_admin_key" };
+    }
     if (!timingSafeEqual(hello.admin.adminKey, expected.adminKey)) {
       return { ok: false, reason: "bad_admin_key" };
     }

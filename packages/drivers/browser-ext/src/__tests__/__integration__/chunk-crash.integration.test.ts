@@ -52,12 +52,11 @@ describe.skipIf(!GATE)(
       await bootHost(harness);
 
       const driverSock = await connect(harness.socketPath);
-      const { writer } = await driverHello(driverSock);
+      const { writer, leaseToken } = await driverHello(driverSock);
 
       const tabId = 42;
       const sessionId = randomUUID();
       const reqId = randomUUID();
-      const leaseToken = "f".repeat(32);
 
       // 1. Driver requests attach; extension acks.
       await writer.write(

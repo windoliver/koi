@@ -38,15 +38,29 @@ export interface DriverClient {
     frame: Extract<DriverFrame, { kind: "attach" }>,
   ) => Promise<AttachAckOkFrame | AttachAckFailFrame>;
   /**
-   * Send a `detach` frame for the given session. The host tears down the
-   * debugger attachment; driver receives `detach_ack` (routed separately).
-   * Resolves immediately after the frame is written — it does not wait for
-   * the ack (callers that need it should use setFrameHandler or compose a
-   * waitFor themselves).
+   * Send a `detach` frame for the given session AND wait for the host's
+   * `detach_ack`. Resolves with the ack frame so callers can distinguish
+   * success vs. `not_attached`/`chrome_error`/`timeout`. This is the
+   * correct bridge-shutdown primitive — fire-and-forget detach leaves the
+   * host in `detaching_failed` state if the ack is lost.
    */
-  readonly detach: (sessionId: string) => Promise<void>;
+  readonly detach: (
+    sessionId: string,
+    timeoutMs?: number,
+  ) => Promise<Extract<DriverFrame, { kind: "detach_ack" }>>;
   readonly sendCdpFrame: (frame: CdpFrame) => Promise<void>;
+  /**
+   * Singleton-slot handler. `setFrameHandler(null)` clears it. Prefer
+   * `subscribeFrames` for multi-listener use (e.g., multiple loopback WS
+   * bridges sharing one DriverClient).
+   */
   readonly setFrameHandler: (handler: ((frame: DriverFrame) => void) | null) => void;
+  /**
+   * Register an additional frame listener. Multiple subscribers are allowed
+   * — typically each bridge filters by its own sessionId. Returns an
+   * unsubscribe function.
+   */
+  readonly subscribeFrames: (listener: (frame: DriverFrame) => void) => () => void;
   readonly setCloseHandler: (handler: (() => void) | null) => void;
   readonly close: () => Promise<void>;
 }
@@ -70,7 +84,7 @@ export interface LoopbackWebSocketBridge {
 export interface LoopbackWebSocketBridgeOptions {
   readonly token: string;
   readonly sessionId: string;
-  readonly transport: Pick<DriverClient, "sendCdpFrame" | "setFrameHandler" | "detach">;
+  readonly transport: Pick<DriverClient, "sendCdpFrame" | "subscribeFrames" | "detach">;
 }
 
 export interface LoopbackUpgradeSocket {
@@ -115,6 +129,7 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
   let connected = false;
   let writer: ReturnType<typeof createFrameWriter> | null = null;
   let frameHandler: ((frame: DriverFrame) => void) | null = null;
+  const frameSubscribers = new Set<(frame: DriverFrame) => void>();
   let closeHandler: (() => void) | null = null;
   const pending: PendingFrameWaiter<DriverFrame>[] = [];
 
@@ -154,6 +169,16 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
           continue;
         }
         frameHandler?.(frame);
+        // Fan out to multi-listener subscribers. Snapshot the set before
+        // iterating so an unsubscribe during dispatch doesn't skip callbacks.
+        const snapshot = Array.from(frameSubscribers);
+        for (const listener of snapshot) {
+          try {
+            listener(frame);
+          } catch {
+            // Listener errors must not abort the reader loop.
+          }
+        }
       }
     } catch (error) {
       rejectAll(error instanceof Error ? error : new Error(String(error)));
@@ -228,14 +253,55 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
       await writeFrame(frame);
       return waiter;
     },
-    async detach(sessionId: string): Promise<void> {
-      await writeFrame({ kind: "detach", sessionId });
+    async detach(
+      sessionId: string,
+      timeoutMs = 5_000,
+    ): Promise<Extract<DriverFrame, { kind: "detach_ack" }>> {
+      // Register the waiter inline so the timeout path can remove it from
+      // `pending`. If we leave a stale waiter in place on timeout, a late
+      // detach_ack will be consumed by the already-rejected waiter and every
+      // retry for the same sessionId will time out as well.
+      type AckFrame = Extract<DriverFrame, { kind: "detach_ack" }>;
+      const predicate = (candidate: DriverFrame): candidate is AckFrame =>
+        candidate.kind === "detach_ack" && candidate.sessionId === sessionId;
+      const ack = await new Promise<AckFrame>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const entry: PendingFrameWaiter<DriverFrame> = {
+          predicate,
+          resolve: (frame: DriverFrame): void => {
+            if (timer) clearTimeout(timer);
+            resolve(frame as AckFrame);
+          },
+          reject: (err: Error): void => {
+            if (timer) clearTimeout(timer);
+            reject(err);
+          },
+        };
+        pending.push(entry);
+        timer = setTimeout(() => {
+          const idx = pending.indexOf(entry);
+          if (idx >= 0) pending.splice(idx, 1);
+          reject(new Error(`detach_ack timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
+        if (typeof timer.unref === "function") timer.unref();
+        void writeFrame({ kind: "detach", sessionId }).catch((err) => {
+          const idx = pending.indexOf(entry);
+          if (idx >= 0) pending.splice(idx, 1);
+          if (timer) clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        });
+      });
+      return ack;
     },
     async sendCdpFrame(frame: CdpFrame): Promise<void> {
       await writeFrame(frame);
     },
     setFrameHandler(handler: ((frame: DriverFrame) => void) | null): void {
       frameHandler = handler;
+    },
+    subscribeFrames(listener: (frame: DriverFrame) => void): () => void {
+      frameSubscribers.add(listener);
+      return () => frameSubscribers.delete(listener);
     },
     setCloseHandler(handler: (() => void) | null): void {
       closeHandler = handler;
@@ -273,27 +339,33 @@ export function wireLoopbackWebSocketBridge(
   options: LoopbackWebSocketBridgeOptions,
   server: LoopbackServerLike,
   wss: LoopbackWebSocketServerLike,
-): { readonly close: () => void } {
+): { readonly close: () => Promise<void> } {
   let activeSocket: LoopbackWebSocketPeer | null = null;
   let detached = false;
+  let pendingDetach: Promise<void> | null = null;
 
   // Idempotent detach: unexpected peer-close and explicit close() both converge
-  // here. Without this, a Playwright crash or transient socket loss would
-  // strand the tab in attached state with no automatic cleanup.
-  function tearDownSession(): void {
-    if (detached) return;
+  // here. Fire-and-forget was unsafe — a lost ack would leave the host in
+  // `detaching_failed` and future attach attempts bounce as already_attached.
+  // Retain a promise of the detach so awaitable callers can wait for it.
+  function tearDownSession(): Promise<void> {
+    if (detached) return pendingDetach ?? Promise.resolve();
     detached = true;
-    void options.transport.detach(options.sessionId).catch(() => {});
+    pendingDetach = options.transport.detach(options.sessionId).then(
+      () => undefined,
+      () => undefined,
+    );
+    return pendingDetach;
   }
 
-  options.transport.setFrameHandler((frame: DriverFrame): void => {
+  // Subscribe (not setFrameHandler) so multiple bridges can share a single
+  // DriverClient without clobbering each other. Each bridge filters by its
+  // own sessionId; unsubscribe on close.
+  const unsubscribeFrames = options.transport.subscribeFrames((frame: DriverFrame): void => {
     if (activeSocket === null || activeSocket.readyState !== WebSocket.OPEN) {
       return;
     }
     if (frame.kind === "cdp_result" || frame.kind === "cdp_error" || frame.kind === "cdp_event") {
-      // Filter by sessionId: a single DriverClient may carry traffic for
-      // multiple attached sessions. Without this filter, frames from another
-      // session would leak into this bridge's Playwright connection.
       if (frame.sessionId !== options.sessionId) return;
       activeSocket.send(toCdpPayload(frame));
     }
@@ -331,18 +403,24 @@ export function wireLoopbackWebSocketBridge(
           activeSocket = null;
         }
         // Peer went away without an explicit close() — release the host's
-        // ownership lease so the next attach attempt doesn't bounce.
-        tearDownSession();
+        // ownership lease so the next attach attempt doesn't bounce. Fire
+        // the detach but don't wait (we're in an event callback).
+        void tearDownSession();
       });
     });
   });
 
   return {
-    close(): void {
-      options.transport.setFrameHandler(null);
+    async close(): Promise<void> {
+      unsubscribeFrames();
       activeSocket?.close();
       activeSocket = null;
-      tearDownSession();
+      // Await the detach completion so the caller knows ownership has
+      // actually been released host-side before the close() promise settles.
+      // Without this, a transient transport error could leave the host's
+      // detach coordinator in `detaching_failed` state + the caller's
+      // next attach bouncing as already_attached, with no surfaced error.
+      await tearDownSession();
     },
   };
 }
@@ -371,7 +449,11 @@ export async function createLoopbackWebSocketBridge(
   return {
     endpoint: `ws://127.0.0.1:${address.port}/${randomUUID()}`,
     async close(): Promise<void> {
-      wiring.close();
+      // Await wiring.close() so the host-side detach ack has landed before
+      // the bridge's close() resolves. Without this, a fast recreate →
+      // reattach race can hit `already_attached` because the host still
+      // owns the session when the caller tries to re-attach.
+      await wiring.close();
       await new Promise<void>((resolve, reject) => {
         wss.close((error?: Error) => {
           if (error) {

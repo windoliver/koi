@@ -56,7 +56,19 @@ export function createAttachCoordinator(deps: {
           return;
         }
         if (owner.clientId === clientId) {
-          replyAlreadyAttached(clientId, frame, undefined);
+          // Same-client retry on already-committed session: return the
+          // existing sessionId as a success ack. Benign retries (reconnect
+          // races, double-submits) must be idempotent, not false-failed with
+          // `already_attached` while the tab is in fact attached to this
+          // very caller.
+          sendDriver(clientId, {
+            kind: "attach_ack",
+            ok: true,
+            tabId: frame.tabId,
+            leaseToken: frame.leaseToken,
+            attachRequestId: frame.attachRequestId,
+            sessionId: owner.sessionId,
+          });
           return;
         }
         replyAlreadyAttached(clientId, frame, {

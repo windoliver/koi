@@ -51,9 +51,17 @@ export interface NativeHostHandle {
 }
 
 export async function runNativeHost(config: NativeHostConfig): Promise<NativeHostHandle> {
-  const instanceId = config.instanceId ?? randomUUID();
+  // Placeholder — overwritten with extension-supplied instanceId before
+  // any identity-bound state (quarantine journal, discovery record) is
+  // created. Using a fresh UUID would break restart-stable grouping.
+  let instanceId = config.instanceId ?? "";
   const expectedToken = await readToken(config.authDir);
-  const expectedAdminKey = await readAdminKey(config.authDir).catch(() => "");
+  // Fail-closed: if admin.key is missing/unreadable, `expectedAdminKey`
+  // stays null and validateHello rejects any hello that claims admin role.
+  // A missing secret MUST NOT degrade to the empty string — a client that
+  // knows the regular driver token could otherwise escalate to admin by
+  // sending an empty admin key.
+  const expectedAdminKey: string | null = await readAdminKey(config.authDir).catch(() => null);
   const installId = await readInstallId(config.authDir);
 
   const writer = createFrameWriter(config.stdout);
@@ -74,7 +82,16 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
    * Per-request routing maps. Required for tenant isolation: without these,
    * any connected client would see every other client's tabs + CDP traffic.
    */
-  const pendingListTabs = new Map<string, string>(); // requestId → clientId
+  // Map host-generated requestId → { clientId, originalRequestId }.
+  // We MUST NOT key routing on the driver-supplied requestId: one authenticated
+  // client can intentionally (or accidentally) reuse another's requestId and
+  // steal its `tabs` reply. Host rewrites the outgoing requestId before sending
+  // to the extension, and rewrites the reply back to the original id for the
+  // waiting client.
+  const pendingListTabs = new Map<
+    string,
+    { readonly clientId: string; readonly originalRequestId: string }
+  >();
   const pendingCdpRequests = new Map<string, string>(); // `${sessionId}:${id}` → clientId
   const cdpKey = (sessionId: string, id: number): string => `${sessionId}:${id}`;
 
@@ -142,8 +159,26 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
   let extensionVersion: string | null = null;
   let selectedProtocol = 1;
   let extensionBrowserSessionId: string | null = null;
-  let resolveExtensionHello: ((value: { browserSessionId: string }) => void) | null = null;
-  const extensionHelloReceived = new Promise<{ browserSessionId: string }>((resolve) => {
+  let extensionIdentity: {
+    readonly instanceId: string;
+    readonly browserSessionId: string;
+    readonly epoch: number;
+    readonly seq: number;
+  } | null = null;
+  let resolveExtensionHello:
+    | ((value: {
+        readonly browserSessionId: string;
+        readonly instanceId: string;
+        readonly epoch: number;
+        readonly seq: number;
+      }) => void)
+    | null = null;
+  const extensionHelloReceived = new Promise<{
+    readonly browserSessionId: string;
+    readonly instanceId: string;
+    readonly epoch: number;
+    readonly seq: number;
+  }>((resolve) => {
     resolveExtensionHello = resolve;
   });
   let done: () => void = () => {};
@@ -206,6 +241,24 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         return;
       }
       selectedProtocol = negotiated.selectedProtocol;
+      // Bind host state to the extension's persisted identity + ordering
+      // metadata when present. Using a fresh UUID would break restart-stable
+      // grouping: quarantine + discovery records would spawn under new
+      // names after each host restart, and discovery-client could no
+      // longer supersede older generations within the same extension.
+      // Fall back to config.instanceId/config.epoch + seq=1 only when the
+      // extension doesn't supply these (legacy tests, older extensions).
+      const extInstanceId = frame.identity?.instanceId;
+      const extEpoch = frame.epoch;
+      const extSeq = frame.seq;
+      instanceId =
+        extInstanceId ?? (instanceId === "" ? (config.instanceId ?? randomUUID()) : instanceId);
+      extensionIdentity = {
+        instanceId,
+        browserSessionId: frame.browserSessionId,
+        epoch: extEpoch ?? config.epoch,
+        seq: extSeq ?? 1,
+      };
       sendNmControl({
         kind: "host_hello",
         hostVersion: HOST_VERSION,
@@ -213,7 +266,12 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         selectedProtocol,
       });
       if (resolveExtensionHello) {
-        resolveExtensionHello({ browserSessionId: frame.browserSessionId });
+        resolveExtensionHello({
+          browserSessionId: frame.browserSessionId,
+          instanceId,
+          epoch: extEpoch ?? config.epoch,
+          seq: extSeq ?? 1,
+        });
         resolveExtensionHello = null;
       }
     }
@@ -279,10 +337,15 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         return;
       }
       case "tabs": {
-        const requester = pendingListTabs.get(frame.requestId);
-        if (requester !== undefined) {
+        const pending = pendingListTabs.get(frame.requestId);
+        if (pending !== undefined) {
           pendingListTabs.delete(frame.requestId);
-          drivers.get(requester)?.send(frame as DriverFrame);
+          // Rewrite the reply's requestId back to the original so the driver
+          // can correlate with its outstanding request.
+          drivers.get(pending.clientId)?.send({
+            ...frame,
+            requestId: pending.originalRequestId,
+          } as DriverFrame);
         }
         return;
       }
@@ -298,12 +361,12 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
   const helloTimeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("extension_hello not received within 10s")), 10_000),
   );
-  const { browserSessionId } = await Promise.race([extensionHelloReceived, helloTimeout]);
+  const helloInfo = await Promise.race([extensionHelloReceived, helloTimeout]);
   void extensionBrowserSessionId;
   const quarantineJournal = await createQuarantineJournal({
     dir: config.quarantineDir,
-    instanceId,
-    browserSessionId,
+    instanceId, // extension-supplied via helloInfo.instanceId
+    browserSessionId: helloInfo.browserSessionId,
   });
 
   const probeResult = await runBootProbe({
@@ -336,6 +399,17 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         send: (frame) => void driverWriter.write(JSON.stringify(frame)),
         close: () => socket.destroy(),
       });
+      // Unauthenticated handshake deadline: reap sockets that never complete
+      // `hello` within the window. Without this, a local process can open
+      // many connections and stall them pre-auth to exhaust fds/memory.
+      const HANDSHAKE_DEADLINE_MS = 5_000;
+      const handshakeTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+        if (!driverLeases.has(clientId)) {
+          drivers.get(clientId)?.close();
+        }
+      }, HANDSHAKE_DEADLINE_MS);
+      if (typeof handshakeTimer.unref === "function") handshakeTimer.unref();
+      socket.once("close", () => clearTimeout(handshakeTimer));
       (async (): Promise<void> => {
         try {
           for await (const raw of createFrameReader(socket)) {
@@ -359,8 +433,8 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
             driverLeases.delete(clientId);
           }
           // Clear any pending routing state owned by this client.
-          for (const [reqId, c] of pendingListTabs) {
-            if (c === clientId) pendingListTabs.delete(reqId);
+          for (const [hostReqId, pending] of pendingListTabs) {
+            if (pending.clientId === clientId) pendingListTabs.delete(hostReqId);
           }
           for (const [k, c] of pendingCdpRequests) {
             if (c === clientId) pendingCdpRequests.delete(k);
@@ -382,31 +456,26 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     }
     switch (frame.kind) {
       case "hello": {
+        // Close the socket after any negative hello_ack so a misbehaving
+        // client cannot park a stream of failed-auth sockets on the host.
+        const rejectAndClose = (reason: string, extras?: Record<string, unknown>): void => {
+          drivers
+            .get(clientId)
+            ?.send({ kind: "hello_ack", ok: false, reason, ...(extras ?? {}) } as DriverFrame);
+          drivers.get(clientId)?.close();
+        };
         if (driverLeases.has(clientId)) {
-          drivers.get(clientId)?.send({
-            kind: "hello_ack",
-            ok: false,
-            reason: "bad_lease_token",
-          });
+          rejectAndClose("bad_lease_token");
           return;
         }
         if (leasesInUse.has(frame.leaseToken)) {
-          drivers.get(clientId)?.send({
-            kind: "hello_ack",
-            ok: false,
-            reason: "lease_collision",
-          });
+          rejectAndClose("lease_collision");
           return;
         }
         // Validate the driver's advertised supportedProtocols against the
         // host's selected protocol (already negotiated with the extension).
         if (!frame.supportedProtocols.includes(selectedProtocol)) {
-          drivers.get(clientId)?.send({
-            kind: "hello_ack",
-            ok: false,
-            reason: "version_mismatch",
-            hostSupportedProtocols: [selectedProtocol],
-          });
+          rejectAndClose("version_mismatch", { hostSupportedProtocols: [selectedProtocol] });
           return;
         }
         const validation = validateHello(
@@ -414,7 +483,7 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           { token: expectedToken, adminKey: expectedAdminKey },
         );
         if (!validation.ok) {
-          drivers.get(clientId)?.send({ kind: "hello_ack", ok: false, reason: validation.reason });
+          rejectAndClose(validation.reason);
           return;
         }
         driverRoles.set(clientId, validation.role);
@@ -431,10 +500,15 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         });
         return;
       }
-      case "list_tabs":
-        pendingListTabs.set(frame.requestId, clientId);
-        sendNm(frame);
+      case "list_tabs": {
+        const hostRequestId = randomUUID();
+        pendingListTabs.set(hostRequestId, {
+          clientId,
+          originalRequestId: frame.requestId,
+        });
+        sendNm({ ...frame, requestId: hostRequestId });
         return;
+      }
       case "attach": {
         const pinnedLease = driverLeases.get(clientId);
         if (pinnedLease === undefined || pinnedLease !== frame.leaseToken) {
@@ -495,6 +569,17 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           });
           return;
         }
+        // Reject malformed requests up-front so operator mistakes
+        // ({ scope: "origin" } without `origin`) don't quietly succeed
+        // with an empty cleared-origins ack.
+        if (frame.scope === "origin" && (!frame.origin || frame.origin.length === 0)) {
+          drivers.get(clientId)?.send({
+            kind: "admin_clear_grants_ack",
+            ok: false,
+            reason: "PERMISSION",
+          });
+          return;
+        }
         void handleAdminClearGrants({
           role: driverRoles.get(clientId) ?? "driver",
           scope: frame.scope,
@@ -543,6 +628,11 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     return undefined;
   }
 
+  // Discovery ordering must reflect the extension's persisted (epoch, seq).
+  // discovery-client selects the highest (epoch, seq) within an instanceId
+  // group; a fresh host boot that keeps config.epoch + seq=1 would publish
+  // the same or lower apparent generation than an existing record, making
+  // supersede nondeterministic after repeated reconnects.
   const discoveryRecord: DiscoveryRecord = {
     instanceId,
     pid: process.pid,
@@ -551,9 +641,10 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     name: config.name,
     browserHint: config.browserHint,
     extensionVersion,
-    epoch: config.epoch,
-    seq: 1,
+    epoch: helloInfo.epoch,
+    seq: helloInfo.seq,
   };
+  void extensionIdentity;
   await supersedeStale(config.discoveryDir, discoveryRecord);
   await writeDiscoveryFile(config.discoveryDir, discoveryRecord);
 

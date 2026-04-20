@@ -54,6 +54,28 @@ export interface AttachFsm {
   }) => Promise<void>;
   readonly handleAbandonAttach: (leaseToken: string) => Promise<readonly number[]>;
   readonly handleTabRemoved: (tabId: number) => Promise<void>;
+  /**
+   * Called when Chrome fires `chrome.debugger.onDetach` — the browser has
+   * torn down the debugger session out-of-band (DevTools opened, cancelled,
+   * renderer crashed, etc). Must clear local FSM state so subsequent attach
+   * flows don't evaluate against a dead session.
+   */
+  readonly handleDebuggerDetached: (
+    tabId: number,
+    reason:
+      | "navigated_away"
+      | "private_origin"
+      | "tab_closed"
+      | "devtools_opened"
+      | "extension_reload"
+      | "unknown",
+  ) => void;
+  /**
+   * Revoke all attached sessions: call `chrome.debugger.detach` for each,
+   * clear FSM state, emit `detached` frames. Used on installId mismatch
+   * (reinstall/reprovision) where every existing attachment must end.
+   */
+  readonly revokeAllAttached: () => Promise<void>;
   readonly handleCommittedNavigation: (details: {
     readonly tabId: number;
     readonly frameId: number;
@@ -437,6 +459,39 @@ export function createAttachFsm(deps: {
             "tab_closed",
           ),
         );
+      }
+    },
+    handleDebuggerDetached(tabId, reason): void {
+      const state = tabStates.get(tabId);
+      if (!state) return;
+      tabStates.delete(tabId);
+      if (state.phase === "attached") {
+        sessionToTab.delete(state.sessionId);
+        deps.sendFrame(createDetachedFrame(state, reason));
+        return;
+      }
+      for (const participant of state.participants) {
+        deps.sendFrame(
+          createFailure(
+            {
+              kind: "attach",
+              tabId,
+              leaseToken: participant.leaseToken,
+              attachRequestId: participant.attachRequestId,
+            },
+            "tab_closed",
+          ),
+        );
+      }
+    },
+    async revokeAllAttached(): Promise<void> {
+      const snapshot = Array.from(tabStates.entries());
+      for (const [tabId, state] of snapshot) {
+        if (state.phase !== "attached") continue;
+        const outcome = await detachDebugger(tabId);
+        tabStates.delete(tabId);
+        sessionToTab.delete(state.sessionId);
+        deps.sendFrame(createDetachedFrame(state, "extension_reload", outcome.ok));
       }
     },
     async handleCommittedNavigation(details): Promise<void> {

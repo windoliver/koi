@@ -54,16 +54,16 @@ export function createNativeConnection(deps: {
     const storedInstallId = await deps.storage.getInstallId();
     if (storedInstallId === hostInstallId) return;
     // Revocation event: installId changed (host reinstall / reprovision).
-    // Clear persisted grants AND tear down live debugger sessions so no
-    // pre-revocation attachment keeps running against the user's tabs.
+    // Clear persisted grants AND tear down live debugger sessions via
+    // chrome.debugger.detach so Chrome actually ends the attachment — not
+    // just forgets local FSM state. handleTabRemoved only cleared local
+    // bookkeeping, leaving Chrome debugger sessions live.
     await Promise.all([
       deps.storage.clearAlwaysGrants(),
       deps.storage.clearPrivateOriginAllowlist(),
       deps.storage.clearAllowOnceGrants(),
     ]);
-    for (const session of deps.fsm.getAttachedStates()) {
-      await deps.fsm.handleTabRemoved(session.tabId);
-    }
+    await deps.fsm.revokeAllAttached();
     await deps.storage.setInstallId(hostInstallId);
   }
 
@@ -166,9 +166,9 @@ export function createNativeConnection(deps: {
     state = { kind: "connecting", epoch: deps.epoch, seq, promise };
     try {
       await promise;
-    } catch {
+    } catch (error) {
       state = { kind: "idle" };
-      throw promise;
+      throw error;
     }
   }
 

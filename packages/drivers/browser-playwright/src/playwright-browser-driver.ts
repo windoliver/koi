@@ -207,13 +207,22 @@ async function checkNavigationUrlAllowed(
   rawUrl: string,
   blockPrivateAddresses: boolean,
 ): Promise<KoiError | null> {
-  if (blockPrivateAddresses === false) return null;
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
     return validation(`Invalid URL: ${rawUrl}`);
   }
+  // Scheme validation is ALWAYS enforced — decoupled from blockPrivateAddresses.
+  // Previously an `blockPrivateAddresses: false` opt-out also silently allowed
+  // file:// / chrome:// / javascript: navigation (trust-boundary much bigger
+  // than private-address SSRF alone). Scheme is denied-by-default regardless.
+  if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "about:") {
+    return permission(
+      `Non-HTTP(S) navigation denied (scheme ${url.protocol}). Allowed: http://, https://, about:.`,
+    );
+  }
+  if (blockPrivateAddresses === false) return null;
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     // Non-HTTP(S) schemes cross a larger trust boundary than SSRF alone:
     //   - file://      — local filesystem read
@@ -265,11 +274,14 @@ async function checkNavigationUrlAllowed(
         );
       }
     }
-  } catch (err) {
-    // DNS lookup failure → fail closed (consistent with the route() guard behavior).
-    return permission(
-      `DNS lookup failed for ${hostname}: ${err instanceof Error ? err.message : String(err)}. Fail-closed policy denies navigation.`,
-    );
+  } catch {
+    // Node DNS lookup failed. Do NOT fail-closed here: split-horizon / VPN /
+    // mDNS / enterprise intranet hostnames routinely resolve in Chromium
+    // (which may use a different resolver, hosts file, or system DOH
+    // config) but not in Node. Failing closed here would break legitimate
+    // intranet targets. The main-frame route guard and literal-IP checks
+    // above already block the concrete SSRF vectors; hostname enforcement
+    // for browser-only resolvers is Chromium's job, not ours.
   }
   return null;
 }
@@ -292,11 +304,16 @@ async function installPageRebindingGuard(
   if (!blockPrivateAddresses) return;
   await page.route("**", async (route) => {
     const req = route.request();
-    // Intercept ALL request types (document, xhr, fetch, image, script,
-    // websocket, etc.) — a malicious public page can otherwise use
-    // fetch/WebSocket/<img> to probe or exfiltrate from private-address
-    // targets even when the main-frame navigation itself is public.
-    //
+    // Phase 1 scope: only gate main-frame document navigations. Blocking
+    // arbitrary subresources via Node DNS breaks legitimate live pages on
+    // split-horizon / VPN / mDNS hosts that Chromium can resolve but Node
+    // cannot. Full SSRF enforcement for subresources belongs at the CDP
+    // Fetch layer where Chromium's resolver is the source of truth.
+    const isMainFrameNav = req.isNavigationRequest() && req.frame() === page.mainFrame();
+    if (!isMainFrameNav) {
+      await route.continue();
+      return;
+    }
     try {
       const url = new URL(req.url());
       if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -340,7 +357,9 @@ async function installPageRebindingGuard(
         }
       }
     } catch {
-      // DNS lookup failure → fail closed (consistent with fail-closed policy elsewhere).
+      // DNS lookup failure on a main-frame navigation → fail closed. This is
+      // the conservative path for the navigation gate; subresources were
+      // already filtered above.
       await route.abort("accessdenied");
       return;
     }
@@ -625,6 +644,16 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         // Skipped on borrowed contexts: we must not install route handlers on a context
         // that the caller also drives. The tool-layer url-security check still applies
         // to navigations issued by Koi's own `navigate` tool calls.
+        // Borrowed contexts: we cannot install ctx.route() without affecting
+        // caller-owned routing, but we CAN listen for newly-created pages
+        // and install a per-page rebinding guard on each. This closes the
+        // popup / window.open / target=_blank gap where site code spawns
+        // pages outside of the driver's ensurePage() path.
+        if (config.blockPrivateAddresses !== false && borrowedContext) {
+          ctx.on("page", (newPage: Page) => {
+            void installPageRebindingGuard(newPage, true).catch(() => {});
+          });
+        }
         if (config.blockPrivateAddresses !== false && !borrowedContext) {
           await ctx.route("**", async (route) => {
             const req = route.request();
@@ -1163,7 +1192,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async wait(options: BrowserWaitOptions): Promise<Result<void, KoiError>> {
       try {
-        const { page, tabId: activeTabId } = await ensurePage();
+        const { page } = await ensurePage();
 
         if (options.kind === "timeout") {
           const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");

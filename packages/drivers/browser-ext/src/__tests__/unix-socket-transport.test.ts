@@ -129,11 +129,14 @@ describe("unix-socket transport", () => {
           async sendCdpFrame(frame): Promise<void> {
             cdpFrameSeen = frame.kind === "cdp" && frame.id === 7;
           },
-          setFrameHandler(handler): void {
-            frameHandlerRef.current = handler as ((frame: DriverFrame) => void) | null;
+          subscribeFrames(listener): () => void {
+            frameHandlerRef.current = listener;
+            return () => {
+              if (frameHandlerRef.current === listener) frameHandlerRef.current = null;
+            };
           },
-          async detach(): Promise<void> {
-            // bridge close triggers this; test doesn't assert on it.
+          async detach() {
+            return { kind: "detach_ack" as const, sessionId: "", tabId: 0, ok: true };
           },
         },
       },
