@@ -841,20 +841,27 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
                 clearTimeout(probeHandle);
               }
             }
-            if (stillAlive && current !== undefined) {
+            // Post-await generation re-check (TOCTOU): the isAlive probe
+            // suspended this coroutine for up to 250ms. A successor
+            // start() can have replaced the pool entry — and any
+            // mutation we do below would corrupt its state. If the pool
+            // entry under our id is no longer ours, exit silently.
+            const afterProbe = pool.get(request.workerId);
+            if (afterProbe !== undefined && afterProbe !== entry) return;
+            if (stillAlive && afterProbe !== undefined) {
               // Do NOT resolveExited — teardownWorker's isAlive poll is
               // the source of truth when the watch stream is untrustworthy.
               quarantined.set(request.workerId, {
-                backend: current.backend,
-                agentId: current.handle.agentId,
+                backend: afterProbe.backend,
+                agentId: afterProbe.handle.agentId,
                 reason: "watch-closed-before-process-exit",
               });
               pool.delete(request.workerId);
               // activeIds preserved — quarantine owns the id now.
               return;
             }
-            if (current !== undefined) {
-              current.resolveExited();
+            if (afterProbe !== undefined) {
+              afterProbe.resolveExited();
               pool.delete(request.workerId);
             }
             // Preserve the activeIds reservation if a quarantine already
@@ -914,6 +921,12 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           "watch-stream-fault",
           undefined,
         );
+        // Post-await generation re-check (TOCTOU): teardownWorker can
+        // suspend for the entire shutdown deadline. A successor start()
+        // may have replaced the pool entry — pool.delete and any
+        // subsequent activeIds mutation would corrupt that successor.
+        const afterTeardown = pool.get(request.workerId);
+        if (afterTeardown !== undefined && afterTeardown !== entry) return;
         pool.delete(request.workerId);
         healthMonitor.untrack(request.workerId);
 
