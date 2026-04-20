@@ -6,14 +6,10 @@ import type {
   Result,
   Supervisor,
   SupervisorConfig,
-  SupervisorHealth,
-  SupervisorHealthMetrics,
-  SupervisorHealthStatus,
   WorkerBackend,
   WorkerBackendKind,
   WorkerEvent,
   WorkerHandle,
-  WorkerHealth,
   WorkerId,
   WorkerRestartPolicy,
   WorkerSpawnRequest,
@@ -24,6 +20,7 @@ import {
   validateSupervisorConfig,
 } from "@koi/core";
 import { createHeartbeatMonitor } from "./heartbeat-monitor.js";
+import { buildHealth } from "./supervisor-health.js";
 
 /**
  * Internal pool entry. Mutable fields:
@@ -81,18 +78,6 @@ const BACKEND_PREFERENCE: readonly WorkerBackendKind[] = [
   "tmux",
   "remote",
 ];
-
-function deriveStatus(m: SupervisorHealthMetrics): {
-  readonly status: SupervisorHealthStatus;
-  readonly reasons: readonly string[];
-} {
-  if (m.shuttingDown) return { status: "unhealthy", reasons: ["shutting_down"] };
-  const reasons: string[] = [];
-  if (m.quarantinedCount > 0) reasons.push("quarantined_workers");
-  if (m.eventDropCount > 0) reasons.push("event_buffer_drops");
-  if (m.poolSize + m.pendingSpawnCount >= m.maxWorkers) reasons.push("at_capacity");
-  return { status: reasons.length > 0 ? "degraded" : "ok", reasons };
-}
 
 export function createSupervisor(config: SupervisorConfig): Result<Supervisor, KoiError> {
   const validated = validateSupervisorConfig(config);
@@ -691,6 +676,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
             error: syntheticError,
           });
           activeIds.delete(request.workerId);
+          healthMonitor.untrack(request.workerId);
           return;
         }
 
@@ -997,57 +983,22 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     }
   };
 
-  const health: Supervisor["health"] = () => {
-    const metrics: SupervisorHealthMetrics = {
-      poolSize: pool.size,
-      maxWorkers: config.maxWorkers,
-      quarantinedCount: quarantined.size,
-      restartingCount: restarting.size,
-      pendingSpawnCount: pendingSpawns,
-      eventDropCount: droppedCount,
-      shuttingDown,
-    };
-    const tracked = healthMonitor.snapshot();
-    const trackedIds = new Set(tracked.map((w) => w.workerId));
-    const extras: WorkerHealth[] = [];
-    for (const [id, entry] of pool) {
-      if (trackedIds.has(id)) continue;
-      extras.push({
-        workerId: id,
-        agentId: entry.handle.agentId,
-        state: entry.stopping ? "stopping" : "running",
-        lastHeartbeatAt: undefined,
-        heartbeatDeadlineAt: undefined,
-      });
-    }
-    for (const [id, q] of quarantined) {
-      if (trackedIds.has(id) || pool.has(id)) continue;
-      extras.push({
-        workerId: id,
-        agentId: q.agentId,
-        state: "quarantined",
-        lastHeartbeatAt: undefined,
-        heartbeatDeadlineAt: undefined,
-      });
-    }
-    for (const [id, r] of restarting) {
-      if (trackedIds.has(id) || pool.has(id)) continue;
-      extras.push({
-        workerId: id,
-        agentId: r.agentId,
-        state: "restarting",
-        lastHeartbeatAt: undefined,
-        heartbeatDeadlineAt: undefined,
-      });
-    }
-    const { status, reasons } = deriveStatus(metrics);
-    return {
-      status,
-      reasons,
-      metrics,
-      workers: [...tracked, ...extras],
-    } satisfies SupervisorHealth;
-  };
+  const health: Supervisor["health"] = () =>
+    buildHealth({
+      pool,
+      quarantined,
+      restarting,
+      metrics: {
+        poolSize: pool.size,
+        maxWorkers: config.maxWorkers,
+        quarantinedCount: quarantined.size,
+        restartingCount: restarting.size,
+        pendingSpawnCount: pendingSpawns,
+        eventDropCount: droppedCount,
+        shuttingDown,
+      },
+      healthMonitor,
+    });
 
   return { ok: true, value: { start, stop, shutdown, list, watchAll, health } };
 }
