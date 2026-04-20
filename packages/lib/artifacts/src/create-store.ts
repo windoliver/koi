@@ -40,6 +40,7 @@ import type {
   ScavengeOrphanBlobsResult,
   SweepArtifactsResult,
 } from "./types.js";
+import { createRepairWorker } from "./worker.js";
 
 export async function createArtifactStore(config: ArtifactStoreConfig): Promise<ArtifactStore> {
   // Defense in depth: the public type does not declare blobStore, but a JS
@@ -155,6 +156,20 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     // valid artifacts just because the process restarted.
     sweepTtlOnOpen({ db, now: Date.now() });
 
+    // Spec §6.5 step 4: background repair worker. `start()` arms the
+    // iteration loop (or is a no-op for `workerIntervalMs = "manual"`). The
+    // worker owns every `blob_ready = 0` row that survived startup recovery
+    // plus Phase B tombstone drain — see worker.ts header. The default
+    // terminal-delete budget (10) matches the docstring on
+    // `ArtifactStoreConfig.maxRepairAttempts`.
+    const worker = createRepairWorker({
+      db,
+      blobStore,
+      config,
+      maxRepairAttempts: config.maxRepairAttempts ?? 10,
+    });
+    worker.start();
+
     const rawSave = createSaveArtifact({ db, blobStore, config });
     const rawGet = createGetArtifact({ db, blobStore });
     const rawList = createListArtifacts({ db });
@@ -235,9 +250,15 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       if (closePromise) return closePromise;
       closing = true;
       closePromise = (async () => {
-        // Wait for in-flight ops to drain. No timeout — a stuck blob I/O must
-        // finish before ownership is released; otherwise a new owner could race
-        // the old owner's pending writes.
+        // Tear down the repair worker first: cancels future ticks and awaits
+        // any in-flight iteration so its blob probes + per-row DB txs finish
+        // before we close the SQLite handle. `stop()` is idempotent and
+        // memoizes its own drain promise — concurrent close() callers share
+        // one underlying drain. See worker.ts header for the stop() contract.
+        await worker.stop();
+        // Wait for in-flight public-API ops to drain. No timeout — a stuck
+        // blob I/O must finish before ownership is released; otherwise a new
+        // owner could race the old owner's pending writes.
         if (inFlight > 0) {
           await new Promise<void>((resolve) => {
             drainWaiters.push(resolve);

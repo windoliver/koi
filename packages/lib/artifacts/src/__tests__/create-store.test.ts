@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +13,18 @@ import { sessionId } from "@koi/core";
 // undefined → pass-through (all other tests behave identically to the real
 // filesystem store).
 const deleteGate: { pending: Promise<void> | undefined } = { pending: undefined };
+
+// Mutable "has gate" used by the Plan 4 Task 6 worker close-barrier tests.
+// When set to a promise, any `blobStore.has(...)` call blocks until the gate
+// resolves. Same shape as `deleteGate` above; lets tests hang a worker
+// iteration mid-`drainBlobReadyZero` probe, assert close() is still pending,
+// then release and confirm close() drains the iteration before resolving.
+const hasGate: { pending: Promise<void> | undefined } = { pending: undefined };
+
+// Counter for `blobStore.has(...)` calls. The "no ticks after close" test
+// samples this counter across a close() + wait interval to prove the worker
+// loop is fully quiesced. Reset in each close-barrier test's beforeEach.
+const hasCounter: { count: number } = { count: 0 };
 
 // Pass-through mock that wraps `delete` in the gate. The mock factory must
 // reach the REAL createFilesystemBlobStore (not itself); `require()` bypasses
@@ -33,7 +46,11 @@ mock.module("@koi/blob-cas", () => {
       return {
         put: real.put,
         get: real.get,
-        has: real.has,
+        has: async (hash: string): Promise<boolean> => {
+          hasCounter.count++;
+          if (hasGate.pending !== undefined) await hasGate.pending;
+          return real.has(hash);
+        },
         list: real.list,
         delete: async (hash: string): Promise<boolean> => {
           if (deleteGate.pending !== undefined) await deleteGate.pending;
@@ -241,5 +258,176 @@ describe("createArtifactStore close-barrier", () => {
     release();
     await scavenging;
     await closing;
+  });
+});
+
+/**
+ * Plan 4 Task 6: close-barrier worker integration. The worker is spun up by
+ * `createArtifactStore` and must be torn down by `close()` BEFORE the drain
+ * for other in-flight ops, so a mid-flight `drainBlobReadyZero` (blobStore.has
+ * probe + per-row DB tx) finishes before the store closes its SQLite handle.
+ *
+ * Seed path: `saveArtifact` then flip `blob_ready` back to 0 via a raw DB
+ * handle while the store is closed. Next open, the worker's first iteration
+ * calls `blobStore.has(hash)` on that row — which is either gated (tests 1+3)
+ * or counted (test 2).
+ */
+async function seedBlobReadyZeroRow(dbPath: string, blobDir: string): Promise<void> {
+  const { createArtifactStore } = await import("../create-store.js");
+  const store = await createArtifactStore({
+    dbPath,
+    blobDir,
+    // Disable scheduled worker ticks during seed — we only want saveArtifact
+    // to land, then we manipulate blob_ready=0 offline. A live worker would
+    // race the seed by promoting the row back to blob_ready=1.
+    workerIntervalMs: "manual",
+  });
+  const save = await store.saveArtifact({
+    sessionId: sessionId("sess_seed"),
+    name: "seed.txt",
+    data: new TextEncoder().encode("seed-payload"),
+    mimeType: "text/plain",
+  });
+  if (!save.ok) throw new Error(`seed save failed: ${save.error.kind}`);
+  await store.close();
+  // Flip blob_ready back to 0 for the seeded row. This mirrors the natural
+  // state a save leaves behind if its post-commit repair crashes — exactly
+  // what the worker's drainBlobReadyZero pass is designed to resolve.
+  const raw = new Database(dbPath);
+  try {
+    raw.exec("PRAGMA journal_mode = WAL;");
+    raw.query("UPDATE artifacts SET blob_ready = 0 WHERE id = ?").run(save.value.id);
+  } finally {
+    raw.close();
+  }
+}
+
+describe("createArtifactStore close-barrier (worker, Plan 4 Task 6)", () => {
+  let blobDir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    blobDir = join(tmpdir(), `koi-art-store-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    dbPath = join(blobDir, "store.db");
+    hasGate.pending = undefined;
+    hasCounter.count = 0;
+  });
+
+  afterEach(() => {
+    // Release the gate unconditionally so a failed test doesn't hang the
+    // suite — an un-released gate would trap the next test's worker in an
+    // unresolvable await.
+    hasGate.pending = undefined;
+    rmSync(blobDir, { recursive: true, force: true });
+  });
+
+  test("close() awaits in-flight worker iteration before closing SQLite", async () => {
+    // Seed a blob_ready=0 row so the worker's first iteration calls
+    // blobStore.has() — our gated mock hangs that probe, which keeps the
+    // iteration mid-flight until the test releases the gate.
+    await seedBlobReadyZeroRow(dbPath, blobDir);
+    // Zero the counter AFTER seed: saveArtifact's post-commit repair path
+    // calls has() internally; we want the worker-only contribution below.
+    hasCounter.count = 0;
+
+    // Arm the has-gate BEFORE opening so the very first scheduled tick hangs.
+    let release: () => void = () => {};
+    hasGate.pending = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      workerIntervalMs: 100,
+    });
+
+    // Wait long enough for the first scheduled tick to fire and enter the
+    // gated has() call. 150ms >> 100ms interval.
+    await new Promise<void>((r) => setTimeout(r, 150));
+    // Prove the iteration actually reached the gate (otherwise a failing
+    // test below could be a false negative from "iteration never started").
+    expect(hasCounter.count).toBeGreaterThan(0);
+
+    const closing = store.close();
+
+    // close() must NOT resolve while the worker iteration is gated.
+    const winner = await Promise.race([
+      closing.then(() => "close" as const),
+      Promise.resolve().then(() => "pending" as const),
+    ]);
+    expect(winner).toBe("pending");
+
+    // Release the gate. The iteration completes its has() probe + the rest
+    // of drainBlobReadyZero / drainTombstones, then stop() resolves, then
+    // close() proceeds through db.close() + releaseLock().
+    release();
+    await closing;
+  });
+
+  test("no worker ticks fire after close() resolves", async () => {
+    await seedBlobReadyZeroRow(dbPath, blobDir);
+    hasCounter.count = 0;
+
+    const store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      workerIntervalMs: 100,
+    });
+
+    // Let at least one tick run so we know the worker is alive and hitting
+    // has() against the seeded row. 300ms / 100ms = ~3 iterations worth; a
+    // 1-iteration floor tolerates CI jitter.
+    await new Promise<void>((r) => setTimeout(r, 300));
+    expect(hasCounter.count).toBeGreaterThanOrEqual(1);
+
+    await store.close();
+    const countAtClose = hasCounter.count;
+
+    // Wait a window longer than the interval. If the worker's interval timer
+    // weren't cleared by stop(), we'd observe at least 2 more ticks here.
+    await new Promise<void>((r) => setTimeout(r, 300));
+    expect(hasCounter.count).toBe(countAtClose);
+  });
+
+  test("concurrent close() calls share the same stop promise (idempotent while worker iterates)", async () => {
+    await seedBlobReadyZeroRow(dbPath, blobDir);
+    hasCounter.count = 0;
+
+    let release: () => void = () => {};
+    hasGate.pending = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      workerIntervalMs: 100,
+    });
+
+    // Wait for the first tick to enter the gated has() probe.
+    await new Promise<void>((r) => setTimeout(r, 150));
+    expect(hasCounter.count).toBeGreaterThan(0);
+
+    // Two concurrent close() calls while the worker iteration is still
+    // mid-has(). Both must be pending until the gate releases; both must
+    // resolve against the same underlying stop+drain+close work (no double
+    // db.close(), no "ArtifactStore is closed" rejection from the second
+    // caller).
+    const first = store.close();
+    const second = store.close();
+
+    const winner = await Promise.race([
+      Promise.all([first, second]).then(() => "both" as const),
+      Promise.resolve().then(() => "pending" as const),
+    ]);
+    expect(winner).toBe("pending");
+
+    release();
+    await Promise.all([first, second]);
+    // Third close() after resolution is still a no-op, matching the
+    // sweep/scavenge close-barrier contract from Plan 3 Task 9.
+    await store.close();
   });
 });
