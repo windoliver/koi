@@ -66,6 +66,60 @@ describe("validateSupervisorConfig", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("VALIDATION");
   });
+
+  it("rejects heartbeat.intervalMs <= 0", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 0, timeoutMs: 100 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects heartbeat.timeoutMs <= 0", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50, timeoutMs: -1 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects non-finite heartbeat values", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: Number.POSITIVE_INFINITY, timeoutMs: 100 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects heartbeat.timeoutMs <= intervalMs (healthy worker would time out between heartbeats)", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 100, timeoutMs: 100 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("accepts valid heartbeat config", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("workerId", () => {

@@ -35,13 +35,12 @@ describe.skipIf(!distExists)("build output", () => {
     }
   });
 
-  test("index bundle is under 27KB", async () => {
-    // Threshold updated: @koi/daemon L0 contracts added (WorkerBackend,
-    // Supervisor, WorkerRestartPolicy, validateSupervisorConfig,
-    // DEFAULT_WORKER_RESTART_POLICY). Previous threshold (25600) was for
-    // isModelChunk() runtime type guard in validation-utils.ts.
+  test("index bundle is under 28KB", async () => {
+    // Threshold updated: heartbeat config validation added to
+    // validateSupervisorConfig (intervalMs>0, timeoutMs>0, timeoutMs>intervalMs).
+    // Previous threshold (27648) was for the @koi/daemon L0 surface.
     const file = Bun.file(resolve(DIST_DIR, "index.js"));
     const size = file.size;
-    expect(size).toBeLessThan(27648);
+    expect(size).toBeLessThan(28672);
   });
 });

@@ -877,6 +877,13 @@ interface WorkerBackend {
     readonly kill: (id: WorkerId) => Promise<Result<void, KoiError>>;
     readonly isAlive: (id: WorkerId) => Promise<boolean>;
     readonly watch: (id: WorkerId) => AsyncIterable<WorkerEvent>;
+    /**
+     * True if this backend emits \`WorkerEvent.heartbeat\` when a worker signals
+     * liveness. When undefined/false, the supervisor rejects \`backendHints.heartbeat\`
+     * opt-in at \`start()\` time — opting in on a backend that can't emit heartbeats
+     * would cause every worker to trip the missed-deadline timeout and be torn down.
+     */
+    readonly supportsHeartbeat?: boolean;
 }
 interface WorkerSpawnRequest {
     readonly workerId: WorkerId;

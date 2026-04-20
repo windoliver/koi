@@ -41,6 +41,13 @@ export interface WorkerBackend {
   readonly kill: (id: WorkerId) => Promise<Result<void, KoiError>>;
   readonly isAlive: (id: WorkerId) => Promise<boolean>;
   readonly watch: (id: WorkerId) => AsyncIterable<WorkerEvent>;
+  /**
+   * True if this backend emits `WorkerEvent.heartbeat` when a worker signals
+   * liveness. When undefined/false, the supervisor rejects `backendHints.heartbeat`
+   * opt-in at `start()` time — opting in on a backend that can't emit heartbeats
+   * would cause every worker to trip the missed-deadline timeout and be torn down.
+   */
+  readonly supportsHeartbeat?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +512,41 @@ export function validateSupervisorConfig(
         retryable: false,
       },
     };
+  }
+  if (config.heartbeat !== undefined) {
+    const h = config.heartbeat;
+    if (!Number.isFinite(h.intervalMs) || h.intervalMs <= 0) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "SupervisorConfig.heartbeat.intervalMs must be a finite number > 0",
+          retryable: false,
+        },
+      };
+    }
+    if (!Number.isFinite(h.timeoutMs) || h.timeoutMs <= 0) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "SupervisorConfig.heartbeat.timeoutMs must be a finite number > 0",
+          retryable: false,
+        },
+      };
+    }
+    if (h.timeoutMs <= h.intervalMs) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "SupervisorConfig.heartbeat.timeoutMs must be greater than intervalMs " +
+            "(otherwise every healthy worker times out before its next heartbeat lands)",
+          retryable: false,
+        },
+      };
+    }
   }
   return { ok: true, value: config };
 }

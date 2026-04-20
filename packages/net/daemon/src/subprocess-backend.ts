@@ -295,6 +295,7 @@ export function createSubprocessBackend(): WorkerBackend {
     kind: "subprocess",
     displayName: "Bun subprocess",
     isAvailable: () => typeof Bun !== "undefined" && typeof Bun.spawn === "function",
+    supportsHeartbeat: true,
     spawn,
     terminate,
     kill,

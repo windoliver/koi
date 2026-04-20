@@ -158,7 +158,24 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     publishEvent,
     teardown: async (id, reason) => {
       if (stopRef === undefined) return;
-      await stopRef(id, reason);
+      // Preserve the Result — silent drop would let a zombie worker survive
+      // while observability already reported "crashed". A failed teardown
+      // (terminate + kill both exhausted their deadlines) means the OS
+      // process may still be alive; surface it via a second crashed event
+      // so external observers see the degradation.
+      const result = await stopRef(id, reason);
+      if (!result.ok) {
+        publishEvent({
+          kind: "crashed",
+          workerId: id,
+          at: Date.now(),
+          error: {
+            code: "HEARTBEAT_TIMEOUT",
+            message: `Heartbeat-timeout teardown failed for worker ${id}: ${result.error.code} ${result.error.message}`,
+            retryable: false,
+          },
+        });
+      }
     },
     now: Date.now,
   });
@@ -433,6 +450,22 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         error: {
           code: "UNAVAILABLE",
           message: "No registered backend can handle this spawn",
+          retryable: false,
+        },
+      };
+    }
+    // Fail fast if the caller opted into heartbeat but the resolved backend
+    // doesn't emit heartbeat events. Otherwise every healthy worker would
+    // trip the missed-deadline timeout and be torn down.
+    if (isHeartbeatOptIn(request) && backend.supportsHeartbeat !== true) {
+      releaseReservations();
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            `Backend "${backend.displayName}" (kind=${backend.kind}) does not support heartbeat; ` +
+            "remove backendHints.heartbeat or route this worker to a backend with supportsHeartbeat=true",
           retryable: false,
         },
       };

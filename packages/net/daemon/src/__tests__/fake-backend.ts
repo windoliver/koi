@@ -36,6 +36,14 @@ export interface FakeBackendConfig {
    * assert pid refresh on restart.
    */
   readonly pidSeed?: number;
+  /**
+   * Advertises heartbeat support to the supervisor. Tests that opt workers
+   * into heartbeat via `backendHints.heartbeat=true` must set this — the
+   * supervisor rejects opt-in on backends without heartbeat support to
+   * avoid spurious timeouts on backends that never emit `heartbeat` events.
+   * Defaults to false (supervisor treats missing flag as "no heartbeat").
+   */
+  readonly supportsHeartbeat?: boolean;
 }
 
 export function createFakeBackend(
@@ -52,6 +60,7 @@ export function createFakeBackend(
     kind,
     displayName: "fake",
     isAvailable: () => true,
+    ...(config.supportsHeartbeat === true && { supportsHeartbeat: true }),
     spawn: async (req: WorkerSpawnRequest): Promise<Result<WorkerHandle, KoiError>> => {
       const controller = new AbortController();
       const state: FakeWorkerState = {

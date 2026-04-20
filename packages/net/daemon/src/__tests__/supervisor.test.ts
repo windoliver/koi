@@ -1672,8 +1672,33 @@ describe("supervisor.health()", () => {
     await supervisor.value.shutdown("test");
   });
 
+  it("rejects heartbeat opt-in at start() when backend.supportsHeartbeat is falsy", async () => {
+    // Fake backend defaults to supportsHeartbeat=undefined → supervisor must
+    // reject the opt-in with a VALIDATION error rather than silently enabling
+    // tracking (which would trip every worker's deadline).
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("no-cap-1"),
+      agentId: agentId("agent-no-cap"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("does not support heartbeat");
+    }
+    await supervisor.value.shutdown("test");
+  });
+
   it("heartbeat-opt-in worker: lastHeartbeatAt advances on each observed heartbeat", async () => {
-    const { backend, heartbeat } = createFakeBackend();
+    const { backend, heartbeat } = createFakeBackend({ supportsHeartbeat: true });
     const supervisor = createSupervisor({
       maxWorkers: 4,
       shutdownDeadlineMs: 500,
