@@ -1,10 +1,21 @@
 /**
- * Background repair worker — spec §6.5 step 4 (Plan 4 scaffolding).
+ * Background repair worker — spec §6.5 step 4.
  *
- * This file ships the lifecycle only: start / stop / runOnce / active. The
- * iteration body is a zero-stats stub that Task 5 fills in by calling
- * `drainBlobReadyZero` (Task 4) and the existing tombstone drain from
- * `drain-tombstones.ts`.
+ * Each iteration runs two drains in strict order:
+ *
+ *   1. `drainBlobReadyZero` (spec §6.5 step 4a) — probes every `blob_ready = 0`
+ *      row, promotes those whose blob is present, increments `repair_attempts`
+ *      (and terminal-deletes once the budget is exhausted) for those whose
+ *      blob is definitively absent, and leaves transient failures untouched.
+ *
+ *   2. `drainPendingBlobDeletes` (spec §6.3 Phase B, shipped in Plan 3) —
+ *      claims every unclaimed tombstone, deletes its blob, and reconciles
+ *      the tombstone row.
+ *
+ * Order matters. A terminal-delete in step 1 produces a tombstone that step
+ * 2 immediately drains within the SAME iteration — so a one-shot `runOnce()`
+ * suffices to fully retire a doomed `blob_ready = 0` row without waiting
+ * for the next tick.
  *
  * Lifecycle contract:
  *
@@ -40,17 +51,11 @@
 
 import type { Database } from "bun:sqlite";
 import type { BlobStore } from "@koi/blob-cas";
+import { drainBlobReadyZero } from "./drain-blob-ready-zero.js";
+import { createDrainTombstones } from "./drain-tombstones.js";
 import type { ArtifactStoreConfig, WorkerStats } from "./types.js";
 
 const DEFAULT_WORKER_INTERVAL_MS = 30_000;
-
-const ZERO_STATS: WorkerStats = {
-  promoted: 0,
-  terminallyDeleted: 0,
-  transientErrors: 0,
-  tombstonesDrained: 0,
-  bytesReclaimed: 0,
-};
 
 export interface RepairWorkerHandle {
   /**
@@ -81,19 +86,54 @@ export interface CreateRepairWorkerArgs {
   readonly blobStore: BlobStore;
   readonly config: ArtifactStoreConfig;
   /**
-   * Test-only iteration hook. Task 3 scaffolding keeps the production body
-   * a zero-stats stub (Tasks 4 and 5 fill in the real drains). Tests inject
-   * a custom async body to exercise timing / serialization without having
-   * to wire up a real Database + BlobStore. Never set this in production
-   * callers — the name is deliberately double-underscored for visibility.
+   * Terminal-delete budget for `blob_ready = 0` rows whose blob is
+   * definitively absent. Threaded through as a plain number (already
+   * validated + defaulted upstream in `create-store.ts`) so the worker
+   * doesn't reach back into `ArtifactStoreConfig` for a single field.
+   */
+  readonly maxRepairAttempts: number;
+  /**
+   * Test-only iteration hook. Production callers leave this undefined and
+   * the default iteration body runs `drainBlobReadyZero` then the Phase B
+   * tombstone drain. Tests inject a custom async body to exercise timing /
+   * serialization without having to wire up a real Database + BlobStore.
+   * Never set this in production callers — the name is deliberately
+   * double-underscored for visibility.
    */
   readonly __testIteration?: () => Promise<WorkerStats>;
 }
 
 export function createRepairWorker(args: CreateRepairWorkerArgs): RepairWorkerHandle {
   const intervalSetting = args.config.workerIntervalMs ?? DEFAULT_WORKER_INTERVAL_MS;
-  const iterationBody: () => Promise<WorkerStats> =
-    args.__testIteration ?? (async (): Promise<WorkerStats> => ZERO_STATS);
+  // Phase B drain factory: memoize once per worker so the closure captures
+  // `db` + `blobStore` and the iteration body stays a pure function call.
+  const drainTombstones = createDrainTombstones({
+    db: args.db,
+    blobStore: args.blobStore,
+  });
+  const defaultIterationBody = async (): Promise<WorkerStats> => {
+    // Phase A first — spec §6.5 step 4. A terminal-delete here produces a
+    // tombstone that Phase B immediately drains in the same iteration.
+    const a = await drainBlobReadyZero({
+      db: args.db,
+      blobStore: args.blobStore,
+      maxRepairAttempts: args.maxRepairAttempts,
+    });
+    // Phase B second. `drainPendingBlobDeletes` returns `{ reclaimed }`;
+    // the WorkerStats field is named `tombstonesDrained` (same concept,
+    // plan-level naming). Phase B swallows its own transient blobStore
+    // failures (claimed_at stays set for next drain) — those do not
+    // surface in WorkerStats. transientErrors reflects Phase A only.
+    const b = await drainTombstones();
+    return {
+      promoted: a.promoted,
+      terminallyDeleted: a.terminallyDeleted,
+      transientErrors: a.transientErrors,
+      tombstonesDrained: b.reclaimed,
+      bytesReclaimed: 0,
+    };
+  };
+  const iterationBody: () => Promise<WorkerStats> = args.__testIteration ?? defaultIterationBody;
 
   // Timer handle from Bun's global setInterval. Stored as `ReturnType<...>`
   // rather than `number` because Bun/Node typings disagree and we only need
