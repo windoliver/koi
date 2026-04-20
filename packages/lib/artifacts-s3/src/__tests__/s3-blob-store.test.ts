@@ -420,4 +420,63 @@ describe("createS3BlobStore", () => {
       expect(hash).toBe(HELLO_HASH);
     });
   });
+
+  describe("store-id sentinel (Plan 5 Task 5)", () => {
+    test("writeStoreId PUTs the UUID at `<prefix>/__store_id__`", async () => {
+      s3Mock.on(PutObjectCommand).resolves({});
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "tenant-a/blobs" });
+      const uuid = "12345678-1234-4234-a234-1234567890ab";
+
+      await store.sentinel?.writeStoreId(uuid);
+
+      const calls = s3Mock.commandCalls(PutObjectCommand);
+      expect(calls).toHaveLength(1);
+      const input = calls[0]?.args[0].input;
+      expect(input?.Bucket).toBe("test-bucket");
+      expect(input?.Key).toBe("tenant-a/blobs/__store_id__");
+      // Body is the UUID encoded as UTF-8 bytes — not a hash, not sharded.
+      expect(input?.Body).toEqual(new TextEncoder().encode(uuid));
+    });
+
+    test("writeStoreId with empty prefix uses `__store_id__` at the bucket root", async () => {
+      s3Mock.on(PutObjectCommand).resolves({});
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "" });
+
+      await store.sentinel?.writeStoreId("00000000-0000-4000-8000-000000000000");
+
+      const input = s3Mock.commandCalls(PutObjectCommand)[0]?.args[0].input;
+      expect(input?.Key).toBe("__store_id__");
+    });
+
+    test("readStoreId returns the UUID written by a prior writeStoreId", async () => {
+      const uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      s3Mock.on(GetObjectCommand).resolves({ Body: bodyFromBytes(new TextEncoder().encode(uuid)) });
+
+      const store = createS3BlobStore(baseConfig());
+      const got = await store.sentinel?.readStoreId();
+      expect(got).toBe(uuid);
+
+      const calls = s3Mock.commandCalls(GetObjectCommand);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.args[0].input.Key).toBe("__store_id__");
+    });
+
+    test("readStoreId returns undefined when sentinel is absent (NoSuchKey)", async () => {
+      const err = new Error("not found");
+      err.name = "NoSuchKey";
+      s3Mock.on(GetObjectCommand).rejects(err);
+
+      const store = createS3BlobStore(baseConfig());
+      expect(await store.sentinel?.readStoreId()).toBeUndefined();
+    });
+
+    test("readStoreId returns undefined for NotFound (HeadObject-style errors from GetObject on some S3-compatibles)", async () => {
+      const err = new Error("not found");
+      err.name = "NotFound";
+      s3Mock.on(GetObjectCommand).rejects(err);
+
+      const store = createS3BlobStore(baseConfig());
+      expect(await store.sentinel?.readStoreId()).toBeUndefined();
+    });
+  });
 });

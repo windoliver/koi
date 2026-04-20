@@ -24,9 +24,17 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import type { BlobStore } from "@koi/blob-cas";
+import type { BlobStore, StoreIdSentinel } from "@koi/blob-cas";
 import type { S3BlobStoreConfig } from "./config.js";
 import { validateS3BlobStoreConfig } from "./config.js";
+
+/**
+ * Sentinel key for the store-id pairing blob (spec §3.0 Layer 2). Chosen so
+ * it cannot collide with any content-addressed blob: the CAS layout is
+ * `<shard>/<hash>` (shard = 2 hex chars), and `__store_id__` is neither a
+ * 2-char hex shard nor a 64-char hex hash — list() already filters it out.
+ */
+const STORE_ID_SENTINEL_KEY = "__store_id__";
 
 const HASH_SHARD_LEN = 2;
 const HASH_HEX_LEN = 64;
@@ -206,11 +214,48 @@ export function createS3BlobStore(config: S3BlobStoreConfig): BlobStore {
     } while (continuationToken !== undefined);
   }
 
+  // Store-id sentinel (spec §3.0). Lives at `<prefix>/__store_id__` (or
+  // `__store_id__` with an empty prefix). Uses PutObject for writes and
+  // GetObject for reads — S3's strong read-after-write consistency makes the
+  // sentinel durable the moment `writeStoreId` resolves.
+  const sentinelKey = prefix === "" ? STORE_ID_SENTINEL_KEY : `${prefix}/${STORE_ID_SENTINEL_KEY}`;
+
+  const sentinel: StoreIdSentinel = {
+    readStoreId: async () => {
+      try {
+        const response = await client.send(
+          new GetObjectCommand({ Bucket: bucket, Key: sentinelKey }),
+        );
+        if (response.Body === undefined) return undefined;
+        const body = response.Body as { readonly transformToByteArray: () => Promise<Uint8Array> };
+        const bytes = await body.transformToByteArray();
+        return new TextDecoder().decode(bytes);
+      } catch (err) {
+        if (hasErrorName(err, "NoSuchKey") || hasErrorName(err, "NotFound")) return undefined;
+        throw new Error("S3 get failed for store-id sentinel", { cause: err });
+      }
+    },
+    writeStoreId: async (uuid: string) => {
+      try {
+        await client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: sentinelKey,
+            Body: new TextEncoder().encode(uuid),
+          }),
+        );
+      } catch (err) {
+        throw new Error("S3 put failed for store-id sentinel", { cause: err });
+      }
+    },
+  };
+
   return {
     put,
     get,
     has,
     delete: deleteBlob,
     list,
+    sentinel,
   };
 }

@@ -1,4 +1,4 @@
-export type { BlobStore } from "./blob-store.js";
+export type { BlobStore, StoreIdSentinel } from "./blob-store.js";
 export { createFilesystemBlobStore } from "./blob-store.js";
 export {
   blobPath,

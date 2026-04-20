@@ -51,6 +51,10 @@ mock.module("@koi/blob-cas", () => {
           counters.list++;
           return real.list();
         },
+        // Forward the FS sentinel — Plan 5 routes store-id pairing through
+        // `blobStore.sentinel`, so tests wrapping the real store must
+        // preserve it.
+        ...(real.sentinel !== undefined ? { sentinel: real.sentinel } : {}),
       };
     },
   };

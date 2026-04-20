@@ -11,6 +11,7 @@
  * only — never returned.
  */
 
+import type { BlobStore } from "@koi/blob-cas";
 import type { ArtifactId, SessionId } from "@koi/core";
 
 export interface Artifact {
@@ -131,7 +132,22 @@ export interface ArtifactStore {
 
 export interface ArtifactStoreConfig {
   readonly dbPath: string;
-  readonly blobDir: string;
+  /**
+   * Root directory for the default filesystem `BlobStore`. Required when
+   * `blobStore` is omitted. Ignored when `blobStore` is provided (the
+   * pluggable backend owns its own root).
+   */
+  readonly blobDir?: string;
+  /**
+   * Optional `BlobStore` override (Plan 5 — #1922). When provided, the store
+   * uses this backend verbatim and skips all FS-specific bootstrap
+   * (`mkdirSync(blobDir)`, `createFilesystemBlobStore`). The backend-agnostic
+   * store-id sentinel (§3.0) pairs the metadata DB against
+   * `blobStore.sentinel` rather than a filesystem path. Built-in factories
+   * (`createFilesystemBlobStore`, `createS3BlobStore`) populate `sentinel`
+   * automatically; third-party backends that omit it cannot be used here.
+   */
+  readonly blobStore?: BlobStore;
   readonly durability?: "process" | "os";
   readonly maxArtifactBytes?: number;
   /**
@@ -200,9 +216,6 @@ export interface ArtifactStoreConfig {
    * expected and operationally silent.
    */
   readonly onEvent?: (event: ArtifactStoreEvent) => void;
-  // Plan 5 (#1922) will add `blobStore: BlobStore` for pluggable backends —
-  // still omitted from the public surface so the type never advertises a
-  // field that would be rejected at runtime.
 }
 
 /**

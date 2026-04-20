@@ -139,15 +139,24 @@ describe("saveArtifact", () => {
     expect(r2.value.version).toBe(1); // Same version, not bumped
   });
 
-  test("rejects smuggled blobStore with Plan 5 pointer", async () => {
+  test("accepts a pluggable blobStore override (Plan 5)", async () => {
+    // Plan 5 exposes `blobStore` on ArtifactStoreConfig. Providing a custom
+    // `BlobStore` must round-trip saves/gets through that backend — no
+    // pre-existing FS-layout assumptions.
+    await store.close();
     const { createFilesystemBlobStore } = await import("@koi/blob-cas");
-    const customBlobStore = createFilesystemBlobStore(blobDir);
-    // The public type no longer declares blobStore; verify the runtime
-    // defense-in-depth still catches JS callers that smuggle it in.
-    const smuggled = { dbPath: "/tmp/fake.db", blobDir, blobStore: customBlobStore } as never;
-    await expect(createArtifactStore(smuggled)).rejects.toThrow(
-      /blobStore is not supported in Plan 2/,
-    );
+    const override = createFilesystemBlobStore(blobDir);
+    const freshDbPath = join(blobDir, "override.db");
+    const s2 = await createArtifactStore({ dbPath: freshDbPath, blobStore: override });
+    const r = await s2.saveArtifact({
+      sessionId: sessionId("sess_a"),
+      name: "a.txt",
+      data: new TextEncoder().encode("hello-override"),
+      mimeType: "text/plain",
+    });
+    if (!r.ok) throw new Error(`save failed: ${r.error.kind}`);
+    expect(r.value.version).toBe(1);
+    await s2.close();
   });
 
   test("save succeeds when under maxSessionBytes quota", async () => {

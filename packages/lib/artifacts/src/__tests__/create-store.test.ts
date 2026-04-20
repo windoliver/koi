@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BlobStore } from "@koi/blob-cas";
@@ -56,6 +56,10 @@ mock.module("@koi/blob-cas", () => {
           if (deleteGate.pending !== undefined) await deleteGate.pending;
           return real.delete(hash);
         },
+        // Forward the real FS sentinel — Plan 5 routes store-id pairing
+        // through `blobStore.sentinel`, so omitting it here would make every
+        // test that calls `createArtifactStore` fail with "missing sentinel".
+        ...(real.sentinel !== undefined ? { sentinel: real.sentinel } : {}),
       };
     },
   };
@@ -141,6 +145,105 @@ describe("createArtifactStore (skeleton)", () => {
       blobDir,
     });
     await store.close();
+  });
+});
+
+/**
+ * Plan 5: `blobStore` override on `ArtifactStoreConfig`. Callers may supply a
+ * non-FS backend (S3, in-memory, etc.); the store routes all reads/writes +
+ * the store-id sentinel through that backend and skips all FS-specific
+ * bootstrap (no `mkdirSync(blobDir)`, no default filesystem factory).
+ */
+describe("createArtifactStore (blobStore override, Plan 5)", () => {
+  let dbPath: string;
+  let blobDir: string;
+
+  beforeEach(() => {
+    blobDir = join(tmpdir(), `koi-art-ovr-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    dbPath = join(blobDir, "store.db");
+  });
+
+  afterEach(() => {
+    rmSync(blobDir, { recursive: true, force: true });
+  });
+
+  /** In-memory `BlobStore` backed by a `Map` + its own sentinel. */
+  function createMemBackend(): BlobStore {
+    const blobs = new Map<string, Uint8Array>();
+    const sentinelState: { value: string | undefined } = { value: undefined };
+    async function hashHex(data: Uint8Array): Promise<string> {
+      const h = new Bun.CryptoHasher("sha256");
+      h.update(data);
+      return h.digest("hex");
+    }
+    async function* list(): AsyncIterable<string> {
+      for (const k of blobs.keys()) yield k;
+    }
+    return {
+      put: async (data) => {
+        const h = await hashHex(data);
+        blobs.set(h, data);
+        return h;
+      },
+      get: async (h) => blobs.get(h),
+      has: async (h) => blobs.has(h),
+      delete: async (h) => blobs.delete(h),
+      list,
+      sentinel: {
+        readStoreId: async () => sentinelState.value,
+        writeStoreId: async (uuid) => {
+          sentinelState.value = uuid;
+        },
+      },
+    };
+  }
+
+  test("accepts blobStore override (no throw)", async () => {
+    const override = createMemBackend();
+    const store = await createArtifactStore({ dbPath, blobDir, blobStore: override });
+    expect(typeof store.close).toBe("function");
+    await store.close();
+  });
+
+  test("override + omitted blobDir: save/get round-trips without touching the FS", async () => {
+    const override = createMemBackend();
+    // :memory: DB so nothing hits the filesystem at all.
+    const store = await createArtifactStore({
+      dbPath: ":memory:",
+      blobStore: override,
+    });
+    const save = await store.saveArtifact({
+      sessionId: sessionId("sess_a"),
+      name: "a.txt",
+      data: new TextEncoder().encode("hello"),
+      mimeType: "text/plain",
+    });
+    if (!save.ok) throw new Error(`save failed: ${save.error.kind}`);
+    const got = await store.getArtifact(save.value.id, { sessionId: sessionId("sess_a") });
+    if (!got.ok) throw new Error(`get failed: ${got.error.kind}`);
+    expect(new TextDecoder().decode(got.value.data)).toBe("hello");
+    // The backend actually holds the bytes (proving the override was used).
+    expect(await override.has(save.value.contentHash)).toBe(true);
+    await store.close();
+  });
+
+  test("override + persistent DB: store-id sentinel lives on the backend, not the FS", async () => {
+    const override = createMemBackend();
+    const store = await createArtifactStore({ dbPath, blobDir, blobStore: override });
+    await store.close();
+    // FS sentinel was never written — override owns its own sentinel.
+    expect(existsSync(join(blobDir, ".store-id"))).toBe(false);
+    const raw = await override.sentinel?.readStoreId();
+    expect(raw).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  test("neither blobDir nor blobStore → throws", async () => {
+    // Both fields are optional on the type (either satisfies construction),
+    // so the runtime guard is the only line of defense.
+    await expect(createArtifactStore({ dbPath: ":memory:" })).rejects.toThrow(
+      /requires either `blobDir`.*or `blobStore`/,
+    );
   });
 });
 

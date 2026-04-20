@@ -43,14 +43,13 @@ import type {
 import { createRepairWorker } from "./worker.js";
 
 export async function createArtifactStore(config: ArtifactStoreConfig): Promise<ArtifactStore> {
-  // Defense in depth: the public type does not declare blobStore, but a JS
-  // caller can still smuggle it in. Reject loudly rather than silently
-  // ignore — Plan 5 (#1922) adds pluggable backends with remote-backend
-  // sentinel pairing.
-  const smuggled = config as unknown as { readonly blobStore?: unknown };
-  if (smuggled.blobStore !== undefined) {
+  // Plan 5: `blobStore` override is public. When provided, the store uses it
+  // verbatim and skips FS-specific bootstrap (`mkdirSync(blobDir, ...)`,
+  // default filesystem factory). `blobDir` is still required for the default
+  // FS backend (both as the blob root and as the lock-file directory).
+  if (config.blobStore === undefined && config.blobDir === undefined) {
     throw new Error(
-      "ArtifactStoreConfig.blobStore is not supported in Plan 2 — use the default FS backend via blobDir. Plan 5 (#1922) adds pluggable backends with remote-backend sentinel pairing.",
+      "ArtifactStoreConfig requires either `blobDir` (for the default filesystem backend) or `blobStore` (for a pluggable backend).",
     );
   }
 
@@ -117,21 +116,40 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     );
   }
 
-  // Ensure the blob directory and the DB's containing directory exist
-  // before lock acquisition writes its tmp files. A brand-new store open
-  // should succeed without requiring the caller to pre-create directories.
-  mkdirSync(config.blobDir, { recursive: true });
+  // Ensure the DB's containing directory exists before lock acquisition writes
+  // its tmp files. For the default FS backend, also pre-create `blobDir`. For
+  // a `blobStore` override, the backend owns its own root; we only need a
+  // filesystem directory for the advisory-lock tmp file (alongside the DB).
   if (!isInMemoryDbPath(config.dbPath)) {
     mkdirSync(dirname(config.dbPath), { recursive: true });
   }
+  if (config.blobStore === undefined) {
+    // Non-null: the smuggle-check at the top rejected `blobStore === undefined &&
+    // blobDir === undefined`, so when `blobStore === undefined` we know
+    // `blobDir` is defined.
+    const blobDir = config.blobDir;
+    if (blobDir === undefined) {
+      throw new Error("unreachable: blobDir guaranteed by config validation above");
+    }
+    mkdirSync(blobDir, { recursive: true });
+  }
 
+  // The filesystem blobDir-lock (spec §3.0 Layer 1a) is a defense against two
+  // :memory: DBs sharing a single local blob directory. For a pluggable
+  // `blobStore`, the backend's own store-id sentinel (Layer 2) is the
+  // corresponding defense — no local-filesystem lock applies. `acquireLock`
+  // skips its Layer-1a lock when `blobDir` is undefined.
   const releaseLock = acquireLock(config.dbPath, config.blobDir);
 
   let db: Database | undefined;
   try {
     db = openDatabase(config);
-    const blobStore: BlobStore = createFilesystemBlobStore(config.blobDir);
-    await ensureStoreIdPair({ db, blobDir: config.blobDir, blobStore });
+    const blobStore: BlobStore =
+      config.blobStore ??
+      // `blobDir` is guaranteed by the validation at the top when `blobStore`
+      // is undefined — the fallback string keeps TS happy but is unreachable.
+      createFilesystemBlobStore(config.blobDir ?? "");
+    await ensureStoreIdPair({ db, blobStore });
 
     // Startup recovery (spec §6.5 Plan 4): local SQLite DML only. Drains
     // stale pending_blob_puts and resolves the subset of bound intents that
