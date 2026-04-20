@@ -85,11 +85,21 @@ Mid-file `parse_error` is always rejected regardless of strategy.
 
 ## Compaction (`summarizeSession` only)
 
-`summarizeRange` rejects compacted transcripts outright (`RANGE_COMPACTED`).
+`summarizeRange` rejects compacted transcripts with `error.code === "VALIDATION"`
+and `error.context.reason === "range-compacted"`.
 `summarizeSession` accepts them with `allowCompacted: true`; the result comes
 back as `kind: "compacted"` with a `derived` body, and `meta.rangeOrigin ===
 "post-compaction"` so consumers don't persist synthetic turn bounds as original
 session turns.
+
+Without `allowCompacted: true`, `summarizeSession` fails with
+`error.code === "VALIDATION"` and `error.context.reason === "session-compacted"`.
+
+## Error signaling contract
+
+`@koi/agent-summary` uses shared `KoiError.code` values from `@koi/core`
+(`VALIDATION`, `NOT_FOUND`, `EXTERNAL`) and carries summary-specific routing
+detail in `error.context.reason`.
 
 ## Cache
 
@@ -99,6 +109,5 @@ request (identity, integrity invariants, Zod shape) before surfacing.
 
 ## Full API
 
-See `packages/lib/agent-summary/src/types.ts` for types,
-`docs/superpowers/specs/2026-04-17-agent-summary-design.md` for design rationale
-and integrity policy.
+See `packages/lib/agent-summary/src/types.ts` for public types and
+`packages/lib/agent-summary/src/__tests__/` for executable integrity and edge-case behavior.

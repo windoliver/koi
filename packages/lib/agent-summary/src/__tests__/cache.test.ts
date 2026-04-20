@@ -154,7 +154,7 @@ describe("cacheKey skipped fingerprint", () => {
 });
 
 describe("createMemoryCache", () => {
-  test("miss → set → hit", async () => {
+  test("miss → set → hit returns a defensive clone", async () => {
     const cache = createMemoryCache();
     const key = "k1";
     expect(await cache.get(key)).toBeUndefined();
@@ -181,6 +181,13 @@ describe("createMemoryCache", () => {
       },
     };
     await cache.set(key, env);
-    expect(await cache.get(key)).toBe(env);
+    const firstHit = await cache.get(key);
+    expect(firstHit).toEqual(env);
+    expect(firstHit).not.toBe(env);
+    if (firstHit && firstHit.kind === "clean") {
+      (firstHit.summary as unknown as { goal: string }).goal = "mutated";
+    }
+    const secondHit = await cache.get(key);
+    expect(secondHit).toEqual(env);
   });
 });

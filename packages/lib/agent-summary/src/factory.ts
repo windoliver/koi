@@ -60,6 +60,7 @@ interface PipelineArgs {
 export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
   const cache = deps.cache ?? createMemoryCache();
   const clock = deps.clock ?? Date.now;
+  const inFlight = new Map<string, Promise<Result<SummaryOk, KoiError>>>();
   const emit = (e: SummaryEvent): void => {
     deps.onEvent?.(e);
   };
@@ -96,179 +97,207 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
       droppedTailTurns,
     });
 
-    if (degraded) {
-      emit({
-        kind: "transcript.skipped",
-        hash,
-        skippedCount: skipped.length,
-      });
-    }
-
     const expectedKind: SummaryOk["kind"] = hasCompactionPrefix
       ? "compacted"
       : degraded
         ? "degraded"
         : "clean";
 
-    let cached: SummaryOk | undefined;
-    try {
-      cached = await cache.get(hash);
-    } catch (err) {
-      emit({
-        kind: "cache.read_fail",
-        hash,
-        error: asKoiError("cache_get_threw", err),
-      });
-      cached = undefined;
+    const pending = inFlight.get(hash);
+    if (pending !== undefined) {
+      const joined = await pending;
+      return cloneSuccessfulResult(joined);
     }
-    if (cached !== undefined) {
-      const valid = validateCachedEnvelope(cached, {
-        expectedHash: hash,
-        expectedSessionId: sessionId,
-        expectedFromTurn: fromTurn,
-        expectedToTurn: toTurn,
-        expectedKind,
-        expectedHasCompactionPrefix: hasCompactionPrefix,
-        expectedRangeOrigin: hasCompactionPrefix ? "post-compaction" : "raw",
-        expectedSkipped: skipped,
-        expectedDroppedTailTurns: droppedTailTurns,
-        expectedCompactionEntryCount: compactionEntryCount,
-      });
-      if (valid.ok) {
-        emit({ kind: "cache.hit", hash });
-        return { ok: true, value: valid.value };
+
+    const active = (async (): Promise<Result<SummaryOk, KoiError>> => {
+      if (degraded) {
+        emit({
+          kind: "transcript.skipped",
+          hash,
+          skippedCount: skipped.length,
+        });
       }
-      emit({ kind: "cache.corrupt", hash, reason: valid.error.reason });
-    }
-    emit({ kind: "cache.miss", hash });
 
-    const { system, user } = buildPrompt(entries, {
-      granularity: resolved.granularity,
-      focus: resolved.focus,
-      maxTokens: resolved.maxTokens,
-      hasCompactionPrefix,
-    });
-
-    const callOnce = async (strict: boolean): Promise<string> => {
-      const systemMsg = strict
-        ? buildPrompt(entries, {
-            granularity: resolved.granularity,
-            focus: resolved.focus,
-            maxTokens: resolved.maxTokens,
-            hasCompactionPrefix,
-            strictRetry: true,
-          }).system
-        : system;
-      emit({ kind: "model.start", hash, maxTokens: resolved.maxTokens });
-      const start = clock();
-      const resp = await deps.modelCall({
-        messages: [
-          { role: "system", content: systemMsg },
-          { role: "user", content: user },
-        ],
-        maxTokens: resolved.maxTokens,
-        responseFormat: "json",
-        metadata: {
-          summaryMode: resolved.granularity,
-          modelHint: resolved.modelHint,
-        },
-      });
-      emit({ kind: "model.end", hash, elapsedMs: clock() - start });
-      return resp.text;
-    };
-
-    let text: string;
-    try {
-      text = await callOnce(false);
-    } catch (err) {
-      return {
-        ok: false,
-        error: {
-          code: "EXTERNAL",
-          message: "modelCall rejected",
-          retryable: true,
-          context: { cause: String(err) },
-        },
-      };
-    }
-
-    let parsed = parseOutput(text);
-    if (!parsed.ok) {
-      emit({ kind: "parse.retry", hash });
+      let cached: SummaryOk | undefined;
       try {
-        text = await callOnce(true);
+        cached = await cache.get(hash);
+      } catch (err) {
+        emit({
+          kind: "cache.read_fail",
+          hash,
+          error: asKoiError("cache_get_threw", err),
+        });
+        cached = undefined;
+      }
+      if (cached !== undefined) {
+        const valid = validateCachedEnvelope(cached, {
+          expectedHash: hash,
+          expectedSessionId: sessionId,
+          expectedFromTurn: fromTurn,
+          expectedToTurn: toTurn,
+          expectedKind,
+          expectedHasCompactionPrefix: hasCompactionPrefix,
+          expectedRangeOrigin: hasCompactionPrefix ? "post-compaction" : "raw",
+          expectedSkipped: skipped,
+          expectedDroppedTailTurns: droppedTailTurns,
+          expectedCompactionEntryCount: compactionEntryCount,
+        });
+        if (valid.ok) {
+          emit({ kind: "cache.hit", hash });
+          return { ok: true, value: valid.value };
+        }
+        emit({ kind: "cache.corrupt", hash, reason: valid.error.reason });
+      }
+      emit({ kind: "cache.miss", hash });
+
+      const { system, user } = buildPrompt(entries, {
+        granularity: resolved.granularity,
+        focus: resolved.focus,
+        maxTokens: resolved.maxTokens,
+        hasCompactionPrefix,
+      });
+
+      const callOnce = async (strict: boolean): Promise<string> => {
+        const systemMsg = strict
+          ? buildPrompt(entries, {
+              granularity: resolved.granularity,
+              focus: resolved.focus,
+              maxTokens: resolved.maxTokens,
+              hasCompactionPrefix,
+              strictRetry: true,
+            }).system
+          : system;
+        emit({ kind: "model.start", hash, maxTokens: resolved.maxTokens });
+        const start = clock();
+        const resp = await deps.modelCall({
+          messages: [
+            { role: "system", content: systemMsg },
+            { role: "user", content: user },
+          ],
+          maxTokens: resolved.maxTokens,
+          responseFormat: "json",
+          metadata: {
+            summaryMode: resolved.granularity,
+            modelHint: resolved.modelHint,
+          },
+        });
+        emit({ kind: "model.end", hash, elapsedMs: clock() - start });
+        return resp.text;
+      };
+
+      let text: string;
+      try {
+        text = await callOnce(false);
       } catch (err) {
         return {
           ok: false,
           error: {
             code: "EXTERNAL",
-            message: "modelCall rejected on retry",
+            message: "modelCall rejected",
             retryable: true,
-            context: { cause: String(err) },
+            context: {
+              cause: String(err),
+              reason: "model-error",
+              stage: "initial",
+            },
           },
         };
       }
-      parsed = parseOutput(text);
+
+      let parsed = parseOutput(text);
       if (!parsed.ok) {
-        emit({ kind: "parse.fail", hash });
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: parsed.error.reason,
-            retryable: false,
-          },
-        };
-      }
-    }
-
-    const body: SessionSummary = {
-      sessionId,
-      range: { fromTurn, toTurn, entryCount: entries.length },
-      goal: parsed.value.goal,
-      status: parsed.value.status,
-      actions: parsed.value.actions.map((a) => ({
-        kind: a.kind,
-        name: a.name,
-        ...(a.paths !== undefined && a.paths !== null ? { paths: a.paths } : {}),
-        ...(a.detail !== undefined && a.detail !== null ? { detail: a.detail } : {}),
-      })),
-      outcomes: parsed.value.outcomes,
-      errors: parsed.value.errors,
-      learnings: parsed.value.learnings,
-      meta: {
-        granularity: resolved.granularity,
-        modelHint: resolved.modelHint,
-        hash,
-        generatedAt: clock(),
-        schemaVersion: 1,
-        hasCompactionPrefix,
-        rangeOrigin: hasCompactionPrefix ? "post-compaction" : "raw",
-      },
-    };
-
-    const envelope: SummaryOk = hasCompactionPrefix
-      ? {
-          kind: "compacted",
-          derived: body,
-          compactionEntryCount,
-          skipped,
-          droppedTailTurns,
+        emit({ kind: "parse.retry", hash });
+        try {
+          text = await callOnce(true);
+        } catch (err) {
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: "modelCall rejected on retry",
+              retryable: true,
+              context: {
+                cause: String(err),
+                reason: "model-error",
+                stage: "retry",
+              },
+            },
+          };
         }
-      : degraded
-        ? { kind: "degraded", partial: body, skipped, droppedTailTurns }
-        : { kind: "clean", summary: body };
+        parsed = parseOutput(text);
+        if (!parsed.ok) {
+          emit({ kind: "parse.fail", hash });
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: parsed.error.reason,
+              retryable: false,
+              context: {
+                reason: "parse-error",
+                detail: parsed.error.reason,
+              },
+            },
+          };
+        }
+      }
 
+      const body: SessionSummary = {
+        sessionId,
+        range: { fromTurn, toTurn, entryCount: entries.length },
+        goal: parsed.value.goal,
+        status: parsed.value.status,
+        actions: parsed.value.actions.map((a) => ({
+          kind: a.kind,
+          name: a.name,
+          ...(a.paths !== undefined && a.paths !== null ? { paths: a.paths } : {}),
+          ...(a.detail !== undefined && a.detail !== null ? { detail: a.detail } : {}),
+        })),
+        outcomes: parsed.value.outcomes,
+        errors: parsed.value.errors,
+        learnings: parsed.value.learnings,
+        meta: {
+          granularity: resolved.granularity,
+          modelHint: resolved.modelHint,
+          hash,
+          generatedAt: clock(),
+          schemaVersion: 1,
+          hasCompactionPrefix,
+          rangeOrigin: hasCompactionPrefix ? "post-compaction" : "raw",
+        },
+      };
+
+      const envelope: SummaryOk = hasCompactionPrefix
+        ? {
+            kind: "compacted",
+            derived: body,
+            compactionEntryCount,
+            skipped,
+            droppedTailTurns,
+          }
+        : degraded
+          ? { kind: "degraded", partial: body, skipped, droppedTailTurns }
+          : { kind: "clean", summary: body };
+
+      try {
+        await cache.set(hash, envelope);
+      } catch (err) {
+        emit({
+          kind: "cache.write_fail",
+          hash,
+          error: asKoiError("cache_set_threw", err),
+        });
+      }
+      return { ok: true, value: envelope };
+    })();
+
+    inFlight.set(hash, active);
     try {
-      await cache.set(hash, envelope);
-    } catch (err) {
-      emit({
-        kind: "cache.write_fail",
-        hash,
-        error: asKoiError("cache_set_threw", err),
-      });
+      const settled = await active;
+      return cloneSuccessfulResult(settled);
+    } finally {
+      if (inFlight.get(hash) === active) inFlight.delete(hash);
     }
-    return { ok: true, value: envelope };
   };
 
   const summarizeSession = async (
@@ -542,4 +571,8 @@ function asKoiError(prefix: string, cause: unknown): KoiError {
     message: `${prefix}: ${cause instanceof Error ? cause.message : String(cause)}`,
     retryable: false,
   };
+}
+
+function cloneSuccessfulResult(result: Result<SummaryOk, KoiError>): Result<SummaryOk, KoiError> {
+  return result.ok ? { ok: true, value: structuredClone(result.value) } : result;
 }
