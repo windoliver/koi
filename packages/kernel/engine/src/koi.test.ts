@@ -5041,6 +5041,76 @@ describe("createKoi stop gate", () => {
     expect(turnEnds.length).toBe(DEFAULT_MAX_STOP_RETRIES);
   });
 
+  test("stop-gate retry survives adapter.inject throw (#review-round3-F2)", async () => {
+    // An unguarded `adapter.inject` throw inside the stop-gate block path
+    // used to hard-fail the retry, escalating a recoverable veto into a
+    // user-visible error. With the try/catch, the retry proceeds via
+    // `pendingStopInput` delivery.
+    const { middleware } = blockingStopMiddleware(1);
+    const { adapter: baseAdapter, streamCalls } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    // Wrap inject to throw on the stop-gate block call.
+    const adapter = {
+      ...baseAdapter,
+      inject: async (_msg: unknown): Promise<void> => {
+        throw new Error("simulated inject failure");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+    const kinds = events.map((e) => e.kind);
+
+    // Retry must have proceeded — we expect the full sequence
+    // turn_start → turn_end (blocked) → turn_start → done.
+    expect(kinds).toEqual(["turn_start", "turn_end", "turn_start", "done"]);
+    expect(streamCalls.length).toBe(2);
+  });
+
+  test("agent.lifecycle.turnIndex is post-advance in onAfterTurn for blocked turns (#review-round3-F3)", async () => {
+    // Middleware's onAfterTurn hook must see the same lifecycle
+    // turnIndex value for blocked turns as for normal turns — i.e. the
+    // POST-advance value. Before round 3, blocked turns ran
+    // onAfterTurn BEFORE advance_turn, so middleware saw a stale
+    // off-by-one.
+    const observedInHook: number[] = [];
+    const recorderMiddleware: KoiMiddleware = {
+      name: "turnindex-recorder",
+      describeCapabilities: () => undefined,
+      onAfterTurn: async (_ctx) => {
+        // Read the live lifecycle value at hook time.
+        const lc = runtime.agent.lifecycle;
+        observedInHook.push(lc.state === "running" ? lc.turnIndex : -1);
+      },
+    };
+    const { middleware: blocker } = blockingStopMiddleware(1);
+    const { adapter } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [recorderMiddleware, blocker],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    // Exactly one onAfterTurn fires for the blocked turn (the retry
+    // completes normally without emitting turn_end). The observed
+    // value must be the post-advance 1, not the pre-advance 0.
+    expect(observedInHook).toEqual([1]);
+  });
+
   test("agent.lifecycle.turnIndex advances across stop-gate block retries (#review-round2-F3)", async () => {
     // Stop-gate blocks emit a synthetic turn_end. Without the advance_turn
     // call in the block path (or with the wrong ordering), the lifecycle

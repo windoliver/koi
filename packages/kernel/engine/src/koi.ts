@@ -1251,14 +1251,43 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           }
 
           // Deferred forge refresh: runs AFTER consumer processed turn_end,
-          // so tools/middleware injected between turns take effect next turn
+          // so tools/middleware injected between turns take effect next turn.
+          //
+          // #review-round3-F1: drain to a stable state. If `forge.watch`
+          // fires DURING the `await refreshForgeState()` below, the
+          // callback sets `forgeStateDirty = true` again. Without looping,
+          // that mid-refresh change is visible to the FSM's sequence gate
+          // (good — no stale commit) but the follow-up recomposition does
+          // not re-run, so forged middleware activated between turns could
+          // miss a turn. Loop until the dirty flag stays clear across a
+          // full refresh cycle.
           if (pendingForgeRefresh) {
             pendingForgeRefresh = false;
-            // Skip refresh if watch is active and nothing changed since last notification
-            const shouldRefresh = forge?.watch === undefined || forgeStateDirty;
-            if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
-              forgeStateDirty = false;
-              await refreshForgeState(cachedTerminals);
+            if (forge !== undefined && cachedTerminals !== undefined) {
+              // When `forge.watch` is active, only refresh when dirty.
+              // Without `watch`, always refresh (no push notification to
+              // flag dirty).
+              if (forge.watch === undefined) {
+                await refreshForgeState(cachedTerminals);
+              } else {
+                // Drain: a concurrent watch event during refresh raises
+                // the dirty flag mid-await; loop until we complete a
+                // refresh cycle without new changes landing.
+                // let justified: mutable loop guard with hard cap to
+                // prevent pathological drain loops
+                let drainIterations = 0;
+                const DRAIN_CAP = 8;
+                while (forgeStateDirty && drainIterations < DRAIN_CAP) {
+                  forgeStateDirty = false;
+                  drainIterations++;
+                  await refreshForgeState(cachedTerminals);
+                }
+                if (drainIterations === DRAIN_CAP && forgeStateDirty) {
+                  console.warn(
+                    "[koi] forge refresh drain cap reached; proceeding with possibly-stale state",
+                  );
+                }
+              }
             }
           }
 
@@ -1383,8 +1412,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                   // Inject block reason via adapter.inject() if available
                   // as a best-effort hint to the running adapter state.
+                  //
+                  // #review-round3-F2: inject is documented as best-effort,
+                  // but an unguarded throw here hard-fails the retry and
+                  // escalates a recoverable stop-gate veto into a
+                  // user-visible error. Swallow inject failures so the
+                  // `pendingStopInput` path (the guaranteed delivery route)
+                  // still runs.
                   if (adapter.inject !== undefined) {
-                    await adapter.inject(blockMessage);
+                    try {
+                      await adapter.inject(blockMessage);
+                    } catch (injectErr: unknown) {
+                      console.warn(
+                        "[koi] adapter.inject failed during stop-gate block; continuing with pendingStopInput delivery",
+                        injectErr,
+                      );
+                    }
                   }
                   // Always include the block message in the retry stream input.
                   // inject() state may not survive across stream() restarts,
@@ -1430,6 +1473,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   // Emit turn_end for the blocked turn (mirrors L2 turn-runner pattern).
                   // stopBlocked flag lets middleware distinguish vetoes from real completions.
                   const blockedTurnIndex = currentTurnIndex;
+
+                  // #review-round3-F3: advance the FSM turnIndex BEFORE
+                  // running `onAfterTurn` hooks so middleware observing
+                  // `agent.lifecycle.turnIndex` sees the SAME post-advance
+                  // value whether the turn completed normally or was
+                  // blocked by the stop-gate. The non-blocked turn_end path
+                  // higher up already orders advance_turn before hooks;
+                  // this brings the blocked path into parity.
+                  currentTurnIndex = blockedTurnIndex + 1;
+                  outerCurrentTurnIndex = currentTurnIndex;
+                  pendingForgeRefresh = true;
+                  agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
+
                   const blockedTurnCtx = createTurnContext({
                     session: sessionCtx,
                     turnIndex: blockedTurnIndex,
@@ -1445,18 +1501,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   });
                   await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
                   debugInstrumentation?.onTurnEnd(blockedTurnIndex);
-
-                  // #review-round2-F3: advance the FSM turnIndex BEFORE the
-                  // yield so consumers that read `agent.lifecycle.turnIndex`
-                  // on the turn_end event observe the new value. Firing
-                  // after the yield would leak a stale turn index to any
-                  // observer since the consumer resumes on the old state.
-                  // This matches the ordering of the non-blocked turn_end
-                  // path further up.
-                  currentTurnIndex = blockedTurnIndex + 1;
-                  outerCurrentTurnIndex = currentTurnIndex;
-                  pendingForgeRefresh = true;
-                  agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
 
                   yield {
                     kind: "turn_end",
