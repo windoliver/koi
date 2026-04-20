@@ -32,6 +32,7 @@
 
 import { createAgentResolver } from "@koi/agent-runtime";
 import { createAgentSummary } from "@koi/agent-summary";
+import { createArtifactStore } from "@koi/artifacts";
 import type {
   Agent,
   AuditEntry,
@@ -53,6 +54,7 @@ import type {
   SpawnFn,
 } from "@koi/core";
 import {
+  artifactId,
   createSingleToolProvider,
   memoryRecordId,
   sessionId,
@@ -238,6 +240,88 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// @koi/artifacts — exercised by the artifacts-roundtrip golden. The LLM
+// calls artifact_save to persist a small blob via the real ArtifactStore
+// (SQLite meta + filesystem blob-cas), then calls artifact_get with the
+// returned id to retrieve the bytes. Uses a throwaway tmp dir so the
+// recording doesn't leak state between runs.
+const ARTIFACT_TMPDIR = `/tmp/koi-record-artifacts-${Date.now()}-${crypto.randomUUID()}`;
+const { mkdirSync: mkdirSyncArt } = await import("node:fs");
+mkdirSyncArt(`${ARTIFACT_TMPDIR}/blobs`, { recursive: true });
+const artifactStore = await createArtifactStore({
+  dbPath: `${ARTIFACT_TMPDIR}/store.db`,
+  blobDir: `${ARTIFACT_TMPDIR}/blobs`,
+});
+const ARTIFACT_SESSION = sessionId("golden-artifact-session");
+
+const artifactSaveToolResult = buildTool({
+  name: "artifact_save",
+  description:
+    "Save a text artifact to the content-addressed artifact store. Returns the new artifact id and version.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Artifact logical name (e.g. 'notes.txt')" },
+      content: { type: "string", description: "UTF-8 text content" },
+      mimeType: {
+        type: "string",
+        description: "MIME type (defaults to text/plain)",
+      },
+    },
+    required: ["name", "content"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const saved = await artifactStore.saveArtifact({
+      sessionId: ARTIFACT_SESSION,
+      name: args.name as string,
+      data: new TextEncoder().encode(args.content as string),
+      mimeType: (args.mimeType as string | undefined) ?? "text/plain",
+    });
+    if (!saved.ok) return { ok: false, error: saved.error.kind };
+    return {
+      ok: true,
+      id: saved.value.id,
+      version: saved.value.version,
+      size: saved.value.size,
+      contentHash: saved.value.contentHash,
+    };
+  },
+});
+if (!artifactSaveToolResult.ok) {
+  console.error(`buildTool(artifact_save) failed: ${artifactSaveToolResult.error.message}`);
+  process.exit(1);
+}
+const artifactSaveTool = artifactSaveToolResult.value;
+
+const artifactGetToolResult = buildTool({
+  name: "artifact_get",
+  description: "Retrieve an artifact's UTF-8 text content by id.",
+  inputSchema: {
+    type: "object",
+    properties: { id: { type: "string", description: "Artifact id returned by artifact_save" } },
+    required: ["id"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const got = await artifactStore.getArtifact(artifactId(args.id as string), {
+      sessionId: ARTIFACT_SESSION,
+    });
+    if (!got.ok) return { ok: false, error: got.error.kind };
+    return {
+      ok: true,
+      id: got.value.meta.id,
+      size: got.value.meta.size,
+      content: new TextDecoder().decode(got.value.data),
+    };
+  },
+});
+if (!artifactGetToolResult.ok) {
+  console.error(`buildTool(artifact_get) failed: ${artifactGetToolResult.error.message}`);
+  process.exit(1);
+}
+const artifactGetTool = artifactGetToolResult.value;
 
 // send_message — tool with a string field for exfiltration guard testing
 const sendMessageToolResult = buildTool({
@@ -1993,6 +2077,34 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
+  },
+
+  // artifacts-roundtrip: exercises @koi/artifacts via two tools backed by a
+  // real ArtifactStore. The LLM saves content, then fetches it back by id.
+  // Validates the full L2 surface: buildTool → permissions → artifact_save →
+  // ArtifactStore.saveArtifact → blob-cas put → SQLite commit → tool result
+  // → next turn → artifact_get → ArtifactStore.getArtifact → blob-cas read.
+  {
+    name: "artifacts-roundtrip",
+    prompt:
+      "Use artifact_save to save an artifact named 'notes.txt' with content 'golden trajectory'. Then use artifact_get with the id you got back to fetch the content. Finally respond with just the retrieved content, nothing else.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "artifact-save",
+        toolName: "artifact_save",
+        createTool: () => artifactSaveTool,
+      }),
+      createSingleToolProvider({
+        name: "artifact-get",
+        toolName: "artifact_get",
+        createTool: () => artifactGetTool,
+      }),
+    ],
+    maxTurns: 3,
   },
 
   // 1. simple-text: text response, no tools
@@ -4777,6 +4889,7 @@ await mcpSetup.cleanup();
 await mcpServerClient.close();
 await mcpPlatformServer.stop();
 nexusTransport?.close();
+await artifactStore.close();
 
 console.log(`\nDone. ${12 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");

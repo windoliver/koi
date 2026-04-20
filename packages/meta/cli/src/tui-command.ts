@@ -34,9 +34,11 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { SummaryOk } from "@koi/agent-summary";
 import { createAgentSummary } from "@koi/agent-summary";
+import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
 import { microcompact } from "@koi/context-manager";
 import type {
   AuditEntry,
+  ComponentProvider,
   ContentBlock,
   EngineEvent,
   InboundMessage,
@@ -60,7 +62,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
-import { resolveFileSystemAsync } from "@koi/runtime";
+import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
@@ -124,6 +126,7 @@ const DEFAULT_SYSTEM_PROMPT =
   "Use TodoWrite to track your progress across multi-step tasks.";
 /** JSONL transcript files are stored at ~/.koi/sessions/<sessionId>.jsonl */
 const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
+const ARTIFACTS_DIR = join(homedir(), ".koi", "artifacts");
 /** Maximum characters for session name (first user message) in session picker. */
 const SESSION_NAME_MAX = 60;
 /** Maximum characters for session preview (last message) in session picker. */
@@ -1412,6 +1415,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  // Declared ahead of interim teardown so a SIGUSR1 arriving during boot
+  // can safely inspect it without tripping a TDZ error. Assigned below,
+  // once the advisory lock has been acquired.
+  // let: reassigned from undefined to the open store on successful construction.
+  let artifactStore: ArtifactStore | undefined;
   // Task 13: when the backend is nexus, prefix fs_* tool approval reason
   // with "[nexus: <transport>]" so the user can tell at a glance that the
   // operation targets a remote filesystem, not a local path. The label is
@@ -1518,6 +1526,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         try {
           batcher.dispose();
         } catch {}
+        try {
+          await artifactStore?.close();
+        } catch {}
       } finally {
         clearInterval(keepAlive);
         process.exit(exitCode);
@@ -1535,6 +1546,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     });
     removeStoredEarlySigusr1Handler();
     process.on("SIGUSR1", interimSigusr1Handler);
+  }
+
+  // Artifact store (@koi/artifacts) — one store per TUI process, rooted at
+  // ~/.koi/artifacts. All saves/lists/deletes happen as `tuiSessionId`.
+  // Opening fails loudly when another TUI already holds the advisory lock
+  // — we surface the reason to stderr and continue without artifact tools
+  // rather than hard-aborting the session.
+  const artifactExtraProviders: ComponentProvider[] = [];
+  try {
+    artifactStore = await createArtifactStore({
+      dbPath: join(ARTIFACTS_DIR, "store.db"),
+      blobDir: join(ARTIFACTS_DIR, "blobs"),
+    });
+    artifactExtraProviders.push(
+      createArtifactToolProvider({ store: artifactStore, sessionId: tuiSessionId }),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`koi tui: artifact store disabled — ${msg}\n`);
   }
 
   const runtimeReady = createKoiRuntime({
@@ -1587,6 +1617,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // compensating ops through the right backend. Omitted when undefined —
     // factory falls back to the default local backend rooted at cwd.
     ...(resolvedFilesystemBackend !== undefined ? { filesystem: resolvedFilesystemBackend } : {}),
+    // @koi/artifacts tools — wired when the advisory lock was acquired at
+    // boot. When construction failed (concurrent TUI, FS issue) the array
+    // is empty and the artifact_* tools are simply absent from the agent.
+    ...(artifactExtraProviders.length > 0 ? { extraProviders: artifactExtraProviders } : {}),
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -2628,6 +2662,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
       // complete before the transport is closed.
       await resolvedFilesystemBackend?.dispose?.();
+      // Close the artifact store (release advisory lock, close SQLite handle).
+      // dispose() is host-owned per @koi/runtime contract.
+      if (artifactStore !== undefined) {
+        try {
+          await artifactStore.close();
+        } catch (err) {
+          process.stderr.write(
+            `[koi tui] artifact store close failed: ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+        }
+      }
     } finally {
       clearInterval(shutdownKeepAlive);
       // Flush OTel spans before process exit

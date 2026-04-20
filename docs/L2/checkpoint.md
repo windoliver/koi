@@ -12,6 +12,7 @@ Implements the capture and restore halves of #1625. At end of every turn, snapsh
 @koi/checkpoint              (L2, this package)
    │
    ├─ @koi/snapshot-store-sqlite   (L2, storage adapter)
+   ├─ @koi/blob-cas                (L0u, content-addressed filesystem blob store — shared with @koi/artifacts)
    ├─ @koi/core                    (L0, types: AgentSnapshot, FileOpRecord, CompensatingOp, SNAPSHOT_STATUS_KEY)
    ├─ @koi/hash                    (L0u, content hashing)
    ├─ @koi/git-utils                (L0u, git status for drift detection)
@@ -27,6 +28,8 @@ This package owns three concerns:
 The chain storage layer (`@koi/snapshot-store-sqlite`) is a separate L2 adapter so the deterministic-replay sibling package can reuse it.
 
 ## CAS blob store
+
+Blob storage is delegated to `@koi/blob-cas` (L0u). The same primitive backs `@koi/artifacts`, so the two packages share the CAS implementation — write/read semantics, directory sharding, fsync contract, and collision recovery.
 
 File contents are stored in a content-addressed directory:
 

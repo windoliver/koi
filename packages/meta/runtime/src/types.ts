@@ -3,6 +3,7 @@ import type {
   AgentResolverDirs,
   RegistryConflictWarning,
 } from "@koi/agent-runtime";
+import type { ArtifactStore } from "@koi/artifacts";
 import type { Checkpoint } from "@koi/checkpoint";
 import type {
   AgentResolver,
@@ -20,6 +21,7 @@ import type {
   ReportStore,
   RetrySignalReader,
   RichTrajectoryStep,
+  SessionId,
   SpawnLedger,
   ToolDescriptor,
   ToolPolicy,
@@ -265,6 +267,28 @@ export interface RuntimeConfig {
         readonly snapshotPath?: string | undefined;
         /** Content-addressed blob directory for file pre/post-image storage. */
         readonly blobDir: string;
+      }
+    | undefined;
+
+  /**
+   * Artifact store wiring (@koi/artifacts). When provided, the runtime
+   * attaches a ComponentProvider that exposes four artifact tools to
+   * every agent: artifact_save, artifact_get, artifact_list,
+   * artifact_delete. All calls run as the supplied `sessionId`.
+   *
+   * The caller owns the `ArtifactStore` lifecycle — `runtime.dispose()`
+   * does NOT call `store.close()` so the same store can outlive a
+   * single runtime instance (e.g. reused across TUI restarts).
+   *
+   * Omit to skip artifact tooling entirely; the runtime handle's
+   * `artifacts` field is then `undefined`. Plan 6 (#1923) will extend
+   * the scoping story so each agent operates on its own per-session
+   * namespace without the caller preselecting a sessionId here.
+   */
+  readonly artifacts?:
+    | {
+        readonly store: ArtifactStore;
+        readonly sessionId: SessionId;
       }
     | undefined;
 
@@ -545,6 +569,21 @@ export interface RuntimeHandle {
    * command and any programmatic caller use this handle.
    */
   readonly checkpoint: Checkpoint | undefined;
+
+  /**
+   * Artifact wiring handle (@koi/artifacts). Only populated when
+   * `config.artifacts` is provided. `store` is the exact instance the
+   * caller passed in (the runtime does NOT own its lifecycle). `provider`
+   * is a ComponentProvider exposing artifact_save/get/list/delete —
+   * forward it to `createKoi({ providers })` so every spawned agent sees
+   * the tools.
+   */
+  readonly artifacts:
+    | {
+        readonly store: ArtifactStore;
+        readonly provider: ComponentProvider;
+      }
+    | undefined;
 
   /**
    * Resolved filesystem backend. Only populated when filesystem is explicitly

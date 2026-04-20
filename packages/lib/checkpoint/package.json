@@ -17,6 +17,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@koi/blob-cas": "workspace:*",
     "@koi/core": "workspace:*"
   },
   "devDependencies": {

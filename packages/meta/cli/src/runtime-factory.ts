@@ -37,6 +37,7 @@ import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
 import type {
   ApprovalHandler,
+  ComponentProvider,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -561,6 +562,13 @@ export interface KoiRuntimeConfig {
    * backend during rewind.
    */
   readonly filesystem?: FileSystemBackend | undefined;
+  /**
+   * Host-provided ComponentProviders appended after the core + stack
+   * providers and before plan-related providers. Used to wire host-owned
+   * subsystems that don't fit a preset stack (e.g. `@koi/artifacts`
+   * tools backed by a host-owned ArtifactStore). Order preserved.
+   */
+  readonly extraProviders?: readonly ComponentProvider[] | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -2080,6 +2088,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       providers: [
         ...coreProviders,
         ...stackContribution.providers,
+        ...(config.extraProviders ?? []),
         ...(planBundle !== undefined ? planBundle.providers : []),
         ...(planPersistBundle !== undefined ? planPersistBundle.providers : []),
       ],

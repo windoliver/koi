@@ -83,6 +83,14 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/artifacts": {
+      "name": "@koi/artifacts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/blob-cas": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/bash-ast": {
       "name": "@koi/bash-ast",
       "version": "0.0.0",
@@ -101,6 +109,10 @@
     },
     "packages/lib/bash-security": {
       "name": "@koi/bash-security",
+      "version": "0.0.0",
+    },
+    "packages/lib/blob-cas": {
+      "name": "@koi/blob-cas",
       "version": "0.0.0",
     },
     "packages/lib/channel-base": {
@@ -122,6 +134,7 @@
       "name": "@koi/checkpoint",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/blob-cas": "workspace:*",
         "@koi/core": "workspace:*",
       },
       "devDependencies": {
@@ -586,6 +599,7 @@
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -676,6 +690,7 @@
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
@@ -1231,6 +1246,8 @@
 
     "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
 
+    "@koi/artifacts": ["@koi/artifacts@workspace:packages/lib/artifacts"],
+
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
@@ -1240,6 +1257,8 @@
     "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
+
+    "@koi/blob-cas": ["@koi/blob-cas@workspace:packages/lib/blob-cas"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
