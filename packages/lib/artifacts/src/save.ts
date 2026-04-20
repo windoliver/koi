@@ -139,12 +139,38 @@ export function createSaveArtifact(args: {
         }
       }
 
-      // Observe tombstone claim state + reclaim
+      // Observe tombstone claim state + conditionally reclaim.
+      //
+      // Three branches per spec §6.1 step 5 + §6.3 race analysis:
+      //   (a) no tombstone → normal path, no interaction.
+      //   (b) tombstone with claimed_at IS NULL → Phase B has not claimed;
+      //       reclaim by DELETE gated on `claimed_at IS NULL` (guards against
+      //       a concurrent claim tx between our SELECT and DELETE). If the
+      //       gated DELETE hits 0 rows, Phase B claimed during the window —
+      //       fall through to the claimed branch and re-put post-commit.
+      //   (c) tombstone with claimed_at IS NOT NULL → Phase B owns this
+      //       tombstone. Leave it alone (Phase B's reconcile will remove
+      //       it) and set needsRePut = true so we unconditionally re-put
+      //       after commit — Phase B's blob delete may run any time.
       const tomb = args.db
         .query("SELECT claimed_at FROM pending_blob_deletes WHERE hash = ?")
         .get(hash) as { readonly claimed_at: number | null } | null;
-      const needsRePut = tomb !== null && tomb.claimed_at !== null;
-      args.db.query("DELETE FROM pending_blob_deletes WHERE hash = ?").run(hash);
+      let needsRePut = false;
+      if (tomb !== null) {
+        if (tomb.claimed_at === null) {
+          const del = args.db
+            .query("DELETE FROM pending_blob_deletes WHERE hash = ? AND claimed_at IS NULL")
+            .run(hash);
+          if (del.changes === 0) {
+            // Phase B claimed between our SELECT and our DELETE. Leave the
+            // tombstone (Phase B owns it) and re-put post-commit.
+            needsRePut = true;
+          }
+        } else {
+          // Phase B already owns the tombstone. Don't touch it.
+          needsRePut = true;
+        }
+      }
 
       // Insert artifact row (always blob_ready=0). Do NOT retire the intent
       // yet — we keep it as a durable recovery signal until post-commit repair
