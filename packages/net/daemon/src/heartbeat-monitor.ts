@@ -19,7 +19,7 @@ interface MonitorEntry {
   readonly config: HeartbeatConfig;
   lastHeartbeatAt: number;
   deadlineAt: number;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMonitor {
@@ -34,6 +34,7 @@ export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMon
     if (isShutdown) return;
     const entry = entries.get(id);
     if (entry === undefined) return;
+    // retryable=false: timeout implies caller tore the worker down; auto-restart policy is deferred to a future issue.
     deps.publishEvent({
       kind: "crashed",
       workerId: id,
@@ -41,7 +42,7 @@ export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMon
       error: {
         code: "HEARTBEAT_TIMEOUT",
         message: `No heartbeat from worker ${id} within ${entry.config.timeoutMs}ms`,
-        retryable: true,
+        retryable: false,
       },
     });
     deps.teardown(id, "heartbeat-timeout").catch(() => undefined);
@@ -50,16 +51,15 @@ export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMon
   const track: HeartbeatMonitor["track"] = (id, agentId, config) => {
     if (isShutdown) return;
     const existing = entries.get(id);
-    if (existing !== undefined) clearTimeout(existing.timer);
+    if (existing?.timer !== undefined) clearTimeout(existing.timer);
     const now = deps.now();
     const entry: MonitorEntry = {
       agentId,
       config,
       lastHeartbeatAt: now,
       deadlineAt: now + config.timeoutMs,
-      timer: setTimeout(() => undefined, 0),
+      timer: undefined,
     };
-    clearTimeout(entry.timer);
     entries.set(id, entry);
     armTimer(id, entry);
   };
@@ -67,7 +67,7 @@ export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMon
   const observe: HeartbeatMonitor["observe"] = (id) => {
     const entry = entries.get(id);
     if (entry === undefined) return;
-    clearTimeout(entry.timer);
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
     const now = deps.now();
     entry.lastHeartbeatAt = now;
     entry.deadlineAt = now + entry.config.timeoutMs;
@@ -77,13 +77,15 @@ export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMon
   const untrack: HeartbeatMonitor["untrack"] = (id) => {
     const entry = entries.get(id);
     if (entry === undefined) return;
-    clearTimeout(entry.timer);
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
     entries.delete(id);
   };
 
   const shutdown: HeartbeatMonitor["shutdown"] = () => {
     isShutdown = true;
-    for (const entry of entries.values()) clearTimeout(entry.timer);
+    for (const entry of entries.values()) {
+      if (entry.timer !== undefined) clearTimeout(entry.timer);
+    }
     entries.clear();
   };
 

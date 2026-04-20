@@ -78,10 +78,10 @@ export type KoiErrorCode =
   /**
    * A worker failed to deliver a heartbeat within its configured `timeoutMs` window.
    * Emitted by the heartbeat monitor as a `crashed` WorkerEvent to trigger supervised
-   * restart. The supervisor treats this as a transient failure and applies the
-   * configured restart policy.
+   * teardown.
    *
-   * retryable: true — the worker may recover on restart.
+   * retryable: false — timeout implies the caller tore the worker down; auto-restart
+   * policy is deferred to a future issue.
    */
   | "HEARTBEAT_TIMEOUT";
 
@@ -114,7 +114,7 @@ export const RETRYABLE_DEFAULTS: Readonly<Record<KoiErrorCode, boolean>> = Objec
   AUTH_REQUIRED: true, // retryable — operation succeeds once the user authorizes
   RESOURCE_EXHAUSTED: true, // retryable — retry once capacity is freed
   UNAVAILABLE: false, // not retryable — caller must fix config or wait for service recovery
-  HEARTBEAT_TIMEOUT: true, // retryable — worker may recover on restart
+  HEARTBEAT_TIMEOUT: false, // retryable=false: timeout implies caller tore the worker down; auto-restart policy is deferred to a future issue
 });
 
 export type Result<T, E = KoiError> =
