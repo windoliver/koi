@@ -1697,21 +1697,28 @@ describe("supervisor.health()", () => {
     await supervisor.value.shutdown("test");
   });
 
-  it("mixed-backend registry: heartbeat opt-in routes to heartbeat-capable backend even when it isn't first-preference", async () => {
-    // Regression: pickBackend used to pick the first available by static
-    // preference, ignoring heartbeat need. A mixed registry with
-    // in-process (no-hb) + subprocess (hb) would reject opt-in despite
-    // subprocess being available. The fix filters candidates by
-    // supportsHeartbeat before probing.
-    const noHb = createFakeBackend({ kind: "in-process" }); // supportsHeartbeat: undefined
-    const hbCapable = createFakeBackend({ kind: "subprocess", supportsHeartbeat: true });
+  it("mixed-backend registry: heartbeat opt-in skips higher-preference backend that lacks heartbeat", async () => {
+    // Regression proof: the higher-preference "subprocess" slot holds a
+    // backend that does NOT support heartbeat; the lower-preference
+    // "in-process" slot holds one that DOES. Old logic (no capability
+    // filter) picked subprocess by preference, then rejected opt-in via
+    // the capability gate — call would fail with VALIDATION. Fixed logic
+    // skips the unsupported candidate during selection and picks the
+    // heartbeat-capable in-process backend, so start() succeeds.
+    //
+    // We assert via the supervisor's behavior: start() succeeds and the
+    // live-worker count lands on the heartbeat-capable backend. If the
+    // filter were broken, either start() would fail or liveWorkerCount
+    // would end up on the wrong backend.
+    const noHb = createFakeBackend({ kind: "subprocess" }); // preferred but no-heartbeat
+    const hbCapable = createFakeBackend({ kind: "in-process", supportsHeartbeat: true });
     const supervisor = createSupervisor({
       maxWorkers: 4,
       shutdownDeadlineMs: 500,
       heartbeat: { intervalMs: 50, timeoutMs: 200 },
       backends: {
-        "in-process": noHb.backend,
-        subprocess: hbCapable.backend,
+        subprocess: noHb.backend,
+        "in-process": hbCapable.backend,
       },
     });
     if (!supervisor.ok) return;
@@ -1722,9 +1729,42 @@ describe("supervisor.health()", () => {
       backendHints: { heartbeat: true },
     });
     expect(result.ok).toBe(true);
-    // Verify we got the capable backend — only hbCapable should have a live worker.
+    // Filter routed us to the capable backend, not the preferred-but-incapable one.
     expect(hbCapable.liveWorkerCount()).toBeGreaterThan(0);
     expect(noHb.liveWorkerCount()).toBe(0);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("mixed-backend registry: reports unavailable when all heartbeat-capable backends fail isAvailable probes", async () => {
+    // A heartbeat-capable backend is registered but transiently
+    // unavailable. We want a UNAVAILABLE (retryable) error rather than
+    // a VALIDATION (static misconfig) error — operators need distinct
+    // remediation paths for "backend is down" vs "backend is missing".
+    const hbButDown: ReturnType<typeof createFakeBackend> = createFakeBackend({
+      kind: "subprocess",
+      supportsHeartbeat: true,
+    });
+    // Monkey-patch isAvailable to return false so probe fails.
+    // biome-ignore lint/suspicious/noExplicitAny: test-only mutation of the fake backend probe.
+    (hbButDown.backend as any).isAvailable = (): boolean => false;
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { subprocess: hbButDown.backend },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("mixed-down-1"),
+      agentId: agentId("agent-mixed-down-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+      expect(result.error.retryable).toBe(true);
+    }
     await supervisor.value.shutdown("test");
   });
 

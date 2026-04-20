@@ -211,23 +211,46 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   // `supportsHeartbeat=true` are eligible — in a mixed registry (e.g.,
   // in-process + subprocess), a heartbeat-opt-in request must not be rejected
   // just because the first-preference backend can't emit heartbeats.
+  //
+  // Returns a tagged failure reason so callers can distinguish:
+  //   unregistered  — the named kind is not in config.backends
+  //   unsupported   — candidate(s) exist but none advertise heartbeat support
+  //   unavailable   — candidate(s) exist but all failed isAvailable probes
+  // Operators need this distinction to know whether to fix config vs wait
+  // for transient probe recovery.
+  type PickFailure =
+    | { readonly ok: false; readonly reason: "unregistered" }
+    | { readonly ok: false; readonly reason: "unsupported" }
+    | { readonly ok: false; readonly reason: "unavailable" };
+  type PickResult = { readonly ok: true; readonly backend: WorkerBackend } | PickFailure;
+
   const pickBackend = async (
     kind?: WorkerBackendKind,
     requireHeartbeat?: boolean,
-  ): Promise<WorkerBackend | undefined> => {
+  ): Promise<PickResult> => {
     if (kind !== undefined) {
+      // Explicit kind is honored verbatim — callers who name a backend
+      // want that backend, not a fallback. We don't probe isAvailable
+      // here; spawn failures surface via backend.spawn's own error.
       const b = config.backends[kind];
-      if (b === undefined) return undefined;
-      if (requireHeartbeat === true && b.supportsHeartbeat !== true) return undefined;
-      return b;
+      if (b === undefined) return { ok: false, reason: "unregistered" };
+      if (requireHeartbeat === true && b.supportsHeartbeat !== true) {
+        return { ok: false, reason: "unsupported" };
+      }
+      return { ok: true, backend: b };
     }
+    let sawCompatible = false;
     for (const k of BACKEND_PREFERENCE) {
       const b = config.backends[k];
       if (b === undefined) continue;
       if (requireHeartbeat === true && b.supportsHeartbeat !== true) continue;
-      if (await probeBackend(b)) return b;
+      sawCompatible = true;
+      if (await probeBackend(b)) return { ok: true, backend: b };
     }
-    return undefined;
+    // Compatible backends exist but none responded to isAvailable — transient.
+    if (sawCompatible) return { ok: false, reason: "unavailable" };
+    // Nothing in the registry can satisfy the request — static misconfiguration.
+    return { ok: false, reason: requireHeartbeat === true ? "unsupported" : "unregistered" };
   };
 
   /**
@@ -453,14 +476,27 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     };
 
     const heartbeatRequested = isHeartbeatOptIn(request);
-    const backend = await pickBackend(overrides?.backend, heartbeatRequested);
-    if (backend === undefined) {
+    const pick = await pickBackend(overrides?.backend, heartbeatRequested);
+    if (!pick.ok) {
       releaseReservations();
-      // Distinguish the "no heartbeat-capable backend" case so the caller
-      // knows WHY no backend matched — validation-style error rather than
-      // a generic "unavailable".
-      if (heartbeatRequested) {
-        const explicitKind = overrides?.backend;
+      // Map the tagged reason to a specific error so operators get accurate
+      // remediation guidance: static misconfiguration vs transient probe
+      // failure vs capability mismatch.
+      const explicitKind = overrides?.backend;
+      if (pick.reason === "unregistered") {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              explicitKind !== undefined
+                ? `Backend kind "${explicitKind}" is not registered in SupervisorConfig.backends`
+                : "No registered backend can handle this spawn",
+            retryable: false,
+          },
+        };
+      }
+      if (pick.reason === "unsupported") {
         return {
           ok: false,
           error: {
@@ -475,15 +511,22 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           },
         };
       }
+      // reason === "unavailable"
       return {
         ok: false,
         error: {
           code: "UNAVAILABLE",
-          message: "No registered backend can handle this spawn",
-          retryable: false,
+          message:
+            explicitKind !== undefined
+              ? `Backend "${explicitKind}" is currently unavailable (isAvailable probe failed or timed out)`
+              : heartbeatRequested
+                ? "All heartbeat-capable backends are currently unavailable"
+                : "No backend is currently available to handle this spawn",
+          retryable: true,
         },
       };
     }
+    const backend = pick.backend;
 
     const spawnTimeoutMs = config.spawnTimeoutMs ?? 30_000;
     let spawned: Result<WorkerHandle, KoiError>;

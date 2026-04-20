@@ -69,7 +69,13 @@ export function createFakeBackend(
         events: [],
         listeners: [],
         emit: (ev) => {
-          state.events.push(ev);
+          // Mirror subprocess-backend: heartbeats are live signals, not
+          // replay history. Dropping them keeps state.events bounded for
+          // long-lived workers — otherwise high-frequency heartbeats grow
+          // the array indefinitely.
+          if (ev.kind !== "heartbeat") {
+            state.events.push(ev);
+          }
           const pending = [...state.listeners];
           state.listeners.length = 0;
           for (const l of pending) l(ev);

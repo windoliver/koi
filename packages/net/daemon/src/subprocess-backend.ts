@@ -41,7 +41,15 @@ export function createSubprocessBackend(): WorkerBackend {
   const workers = new Map<WorkerId, SubprocState>();
 
   const emit = (state: SubprocState, ev: WorkerEvent): void => {
-    state.events.push(ev);
+    // Heartbeat events are liveness signals, not lifecycle history — a
+    // long-lived worker emits them every few seconds, so retaining them
+    // in the replay buffer grows state.events unboundedly. Dispatch to
+    // active listeners only and drop. Lifecycle events (started, exited,
+    // crashed) stay in the replay buffer so a late-attaching watcher can
+    // reconstruct the worker's state.
+    if (ev.kind !== "heartbeat") {
+      state.events.push(ev);
+    }
     const pending = [...state.listeners];
     state.listeners.length = 0;
     for (const l of pending) l(ev);
