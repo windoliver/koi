@@ -789,9 +789,37 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           const current = pool.get(request.workerId);
           const stopping = current?.stopping === true;
           if (shuttingDown || stopping) {
-            // Expected completion under cancellation. Tidy up without
-            // emitting crash telemetry or triggering restart.
+            // Expected completion under cancellation. But a non-terminal
+            // watch close is NOT proof that the OS process exited — the
+            // backend may have dropped its stream (RPC disconnect, abort
+            // fired early) while the worker is still alive. Resolving
+            // exitedPromise here would let teardownWorker's `race` win on
+            // a false "exited" signal and return ok while the process
+            // persists. Confirm liveness first; quarantine if still alive
+            // so stop()/shutdown() retry paths can finish the teardown.
             healthMonitor.untrack(request.workerId);
+            let stillAlive = false;
+            if (current !== undefined) {
+              try {
+                stillAlive = await current.backend.isAlive(request.workerId);
+              } catch {
+                // Treat probe failure as "unknown — assume alive" so we
+                // quarantine rather than silently release activeIds.
+                stillAlive = true;
+              }
+            }
+            if (stillAlive && current !== undefined) {
+              // Do NOT resolveExited — teardownWorker's isAlive poll is
+              // the source of truth when the watch stream is untrustworthy.
+              quarantined.set(request.workerId, {
+                backend: current.backend,
+                agentId: current.handle.agentId,
+                reason: "watch-closed-before-process-exit",
+              });
+              pool.delete(request.workerId);
+              // activeIds preserved — quarantine owns the id now.
+              return;
+            }
             if (current !== undefined) {
               current.resolveExited();
               pool.delete(request.workerId);
@@ -992,12 +1020,20 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // existing watch-stream-fault path). Without this, abort-driven tidy
     // cleanup would release activeIds and a subsequent start() could race
     // a still-live worker into a duplicate spawn — split-brain.
+    //
+    // On teardown SUCCESS, clear any stale quarantine record left over from
+    // a prior failed stop() on the same id. The IIFE's tidy-cleanup branch
+    // preserves activeIds when quarantined.has(id), so leaving the stale
+    // record would strand the id permanently (future start() rejects with
+    // CONFLICT even though the OS process is confirmed dead).
     if (!teardownResult.ok) {
       quarantined.set(id, {
         backend: entry.backend,
         agentId: entry.handle.agentId,
         reason: "stop-teardown-failed",
       });
+    } else {
+      quarantined.delete(id);
     }
     // Belt-and-suspenders: abort the backend.watch AbortSignal AFTER teardown
     // so a backend that drops its watch stream without ever emitting a
