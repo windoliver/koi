@@ -46,15 +46,11 @@ import type {
   ModelAdapter,
   PermissionBackend,
   RichTrajectoryStep,
+  RuleDescriptor,
   SessionId,
   SessionTranscript,
 } from "@koi/core";
-import {
-  COMPONENT_PRIORITY,
-  GOVERNANCE,
-  GOVERNANCE_ALLOW,
-  agentId as makeAgentId,
-} from "@koi/core";
+import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
 import { DEFAULT_PRICING, resolvePricing } from "@koi/cost-aggregator";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
@@ -63,6 +59,7 @@ import { createGovernanceController, createKoi } from "@koi/engine";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
+import { createPatternBackend } from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -252,15 +249,41 @@ function resolveCostConfig(
 // ---------------------------------------------------------------------------
 
 /**
- * Always-allow governance backend. Used for the in-runtime middleware which is
- * primarily an observability/recording layer — policy gating happens via the
- * engine extension's controller checks. Future PRs can swap in a pattern-backend
- * loaded from manifest YAML.
+ * Default-allow pattern backend with no rules. Until the manifest YAML rules
+ * loader (#1877) lands, we have no real rules to evaluate, so the backend
+ * accepts every call and `describeRules()` returns []. The runtime
+ * synthesizes a `default-allow` descriptor below so the /governance "Active
+ * rules" section renders something the operator can read.
  */
-function createAllowAllBackend(): GovernanceBackend {
-  return {
-    evaluator: { evaluate: () => GOVERNANCE_ALLOW },
-  };
+function createDefaultPatternBackend(): GovernanceBackend {
+  return createPatternBackend({ rules: [], defaultDeny: false });
+}
+
+/** Synthetic descriptor used when the backend reports no rules. */
+const SYNTHETIC_DEFAULT_ALLOW: RuleDescriptor = {
+  id: "default-allow",
+  description: "no rules configured; all calls allowed (manifest YAML loader #1877 pending)",
+  effect: "allow",
+  pattern: "*",
+};
+
+/**
+ * Resolve the rule list for `/governance` — call `backend.describeRules()` if
+ * the backend exposes it, fall back to the synthetic default-allow entry when
+ * empty. Errors degrade to the synthetic entry rather than crashing the
+ * runtime — the rule list is observational, not on the gating path.
+ */
+async function resolveGovernanceRules(
+  backend: GovernanceBackend,
+): Promise<readonly RuleDescriptor[]> {
+  if (backend.describeRules === undefined) return [SYNTHETIC_DEFAULT_ALLOW];
+  try {
+    const rules = await backend.describeRules();
+    return rules.length > 0 ? rules : [SYNTHETIC_DEFAULT_ALLOW];
+  } catch (err: unknown) {
+    console.warn("[koi runtime] governance describeRules() failed:", err);
+    return [SYNTHETIC_DEFAULT_ALLOW];
+  }
 }
 
 /**
@@ -756,6 +779,14 @@ export interface KoiRuntimeHandle {
    * the /plugins view and inject plugin awareness into the system prompt.
    */
   readonly pluginSummary: PluginDiscoverySummary;
+  /**
+   * Static snapshot of governance backend rules for the `/governance` "Active
+   * rules" section. Resolved once at runtime construction via
+   * `backend.describeRules()`; falls back to a synthetic `default-allow`
+   * descriptor when the backend reports no rules. Empty rule lists never
+   * surface — callers always receive at least one descriptor.
+   */
+  readonly governanceRules: readonly RuleDescriptor[];
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -1989,8 +2020,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     //   - trajectory span (middleware:koi:governance-core in /trajectory)
     //   - compliance audit records (when backend.compliance is wired)
     //   - per-call onAlert/onViolation hooks (more granular than bridge polling)
+    const governanceBackend = createDefaultPatternBackend();
+    const governanceRules = await resolveGovernanceRules(governanceBackend);
     const governanceMw = createGovernanceMiddleware({
-      backend: createAllowAllBackend(),
+      backend: governanceBackend,
       controller: sharedGovernanceController,
       cost: createPricingCostCalculator(),
     });
@@ -2301,6 +2334,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       transcript,
       sandboxActive,
       pluginSummary,
+      governanceRules,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a

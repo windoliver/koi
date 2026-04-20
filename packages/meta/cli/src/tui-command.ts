@@ -1657,6 +1657,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           controller: governanceController,
           sessionId: tuiSessionId as string,
           alertsPath: join(homedir(), ".koi", "governance-alerts.jsonl"),
+          // Static rule snapshot resolved by runtime-factory via
+          // backend.describeRules() — falls back to a synthetic default-allow
+          // entry until the manifest YAML loader (#1877) wires real rules.
+          rules: handle.governanceRules,
           // Static capability mirror — matches the createGovernanceMiddleware's
           // describeCapabilities() output. Hardcoded here to avoid plumbing the
           // middleware instance back from runtime-factory just for one string.
