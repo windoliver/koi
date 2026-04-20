@@ -31,6 +31,7 @@
         "@types/chrome": "^0.0.280",
         "@types/ws": "^8.18.1",
         "esbuild": "^0.25.11",
+        "playwright": "^1.49.0",
       },
     },
     "packages/drivers/browser-playwright": {
