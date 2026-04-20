@@ -20,7 +20,12 @@
     "optional": true
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1032.0",
     "@koi/blob-cas": "workspace:*",
     "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@smithy/util-stream": "4.5.23",
+    "aws-sdk-client-mock": "4.1.0"
   }
 }

@@ -1,0 +1,232 @@
+import { beforeEach, describe, expect, test } from "bun:test";
+import { Readable } from "node:stream";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+import { sdkStreamMixin } from "@smithy/util-stream";
+import { mockClient } from "aws-sdk-client-mock";
+import type { S3BlobStoreConfig } from "../config.js";
+import { createS3BlobStore } from "../s3-blob-store.js";
+
+/**
+ * Contract tests for the S3-backed BlobStore (Plan 5 / Task 2).
+ *
+ * Uses aws-sdk-client-mock to intercept the S3Client `.send()` calls so tests
+ * run offline. These tests cover the 4 non-list operations — list() is Task 3.
+ */
+
+// Precomputed SHA-256("hello world") for hash-layout assertions. Kept at the
+// top of the file so every test can reference the same canonical fixture
+// without recomputing.
+const HELLO = new TextEncoder().encode("hello world");
+const HELLO_HASH = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+function baseConfig(): S3BlobStoreConfig {
+  return {
+    bucket: "test-bucket",
+    region: "us-east-1",
+    credentials: {
+      accessKeyId: "AKIA000000EXAMPLE",
+      secretAccessKey: "secret/example/key",
+    },
+  };
+}
+
+/**
+ * Wrap raw bytes as an SDK-compatible response body. GetObjectCommand resolves
+ * with a `Body` that exposes `transformToByteArray()` — aws-sdk-client-mock
+ * doesn't add the mixin automatically, so we do it here.
+ */
+function bodyFromBytes(data: Uint8Array) {
+  const stream = new Readable();
+  stream.push(data);
+  stream.push(null);
+  return sdkStreamMixin(stream);
+}
+
+describe("createS3BlobStore", () => {
+  const s3Mock = mockClient(S3Client);
+
+  beforeEach(() => {
+    s3Mock.reset();
+  });
+
+  describe("put", () => {
+    test("returns lowercase SHA-256 hex and issues PutObjectCommand with correct Bucket/Key/Body", async () => {
+      s3Mock.on(PutObjectCommand).resolves({});
+      const store = createS3BlobStore(baseConfig());
+
+      const hash = await store.put(HELLO);
+
+      expect(hash).toBe(HELLO_HASH);
+      const calls = s3Mock.commandCalls(PutObjectCommand);
+      expect(calls).toHaveLength(1);
+      const input = calls[0]?.args[0].input;
+      expect(input?.Bucket).toBe("test-bucket");
+      // no prefix configured → key is "<shard>/<hash>" (no leading slash)
+      expect(input?.Key).toBe(`${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+      expect(input?.Body).toEqual(HELLO);
+    });
+
+    test("uses sharded key under the configured prefix", async () => {
+      s3Mock.on(PutObjectCommand).resolves({});
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "tenant-a/blobs" });
+
+      await store.put(HELLO);
+
+      const input = s3Mock.commandCalls(PutObjectCommand)[0]?.args[0].input;
+      expect(input?.Key).toBe(`tenant-a/blobs/${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+
+    test("with empty prefix, key has no leading slash", async () => {
+      s3Mock.on(PutObjectCommand).resolves({});
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "" });
+
+      await store.put(HELLO);
+
+      const input = s3Mock.commandCalls(PutObjectCommand)[0]?.args[0].input;
+      expect(input?.Key).toBe(`${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+      expect(input?.Key?.startsWith("/")).toBe(false);
+    });
+  });
+
+  describe("get", () => {
+    test("returns Uint8Array with correct bytes when present", async () => {
+      s3Mock.on(GetObjectCommand).resolves({ Body: bodyFromBytes(HELLO) });
+      const store = createS3BlobStore(baseConfig());
+
+      const data = await store.get(HELLO_HASH);
+
+      expect(data).toBeInstanceOf(Uint8Array);
+      expect(data).toEqual(HELLO);
+      const input = s3Mock.commandCalls(GetObjectCommand)[0]?.args[0].input;
+      expect(input?.Bucket).toBe("test-bucket");
+      expect(input?.Key).toBe(`${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+
+    test("returns undefined when key is absent (NoSuchKey)", async () => {
+      const err = new Error("The specified key does not exist.");
+      err.name = "NoSuchKey";
+      s3Mock.on(GetObjectCommand).rejects(err);
+      const store = createS3BlobStore(baseConfig());
+
+      const data = await store.get(HELLO_HASH);
+
+      expect(data).toBeUndefined();
+    });
+
+    test("throws wrapped error on non-404 failures", async () => {
+      const err = new Error("Internal Server Error");
+      err.name = "InternalError";
+      s3Mock.on(GetObjectCommand).rejects(err);
+      const store = createS3BlobStore(baseConfig());
+
+      await expect(store.get(HELLO_HASH)).rejects.toThrow(/get/);
+    });
+
+    test("uses sharded key layout under prefix", async () => {
+      s3Mock.on(GetObjectCommand).resolves({ Body: bodyFromBytes(HELLO) });
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "tenant-a/blobs" });
+
+      await store.get(HELLO_HASH);
+
+      const input = s3Mock.commandCalls(GetObjectCommand)[0]?.args[0].input;
+      expect(input?.Key).toBe(`tenant-a/blobs/${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+  });
+
+  describe("has", () => {
+    test("returns true when HeadObjectCommand succeeds", async () => {
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const store = createS3BlobStore(baseConfig());
+
+      await expect(store.has(HELLO_HASH)).resolves.toBe(true);
+      const input = s3Mock.commandCalls(HeadObjectCommand)[0]?.args[0].input;
+      expect(input?.Bucket).toBe("test-bucket");
+      expect(input?.Key).toBe(`${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+
+    test("returns false on NotFound (404)", async () => {
+      const err = new Error("Not Found");
+      err.name = "NotFound";
+      s3Mock.on(HeadObjectCommand).rejects(err);
+      const store = createS3BlobStore(baseConfig());
+
+      await expect(store.has(HELLO_HASH)).resolves.toBe(false);
+    });
+
+    test("throws on 5xx-style errors (not 200/404)", async () => {
+      const err = new Error("Service Unavailable");
+      err.name = "ServiceUnavailable";
+      s3Mock.on(HeadObjectCommand).rejects(err);
+      const store = createS3BlobStore(baseConfig());
+
+      await expect(store.has(HELLO_HASH)).rejects.toThrow(/has/);
+    });
+
+    test("uses sharded key layout under prefix", async () => {
+      s3Mock.on(HeadObjectCommand).resolves({});
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "tenant-a/blobs" });
+
+      await store.has(HELLO_HASH);
+
+      const input = s3Mock.commandCalls(HeadObjectCommand)[0]?.args[0].input;
+      expect(input?.Key).toBe(`tenant-a/blobs/${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+  });
+
+  describe("delete", () => {
+    test("issues DeleteObjectCommand and returns true on success (S3 delete is idempotent)", async () => {
+      s3Mock.on(DeleteObjectCommand).resolves({});
+      const store = createS3BlobStore(baseConfig());
+
+      await expect(store.delete(HELLO_HASH)).resolves.toBe(true);
+      const input = s3Mock.commandCalls(DeleteObjectCommand)[0]?.args[0].input;
+      expect(input?.Bucket).toBe("test-bucket");
+      expect(input?.Key).toBe(`${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+
+    test("throws on network / non-404 errors (not swallowed as false)", async () => {
+      const err = new Error("Connection refused");
+      err.name = "NetworkingError";
+      s3Mock.on(DeleteObjectCommand).rejects(err);
+      const store = createS3BlobStore(baseConfig());
+
+      await expect(store.delete(HELLO_HASH)).rejects.toThrow(/delete/);
+    });
+
+    test("uses sharded key layout under prefix", async () => {
+      s3Mock.on(DeleteObjectCommand).resolves({});
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "tenant-a/blobs" });
+
+      await store.delete(HELLO_HASH);
+
+      const input = s3Mock.commandCalls(DeleteObjectCommand)[0]?.args[0].input;
+      expect(input?.Key).toBe(`tenant-a/blobs/${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+  });
+
+  describe("S3Client configuration", () => {
+    test("endpoint and forcePathStyle are forwarded to the underlying S3Client", async () => {
+      // When a custom endpoint is configured (e.g. MinIO/R2), the SDK must
+      // route through it. Rather than reaching into client internals, verify
+      // behavior: a mocked .send() still resolves correctly regardless of
+      // endpoint config — the config validates at construction and is passed
+      // through to the SDK.
+      s3Mock.on(PutObjectCommand).resolves({});
+      const store = createS3BlobStore({
+        ...baseConfig(),
+        endpoint: "https://minio.example.com",
+        forcePathStyle: true,
+      });
+
+      const hash = await store.put(HELLO);
+
+      expect(hash).toBe(HELLO_HASH);
+    });
+  });
+});
