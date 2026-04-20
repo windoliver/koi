@@ -994,11 +994,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // while a refresh is already running
           let refreshPending = false;
 
+          // #review-round5-F1: hard cap on the eager refresh loop. A
+          // pathological watch source whose `toolDescriptors()` call
+          // re-fires the watch event during its own resolution could
+          // otherwise spin this loop forever — saturating CPU/IO and
+          // flooding the forge backend, with no turn boundary able to
+          // engage the turn-boundary DRAIN_CAP safeguard. After the cap
+          // we exit the loop and leave `forgeStateDirty = true` so the
+          // next turn-boundary drain (which has its own cap + fail-closed
+          // path) can either quiesce or surface the failure.
+          const RUN_REFRESH_CAP = 8;
           const runRefresh = async (): Promise<void> => {
             refreshInFlight = true;
             try {
-              // Drain queued events by looping: a burst that sets
-              // `refreshPending` during this await will re-run exactly once.
+              // let justified: mutable loop counter bounded by RUN_REFRESH_CAP
+              let iterations = 0;
               do {
                 refreshPending = false;
                 try {
@@ -1010,6 +1020,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   tryCommitForgeRefresh(mySeq, d);
                 } catch (err: unknown) {
                   console.warn("[koi] forge descriptor refresh failed", err);
+                  break;
+                }
+                iterations++;
+                if (iterations >= RUN_REFRESH_CAP && refreshPending) {
+                  // Give up the eager loop; preserve `forgeStateDirty`
+                  // so the turn-boundary drain picks it up. The
+                  // turn-boundary path has its own DRAIN_CAP +
+                  // fail-closed throw for the truly pathological case.
+                  console.warn(
+                    `[koi] eager forge refresh cap (${RUN_REFRESH_CAP}) reached; deferring to turn-boundary drain`,
+                  );
+                  forgeStateDirty = true;
                   break;
                 }
               } while (refreshPending);

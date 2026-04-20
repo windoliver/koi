@@ -4159,6 +4159,66 @@ describe("createKoi forge watch", () => {
     expect(toolDescriptors).toHaveBeenCalledTimes(1);
   });
 
+  test("eager forge refresh bounds itself on self-triggering watch (#review-round5-F1)", async () => {
+    // Pathological forge: every toolDescriptors() call re-fires the
+    // watch event. Without a hard cap on runRefresh, this hot-loops
+    // forever — saturating CPU/IO and flooding the backend. The cap
+    // bounds calls per eager refresh cycle.
+    // let justified: watch listener ref
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+    // let justified: mutable call counter
+    let toolDescriptorCallCount = 0;
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async (): Promise<readonly ToolDescriptor[]> => {
+        toolDescriptorCallCount++;
+        // Self-trigger every call to keep refreshPending permanently true.
+        watchListener?.({ kind: "saved", brickId: brickId("x") });
+        return [];
+      }),
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    // Adapter that never emits turn_end — so only the eager watch
+    // refresh path runs. If unbounded it hot-loops forever and the
+    // test times out.
+    const adapter: EngineAdapter = {
+      engineId: "hot-loop-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          // Trigger the first watch event to start the eager loop.
+          watchListener?.({ kind: "saved", brickId: brickId("start") });
+          // Let the eager loop run for a short window then complete.
+          await new Promise((r) => setTimeout(r, 150));
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "go" }));
+
+    // Bounded: session-start refresh (1) + eager cap (8) + small
+    // margin for timing slop. Without the cap this is unbounded.
+    expect(toolDescriptorCallCount).toBeLessThan(20);
+  }, 10_000);
+
   test("forge refresh fails closed when drain cap is exhausted (#review-round4-F2)", async () => {
     // Pathological forge: every toolDescriptors() call fires another
     // watch event DURING its resolution, so forgeStateDirty is
