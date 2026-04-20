@@ -21,10 +21,30 @@ const collect = async (
 ): Promise<readonly WorkerEvent[]> => {
   const out: WorkerEvent[] = [];
   const deadline = Date.now() + timeoutMs;
-  for await (const ev of iter) {
-    out.push(ev);
-    if (stopPredicate(ev)) break;
-    if (Date.now() > deadline) break;
+  const iterator = iter[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      // Race each iterator.next() against the remaining deadline. Without
+      // this, a stalled iterator (terminal event dropped, producer hung)
+      // keeps the for-await blocked indefinitely — the test then only
+      // fails at the global test timeout with no signal about the race.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedNext = Promise.race([
+        iterator.next(),
+        new Promise<{ done: true; value: undefined }>((resolve) => {
+          timer = setTimeout(() => resolve({ done: true, value: undefined }), remaining);
+        }),
+      ]);
+      const r = await timedNext;
+      clearTimeout(timer);
+      if (r.done) break;
+      out.push(r.value);
+      if (stopPredicate(r.value)) break;
+    }
+  } finally {
+    if (iterator.return !== undefined) await iterator.return(undefined);
   }
   return out;
 };

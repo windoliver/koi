@@ -330,14 +330,33 @@ export function createSubprocessBackend(): WorkerBackend {
           return;
         }
       }
-      if (!state.alive) {
-        state.terminalDelivered = true;
-        return;
-      }
-      // Phase 4: live stream. Non-heartbeat events are ALSO appended to
-      // state.events, so we advance the cursor to avoid double-yielding
-      // them during any future re-drain (shutdown cleanup path).
-      while (state.alive) {
+      // Phase 4: always-drain-then-await loop. Unifying the drain and
+      // await into a single loop eliminates the heartbeat-then-exit race
+      // where an `exited`/`crashed` event appended to state.events during
+      // a yield pause is never delivered (listeners had already been
+      // drained, state.alive flips false, and a naive `while(alive)` exit
+      // leaves the terminal event buffered but unseen).
+      while (true) {
+        // Drain any events appended since the last iteration (including
+        // during the yield pause of whatever we just yielded).
+        while (cursor < state.events.length) {
+          const ev = state.events[cursor++];
+          if (ev === undefined) break;
+          yield ev;
+          if (ev.kind === "exited" || ev.kind === "crashed") {
+            state.terminalDelivered = true;
+            return;
+          }
+        }
+        if (!state.alive) {
+          // Process died and no pending terminal is buffered: mark delivered
+          // and return. The fallback-prune path cleans up orphaned state.
+          state.terminalDelivered = true;
+          return;
+        }
+        // Wait for next event. Non-heartbeat events are also in
+        // state.events (pushed by emit), so we advance the cursor after
+        // yield to avoid double-delivery on the next drain pass.
         const ev = await new Promise<WorkerEvent>((resolve) => {
           state.listeners.push(resolve);
         });

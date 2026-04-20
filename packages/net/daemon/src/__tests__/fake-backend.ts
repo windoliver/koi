@@ -151,15 +151,23 @@ export function createFakeBackend(
         yield ev;
         if (ev.kind === "exited" || ev.kind === "crashed") return;
       }
-      if (!s.alive) return;
-      // Phase 4: live stream.
-      while (s.alive) {
+      // Phase 4: always-drain-then-await. See subprocess-backend for
+      // the full rationale — avoids terminal-event loss when a crash
+      // lands during a heartbeat yield pause.
+      while (true) {
+        while (cursor < s.events.length) {
+          const ev = s.events[cursor++];
+          if (ev === undefined) break;
+          yield ev;
+          if (ev.kind === "exited" || ev.kind === "crashed") return;
+        }
+        if (!s.alive) return;
         const ev = await new Promise<WorkerEvent>((resolve) => {
           s.listeners.push(resolve);
         });
         yield ev;
         if (ev.kind !== "heartbeat") cursor++;
-        if (ev.kind === "exited" || ev.kind === "crashed") break;
+        if (ev.kind === "exited" || ev.kind === "crashed") return;
       }
     },
   };

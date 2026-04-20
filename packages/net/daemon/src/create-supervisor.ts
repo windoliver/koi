@@ -699,6 +699,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // Watch backend events for this worker — drive restart policy + exit
     // promise resolution. Fire-and-forget: lives as long as the worker.
     void (async () => {
+      let terminalProcessed = false;
       try {
         for await (const ev of backend.watch(request.workerId)) {
           publishEvent(ev);
@@ -707,6 +708,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
             continue;
           }
           if (ev.kind !== "exited" && ev.kind !== "crashed") continue;
+          terminalProcessed = true;
           healthMonitor.untrack(ev.workerId);
 
           const current = pool.get(request.workerId);
@@ -741,6 +743,16 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
           scheduleRestart(current, request, policy, recentTimestamps, now);
           return;
+        }
+        // Post-loop guard: the watch iterator completed without yielding
+        // a terminal event. Defense-in-depth: even with the phase-4
+        // drain fix, a backend contract violation (e.g., a future custom
+        // adapter returning early) must not leak the pool entry. Route
+        // through the same watch-fault handler used by the catch path.
+        if (!terminalProcessed) {
+          throw new Error(
+            `backend.watch(${request.workerId}) completed without yielding a terminal event`,
+          );
         }
       } catch (e) {
         // Watch stream faulted. The underlying worker may still be alive;
