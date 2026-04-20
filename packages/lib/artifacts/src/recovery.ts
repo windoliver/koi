@@ -1,43 +1,41 @@
 /**
- * Plan 2 startup recovery — synchronous pass over pending_blob_puts rows
- * and blob_ready=0 artifact rows left by a previous crash.
+ * Plan 4 startup recovery — local DML only, zero blob I/O.
  *
- * This is a minimal subset of the full recovery described in spec §6.5.
- * Plan 4 extends with a background worker for ongoing repair and adds
- * TTL-on-open, scavenger, and the full tombstone Phase B drain. Plan 2
- * handles the two "crashed mid-save" shapes so saves never silently strand
- * invisible rows.
+ * Spec §6.5 Plan 4 contract: `createArtifactStore` must NEVER call
+ * `blobStore.has()` / `put()` / `delete()` on the critical path. The
+ * remaining synchronous recovery passes here operate only on already-
+ * resolved rows/intents — the background worker (Plan 4 tasks 3-5)
+ * handles every `blob_ready = 0` row that still requires a blob probe.
  *
- * Recovery matches intents to artifact rows by `artifact_id` (populated by
- * saveArtifact once its metadata tx inserts the row). This avoids the
- * hash-collapse bug where a concurrent same-content save with a completed
- * blob_ready=1 row would fool recovery into retiring the earlier save's
- * intent — leaving the earlier row permanently blob_ready=0.
+ * Passes (ordered):
  *
- * Durability contract: a single negative `has()` probe NEVER terminally
- * deletes a row. `repair_attempts` is incremented on each confirmed miss
- * and only at >= maxRepairAttempts do we tombstone the hash and delete the
- * row. That tolerates transient backend outages during restart — a backend
- * that's down right now will hit has=false, increment the counter, and
- * leave the row for the next attempt. Only persistent missing-blob errors
- * (10 restarts with confirmed absence, by default) trigger terminal loss.
+ * 1. `drainStalePendingIntents` (Task 1) — rows in `pending_blob_puts`
+ *    older than the grace window. Each is either deleted (artifacts row
+ *    references the hash) or deleted + tombstoned (no live reference).
+ *    Pure local DML.
  *
- * Behavior (per pending_blob_puts row, oldest first):
- *   - artifact_id IS NULL → save crashed before its metadata tx committed.
- *     Tombstone the hash if no live ref, retire the intent.
- *   - artifact_id set, row missing → row was externally deleted after the
- *     intent was bound. Retire the intent.
- *   - artifact_id set, row blob_ready=1 → save completed past the UPDATE but
- *     before retiring the intent. Retire the intent.
- *   - artifact_id set, row blob_ready=0 → crashed between COMMIT and UPDATE.
- *     If blob is present, promote. If missing, increment repair_attempts;
- *     only delete at the maxRepairAttempts threshold.
+ * 2. `drainPendingIntents` — resolves only the two shapes that need no
+ *    blob I/O to disambiguate:
+ *      - `artifact_id` bound, target row externally deleted → retire
+ *        intent + tombstone the hash if unreferenced.
+ *      - `artifact_id` bound, target row already `blob_ready = 1` →
+ *        retire the intent (save completed past its own UPDATE).
+ *    `artifact_id IS NULL` entries inside the grace window and
+ *    `blob_ready = 0` rows with a bound intent are LEFT ALONE — the
+ *    worker revisits after the grace window and probes the backend.
+ *
+ * The old `drainOrphanedHiddenRows` pass is gone: rows that sit at
+ * `blob_ready = 0` with no intent still require a backend probe to
+ * distinguish "blob really exists, intent was lost" from "blob was
+ * deleted, row must be tombstoned" — that probe is now the worker's job.
+ *
+ * Every read-side API already hides `blob_ready = 0` rows, so leaving
+ * them untouched on open is safe: the store opens faster, no remote
+ * blob call can block bootstrap, and no negative probe on a transient
+ * backend outage can erode a committed save's retry budget.
  */
 
 import type { Database } from "bun:sqlite";
-import type { BlobStore } from "@koi/blob-cas";
-
-const DEFAULT_MAX_REPAIR_ATTEMPTS = 10;
 
 /**
  * Default grace window for the §6.5 step 1 stale-intent drain: 5 minutes.
@@ -61,38 +59,27 @@ interface IntentRow {
 
 interface TargetRow {
   readonly blob_ready: number;
-  readonly repair_attempts: number;
 }
 
-export async function runStartupRecovery(args: {
+export function runStartupRecovery(args: {
   readonly db: Database;
-  readonly blobStore: BlobStore;
-  readonly maxRepairAttempts?: number;
   readonly staleIntentGraceMs?: number;
-}): Promise<void> {
-  const maxAttempts = args.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS;
+}): void {
   const staleIntentGraceMs = args.staleIntentGraceMs ?? DEFAULT_STALE_INTENT_GRACE_MS;
 
   // Spec §6.5 step 1: convert stale pre-commit intents (older than the
   // grace window) directly into sweep tombstones (or drop them outright
-  // when an artifacts row already references the hash). This is local
-  // DML only — no blob I/O — and must run before any subsequent pass
-  // that might observe a now-resolved intent.
+  // when an artifacts row already references the hash). Local DML only.
   drainStalePendingIntents({
     db: args.db,
     staleIntentGraceMs,
     now: Date.now(),
   });
 
-  // Pass 1: walk pending_blob_puts (the normal case for Plan 2 saves).
-  await drainPendingIntents({ ...args, maxAttempts });
-
-  // Pass 2: sweep any blob_ready=0 rows that have NO remaining intent.
-  // This catches rows stranded by an earlier iteration's hash-collapse bug
-  // or by any external mutation that dropped the intent without resolving
-  // the row. Every hidden row is either promoted, has its repair_attempts
-  // bumped (for transient outages), or terminal-deleted after max attempts.
-  await drainOrphanedHiddenRows({ ...args, maxAttempts });
+  // Pass 2: walk pending_blob_puts for intents bound to a specific row
+  // that can be resolved without touching the backend. blob_ready=0
+  // targets with a bound intent are left untouched — worker owns them.
+  drainPendingIntents({ db: args.db });
 }
 
 interface StaleIntentRow {
@@ -106,8 +93,8 @@ interface StaleIntentRow {
  * `BEGIN IMMEDIATE` transaction:
  *   - If an `artifacts` row references the hash (any blob_ready state),
  *     just `DELETE FROM pending_blob_puts WHERE intent_id = ?`. The row's
- *     own repair path (drainPendingIntents + drainOrphanedHiddenRows) owns
- *     resolution; there is nothing for this step to reclaim.
+ *     own repair path owns resolution; there is nothing for this step to
+ *     reclaim.
  *   - Otherwise, DELETE the intent AND
  *     `INSERT OR IGNORE INTO pending_blob_deletes` the hash so the normal
  *     sweep's Phase B drain reclaims the orphan blob (no O(N) scan needed).
@@ -150,87 +137,32 @@ export function drainStalePendingIntents(args: {
   }
 }
 
-interface OrphanRowWithAttempts {
-  readonly id: string;
-  readonly content_hash: string;
-  readonly repair_attempts: number;
-}
-
-async function drainOrphanedHiddenRows(args: {
-  readonly db: Database;
-  readonly blobStore: BlobStore;
-  readonly maxAttempts: number;
-}): Promise<void> {
-  const rows = args.db
-    .query(
-      `SELECT id, content_hash, repair_attempts FROM artifacts
-        WHERE blob_ready = 0
-          AND NOT EXISTS (SELECT 1 FROM pending_blob_puts WHERE artifact_id = artifacts.id)`,
-    )
-    .all() as ReadonlyArray<OrphanRowWithAttempts>;
-
-  for (const row of rows) {
-    const blobPresent = await args.blobStore.has(row.content_hash);
-    if (blobPresent) {
-      args.db
-        .query("UPDATE artifacts SET blob_ready = 1 WHERE id = ? AND blob_ready = 0")
-        .run(row.id);
-      continue;
-    }
-
-    // Confirmed missing — bump repair_attempts and only terminal-delete
-    // if we've hit the budget. A single negative probe during a transient
-    // backend outage must NOT reap a committed save.
-    const nextAttempts = row.repair_attempts + 1;
-    if (nextAttempts < args.maxAttempts) {
-      args.db
-        .query("UPDATE artifacts SET repair_attempts = ? WHERE id = ? AND blob_ready = 0")
-        .run(nextAttempts, row.id);
-      continue;
-    }
-
-    // Budget exhausted: the blob has been confirmed absent N times across
-    // restarts. Terminal-delete + tombstone.
-    args.db.transaction(() => {
-      args.db.query("DELETE FROM artifacts WHERE id = ?").run(row.id);
-      const stillReferenced = args.db
-        .query(
-          `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
-                        OR EXISTS (SELECT 1 FROM pending_blob_puts WHERE hash = ?)`,
-        )
-        .get(row.content_hash, row.content_hash);
-      if (!stillReferenced) {
-        args.db
-          .query(
-            "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
-          )
-          .run(row.content_hash, Date.now());
-      }
-    })();
-  }
-}
-
-async function drainPendingIntents(args: {
-  readonly db: Database;
-  readonly blobStore: BlobStore;
-  readonly maxAttempts: number;
-}): Promise<void> {
+/**
+ * Resolve pending_blob_puts rows that can be cleaned up with no blob I/O:
+ *
+ *   - `artifact_id IS NULL` → owned exclusively by the stale-intent drain
+ *     above (once the grace window elapses) or by the worker (before it).
+ *     Not touched here.
+ *   - `artifact_id` bound, target row missing → row was externally deleted
+ *     after the intent was bound. Retire the intent + tombstone the hash
+ *     if unreferenced.
+ *   - `artifact_id` bound, target row `blob_ready = 1` → save completed
+ *     past its UPDATE but before retiring the intent. Retire the intent.
+ *   - `artifact_id` bound, target row `blob_ready = 0` → worker territory.
+ *     The row is invisible via read-side APIs; the worker will probe
+ *     `blobStore.has(hash)` asynchronously and promote or terminal-delete.
+ *     Leave both the row and the intent untouched here.
+ */
+function drainPendingIntents(args: { readonly db: Database }): void {
   const intents = args.db
     .query("SELECT intent_id, hash, artifact_id FROM pending_blob_puts ORDER BY created_at")
     .all() as ReadonlyArray<IntentRow>;
 
   for (const intent of intents) {
-    // Case A: intent never bound to a row (save crashed before metadata
-    // tx). Resolution is now owned exclusively by drainStalePendingIntents
-    // (spec §6.5 step 1). Younger-than-grace intents in this state might
-    // belong to a real in-flight save that simply hasn't committed its
-    // metadata row yet — do not touch them here; the background repair
-    // worker will revisit after the grace window elapses.
     if (intent.artifact_id === null) continue;
 
-    // Intent is bound to a specific row. Look it up.
     const target = args.db
-      .query("SELECT blob_ready, repair_attempts FROM artifacts WHERE id = ?")
+      .query("SELECT blob_ready FROM artifacts WHERE id = ?")
       .get(intent.artifact_id) as TargetRow | null;
 
     if (target === null) {
@@ -260,46 +192,8 @@ async function drainPendingIntents(args: {
     if (target.blob_ready === 1) {
       // Save completed past the UPDATE; intent retirement was lost. Retire now.
       args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-      continue;
     }
-
-    // target.blob_ready === 0 → crash between COMMIT and UPDATE blob_ready=1.
-    const blobPresent = await args.blobStore.has(intent.hash);
-    if (blobPresent) {
-      args.db.query("UPDATE artifacts SET blob_ready = 1 WHERE id = ?").run(intent.artifact_id);
-      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-      continue;
-    }
-
-    // Blob confirmed absent — bump repair_attempts. A single negative probe
-    // during transient backend outage must NOT reap a committed save. Only
-    // terminal-delete once repair_attempts has accumulated to the budget.
-    const nextAttempts = target.repair_attempts + 1;
-    if (nextAttempts < args.maxAttempts) {
-      args.db
-        .query("UPDATE artifacts SET repair_attempts = ? WHERE id = ? AND blob_ready = 0")
-        .run(nextAttempts, intent.artifact_id);
-      continue;
-    }
-
-    // Budget exhausted: terminal delete + tombstone + retire intent.
-    args.db.transaction(() => {
-      args.db.query("DELETE FROM artifacts WHERE id = ?").run(intent.artifact_id);
-      const stillReferenced = args.db
-        .query(
-          `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
-                        OR EXISTS (SELECT 1 FROM pending_blob_puts
-                                    WHERE hash = ? AND intent_id != ?)`,
-        )
-        .get(intent.hash, intent.hash, intent.intent_id);
-      if (!stillReferenced) {
-        args.db
-          .query(
-            "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
-          )
-          .run(intent.hash, Date.now());
-      }
-      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-    })();
+    // target.blob_ready === 0 → blob probe is the worker's responsibility.
+    // The row is invisible to readers; leaving it untouched is safe.
   }
 }

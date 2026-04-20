@@ -28,7 +28,7 @@ import { createScavengerOrphanBlobs } from "./scavenger.js";
 import { createRevokeShare, createShareArtifact } from "./share.js";
 import { openDatabase } from "./sqlite.js";
 import { ensureStoreIdPair } from "./store-id.js";
-import { createSweepArtifacts } from "./sweep.js";
+import { createSweepArtifacts, sweepTtlOnOpen } from "./sweep.js";
 import type {
   Artifact,
   ArtifactError,
@@ -121,21 +121,28 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     const blobStore: BlobStore = createFilesystemBlobStore(config.blobDir);
     await ensureStoreIdPair({ db, blobDir: config.blobDir, blobStore });
 
-    // Startup recovery: resolve blob_ready=0 rows and stale pending_blob_puts
-    // rows left by a previous crash. Runs synchronously so the store is in a
-    // consistent state before first use. Uses repair_attempts budget so a
-    // single negative probe during transient backend outage does not reap a
-    // committed save.
-    await runStartupRecovery({
+    // Startup recovery (spec §6.5 Plan 4): local SQLite DML only. Drains
+    // stale pending_blob_puts and resolves the subset of bound intents that
+    // need no backend probe. blob_ready=0 rows with a bound intent are
+    // left untouched for the background worker (Plan 4 tasks 3-5). The
+    // open path must never call blobStore.has/put/delete — a transient S3
+    // outage on restart would otherwise either stall bootstrap or erode a
+    // committed save's retry budget.
+    runStartupRecovery({
       db,
-      blobStore,
-      ...(config.maxRepairAttempts !== undefined
-        ? { maxRepairAttempts: config.maxRepairAttempts }
-        : {}),
       ...(config.staleIntentGraceMs !== undefined
         ? { staleIntentGraceMs: config.staleIntentGraceMs }
         : {}),
     });
+
+    // Spec §6.5 step 3: TTL-only Phase A sweep. Local DML only. Reaps rows
+    // whose per-row frozen `expires_at` is already in the past; enqueues
+    // tombstones for hashes whose only references were inside the deletion
+    // set. Tombstones are drained later by the background worker. Quota
+    // and per-name retention are deliberately NOT applied here — a
+    // stricter policy or rollback must not silently delete previously
+    // valid artifacts just because the process restarted.
+    sweepTtlOnOpen({ db, now: Date.now() });
 
     const rawSave = createSaveArtifact({ db, blobStore, config });
     const rawGet = createGetArtifact({ db, blobStore });

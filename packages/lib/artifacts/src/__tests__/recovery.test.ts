@@ -1,130 +1,448 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFilesystemBlobStore } from "@koi/blob-cas";
+import type { BlobStore } from "@koi/blob-cas";
 import { sessionId } from "@koi/core";
-import { createArtifactStore } from "../create-store.js";
 import type { ArtifactStore } from "../types.js";
 
-describe("startup recovery", () => {
+/**
+ * Counting blobStore mock. Static ESM imports of `@koi/blob-cas` everywhere
+ * in @koi/artifacts are redirected through this factory so we can count
+ * every `has()` / `put()` / `delete()` / `list()` the open path makes.
+ *
+ * Spec §6.5 Plan 4: the critical path of `createArtifactStore` MUST NOT
+ * touch the backend. Only `ensureStoreIdPair`'s sentinel check may walk
+ * `list()` — and only on the first ever open (both sides empty) or on an
+ * asymmetric recovery path. A clean re-open must observe zero calls.
+ */
+const counters = { has: 0, put: 0, delete: 0, list: 0 };
+function resetCounters(): void {
+  counters.has = 0;
+  counters.put = 0;
+  counters.delete = 0;
+  counters.list = 0;
+}
+
+const loadRealBlobCas = (): typeof import("@koi/blob-cas") =>
+  require("../../../../../packages/lib/blob-cas/src/index.ts");
+
+mock.module("@koi/blob-cas", () => {
+  const realModule = loadRealBlobCas();
+  return {
+    createFilesystemBlobStore: (blobDir: string): BlobStore => {
+      const real = realModule.createFilesystemBlobStore(blobDir);
+      return {
+        put: (data) => {
+          counters.put++;
+          return real.put(data);
+        },
+        get: (hash) => real.get(hash),
+        has: (hash) => {
+          counters.has++;
+          return real.has(hash);
+        },
+        delete: (hash) => {
+          counters.delete++;
+          return real.delete(hash);
+        },
+        list: () => {
+          counters.list++;
+          return real.list();
+        },
+      };
+    },
+  };
+});
+
+import { createArtifactStore } from "../create-store.js";
+
+describe("startup recovery — open path blob-I/O invariants (Plan 4 §6.5)", () => {
   let blobDir: string;
   let dbPath: string;
-  let store: ArtifactStore;
+  let store: ArtifactStore | undefined;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     blobDir = join(tmpdir(), `koi-art-rec-${crypto.randomUUID()}`);
     mkdirSync(blobDir, { recursive: true });
     dbPath = join(blobDir, "store.db");
-    store = await createArtifactStore({ dbPath, blobDir });
+    resetCounters();
   });
 
   afterEach(async () => {
-    await store.close();
+    if (store !== undefined) await store.close();
+    store = undefined;
     rmSync(blobDir, { recursive: true, force: true });
   });
 
-  async function simulateCrashedSave(hash: string, artifactBlobReady: 0 | 1): Promise<string> {
+  test("clean re-open: zero has/put/delete/list calls", async () => {
+    // First open bootstraps the store_id pair (sentinel write) — may call
+    // list() once inside ensureStoreIdPair for the empty-store check. That
+    // isn't a blob probe; discount it by resetting counters after bootstrap.
+    store = await createArtifactStore({ dbPath, blobDir });
     await store.close();
+    store = undefined;
+
+    resetCounters();
+    store = await createArtifactStore({ dbPath, blobDir });
+    expect(counters.has).toBe(0);
+    expect(counters.put).toBe(0);
+    expect(counters.delete).toBe(0);
+    expect(counters.list).toBe(0);
+  });
+
+  test("re-open with blob_ready=0 row + bound intent: zero has/put/delete/list calls", async () => {
+    // Seed the shape that Plan 2 recovery would have probed: a crashed-mid-
+    // save row at blob_ready=0 with a matching pending_blob_puts intent.
+    // Plan 4 open MUST leave it alone; the worker owns blob probes.
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
     const db = new Database(dbPath);
-    const now = Date.now();
     const artId = `art_${crypto.randomUUID()}`;
+    const hash = "f".repeat(64);
+    const now = Date.now();
     db.query(
       `INSERT INTO artifacts (id, session_id, name, version, mime_type, size, content_hash, created_at, blob_ready)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(artId, "sess_a", "crashed.txt", 1, "text/plain", 3, hash, now, artifactBlobReady);
-    // Simulate a mid-save crash: the intent is bound to this specific artifact_id
-    // (post-save.ts's UPDATE pending_blob_puts SET artifact_id = ?).
+       VALUES (?, 'sess_a', 'crashed.txt', 1, 'text/plain', 3, ?, ?, 0)`,
+    ).run(artId, hash, now);
     const intentId = `intent_${crypto.randomUUID()}`;
     db.query(
       `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
        VALUES (?, ?, ?, ?)`,
     ).run(intentId, hash, artId, now);
     db.close();
-    return artId;
-  }
 
-  test("promotes blob_ready=0 row when blob is present on disk", async () => {
-    // Seed a real blob on disk
-    const blobs = createFilesystemBlobStore(blobDir);
-    const data = new TextEncoder().encode("abc");
-    const hash = await blobs.put(data);
-    const artId = await simulateCrashedSave(hash, 0);
-
+    resetCounters();
     store = await createArtifactStore({ dbPath, blobDir });
-    const r = await store.getArtifact(artId as never, {
-      sessionId: sessionId("sess_a"),
-    });
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error("unreachable");
-    expect(new TextDecoder().decode(r.value.data)).toBe("abc");
+    expect(counters.has).toBe(0);
+    expect(counters.put).toBe(0);
+    expect(counters.delete).toBe(0);
+    expect(counters.list).toBe(0);
   });
 
-  test("does NOT delete blob_ready=0 row on first missing-blob probe (retry budget)", async () => {
-    // Transient backend outage on restart: single negative has() must not
-    // reap a committed save. Row stays blob_ready=0 with repair_attempts
-    // incremented for the next pass.
-    const fakeHash = "0".repeat(64);
-    const artId = await simulateCrashedSave(fakeHash, 0);
-
-    store = await createArtifactStore({ dbPath, blobDir, maxRepairAttempts: 10 });
-    const r = await store.getArtifact(artId as never, {
-      sessionId: sessionId("sess_a"),
-    });
-    // Row is invisible (blob_ready=0) but not deleted
-    expect(r.ok).toBe(false);
-
+  test("blob_ready=0 row with bound intent survives open untouched", async () => {
+    store = await createArtifactStore({ dbPath, blobDir });
     await store.close();
+    store = undefined;
+
     const db = new Database(dbPath);
-    const row = db.query("SELECT repair_attempts FROM artifacts WHERE id = ?").get(artId) as {
-      readonly repair_attempts: number;
+    const artId = `art_${crypto.randomUUID()}`;
+    const hash = "a".repeat(64);
+    const now = Date.now();
+    db.query(
+      `INSERT INTO artifacts (id, session_id, name, version, mime_type, size, content_hash, created_at, blob_ready)
+       VALUES (?, 'sess_a', 'crashed.txt', 1, 'text/plain', 3, ?, ?, 0)`,
+    ).run(artId, hash, now);
+    const intentId = `intent_${crypto.randomUUID()}`;
+    db.query(
+      `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(intentId, hash, artId, now);
+    db.close();
+
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const db2 = new Database(dbPath);
+    const row = db2.query("SELECT blob_ready FROM artifacts WHERE id = ?").get(artId) as {
+      readonly blob_ready: number;
     } | null;
-    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(fakeHash);
-    db.close();
-    store = await createArtifactStore({ dbPath, blobDir, maxRepairAttempts: 10 });
+    const intent = db2.query("SELECT 1 FROM pending_blob_puts WHERE intent_id = ?").get(intentId);
+    const tomb = db2.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db2.close();
+
     expect(row).not.toBeNull();
-    expect(row?.repair_attempts).toBeGreaterThanOrEqual(1);
-    expect(tomb).toBeFalsy(); // No tombstone yet — budget not exhausted
-  });
-
-  test("terminal-deletes blob_ready=0 row after maxRepairAttempts confirmed misses", async () => {
-    const fakeHash = "0".repeat(64);
-    const artId = await simulateCrashedSave(fakeHash, 0);
-
-    // maxRepairAttempts=1 → the very first confirmed miss terminal-deletes.
-    store = await createArtifactStore({ dbPath, blobDir, maxRepairAttempts: 1 });
-    const r = await store.getArtifact(artId as never, {
-      sessionId: sessionId("sess_a"),
-    });
-    expect(r.ok).toBe(false);
-
-    await store.close();
-    const db = new Database(dbPath);
-    const row = db.query("SELECT 1 FROM artifacts WHERE id = ?").get(artId);
-    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(fakeHash);
-    db.close();
-    store = await createArtifactStore({ dbPath, blobDir });
-    expect(row).toBeFalsy(); // Row terminal-deleted
-    expect(tomb).toBeTruthy(); // Tombstone enqueued
+    expect(row?.blob_ready).toBe(0);
+    expect(intent).toBeTruthy(); // intent stays — worker will probe
+    expect(tomb).toBeFalsy();
   });
 
   test("retires stale pending_blob_puts when matching blob_ready=1 row exists", async () => {
-    const blobs = createFilesystemBlobStore(blobDir);
-    const data = new TextEncoder().encode("ok");
-    const hash = await blobs.put(data);
-    await simulateCrashedSave(hash, 1); // blob_ready=1 but leaked intent
+    // Already-resolved bound intent path: target row is blob_ready=1, so
+    // no blob I/O is needed to retire the intent.
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const db = new Database(dbPath);
+    const artId = `art_${crypto.randomUUID()}`;
+    const hash = "b".repeat(64);
+    const now = Date.now();
+    db.query(
+      `INSERT INTO artifacts (id, session_id, name, version, mime_type, size, content_hash, created_at, blob_ready)
+       VALUES (?, 'sess_a', 'ok.txt', 1, 'text/plain', 3, ?, ?, 1)`,
+    ).run(artId, hash, now);
+    const intentId = `intent_${crypto.randomUUID()}`;
+    db.query(
+      `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(intentId, hash, artId, now);
+    db.close();
 
     store = await createArtifactStore({ dbPath, blobDir });
-    // Intent should be gone after recovery
     await store.close();
-    const db = new Database(dbPath);
-    const count = db
-      .query("SELECT COUNT(*) AS c FROM pending_blob_puts WHERE hash = ?")
-      .get(hash) as { readonly c: number };
-    db.close();
-    store = await createArtifactStore({ dbPath, blobDir });
+    store = undefined;
+
+    const db2 = new Database(dbPath);
+    const count = db2
+      .query("SELECT COUNT(*) AS c FROM pending_blob_puts WHERE intent_id = ?")
+      .get(intentId) as { readonly c: number };
+    db2.close();
     expect(count.c).toBe(0);
+  });
+
+  test("tombstones + retires intent when target row was externally deleted", async () => {
+    // artifact_id bound, target row missing → the externally-deleted branch.
+    // No blob I/O needed: we just tombstone + retire.
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const db = new Database(dbPath);
+    const ghostArtId = `art_${crypto.randomUUID()}`;
+    const hash = "c".repeat(64);
+    const now = Date.now();
+    const intentId = `intent_${crypto.randomUUID()}`;
+    db.query(
+      `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(intentId, hash, ghostArtId, now);
+    db.close();
+
+    resetCounters();
+    store = await createArtifactStore({ dbPath, blobDir });
+    expect(counters.has).toBe(0);
+    expect(counters.put).toBe(0);
+    expect(counters.delete).toBe(0);
+    expect(counters.list).toBe(0);
+    await store.close();
+    store = undefined;
+
+    const db2 = new Database(dbPath);
+    const intent = db2.query("SELECT 1 FROM pending_blob_puts WHERE intent_id = ?").get(intentId);
+    const tomb = db2.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db2.close();
+    expect(intent).toBeFalsy();
+    expect(tomb).toBeTruthy();
+  });
+});
+
+describe("sweepTtlOnOpen (spec §6.5 step 3)", () => {
+  let blobDir: string;
+  let dbPath: string;
+  let store: ArtifactStore | undefined;
+
+  beforeEach(() => {
+    blobDir = join(tmpdir(), `koi-art-ttlopen-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    dbPath = join(blobDir, "store.db");
+    resetCounters();
+  });
+
+  afterEach(async () => {
+    if (store !== undefined) await store.close();
+    store = undefined;
+    rmSync(blobDir, { recursive: true, force: true });
+  });
+
+  // Seed a committed (blob_ready=1) row with a chosen expires_at so we can
+  // exercise sweepTtlOnOpen's selection predicate deterministically.
+  function seedCommittedRow(args: {
+    readonly sessionId?: string;
+    readonly name?: string;
+    readonly version?: number;
+    readonly hash?: string;
+    readonly size?: number;
+    readonly createdAt?: number;
+    readonly expiresAt: number | null;
+    readonly blobReady?: 0 | 1;
+  }): string {
+    const db = new Database(dbPath);
+    const id = `art_${crypto.randomUUID()}`;
+    const hash = args.hash ?? crypto.randomUUID().replace(/-/g, "") + "a".repeat(32);
+    db.query(
+      `INSERT INTO artifacts
+         (id, session_id, name, version, mime_type, size, content_hash, tags, created_at, expires_at, blob_ready)
+       VALUES (?, ?, ?, ?, 'text/plain', ?, ?, '[]', ?, ?, ?)`,
+    ).run(
+      id,
+      args.sessionId ?? "sess_a",
+      args.name ?? `f_${crypto.randomUUID()}.txt`,
+      args.version ?? 1,
+      args.size ?? 10,
+      hash,
+      args.createdAt ?? Date.now(),
+      args.expiresAt,
+      args.blobReady ?? 1,
+    );
+    db.close();
+    return id;
+  }
+
+  test("TTL-expired rows are reaped + tombstoned on open", async () => {
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const hash = "d".repeat(64);
+    const past = Date.now() - 10_000;
+    const id = seedCommittedRow({ expiresAt: past, hash });
+
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const db = new Database(dbPath);
+    const row = db.query("SELECT 1 FROM artifacts WHERE id = ?").get(id);
+    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db.close();
+    expect(row).toBeFalsy();
+    expect(tomb).toBeTruthy();
+  });
+
+  test("TTL-not-yet-expired rows survive open", async () => {
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const future = Date.now() + 60_000;
+    const id = seedCommittedRow({ expiresAt: future });
+
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const db = new Database(dbPath);
+    const row = db.query("SELECT 1 FROM artifacts WHERE id = ?").get(id);
+    db.close();
+    expect(row).toBeTruthy();
+  });
+
+  test("quota-over rows NOT reaped on open (even with maxSessionBytes set)", async () => {
+    // Two rows, total 20 bytes, maxSessionBytes=5 → full sweep would reap
+    // both. sweepTtlOnOpen must reap nothing because expires_at is NULL.
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const idA = seedCommittedRow({
+      sessionId: "sess_q",
+      name: "a.txt",
+      size: 10,
+      expiresAt: null,
+      createdAt: Date.now() - 2000,
+    });
+    const idB = seedCommittedRow({
+      sessionId: "sess_q",
+      name: "b.txt",
+      size: 10,
+      expiresAt: null,
+      createdAt: Date.now() - 1000,
+    });
+
+    store = await createArtifactStore({ dbPath, blobDir, policy: { maxSessionBytes: 5 } });
+    await store.close();
+    store = undefined;
+
+    const db = new Database(dbPath);
+    const rows = db
+      .query("SELECT id FROM artifacts WHERE id IN (?, ?)")
+      .all(idA, idB) as ReadonlyArray<{ readonly id: string }>;
+    db.close();
+    expect(rows).toHaveLength(2);
+  });
+
+  test("retention-excess rows NOT reaped on open (even with maxVersionsPerName set)", async () => {
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const idV1 = seedCommittedRow({
+      sessionId: "sess_r",
+      name: "doc.txt",
+      version: 1,
+      expiresAt: null,
+      createdAt: Date.now() - 3000,
+    });
+    const idV2 = seedCommittedRow({
+      sessionId: "sess_r",
+      name: "doc.txt",
+      version: 2,
+      expiresAt: null,
+      createdAt: Date.now() - 2000,
+    });
+    const idV3 = seedCommittedRow({
+      sessionId: "sess_r",
+      name: "doc.txt",
+      version: 3,
+      expiresAt: null,
+      createdAt: Date.now() - 1000,
+    });
+
+    store = await createArtifactStore({ dbPath, blobDir, policy: { maxVersionsPerName: 2 } });
+    await store.close();
+    store = undefined;
+
+    const db = new Database(dbPath);
+    const rows = db
+      .query("SELECT id FROM artifacts WHERE id IN (?, ?, ?)")
+      .all(idV1, idV2, idV3) as ReadonlyArray<{ readonly id: string }>;
+    db.close();
+    expect(rows).toHaveLength(3);
+  });
+
+  test("blob_ready=0 rows NOT reaped on open (even when TTL-expired)", async () => {
+    // In-flight row's expires_at is already in the past. `selectTtlExpired`
+    // filters on blob_ready=1 so this row is never a candidate.
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const past = Date.now() - 10_000;
+    const hash = "e".repeat(64);
+    const id = seedCommittedRow({
+      hash,
+      expiresAt: past,
+      blobReady: 0,
+    });
+
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const db = new Database(dbPath);
+    const row = db.query("SELECT blob_ready FROM artifacts WHERE id = ?").get(id) as {
+      readonly blob_ready: number;
+    } | null;
+    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db.close();
+    expect(row).not.toBeNull();
+    expect(row?.blob_ready).toBe(0);
+    expect(tomb).toBeFalsy();
+  });
+
+  test("sweepTtlOnOpen makes zero blob-I/O calls", async () => {
+    // Single seeded TTL-expired row, matching + non-matching intent shapes,
+    // and a rebootstrapped store. The open path is NOT allowed to call
+    // has/put/delete, and the Plan 4 worker is the only thing that drains
+    // tombstones, so list() stays at 0 too.
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    store = undefined;
+
+    const past = Date.now() - 10_000;
+    seedCommittedRow({ expiresAt: past });
+
+    resetCounters();
+    store = await createArtifactStore({ dbPath, blobDir });
+    expect(counters.has).toBe(0);
+    expect(counters.put).toBe(0);
+    expect(counters.delete).toBe(0);
+    expect(counters.list).toBe(0);
   });
 });
 

@@ -40,7 +40,12 @@ export interface SweepResult {
   readonly bytesReclaimed: number;
 }
 
-interface CandidateRow {
+/**
+ * A row slated for deletion by a sweep. Shared between the full-policy
+ * `sweepArtifacts` (§6.3) and the open-path `sweepTtlOnOpen` (§6.5 step 3)
+ * so both use the same candidate-hash logic and the same tombstone protocol.
+ */
+export interface CandidateRow {
   readonly id: string;
   readonly content_hash: string;
   readonly size: number;
@@ -63,7 +68,7 @@ interface RetentionRow {
   readonly version: number;
 }
 
-function selectTtlExpired(db: Database, now: number): ReadonlyArray<CandidateRow> {
+export function selectTtlExpired(db: Database, now: number): ReadonlyArray<CandidateRow> {
   return db
     .query(
       `SELECT id, content_hash, size FROM artifacts
@@ -72,6 +77,48 @@ function selectTtlExpired(db: Database, now: number): ReadonlyArray<CandidateRow
           AND expires_at < ?`,
     )
     .all(now) as ReadonlyArray<CandidateRow>;
+}
+
+/**
+ * Shared Phase A reap: DELETE rows + tombstone any content_hash whose only
+ * references were inside the deletion set. Must be called inside a BEGIN
+ * IMMEDIATE transaction so the candidate-hash check is free of TOCTOU
+ * against concurrent saves (a save journaling an intent for the same hash
+ * keeps the blob alive).
+ *
+ * Used by `sweepArtifacts` (full policy) and by `sweepTtlOnOpen` (TTL-only
+ * on create-store). Returns a summary so callers can surface counters.
+ */
+export function reapDeletionSet(args: {
+  readonly db: Database;
+  readonly deletionById: ReadonlyMap<string, CandidateRow>;
+  readonly now: number;
+}): SweepResult {
+  if (args.deletionById.size === 0) return { deleted: 0, bytesReclaimed: 0 };
+
+  const deletionIds: ReadonlySet<string> = new Set(args.deletionById.keys());
+  const candidateHashes = new Set<string>();
+  const distinctHashes = new Set(Array.from(args.deletionById.values(), (r) => r.content_hash));
+  for (const hash of distinctHashes) {
+    if (!hashStillReferenced(args.db, hash, deletionIds)) {
+      candidateHashes.add(hash);
+    }
+  }
+
+  const ids = Array.from(deletionIds);
+  const placeholders = ids.map(() => "?").join(",");
+  args.db.query(`DELETE FROM artifacts WHERE id IN (${placeholders})`).run(...ids);
+
+  const tombstoneStmt = args.db.query(
+    "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+  );
+  for (const hash of candidateHashes) {
+    tombstoneStmt.run(hash, args.now);
+  }
+
+  let bytesReclaimed = 0;
+  for (const row of args.deletionById.values()) bytesReclaimed += row.size;
+  return { deleted: args.deletionById.size, bytesReclaimed };
 }
 
 function selectQuotaExcess(
@@ -211,41 +258,13 @@ export function createSweepArtifacts(args: {
         }
       }
 
-      if (deletionById.size === 0) {
-        return { deleted: 0, bytesReclaimed: 0 };
-      }
-
-      // Compute candidateHashes INSIDE the tx — no TOCTOU against concurrent
-      // saves. A hash that is still referenced outside the deletion set (by
-      // any surviving artifacts row or any pending_blob_puts intent) is NOT
-      // a candidate; its blob must survive.
-      const deletionIds: ReadonlySet<string> = new Set(deletionById.keys());
-      const candidateHashes = new Set<string>();
-      const distinctHashes = new Set(Array.from(deletionById.values(), (r) => r.content_hash));
-      for (const hash of distinctHashes) {
-        if (!hashStillReferenced(args.db, hash, deletionIds)) {
-          candidateHashes.add(hash);
-        }
-      }
-
-      // DELETE rows. ON DELETE CASCADE removes share grants.
-      const ids = Array.from(deletionIds);
-      const placeholders = ids.map(() => "?").join(",");
-      args.db.query(`DELETE FROM artifacts WHERE id IN (${placeholders})`).run(...ids);
-
-      // Tombstone unreferenced hashes. ON CONFLICT DO NOTHING preserves the
-      // uniqueness invariant for repeated sweeps.
-      const tombstoneStmt = args.db.query(
-        "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      );
-      for (const hash of candidateHashes) {
-        tombstoneStmt.run(hash, now);
-      }
-
-      let bytesReclaimed = 0;
-      for (const row of deletionById.values()) bytesReclaimed += row.size;
-
-      return { deleted: deletionById.size, bytesReclaimed };
+      // Compute candidateHashes + DELETE + tombstone INSIDE the tx — no
+      // TOCTOU against concurrent saves. A hash that is still referenced
+      // outside the deletion set (by any surviving artifacts row or any
+      // pending_blob_puts intent) is NOT a candidate; its blob must survive.
+      // ON DELETE CASCADE removes share grants. ON CONFLICT DO NOTHING
+      // preserves the uniqueness invariant for repeated sweeps.
+      return reapDeletionSet({ db: args.db, deletionById, now });
     });
 
     const phaseA = tx();
@@ -255,4 +274,31 @@ export function createSweepArtifacts(args: {
     await drainTombstones();
     return phaseA;
   };
+}
+
+/**
+ * Spec §6.5 step 3: TTL-only Phase A sweep executed synchronously on
+ * `createArtifactStore`. A single `BEGIN IMMEDIATE` transaction that
+ * tombstones rows whose per-row `expires_at` is already in the past.
+ *
+ * **Local SQLite DML only — no blob I/O, no network.** The tombstones it
+ * enqueues are drained later by the background Phase B worker (Plan 4
+ * Tasks 3-5). Used instead of a full `sweepArtifacts` so a stricter policy
+ * or rollback cannot silently delete previously-valid artifacts at
+ * startup: only TTL (frozen `expires_at` per row at save time) is safe to
+ * apply unconditionally — quota and per-name retention are explicit
+ * sweep-only decisions.
+ *
+ * `blob_ready = 0` rows are excluded by `selectTtlExpired`'s predicate so
+ * an in-flight save's row (including one left mid-repair by a crash) is
+ * never a candidate.
+ */
+export function sweepTtlOnOpen(args: { readonly db: Database; readonly now: number }): SweepResult {
+  return args.db.transaction((): SweepResult => {
+    const deletionById = new Map<string, CandidateRow>();
+    for (const row of selectTtlExpired(args.db, args.now)) {
+      deletionById.set(row.id, row);
+    }
+    return reapDeletionSet({ db: args.db, deletionById, now: args.now });
+  })();
 }
