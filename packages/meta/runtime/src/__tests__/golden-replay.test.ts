@@ -11458,3 +11458,162 @@ describe("Assembled-runtime ordering", () => {
     expect(preludeMw.name).toBe("turn-prelude");
   });
 });
+
+describe("Golden: @koi/artifacts", () => {
+  test("saveArtifact + getArtifact round-trips the owner's bytes", async () => {
+    const { createArtifactStore } = await import("@koi/artifacts");
+    const { artifactId, sessionId } = await import("@koi/core");
+    const { mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const blobDir = join(tmpdir(), `koi-rt-art-rt-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const dbPath = join(blobDir, "store.db");
+    const store = await createArtifactStore({ dbPath, blobDir });
+    try {
+      const owner = sessionId("sess-owner");
+      const data = new TextEncoder().encode("hello artifacts");
+      const saved = await store.saveArtifact({
+        sessionId: owner,
+        name: "greeting.txt",
+        data,
+        mimeType: "text/plain",
+      });
+      expect(saved.ok).toBe(true);
+      if (!saved.ok) return;
+      expect(saved.value.size).toBe(data.byteLength);
+      expect(saved.value.version).toBe(1);
+
+      const got = await store.getArtifact(saved.value.id, { sessionId: owner });
+      expect(got.ok).toBe(true);
+      if (!got.ok) return;
+      expect(new TextDecoder().decode(got.value.data)).toBe("hello artifacts");
+      expect(got.value.meta.contentHash).toBe(saved.value.contentHash);
+
+      // Unknown id returns not_found.
+      const missing = await store.getArtifact(artifactId("00000000-0000-0000-0000-000000000000"), {
+        sessionId: owner,
+      });
+      expect(missing.ok).toBe(false);
+      if (missing.ok) return;
+      expect(missing.error.kind).toBe("not_found");
+    } finally {
+      await store.close();
+      rmSync(blobDir, { recursive: true, force: true });
+    }
+  });
+
+  test("cross-session getArtifact returns not_found (probe-resistant ACL)", async () => {
+    const { createArtifactStore } = await import("@koi/artifacts");
+    const { sessionId } = await import("@koi/core");
+    const { mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const blobDir = join(tmpdir(), `koi-rt-art-acl-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const dbPath = join(blobDir, "store.db");
+    const store = await createArtifactStore({ dbPath, blobDir });
+    try {
+      const owner = sessionId("sess-owner");
+      const stranger = sessionId("sess-stranger");
+      const saved = await store.saveArtifact({
+        sessionId: owner,
+        name: "secret.bin",
+        data: new Uint8Array([1, 2, 3, 4]),
+        mimeType: "application/octet-stream",
+      });
+      expect(saved.ok).toBe(true);
+      if (!saved.ok) return;
+
+      // Stranger sees not_found, not forbidden — probe-resistance.
+      const probe = await store.getArtifact(saved.value.id, { sessionId: stranger });
+      expect(probe.ok).toBe(false);
+      if (probe.ok) return;
+      expect(probe.error.kind).toBe("not_found");
+
+      // listArtifacts from the stranger's session is empty.
+      const strangerList = await store.listArtifacts({}, { sessionId: stranger });
+      expect(strangerList.length).toBe(0);
+
+      // Owner still sees the artifact in their own list.
+      const ownerList = await store.listArtifacts({}, { sessionId: owner });
+      expect(ownerList.length).toBe(1);
+      expect(ownerList[0]?.id).toBe(saved.value.id);
+    } finally {
+      await store.close();
+      rmSync(blobDir, { recursive: true, force: true });
+    }
+  });
+
+  test("shareArtifact grants read; revokeShare removes it", async () => {
+    const { createArtifactStore } = await import("@koi/artifacts");
+    const { sessionId } = await import("@koi/core");
+    const { mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const blobDir = join(tmpdir(), `koi-rt-art-share-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const dbPath = join(blobDir, "store.db");
+    const store = await createArtifactStore({ dbPath, blobDir });
+    try {
+      const owner = sessionId("sess-owner");
+      const peer = sessionId("sess-peer");
+      const saved = await store.saveArtifact({
+        sessionId: owner,
+        name: "shared.txt",
+        data: new TextEncoder().encode("visible to peer"),
+        mimeType: "text/plain",
+      });
+      expect(saved.ok).toBe(true);
+      if (!saved.ok) return;
+
+      // Before sharing: peer sees not_found.
+      const before = await store.getArtifact(saved.value.id, { sessionId: peer });
+      expect(before.ok).toBe(false);
+
+      const shared = await store.shareArtifact(saved.value.id, peer, { ownerSessionId: owner });
+      expect(shared.ok).toBe(true);
+
+      // After sharing: peer can read.
+      const afterShare = await store.getArtifact(saved.value.id, { sessionId: peer });
+      expect(afterShare.ok).toBe(true);
+      if (!afterShare.ok) return;
+      expect(new TextDecoder().decode(afterShare.value.data)).toBe("visible to peer");
+
+      const revoked = await store.revokeShare(saved.value.id, peer, { ownerSessionId: owner });
+      expect(revoked.ok).toBe(true);
+
+      // After revoke: peer sees not_found again.
+      const afterRevoke = await store.getArtifact(saved.value.id, { sessionId: peer });
+      expect(afterRevoke.ok).toBe(false);
+      if (afterRevoke.ok) return;
+      expect(afterRevoke.error.kind).toBe("not_found");
+    } finally {
+      await store.close();
+      rmSync(blobDir, { recursive: true, force: true });
+    }
+  });
+
+  test("single-writer lock: second open on same paths throws while first is alive", async () => {
+    const { createArtifactStore } = await import("@koi/artifacts");
+    const { mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    const blobDir = join(tmpdir(), `koi-rt-art-lock-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const dbPath = join(blobDir, "store.db");
+    const first = await createArtifactStore({ dbPath, blobDir });
+    try {
+      await expect(createArtifactStore({ dbPath, blobDir })).rejects.toThrow(
+        /already open by another process/,
+      );
+    } finally {
+      await first.close();
+      rmSync(blobDir, { recursive: true, force: true });
+    }
+  });
+});
