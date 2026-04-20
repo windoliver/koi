@@ -515,22 +515,38 @@ export function validateSupervisorConfig(
   }
   if (config.heartbeat !== undefined) {
     const h = config.heartbeat;
-    if (!Number.isFinite(h.intervalMs) || h.intervalMs <= 0) {
+    // 32-bit signed int max. setTimeout delays above this value silently
+    // fall back to 1ms in Node/Bun, causing immediate deadline fires — a
+    // common footgun when a config is in seconds or a user miscalculates.
+    const MAX_TIMER_MS = 2_147_483_647;
+    if (
+      !Number.isFinite(h.intervalMs) ||
+      !Number.isInteger(h.intervalMs) ||
+      h.intervalMs <= 0 ||
+      h.intervalMs > MAX_TIMER_MS
+    ) {
       return {
         ok: false,
         error: {
           code: "VALIDATION",
-          message: "SupervisorConfig.heartbeat.intervalMs must be a finite number > 0",
+          message:
+            "SupervisorConfig.heartbeat.intervalMs must be a positive integer <= 2^31-1 (setTimeout bound)",
           retryable: false,
         },
       };
     }
-    if (!Number.isFinite(h.timeoutMs) || h.timeoutMs <= 0) {
+    if (
+      !Number.isFinite(h.timeoutMs) ||
+      !Number.isInteger(h.timeoutMs) ||
+      h.timeoutMs <= 0 ||
+      h.timeoutMs > MAX_TIMER_MS
+    ) {
       return {
         ok: false,
         error: {
           code: "VALIDATION",
-          message: "SupervisorConfig.heartbeat.timeoutMs must be a finite number > 0",
+          message:
+            "SupervisorConfig.heartbeat.timeoutMs must be a positive integer <= 2^31-1 (setTimeout bound)",
           retryable: false,
         },
       };

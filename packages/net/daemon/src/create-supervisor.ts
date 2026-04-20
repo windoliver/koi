@@ -159,22 +159,18 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     teardown: async (id, reason) => {
       if (stopRef === undefined) return;
       // Preserve the Result — silent drop would let a zombie worker survive
-      // while observability already reported "crashed". A failed teardown
-      // (terminate + kill both exhausted their deadlines) means the OS
-      // process may still be alive; surface it via a second crashed event
-      // so external observers see the degradation.
+      // while observability already reported "crashed". We log via
+      // console.error so failures are visible in operator logs without
+      // double-counting the single timeout incident as two crashed events
+      // (the onDeadline path already published one). A proper recoverable
+      // state transition (quarantine with bounded retry) is a deeper
+      // supervisor refactor and is tracked as a follow-up.
       const result = await stopRef(id, reason);
       if (!result.ok) {
-        publishEvent({
-          kind: "crashed",
-          workerId: id,
-          at: Date.now(),
-          error: {
-            code: "HEARTBEAT_TIMEOUT",
-            message: `Heartbeat-timeout teardown failed for worker ${id}: ${result.error.code} ${result.error.message}`,
-            retryable: false,
-          },
-        });
+        console.error(
+          `[koi/daemon] heartbeat-timeout teardown failed for worker ${id}: ` +
+            `${result.error.code} ${result.error.message} — worker may still be alive.`,
+        );
       }
     },
     now: Date.now,
@@ -210,11 +206,25 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   // in a non-Bun environment, or a remote backend whose transport isn't up
   // yet. Explicit `overrides.backend` is still honored verbatim (callers who
   // name a backend want that backend, not a fallback).
-  const pickBackend = async (kind?: WorkerBackendKind): Promise<WorkerBackend | undefined> => {
-    if (kind !== undefined) return config.backends[kind];
+  //
+  // When `requireHeartbeat` is true, only backends that advertise
+  // `supportsHeartbeat=true` are eligible — in a mixed registry (e.g.,
+  // in-process + subprocess), a heartbeat-opt-in request must not be rejected
+  // just because the first-preference backend can't emit heartbeats.
+  const pickBackend = async (
+    kind?: WorkerBackendKind,
+    requireHeartbeat?: boolean,
+  ): Promise<WorkerBackend | undefined> => {
+    if (kind !== undefined) {
+      const b = config.backends[kind];
+      if (b === undefined) return undefined;
+      if (requireHeartbeat === true && b.supportsHeartbeat !== true) return undefined;
+      return b;
+    }
     for (const k of BACKEND_PREFERENCE) {
       const b = config.backends[k];
       if (b === undefined) continue;
+      if (requireHeartbeat === true && b.supportsHeartbeat !== true) continue;
       if (await probeBackend(b)) return b;
     }
     return undefined;
@@ -442,30 +452,34 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       resolveSpawnDone();
     };
 
-    const backend = await pickBackend(overrides?.backend);
+    const heartbeatRequested = isHeartbeatOptIn(request);
+    const backend = await pickBackend(overrides?.backend, heartbeatRequested);
     if (backend === undefined) {
       releaseReservations();
+      // Distinguish the "no heartbeat-capable backend" case so the caller
+      // knows WHY no backend matched — validation-style error rather than
+      // a generic "unavailable".
+      if (heartbeatRequested) {
+        const explicitKind = overrides?.backend;
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              explicitKind !== undefined
+                ? `Backend "${explicitKind}" does not support heartbeat; ` +
+                  "remove backendHints.heartbeat or route to a backend with supportsHeartbeat=true"
+                : "No registered backend advertises supportsHeartbeat=true; " +
+                  "remove backendHints.heartbeat or register a heartbeat-capable backend (e.g. createSubprocessBackend)",
+            retryable: false,
+          },
+        };
+      }
       return {
         ok: false,
         error: {
           code: "UNAVAILABLE",
           message: "No registered backend can handle this spawn",
-          retryable: false,
-        },
-      };
-    }
-    // Fail fast if the caller opted into heartbeat but the resolved backend
-    // doesn't emit heartbeat events. Otherwise every healthy worker would
-    // trip the missed-deadline timeout and be torn down.
-    if (isHeartbeatOptIn(request) && backend.supportsHeartbeat !== true) {
-      releaseReservations();
-      return {
-        ok: false,
-        error: {
-          code: "VALIDATION",
-          message:
-            `Backend "${backend.displayName}" (kind=${backend.kind}) does not support heartbeat; ` +
-            "remove backendHints.heartbeat or route this worker to a backend with supportsHeartbeat=true",
           retryable: false,
         },
       };

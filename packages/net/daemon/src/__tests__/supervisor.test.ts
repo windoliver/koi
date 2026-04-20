@@ -1692,8 +1692,39 @@ describe("supervisor.health()", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.message).toContain("does not support heartbeat");
+      expect(result.error.message).toContain("supportsHeartbeat");
     }
+    await supervisor.value.shutdown("test");
+  });
+
+  it("mixed-backend registry: heartbeat opt-in routes to heartbeat-capable backend even when it isn't first-preference", async () => {
+    // Regression: pickBackend used to pick the first available by static
+    // preference, ignoring heartbeat need. A mixed registry with
+    // in-process (no-hb) + subprocess (hb) would reject opt-in despite
+    // subprocess being available. The fix filters candidates by
+    // supportsHeartbeat before probing.
+    const noHb = createFakeBackend({ kind: "in-process" }); // supportsHeartbeat: undefined
+    const hbCapable = createFakeBackend({ kind: "subprocess", supportsHeartbeat: true });
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: {
+        "in-process": noHb.backend,
+        subprocess: hbCapable.backend,
+      },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("mixed-1"),
+      agentId: agentId("agent-mixed-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(true);
+    // Verify we got the capable backend — only hbCapable should have a live worker.
+    expect(hbCapable.liveWorkerCount()).toBeGreaterThan(0);
+    expect(noHb.liveWorkerCount()).toBe(0);
     await supervisor.value.shutdown("test");
   });
 

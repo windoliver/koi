@@ -120,6 +120,28 @@ describe("validateSupervisorConfig", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  it("rejects non-integer heartbeat values", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50.5, timeoutMs: 200 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects heartbeat values above 2^31-1 (setTimeout bound)", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50, timeoutMs: 2_147_483_648 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
 });
 
 describe("workerId", () => {
