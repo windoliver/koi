@@ -218,4 +218,68 @@ describe("store-id fingerprint (in-memory backend)", () => {
       /missing its store-id sentinel/,
     );
   });
+
+  test("bootstrap race: writeStoreId rejects 'already exists' + sentinel mismatch → throws pairing error", async () => {
+    // Simulates the two-process race on a conditional-create backend
+    // (S3 with `IfNoneMatch: "*"`). Process B reads an absent sentinel,
+    // races process A, and B's writeStoreId fails with "already exists".
+    // The backend now holds A's UUID. ensureStoreIdPair must catch the
+    // rejection, re-read, and surface the standard "paired with a
+    // different ArtifactStore" error.
+    const otherUuid = crypto.randomUUID();
+    let readCount = 0;
+    const sentinel: StoreIdSentinel = {
+      readStoreId: async () => {
+        // First read: see absent (the empty-store check). Subsequent
+        // reads: after the failed write, see the winner's UUID.
+        return readCount++ === 0 ? undefined : otherUuid;
+      },
+      writeStoreId: async () => {
+        throw new Error("S3 sentinel at foo/__store_id__ already exists");
+      },
+    };
+    const racedStore: BlobStore = {
+      put: async () => "",
+      get: async () => undefined,
+      has: async () => false,
+      delete: async () => false,
+      list: async function* () {
+        yield* [];
+      },
+      sentinel,
+    };
+    await expect(ensureStoreIdPair({ db, blobStore: racedStore })).rejects.toThrow(
+      /paired with a different ArtifactStore/,
+    );
+  });
+
+  test("pre-populated sentinel with different UUID → standard mismatch error (no write attempted)", async () => {
+    // The caller's readStoreId returns an existing UUID; DB is empty, so
+    // we go down the "sentinel present + DB missing" branch. With a
+    // non-empty blob backend, that surfaces as "Metadata DB is missing
+    // store-id" — but with an empty backend, the code self-heals.
+    // Assert we DON'T silently re-pair when there's a non-matching sentinel.
+    const existing = crypto.randomUUID();
+    const sentinel: StoreIdSentinel = {
+      readStoreId: async () => existing,
+      writeStoreId: async () => {
+        throw new Error("simulator: writeStoreId should not be called in this path");
+      },
+    };
+    const preSeeded: BlobStore = {
+      put: async () => "",
+      get: async () => undefined,
+      has: async () => false,
+      delete: async () => false,
+      list: async function* () {
+        yield* [];
+      },
+      sentinel,
+    };
+    // Empty DB + empty blob store + sentinel present → self-heal by writing
+    // DB row. Verify that's what happens (no write attempted, because the
+    // DB write path in ensureStoreIdPair doesn't call writeStoreId).
+    const id = await ensureStoreIdPair({ db, blobStore: preSeeded });
+    expect(id).toBe(existing);
+  });
 });

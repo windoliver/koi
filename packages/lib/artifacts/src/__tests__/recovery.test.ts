@@ -570,7 +570,12 @@ describe("startup recovery — grace window stale intent drain (spec §6.5 step 
     // "Fresh" intent — but grace=0 makes it stale.
     const intentId = seedStaleIntent({ hash, createdAt: Date.now(), artifactId: null });
 
-    store = await createArtifactStore({ dbPath, blobDir, staleIntentGraceMs: 0 });
+    store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      staleIntentGraceMs: 0,
+      __TEST_ONLY_unsafeStaleIntentGrace: true,
+    });
     await store.close();
 
     const db = new Database(dbPath);
@@ -592,6 +597,29 @@ describe("startup recovery — grace window stale intent drain (spec §6.5 step 
     await expect(createArtifactStore({ dbPath, blobDir, staleIntentGraceMs: 1.5 })).rejects.toThrow(
       /staleIntentGraceMs/,
     );
+  });
+
+  test("rejects staleIntentGraceMs below 60_000ms floor without escape hatch", async () => {
+    // A 100ms grace window in production could let startup recovery convert
+    // a real in-flight save's intent into a tombstone — destroying committed
+    // data. Construction must fail closed.
+    await expect(createArtifactStore({ dbPath, blobDir, staleIntentGraceMs: 100 })).rejects.toThrow(
+      /60_000/,
+    );
+    await expect(createArtifactStore({ dbPath, blobDir, staleIntentGraceMs: 100 })).rejects.toThrow(
+      /__TEST_ONLY_unsafeStaleIntentGrace/,
+    );
+  });
+
+  test("permits staleIntentGraceMs below floor when __TEST_ONLY_unsafeStaleIntentGrace is set", async () => {
+    store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      staleIntentGraceMs: 100,
+      __TEST_ONLY_unsafeStaleIntentGrace: true,
+    });
+    // Construction succeeded — that's the assertion. Close immediately.
+    await store.close();
   });
 });
 

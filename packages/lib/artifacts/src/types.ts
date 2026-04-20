@@ -167,11 +167,21 @@ export interface ArtifactStoreConfig {
    * recovery pass converting a live save's intent into a tombstone that
    * then races the save's own post-commit blob write.
    *
-   * Must be a finite integer >= 0. 0 is permitted (tests exercise the
-   * drain deterministically without waiting) but is unsafe in production
-   * because every in-flight save would be considered stale.
+   * Must be a finite integer >= 0. Production configurations must be
+   * >= 60_000 (1 minute); smaller values are rejected at construction unless
+   * the caller also sets `__TEST_ONLY_unsafeStaleIntentGrace: true`. The
+   * floor protects committed saves from being misclassified as stale and
+   * converted to tombstones on restart.
    */
   readonly staleIntentGraceMs?: number;
+  /**
+   * Test-only escape hatch for `staleIntentGraceMs`. Set to `true` to permit
+   * a `staleIntentGraceMs` below the 60_000 production floor. Never set in
+   * production — a short grace window can convert an in-flight save's intent
+   * into a tombstone, permanently destroying committed data. The name is
+   * deliberately verbose so grep/code review catches misuse.
+   */
+  readonly __TEST_ONLY_unsafeStaleIntentGrace?: boolean;
   /**
    * Lifecycle policy: TTL, quota, and per-name retention. Fields are all
    * optional; when present each must be a finite positive integer. Validated

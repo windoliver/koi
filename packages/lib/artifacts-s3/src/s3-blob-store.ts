@@ -84,6 +84,21 @@ function hasErrorName(err: unknown, name: string): boolean {
   );
 }
 
+/**
+ * Detect whether an unknown error carries the given HTTP status code on its
+ * `$metadata.httpStatusCode` (the AWS SDK populates this for SDK-wrapped
+ * service responses; S3-compatible shims sometimes surface status without a
+ * named error class, so we fall through both channels).
+ */
+function hasHttpStatus(err: unknown, status: number): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  if (!("$metadata" in err)) return false;
+  const meta = (err as { readonly $metadata: unknown }).$metadata;
+  if (typeof meta !== "object" || meta === null) return false;
+  if (!("httpStatusCode" in meta)) return false;
+  return (meta as { readonly httpStatusCode: unknown }).httpStatusCode === status;
+}
+
 function createClient(config: S3BlobStoreConfig): S3Client {
   return new S3Client({
     region: config.region,
@@ -244,14 +259,32 @@ export function createS3BlobStore(config: S3BlobStoreConfig): BlobStore {
     },
     writeStoreId: async (uuid: string) => {
       try {
+        // Conditional create: `IfNoneMatch: "*"` makes the PutObject fail
+        // with 412 PreconditionFailed if the sentinel already exists.
+        // Without this, two stores that mistakenly point at the same prefix
+        // could silently overwrite one another's store-id, repairing the
+        // mismatch sentinel into a silent data-loss hazard. Fail closed
+        // instead — callers that race bootstrap (both observing an absent
+        // sentinel) will see one succeed and the loser propagate this
+        // error; `ensureStoreIdPair` then re-reads and surfaces the
+        // standard "paired with a different ArtifactStore" error if the
+        // UUIDs differ (which they will — each process calls
+        // `crypto.randomUUID()` independently).
         await client.send(
           new PutObjectCommand({
             Bucket: bucket,
             Key: sentinelKey,
             Body: new TextEncoder().encode(uuid),
+            IfNoneMatch: "*",
           }),
         );
       } catch (err) {
+        if (hasErrorName(err, "PreconditionFailed") || hasHttpStatus(err, 412)) {
+          throw new Error(
+            `S3 sentinel at ${sentinelKey} already exists; refusing to overwrite. Another ArtifactStore may be paired with this backend. Run ensureStoreIdPair via createArtifactStore to surface the mismatch.`,
+            { cause: err },
+          );
+        }
         throw new Error("S3 put failed for store-id sentinel", { cause: err });
       }
     },

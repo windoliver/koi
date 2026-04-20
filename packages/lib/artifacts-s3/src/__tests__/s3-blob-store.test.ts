@@ -478,5 +478,60 @@ describe("createS3BlobStore", () => {
       const store = createS3BlobStore(baseConfig());
       expect(await store.sentinel?.readStoreId()).toBeUndefined();
     });
+
+    test("writeStoreId uses IfNoneMatch: '*' for conditional create", async () => {
+      // Without `IfNoneMatch`, two stores accidentally pointed at the same
+      // prefix could silently re-pair the backend. `IfNoneMatch: "*"` makes
+      // S3 return 412 on collision so the second writer fails closed.
+      s3Mock.on(PutObjectCommand).resolves({});
+      const store = createS3BlobStore(baseConfig());
+
+      await store.sentinel?.writeStoreId("00000000-0000-4000-8000-000000000000");
+
+      const input = s3Mock.commandCalls(PutObjectCommand)[0]?.args[0].input;
+      expect(input?.IfNoneMatch).toBe("*");
+    });
+
+    test("writeStoreId surfaces a clear error when sentinel already exists (PreconditionFailed by name)", async () => {
+      // Simulate the 412 branch: the sentinel was written by someone else.
+      // The error must name the conflict — operators need to trace it back
+      // to a prefix collision, not a generic "put failed".
+      const err = new Error("At least one of the pre-conditions you specified did not hold");
+      err.name = "PreconditionFailed";
+      s3Mock.on(PutObjectCommand).rejects(err);
+
+      const store = createS3BlobStore(baseConfig());
+      await expect(
+        store.sentinel?.writeStoreId("11111111-1111-4111-8111-111111111111"),
+      ).rejects.toThrow(/already exists/);
+    });
+
+    test("writeStoreId surfaces a clear error when sentinel already exists (412 by $metadata.httpStatusCode)", async () => {
+      // Some S3-compatible backends return 412 without the SDK's
+      // `PreconditionFailed` error class — we must recognise both paths.
+      const err = new Error("Precondition Failed");
+      err.name = "GenericAwsError";
+      (err as { $metadata?: { httpStatusCode: number } }).$metadata = { httpStatusCode: 412 };
+      s3Mock.on(PutObjectCommand).rejects(err);
+
+      const store = createS3BlobStore(baseConfig());
+      await expect(
+        store.sentinel?.writeStoreId("22222222-2222-4222-8222-222222222222"),
+      ).rejects.toThrow(/already exists/);
+    });
+
+    test("writeStoreId propagates non-412 errors as a generic put-failed error", async () => {
+      // Non-sentinel-collision failures (5xx, DNS, etc.) must not be
+      // mis-attributed to an existing sentinel — the error wording branches
+      // only on 412.
+      const err = new Error("Service Unavailable");
+      err.name = "ServiceUnavailable";
+      s3Mock.on(PutObjectCommand).rejects(err);
+
+      const store = createS3BlobStore(baseConfig());
+      await expect(
+        store.sentinel?.writeStoreId("33333333-3333-4333-8333-333333333333"),
+      ).rejects.toThrow(/S3 put failed/);
+    });
   });
 });

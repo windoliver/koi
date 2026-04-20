@@ -56,6 +56,18 @@ async function writeSentinel(blobStore: BlobStore, id: string): Promise<void> {
   await blobStore.sentinel.writeStoreId(id);
 }
 
+/**
+ * Detect the "sentinel already exists" signal surfaced by conditional-create
+ * backends (S3's `IfNoneMatch: "*"` branch). The phrase "already exists" is
+ * the stable wording used in the S3 backend's thrown Error message — keep
+ * both backends aligned on this literal so this check doesn't false-positive
+ * on unrelated failures (credentials, transport).
+ */
+function isSentinelAlreadyExistsError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.message.includes("already exists");
+}
+
 function writeStoreIdToDb(db: Database, id: string): void {
   db.query("INSERT INTO meta (key, value) VALUES (?, ?)").run(STORE_ID_KEY, id);
 }
@@ -131,8 +143,28 @@ export async function ensureStoreIdPair(args: {
   // after sentinel but before DB, next open sees sentinel-present/DB-missing
   // with an empty store and self-heals. If we crash before sentinel, next
   // open sees both-missing and retries bootstrap from scratch.
+  //
+  // Race window with conditional-create backends (e.g. S3 with
+  // `IfNoneMatch: "*"`): two processes both read an absent sentinel and
+  // race to write. The backend lets only one win; the loser sees an
+  // "already exists" error. Re-read the sentinel and compare — in practice
+  // the loser's `crypto.randomUUID()` never matches the winner's, so we
+  // surface the standard pairing-mismatch error. Keeping the branches
+  // symmetric means a test can still hit the match path if it seeds an
+  // identical UUID, but production will always mismatch.
   const fresh = crypto.randomUUID();
-  await writeSentinel(args.blobStore, fresh);
+  try {
+    await writeSentinel(args.blobStore, fresh);
+  } catch (err) {
+    if (!isSentinelAlreadyExistsError(err)) throw err;
+    const raced = await readSentinel(args.blobStore);
+    if (raced === undefined) throw err;
+    if (raced !== fresh) {
+      throw new Error("Blob backend is paired with a different ArtifactStore; refusing to open");
+    }
+    writeStoreIdToDb(args.db, raced);
+    return raced;
+  }
   writeStoreIdToDb(args.db, fresh);
   return fresh;
 }

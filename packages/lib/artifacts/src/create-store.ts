@@ -90,6 +90,17 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
         `ArtifactStoreConfig.staleIntentGraceMs must be a finite integer >= 0; got ${String(config.staleIntentGraceMs)}. Negative/NaN/fractional values are rejected at construction so misconfiguration surfaces before a recovery pass.`,
       );
     }
+    // Production floor: below 60_000ms (1 min), a concurrent startup recovery
+    // pass can misclassify an in-flight save as stale — converting its
+    // intent into a tombstone that then races the save's own blob write.
+    // Tests opt in with `__TEST_ONLY_unsafeStaleIntentGrace: true`. The
+    // escape hatch only matters below the floor; normal production configs
+    // (including the default 300_000ms) never see it.
+    if (config.staleIntentGraceMs < 60_000 && config.__TEST_ONLY_unsafeStaleIntentGrace !== true) {
+      throw new Error(
+        `ArtifactStoreConfig.staleIntentGraceMs must be >= 60_000 (1 min) in production; got ${String(config.staleIntentGraceMs)}. A shorter grace window can let startup recovery misclassify an in-flight save as stale, converting it to a tombstone and destroying committed data. Tests that need a shorter value must additionally pass __TEST_ONLY_unsafeStaleIntentGrace: true.`,
+      );
+    }
   }
   if (config.maxArtifactBytes !== undefined) {
     if (

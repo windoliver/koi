@@ -69,17 +69,31 @@ type S3Mock = AwsClientStub<S3Client>;
 function installSimulator(mock: S3Mock): Map<string, Uint8Array> {
   const store = new Map<string, Uint8Array>();
 
-  mock.on(PutObjectCommand).callsFake((input: { Key?: string; Body?: unknown }) => {
-    if (input.Key === undefined) throw new Error("simulator: PutObject missing Key");
-    // Body is always a Uint8Array in the S3BlobStore impl (it passes bytes
-    // directly). Guard defensively — anything else is a programming error in
-    // the test setup.
-    if (!(input.Body instanceof Uint8Array)) {
-      throw new Error("simulator: PutObject Body must be Uint8Array");
-    }
-    store.set(input.Key, input.Body);
-    return {};
-  });
+  mock
+    .on(PutObjectCommand)
+    .callsFake((input: { Key?: string; Body?: unknown; IfNoneMatch?: string }) => {
+      if (input.Key === undefined) throw new Error("simulator: PutObject missing Key");
+      // Body is always a Uint8Array in the S3BlobStore impl (it passes bytes
+      // directly). Guard defensively — anything else is a programming error in
+      // the test setup.
+      if (!(input.Body instanceof Uint8Array)) {
+        throw new Error("simulator: PutObject Body must be Uint8Array");
+      }
+      // Honor `IfNoneMatch: "*"` — conditional create. Matches S3's 412
+      // response when the object already exists. The S3 sentinel write uses
+      // this to prevent two ArtifactStores from silently re-pairing against
+      // the same prefix.
+      if (input.IfNoneMatch === "*" && store.has(input.Key)) {
+        const err = namedError(
+          "PreconditionFailed",
+          "At least one of the pre-conditions you specified did not hold",
+        );
+        (err as { $metadata?: { httpStatusCode: number } }).$metadata = { httpStatusCode: 412 };
+        throw err;
+      }
+      store.set(input.Key, input.Body);
+      return {};
+    });
 
   mock.on(GetObjectCommand).callsFake((input: { Key?: string }) => {
     if (input.Key === undefined) throw new Error("simulator: GetObject missing Key");
