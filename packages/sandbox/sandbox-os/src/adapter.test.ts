@@ -145,10 +145,31 @@ describe("collectStream", () => {
     expect(chunks.join("")).toBe("hello");
   });
 
-  test("onChunk is NOT called after budget exhausted", async () => {
+  test("onChunk fires past the capture cap (watch-patterns matching survives truncation)", async () => {
+    // The budget only allows 5 bytes of capture, but onChunk must see the full 11-byte stream.
     const chunks: string[] = [];
     await collectStream(makeStream("hello world"), { remaining: 5 }, (c) => chunks.push(c));
-    expect(chunks.join("")).toBe("hello");
+    // Captured text is truncated at 5 bytes
+    // but the callback receives the entire stream including post-cap bytes.
+    expect(chunks.join("")).toBe("hello world");
+  });
+
+  test("onChunk fires on multi-chunk stream past cap using a mock ReadableStream", async () => {
+    // Build a multi-chunk stream: first chunk fills the budget, second is post-cap.
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("AAAAA")); // 5 bytes — exactly fills budget
+        controller.enqueue(encoder.encode("LATE_MARKER")); // post-cap chunk
+        controller.close();
+      },
+    });
+    const chunks: string[] = [];
+    const result = await collectStream(stream, { remaining: 5 }, (c) => chunks.push(c));
+    expect(result.text).toBe("AAAAA");
+    expect(result.truncated).toBe(true);
+    // onChunk must have received the post-cap chunk too
+    expect(chunks.join("")).toContain("LATE_MARKER");
   });
 });
 

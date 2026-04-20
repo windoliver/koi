@@ -1038,3 +1038,687 @@ describe("task_output — offset reads", () => {
     expect(r.chunks).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// task_output — creator/assignee ACL (createdBy-based read authorization)
+// ---------------------------------------------------------------------------
+
+describe("task_output — ACL", () => {
+  /**
+   * Set up a board where:
+   * - agent-creator creates the task
+   * - agent-worker is the one who picks it up (in_progress)
+   * - agent-unrelated is neither creator nor assignee
+   */
+  async function setupAcl() {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+
+    // Creator tools — creates the task
+    const creatorTools = createNamedTaskTools({ board, agentId: agentId("agent-creator") });
+    // Worker tools — assigned when moving in_progress
+    const workerTools = createNamedTaskTools({ board, agentId: agentId("agent-worker") });
+    // Unrelated tools — neither creator nor assignee
+    const unrelatedTools = createNamedTaskTools({ board, agentId: agentId("agent-unrelated") });
+
+    return { board, creatorTools, workerTools, unrelatedTools };
+  }
+
+  test("creator reads in_progress task — succeeds", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(creatorTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("in_progress");
+  });
+
+  test("assignee reads in_progress task — succeeds", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(workerTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("in_progress");
+  });
+
+  test("unrelated agent reads in_progress task — permission denied", async () => {
+    const { creatorTools, workerTools, unrelatedTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(unrelatedTools.output, { task_id: id })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("permission_denied");
+    expect(typeof r.reason).toBe("string");
+  });
+
+  test("creator reads killed task — succeeds (createdBy persists through kill)", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    await exec(workerTools.stop, { task_id: id });
+
+    const r = (await exec(creatorTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("killed");
+  });
+
+  test("unrelated agent reads killed task — permission denied", async () => {
+    const { creatorTools, workerTools, unrelatedTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    await exec(workerTools.stop, { task_id: id });
+
+    const r = (await exec(unrelatedTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("permission_denied");
+  });
+
+  test("creator reads failed task — succeeds", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    await exec(workerTools.update, { task_id: id, status: "failed", reason: "Timed out" });
+
+    const r = (await exec(creatorTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("failed");
+  });
+
+  test("legacy task with createdBy undefined: fail-closed, any caller denied with legacy_unmigrated", async () => {
+    // Simulate a pre-migration legacy task by adding directly to board without createdBy.
+    // The ACL now returns legacy_unmigrated (not permission_denied) so operators can
+    // distinguish schema-compat failures from genuine ACL denials.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    // Add a legacy task (no createdBy)
+    const legacyId = mkId("legacy-task-001");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted — simulates pre-migration persisted task
+    });
+
+    // Any agent (neither creator nor assignee) must be denied when legacyReadOwner
+    // is explicitly set to a different agent.
+    const anyTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-unrelated"),
+      legacyReadOwner: agentId("agent-session"),
+    });
+    const r = (await exec(anyTools.output, { task_id: "legacy-task-001" })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("legacy_unmigrated");
+    expect(typeof r.reason).toBe("string");
+  });
+
+  test("legacy task with createdBy undefined: legacyReadOwner matching caller — read succeeds", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-002");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy2",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+
+    // legacyReadOwner matches the caller — read must succeed
+    const sessionTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-session"),
+      legacyReadOwner: agentId("agent-session"),
+    });
+    const r = (await exec(sessionTools.output, { task_id: "legacy-task-002" })) as { kind: string };
+    // pending (no status transition) — the important thing is it is NOT permission_denied
+    expect(r.kind).not.toBe("permission_denied");
+  });
+
+  test("legacy task with createdBy undefined: legacyReadOwner omitted — deny-by-default (no ?? agentId fallback)", async () => {
+    // Regression: previously config.legacyReadOwner ?? agentId silently made every
+    // agent its own legacy owner, reopening the ACL for runtimes that omit legacyReadOwner.
+    // Now legacyReadOwner defaults to undefined → legacy reads return legacy_unmigrated.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-no-owner");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy no owner",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+
+    // No legacyReadOwner configured — every caller should receive legacy_unmigrated.
+    const noOwnerTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-caller"),
+      // legacyReadOwner deliberately omitted
+    });
+    const r = (await exec(noOwnerTools.output, { task_id: "legacy-task-no-owner" })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("legacy_unmigrated");
+    expect(typeof r.reason).toBe("string");
+  });
+
+  test("legacy task with createdBy undefined: legacyReadOwner set to different agent — legacy_unmigrated", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-003");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy3",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+
+    // legacyReadOwner is a DIFFERENT agent than the caller — must return legacy_unmigrated
+    const callerTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-caller"),
+      legacyReadOwner: agentId("agent-session"),
+    });
+    const r = (await exec(callerTools.output, { task_id: "legacy-task-003" })) as { kind: string };
+    expect(r.kind).toBe("legacy_unmigrated");
+  });
+
+  test("legacy task with assignedTo is NOT readable by assignee unless legacyReadOwner matches", async () => {
+    // ACL bypass regression: a legacy task (createdBy: undefined) that has assignedTo set
+    // must NOT be readable by the matching assignee. Pre-migration assignedTo is not
+    // trustworthy — only legacyReadOwner unlocks reads of unmigrated tasks.
+    // We simulate the legacy state by: adding a task without createdBy, then using
+    // board.assign() to set assignedTo — giving us createdBy=undefined AND assignedTo=worker.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-assigned");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy with assignee",
+      description: "Old task without createdBy but with assignedTo",
+      // createdBy intentionally omitted — simulates pre-migration persisted task
+    });
+    // Assign to "worker" via the board — sets assignedTo without touching createdBy
+    await board.assign(legacyId, agentId("worker"));
+
+    // Caller is the very same agent listed in assignedTo — but legacyReadOwner is absent.
+    // Must receive legacy_unmigrated, not success.
+    const workerTools = createNamedTaskTools({
+      board,
+      agentId: agentId("worker"),
+      // legacyReadOwner deliberately omitted
+    });
+    const r = (await exec(workerTools.output, { task_id: "legacy-task-assigned" })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("legacy_unmigrated");
+    expect(typeof r.reason).toBe("string");
+  });
+
+  test("legacy task readable only when legacyReadOwner matches caller", async () => {
+    // When legacyReadOwner matches the caller, reads succeed.
+    // When legacyReadOwner is set to a different agent, the caller is denied.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-owner-match");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy with assignee",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+    // Assign to "worker" — gives us createdBy=undefined AND assignedTo=worker
+    await board.assign(legacyId, agentId("worker"));
+
+    // alice is the legacyReadOwner — her read must succeed (returns pending/in_progress, not denied)
+    const aliceTools = createNamedTaskTools({
+      board,
+      agentId: agentId("alice"),
+      legacyReadOwner: agentId("alice"),
+    });
+    const aliceResult = (await exec(aliceTools.output, {
+      task_id: "legacy-task-owner-match",
+    })) as { kind: string };
+    expect(aliceResult.kind).not.toBe("legacy_unmigrated");
+    expect(aliceResult.kind).not.toBe("permission_denied");
+
+    // bob is not the legacyReadOwner — must receive legacy_unmigrated
+    const bobTools = createNamedTaskTools({
+      board,
+      agentId: agentId("bob"),
+      legacyReadOwner: agentId("alice"),
+    });
+    const bobResult = (await exec(bobTools.output, {
+      task_id: "legacy-task-owner-match",
+    })) as { kind: string };
+    expect(bobResult.kind).toBe("legacy_unmigrated");
+  });
+
+  test("worker retains read after their task transitions to failed (lastAssignedTo ACL)", async () => {
+    // Agent creator creates task, agent worker is assigned, worker fails the task (terminal),
+    // worker then reads task_output → succeeds via lastAssignedTo ACL.
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    // Move to in_progress as worker
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    // Fail the task (terminal — non-retryable)
+    await exec(workerTools.update, { task_id: id, status: "failed", reason: "Crashed" });
+
+    // Worker reads after fail — assignedTo was cleared, but lastAssignedTo preserves access
+    const r = (await exec(workerTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("failed");
+  });
+
+  test("worker retains read after retryable failure resets assignedTo", async () => {
+    // After a retryable failure the task goes back to pending with assignedTo=undefined.
+    // The worker that ran it should still be able to inspect the task via lastAssignedTo.
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    // Fail with retryable=true (triggers retry path — back to pending, assignedTo cleared)
+    await exec(workerTools.update, {
+      task_id: id,
+      status: "failed",
+      reason: "Transient",
+      retryable: true,
+    });
+
+    // Worker reads the now-pending (retried) task — should succeed via lastAssignedTo
+    const r = (await exec(workerTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).not.toBe("permission_denied");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task_output — matches_only + bufferReader
+// ---------------------------------------------------------------------------
+
+describe("task_output — matches_only", () => {
+  function makeEntry(
+    event: string,
+    stream: "stdout" | "stderr",
+    line: string,
+  ): import("@koi/core").MatchEntry {
+    return {
+      event,
+      stream,
+      lineNumber: 1,
+      timestamp: Date.now(),
+      line,
+      lineByteLength: line.length,
+      lineClippedPrefixBytes: 0,
+      lineClippedSuffixBytes: 0,
+      lineOriginalByteLength: line.length,
+      matchSpanUnits: { start: 0, end: line.length },
+    };
+  }
+
+  async function setupWithBuffer() {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+
+    // In-memory mock buffer
+    const storedEntries: import("@koi/core").MatchEntry[] = [];
+
+    const mockBuffer: import("@koi/core").TaskOutputReader = {
+      snapshot() {
+        return { stdout: "buffered stdout", stderr: "buffered stderr", truncated: false };
+      },
+      queryMatches(q) {
+        const filtered = storedEntries.filter(
+          (e) =>
+            (q.event === undefined || e.event === q.event) &&
+            (q.stream === undefined || e.stream === q.stream),
+        );
+        return {
+          kind: "matches",
+          entries: filtered,
+          cursor: "s=0",
+          dropped_before_cursor: 0,
+          truncated: false,
+        };
+      },
+    };
+
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: () => mockBuffer,
+    });
+
+    return { tools, storedEntries, board };
+  }
+
+  test("matches_only=true returns buffer entries", async () => {
+    const { tools, storedEntries } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    storedEntries.push(makeEntry("error", "stderr", "ERROR: something bad"));
+    storedEntries.push(makeEntry("ready", "stdout", "Server ready on port 3000"));
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(2);
+  });
+
+  test("matches_only=true with event filter narrows results", async () => {
+    const { tools, storedEntries } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    storedEntries.push(makeEntry("error", "stderr", "ERROR: something bad"));
+    storedEntries.push(makeEntry("ready", "stdout", "Server ready"));
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true, event: "ready" })) as {
+      kind: string;
+      entries: Array<{ event: string }>;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(1);
+    expect(r.entries[0]?.event).toBe("ready");
+  });
+
+  test("matches_only=true with stream filter narrows results", async () => {
+    const { tools, storedEntries } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    storedEntries.push(makeEntry("hit", "stdout", "from stdout"));
+    storedEntries.push(makeEntry("hit", "stderr", "from stderr"));
+
+    const r = (await exec(tools.output, {
+      task_id: id,
+      matches_only: true,
+      stream: "stdout",
+    })) as {
+      kind: string;
+      entries: Array<{ stream: string }>;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(1);
+    expect(r.entries[0]?.stream).toBe("stdout");
+  });
+
+  test("matches_only=true with no bufferReader returns empty result", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({ board, agentId: agentId("agent-1") }); // no bufferReader
+
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+      cursor: string;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(0);
+    expect(r.cursor).toBe("s=0");
+  });
+
+  test("matches_only=true denied for unrelated agent", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+
+    const creatorTools = createNamedTaskTools({ board, agentId: agentId("agent-creator") });
+    const unrelatedTools = createNamedTaskTools({ board, agentId: agentId("agent-unrelated") });
+
+    const rc = await exec(creatorTools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(creatorTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(unrelatedTools.output, {
+      task_id: id,
+      matches_only: true,
+    })) as { kind: string };
+    expect(r.kind).toBe("permission_denied");
+  });
+
+  test("bufferReader snapshot returned for in_progress when no offset reader", async () => {
+    const { tools } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools.output, { task_id: id })) as {
+      kind: string;
+      stdout?: string;
+      stderr?: string;
+    };
+    expect(r.kind).toBe("in_progress");
+    expect(r.stdout).toBe("buffered stdout");
+    expect(r.stderr).toBe("buffered stderr");
+  });
+
+  test("matches_only with malformed cursor sequence returns validation_failed", async () => {
+    // Regression: parseCursor previously returned NaN for non-numeric s= values,
+    // producing a silently empty result. Now output-buffer throws "cursor sequence"
+    // error; task_output surfaces it as validation_failed. We simulate the buffer
+    // throw here (L2→L2 import is prohibited); the unit tests in @koi/tools-bash
+    // cover parseCursor directly.
+    const sequenceErrorBuffer: import("@koi/core").TaskOutputReader = {
+      snapshot() {
+        return { stdout: "out", stderr: "", truncated: false };
+      },
+      queryMatches(q) {
+        if (q.offset !== undefined) {
+          throw new Error(
+            `cursor sequence is not a non-negative integer: ${JSON.stringify(q.offset)}`,
+          );
+        }
+        return {
+          kind: "matches",
+          entries: [makeEntry("ready", "stdout", "server ready")],
+          cursor: "s=1&e=ready&r=stdout",
+          dropped_before_cursor: 0,
+          truncated: false,
+        };
+      },
+    };
+
+    const store2 = createMemoryTaskBoardStore();
+    const resultsDir2 = await freshResultsDir();
+    const board2 = await createManagedTaskBoard({ store: store2, resultsDir: resultsDir2 });
+    const tools2 = createNamedTaskTools({
+      board: board2,
+      agentId: agentId("agent-1"),
+      bufferReader: () => sequenceErrorBuffer,
+    });
+
+    const rc = await exec(tools2.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools2.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools2.output, {
+      task_id: id,
+      matches_only: true,
+      event: "ready",
+      stream: "stdout",
+      match_offset: "s=abc&e=ready&r=stdout",
+    })) as { kind: string; reason: string };
+    expect(r.kind).toBe("validation_failed");
+    expect(r.reason).toMatch(/sequence/i);
+  });
+
+  test("matches_only on terminal task with evicted buffer returns buffer_evicted", async () => {
+    // Simulate a task whose buffer was LRU-evicted: bufferReader returns "evicted" literal.
+    // This is the tri-state contract: "evicted" means it existed then was dropped from the LRU.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: (_id) => "evicted" as const, // explicit eviction marker
+    });
+
+    const rc = await exec(tools.create, { subject: "Evicted", description: "Watch something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+    // Kill the task — now terminal (killed)
+    await exec(tools.stop, { task_id: id });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("buffer_evicted");
+    expect(typeof r.reason).toBe("string");
+    expect(r.reason).toContain("evicted");
+  });
+
+  test("matches_only on terminal task that never had a buffer returns empty matches", async () => {
+    // A task created via plain task_create (non-bash_background) that reaches a terminal
+    // state never had a buffer. bufferReader returns undefined (not "evicted").
+    // Must return kind: "matches" with empty entries — NOT buffer_evicted.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: (_id) => undefined, // never had a buffer — not evicted, just absent
+    });
+
+    const rc = await exec(tools.create, { subject: "NoBuffer", description: "Plain task" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+    // Kill the task — now terminal (killed)
+    await exec(tools.stop, { task_id: id });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+      cursor: string;
+    };
+    // Must NOT return buffer_evicted — the task simply never had a buffer
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(0);
+    expect(r.cursor).toBe("s=0");
+  });
+
+  test("matches_only on LIVE task with no buffer returns empty matches (not buffer_evicted)", async () => {
+    // Live (in_progress) task with no buffer yet — common case when no watch patterns have matched.
+    // Must return kind: "matches" with empty entries, NOT buffer_evicted.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: (_id) => undefined, // no buffer — task hasn't matched anything yet
+    });
+
+    const rc = await exec(tools.create, { subject: "Live", description: "Still running" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+      cursor: string;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(0);
+    expect(r.cursor).toBe("s=0");
+  });
+
+  test("matches_only with a stale cross-filter cursor returns validation_failed", async () => {
+    // Use a buffer that throws on cursor mismatch, mimicking parseCursor in output-buffer.ts
+    const throwingBuffer: import("@koi/core").TaskOutputReader = {
+      snapshot() {
+        return { stdout: "", stderr: "", truncated: false };
+      },
+      queryMatches(q) {
+        if (q.offset !== undefined) {
+          // Simulate parseCursor throwing on filter mismatch
+          throw new Error(
+            `cursor filter mismatch: cursor encodes event="" stream="" but query has event="${q.event ?? ""}" stream="${q.stream ?? ""}"`,
+          );
+        }
+        return {
+          kind: "matches",
+          entries: [],
+          cursor: `s=0&e=${q.event ?? ""}`,
+          dropped_before_cursor: 0,
+          truncated: false,
+        };
+      },
+    };
+
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: () => throwingBuffer,
+    });
+
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    // First call with event filter to get a cursor
+    const first = (await exec(tools.output, {
+      task_id: id,
+      matches_only: true,
+      event: "ready",
+    })) as { kind: string; cursor: string };
+    expect(first.kind).toBe("matches");
+
+    // Reuse the cursor on a DIFFERENT filter — should return validation_failed
+    const r = (await exec(tools.output, {
+      task_id: id,
+      matches_only: true,
+      event: "error",
+      match_offset: first.cursor,
+    })) as { kind: string; reason: string };
+    expect(r.kind).toBe("validation_failed");
+    expect(typeof r.reason).toBe("string");
+    expect(r.reason).toContain("cursor");
+  });
+});

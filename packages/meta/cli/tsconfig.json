@@ -9,6 +9,7 @@
     { "path": "../../kernel/core" },
     { "path": "../../kernel/engine" },
     { "path": "../../lib/agent-summary" },
+    { "path": "../../lib/artifacts" },
     { "path": "../../net/daemon" },
     { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/channel-cli" },

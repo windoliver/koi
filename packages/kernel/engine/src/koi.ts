@@ -1399,6 +1399,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               // `agent.lifecycle.turnIndex` observers see the real running
               // turn. Before this, the FSM's turnIndex stayed at 0 forever.
               agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
+              // #1638: propagate turn_end.stopBlocked into the TurnContext
+              // below so middleware (hook-dispatch, task-anchor, etc.) that
+              // checks `ctx.stopBlocked` sees the authoritative marker.
+              // Covers both the stop-gate veto path (emitted further down
+              // with stopBlocked: true) and the activity-timeout synthetic
+              // turn_end. Without this copy, a timed-out partial turn would
+              // still invoke onAfterTurn as if the turn had completed
+              // successfully and middleware could persist partial state.
               const turnEndCtx = createTurnContext({
                 session: sessionCtx,
                 turnIndex: event.turnIndex,
@@ -1406,6 +1414,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 signal: runSignal,
                 approvalHandler: options.approvalHandler,
                 sendStatus: options.sendStatus,
+                ...(event.stopBlocked === true ? { stopBlocked: true as const } : {}),
               });
               await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
               debugInstrumentation?.onTurnEnd(event.turnIndex);

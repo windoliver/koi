@@ -24,6 +24,7 @@ import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
 import type { TuiStore } from "./state/store.js";
 import type { FetchModelsResult, ModelEntry } from "./state/types.js";
+import { wireStdinResurrection } from "./stdin-resurrection.js";
 import { StoreContext } from "./store-context.js";
 import { computeLayoutTier } from "./theme.js";
 import { TuiRoot } from "./tui-root.js";
@@ -66,7 +67,7 @@ export interface CreateTuiAppConfig {
   /** Called when the user selects a session to resume. */
   readonly onSessionSelect: (sessionId: string) => void;
   /** Called when the user submits a message. */
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, mode?: "queue" | "interrupt") => void;
   /** Called when the user triggers Ctrl+C interrupt. */
   readonly onInterrupt: () => void;
   /**
@@ -259,6 +260,19 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   // the renderer.once("destroy") registration that mountSolidRoot makes.
   // Called directly on stop() so we clean up without broadcasting a destroy event.
   let solidRootDispose: (() => void) | undefined;
+  // #1915 — handle for the stdin-resurrection helper. `disarm()` runs BEFORE
+  // `renderer.destroy()` to prevent a stdin `'close'` event during teardown
+  // from opening a fresh `/dev/tty`. `close()` runs AFTER so OpenTUI's own
+  // cleanup can first execute on the live replacement stream.
+  let stdinResurrectionHandle:
+    | { readonly disarm: () => void; readonly close: () => void }
+    | undefined;
+  // Captured reference to the renderer.once("destroy") handler so stop()
+  // can unregister it before calling renderer.destroy(). Without this,
+  // destroy's synchronous "destroy" event would fire the handler during
+  // stop()'s own teardown and double-invoke the resurrection close at
+  // exactly the wrong moment (mid-renderer-destroy).
+  let externalDestroyHandler: (() => void) | undefined;
 
   const handle: TuiAppHandle = {
     done(): Promise<void> {
@@ -341,6 +355,14 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         activeRenderer = localRenderer;
         started = true;
 
+        // #1915 — rebind stdin if Bun's native reader destroys it mid-session.
+        // Only wires for the real stdin; skip when the caller injected a
+        // renderer (tests use a non-TTY stream, so resurrecting /dev/tty would
+        // be both wrong and unavailable).
+        if (injectedRenderer === undefined) {
+          stdinResurrectionHandle = wireStdinResurrection(activeRenderer);
+        }
+
         // Decision 4A: auto-mount the Solid component tree.
         // createComponent is Solid's non-JSX API (identical to compiled JSX output).
         //
@@ -408,6 +430,9 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           solidRootDispose = undefined;
           cleanupResize?.();
           cleanupResize = undefined;
+          // Disarm BEFORE destroy so a stdin close during localRenderer.destroy()
+          // cannot open a fresh /dev/tty mid-teardown.
+          stdinResurrectionHandle?.disarm();
           if (localRenderer !== injectedRenderer) {
             try {
               localRenderer.destroy();
@@ -415,6 +440,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
               /* ignore secondary error */
             }
           }
+          // Close AFTER renderer.destroy(): OpenTUI's cleanup calls
+          // setRawMode(false) + removeListener on renderer.stdin. If we
+          // closed the resurrected stream first, those calls would hit a
+          // destroyed stream and OpenTUI could abort partway through its
+          // own teardown.
+          stdinResurrectionHandle?.close();
+          stdinResurrectionHandle = undefined;
           activeRenderer = undefined;
           throw e;
         } finally {
@@ -435,19 +467,39 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         keepAliveTimer = setInterval(() => {}, 2_147_483_647);
 
         // If the renderer is destroyed externally (crash, OS teardown) without
-        // stop() being called, resolve done() and release the keepalive so the
-        // process is not pinned by a synthetic timer with no live renderer.
-        // Uses the restored `once` (not the capture shim) — mount is complete.
-        activeRenderer.once("destroy", (): void => {
+        // stop() being called, release all per-run resources so the handle
+        // is cleanly restartable. Uses the restored `once` (not the capture
+        // shim) — mount is complete.
+        externalDestroyHandler = (): void => {
           if (keepAliveTimer !== null) {
             clearInterval(keepAliveTimer);
             keepAliveTimer = null;
           }
+          // Release the resize listener installed during start(). Without
+          // this, a subsequent start() after external destroy adds a
+          // second listener and the old one becomes unreachable, which
+          // produces duplicate set_layout dispatches and an unbounded
+          // listener leak across crash/restart cycles.
+          cleanupResize?.();
+          cleanupResize = undefined;
+          // #1915 — external destruction must also tear down any resurrected
+          // `/dev/tty` stream. `stop()` wouldn't run here (we didn't go
+          // through it), so the helper's internal replacement would leak
+          // without this call. stop() itself removes this handler before
+          // calling renderer.destroy() so the two paths don't double-close.
+          stdinResurrectionHandle?.close();
+          stdinResurrectionHandle = undefined;
+          // activeRenderer is dead — drop the reference so start() builds
+          // a fresh one on the next invocation rather than reusing a
+          // destroyed object.
+          activeRenderer = undefined;
           currentDoneResolve?.();
           currentDoneResolve = null;
           currentDone = Promise.resolve();
           started = false;
-        });
+          externalDestroyHandler = undefined;
+        };
+        activeRenderer.once("destroy", externalDestroyHandler);
 
         // Guard: if stop() already ran and timed out during the mount (stop
         // timeout fired while render() was awaiting native FFI init), it
@@ -522,10 +574,35 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       solidRootDispose?.();
       solidRootDispose = undefined;
 
+      // #1915 — disarm BEFORE renderer.destroy() so a stdin `'close'` event
+      // during teardown cannot race in and open a fresh `/dev/tty`. The
+      // replacement stream (if one is already open) stays alive so
+      // OpenTUI's destroy can still call setRawMode(false) + removeListener
+      // on it; we tear it down explicitly AFTER destroy returns.
+      stdinResurrectionHandle?.disarm();
+
       // Only destroy the terminal renderer if we own it. renderer.destroy() also
       // fires "destroy" event, but solidRootDispose is already cleared above so
       // it won't be called twice (mountSolidRoot's once() listener is idempotent).
+      //
+      // stop() never rejects (matches the done()-contract comment at the top
+      // of this file: "Never rejects — stop() catches all errors internally").
+      // Unexpected destroy errors are logged via console.error but do NOT
+      // propagate — the CLI's post-stop cleanup (resume hint, run report,
+      // batcher dispose, filesystem backend close) must keep running even
+      // when the renderer crashes on teardown; otherwise a shutdown-path
+      // failure compounds into lost diagnostic output + leaked resources.
       if (activeRenderer !== undefined && injectedRenderer === undefined) {
+        // #1915 — detach the external-destroy handler so renderer.destroy()'s
+        // synchronous "destroy" emit doesn't invoke the resurrection close
+        // mid-teardown. stop() explicitly runs the close AFTER destroy()
+        // completes (see below). Without this `off()`, the handler would
+        // close the replacement stream while OpenTUI is still calling
+        // setRawMode(false) + stdin.removeListener on it.
+        if (externalDestroyHandler !== undefined) {
+          activeRenderer.off("destroy", externalDestroyHandler);
+          externalDestroyHandler = undefined;
+        }
         try {
           activeRenderer.destroy();
         } catch (e: unknown) {
@@ -540,10 +617,22 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           const hasErrnoCode = errno === "EBADF" || errno === "ENOENT";
           const hasRawModeMarker = e instanceof Error && /setRawMode|errno: 2/.test(e.message);
           const isStdinRawModeError = hasRawModeMarker && (hasErrnoCode || errno === undefined);
-          if (!isStdinRawModeError) throw e;
+          if (!isStdinRawModeError) {
+            // Log unexpected renderer teardown failures so they surface in
+            // crash reports without tripping the non-throwing stop() contract.
+            console.error("createTuiApp.stop: renderer.destroy() threw", e);
+          }
         }
       }
       activeRenderer = undefined;
+
+      // #1915 — close the stdin-resurrection helper AFTER renderer.destroy()
+      // so OpenTUI's cleanup (setRawMode(false), stdin.removeListener) runs
+      // on a live replacement stream. `disarm()` above already prevented any
+      // new resurrection during destroy; close() now tears the replacement
+      // stream down explicitly so the /dev/tty fd doesn't leak past stop().
+      stdinResurrectionHandle?.close();
+      stdinResurrectionHandle = undefined;
 
       // Release the event-loop keepalive before resolving done() so the process
       // can exit normally once all other handles (stdin, timers) are drained.

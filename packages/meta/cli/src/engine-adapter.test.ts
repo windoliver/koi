@@ -367,6 +367,62 @@ describe("createTranscriptAdapter — #1742 silent-termination fallback", () => 
     expect(deltas[0]?.delta).toBe("partial reply");
   });
 
+  test("activity-timeout metadata renders a timeout-specific interrupted message (#1638)", async () => {
+    // The interactive CLI previously rendered ALL `interrupted` stops as a
+    // generic "[Turn interrupted before the model produced a reply.]" — so
+    // inactivity timeouts, wall-clock timeouts, and user cancels were
+    // indistinguishable in the surface operators watch. Teach the
+    // explainNonCompletedStop fallback to read done.output.metadata and
+    // emit a reason-specific message.
+    const adapter = createTranscriptAdapter({
+      engineId: "test",
+      modelAdapter: makeModelAdapter(),
+      transcript,
+      maxTranscriptMessages: 10,
+      maxTurns: 5,
+    });
+    runTurnState.events = [
+      {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "interrupted",
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 120_000,
+          },
+          metadata: {
+            terminatedBy: "activity-timeout",
+            terminationReason: "idle",
+            elapsedMs: 120_000,
+            metricsSynthesized: true,
+          },
+        },
+      },
+    ];
+
+    const collected: EngineEvent[] = [];
+    for await (const event of adapter.stream({
+      kind: "text",
+      text: "u",
+      callHandlers: fakeHandlers,
+    })) {
+      collected.push(event);
+    }
+
+    const doneIdx = collected.findIndex((e) => e.kind === "done");
+    const deltaBeforeDone = collected
+      .slice(0, doneIdx)
+      .filter((e): e is EngineEvent & { readonly kind: "text_delta" } => e.kind === "text_delta");
+    const synthesizedText = deltaBeforeDone.map((d) => d.delta).join("");
+    expect(synthesizedText).toMatch(/activity timeout/);
+    expect(synthesizedText).toMatch(/inactivity/);
+    expect(synthesizedText).toMatch(/120s/);
+  });
+
   test("does NOT inject synthetic delta on stopReason completed", async () => {
     const collected = await collectEvents(transcript, [], "completed", "real reply");
     const deltas = collected.filter((e) => e.kind === "text_delta");

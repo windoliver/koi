@@ -110,6 +110,15 @@ export interface TaskInput {
    * (e.g. "Reviewing auth module"). Cleared by the board on terminal transitions.
    */
   readonly activeForm?: string | undefined;
+  /**
+   * Agent that created this task. Stamped at creation and persists through all
+   * lifecycle transitions — including terminal ones (killed/failed/completed).
+   * Unlike `assignedTo`, this field is never cleared.
+   *
+   * Optional for backward compatibility with legacy persisted state; treat
+   * `undefined` as "unknown creator — reads open".
+   */
+  readonly createdBy?: AgentId | undefined;
 }
 
 /** A task on the board with full state. */
@@ -119,7 +128,28 @@ export interface Task {
   readonly description: string;
   readonly dependencies: readonly TaskItemId[];
   readonly status: TaskStatus;
+  /**
+   * Agent that created this task. Stamped at creation and persists through all
+   * lifecycle transitions — including terminal ones (killed/failed/completed).
+   * Unlike `assignedTo`, this field is never cleared by the board.
+   *
+   * `undefined` for tasks loaded from snapshots that pre-date this field
+   * ("legacy task — reads open" for ACL purposes).
+   */
+  readonly createdBy?: AgentId | undefined;
   readonly assignedTo?: AgentId | undefined;
+  /**
+   * The most recent agent that was assigned this task. Stamped whenever
+   * `assignedTo` transitions to a concrete agent. Never cleared by any board
+   * transition — only set (never unset) after its first assignment.
+   *
+   * Used by the `task_output` ACL so a worker retains read access after its
+   * task transitions to failed / retried / killed (which may clear `assignedTo`).
+   *
+   * `undefined` for tasks that were never assigned, and for tasks loaded from
+   * snapshots that pre-date this field.
+   */
+  readonly lastAssignedTo?: AgentId | undefined;
   /**
    * Present-continuous description shown in spinner while in_progress
    * (e.g. "Reviewing auth module"). Cleared by the board on terminal transitions.

@@ -370,6 +370,7 @@ export type {
   AgentGroupId,
   AgentId,
   AgentSignal,
+  ArtifactId,
   AttachResult,
   ChildHandle,
   ChildLifecycleEvent,
@@ -416,6 +417,7 @@ export {
   agentGroupId,
   agentId,
   agentToken,
+  artifactId,
   BROWSER,
   COMPONENT_PRIORITY,
   CREDENTIALS,
@@ -1208,6 +1210,19 @@ export type {
   VersionedBrickRef,
 } from "./version-types.js";
 export { publisherId } from "./version-types.js";
+// watch-patterns — L0 types for pattern-based stdout/stderr matching
+export type {
+  CoalescedMatch,
+  MatchEntry,
+  PatternMatch,
+  PendingMatchStore,
+  TaskOutputReader,
+  TaskOutputReaderMatchesResult,
+  TaskOutputReaderMatchQuery,
+  TaskOutputReaderSnapshot,
+  TurnRequestKey,
+  WatchPattern,
+} from "./watch-patterns/index.js";
 // webhook — outbound webhook delivery contract
 export type {
   OutboundWebhookConfig,

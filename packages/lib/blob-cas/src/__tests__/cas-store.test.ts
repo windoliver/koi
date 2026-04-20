@@ -10,7 +10,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { blobPath, hasBlob, readBlob, writeBlobFromFile } from "../cas-store.js";
+import {
+  blobPath,
+  hasBlob,
+  readBlob,
+  writeBlobFromBytes,
+  writeBlobFromFile,
+} from "../cas-store.js";
 
 function makeBlobDir(): string {
   const dir = join(tmpdir(), `koi-cas-${crypto.randomUUID()}`);
@@ -149,5 +155,21 @@ describe("CAS blob store", () => {
     const hash = await writeBlobFromFile(blobDir, src);
     // SHA-256 of the empty string:
     expect(hash).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  });
+
+  test("writeBlobFromBytes: hashes and writes in-memory bytes", async () => {
+    const bytes = new TextEncoder().encode("hello artifacts");
+    const hash = await writeBlobFromBytes(blobDir, bytes);
+    expect(hash).toHaveLength(64);
+    expect(hasBlob(blobDir, hash)).toBe(true);
+    const roundTrip = await readBlob(blobDir, hash);
+    expect(roundTrip).toEqual(bytes);
+  });
+
+  test("writeBlobFromBytes: idempotent on identical bytes", async () => {
+    const bytes = new TextEncoder().encode("dedup me");
+    const h1 = await writeBlobFromBytes(blobDir, bytes);
+    const h2 = await writeBlobFromBytes(blobDir, bytes);
+    expect(h1).toBe(h2);
   });
 });

@@ -27,6 +27,34 @@ function destroyWithGuard(renderer: { destroy(): void }): void {
   }
 }
 
+/**
+ * Replicates the #1915 stop() pattern: if `destroy()` throws an unexpected
+ * error, log it and keep running `actions` (keepalive clear, done resolve,
+ * replacement-stream close, etc.). stop() never rejects — its done()-contract
+ * comment explicitly promises "Never rejects — stop() catches all errors
+ * internally". Swallowing unexpected errors is the price of keeping the
+ * caller's post-stop cleanup (resume hint, run report, batcher dispose,
+ * filesystem backend close) reachable when the renderer crashes on teardown.
+ */
+function destroyThenCleanupNeverThrows(
+  renderer: { destroy(): void },
+  actions: () => void,
+  log: (msg: string, err: unknown) => void,
+): void {
+  try {
+    renderer.destroy();
+  } catch (e: unknown) {
+    const errno = (e as NodeJS.ErrnoException).code;
+    const hasErrnoCode = errno === "EBADF" || errno === "ENOENT";
+    const hasRawModeMarker = e instanceof Error && /setRawMode|errno: 2/.test(e.message);
+    const isStdinRawModeError = hasRawModeMarker && (hasErrnoCode || errno === undefined);
+    if (!isStdinRawModeError) {
+      log("stop: renderer.destroy() threw", e);
+    }
+  }
+  actions();
+}
+
 describe("renderer.destroy() error handling", () => {
   test("EBADF with .code from setRawMode is suppressed", () => {
     const fakeRenderer = {
@@ -99,5 +127,70 @@ describe("renderer.destroy() error handling", () => {
       },
     };
     expect(() => destroyWithGuard(fakeRenderer)).toThrow("setRawMode");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1915 — deferred-rethrow pattern ensures teardown always runs
+// ---------------------------------------------------------------------------
+
+describe("#1915 — destroy-throw cleanup ordering", () => {
+  test("unexpected destroy error is logged, cleanup runs, stop() does not throw", () => {
+    const fakeRenderer = {
+      destroy(): void {
+        throw new Error("simulated wgpu native crash during teardown");
+      },
+    };
+    let cleanupRan = false;
+    const actions = (): void => {
+      cleanupRan = true;
+    };
+    const logCalls: Array<{ readonly msg: string; readonly err: unknown }> = [];
+    const log = (msg: string, err: unknown): void => {
+      logCalls.push({ msg, err });
+    };
+    expect(() => destroyThenCleanupNeverThrows(fakeRenderer, actions, log)).not.toThrow();
+    expect(cleanupRan).toBe(true);
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0]?.msg).toContain("renderer.destroy() threw");
+    expect(logCalls[0]?.err).toBeInstanceOf(Error);
+  });
+
+  test("suppressed stdin-fd-invalid error runs cleanup and does NOT log", () => {
+    const fakeRenderer = {
+      destroy(): void {
+        throw new Error("setRawMode failed with errno: 2");
+      },
+    };
+    let cleanupRan = false;
+    const actions = (): void => {
+      cleanupRan = true;
+    };
+    const logCalls: Array<{ readonly msg: string; readonly err: unknown }> = [];
+    const log = (msg: string, err: unknown): void => {
+      logCalls.push({ msg, err });
+    };
+    expect(() => destroyThenCleanupNeverThrows(fakeRenderer, actions, log)).not.toThrow();
+    expect(cleanupRan).toBe(true);
+    expect(logCalls).toHaveLength(0);
+  });
+
+  test("successful destroy runs cleanup without logging or throwing", () => {
+    const fakeRenderer = {
+      destroy(): void {
+        /* ok */
+      },
+    };
+    let cleanupRan = false;
+    const actions = (): void => {
+      cleanupRan = true;
+    };
+    const logCalls: Array<{ readonly msg: string; readonly err: unknown }> = [];
+    const log = (msg: string, err: unknown): void => {
+      logCalls.push({ msg, err });
+    };
+    expect(() => destroyThenCleanupNeverThrows(fakeRenderer, actions, log)).not.toThrow();
+    expect(cleanupRan).toBe(true);
+    expect(logCalls).toHaveLength(0);
   });
 });

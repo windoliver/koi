@@ -10,7 +10,7 @@
 
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
-import { createEffect, createSignal, on, Show, useContext } from "solid-js";
+import { createEffect, createSignal, For, on, Show, useContext } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
 import { matchCommands, parseSlashCommand, type SlashCommand } from "../commands/slash-detection.js";
 import type { ClipboardImage } from "../utils/clipboard.js";
@@ -29,7 +29,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = COMMAND_DEFINITIONS.map((cmd) =>
 const MAX_HISTORY = 100;
 
 export interface ConversationViewProps {
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, mode?: "queue" | "interrupt") => void;
   readonly onSlashDetected: (query: string | null) => void;
   readonly onSlashSelect?: ((command: SlashCommand, args: string) => void) | undefined;
   readonly onAtQuery?: ((query: string | null) => void) | undefined;
@@ -42,6 +42,7 @@ export interface ConversationViewProps {
 export function ConversationView(props: ConversationViewProps): JSX.Element {
   const slashQuery = useTuiStore((s) => s.slashQuery);
   const atQuery = useTuiStore((s) => s.atQuery);
+  const queuedSubmits = useTuiStore((s) => s.queuedSubmits);
   const storeCtx = useContext(StoreContext);
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
@@ -146,7 +147,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     }
   };
 
-  const handleSubmit = (text: string): void => {
+  const handleSubmit = (text: string, mode: "queue" | "interrupt" = "queue"): void => {
     if (text.trim() !== "") {
       // Add to history (deduplicate consecutive identical entries)
       const current = history();
@@ -157,7 +158,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     // Reset history navigation
     historyIdx = -1;
     draft = "";
-    props.onSubmit(text);
+    props.onSubmit(text, mode);
   };
 
   /**
@@ -210,6 +211,25 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
       <Show when={hasCapturedTurn()}>
         <box paddingLeft={1} flexShrink={0}>
           <text fg={COLORS.textMuted}>↶ /rewind [n] to roll back previous turn(s)</text>
+        </box>
+      </Show>
+      <Show when={queuedSubmits().length > 0}>
+        <box flexDirection="column" flexShrink={0} gap={1}>
+          <For each={queuedSubmits()}>
+            {(text, index) => (
+              <box flexDirection="column">
+                <text fg={COLORS.blueAccent}>
+                  <b>You:</b>
+                </text>
+                <box paddingLeft={2}>
+                  <text fg={COLORS.textSecondary}>{text}</text>
+                </box>
+              </box>
+            )}
+          </For>
+          <box paddingLeft={1}>
+            <text fg={COLORS.textMuted}>Press up to edit queued messages</text>
+          </box>
         </box>
       </Show>
       <InputArea

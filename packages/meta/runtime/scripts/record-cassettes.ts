@@ -32,6 +32,7 @@
 
 import { createAgentResolver } from "@koi/agent-runtime";
 import { createAgentSummary } from "@koi/agent-summary";
+import { createArtifactStore } from "@koi/artifacts";
 import type {
   Agent,
   AuditEntry,
@@ -53,6 +54,7 @@ import type {
   SpawnFn,
 } from "@koi/core";
 import {
+  artifactId,
   createSingleToolProvider,
   memoryRecordId,
   sessionId,
@@ -94,6 +96,7 @@ import {
 } from "@koi/middleware-semantic-retry";
 import { createStrictAgenticMiddleware } from "@koi/middleware-strict-agentic";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
+import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
 import {
@@ -148,6 +151,7 @@ import {
 } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { createPendingMatchStore } from "@koi/watch-patterns";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
@@ -236,6 +240,88 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// @koi/artifacts — exercised by the artifacts-roundtrip golden. The LLM
+// calls artifact_save to persist a small blob via the real ArtifactStore
+// (SQLite meta + filesystem blob-cas), then calls artifact_get with the
+// returned id to retrieve the bytes. Uses a throwaway tmp dir so the
+// recording doesn't leak state between runs.
+const ARTIFACT_TMPDIR = `/tmp/koi-record-artifacts-${Date.now()}-${crypto.randomUUID()}`;
+const { mkdirSync: mkdirSyncArt } = await import("node:fs");
+mkdirSyncArt(`${ARTIFACT_TMPDIR}/blobs`, { recursive: true });
+const artifactStore = await createArtifactStore({
+  dbPath: `${ARTIFACT_TMPDIR}/store.db`,
+  blobDir: `${ARTIFACT_TMPDIR}/blobs`,
+});
+const ARTIFACT_SESSION = sessionId("golden-artifact-session");
+
+const artifactSaveToolResult = buildTool({
+  name: "artifact_save",
+  description:
+    "Save a text artifact to the content-addressed artifact store. Returns the new artifact id and version.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Artifact logical name (e.g. 'notes.txt')" },
+      content: { type: "string", description: "UTF-8 text content" },
+      mimeType: {
+        type: "string",
+        description: "MIME type (defaults to text/plain)",
+      },
+    },
+    required: ["name", "content"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const saved = await artifactStore.saveArtifact({
+      sessionId: ARTIFACT_SESSION,
+      name: args.name as string,
+      data: new TextEncoder().encode(args.content as string),
+      mimeType: (args.mimeType as string | undefined) ?? "text/plain",
+    });
+    if (!saved.ok) return { ok: false, error: saved.error.kind };
+    return {
+      ok: true,
+      id: saved.value.id,
+      version: saved.value.version,
+      size: saved.value.size,
+      contentHash: saved.value.contentHash,
+    };
+  },
+});
+if (!artifactSaveToolResult.ok) {
+  console.error(`buildTool(artifact_save) failed: ${artifactSaveToolResult.error.message}`);
+  process.exit(1);
+}
+const artifactSaveTool = artifactSaveToolResult.value;
+
+const artifactGetToolResult = buildTool({
+  name: "artifact_get",
+  description: "Retrieve an artifact's UTF-8 text content by id.",
+  inputSchema: {
+    type: "object",
+    properties: { id: { type: "string", description: "Artifact id returned by artifact_save" } },
+    required: ["id"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const got = await artifactStore.getArtifact(artifactId(args.id as string), {
+      sessionId: ARTIFACT_SESSION,
+    });
+    if (!got.ok) return { ok: false, error: got.error.kind };
+    return {
+      ok: true,
+      id: got.value.meta.id,
+      size: got.value.meta.size,
+      content: new TextDecoder().decode(got.value.data),
+    };
+  },
+});
+if (!artifactGetToolResult.ok) {
+  console.error(`buildTool(artifact_get) failed: ${artifactGetToolResult.error.message}`);
+  process.exit(1);
+}
+const artifactGetTool = artifactGetToolResult.value;
 
 // send_message — tool with a string field for exfiltration guard testing
 const sendMessageToolResult = buildTool({
@@ -1341,6 +1427,35 @@ const bgTaskToolsAll = createTaskTools({ board: bgTaskBoard, agentId: bgAgentId 
 const [, bgTtGet, , bgTtList, , bgTtOutput] = bgTaskToolsAll as import("@koi/core").Tool[];
 
 // ---------------------------------------------------------------------------
+// @koi/tools-bash bash_background + watch_patterns — separate board + store
+// Exercises the watch_patterns feature: agent fires a background command with
+// a pattern, the turn-prelude middleware injects the match notification on the
+// next model call, and the agent confirms it saw the ready event.
+// ---------------------------------------------------------------------------
+const bgWatchTaskBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+const bgWatchAgentId = "golden-bg-watch-agent" as import("@koi/core").AgentId;
+const bgWatchMatchStore = createPendingMatchStore();
+const bashBackgroundWatchProvider = createSingleToolProvider({
+  name: "bash-background-watch",
+  toolName: "bash_background",
+  createTool: () =>
+    createBashBackgroundTool({
+      taskBoard: bgWatchTaskBoard,
+      agentId: bgWatchAgentId,
+      workspaceRoot: process.cwd(),
+      getWatchStore: () => bgWatchMatchStore,
+    }),
+});
+const bgWatchTaskToolsAll = createTaskTools({ board: bgWatchTaskBoard, agentId: bgWatchAgentId });
+const [, bgWatchTtGet, , , , bgWatchTtOutput] = bgWatchTaskToolsAll as import("@koi/core").Tool[];
+const turnPreludeMw = createTurnPreludeMiddleware({
+  getStore: () => bgWatchMatchStore,
+  getTaskStatus: (id) => bgWatchTaskBoard.snapshot().get(id)?.status,
+});
+
+// ---------------------------------------------------------------------------
 // Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
 // ---------------------------------------------------------------------------
 
@@ -1962,6 +2077,34 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
+  },
+
+  // artifacts-roundtrip: exercises @koi/artifacts via two tools backed by a
+  // real ArtifactStore. The LLM saves content, then fetches it back by id.
+  // Validates the full L2 surface: buildTool → permissions → artifact_save →
+  // ArtifactStore.saveArtifact → blob-cas put → SQLite commit → tool result
+  // → next turn → artifact_get → ArtifactStore.getArtifact → blob-cas read.
+  {
+    name: "artifacts-roundtrip",
+    prompt:
+      "Use artifact_save to save an artifact named 'notes.txt' with content 'golden trajectory'. Then use artifact_get with the id you got back to fetch the content. Finally respond with just the retrieved content, nothing else.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "artifact-save",
+        toolName: "artifact_save",
+        createTool: () => artifactSaveTool,
+      }),
+      createSingleToolProvider({
+        name: "artifact-get",
+        toolName: "artifact_get",
+        createTool: () => artifactGetTool,
+      }),
+    ],
+    maxTurns: 3,
   },
 
   // 1. simple-text: text response, no tools
@@ -3076,6 +3219,39 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 4,
+  },
+
+  // bash-background-watch: @koi/tools-bash watch_patterns + @koi/middleware-turn-prelude.
+  //   Agent fires bash_background with watch_patterns [{pattern:"listening",event:"ready"}].
+  //   The turn-prelude middleware injects the match notification as a user-role message
+  //   on the next model call, and the agent confirms it saw the ready event.
+  {
+    name: "bash-background-watch",
+    prompt:
+      "Use the bash_background tool to run `echo 'listening on port 3000'` in the background " +
+      'with watch_patterns [{"pattern":"listening","event":"ready"}]. ' +
+      "After it returns a taskId, use task_get with that taskId to check status. " +
+      "Then use task_output with the same taskId to read the output. " +
+      "Confirm in your reply that you saw a ready event notification.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      bashBackgroundWatchProvider,
+      createSingleToolProvider({
+        name: "task-get-watch",
+        toolName: "task_get",
+        createTool: () => bgWatchTtGet as import("@koi/core").Tool,
+      }),
+      createSingleToolProvider({
+        name: "task-output-watch",
+        toolName: "task_output",
+        createTool: () => bgWatchTtOutput as import("@koi/core").Tool,
+      }),
+    ],
+    extraMiddleware: [turnPreludeMw],
+    maxTurns: 5,
   },
 
   // bash-ast-too-complex: @koi/bash-ast — proves the SYNC too-complex
@@ -4713,6 +4889,7 @@ await mcpSetup.cleanup();
 await mcpServerClient.close();
 await mcpPlatformServer.stop();
 nexusTransport?.close();
+await artifactStore.close();
 
 console.log(`\nDone. ${12 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");

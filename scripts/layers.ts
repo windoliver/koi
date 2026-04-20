@@ -19,6 +19,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/bash-ast",
   "@koi/bash-classifier",
   "@koi/bash-security",
+  "@koi/blob-cas",
   "@koi/channel-base",
   "@koi/config",
   "@koi/context-manager",
@@ -47,6 +48,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/tools-core",
   "@koi/url-safety",
   "@koi/validation",
+  "@koi/watch-patterns",
 ]);
 
 export const L1_PACKAGES: ReadonlySet<string> = new Set([
@@ -65,6 +67,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/middleware-audit",
   "@koi/middleware-memory-recall",
   "@koi/middleware-strict-agentic",
+  "@koi/middleware-turn-prelude",
   "@koi/plugins",
   "@koi/sandbox-os",
   "@koi/session",
