@@ -274,6 +274,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
   let browser: Browser | null = config.browser ?? null;
   let browserContext: BrowserContext | null = null;
+  // Tracks whether the current `browserContext` was borrowed from an external browser
+  // (cdpEndpoint/wsEndpoint path with a pre-existing context). Borrowed contexts
+  // belong to the caller — we MUST NOT install routes/init-scripts on them and
+  // MUST NOT close them on dispose().
+  let borrowedContext = false;
   // Promise caches prevent concurrent callers from launching two browsers/contexts.
   // Without these, two simultaneous ensureBrowser() calls would both see null and both launch.
   let browserInitPromise: Promise<Browser> | null = null; // intentional mutation: set once on first call
@@ -390,15 +395,23 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           });
         } else {
           const b = await ensureBrowser();
-          // For CDP/WS connections, reuse the default context if one exists
+          // For CDP/WS connections, reuse the default context if one exists —
+          // but flag it as borrowed so we don't mutate or close caller state.
           if (config.cdpEndpoint || config.wsEndpoint) {
             const contexts = b.contexts();
-            ctx = contexts[0] ?? (await b.newContext());
+            const existing = contexts[0];
+            if (existing) {
+              ctx = existing;
+              borrowedContext = true;
+            } else {
+              ctx = await b.newContext();
+            }
           } else {
             ctx = await b.newContext();
           }
         }
-        // Inject stealth script at context level — covers all pages and window.open() tabs
+        // Inject stealth script at context level — covers all pages and window.open() tabs.
+        // Skipped for external-transport paths (caller owns stealth policy for their browser).
         if (config.stealth && !config.browser && !config.cdpEndpoint && !config.wsEndpoint) {
           await ctx.addInitScript(STEALTH_INIT_SCRIPT);
         }
@@ -406,7 +419,10 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         // DNS rebinding guard — re-resolve hostnames at request time for document navigations.
         // Catches post-TTL rebinding that bypasses the static URL check in url-security.ts.
         // Default: enabled (blockPrivateAddresses !== false).
-        if (config.blockPrivateAddresses !== false) {
+        // Skipped on borrowed contexts: we must not install route handlers on a context
+        // that the caller also drives. The tool-layer url-security check still applies
+        // to navigations issued by Koi's own `navigate` tool calls.
+        if (config.blockPrivateAddresses !== false && !borrowedContext) {
           await ctx.route("**", async (route) => {
             const req = route.request();
             // Only intercept main-frame document navigations — sub-resources are not rebinding vectors
@@ -1131,8 +1147,14 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       currentTabId = null;
 
       if (browserContext) {
-        await browserContext.close().catch(() => undefined);
+        // Only close the context if we created it ourselves. Borrowed contexts
+        // (reused from an external browser on cdpEndpoint/wsEndpoint paths)
+        // belong to the caller — closing them would take down their pages.
+        if (!borrowedContext) {
+          await browserContext.close().catch(() => undefined);
+        }
         browserContext = null;
+        borrowedContext = false;
         contextInitPromise = null; // intentional mutation: reset so a new driver can be re-initialized after dispose
       }
 
