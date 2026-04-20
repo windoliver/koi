@@ -277,32 +277,72 @@ export function createSubprocessBackend(): WorkerBackend {
     const state = workers.get(id);
     if (state === undefined) return;
     try {
-      // Yield buffered events first (includes started, and possibly a
-      // terminal event if the subprocess exited before watch attached).
-      for (const ev of state.events) {
-        yield ev;
-        if (ev.kind === "exited" || ev.kind === "crashed") {
+      // We track our position in state.events explicitly (not via for..of)
+      // because we need to re-drain after yielding the lastHeartbeat
+      // replay. A terminal event appended during that yield pause must
+      // still be delivered before we fall through to the alive check.
+      let cursor = 0;
+      const drainLifecycle = function* (): Generator<WorkerEvent, boolean> {
+        // Returns true if a terminal event was yielded (caller should stop).
+        while (cursor < state.events.length) {
+          const ev = state.events[cursor++];
+          if (ev === undefined) break;
+          yield ev;
+          if (ev.kind === "exited" || ev.kind === "crashed") return true;
+        }
+        return false;
+      };
+      // Phase 1: drain existing lifecycle events (started + possibly terminal).
+      {
+        let terminated = false;
+        for (const ev of drainLifecycle()) {
+          yield ev;
+          if (ev.kind === "exited" || ev.kind === "crashed") {
+            terminated = true;
+            break;
+          }
+        }
+        if (terminated) {
           state.terminalDelivered = true;
           return;
         }
       }
-      // Replay the most recent heartbeat (if any) so a watcher that
-      // attached after the child's first process.send() still observes
-      // liveness. Without this, the supervisor's deadline timer can arm
-      // just as a fresh heartbeat is being dropped, leading to spurious
-      // HEARTBEAT_TIMEOUT for a healthy worker.
+      // Phase 2: replay the most recent heartbeat so a watcher attaching
+      // after the child's first process.send() still observes liveness.
+      // Without this, the supervisor's deadline timer can arm just as a
+      // fresh heartbeat was being dropped, leading to spurious HEARTBEAT_TIMEOUT.
       if (state.lastHeartbeat !== undefined) {
         yield state.lastHeartbeat;
+      }
+      // Phase 3: re-drain — a terminal event may have been pushed while
+      // we were yielding the heartbeat (consumer-side await pauses us).
+      {
+        let terminated = false;
+        for (const ev of drainLifecycle()) {
+          yield ev;
+          if (ev.kind === "exited" || ev.kind === "crashed") {
+            terminated = true;
+            break;
+          }
+        }
+        if (terminated) {
+          state.terminalDelivered = true;
+          return;
+        }
       }
       if (!state.alive) {
         state.terminalDelivered = true;
         return;
       }
+      // Phase 4: live stream. Non-heartbeat events are ALSO appended to
+      // state.events, so we advance the cursor to avoid double-yielding
+      // them during any future re-drain (shutdown cleanup path).
       while (state.alive) {
         const ev = await new Promise<WorkerEvent>((resolve) => {
           state.listeners.push(resolve);
         });
         yield ev;
+        if (ev.kind !== "heartbeat") cursor++;
         if (ev.kind === "exited" || ev.kind === "crashed") {
           state.terminalDelivered = true;
           return;

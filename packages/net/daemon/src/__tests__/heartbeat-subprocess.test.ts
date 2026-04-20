@@ -110,6 +110,45 @@ describe("subprocess heartbeat (IPC opt-in)", () => {
     expect(preAttachHeartbeats.length).toBeLessThanOrEqual(1);
   });
 
+  it("terminal event is NOT lost when worker exits during heartbeat-replay yield pause", async () => {
+    // Regression: after yielding the replayed heartbeat, the watcher
+    // checked state.alive and returned early. If the subprocess exited
+    // BETWEEN the heartbeat yield and the alive check, the buffered
+    // exited event was silently dropped — consumers got `started`,
+    // `heartbeat`, then iterator done with no terminal. Fix: re-drain
+    // state.events after the heartbeat yield.
+    //
+    // We reproduce by spawning a quickly-exiting child that still emits
+    // a heartbeat beforehand, consuming slowly (small per-event delay),
+    // and asserting the terminal event is the last thing yielded.
+    const backend = createSubprocessBackend();
+    const id = workerId("hb-terminal-race-1");
+    const QUICK_HEARTBEAT_THEN_EXIT = `
+      if (typeof process.send === "function") process.send({ koi: "heartbeat" });
+      setTimeout(() => process.exit(0), 50);
+    `;
+    const spawned = await backend.spawn({
+      workerId: id,
+      agentId: agentId("agent-hb-terminal-race-1"),
+      command: ["bun", "-e", QUICK_HEARTBEAT_THEN_EXIT],
+      backendHints: { heartbeat: true },
+    });
+    expect(spawned.ok).toBe(true);
+    // Wait long enough that `started` + heartbeat are buffered AND the
+    // subprocess has exited (so exited event is in state.events).
+    await new Promise((r) => setTimeout(r, 200));
+    const events: WorkerEvent[] = [];
+    for await (const ev of backend.watch(id)) {
+      events.push(ev);
+      // Simulate a slow consumer. Terminal event must still be delivered.
+      await new Promise((r) => setTimeout(r, 5));
+      if (ev.kind === "exited" || ev.kind === "crashed") break;
+    }
+    const terminal = events[events.length - 1];
+    expect(terminal).toBeDefined();
+    expect(terminal?.kind === "exited" || terminal?.kind === "crashed").toBe(true);
+  });
+
   it("child that never heartbeats still exits cleanly under IPC opt-in (backend is permissive)", async () => {
     const backend = createSubprocessBackend();
     const id = workerId("silent-hb-1");

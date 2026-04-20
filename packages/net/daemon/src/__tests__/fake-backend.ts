@@ -130,20 +130,35 @@ export function createFakeBackend(
     watch: async function* (id) {
       const s = workers.get(id);
       if (s === undefined) return;
-      // Yield buffered lifecycle events
-      for (const ev of s.events) yield ev;
-      // Replay the latest heartbeat (if any) to avoid the attach-race:
-      // a heartbeat emitted before the watcher subscribes would otherwise
-      // be dropped, and the supervisor's deadline timer could fire
-      // spuriously.
+      // Cursor-based drain: we can't rely on for..of because the heartbeat
+      // replay introduces a yield pause during which a terminal event can
+      // be appended. See subprocess-backend for the full explanation.
+      let cursor = 0;
+      // Phase 1: drain existing lifecycle events.
+      while (cursor < s.events.length) {
+        const ev = s.events[cursor++];
+        if (ev === undefined) break;
+        yield ev;
+        if (ev.kind === "exited" || ev.kind === "crashed") return;
+      }
+      // Phase 2: replay latest heartbeat for attach-race resistance.
       if (s.lastHeartbeat !== undefined) yield s.lastHeartbeat;
+      // Phase 3: re-drain — terminal event may have landed during the
+      // heartbeat yield pause.
+      while (cursor < s.events.length) {
+        const ev = s.events[cursor++];
+        if (ev === undefined) break;
+        yield ev;
+        if (ev.kind === "exited" || ev.kind === "crashed") return;
+      }
       if (!s.alive) return;
-      // Subscribe for future events
+      // Phase 4: live stream.
       while (s.alive) {
         const ev = await new Promise<WorkerEvent>((resolve) => {
           s.listeners.push(resolve);
         });
         yield ev;
+        if (ev.kind !== "heartbeat") cursor++;
         if (ev.kind === "exited" || ev.kind === "crashed") break;
       }
     },
