@@ -4,6 +4,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -207,6 +208,179 @@ describe("createS3BlobStore", () => {
 
       const input = s3Mock.commandCalls(DeleteObjectCommand)[0]?.args[0].input;
       expect(input?.Key).toBe(`tenant-a/blobs/${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
+    });
+  });
+
+  describe("list", () => {
+    // Build a fake SHA-256 hex with the given 2-char shard prefix. Saves
+    // the per-test noise of hand-typing 64 hex chars.
+    function fakeHash(shard: string, filler: string = "a"): string {
+      const rest = filler.repeat(62);
+      return (shard + rest).slice(0, 64);
+    }
+
+    function keyFor(prefix: string, hash: string): string {
+      const shard = hash.slice(0, 2);
+      return prefix === "" ? `${shard}/${hash}` : `${prefix}/${shard}/${hash}`;
+    }
+
+    test("empty bucket yields nothing and the generator terminates", async () => {
+      s3Mock.on(ListObjectsV2Command).resolves({ Contents: [], IsTruncated: false });
+      const store = createS3BlobStore(baseConfig());
+
+      const out: string[] = [];
+      for await (const h of store.list()) out.push(h);
+
+      expect(out).toEqual([]);
+    });
+
+    test("paginates via NextContinuationToken / IsTruncated and yields all hashes", async () => {
+      const h1 = fakeHash("aa", "1");
+      const h2 = fakeHash("ab", "2");
+      const h3 = fakeHash("ac", "3");
+      const h4 = fakeHash("ad", "4");
+
+      s3Mock
+        .on(ListObjectsV2Command)
+        .resolvesOnce({
+          Contents: [{ Key: keyFor("", h1) }, { Key: keyFor("", h2) }],
+          IsTruncated: true,
+          NextContinuationToken: "token-1",
+        })
+        .resolvesOnce({
+          Contents: [{ Key: keyFor("", h3) }, { Key: keyFor("", h4) }],
+          IsTruncated: false,
+        });
+
+      const store = createS3BlobStore(baseConfig());
+      const out: string[] = [];
+      for await (const h of store.list()) out.push(h);
+
+      expect(out).toEqual([h1, h2, h3, h4]);
+      const calls = s3Mock.commandCalls(ListObjectsV2Command);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.args[0].input.ContinuationToken).toBeUndefined();
+      expect(calls[1]?.args[0].input.ContinuationToken).toBe("token-1");
+    });
+
+    test("skips keys that don't match the sharded hash layout (e.g. __store_id__ sentinel)", async () => {
+      const good = fakeHash("aa", "1");
+      s3Mock.on(ListObjectsV2Command).resolves({
+        Contents: [
+          // sentinel at prefix root — no shard, not a hash
+          { Key: "__store_id__" },
+          // random non-hash key under a non-hash pseudo-shard
+          { Key: "zz/not-a-hash" },
+          // shard doesn't match hash prefix
+          { Key: `bb/${good}` },
+          // uppercase hex — rejected (SHA-256 lowercase invariant)
+          { Key: `aa/${good.toUpperCase()}` },
+          // too short
+          { Key: "aa/deadbeef" },
+          // correct layout — the only one we keep
+          { Key: keyFor("", good) },
+        ],
+        IsTruncated: false,
+      });
+      const store = createS3BlobStore(baseConfig());
+
+      const out: string[] = [];
+      for await (const h of store.list()) out.push(h);
+
+      expect(out).toEqual([good]);
+    });
+
+    test("consumer breaking out of the loop does not leak pagination (generator closes)", async () => {
+      const h1 = fakeHash("aa", "1");
+      const h2 = fakeHash("ab", "2");
+      const h3 = fakeHash("ac", "3");
+      const h4 = fakeHash("ad", "4");
+
+      s3Mock
+        .on(ListObjectsV2Command)
+        .resolvesOnce({
+          Contents: [{ Key: keyFor("", h1) }, { Key: keyFor("", h2) }],
+          IsTruncated: true,
+          NextContinuationToken: "token-1",
+        })
+        .resolvesOnce({
+          Contents: [{ Key: keyFor("", h3) }, { Key: keyFor("", h4) }],
+          IsTruncated: false,
+        });
+
+      const store = createS3BlobStore(baseConfig());
+      const out: string[] = [];
+      for await (const h of store.list()) {
+        out.push(h);
+        if (out.length === 1) break;
+      }
+
+      expect(out).toEqual([h1]);
+      // Only the first page should have been fetched — breaking before the
+      // first page is exhausted must not prefetch the next.
+      expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(1);
+    });
+
+    test("empty prefix: keys extracted with no prefix-strip and Prefix omitted (or empty)", async () => {
+      const h1 = fakeHash("aa", "1");
+      s3Mock.on(ListObjectsV2Command).resolves({
+        Contents: [{ Key: keyFor("", h1) }],
+        IsTruncated: false,
+      });
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "" });
+
+      const out: string[] = [];
+      for await (const h of store.list()) out.push(h);
+
+      expect(out).toEqual([h1]);
+      const input = s3Mock.commandCalls(ListObjectsV2Command)[0]?.args[0].input;
+      expect(input?.Bucket).toBe("test-bucket");
+      // With an empty prefix, the request's Prefix must be undefined or ""
+      // (either is correct — S3 treats them identically).
+      expect(input?.Prefix === undefined || input?.Prefix === "").toBe(true);
+    });
+
+    test("non-empty prefix: strips prefix + shard and sends Prefix with trailing slash", async () => {
+      const h1 = fakeHash("aa", "1");
+      const h2 = fakeHash("bc", "2");
+      s3Mock.on(ListObjectsV2Command).resolves({
+        Contents: [{ Key: keyFor("tenant-a/blobs", h1) }, { Key: keyFor("tenant-a/blobs", h2) }],
+        IsTruncated: false,
+      });
+      const store = createS3BlobStore({ ...baseConfig(), prefix: "tenant-a/blobs" });
+
+      const out: string[] = [];
+      for await (const h of store.list()) out.push(h);
+
+      expect(out).toEqual([h1, h2]);
+      const input = s3Mock.commandCalls(ListObjectsV2Command)[0]?.args[0].input;
+      expect(input?.Bucket).toBe("test-bucket");
+      // Prefix should scope the list — trailing slash avoids matching
+      // `tenant-a/blobs-other/...` siblings.
+      expect(input?.Prefix).toBe("tenant-a/blobs/");
+    });
+
+    test("filters out keys whose hash portion isn't 64 lowercase hex chars", async () => {
+      const good = fakeHash("aa", "1");
+      s3Mock.on(ListObjectsV2Command).resolves({
+        Contents: [
+          // 63 chars — too short
+          { Key: `aa/${"a".repeat(63)}` },
+          // 65 chars — too long
+          { Key: `aa/${"a".repeat(65)}` },
+          // non-hex (g, h, i ...)
+          { Key: `aa/${"g".repeat(64)}` },
+          // valid
+          { Key: keyFor("", good) },
+        ],
+        IsTruncated: false,
+      });
+      const store = createS3BlobStore(baseConfig());
+
+      const out: string[] = [];
+      for await (const h of store.list()) out.push(h);
+
+      expect(out).toEqual([good]);
     });
   });
 

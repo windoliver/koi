@@ -20,6 +20,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -28,6 +29,8 @@ import type { S3BlobStoreConfig } from "./config.js";
 import { validateS3BlobStoreConfig } from "./config.js";
 
 const HASH_SHARD_LEN = 2;
+const HASH_HEX_LEN = 64;
+const HASH_HEX_REGEX = /^[0-9a-f]{64}$/;
 
 /**
  * Compute the S3 key for a blob under the configured prefix.
@@ -151,22 +154,52 @@ export function createS3BlobStore(config: S3BlobStoreConfig): BlobStore {
     }
   }
 
-  // Implemented in Task 3 with pagination. Keep the method present so the
-  // BlobStore contract shape is satisfied; the iterator throws on first
-  // `next()` so accidental callers in the interim get a loud signal rather
-  // than silent empty iteration.
-  function list(): AsyncIterable<string> {
-    return {
-      [Symbol.asyncIterator](): AsyncIterator<string> {
-        return {
-          next(): Promise<IteratorResult<string>> {
-            return Promise.reject(
-              new Error("S3 BlobStore.list() not implemented until Plan 5 / Task 3"),
-            );
-          },
-        };
-      },
-    };
+  // List scope: configured prefix only. A non-empty prefix ships with a
+  // trailing `/` so siblings (e.g. `tenant-a/blobs-other/...`) aren't matched.
+  // Empty prefix omits the Prefix parameter entirely (lists bucket root).
+  const listPrefix = prefix === "" ? undefined : `${prefix}/`;
+
+  /**
+   * Extract the hash from an S3 key if it matches the sharded CAS layout.
+   * Returns undefined for anything else (sentinels, malformed keys, non-hex).
+   *
+   * Layout: `<prefix>/<shard>/<hash>` (or `<shard>/<hash>` with empty prefix).
+   * The shard MUST equal the first 2 chars of the hash and the hash MUST
+   * be 64 lowercase hex chars. Anything else is filtered out.
+   */
+  function extractHash(key: string): string | undefined {
+    const stripped = listPrefix === undefined ? key : key.slice(listPrefix.length);
+    const parts = stripped.split("/");
+    if (parts.length !== 2) return undefined;
+    const [shard, hash] = parts;
+    if (shard === undefined || hash === undefined) return undefined;
+    if (shard.length !== HASH_SHARD_LEN) return undefined;
+    if (hash.length !== HASH_HEX_LEN) return undefined;
+    if (!HASH_HEX_REGEX.test(hash)) return undefined;
+    if (hash.slice(0, HASH_SHARD_LEN) !== shard) return undefined;
+    return hash;
+  }
+
+  async function* list(): AsyncGenerator<string> {
+    // `let` is required: ContinuationToken threads through pages. Per-page
+    // yield (not per-page batch) means breaking the consumer loop doesn't
+    // prefetch the next page.
+    let continuationToken: string | undefined;
+    do {
+      const response = await client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          ...(listPrefix !== undefined ? { Prefix: listPrefix } : {}),
+          ...(continuationToken !== undefined ? { ContinuationToken: continuationToken } : {}),
+        }),
+      );
+      for (const obj of response.Contents ?? []) {
+        if (obj.Key === undefined) continue;
+        const hash = extractHash(obj.Key);
+        if (hash !== undefined) yield hash;
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken !== undefined);
   }
 
   return {
