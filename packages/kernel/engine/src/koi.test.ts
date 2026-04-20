@@ -23,8 +23,26 @@ import {
   DEFAULT_UNSANDBOXED_POLICY,
   toolToken,
 } from "@koi/core";
+import { AgentEntity } from "./agent-entity.js";
 import { createKoi } from "./koi.js";
 import type { ForgeRuntime } from "./types.js";
+
+/**
+ * Access the concrete L1 lifecycle state attached to the runtime's agent.
+ *
+ * `KoiRuntime.agent` is typed as the L0 `Agent` interface which does not
+ * expose `lifecycle`. The L1 `AgentEntity` implementation does. The helper
+ * narrows safely via `instanceof` and throws on mismatch so tests fail with
+ * a clear diagnostic instead of `undefined` deref under a stale assumption.
+ */
+function agentLifecycleOf(
+  agent: import("@koi/core").Agent,
+): import("./lifecycle.js").AgentLifecycle {
+  if (!(agent instanceof AgentEntity)) {
+    throw new Error("expected runtime.agent to be an AgentEntity instance");
+  }
+  return agent.lifecycle;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -5251,7 +5269,7 @@ describe("createKoi stop gate", () => {
       describeCapabilities: () => undefined,
       onAfterTurn: async (_ctx) => {
         // Read the live lifecycle value at hook time.
-        const lc = runtime.agent.lifecycle;
+        const lc = agentLifecycleOf(runtime.agent);
         observedInHook.push(lc.state === "running" ? lc.turnIndex : -1);
       },
     };
@@ -5299,7 +5317,7 @@ describe("createKoi stop gate", () => {
     const snapshots: number[] = [];
     for await (const event of runtime.run({ kind: "text", text: "hello" })) {
       if (event.kind === "turn_end") {
-        const lc = runtime.agent.lifecycle;
+        const lc = agentLifecycleOf(runtime.agent);
         snapshots.push(lc.state === "running" ? lc.turnIndex : -1);
       }
     }
@@ -5330,7 +5348,7 @@ describe("createKoi stop gate", () => {
     const observedTurnIndices: number[] = [];
     for await (const event of runtime.run({ kind: "text", text: "go" })) {
       if (event.kind === "turn_end") {
-        const lc = runtime.agent.lifecycle;
+        const lc = agentLifecycleOf(runtime.agent);
         observedTurnIndices.push(lc.state === "running" ? lc.turnIndex : -1);
       }
     }
