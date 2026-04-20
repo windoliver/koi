@@ -1657,6 +1657,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           controller: governanceController,
           sessionId: tuiSessionId as string,
           alertsPath: join(homedir(), ".koi", "governance-alerts.jsonl"),
+          // Static capability mirror — matches the createGovernanceMiddleware's
+          // describeCapabilities() output. Hardcoded here to avoid plumbing the
+          // middleware instance back from runtime-factory just for one string.
+          capabilities: [
+            { label: "governance", description: "Policy gate + setpoint enforcement active" },
+          ],
         });
         // Seed up to 10 most-recent alerts from JSONL so /governance
         // shows context across sessions instead of starting empty.
