@@ -2,7 +2,7 @@
 
 Versioned, session-scoped file lifecycle for agent-created outputs. Metadata in SQLite, bytes in a content-addressed blob store (`@koi/blob-cas`), single-writer advisory lock, crash-safe save protocol.
 
-This is Plan 2 of issue #1651. Plan 3 (#1920) added TTL + quota lifecycle — see [Lifecycle](#lifecycle). Plan 4 (#1921) moved blob-ready repair and Phase B tombstone drain off the open path onto a background worker — see [Startup recovery + background worker](#startup-recovery--background-worker). Plan 5 (#1922) will add pluggable backends (S3). Plan 6 (#1923) will ship agent-facing tool governance.
+This is Plan 2 of issue #1651. Plan 3 (#1920) added TTL + quota lifecycle — see [Lifecycle](#lifecycle). Plan 4 (#1921) moved blob-ready repair and Phase B tombstone drain off the open path onto a background worker — see [Startup recovery + background worker](#startup-recovery--background-worker). Plan 5 (#1922) added pluggable blob backends via `ArtifactStoreConfig.blobStore` — see [Pluggable blob backends](#pluggable-blob-backends). Plan 6 (#1923) will ship agent-facing tool governance.
 
 ## Public surface
 
@@ -134,6 +134,7 @@ interface ArtifactStoreConfig {
   readonly workerIntervalMs?: number | "manual"; // Default 30_000; "manual" disables the interval (tests)
   readonly onEvent?: (event: ArtifactStoreEvent) => void; // Drift signal (repair_exhausted / transient_repair_error)
   readonly policy?: LifecyclePolicy;            // See Lifecycle — validated at construction
+  readonly blobStore?: BlobStore;               // Plan 5: inject a pre-built backend (e.g. @koi/artifacts-s3). Omitted → filesystem CAS at blobDir
 }
 
 interface LifecyclePolicy {
@@ -143,7 +144,13 @@ interface LifecyclePolicy {
 }
 ```
 
-All `LifecyclePolicy` fields are optional and each must be a finite positive integer when present; omitted fields disable the corresponding rule. Plan 5 (#1922) will add `blobStore` for pluggable backends.
+All `LifecyclePolicy` fields are optional and each must be a finite positive integer when present; omitted fields disable the corresponding rule.
+
+## Pluggable blob backends
+
+`ArtifactStoreConfig.blobStore?: BlobStore` accepts a pre-built blob store from any implementation conforming to the `@koi/blob-cas` `BlobStore` contract (Plan 5). Omitted → the default filesystem CAS at `blobDir` is created automatically. Provided → the filesystem CAS is skipped and the injected backend is used directly for every put/get/has/delete/list and the store-id sentinel. All save-protocol invariants (crash recovery, positive-has gate, repair worker, Phase B tombstone drain, scavenger) run unchanged over whichever backend is wired. The pairing fingerprint (`meta.store_id` ↔ backend sentinel) stays the authority for backend identity, so the injected backend and SQLite DB are still refused if they come from different stores.
+
+`@koi/artifacts-s3` ships the first alternate backend (AWS S3 and S3-compatible stores — MinIO, Cloudflare R2, Backblaze B2). Full config surface, security model (explicit credentials, no env-var fallback), key layout, and cost notes live in [`docs/L2/artifacts-s3.md`](./artifacts-s3.md).
 
 ## L3 wiring
 
