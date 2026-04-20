@@ -50,7 +50,7 @@ import type {
   KoiError,
   Result,
 } from "@koi/core";
-import { internal, notFound, staleRef, validation } from "@koi/core";
+import { internal, notFound, permission, staleRef, validation } from "@koi/core";
 import type { Browser, BrowserContext, FrameLocator, Locator, Page } from "playwright";
 import { chromium } from "playwright";
 
@@ -159,6 +159,71 @@ function isPrivateIp(ip: string): boolean {
     ip.startsWith("fd") ||
     ip === "0.0.0.0"
   );
+}
+
+/**
+ * Driver-level private-address guard. Runs on EVERY navigation before
+ * `page.goto()`, regardless of whether the context is owned or borrowed.
+ * This complements the context `route()` guard (which only runs on owned
+ * contexts — borrowed contexts belong to the caller and can't be mutated).
+ *
+ * Rejects when `blockPrivateAddresses !== false` and:
+ *   - the URL's hostname is a private IP literal (loopback, RFC1918, link-local, etc.).
+ *   - OR the hostname resolves via DNS to a private IP at request time.
+ *
+ * Returns null when the URL is allowed; returns a KoiError otherwise.
+ */
+async function checkNavigationUrlAllowed(
+  rawUrl: string,
+  blockPrivateAddresses: boolean,
+): Promise<KoiError | null> {
+  if (blockPrivateAddresses === false) return null;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return validation(`Invalid URL: ${rawUrl}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    // Non-HTTP(S) schemes (file://, data://, about:, chrome://) are not
+    // private-network rebinding vectors — let Playwright handle them.
+    return null;
+  }
+  const hostname = url.hostname;
+  // Strip IPv6 brackets for isPrivateIp matching.
+  const bare =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const isIpLiteral = /^[\d.:]+$/.test(bare);
+  if (isIpLiteral) {
+    if (isPrivateIp(bare)) {
+      return permission(
+        `Navigation to private IP blocked: ${bare}. Set blockPrivateAddresses: false to override.`,
+      );
+    }
+    // Public IP literal — allowed.
+    return null;
+  }
+  // Hostname — resolve and check. "localhost" needs an explicit check because
+  // DNS resolution rules vary by OS (it may return 127.0.0.1 OR ::1 OR skip DNS entirely).
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return permission(
+      `Navigation to private hostname blocked: ${hostname}. Set blockPrivateAddresses: false to override.`,
+    );
+  }
+  try {
+    const { address } = await dnsPromises.lookup(hostname);
+    if (isPrivateIp(address)) {
+      return permission(
+        `Navigation to private-address-resolving hostname blocked: ${hostname} → ${address}. Set blockPrivateAddresses: false to override.`,
+      );
+    }
+  } catch (err) {
+    // DNS lookup failure → fail closed (consistent with the route() guard behavior).
+    return permission(
+      `DNS lookup failed for ${hostname}: ${err instanceof Error ? err.message : String(err)}. Fail-closed policy denies navigation.`,
+    );
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -638,6 +703,16 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserNavigateOptions,
     ): Promise<Result<BrowserNavigateResult, KoiError>> {
       try {
+        // Driver-level private-address gate — runs BEFORE page.goto, regardless
+        // of context ownership. Borrowed contexts (cdpEndpoint/wsEndpoint paths
+        // where we reused the caller's default context) cannot have the route()
+        // guard installed; this check covers them.
+        const guardErr = await checkNavigationUrlAllowed(
+          url,
+          config.blockPrivateAddresses !== false,
+        );
+        if (guardErr) return { ok: false, error: guardErr };
+
         const page = await ensurePage();
         const tabId = currentTabId;
         if (!tabId) return { ok: false, error: internal("No active tab") };
@@ -912,6 +987,15 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async tabNew(options?: BrowserTabNewOptions): Promise<Result<BrowserTabInfo, KoiError>> {
       try {
+        // Driver-level private-address gate for the tabNew-with-url path.
+        if (options?.url) {
+          const guardErr = await checkNavigationUrlAllowed(
+            options.url,
+            config.blockPrivateAddresses !== false,
+          );
+          if (guardErr) return { ok: false, error: guardErr };
+        }
+
         const ctx = await ensureContext();
         const page = await ctx.newPage();
         const tabId = newTabId();

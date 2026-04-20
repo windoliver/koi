@@ -150,6 +150,107 @@ describe("createPlaywrightBrowserDriver with wsEndpoint", () => {
     }
   });
 
+  test("driver-level private-address guard fires on borrowed context even without route() mutation", async () => {
+    // Setup: wsEndpoint path with an existing context (borrowed), blockPrivateAddresses: true (default).
+    const gotoSpy = mock(async () => undefined);
+    const existingContext = {
+      pages: () => [],
+      newPage: async () => ({
+        url: () => "about:blank",
+        title: async () => "",
+        on: () => {},
+        goto: gotoSpy,
+        close: async () => {},
+      }),
+      close: async () => {},
+      addInitScript: async () => {},
+      route: async () => {},
+    };
+    const fakeBrowser = {
+      contexts: () => [existingContext],
+      newContext: async () => {
+        throw new Error("should not create new context");
+      },
+      close: async () => {},
+    } as unknown as Browser;
+
+    const original = chromium.connectOverCDP;
+    (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+      (async () => fakeBrowser) as unknown as typeof chromium.connectOverCDP;
+
+    try {
+      const driver = createPlaywrightBrowserDriver({
+        wsEndpoint: "ws://127.0.0.1:45678/x",
+        // blockPrivateAddresses defaults to true.
+      });
+
+      // 1. Literal private IP — blocked.
+      const result1 = await driver.navigate("http://127.0.0.1/admin");
+      expect(result1.ok).toBe(false);
+      if (!result1.ok) {
+        expect(result1.error.code).toBe("PERMISSION");
+      }
+
+      // 2. localhost hostname — blocked.
+      const result2 = await driver.navigate("http://localhost:8080/");
+      expect(result2.ok).toBe(false);
+
+      // 3. RFC1918 literal — blocked.
+      const result3 = await driver.navigate("http://192.168.1.1/");
+      expect(result3.ok).toBe(false);
+
+      // Critical: page.goto was never called for any blocked URL.
+      expect(gotoSpy).toHaveBeenCalledTimes(0);
+
+      await driver.dispose?.();
+    } finally {
+      (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+        original;
+    }
+  });
+
+  test("driver-level guard is a no-op when blockPrivateAddresses: false is explicitly set", async () => {
+    const gotoSpy = mock(async () => undefined);
+    const existingContext = {
+      pages: () => [],
+      newPage: async () => ({
+        url: () => "http://127.0.0.1/admin",
+        title: async () => "",
+        on: () => {},
+        goto: gotoSpy,
+        close: async () => {},
+      }),
+      close: async () => {},
+      addInitScript: async () => {},
+      route: async () => {},
+    };
+    const fakeBrowser = {
+      contexts: () => [existingContext],
+      newContext: async () => {
+        throw new Error("should not create new context");
+      },
+      close: async () => {},
+    } as unknown as Browser;
+
+    const original = chromium.connectOverCDP;
+    (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+      (async () => fakeBrowser) as unknown as typeof chromium.connectOverCDP;
+
+    try {
+      const driver = createPlaywrightBrowserDriver({
+        wsEndpoint: "ws://127.0.0.1:45678/x",
+        blockPrivateAddresses: false, // explicit opt-out
+      });
+      const result = await driver.navigate("http://127.0.0.1/admin");
+      expect(result.ok).toBe(true);
+      expect(gotoSpy).toHaveBeenCalledTimes(1);
+      await driver.dispose?.();
+    } finally {
+      (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+        original;
+    }
+  });
+
   test("borrowed context: dispose() does NOT close caller-owned context", async () => {
     const contextCloseSpy = mock(async () => {});
     const browserCloseSpy = mock(async () => {});
