@@ -22,11 +22,13 @@ const MAX_AVAILABLE_AGENT_HINTS = 20;
 export function createDefinitionResolver(registry: AgentDefinitionRegistry): AgentResolver {
   const definitions = registry.list();
   const summaries: readonly TaskableAgentSummary[] = Object.freeze(
-    definitions.map((def) => ({
-      key: def.agentType,
-      name: def.agentType,
-      description: def.whenToUse,
-    })),
+    definitions.map((def) =>
+      Object.freeze({
+        key: def.agentType,
+        name: def.agentType,
+        description: def.whenToUse,
+      } satisfies TaskableAgentSummary),
+    ),
   );
 
   const availableAgentTypes = definitions.map((def) => def.agentType);

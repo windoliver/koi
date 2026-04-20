@@ -160,4 +160,20 @@ describe("createDefinitionResolver — list()", () => {
       expect(summary.name).toBe(summary.key);
     }
   });
+
+  test("list summaries are immutable across calls", async () => {
+    const registry = createAgentDefinitionRegistry([makeMinimalDef("researcher")], []);
+    const resolver = createDefinitionResolver(registry);
+
+    const summaries = await resolver.list();
+    const [summary] = summaries;
+    expect(summary?.name).toBe("researcher");
+
+    expect(() => {
+      (summary as unknown as { name: string }).name = "hacked";
+    }).toThrow();
+
+    const summariesAgain = await resolver.list();
+    expect(summariesAgain[0]?.name).toBe("researcher");
+  });
 });

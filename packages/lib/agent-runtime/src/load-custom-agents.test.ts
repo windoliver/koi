@@ -251,6 +251,94 @@ Override prompt.`;
     expect(registry.resolve("researcher")).toBeUndefined();
   });
 
+  test("fail-closed: unclosed frontmatter with top-level name poisons intended type", () => {
+    const builtIn = getBuiltInAgents();
+
+    const unclosedFrontmatter = `---
+name: researcher
+description: Broken override
+model: sonnet
+
+Body with missing closing delimiter.`;
+
+    writeAgentFile(tempDir, "override.md", unclosedFrontmatter);
+
+    const { failedTypes } = loadCustomAgents({ projectDir: tempDir });
+
+    expect(failedTypes.some((f) => f.agentType === "researcher")).toBe(true);
+    expect(failedTypes.some((f) => f.agentType === "override")).toBe(false);
+
+    const registry = createAgentDefinitionRegistry(builtIn, [], failedTypes);
+    expect(registry.resolve("researcher")).toBeUndefined();
+  });
+
+  test("does not poison from nested metadata.name when top-level name is missing", () => {
+    const builtIn = getBuiltInAgents();
+
+    const nestedNameOnly = `---
+metadata:
+  name: researcher
+description: Not a valid top-level name
+---
+
+Body.`;
+
+    writeAgentFile(tempDir, "other.md", nestedNameOnly);
+
+    const { failedTypes } = loadCustomAgents({ projectDir: tempDir });
+
+    // Missing top-level `name` should poison by filename, not nested metadata.name.
+    expect(failedTypes.some((f) => f.agentType === "other")).toBe(true);
+    expect(failedTypes.some((f) => f.agentType === "researcher")).toBe(false);
+
+    const registry = createAgentDefinitionRegistry(builtIn, [], failedTypes);
+    expect(registry.resolve("researcher")).toBeDefined();
+  });
+
+  test("malformed YAML with nested name does not poison that nested name", () => {
+    const builtIn = getBuiltInAgents();
+
+    const malformedNestedName = `---
+metadata:
+  name: researcher
+description: Broken
+model: [unclosed
+---
+
+Body.`;
+
+    writeAgentFile(tempDir, "other.md", malformedNestedName);
+
+    const { failedTypes } = loadCustomAgents({ projectDir: tempDir });
+
+    expect(failedTypes.some((f) => f.agentType === "other")).toBe(true);
+    expect(failedTypes.some((f) => f.agentType === "researcher")).toBe(false);
+
+    const registry = createAgentDefinitionRegistry(builtIn, [], failedTypes);
+    expect(registry.resolve("researcher")).toBeDefined();
+  });
+
+  test("unclosed frontmatter with nested name does not poison that nested name", () => {
+    const builtIn = getBuiltInAgents();
+
+    const unclosedNestedName = `---
+metadata:
+  name: researcher
+description: Missing closing delimiter
+
+Body.`;
+
+    writeAgentFile(tempDir, "other.md", unclosedNestedName);
+
+    const { failedTypes } = loadCustomAgents({ projectDir: tempDir });
+
+    expect(failedTypes.some((f) => f.agentType === "other")).toBe(true);
+    expect(failedTypes.some((f) => f.agentType === "researcher")).toBe(false);
+
+    const registry = createAgentDefinitionRegistry(builtIn, [], failedTypes);
+    expect(registry.resolve("researcher")).toBeDefined();
+  });
+
   test("source-aware: broken user agent does NOT block valid project override", () => {
     const builtIn = getBuiltInAgents();
 

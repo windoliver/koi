@@ -57,7 +57,17 @@ export interface LoadAgentsResult {
 
 const FRONTMATTER_OPENING_RE = /^---[ \t]*\r?\n/u;
 const FRONTMATTER_CLOSING_RE = /\r?\n---[ \t]*(?:\r?\n|$)/u;
-const FRONTMATTER_NAME_LINE_RE = /^\s*name\s*:\s*(['"]?)([a-zA-Z0-9-]+)\1(?:\s+#.*)?\s*$/m;
+const FRONTMATTER_KEY_LINE_RE = /^([ \t]*)([a-zA-Z0-9_-]+)\s*:/;
+const FRONTMATTER_NAME_LINE_RE = /^([ \t]*)name\s*:\s*(['"]?)([a-zA-Z0-9-]+)\2(?:\s+#.*)?\s*$/;
+
+/** True when content starts with frontmatter opener but has no closing delimiter. */
+function hasUnclosedFrontmatter(content: string): boolean {
+  const openingMatch = FRONTMATTER_OPENING_RE.exec(content);
+  if (!openingMatch) return false;
+
+  const remainder = content.slice(openingMatch[0].length);
+  return !FRONTMATTER_CLOSING_RE.test(remainder);
+}
 
 /**
  * Extract raw frontmatter text without parsing YAML.
@@ -82,8 +92,39 @@ function extractNameFromRawFrontmatter(content: string): string | undefined {
   const rawFrontmatter = extractRawFrontmatter(content);
   if (rawFrontmatter === undefined) return undefined;
 
-  const nameMatch = FRONTMATTER_NAME_LINE_RE.exec(rawFrontmatter);
-  return nameMatch?.[2];
+  const lines = rawFrontmatter.split(/\r?\n/u);
+
+  // Determine the minimum indentation level among YAML key lines. This is our
+  // best-effort approximation for "top-level" keys in malformed frontmatter.
+  let minKeyIndent: number | undefined;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+
+    const keyMatch = FRONTMATTER_KEY_LINE_RE.exec(line);
+    if (!keyMatch) continue;
+
+    const indent = keyMatch[1]?.length ?? 0;
+    if (minKeyIndent === undefined || indent < minKeyIndent) {
+      minKeyIndent = indent;
+    }
+  }
+
+  if (minKeyIndent === undefined) return undefined;
+
+  // Only accept name lines that match the top-level indentation. This avoids
+  // poisoning from nested values like `metadata:\n  name: researcher`.
+  for (const line of lines) {
+    const nameMatch = FRONTMATTER_NAME_LINE_RE.exec(line);
+    if (!nameMatch) continue;
+
+    const indent = nameMatch[1]?.length ?? 0;
+    if (indent !== minKeyIndent) continue;
+
+    return nameMatch[3];
+  }
+
+  return undefined;
 }
 
 /**
@@ -95,9 +136,16 @@ function extractIntendedName(content: string): string | undefined {
   if (fmResult.ok) {
     const name = fmResult.value.meta.name;
     if (typeof name === "string" && name.length > 0) return name;
+
+    // parseFrontmatter treats unclosed frontmatter as "no frontmatter";
+    // recover intended type for fail-closed poisoning in this case.
+    if (hasUnclosedFrontmatter(content)) {
+      return extractNameFromRawFrontmatter(content);
+    }
+    return undefined;
   }
 
-  // Parse-free fallback for malformed YAML frontmatter.
+  // Parse-free fallback is only for malformed YAML frontmatter.
   return extractNameFromRawFrontmatter(content);
 }
 
