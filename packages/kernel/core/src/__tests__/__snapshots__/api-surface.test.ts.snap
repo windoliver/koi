@@ -877,6 +877,13 @@ interface WorkerBackend {
     readonly kill: (id: WorkerId) => Promise<Result<void, KoiError>>;
     readonly isAlive: (id: WorkerId) => Promise<boolean>;
     readonly watch: (id: WorkerId) => AsyncIterable<WorkerEvent>;
+    /**
+     * True if this backend emits \`WorkerEvent.heartbeat\` when a worker signals
+     * liveness. When undefined/false, the supervisor rejects \`backendHints.heartbeat\`
+     * opt-in at \`start()\` time — opting in on a backend that can't emit heartbeats
+     * would cause every worker to trip the missed-deadline timeout and be torn down.
+     */
+    readonly supportsHeartbeat?: boolean;
 }
 interface WorkerSpawnRequest {
     readonly workerId: WorkerId;
@@ -938,6 +945,12 @@ interface SupervisorConfig {
      * backend can otherwise consume worker slots indefinitely).
      */
     readonly spawnTimeoutMs?: number | undefined;
+    /**
+     * Default heartbeat cadence/timeout applied to workers that opt into
+     * heartbeat monitoring via \`WorkerSpawnRequest.backendHints.heartbeat = true\`.
+     * Omitted → \`DEFAULT_HEARTBEAT_CONFIG\` is used.
+     */
+    readonly heartbeat?: HeartbeatConfig | undefined;
 }
 interface WorkerRestartPolicy {
     readonly restart: RestartType;
@@ -947,6 +960,55 @@ interface WorkerRestartPolicy {
     readonly backoffCeilingMs: number;
 }
 declare const DEFAULT_WORKER_RESTART_POLICY: WorkerRestartPolicy;
+/**
+ * Worker heartbeat configuration. \`intervalMs\` is advisory cadence for the
+ * sender; the supervisor does not enforce it. \`timeoutMs\` is the deadline:
+ * if no heartbeat event arrives within this window, the supervisor declares
+ * the worker hung and tears it down.
+ */
+interface HeartbeatConfig {
+    readonly intervalMs: number;
+    readonly timeoutMs: number;
+}
+declare const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig;
+declare const SUPERVISOR_HEALTH_STATUS: {
+    readonly OK: "ok";
+    readonly DEGRADED: "degraded";
+    readonly UNHEALTHY: "unhealthy";
+};
+type SupervisorHealthStatus = (typeof SUPERVISOR_HEALTH_STATUS)[keyof typeof SUPERVISOR_HEALTH_STATUS];
+/**
+ * Per-worker health snapshot. \`lastHeartbeatAt\` / \`heartbeatDeadlineAt\` are
+ * \`undefined\` for workers that did not opt into heartbeat monitoring via
+ * \`WorkerSpawnRequest.backendHints.heartbeat = true\`.
+ */
+interface WorkerHealth {
+    readonly workerId: WorkerId;
+    readonly agentId: AgentId;
+    readonly state: "running" | "restarting" | "quarantined" | "stopping";
+    readonly lastHeartbeatAt: number | undefined;
+    readonly heartbeatDeadlineAt: number | undefined;
+}
+interface SupervisorHealthMetrics {
+    readonly poolSize: number;
+    readonly maxWorkers: number;
+    readonly quarantinedCount: number;
+    readonly restartingCount: number;
+    readonly pendingSpawnCount: number;
+    readonly eventDropCount: number;
+    readonly shuttingDown: boolean;
+}
+/**
+ * Aggregate supervisor health: a three-state verdict + machine-readable
+ * reasons + raw counters + per-worker detail. Consumers (TUI, CLI, future
+ * HTTP wrapper) render whichever slice they need.
+ */
+interface SupervisorHealth {
+    readonly status: SupervisorHealthStatus;
+    readonly reasons: readonly string[];
+    readonly metrics: SupervisorHealthMetrics;
+    readonly workers: readonly WorkerHealth[];
+}
 interface Supervisor {
     readonly start: (request: WorkerSpawnRequest, overrides?: {
         readonly restart?: WorkerRestartPolicy;
@@ -956,6 +1018,8 @@ interface Supervisor {
     readonly shutdown: (reason: string) => Promise<Result<void, KoiError>>;
     readonly list: () => readonly ProcessDescriptor[];
     readonly watchAll: () => AsyncIterable<WorkerEvent>;
+    /** In-memory health snapshot — pure read, no mutation, no \`await\`. */
+    readonly health: () => SupervisorHealth;
 }
 /**
  * Lifecycle status of a background session. The registry is the single
@@ -3088,7 +3152,7 @@ interface TaskOutputReader {
     readonly queryMatches: (q: TaskOutputReaderMatchQuery) => TaskOutputReaderMatchesResult;
 }
 
-export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AnomalyBase, type AnomalyDetail, type AnomalySignal, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BackgroundSessionEvent, type BackgroundSessionRecord, type BackgroundSessionRegistry, type BackgroundSessionStatus, type BackgroundSessionUpdate, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CoalescedMatch, type CompactResult, type CompensatingOp, ComponentProvider, type CompositionSchedulerEvent, type ContentReplacement, type ContextSummary, type ContextSummaryRef, type CriterionResult, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DEFAULT_WORKER_RESTART_POLICY, type DecisionCorrelationId, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type PermissionDecision as EscalationDecision, type PermissionRequest as EscalationRequest, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MatchEntry, type MessageThreadSnapshot, ModelChunk, type NexusPath, type NodeCapability, type NodeId, type OutcomeEvaluation, type OutcomeEvaluationResult, type OutcomeReport, type OutcomeReportInput, type OutcomeRubric, type OutcomeStore, type OutcomeValence, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PatternMatch, type PendingFrame, type PendingMatchStore, PermissionConfig, type PermissionEscalation, ProcessDescriptor, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, RestartType, Result, type ReviewDecision, type RubricCriterion, SNAPSHOT_STATUS_KEY, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionStatus, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, type SnapshotStatus, SubsystemToken, type Supervisor, type SupervisorConfig, type SystemSignal, type SystemSignalSource, type SystemSignalSourceOptions, TaskBoardSnapshot, TaskId, TaskItemId, type TaskOutputReader, type TaskOutputReaderMatchQuery, type TaskOutputReaderMatchesResult, type TaskOutputReaderSnapshot, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TruncateResult, type TuiAdapter, type TurnRequestKey, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, type WatchPattern, type WorkerBackend, type WorkerBackendKind, type WorkerEvent, type WorkerHandle, type WorkerId, type WorkerRestartPolicy, type WorkerSpawnRequest, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, decisionCorrelationId, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isModelChunk, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateBackgroundSessionRecord, validateNonEmpty, validateSessionIdSyntax, validateSupervisorConfig, validation, workerId };
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AnomalyBase, type AnomalyDetail, type AnomalySignal, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BackgroundSessionEvent, type BackgroundSessionRecord, type BackgroundSessionRegistry, type BackgroundSessionStatus, type BackgroundSessionUpdate, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CoalescedMatch, type CompactResult, type CompensatingOp, ComponentProvider, type CompositionSchedulerEvent, type ContentReplacement, type ContextSummary, type ContextSummaryRef, type CriterionResult, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_HEARTBEAT_CONFIG, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DEFAULT_WORKER_RESTART_POLICY, type DecisionCorrelationId, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type PermissionDecision as EscalationDecision, type PermissionRequest as EscalationRequest, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, type HeartbeatConfig, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MatchEntry, type MessageThreadSnapshot, ModelChunk, type NexusPath, type NodeCapability, type NodeId, type OutcomeEvaluation, type OutcomeEvaluationResult, type OutcomeReport, type OutcomeReportInput, type OutcomeRubric, type OutcomeStore, type OutcomeValence, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PatternMatch, type PendingFrame, type PendingMatchStore, PermissionConfig, type PermissionEscalation, ProcessDescriptor, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, RestartType, Result, type ReviewDecision, type RubricCriterion, SNAPSHOT_STATUS_KEY, SUPERVISOR_HEALTH_STATUS, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionStatus, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, type SnapshotStatus, SubsystemToken, type Supervisor, type SupervisorConfig, type SupervisorHealth, type SupervisorHealthMetrics, type SupervisorHealthStatus, type SystemSignal, type SystemSignalSource, type SystemSignalSourceOptions, TaskBoardSnapshot, TaskId, TaskItemId, type TaskOutputReader, type TaskOutputReaderMatchQuery, type TaskOutputReaderMatchesResult, type TaskOutputReaderSnapshot, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TruncateResult, type TuiAdapter, type TurnRequestKey, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, type WatchPattern, type WorkerBackend, type WorkerBackendKind, type WorkerEvent, type WorkerHandle, type WorkerHealth, type WorkerId, type WorkerRestartPolicy, type WorkerSpawnRequest, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, decisionCorrelationId, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isModelChunk, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateBackgroundSessionRecord, validateNonEmpty, validateSessionIdSyntax, validateSupervisorConfig, validation, workerId };
 "
 `;
 
@@ -3834,7 +3898,16 @@ type KoiErrorCode = "VALIDATION" | "NOT_FOUND" | "PERMISSION" | "CONFLICT" | "RA
  *
  * retryable: false — caller must resolve configuration or wait for service recovery.
  */
- | "UNAVAILABLE";
+ | "UNAVAILABLE"
+/**
+ * A worker failed to deliver a heartbeat within its configured \`timeoutMs\` window.
+ * Emitted by the heartbeat monitor as a \`crashed\` WorkerEvent to trigger supervised
+ * teardown.
+ *
+ * retryable: false — timeout implies the caller tore the worker down; auto-restart
+ * policy is deferred to a future issue.
+ */
+ | "HEARTBEAT_TIMEOUT";
 interface KoiError {
     readonly code: KoiErrorCode;
     readonly message: string;

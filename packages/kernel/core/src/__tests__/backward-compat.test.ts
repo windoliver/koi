@@ -73,9 +73,9 @@ describe("RETRYABLE_DEFAULTS backward compatibility", () => {
     }
   });
 
-  test("has exactly 12 codes (no unexpected additions)", () => {
-    // 12 after RESOURCE_EXHAUSTED and UNAVAILABLE were added for @koi/daemon (#1338)
-    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(12);
+  test("has exactly 13 codes (no unexpected additions)", () => {
+    // 13 after HEARTBEAT_TIMEOUT was added for the heartbeat-monitor (#1900)
+    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(13);
   });
 });
 

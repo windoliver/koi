@@ -1386,6 +1386,22 @@ describe("supervisor correctness hardening", () => {
     liveWorkers.clear();
   });
 
+  it("supervisor internal agentId propagation (prereq for health())", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 2,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    expect(supervisor.ok).toBe(true);
+    if (!supervisor.ok) return;
+    const started = await supervisor.value.start(makeRequest("agentid-1"));
+    expect(started.ok).toBe(true);
+    const list = supervisor.value.list();
+    expect(list.some((d) => d.agentId === agentId("agent-agentid-1"))).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
   it("shutdown() fails closed when a quarantined worker cannot be torn down", async () => {
     // If a watch fault leaves a ghost that refuses to die, shutdown must
     // report failure instead of returning ok while the process runs on.
@@ -1585,5 +1601,200 @@ describe("supervisor correctness hardening", () => {
     // Shutdown must still work after the churn storm.
     const sd = await supervisorResult.value.shutdown("test");
     expect(sd.ok).toBe(true);
+  });
+});
+
+describe("supervisor.health()", () => {
+  it("returns status:ok and empty workers on a fresh supervisor", () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const h = supervisor.value.health();
+    expect(h.status).toBe("ok");
+    expect(h.reasons).toEqual([]);
+    expect(h.workers).toEqual([]);
+    expect(h.metrics.poolSize).toBe(0);
+    expect(h.metrics.maxWorkers).toBe(4);
+    expect(h.metrics.shuttingDown).toBe(false);
+  });
+
+  it("returns status:degraded with reason 'at_capacity' when pool is full", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 1,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("cap-1"));
+    const h = supervisor.value.health();
+    expect(h.status).toBe("degraded");
+    expect(h.reasons).toContain("at_capacity");
+    await supervisor.value.shutdown("test");
+  });
+
+  it("returns status:unhealthy with reason 'shutting_down' during shutdown", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("sd-1"));
+    const shutdownPromise = supervisor.value.shutdown("test");
+    // Pull health mid-shutdown — shuttingDown flag is set synchronously.
+    const h = supervisor.value.health();
+    expect(h.status).toBe("unhealthy");
+    expect(h.reasons).toEqual(["shutting_down"]);
+    await shutdownPromise;
+  });
+
+  it("includes non-heartbeat-opted workers with lastHeartbeatAt undefined", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("no-hb"));
+    const h = supervisor.value.health();
+    const w = h.workers.find((x) => x.workerId === workerId("no-hb"));
+    expect(w).toBeDefined();
+    expect(w?.lastHeartbeatAt).toBeUndefined();
+    expect(w?.heartbeatDeadlineAt).toBeUndefined();
+    expect(w?.agentId).toBe(agentId("agent-no-hb"));
+    await supervisor.value.shutdown("test");
+  });
+
+  it("rejects heartbeat opt-in at start() when backend.supportsHeartbeat is falsy", async () => {
+    // Fake backend defaults to supportsHeartbeat=undefined → supervisor must
+    // reject the opt-in with a VALIDATION error rather than silently enabling
+    // tracking (which would trip every worker's deadline).
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("no-cap-1"),
+      agentId: agentId("agent-no-cap"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("supportsHeartbeat");
+    }
+    await supervisor.value.shutdown("test");
+  });
+
+  it("mixed-backend registry: heartbeat opt-in skips higher-preference backend that lacks heartbeat", async () => {
+    // Regression proof: the higher-preference "subprocess" slot holds a
+    // backend that does NOT support heartbeat; the lower-preference
+    // "in-process" slot holds one that DOES. Old logic (no capability
+    // filter) picked subprocess by preference, then rejected opt-in via
+    // the capability gate — call would fail with VALIDATION. Fixed logic
+    // skips the unsupported candidate during selection and picks the
+    // heartbeat-capable in-process backend, so start() succeeds.
+    //
+    // We assert via the supervisor's behavior: start() succeeds and the
+    // live-worker count lands on the heartbeat-capable backend. If the
+    // filter were broken, either start() would fail or liveWorkerCount
+    // would end up on the wrong backend.
+    const noHb = createFakeBackend({ kind: "subprocess" }); // preferred but no-heartbeat
+    const hbCapable = createFakeBackend({ kind: "in-process", supportsHeartbeat: true });
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: {
+        subprocess: noHb.backend,
+        "in-process": hbCapable.backend,
+      },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("mixed-1"),
+      agentId: agentId("agent-mixed-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(true);
+    // Filter routed us to the capable backend, not the preferred-but-incapable one.
+    expect(hbCapable.liveWorkerCount()).toBeGreaterThan(0);
+    expect(noHb.liveWorkerCount()).toBe(0);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("mixed-backend registry: reports unavailable when all heartbeat-capable backends fail isAvailable probes", async () => {
+    // A heartbeat-capable backend is registered but transiently
+    // unavailable. We want a UNAVAILABLE (retryable) error rather than
+    // a VALIDATION (static misconfig) error — operators need distinct
+    // remediation paths for "backend is down" vs "backend is missing".
+    const hbButDown: ReturnType<typeof createFakeBackend> = createFakeBackend({
+      kind: "subprocess",
+      supportsHeartbeat: true,
+    });
+    // Monkey-patch isAvailable to return false so probe fails.
+    // biome-ignore lint/suspicious/noExplicitAny: test-only mutation of the fake backend probe.
+    (hbButDown.backend as any).isAvailable = (): boolean => false;
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { subprocess: hbButDown.backend },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("mixed-down-1"),
+      agentId: agentId("agent-mixed-down-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+      expect(result.error.retryable).toBe(true);
+    }
+    await supervisor.value.shutdown("test");
+  });
+
+  it("heartbeat-opt-in worker: lastHeartbeatAt advances on each observed heartbeat", async () => {
+    const { backend, heartbeat } = createFakeBackend({ supportsHeartbeat: true });
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start({
+      workerId: workerId("hb-1"),
+      agentId: agentId("agent-hb-1"),
+      command: ["echo", "hb"],
+      backendHints: { heartbeat: true },
+    });
+    // Give the supervisor's watch IIFE a microtask to attach to the backend.
+    await new Promise((r) => setTimeout(r, 10));
+    heartbeat(workerId("hb-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const first = supervisor.value.health().workers.find((w) => w.workerId === workerId("hb-1"));
+    const firstTs = first?.lastHeartbeatAt;
+    expect(typeof firstTs).toBe("number");
+    await new Promise((r) => setTimeout(r, 20));
+    heartbeat(workerId("hb-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const second = supervisor.value.health().workers.find((w) => w.workerId === workerId("hb-1"));
+    expect(second?.lastHeartbeatAt).toBeGreaterThan(firstTs ?? 0);
+    await supervisor.value.shutdown("test");
   });
 });
