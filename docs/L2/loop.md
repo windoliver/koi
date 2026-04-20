@@ -267,6 +267,8 @@ Two explicit modes:
 
 **Compatibility note:** Adapters that do not populate `EngineOutput.metrics.totalTokens` (test fakes, replay cassettes, custom adapters) cannot be used with a numeric `maxBudgetTokens`. Use `"unmetered"` (the default) for those. To enforce spend caps on an unmetered adapter, wrap it with a middleware that injects metrics, or use iteration and time budgets instead.
 
+**Activity-timeout synthetic metrics (#1638):** when an iteration's terminal `done` is synthesized by `@koi/runtime`'s `applyActivityTimeout` wrapper, the token fields are zeroed and `output.metadata.metricsSynthesized` is set to `true`. `extractIterationTokens` treats that case as `"unmetered"` — counting the synthesized zeros as free would let repeated timeouts silently bypass `maxBudgetTokens`. A timed-out iteration therefore contributes no real token count to the running total; when combined with a numeric `maxBudgetTokens`, the hard-cap contract above still applies (the loop terminates with `errored` on the first unmetered iteration).
+
 There is no pre-iteration estimate/reserve — adapters can't predict future usage without running the request.
 
 ### Circuit breaker
