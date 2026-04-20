@@ -8,6 +8,7 @@ import type {
   WorkerId,
   WorkerSpawnRequest,
 } from "@koi/core";
+import { isHeartbeatOptIn } from "./heartbeat-opt-in.js";
 
 interface SubprocState {
   readonly proc: ReturnType<typeof Bun.spawn>;
@@ -103,6 +104,22 @@ export function createSubprocessBackend(): WorkerBackend {
       }
     }
     try {
+      // Forward-declare `state` so the IPC handler can close over it safely.
+      // The handler is attached at spawn time, but `state` is only assigned
+      // after `Bun.spawn` returns — the guard `state === undefined` prevents
+      // any early IPC message from dereferencing an uninitialized value.
+      // `let` is intentional here: the forward-reference pattern requires it.
+      let state: SubprocState | undefined;
+      const ipcHandler = (message: unknown): void => {
+        if (state === undefined) return;
+        if (!isHeartbeatMessage(message)) return;
+        emit(state, {
+          kind: "heartbeat",
+          workerId: request.workerId,
+          at: Date.now(),
+        });
+      };
+
       const spawnOptions: Parameters<typeof Bun.spawn>[1] = {
         env,
         stdin: "ignore",
@@ -111,6 +128,9 @@ export function createSubprocessBackend(): WorkerBackend {
       };
       if (request.cwd !== undefined) {
         spawnOptions.cwd = request.cwd;
+      }
+      if (isHeartbeatOptIn(request)) {
+        spawnOptions.ipc = ipcHandler;
       }
       const proc = Bun.spawn([...request.command], spawnOptions);
       // The subprocess inherits the fd; the parent can drop its handle.
@@ -125,7 +145,7 @@ export function createSubprocessBackend(): WorkerBackend {
       }
 
       const controller = new AbortController();
-      const state: SubprocState = {
+      state = {
         proc,
         controller,
         events: [],
@@ -292,4 +312,16 @@ function resolveLogPath(request: WorkerSpawnRequest): string | undefined {
   if (hints === undefined) return undefined;
   const value = hints.logPath;
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Type guard for Bun IPC heartbeat messages sent by child processes via
+ * `process.send({ koi: "heartbeat" })`. Uses `in` narrowing — no `as` cast.
+ * After `"koi" in message`, TypeScript narrows `message` to
+ * `object & { koi: unknown }`, making `.koi` accessible without a cast.
+ */
+function isHeartbeatMessage(message: unknown): boolean {
+  if (typeof message !== "object" || message === null) return false;
+  if (!("koi" in message)) return false;
+  return message.koi === "heartbeat";
 }

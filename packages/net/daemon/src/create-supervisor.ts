@@ -20,6 +20,7 @@ import {
   validateSupervisorConfig,
 } from "@koi/core";
 import { createHeartbeatMonitor } from "./heartbeat-monitor.js";
+import { isHeartbeatOptIn } from "./heartbeat-opt-in.js";
 import { buildHealth } from "./supervisor-health.js";
 
 /**
@@ -161,12 +162,6 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     },
     now: Date.now,
   });
-
-  const isHeartbeatOptIn = (request: WorkerSpawnRequest): boolean => {
-    const hints = request.backendHints;
-    if (hints === undefined) return false;
-    return hints.heartbeat === true;
-  };
 
   // Availability probes are bounded — a single slow backend must not block
   // the entire start() call. We treat timeout or thrown errors as "not
