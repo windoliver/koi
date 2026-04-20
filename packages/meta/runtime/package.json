@@ -55,7 +55,9 @@
     "@koi/middleware-report": "workspace:*",
     "@koi/middleware-strict-agentic": "workspace:*",
     "@koi/middleware-task-anchor": "workspace:*",
+    "@koi/middleware-turn-prelude": "workspace:*",
     "@koi/outcome-evaluator": "workspace:*",
+    "@koi/watch-patterns": "workspace:*",
     "@koi/model-router": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
@@ -91,6 +93,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "bun test",
+    "record": "bun scripts/record-cassettes.ts"
   }
 }

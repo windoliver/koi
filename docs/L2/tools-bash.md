@@ -175,3 +175,82 @@ consumers can use this to verify confinement status without inspecting the runti
   "@koi/bash-security": "workspace:*"
 }
 ```
+
+## `watch_patterns` (reactive notifications on `bash_background`)
+
+Optional array on `bash_background` spawn. Each entry is `{ pattern, event, flags? }`:
+- `pattern`: regex source, ≤256 chars. Compiled via `re2-wasm` — linear time, no ReDoS. Backreferences, lookahead, and lookbehind are rejected at compile.
+- `event`: strict identifier `/^(?!__)[a-z0-9_-]{1,64}$/`. `__`-prefixed names are reserved.
+- `flags`: default `"i"`. `g` and `y` are rejected. `u` is always added internally (re2-wasm requirement).
+
+Up to 16 patterns per spawn.
+
+### What happens on match
+
+Matching lines land in a session-scoped pending-match store (see `@koi/watch-patterns`). Before the next model turn, `@koi/middleware-turn-prelude` injects a **user-role** message summarizing the matches — taskId, event, stream, count, live board status, first-match ISO timestamp. Raw subprocess bytes are NEVER injected; the agent reads matched lines via `task_output(taskId, { matches_only: true, event, stream })` which returns from a per-task side-buffer that survives capture truncation.
+
+### Reserved events that may surface
+
+- `__watch_overflow__` — emitted once per stream when the matcher hits a 16 KB newline-free line.
+- `__watch_dropped__` — emitted per `(taskId, event, stream)` bucket evicted when the store exceeds 256 live buckets.
+- `__watch_dropped_older__` — emitted when the tombstone list itself overflows at 4096 entries.
+
+All reserved events are rejected from user-supplied `event` names at compile time.
+
+### `task_output` with `matches_only`
+
+Shape: `task_output(taskId, { matches_only: true, event?, stream?, offset? })`
+- Filters by `event` and/or `stream` for bucket-targeted recovery after a tombstone.
+- `offset` is a filter-scoped opaque cursor for pagination. A cursor from one filter cannot be reused with a different filter (rejected as validation error).
+
+### task_output authorization
+
+`task_output` applies a two-branch ACL keyed on whether `createdBy` is present:
+
+**Migrated tasks (`createdBy` is set):**
+- `task.createdBy === callerAgentId` → read allowed (creator always reads, across all terminal states).
+- `task.assignedTo === callerAgentId` → read allowed (current worker reads while assigned).
+- `task.lastAssignedTo === callerAgentId` → read allowed (most recent assignee — preserved across fail/kill/retry so the executing worker can inspect postmortem output after `assignedTo` is cleared).
+- Otherwise → `{ kind: "permission_denied" }`.
+
+### task_output read-ACL (migrated tasks)
+
+A caller is allowed to read when any of:
+- `callerAgentId === task.createdBy` (creator)
+- `callerAgentId === task.assignedTo` (current assignee)
+- `callerAgentId === task.lastAssignedTo` (most recent assignee — preserved across fail/kill/retry so the executing worker can inspect postmortem output)
+
+**Legacy tasks (`createdBy === undefined`):**
+- `assignedTo` is ignored entirely — pre-migration assignments are not trustworthy for authorization.
+- Only an explicit `legacyReadOwner` match unlocks reads: if `config.legacyReadOwner === callerAgentId`, read proceeds.
+- Otherwise → `{ kind: "legacy_unmigrated" }` (distinct from `permission_denied` — see below).
+
+### Legacy (pre-#1769) task response
+
+When a file-backed persisted task lacks `createdBy` (i.e., was persisted before PR #1769),
+`task_output` returns:
+
+```ts
+{ kind: "legacy_unmigrated"; reason: string }
+```
+
+This is distinct from `permission_denied`. Operators observing this response should run the
+documented migration. Persisted `assignedTo` on legacy tasks does NOT grant read access —
+only an explicit `legacyReadOwner` match unlocks reads.
+
+### Migrating pre-#1769 persisted tasks
+
+Tasks persisted via `@koi/tasks` file-backed storage before PR #1769 lack the
+`createdBy` field. After upgrade, these tasks are NOT readable via `task_output`
+(the ACL returns `legacy_unmigrated` on undefined creator). If you need legacy-read access,
+run a one-time on-disk migration that rewrites each task JSON with an explicit
+`createdBy` value — the Koi distribution does not ship this migration because
+ownership is deployment-specific.
+
+The in-memory task store (`createMemoryTaskBoardStore`, the default for CLI and
+TUI sessions) has no legacy tasks.
+
+### See also
+
+- `docs/L2/watch-patterns.md` — matcher and store internals.
+- `docs/L2/middleware-turn-prelude.md` — how matches surface into the model turn.

@@ -585,3 +585,5 @@ environments where the binary exists but no user session is running.
 
 - Issue: #1336 (v2 Phase 2f-1), #1339 (v2 Phase 2f-3 — Linux bwrap backend)
 - Cloud backends: `@koi/sandbox-docker`, `@koi/sandbox-e2b`, etc. (separate issues)
+
+<!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->

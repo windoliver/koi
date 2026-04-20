@@ -94,6 +94,7 @@ import {
 } from "@koi/middleware-semantic-retry";
 import { createStrictAgenticMiddleware } from "@koi/middleware-strict-agentic";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
+import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
 import {
@@ -148,6 +149,7 @@ import {
 } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { createPendingMatchStore } from "@koi/watch-patterns";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
@@ -1339,6 +1341,35 @@ const bashBackgroundProvider = createSingleToolProvider({
 });
 const bgTaskToolsAll = createTaskTools({ board: bgTaskBoard, agentId: bgAgentId });
 const [, bgTtGet, , bgTtList, , bgTtOutput] = bgTaskToolsAll as import("@koi/core").Tool[];
+
+// ---------------------------------------------------------------------------
+// @koi/tools-bash bash_background + watch_patterns — separate board + store
+// Exercises the watch_patterns feature: agent fires a background command with
+// a pattern, the turn-prelude middleware injects the match notification on the
+// next model call, and the agent confirms it saw the ready event.
+// ---------------------------------------------------------------------------
+const bgWatchTaskBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+const bgWatchAgentId = "golden-bg-watch-agent" as import("@koi/core").AgentId;
+const bgWatchMatchStore = createPendingMatchStore();
+const bashBackgroundWatchProvider = createSingleToolProvider({
+  name: "bash-background-watch",
+  toolName: "bash_background",
+  createTool: () =>
+    createBashBackgroundTool({
+      taskBoard: bgWatchTaskBoard,
+      agentId: bgWatchAgentId,
+      workspaceRoot: process.cwd(),
+      getWatchStore: () => bgWatchMatchStore,
+    }),
+});
+const bgWatchTaskToolsAll = createTaskTools({ board: bgWatchTaskBoard, agentId: bgWatchAgentId });
+const [, bgWatchTtGet, , , , bgWatchTtOutput] = bgWatchTaskToolsAll as import("@koi/core").Tool[];
+const turnPreludeMw = createTurnPreludeMiddleware({
+  getStore: () => bgWatchMatchStore,
+  getTaskStatus: (id) => bgWatchTaskBoard.snapshot().get(id)?.status,
+});
 
 // ---------------------------------------------------------------------------
 // Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
@@ -3076,6 +3107,39 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 4,
+  },
+
+  // bash-background-watch: @koi/tools-bash watch_patterns + @koi/middleware-turn-prelude.
+  //   Agent fires bash_background with watch_patterns [{pattern:"listening",event:"ready"}].
+  //   The turn-prelude middleware injects the match notification as a user-role message
+  //   on the next model call, and the agent confirms it saw the ready event.
+  {
+    name: "bash-background-watch",
+    prompt:
+      "Use the bash_background tool to run `echo 'listening on port 3000'` in the background " +
+      'with watch_patterns [{"pattern":"listening","event":"ready"}]. ' +
+      "After it returns a taskId, use task_get with that taskId to check status. " +
+      "Then use task_output with the same taskId to read the output. " +
+      "Confirm in your reply that you saw a ready event notification.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      bashBackgroundWatchProvider,
+      createSingleToolProvider({
+        name: "task-get-watch",
+        toolName: "task_get",
+        createTool: () => bgWatchTtGet as import("@koi/core").Tool,
+      }),
+      createSingleToolProvider({
+        name: "task-output-watch",
+        toolName: "task_output",
+        createTool: () => bgWatchTtOutput as import("@koi/core").Tool,
+      }),
+    ],
+    extraMiddleware: [turnPreludeMw],
+    maxTurns: 5,
   },
 
   // bash-ast-too-complex: @koi/bash-ast — proves the SYNC too-complex

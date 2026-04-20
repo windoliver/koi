@@ -374,3 +374,5 @@ output across chunk boundaries, stop-verify via `proc.exited` timing, and natura
 
 - Before: 73 `@koi/tasks` tests
 - After: **159** tests (+86)
+
+<!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
