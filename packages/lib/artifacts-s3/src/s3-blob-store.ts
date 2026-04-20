@@ -142,12 +142,16 @@ export function createS3BlobStore(config: S3BlobStoreConfig): BlobStore {
   }
 
   async function deleteBlob(hash: string): Promise<boolean> {
+    // BlobStore contract requires `delete(missing) → false` and
+    // `delete(present) → true`. S3 DeleteObject is idempotent (returns 204
+    // regardless of prior existence), so we HEAD first to distinguish. The
+    // extra round-trip is the cost of contract compliance — matches the FS
+    // impl's ENOENT branch in @koi/blob-cas.
+    const key = blobKey(prefix, hash);
+    const existed = await has(hash);
+    if (!existed) return false;
     try {
-      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: blobKey(prefix, hash) }));
-      // S3 DeleteObject is idempotent — it returns 204 whether or not the key
-      // existed. We can't cheaply distinguish "was present" from "was absent"
-      // without an extra HEAD, so per BlobStore contract `true = the delete
-      // attempt succeeded` (caller can HEAD first if they care).
+      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
       return true;
     } catch (err) {
       throw new Error(`S3 delete failed for blob ${hash}`, { cause: err });

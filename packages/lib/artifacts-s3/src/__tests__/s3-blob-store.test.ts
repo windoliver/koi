@@ -181,7 +181,11 @@ describe("createS3BlobStore", () => {
   });
 
   describe("delete", () => {
-    test("issues DeleteObjectCommand and returns true on success (S3 delete is idempotent)", async () => {
+    test("HEADs then deletes and returns true when the key existed", async () => {
+      // BlobStore contract: delete(present) → true. Impl HEADs first because
+      // S3's DeleteObject is idempotent and can't by itself distinguish
+      // was-present from was-absent.
+      s3Mock.on(HeadObjectCommand).resolves({});
       s3Mock.on(DeleteObjectCommand).resolves({});
       const store = createS3BlobStore(baseConfig());
 
@@ -191,7 +195,19 @@ describe("createS3BlobStore", () => {
       expect(input?.Key).toBe(`${HELLO_HASH.slice(0, 2)}/${HELLO_HASH}`);
     });
 
+    test("returns false without issuing DeleteObject when the key is absent", async () => {
+      // Contract: delete(missing) → false. Matches FS impl's ENOENT branch.
+      const notFound = new Error("Not Found");
+      notFound.name = "NotFound";
+      s3Mock.on(HeadObjectCommand).rejects(notFound);
+      const store = createS3BlobStore(baseConfig());
+
+      await expect(store.delete(HELLO_HASH)).resolves.toBe(false);
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
+    });
+
     test("throws on network / non-404 errors (not swallowed as false)", async () => {
+      s3Mock.on(HeadObjectCommand).resolves({});
       const err = new Error("Connection refused");
       err.name = "NetworkingError";
       s3Mock.on(DeleteObjectCommand).rejects(err);
@@ -201,6 +217,7 @@ describe("createS3BlobStore", () => {
     });
 
     test("uses sharded key layout under prefix", async () => {
+      s3Mock.on(HeadObjectCommand).resolves({});
       s3Mock.on(DeleteObjectCommand).resolves({});
       const store = createS3BlobStore({ ...baseConfig(), prefix: "tenant-a/blobs" });
 
