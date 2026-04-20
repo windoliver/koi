@@ -248,6 +248,11 @@ export function createAttachFsm(deps: {
     }
 
     if (existing?.phase === "pending_consent") {
+      const ownerLease = existing.participants[0]?.leaseToken;
+      if (ownerLease !== undefined && ownerLease !== frame.leaseToken) {
+        deps.sendFrame(createFailure(frame, "already_attached"));
+        return;
+      }
       const nextParticipants = dedupeParticipants(existing.participants, {
         leaseToken: frame.leaseToken,
         attachRequestId: frame.attachRequestId,
@@ -257,6 +262,10 @@ export function createAttachFsm(deps: {
     }
 
     if (existing?.phase === "attaching") {
+      if (existing.clientId !== frame.leaseToken) {
+        deps.sendFrame(createFailure(frame, "already_attached"));
+        return;
+      }
       const nextParticipants = dedupeParticipants(existing.participants, {
         leaseToken: frame.leaseToken,
         attachRequestId: frame.attachRequestId,

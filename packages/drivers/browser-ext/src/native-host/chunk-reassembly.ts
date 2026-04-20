@@ -43,15 +43,20 @@ export function createChunkBuffer(config: {
 
   function finalize(entry: ChunkEntry): void {
     if (entry.payloadKind === null) return;
-    const parts: string[] = [];
+    // The extension chunks by first base64-encoding the full JSON payload and
+    // then slicing that single base64 string. Base64 is NOT independently
+    // decodable per-fragment unless every boundary lands on a 4-char multiple,
+    // so reassemble the raw base64 string first and decode exactly once.
+    const base64Parts: string[] = [];
     for (let i = 0; i < entry.total; i++) {
       const part = entry.chunks.get(i);
       if (part === undefined) return;
-      parts.push(Buffer.from(part, "base64").toString("utf-8"));
+      base64Parts.push(part);
     }
+    const decoded = Buffer.from(base64Parts.join(""), "base64").toString("utf-8");
     let parsed: unknown;
     try {
-      parsed = JSON.parse(parts.join(""));
+      parsed = JSON.parse(decoded);
     } catch {
       config.events.onGroupDrop({
         sessionId: entry.sessionId,

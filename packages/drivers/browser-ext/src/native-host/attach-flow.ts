@@ -77,6 +77,7 @@ export function createAttachCoordinator(deps: {
         tabId: frame.tabId,
         clientId,
         attachRequestId: frame.attachRequestId,
+        leaseToken: frame.leaseToken,
         receivedAt: now(),
         abandoned: false,
       });
@@ -107,18 +108,33 @@ export function createAttachCoordinator(deps: {
         for (const other of inFlight.entriesForTab(frame.tabId)) {
           if (other.attachRequestId === entry.attachRequestId) continue;
           inFlight.delete(other.clientId, other.attachRequestId);
-          sendDriver(other.clientId, {
-            kind: "attach_ack",
-            ok: false,
-            tabId: frame.tabId,
-            leaseToken: frame.leaseToken,
-            attachRequestId: other.attachRequestId,
-            reason: "already_attached",
-            currentOwner: {
-              clientId: entry.clientId,
-              since: new Date(now()).toISOString(),
-            },
-          });
+          // Same-client / same-lease retries are idempotent: fan the
+          // successful sessionId out to them instead of converting to
+          // `already_attached`. Reconnect / double-submit callers get the
+          // session they asked for.
+          if (other.clientId === entry.clientId || other.leaseToken === entry.leaseToken) {
+            sendDriver(other.clientId, {
+              kind: "attach_ack",
+              ok: true,
+              tabId: frame.tabId,
+              leaseToken: other.leaseToken,
+              attachRequestId: other.attachRequestId,
+              sessionId: frame.sessionId,
+            });
+          } else {
+            sendDriver(other.clientId, {
+              kind: "attach_ack",
+              ok: false,
+              tabId: frame.tabId,
+              leaseToken: other.leaseToken,
+              attachRequestId: other.attachRequestId,
+              reason: "already_attached",
+              currentOwner: {
+                clientId: entry.clientId,
+                since: new Date(now()).toISOString(),
+              },
+            });
+          }
         }
         return;
       }
@@ -128,9 +144,11 @@ export function createAttachCoordinator(deps: {
 
     handleDriverDisconnect(clientId): void {
       const abandoned = inFlight.markAbandonedByClient(clientId);
+      const seenLeases = new Set<string>();
       for (const entry of abandoned) {
-        sendNm({ kind: "abandon_attach", leaseToken: "0".repeat(32) });
-        void entry;
+        if (seenLeases.has(entry.leaseToken)) continue;
+        seenLeases.add(entry.leaseToken);
+        sendNm({ kind: "abandon_attach", leaseToken: entry.leaseToken });
       }
       for (const [tabId, owner] of ownership.entries()) {
         if (owner.clientId === clientId && owner.phase === "committed") {

@@ -17,6 +17,7 @@ describe("runInstallCommand", () => {
           version: "v20.11.1",
           parsedVersion: { major: 20, minor: 11, patch: 1 },
         }),
+        readLocalExtensionId: async () => "a".repeat(32),
         ensureExtensionBundle: async (dir) => {
           calls.push(`bundle:${dir}`);
         },
@@ -60,7 +61,7 @@ describe("runInstallCommand", () => {
       "installId:/tmp/home/.koi/browser-ext",
       "auth:/tmp/home/.koi/browser-ext",
       "wrapper:/tmp/home/.koi/browser-ext/bin/native-host:/opt/homebrew/bin/node:/repo/packages/drivers/browser-ext/dist/native-host/index.js",
-      "manifests:5:/tmp/home/.koi/browser-ext/bin/native-host:chrome-extension://nkehdfkafbjjooiopaegemamgjpaemhl/",
+      `manifests:5:/tmp/home/.koi/browser-ext/bin/native-host:chrome-extension://${"a".repeat(32)}/`,
       "copy:/repo/packages/drivers/browser-ext/dist/extension:/tmp/home/.koi/browser-ext/extension",
     ]);
   });

@@ -127,6 +127,9 @@ describe("unix-socket transport", () => {
           setFrameHandler(handler): void {
             frameHandlerRef.current = handler as ((frame: DriverFrame) => void) | null;
           },
+          async detach(): Promise<void> {
+            // bridge close triggers this; test doesn't assert on it.
+          },
         },
       },
       fakeServer,

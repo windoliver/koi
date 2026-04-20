@@ -292,12 +292,11 @@ async function installPageRebindingGuard(
   if (!blockPrivateAddresses) return;
   await page.route("**", async (route) => {
     const req = route.request();
-    // Only intercept main-frame document navigations — sub-resources are
-    // not private-address rebinding vectors in this scope.
-    if (req.resourceType() !== "document" || !req.isNavigationRequest()) {
-      await route.continue();
-      return;
-    }
+    // Intercept ALL request types (document, xhr, fetch, image, script,
+    // websocket, etc.) — a malicious public page can otherwise use
+    // fetch/WebSocket/<img> to probe or exfiltrate from private-address
+    // targets even when the main-frame navigation itself is public.
+    //
     try {
       const url = new URL(req.url());
       if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -625,11 +624,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         if (config.blockPrivateAddresses !== false && !borrowedContext) {
           await ctx.route("**", async (route) => {
             const req = route.request();
-            // Only intercept main-frame document navigations — sub-resources are not rebinding vectors
-            if (req.resourceType() !== "document" || !req.isNavigationRequest()) {
-              await route.continue();
-              return;
-            }
+            // Intercept ALL request types. A malicious public page can use
+            // fetch / XHR / WebSocket / <img src> / <script src> to probe
+            // private-address targets even when the main-frame navigation is
+            // public — the rebinding guard must cover subresources too.
+            //
             try {
               const url = new URL(req.url());
               // Default-deny non-HTTP(S) schemes on page-driven navigations
@@ -698,7 +697,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     return browserContext;
   }
 
-  async function ensurePage(): Promise<Page> {
+  async function ensurePage(): Promise<{ readonly page: Page; readonly tabId: string }> {
     if (currentTabId === null) {
       const ctx = await ensureContext();
       const page = await ctx.newPage();
@@ -708,22 +707,28 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       currentTabId = tabId;
       attachConsoleListener(page, tabId);
     }
-    const page = tabs.get(currentTabId);
+    // Snapshot currentTabId into a local so concurrent tab-management calls
+    // can't swap the tab out from under us between awaits. All downstream
+    // helpers must be passed `tabId` explicitly instead of re-reading the
+    // module-level `currentTabId`.
+    const tabId = currentTabId;
+    const page = tabs.get(tabId);
     if (!page) {
-      throw new Error(`internal: currentTabId "${currentTabId}" has no page`);
+      throw new Error(`internal: currentTabId "${tabId}" has no page`);
     }
-    return page;
+    return { page, tabId };
   }
 
   function getActiveTabId(): string | null {
     return currentTabId;
   }
 
-  /** Returns a STALE_REF error if snapshotId is provided but doesn't match the active tab's. */
-  function checkSnapshotId(snapshotId: string | undefined): Result<void, KoiError> | null {
+  /** Returns a STALE_REF error if snapshotId is provided but doesn't match the given tab's. */
+  function checkSnapshotId(
+    tabId: string,
+    snapshotId: string | undefined,
+  ): Result<void, KoiError> | null {
     if (snapshotId === undefined) return null;
-    const tabId = getActiveTabId();
-    if (!tabId) return null;
     const snap = tabSnapshots.get(tabId);
     if (!snap || snapshotId !== snap.snapshotId) {
       return {
@@ -747,9 +752,12 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
    * When frameSelector is provided, all resolution is done via page.frameLocator(),
    * which supports cross-origin iframes without explicit context switching.
    */
-  function getLocator(page: Page, ref: string, frameSelector?: string): Locator | null {
-    const tabId = getActiveTabId();
-    if (!tabId) return null;
+  function getLocator(
+    page: Page,
+    tabId: string,
+    ref: string,
+    frameSelector?: string,
+  ): Locator | null {
     const snap = tabSnapshots.get(tabId);
     if (!snap) return null;
     const refInfo = snap.refs[ref];
@@ -775,10 +783,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
   /** Get a Locator or return a STALE_REF/NOT_FOUND error Result. */
   function requireLocator(
     page: Page,
+    tabId: string,
     ref: string,
     frameSelector?: string,
   ): { readonly locator: Locator } | { readonly error: Result<never, KoiError> } {
-    const locator = getLocator(page, ref, frameSelector);
+    const locator = getLocator(page, tabId, ref, frameSelector);
     if (!locator) {
       return {
         error: {
@@ -804,9 +813,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserSnapshotOptions,
     ): Promise<Result<BrowserSnapshotResult, KoiError>> {
       try {
-        const page = await ensurePage();
-        const tabId = currentTabId;
-        if (!tabId) return { ok: false, error: internal("No active tab") };
+        const { page, tabId: activeTabId } = await ensurePage();
 
         const locator = options?.selector
           ? page.locator(options.selector).first()
@@ -822,11 +829,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
         const { text, refs, truncated, title: yamlTitle } = parseAriaYaml(yamlText, options);
 
-        // Generate a new snapshotId and store per-tab state
-        const prevCounter = tabSnapshots.get(tabId)?.refCounter ?? 0;
+        // Generate a new snapshotId and store per-tab state under the tab we
+        // resolved at ensurePage() time — NOT the current `currentTabId`,
+        // which an overlapping tabFocus() could have swapped.
+        const prevCounter = tabSnapshots.get(activeTabId)?.refCounter ?? 0;
         const refCounter = prevCounter + 1;
-        const snapshotId = `snap-${tabId}-${refCounter}`;
-        tabSnapshots.set(tabId, {
+        const snapshotId = `snap-${activeTabId}-${refCounter}`;
+        tabSnapshots.set(activeTabId, {
           snapshotId,
           refs,
           refCounter,
@@ -864,9 +873,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const guardErr = await checkNavigationUrlAllowed(url, blockPrivate);
         if (guardErr) return { ok: false, error: guardErr };
 
-        const page = await ensurePage();
-        const tabId = currentTabId;
-        if (!tabId) return { ok: false, error: internal("No active tab") };
+        const { page, tabId: activeTabId } = await ensurePage();
 
         const t = resolveTimeout(
           options?.timeout,
@@ -876,7 +883,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         );
         if (!t.ok) return t;
 
-        invalidateTabSnapshot(tabId);
+        invalidateTabSnapshot(activeTabId);
 
         await page.goto(url, {
           waitUntil: options?.waitUntil ?? "load",
@@ -909,11 +916,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async click(ref: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
-        const stale = checkSnapshotId(options?.snapshotId);
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref, options?.frameSelector);
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "click");
@@ -928,11 +935,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async hover(ref: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
-        const stale = checkSnapshotId(options?.snapshotId);
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref, options?.frameSelector);
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "hover");
@@ -947,7 +954,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async press(key: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
+        const { page, tabId: activeTabId } = await ensurePage();
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "press");
         if (!t.ok) return t;
 
@@ -964,11 +971,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserTypeOptions,
     ): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
-        const stale = checkSnapshotId(options?.snapshotId);
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref, options?.frameSelector);
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "type");
@@ -990,11 +997,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserActionOptions,
     ): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
-        const stale = checkSnapshotId(options?.snapshotId);
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref, options?.frameSelector);
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "select");
@@ -1012,8 +1019,8 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserActionOptions,
     ): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
-        const stale = checkSnapshotId(options?.snapshotId);
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
         if (stale) return stale;
 
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "fill_form");
@@ -1022,7 +1029,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         // Pass 1: validate all refs before touching any field (atomic guarantee)
         const resolved: Array<{ readonly locator: Locator; readonly field: BrowserFormField }> = [];
         for (const field of fields) {
-          const found = requireLocator(page, field.ref, options?.frameSelector);
+          const found = requireLocator(page, activeTabId, field.ref, options?.frameSelector);
           if ("error" in found) return found.error;
           resolved.push({ locator: found.locator, field });
         }
@@ -1050,13 +1057,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async scroll(options: BrowserScrollOptions): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
+        const { page, tabId: activeTabId } = await ensurePage();
 
         if (options.kind === "element") {
-          const stale = checkSnapshotId(options.snapshotId);
+          const stale = checkSnapshotId(activeTabId, options.snapshotId);
           if (stale) return stale;
 
-          const found = requireLocator(page, options.ref);
+          const found = requireLocator(page, activeTabId, options.ref);
           if ("error" in found) return found.error;
 
           const t = resolveTimeout(options.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "scroll");
@@ -1085,7 +1092,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserScreenshotOptions,
     ): Promise<Result<BrowserScreenshotResult, KoiError>> {
       try {
-        const page = await ensurePage();
+        const { page, tabId: activeTabId } = await ensurePage();
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "screenshot");
         if (!t.ok) return t;
 
@@ -1120,7 +1127,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async wait(options: BrowserWaitOptions): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
+        const { page, tabId: activeTabId } = await ensurePage();
 
         if (options.kind === "timeout") {
           const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");
@@ -1332,8 +1339,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserEvaluateOptions,
     ): Promise<Result<BrowserEvaluateResult, KoiError>> {
       try {
-        const page = await ensurePage();
-        const tabId = currentTabId;
+        const { page, tabId: activeTabId } = await ensurePage();
         const t = resolveTimeout(
           options?.timeout,
           EVALUATE_DEFAULT_MS,
@@ -1383,28 +1389,24 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
                 // page.close() also failed — remains "abandoned".
               }
             }
-            if (tabId) {
-              // Snapshot is stale no matter what — script may have mutated state.
-              invalidateTabSnapshot(tabId);
-              // Only drop from tabs map when the page is actually gone or abandoned.
-              // If goto succeeded, the page is alive at about:blank and should
-              // remain managed so dispose() / tabList() / tabClose() can find it.
-              if (cleanup !== "navigated") {
-                tabs.delete(tabId);
-                tabConsoleLogs.delete(tabId);
-                // When there are NO other tabs, null currentTabId so the next
-                // ensurePage() creates a fresh one (only path where that's safe).
-                // When other tabs exist, keep currentTabId pointing at the
-                // now-missing id — ensurePage() will throw a clear "no active
-                // tab" internal error, forcing the caller to explicitly tabFocus
-                // before continuing. This avoids two hazards:
-                //   (a) silent retarget to a surviving tab the caller didn't
-                //       choose (could cause writes/reads against the wrong page);
-                //   (b) silent new-blank-tab creation that orphans the rest of
-                //       the session.
-                if (currentTabId === tabId && tabs.size === 0) {
-                  currentTabId = null;
-                }
+            // Snapshot is stale no matter what — script may have mutated state.
+            // Invalidate under the tab we resolved at ensurePage(), not a
+            // possibly-raced currentTabId.
+            invalidateTabSnapshot(activeTabId);
+            // Only drop from tabs map when the page is actually gone or abandoned.
+            // If goto succeeded, the page is alive at about:blank and should
+            // remain managed so dispose() / tabList() / tabClose() can find it.
+            if (cleanup !== "navigated") {
+              tabs.delete(activeTabId);
+              tabConsoleLogs.delete(activeTabId);
+              // When there are NO other tabs, null currentTabId so the next
+              // ensurePage() creates a fresh one (only path where that's safe).
+              // When other tabs exist, keep currentTabId pointing at the
+              // now-missing id — ensurePage() will throw a clear "no active
+              // tab" internal error, forcing the caller to explicitly tabFocus
+              // before continuing.
+              if (currentTabId === activeTabId && tabs.size === 0) {
+                currentTabId = null;
               }
             }
           }
@@ -1422,11 +1424,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserUploadOptions,
     ): Promise<Result<void, KoiError>> {
       try {
-        const page = await ensurePage();
-        const stale = checkSnapshotId(options?.snapshotId);
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref, options?.frameSelector);
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "upload");
