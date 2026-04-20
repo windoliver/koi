@@ -91,6 +91,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/artifacts-s3": {
+      "name": "@koi/artifacts-s3",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/blob-cas": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/bash-ast": {
       "name": "@koi/bash-ast",
       "version": "0.0.0",
@@ -1250,6 +1258,8 @@
     "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
 
     "@koi/artifacts": ["@koi/artifacts@workspace:packages/lib/artifacts"],
+
+    "@koi/artifacts-s3": ["@koi/artifacts-s3@workspace:packages/lib/artifacts-s3"],
 
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
