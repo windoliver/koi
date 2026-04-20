@@ -90,12 +90,12 @@ describe("createExtensionBrowserDriver", () => {
     serverSide.destroy();
   });
 
-  test("non-tabList operations return a clear error when no playwrightDriver is supplied", () => {
+  test("non-tabList operations return a clear error when no playwrightDriver is supplied", async () => {
     const driver = createExtensionBrowserDriver({
       instancesDir: dir,
       authToken: "1234567890abcdef",
     });
-    const result = driver.snapshot() as Awaited<ReturnType<typeof driver.snapshot>>;
+    const result = await driver.snapshot();
     expect(result.ok).toBe(false);
     if (result.ok) {
       return;

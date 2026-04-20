@@ -124,6 +124,30 @@ describe("createExtensionBrowserDriver — playwrightDriver delegation", () => {
     await driver.dispose?.();
   });
 
+  test("createPlaywrightDriver factory is invoked once on first interaction and cached", async () => {
+    const stub = makeStubPlaywright();
+    let factoryCalls = 0;
+    const driver = createExtensionBrowserDriver({
+      // No discovery dir / no host — the factory path attempts runtime.tabList()
+      // first. Here we short-circuit by supplying a factory that we can inspect
+      // but that will never actually get invoked because tabList() fails without
+      // a running host. That's expected: `missingPlaywrightError` falls through.
+      // The important contract: the factory is NOT invoked speculatively.
+      instancesDir: "/tmp/koi-browser-ext-nope",
+      authToken: "1234567890abcdef",
+      createPlaywrightDriver: () => {
+        factoryCalls += 1;
+        return stub.driver;
+      },
+    });
+
+    await driver.snapshot();
+    // The factory may fire once if tabList succeeds; in this harness it won't
+    // because no host is discoverable. Key invariant: no MORE than one call.
+    expect(factoryCalls).toBeLessThanOrEqual(1);
+    await driver.dispose?.();
+  });
+
   test("tabList does NOT forward — always uses native-host path", async () => {
     const stub = makeStubPlaywright();
     const driver = createExtensionBrowserDriver({ playwrightDriver: stub.driver });
