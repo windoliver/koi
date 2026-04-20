@@ -853,14 +853,20 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         };
 
         if (current === undefined) {
-          // Fault before pool admission (shouldn't happen today, but handle).
+          // Fault after pool removal (e.g., heartbeat-timeout already
+          // dropped the pool entry) — the watch loop was still parked and
+          // threw afterward. Do NOT release activeIds if a quarantine owns
+          // the id; the stop/shutdown quarantine-retry path is responsible
+          // for clearing it only after a confirmed teardown.
           publishEvent({
             kind: "crashed",
             workerId: request.workerId,
             at: Date.now(),
             error: syntheticError,
           });
-          activeIds.delete(request.workerId);
+          if (!quarantined.has(request.workerId)) {
+            activeIds.delete(request.workerId);
+          }
           healthMonitor.untrack(request.workerId);
           return;
         }

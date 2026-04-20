@@ -2185,6 +2185,97 @@ describe("supervisor watch AbortSignal plumbing", () => {
     await supervisor.value.shutdown("test");
   });
 
+  it("heartbeat-timeout with failed teardown preserves activeIds via quarantine", async () => {
+    // Regression guard for the watch-fault branch (current === undefined):
+    // when heartbeat-timeout fires and stop()'s teardown fails, the entry
+    // is removed from the pool but stays quarantined. Any subsequent fault
+    // path — including the catch branch that sees current === undefined —
+    // must NOT release activeIds while the quarantine owns the id, or a
+    // fresh start() could race a still-live worker into a duplicate spawn.
+    const live = new Map<string, { alive: boolean }>();
+    let throwWatch: ((err: Error) => void) | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "unkillable-hb",
+      isAvailable: () => true,
+      supportsHeartbeat: true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill silently succeed but worker stays alive —
+      // teardownWorker exhausts both deadlines and returns INTERNAL.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        // Park on both abort and an external throw-handle so the test can
+        // force the catch branch to run after the heartbeat-timeout tear
+        // down has already dropped the pool entry.
+        await new Promise<void>((resolve, reject) => {
+          throwWatch = (err): void => reject(err);
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 30,
+      heartbeat: { intervalMs: 20, timeoutMs: 50 },
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const started = await supervisor.value.start({
+      workerId: workerId("hb-unkillable-1"),
+      agentId: agentId("agent-hb-unkillable-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(started.ok).toBe(true);
+
+    // Wait past heartbeat deadline + teardown deadlines so the monitor
+    // has fired, stop() has observed teardown failure, and the pool entry
+    // has been removed but quarantine remains.
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Force the watch generator to throw AFTER the pool entry is gone —
+    // this drives the catch branch's `current === undefined` path.
+    if (throwWatch !== undefined) throwWatch(new Error("synthetic watch fault"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // activeIds must still be reserved via quarantine.
+    const duplicate = await supervisor.value.start({
+      workerId: workerId("hb-unkillable-1"),
+      agentId: agentId("agent-hb-unkillable-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.error.code).toBe("CONFLICT");
+
+    // Let the worker die, then retry stop via the quarantine path so
+    // shutdown can drain cleanly.
+    const state = live.get(workerId("hb-unkillable-1"));
+    if (state !== undefined) state.alive = false;
+    await supervisor.value.stop(workerId("hb-unkillable-1"), "cleanup");
+    await supervisor.value.shutdown("test");
+  });
+
   it("shutdown resolves within deadline even against a stalling backend", async () => {
     // Without AbortSignal plumbing, a backend whose watch stream never emits
     // a terminal event and never returns would leave shutdown() blocked on
