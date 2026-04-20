@@ -11,6 +11,7 @@
  * - When enabled, Shift+Enter is detectable via key.shift + key.name === "return"
  * - Legacy terminals ("raw" source) send 0x0D for both → indistinguishable
  * - Fallback: Ctrl+J (0x0A, line feed) always works for newline insertion
+ * - Reliable interrupt-send fallback: Ctrl+K submits in interrupt mode
  */
 
 import type { KeyEvent } from "@opentui/core";
@@ -65,6 +66,12 @@ export function processInputKey(key: KeyEvent, currentText: string): InputKeyRes
   // Ctrl+J: universal newline fallback (0x0A, works in all terminals)
   if (key.ctrl && key.name === "j") {
     return { kind: "insert-newline" };
+  }
+
+  // Ctrl+K: reliable interrupt-send fallback for terminals that do not
+  // report modified Enter distinctly.
+  if (key.ctrl && key.name === "k") {
+    return { kind: "submit", text: currentText, mode: "interrupt" };
   }
 
   // Ctrl+C: submit empty (cancel / interrupt)

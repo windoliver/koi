@@ -16,6 +16,7 @@ const KEYBINDINGS = [
   { key: "Enter", action: "Submit message" },
   { key: "Ctrl+Enter", action: "Interrupt current turn and send message" },
   { key: "Meta+Enter", action: "Interrupt current turn and send message" },
+  { key: "Ctrl+K", action: "Interrupt current turn and send message" },
   { key: "Ctrl+J", action: "Insert newline in message" },
 ] as const;
 

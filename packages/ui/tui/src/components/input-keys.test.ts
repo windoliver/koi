@@ -106,6 +106,17 @@ describe("processInputKey — Ctrl+J", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Ctrl+K — reliable interrupt-send fallback
+// ---------------------------------------------------------------------------
+
+describe("processInputKey — Ctrl+K", () => {
+  test("Ctrl+K submits in interrupt mode", () => {
+    const result = processInputKey(key("k", { ctrl: true }), "hello");
+    expect(result).toEqual({ kind: "submit", text: "hello", mode: "interrupt" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Backspace / Delete
 // ---------------------------------------------------------------------------
 
