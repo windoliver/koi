@@ -2,7 +2,7 @@
 
 Versioned, session-scoped file lifecycle for agent-created outputs. Metadata in SQLite, bytes in a content-addressed blob store (`@koi/blob-cas`), single-writer advisory lock, crash-safe save protocol.
 
-This is Plan 2 of issue #1651. Plan 3 (#1920) added TTL + quota lifecycle — see [Lifecycle](#lifecycle). Plan 4 (#1921) will add background repair. Plan 5 (#1922) will add pluggable backends (S3). Plan 6 (#1923) will ship agent-facing tool governance.
+This is Plan 2 of issue #1651. Plan 3 (#1920) added TTL + quota lifecycle — see [Lifecycle](#lifecycle). Plan 4 (#1921) moved blob-ready repair and Phase B tombstone drain off the open path onto a background worker — see [Startup recovery + background worker](#startup-recovery--background-worker). Plan 5 (#1922) will add pluggable backends (S3). Plan 6 (#1923) will ship agent-facing tool governance.
 
 ## Public surface
 
@@ -77,17 +77,25 @@ If the process crashes between any two steps, startup recovery (below) reconcile
 
 ## Startup recovery
 
-Run synchronously during `createArtifactStore`. Walks `pending_blob_puts` by `created_at`, then sweeps any orphaned `blob_ready=0` rows.
+Run synchronously during `createArtifactStore`. Local-only: the open path touches SQLite exclusively — zero blob I/O on the critical path (Plan 4, spec §6.5). Walks `pending_blob_puts` and converts any row older than `staleIntentGraceMs` into a `pending_blob_deletes` tombstone (`artifact_id` NULL) or retires it (`artifact_id` set, row missing / `blob_ready=1`) in one `BEGIN IMMEDIATE`. Fresh rows (within the grace window) are left alone because a concurrent save in another process may still be mid-flight. All `has()` / `delete()` probes against the blob backend — promoting `blob_ready=0` rows, terminally deleting after `maxRepairAttempts`, draining tombstones — happen later on the background worker.
 
-| Row state | Action |
-|---|---|
-| `artifact_id` NULL (crashed before INSERT) | retire intent; tombstone hash if unreferenced |
-| `artifact_id` set, row missing (externally deleted) | retire intent; tombstone hash if unreferenced |
-| `artifact_id` set, `blob_ready=1` | retire intent (update was committed, retirement was lost) |
-| `artifact_id` set, `blob_ready=0`, blob present | promote to `blob_ready=1`, retire intent |
-| `artifact_id` set, `blob_ready=0`, blob absent | increment `repair_attempts`; terminal-delete only at `maxRepairAttempts` (default 10) |
+A single negative `blobStore.has()` probe never reaps a committed save — this tolerates transient backend outages across restarts. Only persistent missing-blob across N consecutive worker probes triggers terminal loss (see below).
 
-A single negative `blobStore.has()` probe never reaps a committed save — this tolerates transient backend outages across restarts. Only persistent missing-blob across N consecutive startup attempts triggers terminal loss.
+## Startup recovery + background worker
+
+**Open is local-only.** `createArtifactStore` performs the stale-intent drain inside SQLite and returns — no `blobStore.has()`, no `blobStore.delete()`, no network calls on the critical path. This makes open latency constant regardless of the blob backend's health (S3 hiccups can no longer block store construction). The `staleIntentGraceMs` default of 5 minutes is a safety bound: it must exceed worst-case save latency so a real in-flight save (another process, a slow CAS backend, a large payload) is never mistaken for stale and tombstoned out from under its owner. Tests may lower it to 0 for deterministic drains, but production values should stay well above typical blob-write P99.
+
+**Open sweep is TTL-only.** If the store was configured with `policy.ttlMs`, open runs a `blob_ready = 1` TTL-only reap — no quota, no retention. Quota and retention depend on session-scoped accounting that the background worker and explicit `sweepArtifacts()` handle authoritatively; replaying them inline on open would duplicate work, risk BEGIN IMMEDIATE contention with the worker's first tick, and couple open latency to policy size. TTL alone is cheap (indexed `expires_at` scan) and addresses the only time-sensitive policy — stale bytes that expired while the process was down.
+
+**Background worker.** `workerIntervalMs` (default 30_000, `"manual"` for tests) schedules a `setInterval` that runs one iteration per tick: first `drainBlobReadyZero` (promote ready rows, increment `repair_attempts` on misses, terminal-delete at `maxRepairAttempts`), then the Phase B tombstone drain (claim → `blobStore.delete()` → reconcile). `"manual"` disables the interval entirely so tests drive `runOnce()` deterministically; the 100ms floor on numeric values guards against pathological busy loops that would starve save/get transactions.
+
+**`repair_attempts` semantics.** Only **confirmed-absent** probes count — a `blobStore.has()` that returns `false` cleanly. Transient failures (a thrown `has()` call, network error, 5xx) are logged via `onEvent` as `transient_repair_error` but do not advance the counter. This preserves the Plan 2 invariant that N consecutive clean absence probes — not N flaky iterations — are required before terminal loss.
+
+**`onEvent` hook shape.** `onEvent?: (event: ArtifactStoreEvent) => void` fires on two kinds: `repair_exhausted` (terminal delete after `maxRepairAttempts` — stable fields: `artifactId`, `contentHash`, `sessionId`, `attempts`) and `transient_repair_error` (raw backend error surfaced to the operator — fields: `artifactId`, `contentHash`, `error: unknown`). A thrown callback is swallowed with a one-shot `console.warn` so a bad observer cannot corrupt repair progress. Typical operator use: log `repair_exhausted` to an alerting channel (a steady stream implies systemic blob-write loss, not a blip) and feed `transient_repair_error` rates into a backend-health dashboard.
+
+**Close barrier.** `close()` stops the interval, then awaits the in-flight iteration (if any) before unlinking the advisory lock. Callers that want a synchronous flush — `await store.close()` at shutdown — are guaranteed no worker tick is racing the lock release.
+
+See spec §6.5 (`docs/superpowers/specs/2026-04-18-artifacts-design.md`) for the full race analysis (stale-intent grace window, save-reclaims-tombstone, `repair_attempts` monotonicity under concurrent processes, worker vs. manual-sweep overlap).
 
 ## Lifecycle
 
@@ -117,12 +125,15 @@ Three visibility paths:
 
 ```ts
 interface ArtifactStoreConfig {
-  readonly dbPath: string;              // SQLite file path; ':memory:' and 'file:*?mode=memory' supported
-  readonly blobDir: string;             // Filesystem dir for CAS
-  readonly durability?: "process" | "os"; // journal_mode tuning
-  readonly maxArtifactBytes?: number;   // Upper bound per save (invalid_input above)
-  readonly maxRepairAttempts?: number;  // Default 10 — see Startup recovery
-  readonly policy?: LifecyclePolicy;    // See Lifecycle — validated at construction
+  readonly dbPath: string;                      // SQLite file path; ':memory:' and 'file:*?mode=memory' supported
+  readonly blobDir: string;                     // Filesystem dir for CAS
+  readonly durability?: "process" | "os";       // journal_mode tuning
+  readonly maxArtifactBytes?: number;           // Upper bound per save (invalid_input above)
+  readonly maxRepairAttempts?: number;          // Default 10 — see Startup recovery
+  readonly staleIntentGraceMs?: number;         // Default 300_000 (5 min) — stale-intent drain safety bound
+  readonly workerIntervalMs?: number | "manual"; // Default 30_000; "manual" disables the interval (tests)
+  readonly onEvent?: (event: ArtifactStoreEvent) => void; // Drift signal (repair_exhausted / transient_repair_error)
+  readonly policy?: LifecyclePolicy;            // See Lifecycle — validated at construction
 }
 
 interface LifecyclePolicy {
@@ -140,6 +151,6 @@ All `LifecyclePolicy` fields are optional and each must be a finite positive int
 
 ## Testing
 
-- Unit: 157 tests in `packages/lib/artifacts/src/__tests__/` covering CRUD, ACL, validation, lock, migration, recovery, concurrent-save edge cases, and (Plan 3) policy validation, quota accounting, Phase A sweep across TTL/quota/retention, Phase B drain (claim/delete/reconcile + resume-from-claimed), save-side tombstone reclaim, and scavenger orphan detection.
+- Unit: 210 tests in `packages/lib/artifacts/src/__tests__/` covering CRUD, ACL, validation, lock, migration, recovery, concurrent-save edge cases, (Plan 3) policy validation, quota accounting, Phase A sweep across TTL/quota/retention, Phase B drain (claim/delete/reconcile + resume-from-claimed), save-side tombstone reclaim, scavenger orphan detection, and (Plan 4) stale-intent grace-window drain, local-only open path, TTL-only open sweep, `drainBlobReadyZero` repair probes, background worker scaffolding (start/stop/runOnce), close-barrier iteration flush, and structured `onEvent` drift signals.
 - Integration: 5 standalone Golden tests + 1 ATIF trajectory-replay test in `packages/meta/runtime/src/__tests__/golden-replay.test.ts` (cassette: `fixtures/artifacts-roundtrip.trajectory.json`).
 - TUI corner cases (manual): concurrent-TUI degradation, bogus-id not_found, list filters, delete-then-get.
