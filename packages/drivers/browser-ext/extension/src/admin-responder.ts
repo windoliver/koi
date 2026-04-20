@@ -52,13 +52,27 @@ export async function respondToAdminClearGrants(deps: {
   let clearedPrivateOrigins: readonly string[];
 
   if (scope === "origin" && targetOrigin !== undefined) {
-    // Scoped revocation: touch only the one origin. Leave allow_once grants,
-    // other origins' always grants, and the private-origin allowlist intact
-    // (the allowlist governs different sites and must not be wiped by an
-    // origin-scoped request).
+    // Scoped revocation: remove the persistent always-grant AND the
+    // private-origin allowlist entry for this origin, AND revoke any
+    // per-tab allow_once entries whose live session is on this origin.
+    // The allow_once key is (tabId, documentId), not keyed by origin
+    // directly — so we resolve origin→tabId via the live FSM state.
+    //
+    // Other origins' grants stay intact.
     await deps.storage.removeAlwaysGrant(targetOrigin);
+    const priv = await deps.storage.getPrivateOriginAllowlist();
+    const filteredPriv = priv.filter((o) => o !== targetOrigin);
+    const removedFromPriv = filteredPriv.length < priv.length;
+    if (removedFromPriv) {
+      await deps.storage.setPrivateOriginAllowlist(filteredPriv);
+    }
+    for (const session of deps.fsm.getAttachedStates()) {
+      if (session.origin === targetOrigin) {
+        await deps.storage.revokeAllowOnceForTab(session.tabId);
+      }
+    }
     clearedOrigins = [targetOrigin];
-    clearedPrivateOrigins = [];
+    clearedPrivateOrigins = removedFromPriv ? [targetOrigin] : [];
   } else {
     // scope === "all": wipe everything.
     const [always, priv] = await Promise.all([

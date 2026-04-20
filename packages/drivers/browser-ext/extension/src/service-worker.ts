@@ -3,7 +3,6 @@ import { createAttachFsm } from "./attach-fsm.js";
 import { createChunkSender } from "./chunking.js";
 import { createNativeConnection } from "./connect-native.js";
 import { createConsentManager } from "./consent.js";
-import { createDetachedFrame } from "./detach-helpers.js";
 import { createKeepalive } from "./keepalive.js";
 import { createRouter } from "./router.js";
 import { createExtensionStorage } from "./storage.js";
@@ -97,15 +96,18 @@ async function bootstrap(): Promise<void> {
   chrome.debugger.onDetach.addListener((source, reason) => {
     const tabId = source.tabId;
     if (tabId === undefined) return;
-    const session = fsm.getAttachedStates().find((state) => state.tabId === tabId);
-    if (!session) return;
     const detachedReason =
       reason === "target_closed"
         ? "tab_closed"
         : reason === "canceled_by_user"
           ? "devtools_opened"
           : "unknown";
-    emitFrame(createDetachedFrame(session, detachedReason));
+    // Drive FSM state cleanup AND emit the `detached` frame via the FSM
+    // method. Previously we only emitted the frame and left `tabStates` /
+    // `sessionToTab` populated — next attach on that tab then evaluated
+    // against stale ownership (same-client retries acked with dead sessionId,
+    // others rejected as already_attached against no-longer-attached tab).
+    fsm.handleDebuggerDetached(tabId, detachedReason);
   });
   chrome.runtime.onInstalled.addListener(() => {
     void keepalive.installAlarm();

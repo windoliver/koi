@@ -52,8 +52,8 @@ describe.skipIf(!GATE)("attach-lease integration — two drivers racing for same
     const tabId = 42;
     const reqA = randomUUID();
     const reqB = randomUUID();
-    const leaseA = "a".repeat(32);
-    const leaseB = "b".repeat(32);
+    const leaseA = a.leaseToken;
+    const leaseB = b.leaseToken;
     const sessionId = randomUUID();
 
     // clientA fires attach first — host forwards it to extension via NM.
