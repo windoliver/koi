@@ -53,11 +53,17 @@ export function createNativeConnection(deps: {
   async function wipeForInstallId(hostInstallId: string): Promise<void> {
     const storedInstallId = await deps.storage.getInstallId();
     if (storedInstallId === hostInstallId) return;
+    // Revocation event: installId changed (host reinstall / reprovision).
+    // Clear persisted grants AND tear down live debugger sessions so no
+    // pre-revocation attachment keeps running against the user's tabs.
     await Promise.all([
       deps.storage.clearAlwaysGrants(),
       deps.storage.clearPrivateOriginAllowlist(),
       deps.storage.clearAllowOnceGrants(),
     ]);
+    for (const session of deps.fsm.getAttachedStates()) {
+      await deps.fsm.handleTabRemoved(session.tabId);
+    }
     await deps.storage.setInstallId(hostInstallId);
   }
 

@@ -31,6 +31,7 @@ export function createRouter(deps: {
         )({})) as readonly chrome.tabs.Tab[];
         deps.emitFrame({
           kind: "tabs",
+          requestId: frame.requestId,
           tabs: tabs
             .filter((tab): tab is chrome.tabs.Tab & { readonly id: number } => tab.id !== undefined)
             .map((tab) => ({

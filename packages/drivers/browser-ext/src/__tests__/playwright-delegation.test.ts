@@ -90,8 +90,12 @@ describe("createExtensionBrowserDriver — playwrightDriver delegation", () => {
       if (typeof method !== "function") continue;
       const result = await method("arg1", "arg2");
       expect((result as Result<unknown, KoiError>).ok).toBe(false);
+      // Tab management methods (tabNew/tabClose/tabFocus) return
+      // specific guidance, not the generic "no playwrightDriver" error.
+      // Everything else returns the composition-missing error.
+      if (name === "tabNew" || name === "tabClose" || name === "tabFocus") continue;
       const err = (result as { ok: false; error: KoiError }).error;
-      expect(err.message).toMatch(/playwrightDriver/);
+      expect(err.message).toMatch(/playwrightDriver|createPlaywrightDriver|target tab/);
     }
     await driver.dispose?.();
   });

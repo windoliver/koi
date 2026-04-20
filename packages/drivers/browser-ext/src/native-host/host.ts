@@ -74,7 +74,7 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
    * Per-request routing maps. Required for tenant isolation: without these,
    * any connected client would see every other client's tabs + CDP traffic.
    */
-  const pendingListTabs: string[] = []; // FIFO queue of clientIds awaiting `tabs`
+  const pendingListTabs = new Map<string, string>(); // requestId → clientId
   const pendingCdpRequests = new Map<string, string>(); // `${sessionId}:${id}` → clientId
   const cdpKey = (sessionId: string, id: number): string => `${sessionId}:${id}`;
 
@@ -279,8 +279,11 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         return;
       }
       case "tabs": {
-        const requester = pendingListTabs.shift();
-        if (requester) drivers.get(requester)?.send(frame as DriverFrame);
+        const requester = pendingListTabs.get(frame.requestId);
+        if (requester !== undefined) {
+          pendingListTabs.delete(frame.requestId);
+          drivers.get(requester)?.send(frame as DriverFrame);
+        }
         return;
       }
       case "abandon_attach_ack":
@@ -356,8 +359,8 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
             driverLeases.delete(clientId);
           }
           // Clear any pending routing state owned by this client.
-          for (let i = pendingListTabs.length - 1; i >= 0; i--) {
-            if (pendingListTabs[i] === clientId) pendingListTabs.splice(i, 1);
+          for (const [reqId, c] of pendingListTabs) {
+            if (c === clientId) pendingListTabs.delete(reqId);
           }
           for (const [k, c] of pendingCdpRequests) {
             if (c === clientId) pendingCdpRequests.delete(k);
@@ -429,7 +432,7 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         return;
       }
       case "list_tabs":
-        pendingListTabs.push(clientId);
+        pendingListTabs.set(frame.requestId, clientId);
         sendNm(frame);
         return;
       case "attach": {
@@ -462,10 +465,25 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         detach.initiateHostDetach(tab);
         return;
       }
-      case "cdp":
+      case "cdp": {
+        // Ownership check: only the client that currently owns the session's
+        // tab can send CDP frames for it. Without this gate, a second
+        // authenticated client that learned or guessed a sessionId could
+        // drive another client's attached tab — a tenant-isolation break.
+        const tab = findTabByOwner(clientId, frame.sessionId);
+        if (tab === undefined) {
+          drivers.get(clientId)?.send({
+            kind: "cdp_error",
+            sessionId: frame.sessionId,
+            id: frame.id,
+            error: { code: -32000, message: "not attached" },
+          });
+          return;
+        }
         pendingCdpRequests.set(cdpKey(frame.sessionId, frame.id), clientId);
         sendNm(frame);
         return;
+      }
       case "admin_clear_grants":
         // admin_clear_grants is single-flight per spec §8.7: reject overlapping
         // requests with PERMISSION so retries don't race on the shared ack slot.

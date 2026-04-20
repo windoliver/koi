@@ -29,7 +29,7 @@ describe("DriverFrameSchema — happy paths", () => {
         admin: { adminKey: "b".repeat(64) },
       },
     ],
-    ["list_tabs", { kind: "list_tabs" }],
+    ["list_tabs", { kind: "list_tabs", requestId: "33333333-3333-4333-8333-333333333333" }],
     [
       "attach (no reattach)",
       {

@@ -88,10 +88,15 @@ describe("unix-socket transport", () => {
     void (async () => {
       try {
         for await (const payload of createFrameReader(serverSide)) {
-          const frame = JSON.parse(payload) as { readonly kind: string };
+          const frame = JSON.parse(payload) as {
+            readonly kind: string;
+            readonly requestId?: string;
+          };
           observedKind = frame.kind;
           if (frame.kind === "list_tabs") {
-            await writer.write(JSON.stringify({ kind: "tabs", tabs: [] }));
+            await writer.write(
+              JSON.stringify({ kind: "tabs", requestId: frame.requestId, tabs: [] }),
+            );
           }
         }
       } catch {}

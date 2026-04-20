@@ -10,6 +10,13 @@ export interface CleanupPendingManager {
 interface QueuedAttach {
   readonly frame: NmAttach;
   readonly timeoutHandle: ReturnType<typeof setTimeout>;
+  /**
+   * Becomes true when the 60s fail-out fires. release() must skip terminal
+   * entries so a timed-out attach can never be replayed after its failure
+   * ack was already sent — that would produce contradictory attach_ack
+   * traffic for the same request.
+   */
+  terminal: boolean;
 }
 
 interface CleanupEntry {
@@ -31,6 +38,7 @@ export function createCleanupPendingManager(deps: {
     clearTimeout(entry.advisoryHandle);
     for (const queued of entry.queued) {
       clearTimeout(queued.timeoutHandle);
+      if (queued.terminal) continue; // failure already dispatched — do not replay
       await deps.runAttach(queued.frame);
     }
   }
@@ -49,10 +57,17 @@ export function createCleanupPendingManager(deps: {
     enqueue(frame): boolean {
       const entry = entries.get(frame.tabId);
       if (!entry) return false;
-      const timeoutHandle = setTimeout(() => {
-        deps.failAttach(frame, "tab_closed");
-      }, 60_000);
-      entry.queued.push({ frame, timeoutHandle });
+      const queued: QueuedAttach = {
+        frame,
+        terminal: false,
+        timeoutHandle: setTimeout(() => {
+          // Mark terminal BEFORE failAttach so a concurrent release() iterating
+          // the queue sees the flag and skips replay.
+          queued.terminal = true;
+          deps.failAttach(frame, "tab_closed");
+        }, 60_000),
+      };
+      entry.queued.push(queued);
       return true;
     },
     has: (tabId) => entries.has(tabId),
