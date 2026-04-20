@@ -15,7 +15,7 @@ describe("createFrameWriter", () => {
     writer.close();
     await new Promise<void>((resolve) => sink.on("end", () => resolve()));
 
-    const combined = Buffer.concat(chunks);
+    const combined = Buffer.concat(chunks.map((c) => new Uint8Array(c)));
     expect(combined.length).toBe(4 + payload.length);
     expect(combined.readUInt32LE(0)).toBe(payload.length);
     expect(combined.subarray(4).toString("utf-8")).toBe(payload);
@@ -32,7 +32,7 @@ describe("createFrameWriter", () => {
     writer.close();
     await new Promise<void>((resolve) => sink.on("end", () => resolve()));
 
-    const combined = Buffer.concat(chunks);
+    const combined = Buffer.concat(chunks.map((c) => new Uint8Array(c)));
     expect(combined.readUInt32LE(0)).toBe(7);
     expect(combined.subarray(4, 11).toString("utf-8")).toBe('{"a":1}');
     expect(combined.readUInt32LE(11)).toBe(7);

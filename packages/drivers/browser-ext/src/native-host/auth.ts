@@ -3,7 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const DEFAULT_AUTH_DIR = join(homedir(), ".koi", "browser-ext");
+export const DEFAULT_AUTH_DIR: string = join(homedir(), ".koi", "browser-ext");
 
 async function readSecretFile(path: string): Promise<string> {
   let st: Stats;

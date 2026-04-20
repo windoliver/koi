@@ -7,7 +7,7 @@ function framed(payload: string): Buffer {
   const body = Buffer.from(payload, "utf-8");
   const header = Buffer.alloc(4);
   header.writeUInt32LE(body.byteLength, 0);
-  return Buffer.concat([header, body]);
+  return Buffer.concat([new Uint8Array(header), new Uint8Array(body)]);
 }
 
 async function* iterateFrames(chunks: readonly Buffer[]): AsyncGenerator<string> {
@@ -31,7 +31,10 @@ describe("createFrameReader", () => {
   });
 
   test("reads multiple framed messages in one chunk", async () => {
-    const combined = Buffer.concat([framed('{"a":1}'), framed('{"b":2}')]);
+    const combined = Buffer.concat([
+      new Uint8Array(framed('{"a":1}')),
+      new Uint8Array(framed('{"b":2}')),
+    ]);
     const frames = await collect(iterateFrames([combined]));
     expect(frames).toEqual(['{"a":1}', '{"b":2}']);
   });
@@ -80,7 +83,9 @@ describe("createFrameReader", () => {
     const header = Buffer.alloc(4);
     header.writeUInt32LE(10, 0);
     const partial = Buffer.from("abc", "utf-8");
-    const stream = Readable.from([Buffer.concat([header, partial])]);
+    const stream = Readable.from([
+      Buffer.concat([new Uint8Array(header), new Uint8Array(partial)]),
+    ]);
     await expect(
       (async () => {
         const reader = createFrameReader(stream);

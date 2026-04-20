@@ -1,6 +1,6 @@
 import type { Writable } from "node:stream";
 
-export const MAX_FRAME_SIZE = 1024 * 1024;
+export const MAX_FRAME_SIZE: number = 1024 * 1024;
 
 export interface FrameWriter {
   readonly write: (payload: string) => Promise<void>;
@@ -20,7 +20,8 @@ export function createFrameWriter(sink: Writable): FrameWriter {
       }
       const header = Buffer.alloc(4);
       header.writeUInt32LE(body.byteLength, 0);
-      if (!sink.write(Buffer.concat([header, body]))) {
+      const combined = Buffer.concat([new Uint8Array(header), new Uint8Array(body)]);
+      if (!sink.write(combined)) {
         await new Promise<void>((resolve) => sink.once("drain", () => resolve()));
       }
     },

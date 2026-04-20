@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 
-export const MAX_FRAME_SIZE = 1024 * 1024; // 1 MB per Chrome's NM spec
+export const MAX_FRAME_SIZE: number = 1024 * 1024; // 1 MB per Chrome's NM spec
 
 /**
  * Reads length-prefixed frames from a stream. Each frame = 4-byte LE length +
@@ -10,9 +10,10 @@ export const MAX_FRAME_SIZE = 1024 * 1024; // 1 MB per Chrome's NM spec
  * truncated streams (buffered bytes remaining when stream ends).
  */
 export async function* createFrameReader(stream: Readable): AsyncGenerator<string> {
-  let buffer = Buffer.alloc(0);
+  let buffer: Buffer = Buffer.alloc(0);
   for await (const chunk of stream) {
-    buffer = Buffer.concat([buffer, chunk as Buffer]);
+    const next = chunk instanceof Buffer ? chunk : Buffer.from(chunk as Uint8Array);
+    buffer = Buffer.concat([new Uint8Array(buffer), new Uint8Array(next)]);
     while (buffer.length >= 4) {
       const length = buffer.readUInt32LE(0);
       if (length === 0) {

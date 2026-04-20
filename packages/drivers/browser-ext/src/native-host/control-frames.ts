@@ -5,45 +5,61 @@ import { z } from "zod";
  * They are NEVER forwarded to the driver socket. Strictly disjoint from NmFrame.
  */
 
-const ExtensionHelloSchema = z.object({
-  kind: z.literal("extension_hello"),
-  extensionId: z.string(),
-  extensionVersion: z.string(),
-  installId: z
-    .string()
-    .regex(/^[0-9a-f]{64}$/)
-    .nullable(),
-  browserSessionId: z.string(),
-  supportedProtocols: z.array(z.number().int().positive()),
-});
+export interface ExtensionHello {
+  readonly kind: "extension_hello";
+  readonly extensionId: string;
+  readonly extensionVersion: string;
+  readonly installId: string | null;
+  readonly browserSessionId: string;
+  readonly supportedProtocols: readonly number[];
+}
 
-const HostHelloSchema = z.object({
-  kind: z.literal("host_hello"),
-  hostVersion: z.string(),
-  installId: z.string().regex(/^[0-9a-f]{64}$/),
-  selectedProtocol: z.number().int().positive(),
-});
+export interface HostHello {
+  readonly kind: "host_hello";
+  readonly hostVersion: string;
+  readonly installId: string;
+  readonly selectedProtocol: number;
+}
 
-const PingSchema = z.object({
-  kind: z.literal("ping"),
-  seq: z.number().int().nonnegative(),
-});
+export interface Ping {
+  readonly kind: "ping";
+  readonly seq: number;
+}
 
-const PongSchema = z.object({
-  kind: z.literal("pong"),
-  seq: z.number().int().nonnegative(),
-});
+export interface Pong {
+  readonly kind: "pong";
+  readonly seq: number;
+}
 
-export const NmControlFrameSchema = z.union([
-  ExtensionHelloSchema,
-  HostHelloSchema,
-  PingSchema,
-  PongSchema,
+export type NmControlFrame = ExtensionHello | HostHello | Ping | Pong;
+
+export const NmControlFrameSchema: z.ZodType<NmControlFrame> = z.union([
+  z.object({
+    kind: z.literal("extension_hello"),
+    extensionId: z.string(),
+    extensionVersion: z.string(),
+    installId: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    browserSessionId: z.string(),
+    supportedProtocols: z.array(z.number().int().positive()),
+  }),
+  z.object({
+    kind: z.literal("host_hello"),
+    hostVersion: z.string(),
+    installId: z.string().regex(/^[0-9a-f]{64}$/),
+    selectedProtocol: z.number().int().positive(),
+  }),
+  z.object({
+    kind: z.literal("ping"),
+    seq: z.number().int().nonnegative(),
+  }),
+  z.object({
+    kind: z.literal("pong"),
+    seq: z.number().int().nonnegative(),
+  }),
 ]);
-
-export type NmControlFrame = z.infer<typeof NmControlFrameSchema>;
-export type ExtensionHello = z.infer<typeof ExtensionHelloSchema>;
-export type HostHello = z.infer<typeof HostHelloSchema>;
 
 export interface ProtocolNegotiationSuccess {
   readonly ok: true;

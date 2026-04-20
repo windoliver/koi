@@ -16,6 +16,10 @@ export interface InFlightMap {
   readonly delete: (clientId: string, attachRequestId: string) => boolean;
   readonly markAbandonedByClient: (clientId: string) => readonly InFlightAttach[];
   readonly entriesForTab: (tabId: number) => readonly InFlightAttach[];
+  readonly findByTabAndRequest: (
+    tabId: number,
+    attachRequestId: string,
+  ) => InFlightAttach | undefined;
   readonly size: () => number;
 }
 
@@ -39,6 +43,12 @@ export function createInFlightMap(): InFlightMap {
     },
     entriesForTab: (tabId) =>
       Array.from(map.values()).filter((e) => e.tabId === tabId && !e.abandoned),
+    findByTabAndRequest: (tabId, attachRequestId) => {
+      for (const entry of map.values()) {
+        if (entry.tabId === tabId && entry.attachRequestId === attachRequestId) return entry;
+      }
+      return undefined;
+    },
     size: () => map.size,
   };
 }
