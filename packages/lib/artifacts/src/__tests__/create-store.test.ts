@@ -44,4 +44,30 @@ describe("createArtifactStore (skeleton)", () => {
     await store.close();
     await store.close();
   });
+
+  test.each([
+    { value: 0, label: "zero" },
+    { value: -1, label: "negative" },
+    { value: 0.5, label: "fractional" },
+    { value: Number.NaN, label: "NaN" },
+    { value: Number.POSITIVE_INFINITY, label: "Infinity" },
+  ])("rejects invalid maxRepairAttempts: $label", async ({ value }) => {
+    await expect(
+      createArtifactStore({ dbPath, blobDir, maxRepairAttempts: value }),
+    ).rejects.toThrow(/maxRepairAttempts/);
+  });
+
+  test("rejects non-memory SQLite URI dbPath", async () => {
+    await expect(
+      createArtifactStore({ dbPath: "file:/tmp/x.db?cache=shared", blobDir }),
+    ).rejects.toThrow(/non-memory SQLite URI paths.*not supported in Plan 2/);
+  });
+
+  test("accepts SQLite in-memory URI dbPath", async () => {
+    const store = await createArtifactStore({
+      dbPath: "file:memtest?mode=memory&cache=shared",
+      blobDir,
+    });
+    await store.close();
+  });
 });

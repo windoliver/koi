@@ -56,6 +56,45 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     );
   }
 
+  if (config.maxRepairAttempts !== undefined) {
+    if (
+      !Number.isFinite(config.maxRepairAttempts) ||
+      !Number.isInteger(config.maxRepairAttempts) ||
+      config.maxRepairAttempts < 1
+    ) {
+      throw new Error(
+        `ArtifactStoreConfig.maxRepairAttempts must be a finite integer >= 1; got ${String(config.maxRepairAttempts)}. A zero/negative/NaN value would collapse the retry budget and terminal-delete committed saves on the first missing-blob probe.`,
+      );
+    }
+  }
+  if (config.maxArtifactBytes !== undefined) {
+    if (
+      !Number.isFinite(config.maxArtifactBytes) ||
+      !Number.isInteger(config.maxArtifactBytes) ||
+      config.maxArtifactBytes < 0
+    ) {
+      throw new Error(
+        `ArtifactStoreConfig.maxArtifactBytes must be a finite non-negative integer; got ${String(config.maxArtifactBytes)}.`,
+      );
+    }
+  }
+
+  // Reject non-memory SQLite URI paths. The advisory lock and mkdir logic
+  // operate on filesystem paths; `file:/tmp/x.db?cache=shared` is a valid
+  // SQLite URI but not a filesystem path — its lock file would land at
+  // `file:/tmp/x.db?cache=shared.lock` (wrong namespace) and dirname()
+  // would resolve to `file:/tmp` (junk local dir). Plan 2 supports bare
+  // filesystem paths and in-memory forms only; Plan 4 may add full URI
+  // support alongside flock.
+  if (
+    !isInMemoryDbPath(config.dbPath) &&
+    (config.dbPath.startsWith("file:") || config.dbPath.startsWith("file://"))
+  ) {
+    throw new Error(
+      `ArtifactStoreConfig.dbPath: non-memory SQLite URI paths (${config.dbPath}) are not supported in Plan 2. Use a bare filesystem path (e.g. "/tmp/store.db") or an in-memory form (":memory:", "file::memory:", "file:name?mode=memory").`,
+    );
+  }
+
   // Ensure the blob directory and the DB's containing directory exist
   // before lock acquisition writes its tmp files. A brand-new store open
   // should succeed without requiring the caller to pre-create directories.
