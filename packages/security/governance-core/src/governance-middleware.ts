@@ -629,14 +629,26 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
             // includes well-formed terminal usage, prefer it as the
             // authoritative sample — provisional/malformed mid-stream
             // chunks should not poison a stream that ultimately reconciled
-            // to a valid total. Only latch degraded when the terminal
-            // itself is missing or malformed (no recovery path).
+            // to a valid total.
+            //
+            // Order matters: check terminal-corruption FIRST. A malformed
+            // `done.response.usage` is itself a fail-closed signal,
+            // independent of whether earlier chunks were malformed.
+            // Otherwise an end-only-malformed stream would fall through
+            // to `recordDeltaSoft(accumulated)` and silently undercount
+            // because the accumulator looks valid.
             const doneUsage = chunk.response.usage;
+            const doneUsagePresent = doneUsage !== undefined;
             const doneUsageWellFormed =
-              doneUsage !== undefined &&
+              doneUsagePresent &&
               !isInvalidSide(doneUsage.inputTokens) &&
               !isInvalidSide(doneUsage.outputTokens);
-            if (doneUsageWellFormed) {
+            if (doneUsagePresent && !doneUsageWellFormed) {
+              latchDegraded("Malformed terminal usage from provider stream", undefined, {
+                model,
+                phase: "stream:done-malformed",
+              });
+            } else if (doneUsageWellFormed) {
               await recordModelUsageSoft(ctx, chunk.response, model);
             } else if (malformedChunkSeen) {
               latchDegraded("Malformed token count from provider stream", undefined, {
