@@ -30,17 +30,17 @@ describe("startup recovery", () => {
     const db = new Database(dbPath);
     const now = Date.now();
     const artId = `art_${crypto.randomUUID()}`;
-    db.exec(
+    db.query(
       `INSERT INTO artifacts (id, session_id, name, version, mime_type, size, content_hash, created_at, blob_ready)
-       VALUES ('${artId}', 'sess_a', 'crashed.txt', 1, 'text/plain', 3, '${hash}', ${now}, ${artifactBlobReady})`,
-    );
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(artId, "sess_a", "crashed.txt", 1, "text/plain", 3, hash, now, artifactBlobReady);
     // Simulate a mid-save crash: the intent is bound to this specific artifact_id
     // (post-save.ts's UPDATE pending_blob_puts SET artifact_id = ?).
     const intentId = `intent_${crypto.randomUUID()}`;
-    db.exec(
+    db.query(
       `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
-       VALUES ('${intentId}', '${hash}', '${artId}', ${now})`,
-    );
+       VALUES (?, ?, ?, ?)`,
+    ).run(intentId, hash, artId, now);
     db.close();
     return artId;
   }
@@ -125,6 +125,151 @@ describe("startup recovery", () => {
     db.close();
     store = await createArtifactStore({ dbPath, blobDir });
     expect(count.c).toBe(0);
+  });
+});
+
+describe("startup recovery — grace window stale intent drain (spec §6.5 step 1)", () => {
+  let blobDir: string;
+  let dbPath: string;
+  let store: ArtifactStore;
+
+  beforeEach(() => {
+    blobDir = join(tmpdir(), `koi-art-grace-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    dbPath = join(blobDir, "store.db");
+  });
+
+  afterEach(async () => {
+    if (store !== undefined) await store.close();
+    rmSync(blobDir, { recursive: true, force: true });
+  });
+
+  // Seed a stale pre-insert intent (artifact_id=NULL) with a chosen created_at.
+  function seedStaleIntent(args: {
+    readonly hash: string;
+    readonly createdAt: number;
+    readonly artifactId?: string | null;
+  }): string {
+    // Open/close the store to run migrations and DDL.
+    // (createArtifactStore does this; test uses createArtifactStore before seeding.)
+    const db = new Database(dbPath);
+    const intentId = `intent_${crypto.randomUUID()}`;
+    const artifactId = args.artifactId === undefined ? null : args.artifactId;
+    db.query(
+      `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(intentId, args.hash, artifactId, args.createdAt);
+    db.close();
+    return intentId;
+  }
+
+  function seedArtifactRow(args: { readonly hash: string; readonly blobReady: 0 | 1 }): string {
+    const db = new Database(dbPath);
+    const artId = `art_${crypto.randomUUID()}`;
+    const now = Date.now();
+    db.query(
+      `INSERT INTO artifacts (id, session_id, name, version, mime_type, size, content_hash, created_at, blob_ready)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(artId, "sess_a", "x.txt", 1, "text/plain", 3, args.hash, now, args.blobReady);
+    db.close();
+    return artId;
+  }
+
+  test("stale intent WITH existing artifacts row → intent deleted, no tombstone", async () => {
+    // First open+close to apply schema.
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+
+    const hash = "a".repeat(64);
+    // Artifact row exists at blob_ready=0 (any state per spec §6.5 step 1).
+    seedArtifactRow({ hash, blobReady: 0 });
+    // Stale pre-insert intent older than grace window (10 min ago).
+    const staleCreatedAt = Date.now() - 10 * 60 * 1000;
+    const intentId = seedStaleIntent({ hash, createdAt: staleCreatedAt, artifactId: null });
+
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+
+    const db = new Database(dbPath);
+    const intentRow = db.query("SELECT 1 FROM pending_blob_puts WHERE intent_id = ?").get(intentId);
+    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db.close();
+
+    expect(intentRow).toBeFalsy(); // intent deleted
+    expect(tomb).toBeFalsy(); // no tombstone — artifacts row still references the hash
+  });
+
+  test("stale intent WITHOUT artifacts row → intent deleted AND tombstone enqueued", async () => {
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+
+    const hash = "b".repeat(64);
+    const staleCreatedAt = Date.now() - 10 * 60 * 1000;
+    const intentId = seedStaleIntent({ hash, createdAt: staleCreatedAt, artifactId: null });
+
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+
+    const db = new Database(dbPath);
+    const intentRow = db.query("SELECT 1 FROM pending_blob_puts WHERE intent_id = ?").get(intentId);
+    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db.close();
+
+    expect(intentRow).toBeFalsy();
+    expect(tomb).toBeTruthy();
+  });
+
+  test("intent within grace window is NOT touched", async () => {
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+
+    const hash = "c".repeat(64);
+    // 1 minute ago — well within default 5 min grace window.
+    const freshCreatedAt = Date.now() - 60 * 1000;
+    const intentId = seedStaleIntent({ hash, createdAt: freshCreatedAt, artifactId: null });
+
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+
+    const db = new Database(dbPath);
+    const intentRow = db.query("SELECT 1 FROM pending_blob_puts WHERE intent_id = ?").get(intentId);
+    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db.close();
+
+    expect(intentRow).toBeTruthy(); // untouched
+    expect(tomb).toBeFalsy(); // no tombstone enqueued
+  });
+
+  test("staleIntentGraceMs = 0 makes every intent stale", async () => {
+    store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+
+    const hash = "d".repeat(64);
+    // "Fresh" intent — but grace=0 makes it stale.
+    const intentId = seedStaleIntent({ hash, createdAt: Date.now(), artifactId: null });
+
+    store = await createArtifactStore({ dbPath, blobDir, staleIntentGraceMs: 0 });
+    await store.close();
+
+    const db = new Database(dbPath);
+    const intentRow = db.query("SELECT 1 FROM pending_blob_puts WHERE intent_id = ?").get(intentId);
+    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(hash);
+    db.close();
+
+    expect(intentRow).toBeFalsy();
+    expect(tomb).toBeTruthy();
+  });
+
+  test("rejects negative staleIntentGraceMs at construction", async () => {
+    await expect(createArtifactStore({ dbPath, blobDir, staleIntentGraceMs: -1 })).rejects.toThrow(
+      /staleIntentGraceMs/,
+    );
+  });
+
+  test("rejects non-integer staleIntentGraceMs at construction", async () => {
+    await expect(createArtifactStore({ dbPath, blobDir, staleIntentGraceMs: 1.5 })).rejects.toThrow(
+      /staleIntentGraceMs/,
+    );
   });
 });
 

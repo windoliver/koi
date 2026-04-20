@@ -66,6 +66,17 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       );
     }
   }
+  if (config.staleIntentGraceMs !== undefined) {
+    if (
+      !Number.isFinite(config.staleIntentGraceMs) ||
+      !Number.isInteger(config.staleIntentGraceMs) ||
+      config.staleIntentGraceMs < 0
+    ) {
+      throw new Error(
+        `ArtifactStoreConfig.staleIntentGraceMs must be a finite integer >= 0; got ${String(config.staleIntentGraceMs)}. Negative/NaN/fractional values are rejected at construction so misconfiguration surfaces before a recovery pass.`,
+      );
+    }
+  }
   if (config.maxArtifactBytes !== undefined) {
     if (
       !Number.isFinite(config.maxArtifactBytes) ||
@@ -120,6 +131,9 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       blobStore,
       ...(config.maxRepairAttempts !== undefined
         ? { maxRepairAttempts: config.maxRepairAttempts }
+        : {}),
+      ...(config.staleIntentGraceMs !== undefined
+        ? { staleIntentGraceMs: config.staleIntentGraceMs }
         : {}),
     });
 

@@ -141,6 +141,22 @@ export interface ArtifactStoreConfig {
    */
   readonly maxRepairAttempts?: number;
   /**
+   * Grace window (ms) after which a `pending_blob_puts` row is considered
+   * stale and eligible for the startup recovery drain (spec §6.5 step 1).
+   * Default 300_000 (5 minutes).
+   *
+   * This is a **safety bound**: it must exceed worst-case save latency so a
+   * real in-flight save is never mistaken for stale by a concurrent startup
+   * recovery pass. Values below typical blob-backend latency risk a
+   * recovery pass converting a live save's intent into a tombstone that
+   * then races the save's own post-commit blob write.
+   *
+   * Must be a finite integer >= 0. 0 is permitted (tests exercise the
+   * drain deterministically without waiting) but is unsafe in production
+   * because every in-flight save would be considered stale.
+   */
+  readonly staleIntentGraceMs?: number;
+  /**
    * Lifecycle policy: TTL, quota, and per-name retention. Fields are all
    * optional; when present each must be a finite positive integer. Validated
    * at construction (Plan 3 — #1920). `ttlMs` is frozen onto each row's

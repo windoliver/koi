@@ -39,6 +39,20 @@ import type { BlobStore } from "@koi/blob-cas";
 
 const DEFAULT_MAX_REPAIR_ATTEMPTS = 10;
 
+/**
+ * Default grace window for the §6.5 step 1 stale-intent drain: 5 minutes.
+ *
+ * This is a SAFETY bound, not a liveness tuning knob. It must exceed the
+ * worst-case save latency so a concurrent startup recovery pass never
+ * converts a real in-flight save's intent into a tombstone. With a
+ * filesystem backend, 5 minutes is absurdly generous; with a slow S3
+ * region under load, a multi-GB upload might still complete inside this
+ * window. Operators can raise it via ArtifactStoreConfig.staleIntentGraceMs
+ * but should never set it below observed p99 save latency for their
+ * deployment.
+ */
+const DEFAULT_STALE_INTENT_GRACE_MS = 5 * 60 * 1000;
+
 interface IntentRow {
   readonly intent_id: string;
   readonly hash: string;
@@ -54,8 +68,22 @@ export async function runStartupRecovery(args: {
   readonly db: Database;
   readonly blobStore: BlobStore;
   readonly maxRepairAttempts?: number;
+  readonly staleIntentGraceMs?: number;
 }): Promise<void> {
   const maxAttempts = args.maxRepairAttempts ?? DEFAULT_MAX_REPAIR_ATTEMPTS;
+  const staleIntentGraceMs = args.staleIntentGraceMs ?? DEFAULT_STALE_INTENT_GRACE_MS;
+
+  // Spec §6.5 step 1: convert stale pre-commit intents (older than the
+  // grace window) directly into sweep tombstones (or drop them outright
+  // when an artifacts row already references the hash). This is local
+  // DML only — no blob I/O — and must run before any subsequent pass
+  // that might observe a now-resolved intent.
+  drainStalePendingIntents({
+    db: args.db,
+    staleIntentGraceMs,
+    now: Date.now(),
+  });
+
   // Pass 1: walk pending_blob_puts (the normal case for Plan 2 saves).
   await drainPendingIntents({ ...args, maxAttempts });
 
@@ -65,6 +93,61 @@ export async function runStartupRecovery(args: {
   // the row. Every hidden row is either promoted, has its repair_attempts
   // bumped (for transient outages), or terminal-deleted after max attempts.
   await drainOrphanedHiddenRows({ ...args, maxAttempts });
+}
+
+interface StaleIntentRow {
+  readonly intent_id: string;
+  readonly hash: string;
+}
+
+/**
+ * Spec §6.5 step 1: drain `pending_blob_puts` rows older than the grace
+ * window. Each stale intent is resolved atomically inside a short
+ * `BEGIN IMMEDIATE` transaction:
+ *   - If an `artifacts` row references the hash (any blob_ready state),
+ *     just `DELETE FROM pending_blob_puts WHERE intent_id = ?`. The row's
+ *     own repair path (drainPendingIntents + drainOrphanedHiddenRows) owns
+ *     resolution; there is nothing for this step to reclaim.
+ *   - Otherwise, DELETE the intent AND
+ *     `INSERT OR IGNORE INTO pending_blob_deletes` the hash so the normal
+ *     sweep's Phase B drain reclaims the orphan blob (no O(N) scan needed).
+ *
+ * Rows younger than the grace window are left alone — a real in-flight save
+ * may still be mid-protocol. The grace window is a SAFETY bound on worst-
+ * case save latency; see DEFAULT_STALE_INTENT_GRACE_MS.
+ *
+ * Local DML only; no blob I/O. Safe to run on every open.
+ */
+export function drainStalePendingIntents(args: {
+  readonly db: Database;
+  readonly staleIntentGraceMs: number;
+  readonly now: number;
+}): void {
+  const cutoff = args.now - args.staleIntentGraceMs;
+  const stale = args.db
+    .query("SELECT intent_id, hash FROM pending_blob_puts WHERE created_at <= ?")
+    .all(cutoff) as ReadonlyArray<StaleIntentRow>;
+
+  for (const row of stale) {
+    // Short `BEGIN IMMEDIATE` tx per intent: we must read the artifacts
+    // table AND either delete-only or delete+tombstone atomically, so a
+    // concurrent save that inserts an artifacts row mid-check cannot trick
+    // us into tombstoning a hash with a live reference.
+    args.db.transaction(() => {
+      const hasArtifact = args.db
+        .query("SELECT 1 FROM artifacts WHERE content_hash = ? LIMIT 1")
+        .get(row.hash);
+      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(row.intent_id);
+      if (hasArtifact === null || hasArtifact === undefined) {
+        // No live reference — enqueue a tombstone. INSERT OR IGNORE so a
+        // pre-existing tombstone for the same hash (e.g., from a prior
+        // delete) is preserved.
+        args.db
+          .query("INSERT OR IGNORE INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?)")
+          .run(row.hash, args.now);
+      }
+    })();
+  }
 }
 
 interface OrphanRowWithAttempts {
@@ -137,27 +220,13 @@ async function drainPendingIntents(args: {
     .all() as ReadonlyArray<IntentRow>;
 
   for (const intent of intents) {
-    // Case A: intent never bound to a row (save crashed before metadata tx).
-    if (intent.artifact_id === null) {
-      args.db.transaction(() => {
-        const stillReferenced = args.db
-          .query(
-            `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
-                          OR EXISTS (SELECT 1 FROM pending_blob_puts
-                                      WHERE hash = ? AND intent_id != ?)`,
-          )
-          .get(intent.hash, intent.hash, intent.intent_id);
-        if (!stillReferenced) {
-          args.db
-            .query(
-              "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
-            )
-            .run(intent.hash, Date.now());
-        }
-        args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-      })();
-      continue;
-    }
+    // Case A: intent never bound to a row (save crashed before metadata
+    // tx). Resolution is now owned exclusively by drainStalePendingIntents
+    // (spec §6.5 step 1). Younger-than-grace intents in this state might
+    // belong to a real in-flight save that simply hasn't committed its
+    // metadata row yet — do not touch them here; the background repair
+    // worker will revisit after the grace window elapses.
+    if (intent.artifact_id === null) continue;
 
     // Intent is bound to a specific row. Look it up.
     const target = args.db
