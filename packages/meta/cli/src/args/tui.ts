@@ -49,6 +49,14 @@ export interface TuiFlags extends BaseFlags {
    * in trusted environments — equivalent to rules `{ allow: ["*"] }`.
    */
   readonly yolo: boolean;
+  /**
+   * Maximum cumulative spend in USD before the governance controller
+   * fires a violation. Cost is computed via per-model pricing from
+   * @koi/cost-aggregator's DEFAULT_PRICING table; when the model is
+   * unknown, the limit shows in /governance but accumulation stays at 0
+   * until pricing is available. 0 disables the cap (default).
+   */
+  readonly maxSpendUsd: number;
 }
 
 export function parseTuiFlags(rest: readonly string[]): TuiFlags {
@@ -65,6 +73,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly "verifier-inherit-env": boolean | undefined;
     readonly yolo: boolean | undefined;
     readonly "dangerously-skip-permissions": boolean | undefined;
+    readonly "max-spend": string | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -84,6 +93,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         "verifier-inherit-env": { type: "boolean", default: false },
         yolo: { type: "boolean", default: false },
         "dangerously-skip-permissions": { type: "boolean", default: false },
+        "max-spend": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -145,6 +155,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
     yolo: (values.yolo ?? false) || (values["dangerously-skip-permissions"] ?? false),
+    maxSpendUsd: resolveMaxSpendSafe(values["max-spend"], skipValidators),
   };
 }
 
@@ -168,6 +179,26 @@ function resolveVerifierTimeoutMsSafe(raw: string | undefined, skip: boolean): n
     }
   }
   return resolveVerifierTimeoutMs(raw);
+}
+
+function resolveMaxSpendSafe(raw: string | undefined, skip: boolean): number {
+  if (skip) {
+    try {
+      return resolveMaxSpend(raw);
+    } catch {
+      return 0;
+    }
+  }
+  return resolveMaxSpend(raw);
+}
+
+function resolveMaxSpend(raw: string | undefined): number {
+  if (raw === undefined) return 0;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new ParseError(`--max-spend must be a non-negative finite number (USD), got '${raw}'`);
+  }
+  return parsed;
 }
 
 // Strict positive-integer regex. parseInt alone accepts trailing junk

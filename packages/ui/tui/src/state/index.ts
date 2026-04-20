@@ -16,9 +16,13 @@ export { createStore } from "./store.js";
 // Types & constants
 export type {
   AgentStatus,
+  CapabilityFragmentLite,
   ConnectionStatus,
   CumulativeMetrics,
   FetchModelsResult,
+  GovernanceAlert,
+  GovernanceSlice,
+  GovernanceViolation,
   LayoutTier,
   LedgerAuditEntry,
   LedgerSources,
@@ -32,6 +36,8 @@ export type {
   SpawnProgress,
   SpawnStats,
   SpawnStatus,
+  Toast,
+  ToastKind,
   ToolCallStatus,
   ToolResultData,
   TrajectoryMiddlewareSpan,

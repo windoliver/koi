@@ -24,9 +24,35 @@ export interface GovernanceMiddlewareConfig {
   readonly controller: GovernanceController;
   readonly cost: CostCalculator;
   readonly alertThresholds?: readonly number[];
+  /**
+   * Per-variable threshold overrides. When set for a variable, REPLACES
+   * `alertThresholds` for that variable — does not merge or extend.
+   * Validated by `validateGovernanceConfig`: each entry must be a non-empty
+   * array of numbers in the range (0, 1].
+   */
+  readonly perVariableThresholds?: Record<string, readonly number[]>;
   readonly onAlert?: AlertCallback;
   readonly onViolation?: ViolationCallback;
   readonly onUsage?: UsageCallback;
+  /**
+   * Observer-only mode — when true, the middleware SKIPS every
+   * `controller.record(...)` call (turn / token_usage / tool_success /
+   * tool_error). Use this when another component (typically the engine
+   * extension `createGovernanceExtension()` from `@koi/engine-reconcile`)
+   * is already recording the same events against the same controller —
+   * recording from both sources double-counts every variable and trips
+   * limits at half the configured cap.
+   *
+   * Even in observer mode the middleware still:
+   *   - calls `evaluator.evaluate()` to gate by policy rules,
+   *   - reads `controller.snapshot()` to fire `onAlert`,
+   *   - records compliance audit envelopes via `backend.compliance`,
+   *   - reports `describeCapabilities()` for trajectory.
+   *
+   * Default: false (recorder mode). Hosts that compose with the default
+   * `createKoi` engine adapter should set this to true.
+   */
+  readonly observerOnly?: boolean;
 }
 
 function err(message: string, context?: Record<string, unknown>): KoiError {
@@ -66,6 +92,30 @@ export function validateGovernanceConfig(
           ok: false,
           error: err("alertThresholds must be numbers in (0, 1]", { threshold: t }),
         };
+      }
+    }
+  }
+  if (c.perVariableThresholds !== undefined) {
+    if (typeof c.perVariableThresholds !== "object" || c.perVariableThresholds === null) {
+      return { ok: false, error: err("perVariableThresholds must be an object") };
+    }
+    for (const [variable, thresholds] of Object.entries(c.perVariableThresholds)) {
+      if (!Array.isArray(thresholds)) {
+        return {
+          ok: false,
+          error: err(`perVariableThresholds[${variable}] must be an array`, { variable }),
+        };
+      }
+      for (const t of thresholds) {
+        if (typeof t !== "number" || !Number.isFinite(t) || t <= 0 || t > 1) {
+          return {
+            ok: false,
+            error: err("perVariableThresholds value must be in (0, 1]", {
+              variable,
+              threshold: t,
+            }),
+          };
+        }
       }
     }
   }

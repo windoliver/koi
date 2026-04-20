@@ -23,5 +23,9 @@ export default defineConfig({
   // bun:* built-ins cannot be bundled by esbuild — they are resolved natively
   // at runtime by Bun. This became necessary when @koi/session (which uses
   // bun:sqlite) was added as a transitive dep of @koi/runtime.
-  external: ["bun:sqlite"],
+  // re2-wasm bundles a sibling .wasm asset that its loader resolves via
+  // `__filename`. Bundling the JS into a single chunk breaks that lookup
+  // because the .wasm is never copied into dist/. Keep it external so the
+  // import resolves against node_modules at runtime where the wasm sits.
+  external: ["bun:sqlite", "re2-wasm"],
 });

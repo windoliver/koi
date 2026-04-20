@@ -613,6 +613,8 @@
         "@koi/event-trace": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
+        "@koi/governance-core": "workspace:*",
+        "@koi/governance-defaults": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -664,6 +666,7 @@
         "@opentelemetry/sdk-trace-base": "2.6.1",
         "@opentui/core": "0.1.96",
         "@opentui/solid": "0.1.96",
+        "re2-wasm": "1.0.2",
         "solid-js": "1.9.11",
       },
       "devDependencies": {

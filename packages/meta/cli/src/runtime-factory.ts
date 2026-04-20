@@ -36,26 +36,34 @@ import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
 import type {
+  Agent,
   ApprovalHandler,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
   EngineInput,
   FileSystemBackend,
+  GovernanceBackend,
+  GovernanceController,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
   PermissionBackend,
   RichTrajectoryStep,
+  RuleDescriptor,
   SessionId,
   SessionTranscript,
 } from "@koi/core";
-import { agentId as makeAgentId } from "@koi/core";
+import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
+import { DEFAULT_PRICING, resolvePricing } from "@koi/cost-aggregator";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
-import type { KoiRuntime } from "@koi/engine";
-import { createKoi } from "@koi/engine";
+import type { GovernanceConfig, KoiRuntime } from "@koi/engine";
+import { createGovernanceController, createKoi } from "@koi/engine";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
+import type { CostCalculator } from "@koi/governance-core";
+import { createGovernanceMiddleware } from "@koi/governance-core";
+import { createPatternBackend } from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -211,6 +219,143 @@ export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Cost config helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve governance cost config from the user's --max-spend flag and every
+ * model the runtime might call. The controller stores ONE per-token rate
+ * pair, and the engine-reconcile extension's `controller.record({ kind:
+ * "token_usage" })` calls do not attach a per-call `costUsd`. That means a
+ * router fallback to a differently-priced model would accumulate spend
+ * against the primary's rate — silently breaking `--max-spend` for the
+ * fallback path.
+ *
+ * Validation rules (all enforced at startup, fail-fast):
+ *   1. Every model in the chain must have a `DEFAULT_PRICING` entry.
+ *   2. Every fallback's per-token rates must equal the primary's. Until
+ *      engine-reconcile records per-call `costUsd`, mixed-rate routing
+ *      cannot honor a single setpoint.
+ */
+function resolveCostConfig(
+  maxCostUsd: number,
+  modelChain: readonly string[],
+): {
+  readonly maxCostUsd: number;
+  readonly costPerInputToken: number;
+  readonly costPerOutputToken: number;
+} {
+  if (modelChain.length === 0) {
+    throw new Error("koi: resolveCostConfig requires at least the primary model name");
+  }
+  const unpriced = modelChain.filter((m) => resolvePricing(m, DEFAULT_PRICING) === undefined);
+  if (unpriced.length > 0) {
+    throw new Error(
+      `koi: --max-spend $${maxCostUsd} set but the following model(s) have no pricing in ` +
+        `DEFAULT_PRICING: ${unpriced.join(", ")}. The cost cap would not accumulate when the ` +
+        `router targets them. Add the missing models to @koi/cost-aggregator's DEFAULT_PRICING ` +
+        `table or omit --max-spend.`,
+    );
+  }
+  // unpriced.length === 0 guarantees every entry has pricing.
+  const [primary, ...fallbacks] = modelChain as readonly [string, ...string[]];
+  const primaryPricing = resolvePricing(primary, DEFAULT_PRICING) as NonNullable<
+    ReturnType<typeof resolvePricing>
+  >;
+  const mismatched = fallbacks.filter((m) => {
+    const p = resolvePricing(m, DEFAULT_PRICING);
+    return p?.input !== primaryPricing.input || p?.output !== primaryPricing.output;
+  });
+  if (mismatched.length > 0) {
+    throw new Error(
+      `koi: --max-spend $${maxCostUsd} set but fallback model(s) [${mismatched.join(", ")}] ` +
+        `have different per-token rates than primary "${primary}" ` +
+        `($${primaryPricing.input}/in, $${primaryPricing.output}/out). ` +
+        `The controller stores one rate pair, so mixed-pricing routing would mis-charge spend. ` +
+        `Use a fallback chain with matching pricing, drop --max-spend, or omit KOI_FALLBACK_MODEL.`,
+    );
+  }
+  return {
+    maxCostUsd,
+    costPerInputToken: primaryPricing.input,
+    costPerOutputToken: primaryPricing.output,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared governance controller helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Default-allow pattern backend with no rules. Until the manifest YAML rules
+ * loader (#1877) lands, we have no real rules to evaluate, so the backend
+ * accepts every call and `describeRules()` returns []. The runtime
+ * synthesizes a `default-allow` descriptor below so the /governance "Active
+ * rules" section renders something the operator can read.
+ */
+function createDefaultPatternBackend(): GovernanceBackend {
+  return createPatternBackend({ rules: [], defaultDeny: false });
+}
+
+/** Synthetic descriptor used when the backend reports no rules. */
+const SYNTHETIC_DEFAULT_ALLOW: RuleDescriptor = {
+  id: "default-allow",
+  description: "no rules configured; all calls allowed (manifest YAML loader #1877 pending)",
+  effect: "allow",
+  pattern: "*",
+};
+
+/**
+ * Resolve the rule list for `/governance` — call `backend.describeRules()` if
+ * the backend exposes it, fall back to the synthetic default-allow entry when
+ * empty. Errors degrade to the synthetic entry rather than crashing the
+ * runtime — the rule list is observational, not on the gating path.
+ */
+async function resolveGovernanceRules(
+  backend: GovernanceBackend,
+): Promise<readonly RuleDescriptor[]> {
+  if (backend.describeRules === undefined) return [SYNTHETIC_DEFAULT_ALLOW];
+  try {
+    const rules = await backend.describeRules();
+    return rules.length > 0 ? rules : [SYNTHETIC_DEFAULT_ALLOW];
+  } catch (err: unknown) {
+    console.warn("[koi runtime] governance describeRules() failed:", err);
+    return [SYNTHETIC_DEFAULT_ALLOW];
+  }
+}
+
+/**
+ * Lightweight CostCalculator that resolves per-model rates from
+ * @koi/cost-aggregator's DEFAULT_PRICING. Returns 0 for unknown models so the
+ * middleware doesn't throw on first call.
+ */
+function createPricingCostCalculator(): CostCalculator {
+  return {
+    calculate(model: string, inputTokens: number, outputTokens: number): number {
+      const pricing = resolvePricing(model, DEFAULT_PRICING);
+      if (pricing === undefined) return 0;
+      return inputTokens * pricing.input + outputTokens * pricing.output;
+    },
+  };
+}
+
+/**
+ * Build a ComponentProvider that contributes a pre-existing GovernanceController
+ * with GLOBAL_FORGED priority so it wins over the bundled BUNDLED-priority
+ * provider createKoi adds automatically. This lets us use the SAME controller in
+ * the runtime, the bridge, and the L2 governance middleware.
+ */
+function createSharedGovernanceProvider(controller: GovernanceController): ComponentProvider {
+  return {
+    name: "koi:cli:shared-governance",
+    priority: COMPONENT_PRIORITY.GLOBAL_FORGED,
+    async attach(_agent: Agent): Promise<ReadonlyMap<string, unknown>> {
+      return new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Config & return types
 // ---------------------------------------------------------------------------
 
@@ -272,6 +417,23 @@ export interface KoiRuntimeConfig {
    * int32 max, ~24.8 days).
    */
   readonly defaultMaxDurationMs?: number | undefined;
+  /**
+   * Maximum cumulative spend in USD before the governance controller
+   * fires a violation. When >0, the runtime resolves per-token pricing
+   * for `modelName` via @koi/cost-aggregator's DEFAULT_PRICING and
+   * configures `governance.cost.{maxCostUsd,costPerInputToken,costPerOutputToken}`.
+   * Unknown models cause `createKoiRuntime` to throw at startup so the
+   * budget can never be silently ignored.
+   * 0 (default) keeps cost tracking disabled.
+   */
+  readonly maxSpendUsd?: number | undefined;
+  /**
+   * Fallback model names from the model-router (KOI_FALLBACK_MODEL chain).
+   * Validated alongside the primary `modelName` when `--max-spend` is set —
+   * any unpriced entry refuses startup so a router fallback can never bypass
+   * the budget. Empty / undefined means no router is wired.
+   */
+  readonly fallbackModelNames?: readonly string[] | undefined;
   /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
@@ -691,6 +853,14 @@ export interface KoiRuntimeHandle {
    * the /plugins view and inject plugin awareness into the system prompt.
    */
   readonly pluginSummary: PluginDiscoverySummary;
+  /**
+   * Static snapshot of governance backend rules for the `/governance` "Active
+   * rules" section. Resolved once at runtime construction via
+   * `backend.describeRules()`; falls back to a synthetic `default-allow`
+   * descriptor when the backend reports no rules. Empty rule lists never
+   * surface — callers always receive at least one descriptor.
+   */
+  readonly governanceRules: readonly RuleDescriptor[];
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -1965,6 +2135,59 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // bar or /report command.
     }
 
+    // --- Pre-build shared GovernanceController so it is shared between:
+    //   1. The engine extension (via ECS component lookup inside createKoi)
+    //   2. The L2 createGovernanceMiddleware (observer/recorder)
+    //   3. The bridge (via runtime.agent.component(GOVERNANCE) post-createKoi)
+    // We contribute it via a GLOBAL_FORGED-priority ComponentProvider so it
+    // wins over the BUNDLED-priority provider createKoi installs automatically.
+    const resolvedDurationForGov = resolveMaxDurationMs(config.defaultMaxDurationMs);
+    const sharedGovernanceConfig: Partial<GovernanceConfig> = {
+      iteration: {
+        maxTurns: DEFAULT_MAX_TURNS,
+        maxDurationMs: resolvedDurationForGov,
+        maxTokens: 1_000_000,
+      },
+      ...(config.maxSpendUsd !== undefined && config.maxSpendUsd > 0
+        ? {
+            cost: resolveCostConfig(config.maxSpendUsd, [
+              modelName,
+              ...(config.fallbackModelNames ?? []),
+            ]),
+          }
+        : {}),
+    };
+    const sharedGovernanceController = createGovernanceController(sharedGovernanceConfig);
+    const sharedGovernanceProvider = createSharedGovernanceProvider(sharedGovernanceController);
+
+    // L2 governance middleware — observer mode only. Setpoint accounting
+    // (turn / token_usage / tool outcomes) is owned by the engine extension
+    // `createGovernanceExtension()` from `@koi/engine-reconcile`, which
+    // `createKoi` always installs against this same controller. Letting both
+    // layers record would double-count every variable and trip caps at half
+    // the configured limit. `observerOnly: true` silences the middleware's
+    // four `controller.record(...)` sites while keeping:
+    //   - policy gate (`backend.evaluator.evaluate()`),
+    //   - snapshot-based onAlert dispatch,
+    //   - trajectory span (middleware:koi:governance-core in /trajectory),
+    //   - describeCapabilities() entry surfaced in /governance.
+    //
+    // Known limitation (off-by-one on turn_count): the engine extension
+    // records `kind: "turn"` in `onBeforeTurn` (record then check), so
+    // `maxTurns=N` denies on the Nth pre-gate and yields `N-1` completed
+    // turns. The middleware previously recorded post-turn (the correct
+    // semantics) but observer mode disables it to avoid the double-count.
+    // Tracked separately — fixing requires moving the engine extension's
+    // turn record to `onAfterTurn`, outside this PR's surface.
+    const governanceBackend = createDefaultPatternBackend();
+    const governanceRules = await resolveGovernanceRules(governanceBackend);
+    const governanceMw = createGovernanceMiddleware({
+      backend: governanceBackend,
+      controller: sharedGovernanceController,
+      cost: createPricingCostCalculator(),
+      observerOnly: true,
+    });
+
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
     // compose-middleware.ts. Preset stacks (observability, checkpoint,
@@ -1994,7 +2217,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // middleware flows through the separate `manifestMiddleware`
       // slot and is composed strictly INSIDE the security core
       // layers, regardless of array position here.
-      presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
+      presetExtras: [...stackContribution.middleware, ...auditPresetExtras, governanceMw],
       manifestMiddleware: zoneBMiddleware,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
@@ -2086,6 +2309,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         };
       })(),
       providers: [
+        // sharedGovernanceProvider must come first (GLOBAL_FORGED priority = 50)
+        // so it wins over createKoi's bundled governance provider (priority = 100).
+        // Lower number wins per ECS priority resolution.
+        sharedGovernanceProvider,
         ...coreProviders,
         ...stackContribution.providers,
         ...(config.extraProviders ?? []),
@@ -2128,38 +2355,25 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // must see the same resolved duration or the tighter of the two
       // wins — e.g. the guard's 5-min default would fire before the
       // 30-min governance cap. Thread the resolved values into `limits`
-      // (guard) as well as `governance.iteration` (controller).
-      ...(() => {
-        const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
-        // Pin `maxInactivityMs` to the resolved duration in all hosts
-        // so the two enforcement paths (wall-clock, inactivity) share
-        // one contract. Leaving inactivity at the engine's 5-min
-        // default made quiet model-think phases trip TIMEOUT well
-        // before the advertised cap. For `koi start` the resolved
-        // duration is 5 min anyway (via `defaultMaxDurationMs`), so
-        // this match is a no-op; for the interactive TUI it extends
-        // inactivity to 30 min, which is the intended posture.
-        return {
-          limits: {
-            maxTurns: 25,
-            maxDurationMs: resolvedDuration,
-            maxInactivityMs: resolvedDuration,
-            maxTokens: 1_000_000,
-          },
-          governance: {
-            iteration: {
-              maxTurns: 25,
-              // Per-submit wall-clock cap. TUI default 30 min; `koi start`
-              // default 5 min (via `defaultMaxDurationMs`). Override with
-              // KOI_MAX_DURATION_MS env var (e.g. `KOI_MAX_DURATION_MS=3600000`
-              // for 1h, or `0` to disable the cap entirely).
-              maxDurationMs: resolvedDuration,
-              maxInactivityMs: resolvedDuration,
-              maxTokens: 1_000_000,
-            },
-          },
-        };
-      })(),
+      // (guard). The governance config is now baked into the
+      // sharedGovernanceController above (pre-built before createKoi)
+      // so it is NOT passed here — the bundled governance provider is
+      // overridden by our GLOBAL_FORGED-priority sharedGovernanceProvider.
+      //
+      // Pin `maxInactivityMs` to the resolved duration in all hosts
+      // so the two enforcement paths (wall-clock, inactivity) share
+      // one contract. Leaving inactivity at the engine's 5-min
+      // default made quiet model-think phases trip TIMEOUT well
+      // before the advertised cap. For `koi start` the resolved
+      // duration is 5 min anyway (via `defaultMaxDurationMs`), so
+      // this match is a no-op; for the interactive TUI it extends
+      // inactivity to 30 min, which is the intended posture.
+      limits: {
+        maxTurns: DEFAULT_MAX_TURNS,
+        maxDurationMs: resolvedDurationForGov,
+        maxInactivityMs: resolvedDurationForGov,
+        maxTokens: 1_000_000,
+      },
     });
     // Hand the live runtime to the rotation closure above. The
     // engine never invokes `rotateSessionId` during construction
@@ -2284,6 +2498,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       transcript,
       sandboxActive,
       pluginSummary,
+      governanceRules,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a
