@@ -800,12 +800,30 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
             healthMonitor.untrack(request.workerId);
             let stillAlive = false;
             if (current !== undefined) {
+              // Bound the liveness probe — the same degraded backend
+              // conditions that made watch close early can also stall
+              // isAlive. Without a timeout this coroutine could sit
+              // awaiting forever, blocking resolveExited/pool.delete/
+              // activeIds release. On timeout or throw, treat as
+              // "unknown — assume alive" → quarantine path.
+              const LIVENESS_PROBE_DEADLINE_MS = 250;
+              let probeHandle: ReturnType<typeof setTimeout> | undefined;
+              const probeDeadline = new Promise<"unknown">((resolve) => {
+                probeHandle = setTimeout(() => resolve("unknown"), LIVENESS_PROBE_DEADLINE_MS);
+              });
               try {
-                stillAlive = await current.backend.isAlive(request.workerId);
+                const verdict = await Promise.race([
+                  Promise.resolve(current.backend.isAlive(request.workerId)).then(
+                    (v) => (v ? ("alive" as const) : ("dead" as const)),
+                    () => "unknown" as const,
+                  ),
+                  probeDeadline,
+                ]);
+                stillAlive = verdict !== "dead";
               } catch {
-                // Treat probe failure as "unknown — assume alive" so we
-                // quarantine rather than silently release activeIds.
                 stillAlive = true;
+              } finally {
+                clearTimeout(probeHandle);
               }
             }
             if (stillAlive && current !== undefined) {
@@ -877,7 +895,6 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           "watch-stream-fault",
           undefined,
         );
-        current.resolveExited();
         pool.delete(request.workerId);
         healthMonitor.untrack(request.workerId);
 
@@ -885,6 +902,15 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           // Teardown failed — the old worker may still be alive. Record
           // the quarantine so stop()/shutdown() can retry teardown, and
           // keep activeIds reserved so a duplicate start() is rejected.
+          //
+          // Do NOT call `current.resolveExited()` here: a concurrent stop()
+          // could be awaiting `exitedPromise`, and resolving it would let
+          // stop()'s teardownWorker win a false "exited" signal on the
+          // race — stop() would return ok AND clear the quarantine we
+          // just set. Leaving exitedPromise unresolved forces stop()'s
+          // isAlive poll to take over as the liveness source of truth; a
+          // still-alive worker keeps stop() error → stop() also sets
+          // quarantine (idempotent), preserving activeIds.
           quarantined.set(request.workerId, {
             backend: current.backend,
             agentId: current.handle.agentId,
@@ -903,9 +929,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           return;
         }
 
-        // Teardown succeeded — the old worker is confirmed dead. Now it's
-        // safe to emit the synthetic crashed event and schedule a restart
-        // per policy.
+        // Teardown succeeded — the old worker is confirmed dead. Resolve
+        // the exit promise so any awaiting stop()/shutdown() unblocks,
+        // then emit the synthetic crashed event and schedule a restart.
+        current.resolveExited();
         const syntheticCrash: WorkerEvent = {
           kind: "crashed",
           workerId: request.workerId,

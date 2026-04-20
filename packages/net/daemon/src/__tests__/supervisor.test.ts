@@ -2276,6 +2276,71 @@ describe("supervisor watch AbortSignal plumbing", () => {
     await supervisor.value.shutdown("test");
   });
 
+  it("tidy-cleanup liveness probe is bounded when isAlive hangs", async () => {
+    // Regression guard: the post-loop tidy-cleanup's isAlive probe must
+    // not block the IIFE indefinitely if the backend's isAlive hangs (the
+    // same degraded conditions that caused the watch stream to close
+    // early). Bounding the probe lets stop()/shutdown() return within
+    // their deadlines instead of deadlocking on a wedged liveness check.
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "hanging-isalive",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: () => new Promise<boolean>(() => {}),
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 40,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("hang-probe-1"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // stop() enters its own teardown deadline (40ms terminate + 40ms kill),
+    // then aborts watch. The IIFE's tidy-cleanup must not get stuck on
+    // isAlive — if it did, the post-loop coroutine would leak and the
+    // shutdown drain below would exceed its deadline.
+    const before = Date.now();
+    await supervisor.value.stop(workerId("hang-probe-1"), "test");
+    const sd = await supervisor.value.shutdown("test");
+    const elapsed = Date.now() - before;
+    // Generous bound — the liveness probe timeout is 250ms; we should
+    // complete well under a second even with both stop + shutdown windows.
+    expect(elapsed).toBeLessThan(1500);
+    // Probe timed out → treated as unknown-alive → quarantine owns the id.
+    // Shutdown drains quarantines; teardownWorker still waits on isAlive
+    // which hangs, so shutdown itself is expected to fail closed here.
+    expect(sd.ok).toBe(false);
+  });
+
   it("shutdown resolves within deadline even against a stalling backend", async () => {
     // Without AbortSignal plumbing, a backend whose watch stream never emits
     // a terminal event and never returns would leave shutdown() blocked on
