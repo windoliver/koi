@@ -218,6 +218,13 @@ export function createS3BlobStore(config: S3BlobStoreConfig): BlobStore {
   // `__store_id__` with an empty prefix). Uses PutObject for writes and
   // GetObject for reads — S3's strong read-after-write consistency makes the
   // sentinel durable the moment `writeStoreId` resolves.
+  //
+  // S3's durability model: PutObject 200 OK guarantees the object is written
+  // to multiple AZs before the API returns, and post-Dec-2020 read-after-write
+  // consistency guarantees any subsequent GetObject on a fresh process
+  // observes the new value. No client-side fsync needed — the FS impl's
+  // fsync+rename discipline is replaced by the SDK's acknowledgement of
+  // durable commit, satisfying the `StoreIdSentinel.writeStoreId` contract.
   const sentinelKey = prefix === "" ? STORE_ID_SENTINEL_KEY : `${prefix}/${STORE_ID_SENTINEL_KEY}`;
 
   const sentinel: StoreIdSentinel = {

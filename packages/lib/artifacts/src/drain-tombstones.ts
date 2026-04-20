@@ -115,10 +115,17 @@ export function createDrainTombstones(args: {
 
       try {
         await deleteBlobIdempotent(args.blobStore, row.hash);
-      } catch {
-        // Transient failure. Tombstone retains claimed_at; next drain
-        // resumes via resume-from-claimed. Don't propagate — keep draining
-        // sibling tombstones; they may be unaffected.
+      } catch (err: unknown) {
+        // Blob delete failed — tombstone with `claimed_at` set remains, next
+        // drain retries (resume-from-claimed rule, spec §6.3). Do NOT abort
+        // the drain; sibling tombstones are independent. Structured log
+        // surfaced via console.warn for operator visibility; Plan 4+ onEvent
+        // path covers structured delivery.
+        console.warn(
+          `[artifacts.drain-tombstones] blob delete failed for hash=${row.hash}; tombstone retained for retry: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
         continue;
       }
 

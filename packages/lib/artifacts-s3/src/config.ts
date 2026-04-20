@@ -83,19 +83,26 @@ function validatePrefix(prefix: unknown): void {
   }
 }
 
+function isCredentialsObject(value: unknown): value is {
+  readonly accessKeyId?: unknown;
+  readonly secretAccessKey?: unknown;
+  readonly sessionToken?: unknown;
+} {
+  return typeof value === "object" && value !== null;
+}
+
 function validateCredentials(credentials: unknown): void {
-  if (credentials === null || typeof credentials !== "object") {
+  if (!isCredentialsObject(credentials)) {
     throw new Error(
       `S3BlobStoreConfig.credentials is required and must be an object; got ${String(credentials)}. Credentials are never read from the environment — callers must supply explicit accessKeyId + secretAccessKey.`,
     );
   }
-  const c = credentials as Record<string, unknown>;
-  assertNonEmptyString(c.accessKeyId, "credentials.accessKeyId");
-  assertNonEmptyString(c.secretAccessKey, "credentials.secretAccessKey");
+  assertNonEmptyString(credentials.accessKeyId, "credentials.accessKeyId");
+  assertNonEmptyString(credentials.secretAccessKey, "credentials.secretAccessKey");
   // sessionToken is optional; if present, it must be non-empty (empty string is
   // always a misconfiguration — treat as programmer error).
-  if (c.sessionToken !== undefined) {
-    assertNonEmptyString(c.sessionToken, "credentials.sessionToken");
+  if (credentials.sessionToken !== undefined) {
+    assertNonEmptyString(credentials.sessionToken, "credentials.sessionToken");
   }
 }
 

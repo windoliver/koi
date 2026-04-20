@@ -47,11 +47,25 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
   // verbatim and skips FS-specific bootstrap (`mkdirSync(blobDir, ...)`,
   // default filesystem factory). `blobDir` is still required for the default
   // FS backend (both as the blob root and as the lock-file directory).
-  if (config.blobStore === undefined && config.blobDir === undefined) {
+  // Resolve the backend choice once up front so downstream code can trust it
+  // without re-asserting the `blobStore === undefined → blobDir defined`
+  // invariant at every use site.
+  const resolvedBackend:
+    | { readonly kind: "override"; readonly store: BlobStore }
+    | {
+        readonly kind: "filesystem";
+        readonly blobDir: string;
+      } = (() => {
+    if (config.blobStore !== undefined) {
+      return { kind: "override", store: config.blobStore };
+    }
+    if (config.blobDir !== undefined) {
+      return { kind: "filesystem", blobDir: config.blobDir };
+    }
     throw new Error(
       "ArtifactStoreConfig requires either `blobDir` (for the default filesystem backend) or `blobStore` (for a pluggable backend).",
     );
-  }
+  })();
 
   validateLifecyclePolicy(config.policy);
 
@@ -123,15 +137,8 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
   if (!isInMemoryDbPath(config.dbPath)) {
     mkdirSync(dirname(config.dbPath), { recursive: true });
   }
-  if (config.blobStore === undefined) {
-    // Non-null: the smuggle-check at the top rejected `blobStore === undefined &&
-    // blobDir === undefined`, so when `blobStore === undefined` we know
-    // `blobDir` is defined.
-    const blobDir = config.blobDir;
-    if (blobDir === undefined) {
-      throw new Error("unreachable: blobDir guaranteed by config validation above");
-    }
-    mkdirSync(blobDir, { recursive: true });
+  if (resolvedBackend.kind === "filesystem") {
+    mkdirSync(resolvedBackend.blobDir, { recursive: true });
   }
 
   // The filesystem blobDir-lock (spec §3.0 Layer 1a) is a defense against two
@@ -139,16 +146,18 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
   // `blobStore`, the backend's own store-id sentinel (Layer 2) is the
   // corresponding defense — no local-filesystem lock applies. `acquireLock`
   // skips its Layer-1a lock when `blobDir` is undefined.
-  const releaseLock = acquireLock(config.dbPath, config.blobDir);
+  const releaseLock = acquireLock(
+    config.dbPath,
+    resolvedBackend.kind === "filesystem" ? resolvedBackend.blobDir : undefined,
+  );
 
   let db: Database | undefined;
   try {
     db = openDatabase(config);
     const blobStore: BlobStore =
-      config.blobStore ??
-      // `blobDir` is guaranteed by the validation at the top when `blobStore`
-      // is undefined — the fallback string keeps TS happy but is unreachable.
-      createFilesystemBlobStore(config.blobDir ?? "");
+      resolvedBackend.kind === "override"
+        ? resolvedBackend.store
+        : createFilesystemBlobStore(resolvedBackend.blobDir);
     await ensureStoreIdPair({ db, blobStore });
 
     // Startup recovery (spec §6.5 Plan 4): local SQLite DML only. Drains

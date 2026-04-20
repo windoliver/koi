@@ -106,6 +106,12 @@ export function reapDeletionSet(args: {
   }
 
   const ids = Array.from(deletionIds);
+  // NOTE: `IN (?, ?, ...)` placeholder count must stay below SQLite's
+  // SQLITE_MAX_VARIABLE_NUMBER (999 on conservative builds, 32766 on modern
+  // builds). Current sweeps operate on O(100) rows per iteration so this is
+  // fine. If sweep sizes grow, batch the DELETE or use
+  // `WITH cte(id) AS (VALUES ...)` instead. Same constraint applies to the
+  // sibling IN-clause in `hashStillReferenced`.
   const placeholders = ids.map(() => "?").join(",");
   args.db.query(`DELETE FROM artifacts WHERE id IN (${placeholders})`).run(...ids);
 
