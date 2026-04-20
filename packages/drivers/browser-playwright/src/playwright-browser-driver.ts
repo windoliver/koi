@@ -258,6 +258,68 @@ async function checkNavigationUrlAllowed(
   return null;
 }
 
+/**
+ * Installs a per-page route handler that aborts navigation requests to
+ * private addresses BEFORE the request is committed. Runs on every page
+ * created by the driver — crucial for borrowed contexts (cdpEndpoint /
+ * wsEndpoint paths where we cannot install a context-level guard).
+ *
+ * Unlike the context-level guard, this per-page handler also catches IP
+ * literal navigations (e.g. `http://127.0.0.1/`) — the context-level
+ * version deliberately skipped those assuming a tool-layer check,
+ * which is not guaranteed in borrowed-context setups.
+ */
+async function installPageRebindingGuard(
+  page: Page,
+  blockPrivateAddresses: boolean,
+): Promise<void> {
+  if (!blockPrivateAddresses) return;
+  await page.route("**", async (route) => {
+    const req = route.request();
+    // Only intercept main-frame document navigations — sub-resources are
+    // not private-address rebinding vectors in this scope.
+    if (req.resourceType() !== "document" || !req.isNavigationRequest()) {
+      await route.continue();
+      return;
+    }
+    try {
+      const url = new URL(req.url());
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        await route.continue();
+        return;
+      }
+      const host = url.hostname;
+      const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+      // IP literals (IPv4 dotted + IPv6 / IPv4-mapped IPv6).
+      const isIpLiteral =
+        /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+      if (isIpLiteral) {
+        if (isPrivateIp(bare)) {
+          await route.abort("accessdenied");
+          return;
+        }
+        await route.continue();
+        return;
+      }
+      // Explicit localhost handling — DNS rules vary by OS.
+      if (bare === "localhost" || bare.endsWith(".localhost")) {
+        await route.abort("accessdenied");
+        return;
+      }
+      const { address } = await dnsPromises.lookup(bare);
+      if (isPrivateIp(address)) {
+        await route.abort("accessdenied");
+        return;
+      }
+    } catch {
+      // DNS lookup failure → fail closed (consistent with fail-closed policy elsewhere).
+      await route.abort("accessdenied");
+      return;
+    }
+    await route.continue();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Console helpers
 // ---------------------------------------------------------------------------
@@ -582,6 +644,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     if (currentTabId === null) {
       const ctx = await ensureContext();
       const page = await ctx.newPage();
+      await installPageRebindingGuard(page, config.blockPrivateAddresses !== false);
       const tabId = newTabId();
       tabs.set(tabId, page);
       currentTabId = tabId;
@@ -1040,6 +1103,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
         const ctx = await ensureContext();
         const page = await ctx.newPage();
+        await installPageRebindingGuard(page, config.blockPrivateAddresses !== false);
         const tabId = newTabId();
         tabs.set(tabId, page);
         attachConsoleListener(page, tabId);
@@ -1067,6 +1131,21 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
             tabConsoleLogs.delete(tabId);
             currentTabId = previousTabId; // intentional restore: goto() failed, revert to previous tab
             throw gotoErr;
+          }
+          // Post-navigation redirect check — defense-in-depth against public
+          // URLs that redirect to private addresses. The per-page route guard
+          // aborts these at request time for owned transports, but we still
+          // validate the final URL as a safety net.
+          const finalErr = await checkNavigationUrlAllowed(
+            page.url(),
+            config.blockPrivateAddresses !== false,
+          );
+          if (finalErr) {
+            await page.close().catch(() => undefined);
+            tabs.delete(tabId);
+            tabConsoleLogs.delete(tabId);
+            currentTabId = previousTabId;
+            return { ok: false, error: finalErr };
           }
         }
 

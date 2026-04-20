@@ -46,6 +46,7 @@ interface MockPage {
   readonly evaluate: MockFn;
   readonly bringToFront: MockFn;
   readonly close: MockFn;
+  readonly route: MockFn;
   readonly on: MockFn;
   // Test helpers — exposed by makeMockPage
   readonly _locator: MockLocator;
@@ -166,6 +167,7 @@ function makeMockPage(opts?: {
     evaluate: mock((_script: string) => Promise.resolve("eval-result")),
     bringToFront: mock(() => Promise.resolve()),
     close: mock(() => Promise.resolve()),
+    route: mock((_pattern: string, _handler: unknown) => Promise.resolve()),
     on: mock((event: string, handler: (msg: unknown) => void) => {
       if (event === "console") {
         // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
