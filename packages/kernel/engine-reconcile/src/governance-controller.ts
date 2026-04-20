@@ -253,6 +253,12 @@ export function createGovernanceController(
       case "turn":
         turnCount++;
         break;
+      case "turn_refund": {
+        const refund = Number.isFinite(event.count) ? Math.max(0, event.count) : 0;
+        // Never let refunds drive the counter negative.
+        turnCount = Math.max(0, turnCount - refund);
+        break;
+      }
       case "spawn":
         spawnCount++;
         break;
@@ -260,7 +266,9 @@ export function createGovernanceController(
         spawnCount = Math.max(0, spawnCount - 1);
         break;
       case "forge":
-        // Forge events tracked by L2-contributed variables
+      case "forge_release":
+        // Forge lifecycle (forge / forge_release pairing) tracked by
+        // L2-contributed variables (e.g. @koi/governance-defaults).
         break;
       case "token_usage":
         tokenUsage += event.count;
@@ -337,12 +345,12 @@ export function createGovernanceController(
         violations.push(result.variable);
       }
     }
-    return Object.freeze({
+    return {
       timestamp: Date.now(),
-      readings: Object.freeze(readings),
+      readings,
       healthy: violations.length === 0,
-      violations: Object.freeze(violations),
-    });
+      violations,
+    };
   }
 
   function reading(variable: string): SensorReading | undefined {

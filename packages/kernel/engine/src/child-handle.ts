@@ -20,6 +20,7 @@ import type {
   ChildCompletionResult,
   ChildHandle,
   ChildLifecycleEvent,
+  ProcessState,
   TransitionReason,
 } from "@koi/core";
 import { AGENT_SIGNALS, exitCodeForTransitionReason } from "@koi/core";
@@ -96,32 +97,75 @@ export function createChildHandle(
     }
   }
 
+  /**
+   * Lookup → transition CAS with retry-once on CONFLICT.
+   *
+   * The caller supplies `isApplicable(phase)` to decide whether a transition
+   * is still needed after the retry lookup (e.g. STOP is a no-op when the
+   * child already moved to suspended on its own).
+   *
+   * Non-CONFLICT failures and still-conflicting retries surface as an
+   * `error` ChildLifecycleEvent. Silently dropping signals under contention
+   * was the original bug — users pressing "Stop" saw the agent keep
+   * running with no diagnostic.
+   */
+  async function transitionWithRetry(
+    target: ProcessState,
+    reason: TransitionReason,
+    isApplicable: (phase: ProcessState) => boolean,
+  ): Promise<void> {
+    const entry = await registry.lookup(childId);
+    if (entry === undefined || !isApplicable(entry.status.phase)) return;
+
+    const first = await registry.transition(childId, target, entry.status.generation, reason);
+    if (first.ok) return;
+
+    if (first.error.code !== "CONFLICT") {
+      listeners.notify({
+        kind: "error",
+        childId,
+        cause: new Error(
+          `Transition to "${target}" failed: ${first.error.code}: ${first.error.message}`,
+        ),
+      });
+      return;
+    }
+
+    // CAS conflict — re-lookup and retry once with the fresh generation.
+    const retryEntry = await registry.lookup(childId);
+    if (retryEntry === undefined || !isApplicable(retryEntry.status.phase)) return;
+
+    const second = await registry.transition(childId, target, retryEntry.status.generation, reason);
+    if (!second.ok) {
+      listeners.notify({
+        kind: "error",
+        childId,
+        cause: new Error(
+          `Transition to "${target}" failed after retry: ${second.error.code}: ${second.error.message}`,
+        ),
+      });
+    }
+  }
+
   async function signal(kind: string): Promise<void> {
     listeners.notify({ kind: "signaled", childId, signal: kind });
 
     switch (kind) {
       case AGENT_SIGNALS.STOP: {
-        const entry = await registry.lookup(childId);
-        if (
-          entry === undefined ||
-          (entry.status.phase !== "running" && entry.status.phase !== "waiting")
-        ) {
-          return;
-        }
-        await registry.transition(childId, "suspended", entry.status.generation, {
-          kind: "signal_stop",
-        });
+        await transitionWithRetry(
+          "suspended",
+          { kind: "signal_stop" },
+          (phase) => phase === "running" || phase === "waiting",
+        );
         break;
       }
 
       case AGENT_SIGNALS.CONT: {
-        const entry = await registry.lookup(childId);
-        if (entry === undefined || entry.status.phase !== "suspended") {
-          return;
-        }
-        await registry.transition(childId, "running", entry.status.generation, {
-          kind: "signal_cont",
-        });
+        await transitionWithRetry(
+          "running",
+          { kind: "signal_cont" },
+          (phase) => phase === "suspended",
+        );
         break;
       }
 
@@ -146,21 +190,7 @@ export function createChildHandle(
   }
 
   async function terminate(_reason?: string): Promise<void> {
-    const entry = await registry.lookup(childId);
-    if (entry === undefined || entry.status.phase === "terminated") return;
-
-    const result = await registry.transition(childId, "terminated", entry.status.generation, {
-      kind: "evicted",
-    });
-
-    // Retry once on CAS conflict (entry may have moved between lookup and transition)
-    if (!result.ok && result.error.code === "CONFLICT") {
-      const retryEntry = await registry.lookup(childId);
-      if (retryEntry === undefined || retryEntry.status.phase === "terminated") return;
-      await registry.transition(childId, "terminated", retryEntry.status.generation, {
-        kind: "evicted",
-      });
-    }
+    await transitionWithRetry("terminated", { kind: "evicted" }, (phase) => phase !== "terminated");
   }
 
   function waitForCompletion(): Promise<ChildCompletionResult> {

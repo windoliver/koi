@@ -23,10 +23,29 @@ export interface FakeBackendControls {
   readonly exit: (id: WorkerId, code?: number) => void;
   readonly isAlive: (id: WorkerId) => boolean;
   readonly liveWorkerCount: () => number;
+  /** Last pid emitted via the "started" event (undefined if `pidSeed` not set). */
+  readonly lastEmittedPid: () => number | undefined;
 }
 
-export function createFakeBackend(kind: WorkerBackendKind = "in-process"): FakeBackendControls {
+export interface FakeBackendConfig {
+  readonly kind?: WorkerBackendKind;
+  /**
+   * When set, each `spawn()` emits a monotonically increasing pid in the
+   * `started` event starting at `pidSeed`. Used by bridge tests that
+   * assert pid refresh on restart.
+   */
+  readonly pidSeed?: number;
+}
+
+export function createFakeBackend(
+  kindOrConfig: WorkerBackendKind | FakeBackendConfig = "in-process",
+): FakeBackendControls {
+  const config: FakeBackendConfig =
+    typeof kindOrConfig === "string" ? { kind: kindOrConfig } : kindOrConfig;
+  const kind: WorkerBackendKind = config.kind ?? "in-process";
   const workers = new Map<WorkerId, FakeWorkerState>();
+  let nextPid = config.pidSeed;
+  let lastPid: number | undefined;
 
   const backend: WorkerBackend = {
     kind,
@@ -54,7 +73,18 @@ export function createFakeBackend(kind: WorkerBackendKind = "in-process"): FakeB
         startedAt: Date.now(),
         signal: controller.signal,
       };
-      state.emit({ kind: "started", workerId: req.workerId, at: Date.now() });
+      let emittedPid: number | undefined;
+      if (nextPid !== undefined) {
+        emittedPid = nextPid;
+        nextPid += 1;
+        lastPid = emittedPid;
+      }
+      state.emit({
+        kind: "started",
+        workerId: req.workerId,
+        at: Date.now(),
+        ...(emittedPid !== undefined && { pid: emittedPid }),
+      });
       return { ok: true, value: handle };
     },
     terminate: async (id, _reason) => {
@@ -116,5 +146,6 @@ export function createFakeBackend(kind: WorkerBackendKind = "in-process"): FakeB
       for (const s of workers.values()) if (s.alive) n++;
       return n;
     },
+    lastEmittedPid: () => lastPid,
   };
 }

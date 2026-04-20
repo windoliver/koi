@@ -36,8 +36,10 @@ export function createProcessAccounter(registry: AgentRegistry): SharedProcessAc
     }
 
     if (event.kind === "transitioned" && event.to === "terminated") {
-      count = Math.max(0, count - 1);
-      decremented.add(event.agentId);
+      if (!decremented.has(event.agentId)) {
+        count = Math.max(0, count - 1);
+        decremented.add(event.agentId);
+      }
     }
   });
 

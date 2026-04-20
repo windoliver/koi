@@ -703,6 +703,37 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         ? state
         : { ...state, modal: action.modal };
 
+    case "model_picker_set_query": {
+      if (state.modal?.kind !== "model-picker") return state;
+      return { ...state, modal: { ...state.modal, query: action.query } };
+    }
+
+    case "model_picker_fetched": {
+      if (state.modal?.kind !== "model-picker") return state;
+      const nextModal = action.result.ok
+        ? {
+            ...state.modal,
+            status: "ready" as const,
+            models: action.result.models,
+          }
+        : {
+            ...state.modal,
+            status: "error" as const,
+            error: action.result.error,
+          };
+      return { ...state, modal: nextModal };
+    }
+
+    case "model_switched": {
+      // Keep `sessionInfo.modelName` in lockstep with the top-level
+      // `state.modelName` so diagnostics (doctor view, cost recording,
+      // transcript exports that read session metadata) see a single
+      // source of truth after a mid-session switch.
+      const nextSessionInfo =
+        state.sessionInfo === null ? null : { ...state.sessionInfo, modelName: action.model };
+      return { ...state, modelName: action.model, sessionInfo: nextSessionInfo };
+    }
+
     case "set_connection_status":
       return action.status === state.connectionStatus
         ? state
