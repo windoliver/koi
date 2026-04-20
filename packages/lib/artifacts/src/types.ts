@@ -102,8 +102,14 @@ export interface ArtifactStoreConfig {
    * 2); higher values tolerate longer backend outages across restarts.
    */
   readonly maxRepairAttempts?: number;
-  // Plan 3 (#1920) will add `policy: LifecyclePolicy` for TTL + quota +
-  // retention. Plan 5 (#1922) will add `blobStore: BlobStore` for pluggable
-  // backends. Both are omitted from the Plan 2 public surface so the type
-  // never advertises config fields that would be rejected at runtime.
+  /**
+   * Lifecycle policy: TTL, quota, and per-name retention. Fields are all
+   * optional; when present each must be a finite positive integer. Validated
+   * at construction (Plan 3 — #1920). `ttlMs` is frozen onto each row's
+   * `expires_at` at save time; later policy changes never recompute it.
+   */
+  readonly policy?: LifecyclePolicy;
+  // Plan 5 (#1922) will add `blobStore: BlobStore` for pluggable backends —
+  // still omitted from the public surface so the type never advertises a
+  // field that would be rejected at runtime.
 }

@@ -21,6 +21,7 @@ import { createDeleteArtifact } from "./delete.js";
 import { createGetArtifact } from "./get.js";
 import { createListArtifacts } from "./list.js";
 import { acquireLock, isInMemoryDbPath } from "./lock.js";
+import { validateLifecyclePolicy } from "./policy.js";
 import { runStartupRecovery } from "./recovery.js";
 import { createSaveArtifact } from "./save.js";
 import { createRevokeShare, createShareArtifact } from "./share.js";
@@ -37,24 +38,18 @@ import type {
 } from "./types.js";
 
 export async function createArtifactStore(config: ArtifactStoreConfig): Promise<ArtifactStore> {
-  // Defense in depth: the public type no longer declares blobStore/policy,
-  // but a JS caller can still smuggle them in. Reject loudly rather than
-  // silently ignore — Plan 3 adds policy (#1920), Plan 5 adds blobStore
-  // (#1922).
-  const smuggled = config as unknown as {
-    readonly blobStore?: unknown;
-    readonly policy?: unknown;
-  };
+  // Defense in depth: the public type does not declare blobStore, but a JS
+  // caller can still smuggle it in. Reject loudly rather than silently
+  // ignore — Plan 5 (#1922) adds pluggable backends with remote-backend
+  // sentinel pairing.
+  const smuggled = config as unknown as { readonly blobStore?: unknown };
   if (smuggled.blobStore !== undefined) {
     throw new Error(
       "ArtifactStoreConfig.blobStore is not supported in Plan 2 — use the default FS backend via blobDir. Plan 5 (#1922) adds pluggable backends with remote-backend sentinel pairing.",
     );
   }
-  if (smuggled.policy !== undefined) {
-    throw new Error(
-      "ArtifactStoreConfig.policy is not enforced in Plan 2 — TTL, quota, and per-name retention land in Plan 3 (#1920). Do not pass a policy until it ships.",
-    );
-  }
+
+  validateLifecyclePolicy(config.policy);
 
   if (config.maxRepairAttempts !== undefined) {
     if (
