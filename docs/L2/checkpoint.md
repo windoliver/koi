@@ -113,6 +113,21 @@ Crash safety comes from **idempotency**, not from a coordinator: re-running `res
 
 If the capture step fails at end of turn (disk full, store error, etc.), the turn proceeds. The snapshot is recorded with `SNAPSHOT_STATUS_KEY = "incomplete"` in its metadata and is **skipped on rewind** with a user-visible warning. Checkpoint failure does NOT abort the agent loop — it is a recovery feature, not a correctness feature.
 
+## Stop-blocked contract (#1638)
+
+When `onAfterTurn` fires with `ctx.stopBlocked === true` (activity-timeout abort, stop-gate veto), the middleware fails closed — it never writes a `"complete"` snapshot for a partial turn. The chain of responses depends on whether the aborted turn had already mutated the workspace:
+
+| State | Behavior |
+|-------|----------|
+| `stopBlocked` + empty `fileOps` | Skip entirely; head stays on last good snapshot. |
+| `stopBlocked` + non-empty `fileOps`, rollback succeeds | Actively apply compensating ops to restore disk, discard buffer, head unchanged. |
+| `stopBlocked` + non-empty `fileOps`, rollback fails (`error` or `skipped-missing-blob`) | Persist an `incomplete` marker snapshot (empty `fileOps`, dropped ops in metadata `koi_rollback_dropped_ops`); head still not advanced. |
+| Rollback AND incomplete-persist BOTH fail | **Session quarantined:** `state.quarantine` set. Subsequent `wrapToolCall` on tracked tools throws; `onAfterTurn` for normal turns returns without capture. Quarantine is per-process only (lost on restart). |
+
+Resume-from-disk (`getOrCreateSession`) walks `parentIds` past any `incomplete` head to the nearest `complete` ancestor before seeding `parentNodeId`, so subsequent captures fork from a restorable base rather than a quarantined marker.
+
+Aborted turns do NOT participate in the "same-user-prompt" continuation heuristic — `lastCaptureHadOps` is reset to `false` on the `stopBlocked` branch so the next text-only turn cannot fold into the pre-abort turn's `userTurnIndex`. Incomplete sibling markers reuse the previous prompt's `userTurnIndex` to keep the live ancestor chain contiguous for restore planning's by-count walk.
+
 ## In-flight contract (queue between turns)
 
 Rewind requests received during a tool call are queued; they fire when the engine returns to `idle`. The UI shows a "rewind queued" indicator. There is no mid-turn rewind — this sidesteps the per-tool cancellation problem (Bash subprocesses cannot be safely cancelled mid-syscall).

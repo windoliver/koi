@@ -33,6 +33,7 @@ import type { MemoryStore, MemoryStoreConfig } from "@koi/memory-fs";
 import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { BrowserOperation } from "@koi/tool-browser";
+import type { ActivityTimeoutConfig } from "./apply-activity-timeout.js";
 
 // ---------------------------------------------------------------------------
 // Runtime configuration
@@ -53,10 +54,28 @@ export interface RuntimeConfig {
   readonly debug?: boolean | undefined;
 
   /**
-   * Stream timeout in milliseconds. Applied via AbortSignal.timeout() to model
-   * stream consumption. Default: 120_000 (2 minutes).
+   * Stream timeout in milliseconds. Applied as a wall-clock safety bound on
+   * model stream consumption. Default: 120_000 (2 minutes).
+   *
+   * @deprecated Prefer `activityTimeout` for inactivity-based termination (#1638).
+   *   When `activityTimeout` is not provided, `streamTimeoutMs` is mapped to
+   *   `activityTimeout.maxDurationMs` to preserve existing wall-clock behavior.
    */
   readonly streamTimeoutMs?: number | undefined;
+
+  /**
+   * Inactivity-based stream termination (#1638). When configured, the runtime
+   * resets an idle timer on each adapter event (model chunks, tool calls, tool
+   * results, turn boundaries). Idle past `idleWarnMs` emits a
+   * `custom:activity.idle.warning` event; idle past `idleTerminateMs`
+   * (default 2 × idleWarnMs) aborts the stream with
+   * `custom:activity.terminated.idle`. A `maxDurationMs` wall-clock bound acts
+   * as a final safety net — the stream aborts regardless of activity.
+   *
+   * When both `streamTimeoutMs` and `activityTimeout` are provided,
+   * `activityTimeout` wins.
+   */
+  readonly activityTimeout?: ActivityTimeoutConfig | undefined;
 
   /**
    * Directory for trajectory ATIF files. When provided, creates a
@@ -431,6 +450,15 @@ export interface RuntimeConfig {
 
 /** Default stream timeout: 2 minutes for live API calls. */
 export const DEFAULT_STREAM_TIMEOUT_MS = 120_000 as const;
+
+/**
+ * Default wall-clock fallback for `activityTimeout.maxDurationMs` (#1638).
+ * When a caller supplies `activityTimeout` without an explicit `maxDurationMs`,
+ * the runtime fills in this 4-hour cap so no stream is ever unbounded — idle
+ * timers do the bulk of termination, but a final wall-clock safety net stays
+ * in place as a rollback-safe backstop.
+ */
+export const DEFAULT_ACTIVITY_MAX_DURATION_MS = 14_400_000 as const;
 
 // ---------------------------------------------------------------------------
 // Debug introspection

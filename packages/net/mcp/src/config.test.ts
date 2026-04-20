@@ -358,6 +358,24 @@ describe("normalizeMcpServers", () => {
     expect(servers).toHaveLength(2);
     expect(rejected).toHaveLength(0);
   });
+
+  test("accepts HTTP config with oauth but no clientId (DCR fallback)", () => {
+    // Dynamic Client Registration (RFC 7591) now resolves the clientId at
+    // auth time if the discovered AS has a registration_endpoint.
+    const { servers, rejected } = normalizeMcpServers({
+      dcr: {
+        type: "http",
+        url: "https://dcr.example.com",
+        oauth: { callbackPort: 9000 },
+      },
+    });
+    expect(rejected).toHaveLength(0);
+    expect(servers).toHaveLength(1);
+    const server = servers[0];
+    if (server?.kind === "http") {
+      expect(server.oauth?.clientId).toBeUndefined();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

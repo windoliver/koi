@@ -12,6 +12,7 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 - **`/mcp` TUI command**: full-screen interactive view of MCP server status (connected / needs-auth / error / pending / auth-pending-restart). Reads `.mcp.json` from `cwd` then `~/.koi/.mcp.json` (legacy `~/.claude/.mcp.json` still read with deprecation warning). Status comes from instant Keychain check + background `runtimeHandle.getMcpStatus()` enrichment.
 - **`nav:mcp-auth` handler**: triggers OAuth inline when user presses Enter on a needs-auth row. Per-server in-flight guard prevents double-Enter races. After success, status flips to `auth-pending-restart` since the live runtime requires a TUI restart to attach the newly-available tools.
 - **MCP auth pseudo-tools**: when the model sees `<server>__authenticate` in its tool list (emitted by `@koi/mcp`'s `AuthToolFactory`), it can trigger OAuth without leaving the conversation. The CLI provides the OAuth runtime via `mcp-auth-tools.ts` and `mcp-connection-factory.ts`.
+- **MCP OAuth diagnostics (#1296)**: `koi mcp auth` consumes the new `OAuthRuntime.onAuthFailure(reason)` callback and maps each `OAuthFailureReason` discriminant (`discovery_failed` / `dcr_unavailable` / `dcr_failed` / `exchange_failed` / `state_mismatch` / `authorize_failed`) to an operator-actionable message via `describeOAuthFailure`. Static-`clientId` requirement removed from `validateMcpServerConfig` so DCR-capable servers can omit it; new optional `includeResourceParameter` field forwards to RFC 8707 emission.
 - **MCP tool labels**: namespaced MCP tools (`server__tool`) display as `Server ▸ subtitle` instead of being mislabeled by suffix matching.
 - **Nexus backend acceptance on `koi tui`**: `koi tui` now accepts a nexus-backed filesystem backend when `--allow-remote-fs` is passed. The nexus backend is validated with a pre-flight liveness check at startup; if unreachable the TUI exits with an error rather than starting in a degraded state.
 - **OAuth auth interceptor**: `createTuiRuntime()` wires an OAuth auth interceptor (`createOAuthAuthInterceptor`) into nexus HTTP transport. When the nexus server returns a 401 with a `WWW-Authenticate: Bearer` challenge, the interceptor triggers the TUI's OAuth flow (browser open + localhost redirect) transparently, refreshes the access token, and retries the original request. Tokens are persisted via `@koi/secure-storage` across TUI restarts.
@@ -665,3 +666,21 @@ and `docs/L2/tui.md` for the underlying changes.
 - **`koi start`** — uses `createPatternPermissionBackend` with the blanket `allow: ["*"]` rule (marker-aware). Dual-key evaluation engages automatically: the dangerous-command ratchet overrides allow with ask on sudo, `curl | sh`, `python -c`, `node -e`, etc., and the `!complex` structural ratchet fires on compound forms (redirects, pipelines, subshells, command substitution). This is a real hardening of `koi start` under the auto-allow policy.
 
 The resolver matches tool ids case-insensitively (`"Bash"` or `"bash"`). Non-bash tools and malformed inputs fall through to plain-tool evaluation. See `docs/L3/runtime.md` for the runtime wiring contract and `docs/L2/bash-classifier.md` / `docs/L2/middleware-permissions.md` for the library design and threat model.
+
+## #1638 — Activity-based stream timeouts (dev-only env hook)
+
+Integrates `@koi/checkpoint` (stopBlocked fail-closed rollback + quarantine on rollback/persist double-failure) and `@koi/loop` (budget treats synthesized metrics as unmetered) with the runtime-level activity-timeout wrapper.
+
+CLI surface changes:
+
+- **Headless exit classifier** (`packages/meta/cli/src/headless/run.ts`): a terminal `done` with `stopReason: "interrupted"` AND `metadata.terminatedBy === "activity-timeout"` now exits **4 (TIMEOUT)** instead of 1 (AGENT_FAILURE). Message distinguishes `idle` vs `wall_clock` reason.
+
+- **Interactive fallback message** (`packages/meta/cli/src/engine-adapter.ts` `explainNonCompletedStop`): timeout-synthesized done events render `[Turn interrupted by activity timeout (inactivity|wall-clock) after Ns.]` in the transcript instead of the generic `[Turn interrupted before the model produced a reply.]`.
+
+- **Dev-only env-var hook in `runtime-factory.ts`** (`TEMP #1638` — remove under #1459):
+  - `KOI_IDLE_WARN_MS` — idle warning threshold (ms)
+  - `KOI_IDLE_TERMINATE_MS` — idle termination threshold (ms)
+  - `KOI_WALL_CLOCK_MS` — absolute wall-clock cap (ms; `Infinity` disables)
+  wraps `createTranscriptAdapter` with `applyActivityTimeout` so the wrapper can be exercised manually via TUI / headless before the full runtime migration. A display wrapper above the timeout adapter injects a user-visible `text_delta` with the fallback message when the synthetic `done` carries `metadata.terminatedBy === "activity-timeout"` — mirroring the transcript adapter's own `explainNonCompletedStop` fallback, which does not run once the outer wrapper aborts the inner stream.
+
+See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`activity.idle.warning`, `activity.terminated.idle`, `activity.terminated.wall_clock`), and the `done.output.metadata` contract consumers can read.

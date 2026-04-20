@@ -4,6 +4,8 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/mcp` OAuth (#1296): adds RFC 7591 Dynamic Client Registration with RFC 7592 rollback on registration failure (HTTPS + same-origin + strict-child path SSRF guard on the management URI), RFC 8707 `resource` parameter on authorize + token (opt-out via `includeResourceParameter: false`), CAS-on-UUID `generation` invalidation for stale DCR records (legacy `(clientId, registeredAt)` fallback), tenant-scoped storage keys (4-tuple: `serverName`, `serverUrl`, `redirectUri`, `authority`), schema-validated persisted client info, refresh-path CAS on `(accessToken, refreshToken)` for non-rotating ASes, 408/425/429 classified as transient on both DCR and token endpoints (preserve tokens), and structured `OAuthFailureReason` surfacing through `onAuthFailure` for operator-actionable CLI messaging. Integration harness in `packages/net/mcp/src/oauth/__tests__/flow-integration.test.ts` exercises 8 end-to-end scenarios against a Bun.serve mock authorization server.
+
 `@koi/mcp` now exposes an `AuthToolFactory` callback so auth-needed servers surface as `<server>__authenticate` pseudo-tools (CC pattern). The component provider reads `failure.error.code === "AUTH_REQUIRED"` and either invokes the factory (when supplied by the host) or falls back to skipped components. No new providers are added — existing wiring continues to work.
 
 `@koi/mcp-server` gained a `__test-echo-server__.ts` dev helper (not exported) for E2E validation of #1852. No behavioral change to the package's public API or runtime integration.
@@ -51,7 +53,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/governance-defaults` | Out-of-box `GovernanceController` + `GovernanceBackend` + pricing table for `createRuntime({ governance: withGovernanceDefaults(...) })` (#1874). `createInMemoryController` ships all 10 `GOVERNANCE_VARIABLES` with `>=`-at-limit semantics, per-variable retryable flags, `iteration_reset`/`session_reset` handling, `turn_refund` rollback support (`turn_count` decrements clamped at zero), and `setContextOccupancy()` for host-driven context-pressure telemetry. Fail-closed input handling: NaN/negative/Infinity token fields dropped, non-number config limits rejected at construction, cross-field invariant `errorRateMinSamples <= errorRateWindow` enforced. `forge_depth` is now a concurrent counter paired with `forge_release` (PR #1925) — mirrors `spawn` / `spawn_release` discipline; `forge_budget` remains the cumulative forge-count sensor and is the correct sensor for a lifetime cap once hosts start emitting paired releases. `createPatternBackend` does last-match-wins rule evaluation with kind-scoped `toolId`/`model` selectors and `schema.invalid` fail-closed on malformed payloads (null/array/non-string). `DEFAULT_PRICING` is deep-frozen; `withGovernanceDefaults` seeds per-token fallback pricing from `claude-sonnet-4-6` (caller's pricing table first, shipped `DEFAULT_PRICING` as floor) so the spend cap keeps advancing when `cost.calculate()` throws for an unknown model alias. Structural compatibility with `GovernanceMiddlewareConfig` — no L2→L2 runtime dep on `@koi/governance-core`. | `governance-defaults-*` |
 | `@koi/hook-prompt` | Prompt hook executor — single-shot LLM verdict parsing with hardened JSON extraction, string-boolean coercion, and denial language detection (#1309) | standalone |
 | `@koi/hooks` | Sole hook dispatcher (command/HTTP/prompt/agent) — single dispatcher + observer tap pattern (#1513). Hook policy tiers (#1282): hooks tagged as `managed`/`user`/`session` with tier-phased dispatch (managed → user → session) and `HookPolicy` filtering (`disableAllHooks`, `managedOnly`, `allowUserHooks`, `allowSessionHooks`). `RegisteredHook` with stable `${tier}:${name}` IDs. Two loader entrypoints: `loadRegisteredHooks()` (strict, all-or-nothing) and `loadRegisteredHooksPerEntry()` (#1781: one bad entry does not nuke valid peers; returns `HookLoadError[]` with `kind` discriminator and `failClosed` sniffed from raw JSON so hosts can fail-close per entry). `createHookMiddleware` is the sole authority for all hook events; `@koi/runtime`'s `createHookObserver` subscribes via `onExecuted` tap for ATIF recording. Per-call abort propagation, fail-closed pre-hook blocking, cancel-redaction with `failClosed` filtering. Prompt hooks wired via `PromptExecutorAdapter` with per-session token budgeting and payload size capping (#1309). DNS-level SSRF guard for HTTP hooks with IP validation, IP pinning, header injection prevention, and bounded response body (#1278, #1279) | `tool-use`, `hook-blocked`, `hook-once` |
-| `@koi/mcp` | MCP transport + tool/resource resolver. OAuth 2.0 authorization code + PKCE for HTTP servers, RFC 9728/8414 discovery, `OAuthRuntime` injection, `AUTH_REQUIRED` mid-session re-auth, `@koi/secure-storage` keychain token persistence (#1633) | `mcp-tool-use` |
+| `@koi/mcp` | MCP transport + tool/resource resolver. OAuth 2.1 authorization code + PKCE for HTTP servers, RFC 9728/8414 discovery, RFC 7591 DCR with RFC 7592 rollback (#1296), RFC 8707 `resource` indicator (opt-out via `includeResourceParameter: false`), CAS-on-UUID `generation` for stale DCR invalidation, tenant-scoped storage (4-tuple key), `OAuthRuntime` injection, structured `OAuthFailureReason` via `onAuthFailure`, `AUTH_REQUIRED` mid-session re-auth, `@koi/secure-storage` keychain token persistence (#1633) | `mcp-tool-use` |
 | `@koi/mcp-server` | MCP server — exposes agent tools + platform capabilities (mailbox, tasks, registry) to external MCP clients. 7 platform tools built as real Koi Tools via `buildTool()`. Security: callerId enforcement, event-only mailbox, owned task mutations, visibility-filtered registry, prototype pollution protection, error sanitization | `mcp-server-send` |
 | `@koi/memory` | Memory recall, scoring, and formatting — static headings, JSON metadata inside `<memory-data>` trust boundary, scan resilience (`starved`, `candidateLimitHit`), opt-in `maxCandidates` I/O bound | `memory-recall` |
 | `@koi/memory-fs` | File-based memory storage backend — per-dir mutex + `.memory.lock` for write serialization, worktree-local by default (`shared: true` opt-in with policy pinning), atomic temp-rename updates, `indexError` on mutation returns, serialized MEMORY.md rebuilds. **Atomic `upsert(input, {force})`** runs name+type lookup + Jaccard dedup + write/update inside a single `withDirLock()` critical section (closes the read-list-write TOCTOU window). Returns discriminated `UpsertResult`: `created` / `updated` / `conflict` / `skipped` | standalone |
@@ -304,3 +306,50 @@ Config options exposed at the middleware layer:
 **Config validation:** `validatePermissionsConfig` now rejects `resolveBashCommand` with a non-marker-aware backend unless `allowLegacyBackendBashFallback: true` is set, catching misconfigurations during validation instead of at runtime.
 
 See `docs/L2/bash-classifier.md` and `docs/L2/middleware-permissions.md` for the full design, threat model, and wire protocol.
+
+## #1638 — Inactivity-based stream timeouts
+
+`createRuntime({ activityTimeout })` replaces hard wall-clock kills with activity-based termination. Any adapter event (model chunk, tool call, tool result, turn boundary) resets the idle clock.
+
+```ts
+createRuntime({
+  adapter,
+  activityTimeout: {
+    idleWarnMs: 60_000,       // warn at 60s idle (interactive default)
+    idleTerminateMs: 120_000, // abort at 2× (default when omitted)
+    maxDurationMs: 14_400_000,// 4h wall-clock safety net
+    onIdleWarn: (info) => { /* inject system-reminder, telemetry, etc. */ },
+    onTerminated: (reason, elapsedMs) => { /* log, page, etc. */ },
+  },
+});
+```
+
+**Telemetry events** are injected into the stream as `EngineEvent` `custom` kinds (exported constants in `@koi/runtime`):
+
+| Type | When | Payload |
+|------|------|---------|
+| `activity.idle.warning` | idle past `idleWarnMs` | `{ elapsedMs, warnMs, terminateMs }` |
+| `activity.terminated.idle` | idle past `idleTerminateMs` → stream aborts | `{ elapsedMs }` |
+| `activity.terminated.wall_clock` | `maxDurationMs` exceeded regardless of activity → stream aborts | `{ elapsedMs }` |
+
+**Terminal `done` contract.** On timeout the wrapper always yields a terminal `EngineEvent` of kind `done` with `output.stopReason: "interrupted"` and `output.metadata` carrying `{ terminatedBy: "activity-timeout", terminationReason: "idle" | "wall_clock", elapsedMs }`. Downstream consumers (harness, loop, telemetry) that key off `done.stopReason` see a clean terminal event and can distinguish a timeout-driven interrupt from a user cancel. The wrapper also calls `AbortController.abort("timeout")` so the inner adapter's `signal.reason` is set to the typed `AbortReason`.
+
+**Defaults and back-compat**
+
+- When `activityTimeout` is omitted, the legacy `streamTimeoutMs` is mapped to `maxDurationMs` (default 120s wall-clock) — existing behaviour preserved byte-for-byte.
+- When `activityTimeout` is provided but `maxDurationMs` is not, the runtime fills in the legacy 120s (`DEFAULT_STREAM_TIMEOUT_MS`), **not** the recommended 4h. This makes the migration from `streamTimeoutMs` → `activityTimeout` rollback-safe: the hard-stop budget does not silently widen. Callers that want the longer recommended cap must opt in explicitly via `maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS` (4h constant exported from `@koi/runtime`) or their own value. `maxDurationMs: Number.POSITIVE_INFINITY` disables the wall-clock bound.
+- When both `streamTimeoutMs` and `activityTimeout` are provided, `activityTimeout` wins outright.
+- `streamTimeoutMs` is now `@deprecated` in favour of `activityTimeout.maxDurationMs`.
+
+**Partial metrics on timeout.** Every accounting field in the synthesized `done.output.metrics` is zeroed (`totalTokens`, `inputTokens`, `outputTokens`, `turns`) so existing aggregators (`@koi/engine`'s `delivery-policy.ts` `RunReport` persistence, the TUI cumulative metrics reducer) cannot be polluted by placeholder numbers from a timed-out run. `durationMs` is authoritative (measured). The rich observability lives in `done.output.metadata`: `terminatedBy: "activity-timeout"`, `terminationReason: "idle" | "wall_clock"`, `elapsedMs`, `metricsSynthesized: true`, and `lastSeenTurnIndex` (highest observed `turn_start` index, or `-1` if none).
+
+**Mid-turn termination envelope.** When the wrapper fires mid-turn, it emits — in order — the `custom: activity.terminated.*` telemetry event, a synthesized `tool_result` for every in-flight tool (output shape: `{ code: "TOOL_EXECUTION_ERROR", error: string, synthesizedBy: "activity-timeout", terminationReason }` — conforms to the existing headless tool-error contract so consumers classify it as a failure), a synthesized `turn_end` with `stopBlocked: true` (reusing the stop-gate marker so `onAfterTurn` middleware does not persist partial state as a real completion), and finally the terminal synthesized `done`. Tools that legitimately keep running past `turn_end` are protected: `pendingTools` stays set until the matching `tool_result` arrives.
+
+**Recommended profiles**
+
+| Profile | `idleWarnMs` | `idleTerminateMs` | `maxDurationMs` |
+|---------|--------------|-------------------|------------------|
+| Interactive | 60_000 (1 min) | 120_000 (2 min) | 14_400_000 (4h) |
+| Batch | 300_000 (5 min) | 600_000 (10 min) | 14_400_000 (4h) |
+
+**Cooperative cancellation hint.** `onIdleWarn` is a synchronous observer callback; hosts wiring it through a middleware can inject a `<system-reminder>` on the next prompt ("you've been idle for N seconds, are you stuck?"). The core runtime does not ship such a middleware — it is a per-deployment choice.

@@ -16,6 +16,7 @@ import type {
   InboxComponent,
   InboxItem,
   InboxMode,
+  IssueEntry,
   ReportStore,
   RunReport,
 } from "@koi/core";
@@ -84,6 +85,12 @@ function extractOutputText(output: EngineOutput): string {
  * Accumulates text_delta and tool_call_end results as a fallback so output is not
  * lost when the final done.output.content is empty (matches createTextCollector logic).
  * Throws if no done event is received (stream ended prematurely).
+ *
+ * #1638: when the terminal done is a synthesized activity-timeout abort, the
+ * content is empty and the failure only lives in `output.metadata`. A
+ * deferred/on-demand child delivery must not represent that as an empty
+ * success — fold the termination metadata into a non-empty content block so
+ * the inbox item / RunReport captures the failure signal.
  */
 async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<EngineOutput> {
   let output: EngineOutput | undefined; // let: assigned inside for-await loop
@@ -108,6 +115,18 @@ async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<Engine
       "INTERNAL",
       "Child stream ended without a done event — delivery policy cannot extract output",
     );
+  }
+  // Preserve activity-timeout provenance when content is empty (#1638).
+  // Without this, a timed-out child appears as a blank completion in the
+  // parent inbox / RunReport, masking the failure operators need to see.
+  if (output.content.length === 0 && output.metadata?.terminatedBy === "activity-timeout") {
+    const reason = output.metadata.terminationReason ?? "unknown";
+    const elapsedMs = output.metadata.elapsedMs ?? 0;
+    const message =
+      textBuffer.length > 0
+        ? `${textBuffer}\n\n[Delivery failed: activity-timeout (${reason}) after ${elapsedMs}ms]`
+        : `[Delivery failed: activity-timeout (${reason}) after ${elapsedMs}ms]`;
+    return { ...output, content: [{ kind: "text", text: message }] };
   }
   // If done.output.content is empty, inject the accumulated incremental output.
   // This matches createTextCollector's fallback logic for batch-output engines.
@@ -214,6 +233,26 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
       const text = extractOutputText(output);
       const childId = spawnResult.childPid.id;
 
+      // Propagate activity-timeout provenance into structured RunReport
+      // fields (#1638). Consumers like the TUI summarize reports via
+      // `issues` / `duration.truncated` / `cost` counts, not via the free
+      // summary text — if we left `truncated: false` and `issues: []`, a
+      // timed-out child would appear as a structurally clean run.
+      const isTimeout = output.metadata?.terminatedBy === "activity-timeout";
+      const timeoutIssues: readonly IssueEntry[] = isTimeout
+        ? [
+            {
+              severity: "critical" as const,
+              message: `Run interrupted by activity-timeout (${output.metadata?.terminationReason ?? "unknown"}) after ${output.metadata?.elapsedMs ?? 0}ms`,
+              turnIndex:
+                typeof output.metadata?.lastSeenTurnIndex === "number"
+                  ? Math.max(output.metadata.lastSeenTurnIndex, 0)
+                  : 0,
+              resolved: false,
+            },
+          ]
+        : [];
+
       const report: RunReport = {
         agentId: childId,
         sessionId: sessionId(`delivery-${childId}`),
@@ -225,11 +264,11 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
           durationMs: output.metrics.durationMs,
           totalTurns: output.metrics.turns,
           totalActions: 0,
-          truncated: false,
+          truncated: isTimeout,
         },
         actions: [],
         artifacts: [],
-        issues: [],
+        issues: timeoutIssues,
         cost: {
           inputTokens: output.metrics.inputTokens,
           outputTokens: output.metrics.outputTokens,
