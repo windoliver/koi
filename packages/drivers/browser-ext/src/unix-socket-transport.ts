@@ -202,8 +202,12 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
       return waiter;
     },
     async listTabs(): Promise<TabsFrame> {
-      const waiter = waitFor((candidate): candidate is TabsFrame => candidate.kind === "tabs");
-      await writeFrame({ kind: "list_tabs" });
+      const requestId = randomUUID();
+      const waiter = waitFor(
+        (candidate): candidate is TabsFrame =>
+          candidate.kind === "tabs" && candidate.requestId === requestId,
+      );
+      await writeFrame({ kind: "list_tabs", requestId });
       return waiter;
     },
     async adminClearGrants(frame: AdminClearGrantsFrame): Promise<AdminClearGrantsAckFrame> {
@@ -271,12 +275,26 @@ export function wireLoopbackWebSocketBridge(
   wss: LoopbackWebSocketServerLike,
 ): { readonly close: () => void } {
   let activeSocket: LoopbackWebSocketPeer | null = null;
+  let detached = false;
+
+  // Idempotent detach: unexpected peer-close and explicit close() both converge
+  // here. Without this, a Playwright crash or transient socket loss would
+  // strand the tab in attached state with no automatic cleanup.
+  function tearDownSession(): void {
+    if (detached) return;
+    detached = true;
+    void options.transport.detach(options.sessionId).catch(() => {});
+  }
 
   options.transport.setFrameHandler((frame: DriverFrame): void => {
     if (activeSocket === null || activeSocket.readyState !== WebSocket.OPEN) {
       return;
     }
     if (frame.kind === "cdp_result" || frame.kind === "cdp_error" || frame.kind === "cdp_event") {
+      // Filter by sessionId: a single DriverClient may carry traffic for
+      // multiple attached sessions. Without this filter, frames from another
+      // session would leak into this bridge's Playwright connection.
+      if (frame.sessionId !== options.sessionId) return;
       activeSocket.send(toCdpPayload(frame));
     }
   });
@@ -312,6 +330,9 @@ export function wireLoopbackWebSocketBridge(
         if (activeSocket === ws) {
           activeSocket = null;
         }
+        // Peer went away without an explicit close() — release the host's
+        // ownership lease so the next attach attempt doesn't bounce.
+        tearDownSession();
       });
     });
   });
@@ -321,11 +342,7 @@ export function wireLoopbackWebSocketBridge(
       options.transport.setFrameHandler(null);
       activeSocket?.close();
       activeSocket = null;
-      // Send detach to the host so it tears down the debugger attachment and
-      // clears ownership. Without this, the host keeps the tab marked owned
-      // until the driver connection drops — which bounces `already_attached`
-      // on the next attach attempt.
-      void options.transport.detach(options.sessionId).catch(() => {});
+      tearDownSession();
     },
   };
 }

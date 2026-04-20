@@ -36,10 +36,12 @@ export interface HelloAckFailFrame {
 
 export interface ListTabsFrame {
   readonly kind: "list_tabs";
+  readonly requestId: string;
 }
 
 export interface TabsFrame {
   readonly kind: "tabs";
+  readonly requestId: string;
   readonly tabs: readonly { readonly id: number; readonly url: string; readonly title: string }[];
 }
 
@@ -224,9 +226,10 @@ export const DriverFrameSchema: z.ZodType<DriverFrame> = z.union([
       hostSupportedProtocols: z.array(z.number().int().positive()).optional(),
     }),
   ]),
-  z.object({ kind: z.literal("list_tabs") }),
+  z.object({ kind: z.literal("list_tabs"), requestId: UUID }),
   z.object({
     kind: z.literal("tabs"),
+    requestId: UUID,
     tabs: z.array(z.object({ id: z.number().int(), url: z.string(), title: z.string() })),
   }),
   z.object({

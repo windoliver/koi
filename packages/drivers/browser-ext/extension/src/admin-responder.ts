@@ -36,6 +36,18 @@ export async function respondToAdminClearGrants(deps: {
   const scope = deps.request?.scope ?? "all";
   const targetOrigin = deps.request?.origin;
 
+  // Validate: origin-scoped requests MUST supply an origin. Without this,
+  // a caller that sent `{ scope: "origin" }` (missing origin) would silently
+  // widen to a global wipe — destructive under-validation.
+  if (scope === "origin" && targetOrigin === undefined) {
+    deps.emitFrame({
+      kind: "admin_clear_grants_ack",
+      clearedOrigins: [],
+      detachedTabs: [],
+    });
+    return;
+  }
+
   let clearedOrigins: readonly string[];
   let clearedPrivateOrigins: readonly string[];
 
@@ -48,7 +60,7 @@ export async function respondToAdminClearGrants(deps: {
     clearedOrigins = [targetOrigin];
     clearedPrivateOrigins = [];
   } else {
-    // scope === "all" (or missing): wipe everything.
+    // scope === "all": wipe everything.
     const [always, priv] = await Promise.all([
       deps.storage.clearAlwaysGrants(),
       deps.storage.clearPrivateOriginAllowlist(),

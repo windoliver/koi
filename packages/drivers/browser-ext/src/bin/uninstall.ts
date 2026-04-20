@@ -93,18 +93,25 @@ export async function runUninstallCommand(
   const baseDir = join(homeDir, ".koi", "browser-ext");
   const instancesDir = join(baseDir, "instances");
 
-  // Attempt live admin_clear_grants round-trip as a best effort; fall back to
-  // local-only cleanup if the extension is unreachable. Local artifacts
-  // (NM manifests + token + admin.key + deployed extension bundle) are ALWAYS
-  // removed — rolling back the install must not require the extension to be
-  // alive, or uninstall stops working in exactly the failure modes where it
-  // matters most (browser gone, extension disabled, host wedged).
+  // Grant revocation is the REAL trust-boundary removal: it tells the
+  // extension to drop its stored consent + detach live tabs. Local artifacts
+  // (NM manifests, token, admin.key) are the MECHANISM for revocation — if we
+  // delete them without a successful clear, the user can never revoke grants
+  // via this CLI again (the host needs the token to authenticate, the
+  // manifests to route NM connections).
+  //
+  // Policy: fail closed on offline uninstall. Only remove local artifacts
+  // AFTER admin_clear_grants succeeds. On failure, report the issue and
+  // preserve state so the user can retry after bringing the extension online.
   let clearedOrigins: readonly string[] = [];
   let detachedTabs: readonly number[] = [];
   let onlineGrantClearanceCompleted = false;
+  let failureReason: string | null = null;
 
   const selected = await (deps.selectDiscoveryHost ?? selectDiscoveryHost)({ instancesDir });
-  if (!("code" in selected)) {
+  if ("code" in selected) {
+    failureReason = "no live browser-ext host discovered";
+  } else {
     try {
       const token = await (deps.readToken ?? readToken)(baseDir);
       const adminKey = await (deps.readAdminKey ?? readAdminKey)(baseDir);
@@ -119,7 +126,11 @@ export async function runUninstallCommand(
           leaseToken: leaseToken(),
           admin: { adminKey },
         });
-        if (hello.ok === true && hello.role === "admin") {
+        if (hello.ok !== true) {
+          failureReason = `admin hello failed: ${hello.reason}`;
+        } else if (hello.role !== "admin") {
+          failureReason = `admin hello returned unexpected role: ${hello.role}`;
+        } else {
           const clearAck = await client.adminClearGrants({
             kind: "admin_clear_grants",
             scope: "all",
@@ -128,14 +139,25 @@ export async function runUninstallCommand(
             clearedOrigins = clearAck.clearedOrigins;
             detachedTabs = clearAck.detachedTabs;
             onlineGrantClearanceCompleted = true;
+          } else {
+            failureReason = `admin_clear_grants failed: ${clearAck.reason}`;
           }
         }
       } finally {
         await client.close();
       }
-    } catch {
-      // Swallow all online-path errors. Local cleanup still runs below.
+    } catch (err) {
+      failureReason = `admin handshake raised: ${(err as Error).message ?? String(err)}`;
     }
+  }
+
+  if (!onlineGrantClearanceCompleted) {
+    // Fail closed: preserve the local credentials/manifests so the user can
+    // retry revocation after bringing the extension online. Removing them now
+    // would irreversibly strand extension-side grants.
+    throw new Error(
+      `${offlineUninstallGuidance()}\n\nUnderlying failure: ${failureReason ?? "unknown"}`,
+    );
   }
 
   const { removedManifestPaths, removedPaths } = await removeLocalArtifacts(

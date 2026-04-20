@@ -482,6 +482,10 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
   let contextInitPromise: Promise<BrowserContext> | null = null; // intentional mutation: set once on first call
   let tabCounter = 0;
   const tabs = new Map<string, Page>();
+  // Tabs this driver CREATED (vs. adopted from a borrowed context). On
+  // dispose() we close only driver-owned tabs — adopted pages belong to
+  // the caller and must stay open.
+  const ownedTabIds = new Set<string>();
   let currentTabId: string | null = null;
 
   // Per-tab snapshot state — replaces the old single global currentSnapshotId / currentRefs
@@ -700,12 +704,44 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
   async function ensurePage(): Promise<{ readonly page: Page; readonly tabId: string }> {
     if (currentTabId === null) {
       const ctx = await ensureContext();
-      const page = await ctx.newPage();
+      let page: Page;
+      let adopted = false;
+      // On a borrowed context (CDP/ws endpoint — e.g., browser-ext attached
+      // tab), adopt the single existing page. If the context has no pages,
+      // create one (edge case: fresh browser). If it has multiple, refuse
+      // rather than guess which one the caller wanted.
+      if (borrowedContext) {
+        const existingPages = ctx.pages();
+        if (existingPages.length === 0) {
+          page = await ctx.newPage();
+        } else if (existingPages.length === 1) {
+          page = existingPages[0] as Page;
+          adopted = true;
+        } else {
+          throw new Error(
+            `Ambiguous borrowed context: ${existingPages.length} pages present; cannot auto-select. ` +
+              "Use browser-ext's selectTargetTab() to pick a tab before interaction.",
+          );
+        }
+      } else {
+        page = await ctx.newPage();
+      }
+      // Private-address rebinding guard applies on BOTH owned and adopted
+      // pages: the trust boundary we care about here is "user's browser
+      // must not reach internal addresses from public pages", not "driver
+      // owns vs borrows". Without it on adopted pages, a click-triggered
+      // form submit or link navigation from a public page could still
+      // reach RFC1918 / localhost — defeating blockPrivateAddresses.
       await installPageRebindingGuard(page, config.blockPrivateAddresses !== false);
       const tabId = newTabId();
       tabs.set(tabId, page);
+      if (!adopted) {
+        // Console listener capture IS caller-observability-sensitive — skip
+        // on adopted pages so we don't silently record the user's page logs.
+        ownedTabIds.add(tabId);
+        attachConsoleListener(page, tabId);
+      }
       currentTabId = tabId;
-      attachConsoleListener(page, tabId);
     }
     // Snapshot currentTabId into a local so concurrent tab-management calls
     // can't swap the tab out from under us between awaits. All downstream
@@ -1171,6 +1207,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         await installPageRebindingGuard(page, config.blockPrivateAddresses !== false);
         const tabId = newTabId();
         tabs.set(tabId, page);
+        ownedTabIds.add(tabId);
         attachConsoleListener(page, tabId);
         const previousTabId = currentTabId;
 
@@ -1243,8 +1280,20 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         if (!page) {
           return { ok: false, error: notFound(`Tab "${targetId}" not found`) };
         }
+        // Only close tabs the driver CREATED. Adopted pages on borrowed
+        // contexts (cdpEndpoint/wsEndpoint) belong to the caller — closing
+        // them would destroy the user's live tab.
+        if (!ownedTabIds.has(targetId)) {
+          return {
+            ok: false,
+            error: permission(
+              `Tab "${targetId}" was adopted from a borrowed browser context and cannot be closed through this driver. Close it in the owning browser directly.`,
+            ),
+          };
+        }
         await page.close();
         tabs.delete(targetId);
+        ownedTabIds.delete(targetId);
         invalidateTabSnapshot(targetId);
         tabConsoleLogs.delete(targetId);
 
@@ -1338,6 +1387,26 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       script: string,
       options?: BrowserEvaluateOptions,
     ): Promise<Result<BrowserEvaluateResult, KoiError>> {
+      // Reject evaluate() on borrowed contexts (CDP / ws endpoint). There's
+      // no safe way to cancel page.evaluate() — on timeout the script keeps
+      // running and can continue mutating user state (double-submits, leaked
+      // writes). Destructive cleanup (goto about:blank / page.close) would
+      // discard the user's tab contents. Neither option is acceptable on a
+      // live user browser session; reject at the API boundary instead.
+      //
+      // Callers that need programmatic eval on the user's tab should use
+      // snapshot + click/type/fillForm flows which are cancellable and
+      // idempotent per-operation.
+      if (borrowedContext) {
+        return {
+          ok: false,
+          error: permission(
+            "evaluate() is not supported on borrowed contexts (browser-ext / cdpEndpoint / " +
+              "wsEndpoint). page.evaluate() cannot be cancelled safely on a live user session; " +
+              "use snapshot + click/type/fillForm for scripted interaction instead.",
+          ),
+        };
+      }
       try {
         const { page, tabId: activeTabId } = await ensurePage();
         const t = resolveTimeout(
@@ -1368,8 +1437,20 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           }),
         ]).catch(async (err: unknown) => {
           if (timedOut) {
-            // Kill the execution context so the still-running script cannot
-            // mutate state after we return an error. Escalate in steps:
+            // On borrowed contexts (CDP/ws endpoint), the page belongs to the
+            // user's live browser session (e.g., browser-ext attached tab).
+            // Destructive cleanup (goto about:blank or page.close) would
+            // discard user state / form data — unacceptable.
+            //
+            // Reserve destructive cleanup for driver-OWNED pages only. On
+            // borrowed contexts we just return a timeout and let the still-
+            // running script finish (it may still mutate state, but that's
+            // better than forcibly blanking the user's live tab).
+            if (borrowedContext) {
+              throw err;
+            }
+            // Driver-owned page: kill the execution context so the still-running
+            // script cannot mutate state after we return an error. Escalate:
             //   1. goto about:blank — cleanest; keeps the tab usable. KEEP in map.
             //   2. page.close() if (1) fails — tab is gone. DROP from map.
             //   3. If both fail — renderer wedged. DROP from map anyway so the
@@ -1399,14 +1480,12 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
             if (cleanup !== "navigated") {
               tabs.delete(activeTabId);
               tabConsoleLogs.delete(activeTabId);
-              // When there are NO other tabs, null currentTabId so the next
-              // ensurePage() creates a fresh one (only path where that's safe).
-              // When other tabs exist, keep currentTabId pointing at the
-              // now-missing id — ensurePage() will throw a clear "no active
-              // tab" internal error, forcing the caller to explicitly tabFocus
-              // before continuing.
-              if (currentTabId === activeTabId && tabs.size === 0) {
-                currentTabId = null;
+              if (currentTabId === activeTabId) {
+                // Recover the driver so subsequent calls don't wedge on a
+                // dangling tabId: promote to any surviving tab, or null out
+                // so the next ensurePage() creates a fresh page.
+                const survivor = tabs.keys().next().value;
+                currentTabId = survivor ?? null;
               }
             }
           }
@@ -1499,10 +1578,16 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       tabSnapshots.clear();
       tabConsoleLogs.clear();
 
-      for (const page of tabs.values()) {
-        await page.close().catch(() => undefined);
+      // Only close tabs the driver CREATED. Adopted pages on borrowed
+      // contexts (browser-ext / cdpEndpoint / wsEndpoint) belong to the
+      // caller — closing them would destroy the user's live tab.
+      for (const [tabId, page] of tabs) {
+        if (ownedTabIds.has(tabId)) {
+          await page.close().catch(() => undefined);
+        }
       }
       tabs.clear();
+      ownedTabIds.clear();
       currentTabId = null;
 
       if (browserContext) {

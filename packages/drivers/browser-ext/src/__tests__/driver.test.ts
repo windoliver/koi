@@ -29,7 +29,10 @@ describe("createExtensionBrowserDriver", () => {
     void (async () => {
       try {
         for await (const payload of createFrameReader(serverSide)) {
-          const frame = JSON.parse(payload) as { readonly kind: string };
+          const frame = JSON.parse(payload) as {
+            readonly kind: string;
+            readonly requestId?: string;
+          };
           if (frame.kind === "hello") {
             await writer.write(
               JSON.stringify({
@@ -47,6 +50,7 @@ describe("createExtensionBrowserDriver", () => {
             await writer.write(
               JSON.stringify({
                 kind: "tabs",
+                requestId: frame.requestId,
                 tabs: [{ id: 42, url: "about:blank", title: "Test tab" }],
               }),
             );

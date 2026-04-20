@@ -2,10 +2,12 @@ import { z } from "zod";
 
 export interface NmListTabs {
   readonly kind: "list_tabs";
+  readonly requestId: string;
 }
 
 export interface NmTabs {
   readonly kind: "tabs";
+  readonly requestId: string;
   readonly tabs: readonly { readonly id: number; readonly url: string; readonly title: string }[];
 }
 
@@ -170,9 +172,10 @@ const UUID = z.string().uuid();
 const LeaseToken = z.string().regex(/^[0-9a-f]{32}$/);
 
 export const NmFrameSchema: z.ZodType<NmFrame> = z.union([
-  z.object({ kind: z.literal("list_tabs") }),
+  z.object({ kind: z.literal("list_tabs"), requestId: UUID }),
   z.object({
     kind: z.literal("tabs"),
+    requestId: UUID,
     tabs: z.array(z.object({ id: z.number().int(), url: z.string(), title: z.string() })),
   }),
   z.object({

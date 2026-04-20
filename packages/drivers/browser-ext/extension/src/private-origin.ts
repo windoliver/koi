@@ -14,17 +14,35 @@ function isIpv4Private(hostname: string): boolean {
   return false;
 }
 
+/** Decodes `::ffff:AABB:CCDD` (Node/browser normalized hex form of IPv4-mapped IPv6). */
+function ipv4FromMappedHex(lower: string): string | null {
+  const m = /^::ffff:([\da-f]{1,4}):([\da-f]{1,4})$/.exec(lower);
+  if (!m || m[1] === undefined || m[2] === undefined) return null;
+  const hi = Number.parseInt(m[1], 16);
+  const lo = Number.parseInt(m[2], 16);
+  if (Number.isNaN(hi) || Number.isNaN(lo) || hi > 0xffff || lo > 0xffff) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
 function isIpv6Private(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
-  return (
-    normalized === "::1" ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("fe8") ||
-    normalized.startsWith("fe9") ||
-    normalized.startsWith("fea") ||
-    normalized.startsWith("feb")
-  );
+  if (normalized === "::1") return true;
+  // IPv4-mapped IPv6 dotted-quad form: ::ffff:127.0.0.1
+  const mappedDotted = /^::ffff:([\d.]+)$/.exec(normalized);
+  if (mappedDotted?.[1]) return isIpv4Private(mappedDotted[1]);
+  // IPv4-mapped IPv6 hex form: ::ffff:7f00:0001
+  const mappedHex = ipv4FromMappedHex(normalized);
+  if (mappedHex) return isIpv4Private(mappedHex);
+  // IPv4-compatible IPv6 (deprecated but still parseable): ::127.0.0.1
+  const compat = /^::([\d.]+)$/.exec(normalized);
+  if (compat?.[1] && compat[1].includes(".")) return isIpv4Private(compat[1]);
+  if (normalized.startsWith("fc")) return true;
+  if (normalized.startsWith("fd")) return true;
+  if (normalized.startsWith("fe8")) return true;
+  if (normalized.startsWith("fe9")) return true;
+  if (normalized.startsWith("fea")) return true;
+  if (normalized.startsWith("feb")) return true;
+  return false;
 }
 
 export function normalizeOrigin(input: string): string {
@@ -39,7 +57,10 @@ export function isPrivateOrigin(origin: string): boolean {
     return false;
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  const rawHost = parsed.hostname.toLowerCase();
+  // Strip brackets from IPv6 literals (URL.hostname preserves them).
+  const hostname =
+    rawHost.startsWith("[") && rawHost.endsWith("]") ? rawHost.slice(1, -1) : rawHost;
   if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
   if (PRIVATE_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) return true;
   if (hostname.includes(":")) return isIpv6Private(hostname);

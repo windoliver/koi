@@ -95,35 +95,33 @@ describe("runUninstallCommand", () => {
     ]);
   });
 
-  test("offline host: removes local artifacts anyway (best-effort rollback)", async () => {
+  test("offline host: fails closed — preserves local credentials for retry", async () => {
     const calls: string[] = [];
-    const result = await runUninstallCommand(
-      { homeDir: "/tmp/home", platform: "linux" },
-      {
-        selectDiscoveryHost: async () =>
-          ({
-            code: "HOST_SPAWN_FAILED",
-            message: "missing",
-          }) as never,
-        removeNativeMessagingManifests: async (targets) => {
-          calls.push(`rm-manifests:${targets.length}`);
-          return targets.map(
-            (target) => `${target.nativeMessagingHostsDir}/com.koi.browser_ext.json`,
-          );
+    await expect(
+      runUninstallCommand(
+        { homeDir: "/tmp/home", platform: "linux" },
+        {
+          selectDiscoveryHost: async () =>
+            ({
+              code: "HOST_SPAWN_FAILED",
+              message: "missing",
+            }) as never,
+          removeNativeMessagingManifests: async (targets) => {
+            calls.push(`rm-manifests:${targets.length}`);
+            return [];
+          },
+          wipeAuthFiles: async () => {
+            calls.push("wipe-auth");
+          },
+          removeRuntimeFiles: async () => {
+            calls.push("rm-runtime");
+            return [];
+          },
         },
-        wipeAuthFiles: async () => {
-          calls.push("wipe-auth");
-        },
-        removeRuntimeFiles: async () => {
-          calls.push("rm-runtime");
-          return [];
-        },
-      },
-    );
-
-    expect(result.onlineGrantClearanceCompleted).toBe(false);
-    expect(result.clearedOrigins).toEqual([]);
-    expect(calls).toEqual(["rm-manifests:5", "wipe-auth", "rm-runtime"]);
-    expect(result.removedManifestPaths.length).toBe(5);
+      ),
+    ).rejects.toThrow(/requires a live browser extension connection/);
+    // None of the cleanup callbacks should have run — credentials preserved
+    // so the user can retry revocation after bringing the extension online.
+    expect(calls).toEqual([]);
   });
 });
