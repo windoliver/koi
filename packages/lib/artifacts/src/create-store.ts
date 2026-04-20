@@ -24,6 +24,7 @@ import { acquireLock, isInMemoryDbPath } from "./lock.js";
 import { validateLifecyclePolicy } from "./policy.js";
 import { runStartupRecovery } from "./recovery.js";
 import { createSaveArtifact } from "./save.js";
+import { createScavengerOrphanBlobs } from "./scavenger.js";
 import { createRevokeShare, createShareArtifact } from "./share.js";
 import { openDatabase } from "./sqlite.js";
 import { ensureStoreIdPair } from "./store-id.js";
@@ -36,6 +37,7 @@ import type {
   ArtifactStoreConfig,
   Result,
   SaveArtifactInput,
+  ScavengeOrphanBlobsResult,
   SweepArtifactsResult,
 } from "./types.js";
 
@@ -132,6 +134,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       blobStore,
       ...(config.policy !== undefined ? { policy: config.policy } : {}),
     });
+    const rawScavenge = createScavengerOrphanBlobs({ db, blobStore });
 
     // Mutation barrier: track in-flight ops so close() can drain before
     // closing SQLite + releasing the lock. `closing` short-circuits new calls.
@@ -192,6 +195,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       ctx: { readonly ownerSessionId: SessionId },
     ) => Promise<Result<void, ArtifactError>> = track(rawRevoke);
     const sweepArtifacts: () => Promise<SweepArtifactsResult> = track(rawSweep);
+    const scavengeOrphanBlobs: () => Promise<ScavengeOrphanBlobsResult> = track(rawScavenge);
 
     const close = async (): Promise<void> => {
       if (closed) return;
@@ -222,6 +226,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       shareArtifact,
       revokeShare,
       sweepArtifacts,
+      scavengeOrphanBlobs,
       close,
     };
   } catch (err) {

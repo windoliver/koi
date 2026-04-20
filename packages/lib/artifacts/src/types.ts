@@ -75,6 +75,19 @@ export interface SweepArtifactsResult {
   readonly bytesReclaimed: number;
 }
 
+/**
+ * `scavengeOrphanBlobs()` result (spec §6.4). Disaster-recovery only —
+ * walks the backing store, journals tombstones for every hash with no live
+ * reference, then drives Phase B. `deleted` is the number of blobs actually
+ * reaped via Phase B's reconcile step. `bytesReclaimed` is 0 in Plan 3
+ * (list() yields hashes only; we deliberately don't re-read bytes just to
+ * measure size). See scavenger.ts for rationale.
+ */
+export interface ScavengeOrphanBlobsResult {
+  readonly deleted: number;
+  readonly bytesReclaimed: number;
+}
+
 export interface ArtifactStore {
   readonly saveArtifact: (input: SaveArtifactInput) => Promise<Result<Artifact, ArtifactError>>;
   readonly getArtifact: (
@@ -105,6 +118,14 @@ export interface ArtifactStore {
    * deletion tally. Phase B drains tombstones separately (Task 6).
    */
   readonly sweepArtifacts: () => Promise<SweepArtifactsResult>;
+  /**
+   * Disaster-recovery scavenger (spec §6.4). Walks the backing store,
+   * journals tombstones for every blob with no live reference, then drives
+   * Phase B. NEVER deletes blobs directly. O(N) over the blob store —
+   * operator-run, not hot-path. Safe to invoke while saves/sweeps run
+   * concurrently; Phase B's claim predicate protects in-flight bytes.
+   */
+  readonly scavengeOrphanBlobs: () => Promise<ScavengeOrphanBlobsResult>;
   readonly close: () => Promise<void>;
 }
 
