@@ -6,6 +6,7 @@
  * produce warnings + source-aware poisoning to prevent silent fallback).
  */
 
+import type { Dirent } from "node:fs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentDefinition, AgentDefinitionSource, KoiError } from "@koi/core";
@@ -54,15 +55,50 @@ export interface LoadAgentsResult {
 // Implementation
 // ---------------------------------------------------------------------------
 
+const FRONTMATTER_OPENING_RE = /^---[ \t]*\r?\n/u;
+const FRONTMATTER_CLOSING_RE = /\r?\n---[ \t]*(?:\r?\n|$)/u;
+const FRONTMATTER_NAME_LINE_RE = /^\s*name\s*:\s*(['"]?)([a-zA-Z0-9-]+)\1(?:\s+#.*)?\s*$/m;
+
+/**
+ * Extract raw frontmatter text without parsing YAML.
+ *
+ * Handles both fully-delimited frontmatter and truncated blocks (opening
+ * delimiter with no closing delimiter), which is needed for fail-closed
+ * poisoning when YAML is malformed.
+ */
+function extractRawFrontmatter(content: string): string | undefined {
+  const openingMatch = FRONTMATTER_OPENING_RE.exec(content);
+  if (!openingMatch) return undefined;
+
+  const remainder = content.slice(openingMatch[0].length);
+  const closingMatch = FRONTMATTER_CLOSING_RE.exec(remainder);
+  if (!closingMatch) return remainder;
+
+  return remainder.slice(0, closingMatch.index);
+}
+
+/** Best-effort extraction of `name:` from raw frontmatter text. */
+function extractNameFromRawFrontmatter(content: string): string | undefined {
+  const rawFrontmatter = extractRawFrontmatter(content);
+  if (rawFrontmatter === undefined) return undefined;
+
+  const nameMatch = FRONTMATTER_NAME_LINE_RE.exec(rawFrontmatter);
+  return nameMatch?.[2];
+}
+
 /**
  * Try to extract the intended agent name from frontmatter, even when the
  * full parse pipeline fails. Returns undefined if frontmatter is unparseable.
  */
 function extractIntendedName(content: string): string | undefined {
   const fmResult = parseFrontmatter(content);
-  if (!fmResult.ok) return undefined;
-  const name = fmResult.value.meta.name;
-  return typeof name === "string" && name.length > 0 ? name : undefined;
+  if (fmResult.ok) {
+    const name = fmResult.value.meta.name;
+    if (typeof name === "string" && name.length > 0) return name;
+  }
+
+  // Parse-free fallback for malformed YAML frontmatter.
+  return extractNameFromRawFrontmatter(content);
 }
 
 /** Derive the intended agent type from content (frontmatter name) or filename. */
@@ -97,9 +133,9 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
   const warnings: AgentLoadWarning[] = [];
   const failedTypes: FailedAgentType[] = [];
 
-  let entries: string[];
+  let entries: readonly Dirent[];
   try {
-    entries = readdirSync(dir);
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
@@ -119,12 +155,17 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
   }
 
   // Sort deterministically — readdirSync order varies across platforms
-  entries.sort();
+  const sortedEntries = [...entries].sort((a, b) => {
+    if (a.name < b.name) return -1;
+    if (a.name > b.name) return 1;
+    return 0;
+  });
 
-  for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue;
+  for (const entry of sortedEntries) {
+    // Files only — ignore directories like "researcher.md/" to avoid false poisoning.
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
 
-    const filePath = join(dir, entry);
+    const filePath = join(dir, entry.name);
     let content: string;
     try {
       content = readFileSync(filePath, "utf-8");
@@ -139,7 +180,7 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
         },
       });
       // Poison on read failure too — can't recover name, use filename
-      failedTypes.push({ agentType: entry.replace(/\.md$/, ""), source });
+      failedTypes.push({ agentType: entry.name.replace(/\.md$/, ""), source });
       continue;
     }
 
@@ -148,7 +189,7 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
       agents.push(result.value);
     } else {
       warnings.push({ filePath, error: result.error });
-      failedTypes.push({ agentType: deriveIntendedType(content, entry), source });
+      failedTypes.push({ agentType: deriveIntendedType(content, entry.name), source });
     }
   }
 

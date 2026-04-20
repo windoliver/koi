@@ -71,6 +71,16 @@ describe("loadCustomAgents", () => {
     expect(result.agents.length).toBe(1);
   });
 
+  test("ignores directories with a .md suffix", () => {
+    const agentsDir = join(tempDir, ".koi", "agents");
+    mkdirSync(join(agentsDir, "researcher.md"), { recursive: true });
+
+    const result = loadCustomAgents({ projectDir: tempDir });
+    expect(result.agents).toHaveLength(0);
+    expect(result.warnings).toHaveLength(0);
+    expect(result.failedTypes).toHaveLength(0);
+  });
+
   test("missing directory returns empty list, no error", () => {
     const result = loadCustomAgents({ projectDir: "/nonexistent/path" });
     expect(result.agents.length).toBe(0);
@@ -211,6 +221,29 @@ Override prompt.`;
     const { failedTypes } = loadCustomAgents({ projectDir: tempDir });
 
     // Poisoned by frontmatter name "researcher", NOT filename "override"
+    expect(failedTypes.some((f) => f.agentType === "researcher")).toBe(true);
+    expect(failedTypes.some((f) => f.agentType === "override")).toBe(false);
+
+    const registry = createAgentDefinitionRegistry(builtIn, [], failedTypes);
+    expect(registry.resolve("researcher")).toBeUndefined();
+  });
+
+  test("fail-closed: malformed YAML with a name still poisons intended type", () => {
+    const builtIn = getBuiltInAgents();
+
+    const malformedOverride = `---
+name: researcher
+description: Broken override
+model: [unclosed
+---
+
+Override prompt.`;
+
+    writeAgentFile(tempDir, "override.md", malformedOverride);
+
+    const { failedTypes } = loadCustomAgents({ projectDir: tempDir });
+
+    // Poisoned by intended frontmatter name, not filename.
     expect(failedTypes.some((f) => f.agentType === "researcher")).toBe(true);
     expect(failedTypes.some((f) => f.agentType === "override")).toBe(false);
 

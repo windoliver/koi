@@ -82,6 +82,22 @@ describe("createDefinitionResolver — resolve()", () => {
     }
   });
 
+  test("NOT_FOUND message caps available names for large registries", async () => {
+    const defs = Array.from({ length: 25 }, (_, index) => makeMinimalDef(`agent-${index}`));
+    const registry = createAgentDefinitionRegistry(defs, []);
+    const resolver = createDefinitionResolver(registry);
+
+    const result = await resolver.resolve("typo-agent");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("first 20 of 25");
+      expect(result.error.message).toContain("agent-0");
+      expect(result.error.message).toContain("agent-19");
+      expect(result.error.message).not.toContain("agent-24");
+    }
+  });
+
   test("NOT_FOUND on an empty registry mentions 'no agents loaded'", async () => {
     const registry = createAgentDefinitionRegistry([], []);
     const resolver = createDefinitionResolver(registry);
