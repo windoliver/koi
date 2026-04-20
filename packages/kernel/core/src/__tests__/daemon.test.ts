@@ -116,3 +116,46 @@ describe("validateBackgroundSessionRecord", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+import {
+  DEFAULT_HEARTBEAT_CONFIG,
+  SUPERVISOR_HEALTH_STATUS,
+  type SupervisorHealth,
+} from "../daemon.js";
+
+describe("DEFAULT_HEARTBEAT_CONFIG", () => {
+  it("has positive interval and timeout, with timeout > interval", () => {
+    expect(DEFAULT_HEARTBEAT_CONFIG.intervalMs).toBeGreaterThan(0);
+    expect(DEFAULT_HEARTBEAT_CONFIG.timeoutMs).toBeGreaterThan(DEFAULT_HEARTBEAT_CONFIG.intervalMs);
+  });
+});
+
+describe("SUPERVISOR_HEALTH_STATUS", () => {
+  it("enumerates ok/degraded/unhealthy", () => {
+    expect(SUPERVISOR_HEALTH_STATUS).toEqual({
+      OK: "ok",
+      DEGRADED: "degraded",
+      UNHEALTHY: "unhealthy",
+    });
+  });
+});
+
+describe("SupervisorHealth type shape", () => {
+  it("composes from status, reasons, metrics, workers (compile-time check)", () => {
+    const sample: SupervisorHealth = {
+      status: "ok",
+      reasons: [],
+      metrics: {
+        poolSize: 0,
+        maxWorkers: 4,
+        quarantinedCount: 0,
+        restartingCount: 0,
+        pendingSpawnCount: 0,
+        eventDropCount: 0,
+        shuttingDown: false,
+      },
+      workers: [],
+    };
+    expect(sample.status).toBe("ok");
+  });
+});

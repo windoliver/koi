@@ -118,6 +118,12 @@ export interface SupervisorConfig {
    * backend can otherwise consume worker slots indefinitely).
    */
   readonly spawnTimeoutMs?: number | undefined;
+  /**
+   * Default heartbeat cadence/timeout applied to workers that opt into
+   * heartbeat monitoring via `WorkerSpawnRequest.backendHints.heartbeat = true`.
+   * Omitted → `DEFAULT_HEARTBEAT_CONFIG` is used.
+   */
+  readonly heartbeat?: HeartbeatConfig | undefined;
 }
 
 export interface WorkerRestartPolicy {
@@ -136,6 +142,69 @@ export const DEFAULT_WORKER_RESTART_POLICY: WorkerRestartPolicy = {
   backoffCeilingMs: 30_000,
 };
 
+// ---------------------------------------------------------------------------
+// Heartbeat / health
+// ---------------------------------------------------------------------------
+
+/**
+ * Worker heartbeat configuration. `intervalMs` is advisory cadence for the
+ * sender; the supervisor does not enforce it. `timeoutMs` is the deadline:
+ * if no heartbeat event arrives within this window, the supervisor declares
+ * the worker hung and tears it down.
+ */
+export interface HeartbeatConfig {
+  readonly intervalMs: number;
+  readonly timeoutMs: number;
+}
+
+export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
+  intervalMs: 5_000,
+  timeoutMs: 15_000,
+};
+
+export const SUPERVISOR_HEALTH_STATUS = {
+  OK: "ok",
+  DEGRADED: "degraded",
+  UNHEALTHY: "unhealthy",
+} as const satisfies Record<string, string>;
+export type SupervisorHealthStatus =
+  (typeof SUPERVISOR_HEALTH_STATUS)[keyof typeof SUPERVISOR_HEALTH_STATUS];
+
+/**
+ * Per-worker health snapshot. `lastHeartbeatAt` / `heartbeatDeadlineAt` are
+ * `undefined` for workers that did not opt into heartbeat monitoring via
+ * `WorkerSpawnRequest.backendHints.heartbeat = true`.
+ */
+export interface WorkerHealth {
+  readonly workerId: WorkerId;
+  readonly agentId: AgentId;
+  readonly state: "running" | "restarting" | "quarantined" | "stopping";
+  readonly lastHeartbeatAt: number | undefined;
+  readonly heartbeatDeadlineAt: number | undefined;
+}
+
+export interface SupervisorHealthMetrics {
+  readonly poolSize: number;
+  readonly maxWorkers: number;
+  readonly quarantinedCount: number;
+  readonly restartingCount: number;
+  readonly pendingSpawnCount: number;
+  readonly eventDropCount: number;
+  readonly shuttingDown: boolean;
+}
+
+/**
+ * Aggregate supervisor health: a three-state verdict + machine-readable
+ * reasons + raw counters + per-worker detail. Consumers (TUI, CLI, future
+ * HTTP wrapper) render whichever slice they need.
+ */
+export interface SupervisorHealth {
+  readonly status: SupervisorHealthStatus;
+  readonly reasons: readonly string[];
+  readonly metrics: SupervisorHealthMetrics;
+  readonly workers: readonly WorkerHealth[];
+}
+
 export interface Supervisor {
   readonly start: (
     request: WorkerSpawnRequest,
@@ -148,6 +217,8 @@ export interface Supervisor {
   readonly shutdown: (reason: string) => Promise<Result<void, KoiError>>;
   readonly list: () => readonly ProcessDescriptor[];
   readonly watchAll: () => AsyncIterable<WorkerEvent>;
+  /** In-memory health snapshot — pure read, no mutation, no `await`. */
+  readonly health: () => SupervisorHealth;
 }
 
 // ---------------------------------------------------------------------------
