@@ -639,10 +639,18 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
                 await route.abort("accessdenied");
                 return;
               }
-              const { address } = await dnsPromises.lookup(bare);
-              if (isPrivateIp(address)) {
-                await route.abort("accessdenied");
-                return;
+              // Enumerate all addresses — hostnames with mixed public/private
+              // records must be denied regardless of which single record Node
+              // returns first.
+              const addresses = await dnsPromises.lookup(bare, {
+                all: true,
+                verbatim: true,
+              });
+              for (const { address } of addresses) {
+                if (isPrivateIp(address)) {
+                  await route.abort("accessdenied");
+                  return;
+                }
               }
             } catch {
               // DNS lookup failure → fail closed (deny the request)
