@@ -1261,18 +1261,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // not re-run, so forged middleware activated between turns could
           // miss a turn. Loop until the dirty flag stays clear across a
           // full refresh cycle.
+          //
+          // #review-round4-F2: FAIL CLOSED on drain-cap exhaustion. If a
+          // pathological watch source continues to raise dirty across
+          // DRAIN_CAP iterations, do NOT start the next turn on
+          // possibly-stale forged middleware (which may carry
+          // policy/safety wrappers). Throw so the outer catch converts
+          // this into a terminal `done` with error. The host gets a
+          // clear diagnostic and can recreate the runtime.
           if (pendingForgeRefresh) {
             pendingForgeRefresh = false;
             if (forge !== undefined && cachedTerminals !== undefined) {
-              // When `forge.watch` is active, only refresh when dirty.
-              // Without `watch`, always refresh (no push notification to
-              // flag dirty).
               if (forge.watch === undefined) {
                 await refreshForgeState(cachedTerminals);
               } else {
-                // Drain: a concurrent watch event during refresh raises
-                // the dirty flag mid-await; loop until we complete a
-                // refresh cycle without new changes landing.
                 // let justified: mutable loop guard with hard cap to
                 // prevent pathological drain loops
                 let drainIterations = 0;
@@ -1282,9 +1284,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   drainIterations++;
                   await refreshForgeState(cachedTerminals);
                 }
-                if (drainIterations === DRAIN_CAP && forgeStateDirty) {
-                  console.warn(
-                    "[koi] forge refresh drain cap reached; proceeding with possibly-stale state",
+                if (forgeStateDirty) {
+                  throw KoiRuntimeError.from(
+                    "INTERNAL",
+                    `Forge refresh did not quiesce after ${DRAIN_CAP} iterations — a watch source appears to be continuously publishing. Refusing to start the next turn on possibly-stale forged middleware.`,
+                    { retryable: false },
                   );
                 }
               }
@@ -1306,7 +1310,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
           // Deferred stop-gate retry: create adapter stream AFTER forge/middleware
           // refresh so the retry turn sees updated tools and middleware state.
+          //
+          // #review-round4-F1 (belt-and-braces): check abort again right
+          // before spinning up a fresh adapter.stream() — a cancel that
+          // arrives between the block-path short-circuit above and this
+          // point must not still burn a turn.
           if (pendingStopInput !== undefined) {
+            if (runSignal.aborted) {
+              agent.transition({ kind: "complete", stopReason: "interrupted" });
+              return;
+            }
             adapterIterator = adapter.stream(pendingStopInput)[Symbol.asyncIterator]();
           }
 
@@ -1392,6 +1405,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 });
                 const gateResult = await runStopGate(allMiddleware, stopCtx);
                 if (gateResult.kind === "block") {
+                  // #review-round4-F1: short-circuit the retry path when
+                  // the run has been cancelled. A common interleaving is:
+                  // a user/host abort fires → adapter.inject throws an
+                  // abort-type error → stop-gate block lands → retry
+                  // sets up a FRESH adapter.stream() and burns tokens.
+                  // If the run signal is already aborted, the block's
+                  // retry is moot; let the outer loop's aborted-done
+                  // short-circuit handle termination.
+                  if (runSignal.aborted) {
+                    agent.transition({ kind: "complete", stopReason: "interrupted" });
+                    return;
+                  }
                   stopRetryCount++;
                   // Re-anchor the retry on the user's original request. Vague feedback
                   // like "address this" lets the model drift onto nearby context —

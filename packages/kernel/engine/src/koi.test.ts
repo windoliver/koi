@@ -4159,6 +4159,71 @@ describe("createKoi forge watch", () => {
     expect(toolDescriptors).toHaveBeenCalledTimes(1);
   });
 
+  test("forge refresh fails closed when drain cap is exhausted (#review-round4-F2)", async () => {
+    // Pathological forge: every toolDescriptors() call fires another
+    // watch event DURING its resolution, so forgeStateDirty is
+    // re-raised before each refresh completes. After DRAIN_CAP
+    // iterations the engine must refuse to start the next turn on
+    // possibly-stale middleware — instead yield a terminal `done`
+    // with stopReason=error, NOT silently proceed.
+    // let justified: watch listener captured from forge.watch()
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      // Every call to toolDescriptors re-fires the watch event,
+      // keeping forgeStateDirty pinned to true.
+      toolDescriptors: mock(async (): Promise<readonly ToolDescriptor[]> => {
+        watchListener?.({ kind: "saved", brickId: brickId("tool") });
+        return [];
+      }),
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "drain-cap-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          // Fire a watch event FIRST so forgeStateDirty=true before
+          // the turn boundary. Then toolDescriptors re-fires watch
+          // on every call, keeping dirty pinned.
+          watchListener?.({ kind: "saved", brickId: brickId("tool") });
+          // Fire a turn_end to trigger the drain loop on the next
+          // iteration.
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+          // If the drain throws, we never reach here. If it fails
+          // open, this second yield would execute.
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "go" }));
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done?.kind === "done") {
+      // The drain-cap throw must surface as a terminal error,
+      // not a successful completion.
+      expect(done.output.stopReason).toBe("error");
+    }
+  }, 10_000);
+
   test("stale in-flight refresh doesn't clobber a newer committed refresh (#review-round1-F1)", async () => {
     // Race: a slow refresh (state A) kicks off, then a faster refresh (state B)
     // is issued later and commits first. When A's result finally returns, the
@@ -5039,6 +5104,45 @@ describe("createKoi stop gate", () => {
 
     const turnEnds = events.filter((e) => e.kind === "turn_end");
     expect(turnEnds.length).toBe(DEFAULT_MAX_STOP_RETRIES);
+  });
+
+  test("stop-gate block does NOT retry when run is aborted (#review-round4-F1)", async () => {
+    // Common race: user abort fires, adapter.inject throws, stop-gate
+    // block lands. Before the fix, retry launched a fresh adapter.stream
+    // — burning tokens after a user-visible stop. The abort check must
+    // short-circuit to `interrupted` before building pendingStopInput.
+    const { middleware } = blockingStopMiddleware(999); // always block
+    const controller = new AbortController();
+
+    let streamCallCount = 0;
+    const adapter: EngineAdapter = {
+      engineId: "abort-race",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        streamCallCount++;
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { kind: "done" as const, output: doneOutput() };
+          },
+        };
+      },
+      inject: async () => {
+        // Simulate abort-driven inject failure.
+        controller.abort("user cancelled");
+        throw new Error("aborted");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello", signal: controller.signal }));
+    // Exactly ONE adapter.stream() call — the abort short-circuits
+    // before launching a retry. Prior to the fix, this was 2.
+    expect(streamCallCount).toBe(1);
   });
 
   test("stop-gate retry survives adapter.inject throw (#review-round3-F2)", async () => {
