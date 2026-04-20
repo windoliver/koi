@@ -13,6 +13,8 @@
     { "path": "../../lib/artifacts" },
     { "path": "../../lib/artifacts-s3" },
     { "path": "../../lib/blob-cas" },
+    { "path": "../../drivers/browser-ext" },
+    { "path": "../../drivers/browser-playwright" },
     { "path": "../../lib/harness" },
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },

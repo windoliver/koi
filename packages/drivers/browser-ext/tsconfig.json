@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": ".",
+    "lib": ["ES2025", "DOM", "esnext.disposable"],
+    "types": ["bun", "chrome"]
+  },
+  "include": ["src/**/*", "extension/**/*"]
+}

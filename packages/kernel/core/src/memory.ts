@@ -420,7 +420,7 @@ function escapeTitle(value: string): string {
 
 /** Unescapes Markdown link metacharacters in a title (backslash + brackets). */
 function unescapeTitle(value: string): string {
-  return value.replace(/\\([\[\]\\])/g, "$1");
+  return value.replace(/\\([[\]\\])/g, "$1");
 }
 
 /**
