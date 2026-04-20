@@ -301,7 +301,15 @@ async function installPageRebindingGuard(
     try {
       const url = new URL(req.url());
       if (url.protocol !== "http:" && url.protocol !== "https:") {
-        await route.continue();
+        // Default-deny non-HTTP(S) schemes on page-driven navigations
+        // (window.location, window.open, etc.) — matches the driver-level
+        // policy in checkNavigationUrlAllowed. `about:` remains allowed
+        // for internal cleanup (e.g. parking after a private-address abort).
+        if (url.protocol === "about:") {
+          await route.continue();
+          return;
+        }
+        await route.abort("accessdenied");
         return;
       }
       const host = url.hostname;
@@ -624,9 +632,15 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
             }
             try {
               const url = new URL(req.url());
-              // Skip non-HTTP(S) schemes — file://, data://, etc. are not rebinding targets
+              // Default-deny non-HTTP(S) schemes on page-driven navigations
+              // (file://, data://, chrome://, chrome-extension://, etc.).
+              // `about:` remains allowed for internal cleanup parking.
               if (url.protocol !== "http:" && url.protocol !== "https:") {
-                await route.continue();
+                if (url.protocol === "about:") {
+                  await route.continue();
+                  return;
+                }
+                await route.abort("accessdenied");
                 return;
               }
               const host = url.hostname;
