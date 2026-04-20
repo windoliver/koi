@@ -1939,3 +1939,116 @@ describe("metadata.delegatedTo pending-only invariant", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Version-skew backfill: lastAssignedTo (#1769)
+// ---------------------------------------------------------------------------
+//
+// Tasks persisted before `lastAssignedTo` was introduced have `assignedTo` set
+// but `lastAssignedTo` undefined. On the first post-upgrade transition that
+// clears `assignedTo`, the board must copy `assignedTo` into `lastAssignedTo`
+// (only if empty — never overwrite).  This preserves worker read-access for
+// tasks whose output directory is keyed on the last assigned worker identity.
+
+describe("version-skew lastAssignedTo backfill", () => {
+  // Helper: construct a pre-upgrade in_progress task via the snapshot loader.
+  // The snapshot loader does NOT backfill lastAssignedTo, so this faithfully
+  // simulates a task that was persisted before the field existed.
+  function preUpgradeBoard(workerId: string): import("@koi/core").TaskBoard {
+    const legacyTask: Task = {
+      id: taskItemId("t"),
+      subject: "Legacy task",
+      description: "Task from before lastAssignedTo was introduced",
+      dependencies: [],
+      retries: 0,
+      version: 2,
+      status: "in_progress",
+      assignedTo: agentId(workerId),
+      // lastAssignedTo intentionally absent — simulates pre-upgrade persisted state
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    return createTaskBoard({ maxRetries: 3 }, { items: [legacyTask], results: [] });
+  }
+
+  test("retryable fail backfills lastAssignedTo before clearing assignedTo", () => {
+    const board = preUpgradeBoard("bob");
+    // Verify the pre-upgrade state: assignedTo set, lastAssignedTo missing
+    expect(board.get(taskItemId("t"))?.assignedTo).toBe(agentId("bob"));
+    expect(board.get(taskItemId("t"))?.lastAssignedTo).toBeUndefined();
+
+    const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+    const r = board.fail(taskItemId("t"), err);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("pending");
+    expect(after?.assignedTo).toBeUndefined();
+    // One-time backfill: worker identity preserved in lastAssignedTo
+    expect(after?.lastAssignedTo).toBe(agentId("bob"));
+  });
+
+  test("terminal fail backfills lastAssignedTo before clearing assignedTo", () => {
+    const board = preUpgradeBoard("charlie");
+    expect(board.get(taskItemId("t"))?.assignedTo).toBe(agentId("charlie"));
+    expect(board.get(taskItemId("t"))?.lastAssignedTo).toBeUndefined();
+
+    const err: KoiError = { code: "VALIDATION", message: "unrecoverable", retryable: false };
+    // maxRetries: 3 but error is not retryable → terminal
+    const r = board.fail(taskItemId("t"), err);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("failed");
+    expect(after?.assignedTo).toBeUndefined();
+    // One-time backfill: worker identity preserved in lastAssignedTo
+    expect(after?.lastAssignedTo).toBe(agentId("charlie"));
+  });
+
+  test("kill backfills lastAssignedTo when field is absent", () => {
+    const board = preUpgradeBoard("dana");
+    expect(board.get(taskItemId("t"))?.assignedTo).toBe(agentId("dana"));
+    expect(board.get(taskItemId("t"))?.lastAssignedTo).toBeUndefined();
+
+    const r = board.kill(taskItemId("t"));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("killed");
+    // One-time backfill: worker identity preserved in lastAssignedTo
+    expect(after?.lastAssignedTo).toBe(agentId("dana"));
+  });
+
+  test("lastAssignedTo is NOT overwritten when already set — even if assignedTo differs", () => {
+    // Task has lastAssignedTo: "alice" and assignedTo: "bob" (re-assigned after retry).
+    // Terminal fail must preserve "alice" in lastAssignedTo (never overwrite).
+    const taskWithBoth: Task = {
+      id: taskItemId("t"),
+      subject: "Modern task",
+      description: "Task with both fields set",
+      dependencies: [],
+      retries: 1,
+      version: 3,
+      status: "in_progress",
+      assignedTo: agentId("bob"),
+      lastAssignedTo: agentId("alice"),
+      createdAt: 1000,
+      updatedAt: 3000,
+    };
+    const board = createTaskBoard({ maxRetries: 1 }, { items: [taskWithBoth], results: [] });
+
+    const err: KoiError = { code: "VALIDATION", message: "terminal", retryable: false };
+    const r = board.fail(taskItemId("t"), err);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("failed");
+    expect(after?.assignedTo).toBeUndefined();
+    // lastAssignedTo stays "alice" — NOT overwritten with "bob"
+    expect(after?.lastAssignedTo).toBe(agentId("alice"));
+  });
+});
