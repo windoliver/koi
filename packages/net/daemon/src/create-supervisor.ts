@@ -34,6 +34,15 @@ interface PoolEntry {
   readonly policy: WorkerRestartPolicy;
   readonly exitedPromise: Promise<void>;
   readonly resolveExited: () => void;
+  /**
+   * Per-worker cancellation signal piped into `backend.watch(id, signal)`.
+   * Aborted by `stop()` AFTER teardown completes (so the backend still sees
+   * terminate/kill) and indirectly by `shutdown()` (which stops each worker).
+   * Backends that honor the signal release any watch-stream resources they
+   * hold for this worker; backends that stall without emitting a terminal
+   * event no longer leak one IIFE per abandoned worker.
+   */
+  readonly watchController: AbortController;
   restartAttempts: number;
   restartTimestamps: number[];
   stopping: boolean;
@@ -695,12 +704,14 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       resolveExited = resolve;
     });
 
+    const watchController = new AbortController();
     const entry: PoolEntry = {
       handle: spawned.value,
       backend,
       policy: overrides?.restart ?? defaultPolicy,
       exitedPromise,
       resolveExited,
+      watchController,
       restartAttempts: 0,
       restartTimestamps: [],
       stopping: false,
@@ -723,7 +734,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     void (async () => {
       let terminalProcessed = false;
       try {
-        for await (const ev of backend.watch(request.workerId)) {
+        for await (const ev of backend.watch(request.workerId, watchController.signal)) {
           publishEvent(ev);
           if (ev.kind === "heartbeat") {
             healthMonitor.observe(ev.workerId);
@@ -966,7 +977,17 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     entry.stopping = true;
 
     // Deadline-bounded terminate/kill. See teardownWorker for semantics.
-    return teardownWorker(entry.backend, id, reason, entry.exitedPromise);
+    const teardownResult = await teardownWorker(entry.backend, id, reason, entry.exitedPromise);
+    // Belt-and-suspenders: abort the backend.watch AbortSignal AFTER teardown
+    // so a backend that drops its watch stream without ever emitting a
+    // terminal event (tmux, remote RPC, managed cluster) no longer leaks the
+    // supervisor's watch IIFE for the rest of the supervisor's lifetime.
+    // Sequenced AFTER teardown on purpose: if we aborted first, the IIFE's
+    // stopping-branch would call resolveExited before terminate/kill had a
+    // chance to actually stop the OS process, and teardownWorker would return
+    // "ok" while the process was still alive.
+    entry.watchController.abort();
+    return teardownResult;
   };
 
   stopRef = stop;

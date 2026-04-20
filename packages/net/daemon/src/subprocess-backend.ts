@@ -273,9 +273,11 @@ export function createSubprocessBackend(): WorkerBackend {
     return workers.get(id)?.alive ?? false;
   };
 
-  const watch = async function* (id: WorkerId): AsyncIterable<WorkerEvent> {
+  const watch = async function* (id: WorkerId, signal?: AbortSignal): AsyncIterable<WorkerEvent> {
     const state = workers.get(id);
     if (state === undefined) return;
+    // Early-abort short-circuit: caller aborted before we even started.
+    if (signal?.aborted) return;
     // Cancellation wiring: iterator.return() (called by test helpers or
     // the supervisor during shutdown) must unblock a parked await even
     // when no backend events are arriving. The pattern: remember the
@@ -283,6 +285,19 @@ export function createSubprocessBackend(): WorkerBackend {
     // the finally block. Without this, a stalled iterator could hang
     // indefinitely on its next() promise while waiting for cancellation.
     let cancelResolve: (() => void) | undefined;
+    // AbortSignal plumbing: supervisor aborts on stop()/shutdown() so a
+    // parked await exits even when the backend never emits a terminal
+    // event (pathological adapters or backends under stress). We attach
+    // one listener that resolves the currently-parked cancelResolve.
+    // Removed in finally.
+    const onAbort = (): void => {
+      if (cancelResolve !== undefined) {
+        const r = cancelResolve;
+        cancelResolve = undefined;
+        r();
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       // We track our position in state.events explicitly (not via for..of)
       // because we need to re-drain after yielding the lastHeartbeat
@@ -344,6 +359,7 @@ export function createSubprocessBackend(): WorkerBackend {
       // drained, state.alive flips false, and a naive `while(alive)` exit
       // leaves the terminal event buffered but unseen).
       while (true) {
+        if (signal?.aborted) return;
         // Drain any events appended since the last iteration (including
         // during the yield pause of whatever we just yielded).
         while (cursor < state.events.length) {
@@ -389,6 +405,9 @@ export function createSubprocessBackend(): WorkerBackend {
         }
       }
     } finally {
+      // Detach abort listener so the AbortSignal doesn't retain this
+      // closure past the generator's lifetime.
+      signal?.removeEventListener("abort", onAbort);
       // Wake any parked Promise so iterator.return() can complete
       // bounded. Without this, a consumer timing out and calling return
       // would hang on a Promise that only resolves via a new event.

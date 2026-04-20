@@ -88,6 +88,44 @@ describe("subprocess terminate/kill", () => {
     }
   });
 
+  it("watch() returns when the AbortSignal fires mid-iteration", async () => {
+    // A long-lived worker's watch generator must exit cleanly when the
+    // supervisor aborts its signal (stop() / shutdown() path). Without
+    // this, the supervisor's per-worker watch IIFE would hang for the
+    // rest of the supervisor's lifetime on backends that stall or drop
+    // their watch stream without emitting a terminal event.
+    const backend = createSubprocessBackend();
+    const spawned = await backend.spawn({
+      workerId: workerId("abort-1"),
+      agentId: agentId("agent-abort-1"),
+      command: ["bun", "-e", "setTimeout(()=>{},10000)"],
+    });
+    expect(spawned.ok).toBe(true);
+    const controller = new AbortController();
+    const events: string[] = [];
+    const iterPromise = (async (): Promise<void> => {
+      for await (const ev of backend.watch(workerId("abort-1"), controller.signal)) {
+        events.push(ev.kind);
+        if (ev.kind === "started") {
+          // Trigger abort on the next tick so the generator is parked on
+          // its await when the signal fires — this exercises the
+          // listener-resolves-cancelResolve path, not the early-abort
+          // short-circuit.
+          queueMicrotask(() => controller.abort());
+        }
+      }
+    })();
+    // Bound the wait: the test fails (times out) if the generator never
+    // returns after abort.
+    await Promise.race([
+      iterPromise,
+      new Promise((_r, reject) => setTimeout(() => reject(new Error("timeout")), 1000)),
+    ]);
+    expect(events).toContain("started");
+    // Clean up the child — abort doesn't kill the process, just the watch.
+    await backend.kill(workerId("abort-1"));
+  });
+
   it("prunes dead workers from internal state after exit", async () => {
     // A long-lived daemon that spins up many short-lived workers must not
     // retain their state indefinitely. After a worker exits, isAlive must

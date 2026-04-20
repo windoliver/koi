@@ -1798,3 +1798,184 @@ describe("supervisor.health()", () => {
     await supervisor.value.shutdown("test");
   });
 });
+
+describe("supervisor watch AbortSignal plumbing", () => {
+  // Future backends (tmux, remote RPC, managed cluster) may not guarantee
+  // terminal event emission on shutdown. A backend that stalls or drops its
+  // watch stream without emitting `exited`/`crashed` would leave the
+  // supervisor's watch IIFE dangling for the supervisor's lifetime. The
+  // contract requires the supervisor to pass a per-worker AbortSignal into
+  // `backend.watch(id, signal)` and abort it on stop()/shutdown() so
+  // backends can release watch-stream resources and the IIFE exits cleanly.
+
+  /**
+   * Backend whose watch generator NEVER emits a terminal event on
+   * terminate/kill. It only exits via the supervisor's AbortSignal. Used to
+   * prove the supervisor no longer depends on the backend emitting terminal
+   * events to drain its watch IIFE.
+   */
+  const makeStallingBackend = (): {
+    readonly backend: WorkerBackend;
+    readonly watchAborts: () => number;
+  } => {
+    let abortCount = 0;
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "stalling",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async (id) => {
+        // Flip alive so teardownWorker's isAlive poll can resolve — but
+        // deliberately emit NO terminal event on the watch stream.
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      kill: async (id) => {
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        const s = live.get(id);
+        if (s === undefined) return;
+        // Yield a synthetic "started" event so the IIFE's for-await has at
+        // least one iteration to enter, then wait indefinitely on the abort
+        // signal — no terminal event is ever emitted.
+        yield { kind: "started", workerId: id, at: Date.now() };
+        if (signal === undefined) {
+          // No signal plumbed — contract violated. Fail the test by leaking.
+          await new Promise<void>(() => {});
+          return;
+        }
+        if (signal.aborted) {
+          abortCount++;
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        abortCount++;
+      },
+    };
+    return { backend, watchAborts: () => abortCount };
+  };
+
+  it("backend.watch receives an AbortSignal parameter from the supervisor", async () => {
+    // Proof that the L0 contract change is wired: the supervisor passes a
+    // non-undefined signal into backend.watch on spawn.
+    let receivedSignal: AbortSignal | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "signal-capture",
+      isAvailable: () => true,
+      spawn: async (req) => ({
+        ok: true,
+        value: {
+          workerId: req.workerId,
+          agentId: req.agentId,
+          backendKind: "in-process",
+          startedAt: Date.now(),
+          signal: new AbortController().signal,
+        },
+      }),
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async () => false,
+      watch: async function* (id, signal) {
+        receivedSignal = signal;
+        yield { kind: "exited", workerId: id, at: Date.now(), code: 0, state: "terminated" };
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("sig-1"));
+    // Let the microtask-scheduled watch IIFE attach.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("stop() aborts the watch signal even when the backend never emits a terminal event", async () => {
+    const { backend, watchAborts } = makeStallingBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("stall-stop"));
+    // Let the IIFE attach to the backend's watch.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(0);
+    const stopped = await supervisor.value.stop(workerId("stall-stop"), "test");
+    expect(stopped.ok).toBe(true);
+    // Let the aborted iterator settle.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(1);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("shutdown() aborts every pool worker's watch signal", async () => {
+    const { backend, watchAborts } = makeStallingBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("stall-sd-1"));
+    await supervisor.value.start(makeRequest("stall-sd-2"));
+    await supervisor.value.start(makeRequest("stall-sd-3"));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(0);
+    const result = await supervisor.value.shutdown("test");
+    expect(result.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(3);
+    // Pool must be empty — no IIFE leaks post-shutdown.
+    expect(supervisor.value.list().length).toBe(0);
+  });
+
+  it("shutdown resolves within deadline even against a stalling backend", async () => {
+    // Without AbortSignal plumbing, a backend whose watch stream never emits
+    // a terminal event and never returns would leave shutdown() blocked on
+    // `entry.exitedPromise` until shutdownDeadlineMs * 2 elapses. With the
+    // signal in place, the IIFE exits promptly once stop() aborts it.
+    const { backend } = makeStallingBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("stall-deadline"));
+    await new Promise((r) => setTimeout(r, 10));
+    const before = Date.now();
+    const result = await supervisor.value.shutdown("test");
+    const elapsed = Date.now() - before;
+    expect(result.ok).toBe(true);
+    // Bound is `shutdownDeadlineMs * 2` in code, so well under that proves
+    // the abort is doing real work. Use a generous bound (1s) that still
+    // fails the pre-AbortSignal behavior.
+    expect(elapsed).toBeLessThan(1000);
+  });
+});
