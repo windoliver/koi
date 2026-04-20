@@ -11,7 +11,6 @@
  * only — never returned.
  */
 
-import type { BlobStore } from "@koi/blob-cas";
 import type { ArtifactId, SessionId } from "@koi/core";
 
 export interface Artifact {
@@ -95,8 +94,16 @@ export interface ArtifactStore {
 export interface ArtifactStoreConfig {
   readonly dbPath: string;
   readonly blobDir: string;
-  readonly blobStore?: BlobStore;
-  readonly policy?: LifecyclePolicy;
   readonly durability?: "process" | "os";
   readonly maxArtifactBytes?: number;
+  /**
+   * Terminal-delete threshold for confirmed-missing blobs during startup
+   * recovery. Default 10. Lower values terminal-delete faster (tests use
+   * 2); higher values tolerate longer backend outages across restarts.
+   */
+  readonly maxRepairAttempts?: number;
+  // Plan 3 (#1920) will add `policy: LifecyclePolicy` for TTL + quota +
+  // retention. Plan 5 (#1922) will add `blobStore: BlobStore` for pluggable
+  // backends. Both are omitted from the Plan 2 public surface so the type
+  // never advertises config fields that would be rejected at runtime.
 }

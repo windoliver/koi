@@ -139,12 +139,15 @@ describe("saveArtifact", () => {
     expect(r2.value.version).toBe(1); // Same version, not bumped
   });
 
-  test("rejects custom blobStore with Plan 5 pointer", async () => {
+  test("rejects smuggled blobStore with Plan 5 pointer", async () => {
     const { createFilesystemBlobStore } = await import("@koi/blob-cas");
     const customBlobStore = createFilesystemBlobStore(blobDir);
-    await expect(
-      createArtifactStore({ dbPath: "/tmp/fake.db", blobDir, blobStore: customBlobStore }),
-    ).rejects.toThrow(/blobStore is not supported in Plan 2/);
+    // The public type no longer declares blobStore; verify the runtime
+    // defense-in-depth still catches JS callers that smuggle it in.
+    const smuggled = { dbPath: "/tmp/fake.db", blobDir, blobStore: customBlobStore } as never;
+    await expect(createArtifactStore(smuggled)).rejects.toThrow(
+      /blobStore is not supported in Plan 2/,
+    );
   });
 
   test("pending_blob_puts is empty after successful save (intent retired)", async () => {

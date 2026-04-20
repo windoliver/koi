@@ -29,9 +29,20 @@ import { dirname, join } from "node:path";
 const LOCK_SUFFIX = ".lock";
 const BLOBDIR_LOCK_NAME = ".writer.lock";
 
-function isInMemory(dbPath: string): boolean {
-  return dbPath === ":memory:" || dbPath.startsWith("file::memory:");
+export function isInMemoryDbPath(dbPath: string): boolean {
+  // Bare form
+  if (dbPath === ":memory:") return true;
+  // file::memory: URI form (older Bun/SQLite convention)
+  if (dbPath.startsWith("file::memory:")) return true;
+  // SQLite URI with memory mode parameter:
+  //   file:memdb1?mode=memory&cache=shared
+  //   file:foo.db?mode=memory&cache=shared
+  if (dbPath.startsWith("file:") && /[?&]mode=memory(&|$)/i.test(dbPath)) return true;
+  return false;
 }
+
+// Internal alias for callers inside this file.
+const isInMemory = isInMemoryDbPath;
 
 function pidIsAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;

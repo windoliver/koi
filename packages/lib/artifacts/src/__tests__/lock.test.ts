@@ -73,6 +73,16 @@ describe("single-writer lock", () => {
     release2();
   });
 
+  test("SQLite URI memory DBs are detected and skip dbPath lock", async () => {
+    const { isInMemoryDbPath } = await import("../lock.js");
+    expect(isInMemoryDbPath(":memory:")).toBe(true);
+    expect(isInMemoryDbPath("file::memory:")).toBe(true);
+    expect(isInMemoryDbPath("file:memdb1?mode=memory&cache=shared")).toBe(true);
+    expect(isInMemoryDbPath("file:anything.db?mode=memory")).toBe(true);
+    expect(isInMemoryDbPath("/tmp/real.db")).toBe(false);
+    expect(isInMemoryDbPath("file:/tmp/real.db")).toBe(false);
+  });
+
   test("blobDir lock: two FS DBs with same blobDir but different dbPath blocked", () => {
     const db1 = join(tmpDir, "a.db");
     const db2 = join(tmpDir, "b.db");

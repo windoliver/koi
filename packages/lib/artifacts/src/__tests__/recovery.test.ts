@@ -61,23 +61,52 @@ describe("startup recovery", () => {
     expect(new TextDecoder().decode(r.value.data)).toBe("abc");
   });
 
-  test("deletes blob_ready=0 row + tombstones hash when blob is missing", async () => {
+  test("does NOT delete blob_ready=0 row on first missing-blob probe (retry budget)", async () => {
+    // Transient backend outage on restart: single negative has() must not
+    // reap a committed save. Row stays blob_ready=0 with repair_attempts
+    // incremented for the next pass.
     const fakeHash = "0".repeat(64);
     const artId = await simulateCrashedSave(fakeHash, 0);
 
-    store = await createArtifactStore({ dbPath, blobDir });
+    store = await createArtifactStore({ dbPath, blobDir, maxRepairAttempts: 10 });
     const r = await store.getArtifact(artId as never, {
       sessionId: sessionId("sess_a"),
     });
-    expect(r.ok).toBe(false); // Row was deleted
+    // Row is invisible (blob_ready=0) but not deleted
+    expect(r.ok).toBe(false);
 
-    // Verify tombstone was enqueued
     await store.close();
     const db = new Database(dbPath);
+    const row = db.query("SELECT repair_attempts FROM artifacts WHERE id = ?").get(artId) as {
+      readonly repair_attempts: number;
+    } | null;
+    const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(fakeHash);
+    db.close();
+    store = await createArtifactStore({ dbPath, blobDir, maxRepairAttempts: 10 });
+    expect(row).not.toBeNull();
+    expect(row?.repair_attempts).toBeGreaterThanOrEqual(1);
+    expect(tomb).toBeFalsy(); // No tombstone yet — budget not exhausted
+  });
+
+  test("terminal-deletes blob_ready=0 row after maxRepairAttempts confirmed misses", async () => {
+    const fakeHash = "0".repeat(64);
+    const artId = await simulateCrashedSave(fakeHash, 0);
+
+    // maxRepairAttempts=1 → the very first confirmed miss terminal-deletes.
+    store = await createArtifactStore({ dbPath, blobDir, maxRepairAttempts: 1 });
+    const r = await store.getArtifact(artId as never, {
+      sessionId: sessionId("sess_a"),
+    });
+    expect(r.ok).toBe(false);
+
+    await store.close();
+    const db = new Database(dbPath);
+    const row = db.query("SELECT 1 FROM artifacts WHERE id = ?").get(artId);
     const tomb = db.query("SELECT 1 FROM pending_blob_deletes WHERE hash = ?").get(fakeHash);
     db.close();
     store = await createArtifactStore({ dbPath, blobDir });
-    expect(tomb).toBeTruthy();
+    expect(row).toBeFalsy(); // Row terminal-deleted
+    expect(tomb).toBeTruthy(); // Tombstone enqueued
   });
 
   test("retires stale pending_blob_puts when matching blob_ready=1 row exists", async () => {
