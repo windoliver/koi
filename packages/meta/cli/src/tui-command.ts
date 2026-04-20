@@ -3771,9 +3771,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         case "system:governance-reset":
           // The TUI side already cleared its in-memory alerts via the
           // optimistic dispatch from executeGovernanceReset() in tui-root.tsx.
-          // No-op placeholder for now — when a future PR exposes the alert
-          // tracker on the governance middleware handle, this case will reset
-          // its per-session dedup so onAlert can fire again for crossed thresholds.
+          // Here we reset the bridge's alert-tracker dedup so subsequent
+          // re-crossings of the same threshold re-fire toasts.
+          governanceBridge?.resetAlerts();
           break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.

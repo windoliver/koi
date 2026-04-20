@@ -14,9 +14,16 @@ import type {
   RuleDescriptor,
   SensorReading,
 } from "@koi/core";
+import { createAlertTracker } from "@koi/governance-core";
 import type { CapabilityFragmentLite, GovernanceAlert, TuiStore } from "@koi/tui";
 
 const MAX_PERSISTED_ALERTS = 200;
+/**
+ * Threshold crossings that fire an alert + toast. Lower than governance-core's
+ * default [0.8, 0.95] because the TUI surface is observational — surfacing 50%
+ * gives the user runway to react before approaching the cap.
+ */
+const ALERT_THRESHOLDS: readonly number[] = [0.5, 0.8, 0.95];
 
 export interface GovernanceBridgeConfig {
   readonly store: TuiStore;
@@ -39,8 +46,10 @@ export interface GovernanceBridge {
   readonly pollSnapshot: () => void;
   /** Load up to N most recent persisted alerts from disk. */
   readonly loadRecentAlerts: (n: number) => readonly GovernanceAlert[];
-  /** Update session id (call on session reset). */
+  /** Update session id (call on session reset). Cleans up alert dedup for old session. */
   readonly setSession: (sessionId: string) => void;
+  /** Reset alert dedup for current session — re-crossings will re-fire toasts. */
+  readonly resetAlerts: () => void;
   /** Stop any timers / release resources. */
   readonly dispose: () => void;
 }
@@ -48,6 +57,7 @@ export interface GovernanceBridge {
 export function createGovernanceBridge(config: GovernanceBridgeConfig): GovernanceBridge {
   // let: justified — mutated by setSession
   let sessionId = config.sessionId;
+  const alertTracker = createAlertTracker({ thresholds: ALERT_THRESHOLDS });
 
   ensureParentDir(config.alertsPath);
 
@@ -74,21 +84,34 @@ export function createGovernanceBridge(config: GovernanceBridgeConfig): Governan
     }
   }
 
+  function fireAlert(pct: number, variable: string, reading: SensorReading): void {
+    const alert: GovernanceAlert = {
+      id: nextId(),
+      ts: Date.now(),
+      sessionId,
+      variable,
+      threshold: pct,
+      current: reading.current,
+      limit: reading.limit,
+      utilization: reading.utilization,
+    };
+    config.store.dispatch({ kind: "add_governance_alert", alert });
+    config.store.dispatch({
+      kind: "add_toast",
+      toast: {
+        id: alert.id,
+        kind: pct >= 0.8 ? "error" : "warn",
+        key: `governance:${variable}`,
+        title: `Governance: ${variable} at ${Math.round(pct * 100)}%`,
+        body: formatAlertBody(variable, reading),
+        ts: alert.ts,
+      },
+    });
+    persistAlert(alert);
+  }
+
   return {
-    recordAlert(pct: number, variable: string, reading: SensorReading): void {
-      const alert: GovernanceAlert = {
-        id: nextId(),
-        ts: Date.now(),
-        sessionId,
-        variable,
-        threshold: pct,
-        current: reading.current,
-        limit: reading.limit,
-        utilization: reading.utilization,
-      };
-      config.store.dispatch({ kind: "add_governance_alert", alert });
-      persistAlert(alert);
-    },
+    recordAlert: fireAlert,
 
     recordViolation(variable: string, reason: string): void {
       config.store.dispatch({
@@ -98,17 +121,17 @@ export function createGovernanceBridge(config: GovernanceBridgeConfig): Governan
     },
 
     pollSnapshot(): void {
+      function applySnapshot(snap: GovernanceSnapshot): void {
+        config.store.dispatch({ kind: "set_governance_snapshot", snapshot: snap });
+        alertTracker.checkAndFire(sessionId, snap, fireAlert);
+      }
       const result = config.controller.snapshot();
       if (result instanceof Promise) {
-        void result
-          .then((snap: GovernanceSnapshot) => {
-            config.store.dispatch({ kind: "set_governance_snapshot", snapshot: snap });
-          })
-          .catch((err: unknown) => {
-            console.warn("[governance-bridge] snapshot poll failed:", err);
-          });
+        void result.then(applySnapshot).catch((err: unknown) => {
+          console.warn("[governance-bridge] snapshot poll failed:", err);
+        });
       } else {
-        config.store.dispatch({ kind: "set_governance_snapshot", snapshot: result });
+        applySnapshot(result);
       }
     },
 
@@ -126,13 +149,36 @@ export function createGovernanceBridge(config: GovernanceBridgeConfig): Governan
     },
 
     setSession(newSessionId: string): void {
+      alertTracker.cleanup(sessionId);
       sessionId = newSessionId;
+    },
+
+    resetAlerts(): void {
+      alertTracker.cleanup(sessionId);
     },
 
     dispose(): void {
       // No timers, no open handles — appendFileSync is synchronous.
     },
   };
+}
+
+function formatAlertBody(variable: string, reading: SensorReading): string {
+  if (variable === "cost_usd") {
+    return `$${reading.current.toFixed(2)} / $${reading.limit.toFixed(2)}`;
+  }
+  if (reading.limit >= 1000) {
+    return `${formatThousands(reading.current)} / ${formatThousands(reading.limit)}`;
+  }
+  return `${reading.current} / ${reading.limit}`;
+}
+
+function formatThousands(n: number): string {
+  if (n >= 1000) {
+    const k = n / 1000;
+    return Number.isInteger(k) ? `${k}k` : `${k.toFixed(1)}k`;
+  }
+  return String(n);
 }
 
 function ensureParentDir(path: string): void {
