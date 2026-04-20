@@ -270,6 +270,101 @@ When `SupervisorConfig.backends` registers multiple kinds, `start()` picks in th
 
 ---
 
+## Heartbeat Protocol
+
+Workers can opt into supervisor-side liveness monitoring by sending heartbeat messages over Bun's native IPC channel. Unlike OS-level `isAlive` polling (which only catches crashes), heartbeats also detect hangs — a looping worker that never finishes a task will miss its heartbeat deadline and be torn down.
+
+### Opting in
+
+Set `backendHints.heartbeat: true` in the spawn request:
+
+```typescript
+await supervisor.start({
+  workerId: workerId("research-1"),
+  agentId: agentId("agent-research"),
+  command: ["bun", "run", "./my-worker.ts"],
+  backendHints: { heartbeat: true },
+});
+```
+
+### Child-side pattern
+
+The child process sends a single-shape message over IPC:
+
+```typescript
+// Inside the worker's main loop:
+setInterval(() => {
+  if (typeof process.send === "function") {
+    process.send({ koi: "heartbeat" });
+  }
+}, 5_000); // Advisory cadence — must be shorter than config.heartbeat.timeoutMs
+```
+
+The supervisor ignores any IPC message that is not a heartbeat, leaving room for future control messages.
+
+### Configuration
+
+`SupervisorConfig.heartbeat` sets global defaults (`DEFAULT_HEARTBEAT_CONFIG = { intervalMs: 5_000, timeoutMs: 15_000 }`):
+
+```typescript
+const supervisor = createSupervisor({
+  maxWorkers: 4,
+  shutdownDeadlineMs: 10_000,
+  heartbeat: { intervalMs: 5_000, timeoutMs: 15_000 },
+  backends: { subprocess: createSubprocessBackend() },
+});
+```
+
+### Timeout behavior
+
+If no heartbeat arrives within `timeoutMs`, the supervisor:
+
+1. Publishes a synthetic `WorkerEvent` of kind `"crashed"` with `error.code = "HEARTBEAT_TIMEOUT"` — visible via `watchAll()` to any observer.
+2. Invokes `stop(workerId, "heartbeat-timeout")` — graceful terminate, then kill after `shutdownDeadlineMs`.
+3. Does not auto-restart. Callers that want automatic restart after a heartbeat timeout should wrap `stop()`; this may become a first-class policy in a follow-up issue.
+
+The first heartbeat must arrive within `timeoutMs` of spawn — there is no separate startup grace window. Workers with non-trivial boot cost should emit an early heartbeat as soon as initialization completes.
+
+## Health Reporting
+
+`supervisor.health()` is a synchronous, in-memory snapshot of both per-worker health and supervisor self-health:
+
+```typescript
+const h: SupervisorHealth = supervisor.health();
+// h.status:  "ok" | "degraded" | "unhealthy"
+// h.reasons: readonly string[]   (machine-readable tags)
+// h.metrics: SupervisorHealthMetrics  (raw counters)
+// h.workers: readonly WorkerHealth[]  (per-worker detail)
+```
+
+### Status derivation
+
+- `"unhealthy"` ⇢ supervisor is shutting down
+- `"degraded"` ⇢ any of: quarantined workers exist, event-buffer drops occurred, pool is at capacity
+- `"ok"` ⇢ no degrading condition
+
+Reasons vocabulary:
+- `"shutting_down"` — supervisor-level
+- `"quarantined_workers"` — one or more workers have unconfirmed liveness
+- `"event_buffer_drops"` — the event ring buffer has evicted events (subscribers may have missed some)
+- `"at_capacity"` — `poolSize + pendingSpawnCount >= maxWorkers`
+
+### WorkerHealth fields
+
+```typescript
+interface WorkerHealth {
+  readonly workerId: WorkerId;
+  readonly agentId: AgentId;
+  readonly state: "running" | "restarting" | "quarantined" | "stopping";
+  readonly lastHeartbeatAt: number | undefined;       // undefined for non-heartbeat-tracked workers
+  readonly heartbeatDeadlineAt: number | undefined;   // undefined for non-heartbeat-tracked workers
+}
+```
+
+Non-heartbeat-tracked workers (those spawned without `backendHints.heartbeat: true`) appear in `workers[]` with `lastHeartbeatAt` and `heartbeatDeadlineAt` set to `undefined`.
+
+---
+
 ## Configuration
 
 | Option | Default | Description |
