@@ -1,6 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import type { BackgroundSessionRecord, SupervisorConfig, WorkerBackend } from "../daemon.js";
-import { validateBackgroundSessionRecord, validateSupervisorConfig, workerId } from "../daemon.js";
+import type {
+  BackgroundSessionRecord,
+  SupervisorConfig,
+  SupervisorHealth,
+  WorkerBackend,
+} from "../daemon.js";
+import {
+  DEFAULT_HEARTBEAT_CONFIG,
+  SUPERVISOR_HEALTH_STATUS,
+  validateBackgroundSessionRecord,
+  validateSupervisorConfig,
+  workerId,
+} from "../daemon.js";
 import { agentId } from "../ecs.js";
 
 const fakeBackend = {
@@ -116,12 +127,6 @@ describe("validateBackgroundSessionRecord", () => {
     expect(result.ok).toBe(false);
   });
 });
-
-import {
-  DEFAULT_HEARTBEAT_CONFIG,
-  SUPERVISOR_HEALTH_STATUS,
-  type SupervisorHealth,
-} from "../daemon.js";
 
 describe("DEFAULT_HEARTBEAT_CONFIG", () => {
   it("has positive interval and timeout, with timeout > interval", () => {

@@ -162,7 +162,11 @@ export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
   timeoutMs: 15_000,
 };
 
-export const SUPERVISOR_HEALTH_STATUS = {
+export const SUPERVISOR_HEALTH_STATUS: {
+  readonly OK: "ok";
+  readonly DEGRADED: "degraded";
+  readonly UNHEALTHY: "unhealthy";
+} = {
   OK: "ok",
   DEGRADED: "degraded",
   UNHEALTHY: "unhealthy",
