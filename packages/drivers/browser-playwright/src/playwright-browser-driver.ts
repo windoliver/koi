@@ -1363,35 +1363,33 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         ]).catch(async (err: unknown) => {
           if (timedOut) {
             // Kill the execution context so the still-running script cannot
-            // mutate state after we return an error. Escalate in three steps:
-            //   1. goto about:blank (cleanest — keeps the tab usable).
-            //   2. page.close() if (1) fails (beforeunload handler / wedged
-            //      renderer). The tab is gone; the caller must reopen.
-            //   3. If both fail, drop the tab from our map — the caller's
-            //      snapshot is invalidated below, and we refuse to hand back
-            //      this page on the next ensurePage() call (currentTabId gets
-            //      cleared further down).
-            let killed = false;
+            // mutate state after we return an error. Escalate in steps:
+            //   1. goto about:blank — cleanest; keeps the tab usable. KEEP in map.
+            //   2. page.close() if (1) fails — tab is gone. DROP from map.
+            //   3. If both fail — renderer wedged. DROP from map anyway so the
+            //      caller gets a fresh page on next ensurePage().
+            let cleanup: "navigated" | "closed" | "abandoned" = "abandoned";
             try {
               await page.goto("about:blank", { timeout: 1000 });
-              killed = true;
+              cleanup = "navigated";
             } catch {
-              // goto failed — escalate to page.close().
+              // goto failed — escalate.
             }
-            if (!killed) {
+            if (cleanup === "abandoned") {
               try {
                 await page.close({ runBeforeUnload: false });
-                killed = true;
+                cleanup = "closed";
               } catch {
-                // page.close() also failed — renderer is wedged. Best we can
-                // do is drop the page so the caller gets a fresh one on retry.
+                // page.close() also failed — remains "abandoned".
               }
             }
             if (tabId) {
+              // Snapshot is stale no matter what — script may have mutated state.
               invalidateTabSnapshot(tabId);
-              if (!killed || tabs.has(tabId)) {
-                // Either kill failed OR we closed the page; remove from map
-                // so ensurePage() creates a fresh page next call.
+              // Only drop from tabs map when the page is actually gone or abandoned.
+              // If goto succeeded, the page is alive at about:blank and should
+              // remain managed so dispose() / tabList() / tabClose() can find it.
+              if (cleanup !== "navigated") {
                 tabs.delete(tabId);
                 tabConsoleLogs.delete(tabId);
                 if (currentTabId === tabId) currentTabId = null;
