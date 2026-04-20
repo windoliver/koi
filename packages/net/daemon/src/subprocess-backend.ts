@@ -28,6 +28,14 @@ interface SubprocState {
   // within the grace window, we delete the entry so a caller who never
   // watches cannot leak state for the daemon's lifetime.
   pruneTimer: ReturnType<typeof setTimeout> | undefined;
+  // Most recent heartbeat — replayed to each attaching watcher so the
+  // supervisor's fire-and-forget watch IIFE isn't racing against the
+  // child's first IPC send. Without this, a heartbeat that fires in the
+  // ~microsecond window between spawn and watch-loop attach is dropped
+  // (no listener yet), and the supervisor's deadline timer arms with no
+  // observe() — a healthy worker can hit HEARTBEAT_TIMEOUT. Bounded to
+  // exactly one event per worker (latest wins), so no unbounded growth.
+  lastHeartbeat: WorkerEvent | undefined;
 }
 
 // How long we retain a dead worker's state after exit if no watcher has
@@ -42,12 +50,16 @@ export function createSubprocessBackend(): WorkerBackend {
 
   const emit = (state: SubprocState, ev: WorkerEvent): void => {
     // Heartbeat events are liveness signals, not lifecycle history — a
-    // long-lived worker emits them every few seconds, so retaining them
-    // in the replay buffer grows state.events unboundedly. Dispatch to
-    // active listeners only and drop. Lifecycle events (started, exited,
-    // crashed) stay in the replay buffer so a late-attaching watcher can
-    // reconstruct the worker's state.
-    if (ev.kind !== "heartbeat") {
+    // long-lived worker emits them every few seconds, so retaining all
+    // of them in the replay buffer grows state.events unboundedly.
+    //
+    // Strategy: lifecycle events (started, exited, crashed) stay in the
+    // replay buffer. Heartbeats replace state.lastHeartbeat (one-slot
+    // latest-wins) so a late-attaching watcher sees the most recent
+    // liveness signal instead of missing it entirely.
+    if (ev.kind === "heartbeat") {
+      state.lastHeartbeat = ev;
+    } else {
       state.events.push(ev);
     }
     const pending = [...state.listeners];
@@ -162,6 +174,7 @@ export function createSubprocessBackend(): WorkerBackend {
         terminalDelivered: false,
         terminatedIntentionally: false,
         pruneTimer: undefined,
+        lastHeartbeat: undefined,
       };
       workers.set(request.workerId, state);
       // Include pid so registry bridges can refresh the record's process
@@ -272,6 +285,14 @@ export function createSubprocessBackend(): WorkerBackend {
           state.terminalDelivered = true;
           return;
         }
+      }
+      // Replay the most recent heartbeat (if any) so a watcher that
+      // attached after the child's first process.send() still observes
+      // liveness. Without this, the supervisor's deadline timer can arm
+      // just as a fresh heartbeat is being dropped, leading to spurious
+      // HEARTBEAT_TIMEOUT for a healthy worker.
+      if (state.lastHeartbeat !== undefined) {
+        yield state.lastHeartbeat;
       }
       if (!state.alive) {
         state.terminalDelivered = true;

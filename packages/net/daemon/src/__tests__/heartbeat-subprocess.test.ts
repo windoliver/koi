@@ -67,14 +67,23 @@ describe("subprocess heartbeat (IPC opt-in)", () => {
     expect(heartbeats.length).toBe(0);
   });
 
-  it("heartbeat event retention is bounded — replay buffer does not grow with heartbeat count", async () => {
-    // Regression for unbounded state.events growth: a long-lived worker
-    // sending heartbeats every tick used to push each into the replay
-    // buffer. After the fix, heartbeats dispatch to active listeners
-    // only and do NOT accumulate. We verify by letting heartbeats flow
-    // for a while, then attaching a SECOND watcher late — that watcher
-    // should NOT receive any historical heartbeats, only started (and
-    // eventually the terminal event).
+  it("heartbeat event retention is bounded — at most one pre-attach heartbeat is replayed (latest wins)", async () => {
+    // Regression for unbounded state.events growth. The invariant:
+    // lifecycle events (started, exited, crashed) are always buffered
+    // for late-attaching watchers, but heartbeats collapse to a single
+    // lastHeartbeat slot. So a watcher that attaches late sees:
+    //   1. `started` (from buffer)
+    //   2. AT MOST ONE pre-attach heartbeat (the latest — for liveness)
+    //   3. 0+ post-attach heartbeats (live)
+    //   4. terminal event
+    //
+    // Without the fix, state.events would grow with every heartbeat and
+    // the watcher would see N pre-attach heartbeats (bounded by emit
+    // count). With the fix, the watcher sees <= 1 pre-attach heartbeat
+    // regardless of how many the child emitted.
+    //
+    // We assert by counting heartbeats with timestamps strictly BEFORE
+    // the attach moment. If buffer is bounded, the count is 0 or 1.
     const backend = createSubprocessBackend();
     const id = workerId("hb-bounded-1");
     const spawned = await backend.spawn({
@@ -84,32 +93,21 @@ describe("subprocess heartbeat (IPC opt-in)", () => {
       backendHints: { heartbeat: true },
     });
     expect(spawned.ok).toBe(true);
-    // Let the child send a bunch of heartbeats without an active watcher.
-    // Without the fix, these would pile up in state.events.
+    // Let the child send ~10 heartbeats (30ms interval × 300ms wait).
+    // Without the fix, all 10 would sit in state.events; with the fix,
+    // only the most recent is retained in state.lastHeartbeat.
     await new Promise((r) => setTimeout(r, 300));
+    const attachAt = Date.now();
     const replay = await collect(
       backend.watch(id),
       (ev) => ev.kind === "exited" || ev.kind === "crashed",
       2_000,
     );
-    // The replay should start with `started` (buffered) and proceed into
-    // LIVE heartbeats arriving after the watcher attached — never into
-    // historical heartbeats from before the attach. We can't easily
-    // distinguish replay vs live events, but we CAN prove the buffer
-    // didn't hold ~10 pre-attach heartbeats: the first heartbeat the
-    // watcher sees should have a timestamp AFTER the attach moment
-    // (since buffered heartbeats were dropped).
-    const startedIdx = replay.findIndex((e) => e.kind === "started");
-    expect(startedIdx).toBeGreaterThanOrEqual(0);
-    // If heartbeats were buffered, many would precede any live emit.
-    // After the fix, heartbeats only show up after the attach.
-    const heartbeats = replay.filter((e) => e.kind === "heartbeat");
-    // Child emits at 30ms intervals; we waited 300ms pre-attach. Buffered
-    // behavior would surface ~10 historical heartbeats (roughly 300/30).
-    // After the fix, we see fewer than the pre-attach count because the
-    // pre-attach ones were dropped — the test remains stable even on a
-    // slow runner because we only bound the upper count, not lower.
-    expect(heartbeats.length).toBeLessThan(10);
+    // Every pre-attach heartbeat has .at < attachAt. Bounded-buffer
+    // means 0 or 1 such events (the last-heartbeat slot). Unbounded
+    // would surface ~10.
+    const preAttachHeartbeats = replay.filter((e) => e.kind === "heartbeat" && e.at < attachAt);
+    expect(preAttachHeartbeats.length).toBeLessThanOrEqual(1);
   });
 
   it("child that never heartbeats still exits cleanly under IPC opt-in (backend is permissive)", async () => {

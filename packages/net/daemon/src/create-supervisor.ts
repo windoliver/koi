@@ -230,13 +230,15 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   ): Promise<PickResult> => {
     if (kind !== undefined) {
       // Explicit kind is honored verbatim — callers who name a backend
-      // want that backend, not a fallback. We don't probe isAvailable
-      // here; spawn failures surface via backend.spawn's own error.
+      // want that backend, not a fallback. But we still probe isAvailable
+      // so the caller gets a uniform "unavailable" reason (→ retryable
+      // UNAVAILABLE error) instead of an adapter-specific spawn error.
       const b = config.backends[kind];
       if (b === undefined) return { ok: false, reason: "unregistered" };
       if (requireHeartbeat === true && b.supportsHeartbeat !== true) {
         return { ok: false, reason: "unsupported" };
       }
+      if (!(await probeBackend(b))) return { ok: false, reason: "unavailable" };
       return { ok: true, backend: b };
     }
     let sawCompatible = false;

@@ -15,6 +15,9 @@ interface FakeWorkerState {
   readonly events: WorkerEvent[];
   readonly listeners: Array<(ev: WorkerEvent) => void>;
   readonly emit: (ev: WorkerEvent) => void;
+  // Most recent heartbeat — replayed on watcher attach so the supervisor's
+  // deadline timer doesn't race against a just-dropped heartbeat.
+  lastHeartbeat: WorkerEvent | undefined;
 }
 
 export interface FakeBackendControls {
@@ -68,12 +71,16 @@ export function createFakeBackend(
         controller,
         events: [],
         listeners: [],
+        lastHeartbeat: undefined,
         emit: (ev) => {
           // Mirror subprocess-backend: heartbeats are live signals, not
-          // replay history. Dropping them keeps state.events bounded for
-          // long-lived workers — otherwise high-frequency heartbeats grow
-          // the array indefinitely.
-          if (ev.kind !== "heartbeat") {
+          // replay history. We keep only the latest in lastHeartbeat
+          // (one-slot) so a late-attaching watcher sees current liveness;
+          // the unbounded state.events growth from high-frequency
+          // heartbeats is still avoided.
+          if (ev.kind === "heartbeat") {
+            state.lastHeartbeat = ev;
+          } else {
             state.events.push(ev);
           }
           const pending = [...state.listeners];
@@ -123,8 +130,13 @@ export function createFakeBackend(
     watch: async function* (id) {
       const s = workers.get(id);
       if (s === undefined) return;
-      // Yield buffered events
+      // Yield buffered lifecycle events
       for (const ev of s.events) yield ev;
+      // Replay the latest heartbeat (if any) to avoid the attach-race:
+      // a heartbeat emitted before the watcher subscribes would otherwise
+      // be dropped, and the supervisor's deadline timer could fire
+      // spuriously.
+      if (s.lastHeartbeat !== undefined) yield s.lastHeartbeat;
       if (!s.alive) return;
       // Subscribe for future events
       while (s.alive) {
