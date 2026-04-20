@@ -626,6 +626,23 @@ const driver = createPlaywrightBrowserDriver({
 
 `browser`, `cdpEndpoint`, `wsEndpoint` are the three transport paths. Exactly one wins: `browser` > `wsEndpoint` > `cdpEndpoint` > (default: launch own Chromium). Stealth / userDataDir / launch options apply only to the default launch path.
 
+---
+
+## Private-address guard — Phase 1 scope and known limitations
+
+`blockPrivateAddresses: true` (default) blocks agent navigations to private / loopback / link-local addresses at two enforcement points:
+
+1. **Pre-navigation URL check** in `navigate()` / `tabNew(url)` — rejects literal private IPs (IPv4, IPv6-mapped IPv4 like `::ffff:127.0.0.1`, link-local `fe80::/10`, unique-local `fc00::/7`), `localhost`, `*.localhost`, and hostnames that resolve via DNS to any of the above.
+2. **Per-page route guard** (`page.route()`) on every page the driver creates — aborts document navigation requests at commit time. Works on both owned and borrowed contexts. Also catches server-side 30x redirects that would otherwise reach a private target.
+3. **Context-level route guard** (`ctx.route()`) on owned contexts — covers pages spawned by site code (`window.open`, `target=_blank`) within a driver-owned context.
+4. **Post-navigation final-URL check** — verifies `page.url()` didn't land on a private address after all redirects. Defense-in-depth; parks the page at `about:blank` on mismatch.
+
+### Known limitations (Phase 1)
+
+- **Subresource requests are NOT guarded.** The route handlers intercept only main-frame document navigations. Page-initiated `fetch()`, XHR, form POSTs, images, scripts, and WebSocket handshakes to private addresses still fire. This matches the spec's §7.4 "Layer 2 only" scope — Layer 1 (full `Fetch.requestPaused` request interception with DNS pinning) is explicitly deferred to Phase 2.
+- **Popup pages on borrowed contexts are NOT guarded.** The per-page guard is installed on pages the driver creates via `ctx.newPage()`. On borrowed contexts (cdpEndpoint/wsEndpoint paths reusing the caller's default context), any page the caller's code opens (via `window.open`, `target=_blank`, or its own `ctx.newPage()`) is outside our scope — we intentionally do NOT install route handlers on caller-created pages because that would mutate caller-visible state. The caller owns security policy for pages they create.
+- **Phase 2 plan**: Layer 1 interception via `Fetch.enable` at the CDP level will close both gaps by routing every request (subresources + popup navigations) through a single extension-side blocklist. Tracked separately from Phase 1 PRs.
+
 ### Multi-Tab Workflow
 
 ```typescript

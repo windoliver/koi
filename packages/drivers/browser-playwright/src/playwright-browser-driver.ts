@@ -608,13 +608,28 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
                 await route.continue();
                 return;
               }
-              const hostname = url.hostname;
-              // IP literals are already checked by url-security.ts at the tool layer
-              if (/^[\d.:[\]]+$/.test(hostname)) {
+              const host = url.hostname;
+              const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+              // IP literal — block directly without DNS (covers page-initiated
+              // navigations like window.open("http://127.0.0.1/") that bypass
+              // the tool-layer URL check).
+              const isIpLiteral =
+                /^\d+(\.\d+){3}$/.test(bare) ||
+                (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+              if (isIpLiteral) {
+                if (isPrivateIp(bare)) {
+                  await route.abort("accessdenied");
+                  return;
+                }
                 await route.continue();
                 return;
               }
-              const { address } = await dnsPromises.lookup(hostname);
+              // Explicit localhost (OS-dependent DNS rules).
+              if (bare === "localhost" || bare.endsWith(".localhost")) {
+                await route.abort("accessdenied");
+                return;
+              }
+              const { address } = await dnsPromises.lookup(bare);
               if (isPrivateIp(address)) {
                 await route.abort("accessdenied");
                 return;
