@@ -4,7 +4,7 @@
 
 **Goal:** Extend `@koi/daemon` with a worker heartbeat IPC protocol, missed-heartbeat timeout detection, and an in-memory `supervisor.health()` snapshot that reports both per-worker health and supervisor self-health.
 
-**Architecture:** New L2 module `health-monitor.ts` owns per-worker deadline timers; hooks into the existing supervisor at four points (admission, watch-loop heartbeat event, terminal event, shutdown). Bun subprocess backend gains opt-in IPC wiring via `backendHints.heartbeat === true`. L0 gains five types + two constants; no new `WorkerEvent` kind — missed heartbeat emits synthetic `crashed` with `error.code = "HEARTBEAT_TIMEOUT"` and reuses the existing teardown pipeline.
+**Architecture:** New L2 module `heartbeat-monitor.ts` owns per-worker deadline timers; hooks into the existing supervisor at four points (admission, watch-loop heartbeat event, terminal event, shutdown). Bun subprocess backend gains opt-in IPC wiring via `backendHints.heartbeat === true`. L0 gains five types + two constants; no new `WorkerEvent` kind — missed heartbeat emits synthetic `crashed` with `error.code = "HEARTBEAT_TIMEOUT"` and reuses the existing teardown pipeline.
 
 **Tech Stack:** Bun 1.3.x, TypeScript 6, `bun:test`, tsup. Spec: `docs/superpowers/specs/2026-04-19-daemon-heartbeat-health-design.md`. Issue: <https://github.com/windoliver/koi/issues/1341>.
 
@@ -17,13 +17,13 @@
 | `packages/kernel/core/src/daemon.ts` | +40 LOC | `HeartbeatConfig`, `DEFAULT_HEARTBEAT_CONFIG`, `SUPERVISOR_HEALTH_STATUS`, `SupervisorHealthStatus`, `WorkerHealth`, `SupervisorHealthMetrics`, `SupervisorHealth`; extend `SupervisorConfig` + `Supervisor` |
 | `packages/kernel/core/src/index.ts` | +10 LOC | Export new types + constants from daemon |
 | `packages/kernel/core/src/__tests__/daemon.test.ts` | +20 LOC | Test `DEFAULT_HEARTBEAT_CONFIG` and `SUPERVISOR_HEALTH_STATUS` shape |
-| `packages/net/daemon/src/health-monitor.ts` | NEW ~180 LOC | `createHealthMonitor` — timer-driven deadline, `track`/`observe`/`untrack`/`shutdown`/`snapshot`, synthetic-crash-on-timeout |
-| `packages/net/daemon/src/__tests__/health-monitor.test.ts` | NEW ~180 LOC | 10 unit tests with injected fake `now`/`publishEvent`/`teardown` |
+| `packages/net/daemon/src/heartbeat-monitor.ts` | NEW ~180 LOC | `createHeartbeatMonitor` — timer-driven deadline, `track`/`observe`/`untrack`/`shutdown`/`snapshot`, synthetic-crash-on-timeout |
+| `packages/net/daemon/src/__tests__/heartbeat-monitor.test.ts` | NEW ~180 LOC | 10 unit tests with injected fake `now`/`publishEvent`/`teardown` |
 | `packages/net/daemon/src/create-supervisor.ts` | +50 LOC | Plumb `agentId` into `RestartingEntry`+`QuarantinedEntry`; instantiate monitor; 4 wiring touch-points; new `health()` method |
 | `packages/net/daemon/src/__tests__/supervisor.test.ts` | +100 LOC | Tests for `health()` on fresh/at-capacity/shutting-down supervisor, non-heartbeat-tracked worker, heartbeat-opt-in worker |
 | `packages/net/daemon/src/subprocess-backend.ts` | +30 LOC | Opt-in IPC wiring; `isHeartbeatMessage` guard; emit `heartbeat` events |
 | `packages/net/daemon/src/__tests__/heartbeat-subprocess.test.ts` | NEW ~80 LOC | 3 integration tests with real `Bun.spawn` using inline `bun -e` children |
-| `packages/net/daemon/src/index.ts` | +2 LOC | Export `createHealthMonitor` + `HealthMonitor` type |
+| `packages/net/daemon/src/index.ts` | +2 LOC | Export `createHeartbeatMonitor` + `HeartbeatMonitor` type |
 | `docs/L2/daemon.md` | +90 LOC | Heartbeat section + `health()` shape + child-side IPC pattern |
 | `packages/meta/runtime/src/__tests__/golden-replay.test.ts` | +50 LOC | Two new `test()` cases inside the existing `describe("Golden: @koi/daemon", …)` block |
 
@@ -261,28 +261,28 @@ git commit -m "feat(core): add heartbeat + supervisor health L0 contracts"
 
 ---
 
-## Task 2: `health-monitor.ts` — unit tests first
+## Task 2: `heartbeat-monitor.ts` — unit tests first
 
 **Files:**
-- Test: `packages/net/daemon/src/__tests__/health-monitor.test.ts` (NEW)
-- Create: `packages/net/daemon/src/health-monitor.ts` (NEW)
+- Test: `packages/net/daemon/src/__tests__/heartbeat-monitor.test.ts` (NEW)
+- Create: `packages/net/daemon/src/heartbeat-monitor.ts` (NEW)
 
 - [ ] **Step 1: Write failing unit tests**
 
-Create `packages/net/daemon/src/__tests__/health-monitor.test.ts`:
+Create `packages/net/daemon/src/__tests__/heartbeat-monitor.test.ts`:
 
 ```typescript
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { AgentId, WorkerEvent, WorkerId } from "@koi/core";
 import { agentId, workerId } from "@koi/core";
-import { createHealthMonitor, type HealthMonitor } from "../health-monitor.js";
+import { createHeartbeatMonitor, type HeartbeatMonitor } from "../heartbeat-monitor.js";
 
 const wid = (s: string): WorkerId => workerId(s);
 const aid = (s: string): AgentId => agentId(s);
 const CONFIG = { intervalMs: 50, timeoutMs: 120 };
 
 interface Harness {
-  readonly monitor: HealthMonitor;
+  readonly monitor: HeartbeatMonitor;
   readonly events: WorkerEvent[];
   readonly teardownCalls: Array<{ readonly id: WorkerId; readonly reason: string }>;
   tick: (ms: number) => Promise<void>;
@@ -294,7 +294,7 @@ const makeHarness = (opts?: {
   const events: WorkerEvent[] = [];
   const teardownCalls: Array<{ readonly id: WorkerId; readonly reason: string }> = [];
   let nowMs = 1_000_000;
-  const monitor = createHealthMonitor({
+  const monitor = createHeartbeatMonitor({
     publishEvent: (ev) => events.push(ev),
     teardown: async (id, reason) => {
       teardownCalls.push({ id, reason });
@@ -313,7 +313,7 @@ const makeHarness = (opts?: {
   };
 };
 
-describe("createHealthMonitor", () => {
+describe("createHeartbeatMonitor", () => {
   let h: Harness;
   beforeEach(() => {
     h = makeHarness();
@@ -418,10 +418,10 @@ describe("createHealthMonitor", () => {
 
 - [ ] **Step 2: Run tests, expect failure**
 
-Run: `cd packages/net/daemon && bun test src/__tests__/health-monitor.test.ts`
-Expected: FAIL — module `../health-monitor.js` not found.
+Run: `cd packages/net/daemon && bun test src/__tests__/heartbeat-monitor.test.ts`
+Expected: FAIL — module `../heartbeat-monitor.js` not found.
 
-- [ ] **Step 3: Create `packages/net/daemon/src/health-monitor.ts`**
+- [ ] **Step 3: Create `packages/net/daemon/src/heartbeat-monitor.ts`**
 
 ```typescript
 import type {
@@ -432,13 +432,13 @@ import type {
   WorkerId,
 } from "@koi/core";
 
-export interface HealthMonitorDeps {
+export interface HeartbeatMonitorDeps {
   readonly publishEvent: (ev: WorkerEvent) => void;
   readonly teardown: (id: WorkerId, reason: string) => Promise<void>;
   readonly now: () => number;
 }
 
-export interface HealthMonitor {
+export interface HeartbeatMonitor {
   readonly track: (id: WorkerId, agentId: AgentId, config: HeartbeatConfig) => void;
   readonly observe: (id: WorkerId) => void;
   readonly untrack: (id: WorkerId) => void;
@@ -454,7 +454,7 @@ interface MonitorEntry {
   timer: ReturnType<typeof setTimeout>;
 }
 
-export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
+export function createHeartbeatMonitor(deps: HeartbeatMonitorDeps): HeartbeatMonitor {
   const entries = new Map<WorkerId, MonitorEntry>();
   let isShutdown = false;
 
@@ -479,7 +479,7 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
     deps.teardown(id, "heartbeat-timeout").catch(() => undefined);
   };
 
-  const track: HealthMonitor["track"] = (id, agentId, config) => {
+  const track: HeartbeatMonitor["track"] = (id, agentId, config) => {
     if (isShutdown) return;
     const existing = entries.get(id);
     if (existing !== undefined) clearTimeout(existing.timer);
@@ -496,7 +496,7 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
     entries.set(id, entry);
   };
 
-  const observe: HealthMonitor["observe"] = (id) => {
+  const observe: HeartbeatMonitor["observe"] = (id) => {
     const entry = entries.get(id);
     if (entry === undefined) return;
     clearTimeout(entry.timer);
@@ -506,20 +506,20 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
     armTimer(id, entry);
   };
 
-  const untrack: HealthMonitor["untrack"] = (id) => {
+  const untrack: HeartbeatMonitor["untrack"] = (id) => {
     const entry = entries.get(id);
     if (entry === undefined) return;
     clearTimeout(entry.timer);
     entries.delete(id);
   };
 
-  const shutdown: HealthMonitor["shutdown"] = () => {
+  const shutdown: HeartbeatMonitor["shutdown"] = () => {
     isShutdown = true;
     for (const entry of entries.values()) clearTimeout(entry.timer);
     entries.clear();
   };
 
-  const snapshot: HealthMonitor["snapshot"] = () => {
+  const snapshot: HeartbeatMonitor["snapshot"] = () => {
     const out: WorkerHealth[] = [];
     for (const [id, entry] of entries) {
       out.push({
@@ -539,19 +539,19 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
 
 - [ ] **Step 4: Run tests, expect pass**
 
-Run: `cd packages/net/daemon && bun test src/__tests__/health-monitor.test.ts`
+Run: `cd packages/net/daemon && bun test src/__tests__/heartbeat-monitor.test.ts`
 Expected: PASS (10 tests).
 
 - [ ] **Step 5: Run layer check**
 
 Run: `cd /Users/tafeng/koi/.claude/worktrees/swift-giggling-rabbit && bun scripts/check-layers.ts`
-Expected: PASS — health-monitor imports only from `@koi/core` (L0).
+Expected: PASS — heartbeat-monitor imports only from `@koi/core` (L0).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/net/daemon/src/health-monitor.ts packages/net/daemon/src/__tests__/health-monitor.test.ts
-git commit -m "feat(daemon): health-monitor with timer-driven deadline detection"
+git add packages/net/daemon/src/heartbeat-monitor.ts packages/net/daemon/src/__tests__/heartbeat-monitor.test.ts
+git commit -m "feat(daemon): heartbeat-monitor with timer-driven deadline detection"
 ```
 
 ---
@@ -696,11 +696,11 @@ git commit -m "refactor(daemon): plumb agentId into RestartingEntry and Quaranti
 
 ---
 
-## Task 4: Wire health-monitor into supervisor + add `health()` method
+## Task 4: Wire heartbeat-monitor into supervisor + add `health()` method
 
 **Files:**
 - Modify: `packages/net/daemon/src/create-supervisor.ts`
-- Modify: `packages/net/daemon/src/index.ts` (add `createHealthMonitor` + `HealthMonitor` type export)
+- Modify: `packages/net/daemon/src/index.ts` (add `createHeartbeatMonitor` + `HeartbeatMonitor` type export)
 
 - [ ] **Step 1: Write failing supervisor-level tests for `health()`**
 
@@ -839,7 +839,7 @@ No internal-state exposure and no `unknown` casts — matches the existing `cras
 Run: `cd packages/net/daemon && bun test src/__tests__/supervisor.test.ts -t "supervisor.health"`
 Expected: FAIL — `supervisor.value.health` is not a function.
 
-- [ ] **Step 3: Wire health-monitor into `create-supervisor.ts`**
+- [ ] **Step 3: Wire heartbeat-monitor into `create-supervisor.ts`**
 
 At the top of `create-supervisor.ts`, add imports:
 
@@ -869,7 +869,7 @@ import {
   DEFAULT_WORKER_RESTART_POLICY,
   validateSupervisorConfig,
 } from "@koi/core";
-import { createHealthMonitor } from "./health-monitor.js";
+import { createHeartbeatMonitor } from "./heartbeat-monitor.js";
 ```
 
 Inside `createSupervisor`, after `const defaultPolicy = ...` (around line 110):
@@ -882,7 +882,7 @@ Inside `createSupervisor`, after `const defaultPolicy = ...` (around line 110):
   // `stop` would work, but the indirection here makes the ordering explicit
   // and keeps the code robust against future construction-order changes.
   let stopRef: Supervisor["stop"] | undefined;
-  const healthMonitor = createHealthMonitor({
+  const healthMonitor = createHeartbeatMonitor({
     publishEvent,
     teardown: async (id, reason) => {
       if (stopRef === undefined) return;
@@ -1032,13 +1032,13 @@ Update the final return:
   return { ok: true, value: { start, stop, shutdown, list, watchAll, health } };
 ```
 
-- [ ] **Step 4: Export `createHealthMonitor` from `packages/net/daemon/src/index.ts`**
+- [ ] **Step 4: Export `createHeartbeatMonitor` from `packages/net/daemon/src/index.ts`**
 
 Modify `packages/net/daemon/src/index.ts` — add these lines:
 
 ```typescript
-export type { HealthMonitor, HealthMonitorDeps } from "./health-monitor.js";
-export { createHealthMonitor } from "./health-monitor.js";
+export type { HeartbeatMonitor, HeartbeatMonitorDeps } from "./heartbeat-monitor.js";
+export { createHeartbeatMonitor } from "./heartbeat-monitor.js";
 ```
 
 - [ ] **Step 5: Run supervisor tests, expect pass**
@@ -1055,7 +1055,7 @@ Expected: PASS for all three.
 
 ```bash
 git add packages/net/daemon/src/create-supervisor.ts packages/net/daemon/src/index.ts packages/net/daemon/src/__tests__/supervisor.test.ts packages/net/daemon/src/__tests__/fake-backend.ts
-git commit -m "feat(daemon): integrate health-monitor into supervisor, add health() method"
+git commit -m "feat(daemon): integrate heartbeat-monitor into supervisor, add health() method"
 ```
 
 ---
@@ -1524,7 +1524,7 @@ gh pr create --title "feat(daemon): heartbeat + health monitoring (closes #1341)
 - Extends `@koi/daemon` by ~300 LOC (production); zero new packages.
 
 ## Test plan
-- [x] Unit tests on `health-monitor` — 10 tests, fake timers, covers all code paths
+- [x] Unit tests on `heartbeat-monitor` — 10 tests, fake timers, covers all code paths
 - [x] Integration tests on subprocess IPC — 3 tests with real `Bun.spawn`
 - [x] Supervisor tests — `health()` returns correct status on fresh/at-capacity/shutting-down/heartbeat-tracked cases
 - [x] Golden queries — heartbeat cadence + timeout cleanup, no LLM
@@ -1558,7 +1558,7 @@ EOF
   - Health endpoint returns correct status (test AC) → Task 4 (tests 1-4)
   - Supervisor monitors own health (test AC) → Task 4 (tests 1-3)
 - [x] **No placeholders** — every step has exact code; no "TBD", "later", "fill in"
-- [x] **Type consistency** — `HeartbeatConfig`, `HealthMonitor`, `SupervisorHealth`, `WorkerHealth`, `createHealthMonitor` used identically across tasks; reason strings (`"at_capacity"`, `"quarantined_workers"`, `"event_buffer_drops"`, `"shutting_down"`) match spec and tests
+- [x] **Type consistency** — `HeartbeatConfig`, `HeartbeatMonitor`, `SupervisorHealth`, `WorkerHealth`, `createHeartbeatMonitor` used identically across tasks; reason strings (`"at_capacity"`, `"quarantined_workers"`, `"event_buffer_drops"`, `"shutting_down"`) match spec and tests
 - [x] **File paths** — all absolute from repo root
 - [x] **TDD order preserved** — every implementation task has a failing test step before the implementation step
 - [x] **Frequent commits** — eight named commits aligned with the issue's AC-by-AC structure
