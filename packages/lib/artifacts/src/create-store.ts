@@ -27,6 +27,7 @@ import { createSaveArtifact } from "./save.js";
 import { createRevokeShare, createShareArtifact } from "./share.js";
 import { openDatabase } from "./sqlite.js";
 import { ensureStoreIdPair } from "./store-id.js";
+import { createSweepArtifacts } from "./sweep.js";
 import type {
   Artifact,
   ArtifactError,
@@ -35,6 +36,7 @@ import type {
   ArtifactStoreConfig,
   Result,
   SaveArtifactInput,
+  SweepArtifactsResult,
 } from "./types.js";
 
 export async function createArtifactStore(config: ArtifactStoreConfig): Promise<ArtifactStore> {
@@ -125,6 +127,10 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     const rawDelete = createDeleteArtifact({ db });
     const rawShare = createShareArtifact({ db });
     const rawRevoke = createRevokeShare({ db });
+    const rawSweep = createSweepArtifacts({
+      db,
+      ...(config.policy !== undefined ? { policy: config.policy } : {}),
+    });
 
     // Mutation barrier: track in-flight ops so close() can drain before
     // closing SQLite + releasing the lock. `closing` short-circuits new calls.
@@ -184,6 +190,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       fromSessionId: SessionId,
       ctx: { readonly ownerSessionId: SessionId },
     ) => Promise<Result<void, ArtifactError>> = track(rawRevoke);
+    const sweepArtifacts: () => Promise<SweepArtifactsResult> = track(rawSweep);
 
     const close = async (): Promise<void> => {
       if (closed) return;
@@ -213,6 +220,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       deleteArtifact,
       shareArtifact,
       revokeShare,
+      sweepArtifacts,
       close,
     };
   } catch (err) {

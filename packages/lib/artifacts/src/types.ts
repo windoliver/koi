@@ -64,6 +64,17 @@ export type Result<T, E> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: E };
 
+/**
+ * Phase A sweep result (spec §6.3). `deleted` is the number of metadata rows
+ * reaped; `bytesReclaimed` is the sum of those rows' `size` columns. Phase B
+ * (blob-on-disk reclamation) runs separately via the tombstone journal and
+ * is not reflected here.
+ */
+export interface SweepArtifactsResult {
+  readonly deleted: number;
+  readonly bytesReclaimed: number;
+}
+
 export interface ArtifactStore {
   readonly saveArtifact: (input: SaveArtifactInput) => Promise<Result<Artifact, ArtifactError>>;
   readonly getArtifact: (
@@ -88,6 +99,12 @@ export interface ArtifactStore {
     fromSessionId: SessionId,
     ctx: { readonly ownerSessionId: SessionId },
   ) => Promise<Result<void, ArtifactError>>;
+  /**
+   * Apply the store's configured lifecycle policy (TTL / quota / retention)
+   * to reap eligible rows. Plan 3 Phase A only — returns the metadata-level
+   * deletion tally. Phase B drains tombstones separately (Task 6).
+   */
+  readonly sweepArtifacts: () => Promise<SweepArtifactsResult>;
   readonly close: () => Promise<void>;
 }
 
