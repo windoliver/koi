@@ -104,6 +104,22 @@ describe("SharedProcessAccounter", () => {
     expect(accounter.activeCount()).toBe(0);
   });
 
+  test("no double-decrement on repeated terminated transitions for same agent", () => {
+    registry.register(entry("a1", "running", 0));
+    expect(accounter.activeCount()).toBe(1);
+
+    registry.transition(agentId("a1"), "waiting", 0, { kind: "awaiting_response" });
+    registry.transition(agentId("a1"), "terminated", 1, { kind: "completed" });
+    expect(accounter.activeCount()).toBe(0);
+
+    // Simulate a duplicate/late terminated event by moving back to running then
+    // terminating again without deregistration; count should not go negative.
+    registry.transition(agentId("a1"), "running", 2, { kind: "response_received" });
+    expect(accounter.activeCount()).toBe(0);
+    registry.transition(agentId("a1"), "terminated", 3, { kind: "completed" });
+    expect(accounter.activeCount()).toBe(0);
+  });
+
   test("dispose resets count", async () => {
     registry.register(entry("a1"));
     registry.register(entry("a2"));

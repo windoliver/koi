@@ -89,6 +89,8 @@ interface InMemoryControllerConfig {
 | `iteration_reset` | `turn_count`, `duration_ms` start. NOT token/cost/spawn/error-rate. |
 | `session_reset` | `turn_count`, `duration_ms`, rolling `error_rate` window. NOT token/cost/spawn. |
 
+**Turn rollback semantics** — `turn_refund` decrements `turn_count` by `count` and clamps at zero (no underflow). Non-finite counts are treated as `0`; negative counts are clamped before subtraction.
+
 **Forge semantics** — `forge_depth` is a **concurrent** counter paired with `forge_release`, mirroring `spawn` / `spawn_release`. `forge` increments both `forge_depth` and `forge_budget`; `forge_release` decrements `forge_depth` only (clamped at 0). `forge_budget` is the cumulative forge-event counter (never decrements) and is the correct sensor for a lifetime-forge safety cap. Configuring only `forgeDepthLimit` without `forgeBudgetLimit` is a weak defense once hosts emit paired releases — sequential forge activity will never trip a concurrent cap. `forge_release` carries no correlation ID (same as `spawn_release`), so hosts MUST wrap compile lifecycle in `try` / `finally` with a single guarded release to avoid undercounting live forges. Actual engine-side emission of `forge` / `forge_release` is tracked in gov-8b (#1926) — the L0 variant ships ahead of the v2 forge package.
 
 ### `createPatternBackend(config)`

@@ -467,6 +467,11 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
       case "turn":
         state.turnCount += 1;
         return;
+      case "turn_refund": {
+        const refund = Number.isFinite(event.count) ? Math.max(0, event.count) : 0;
+        state.turnCount = Math.max(0, state.turnCount - refund);
+        return;
+      }
       case "spawn":
         // spawn_count tracks concurrent live children — depth is a property of
         // each controller (its own agentDepth), not a counter the parent mutates.

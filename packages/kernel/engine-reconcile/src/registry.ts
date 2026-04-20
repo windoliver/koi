@@ -84,7 +84,6 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     }
 
     const result = applyTransition(current.status, {
-      from: current.status.phase,
       to: targetPhase,
       expectedGeneration,
       reason,
