@@ -76,6 +76,9 @@ src/
 ├── registry-supervisor-bridge.ts   attachRegistry() — supervisor events → registry writes
 ├── signal-handlers.ts              registerSignalHandlers() — SIGTERM/SIGINT bridge to shutdown
 ├── backoff.ts                      computeBackoff() — exponential backoff helper
+├── heartbeat-monitor.ts            createHeartbeatMonitor() — per-worker deadline timers with synthetic-crash-on-timeout
+├── heartbeat-opt-in.ts             isHeartbeatOptIn() — shared predicate for backendHints.heartbeat opt-in
+├── supervisor-health.ts            buildHealth() + deriveStatus() — health snapshot composition helpers
 └── index.ts                        public re-exports
 ```
 
@@ -408,7 +411,7 @@ Default registry directory: `$KOI_STATE_DIR/daemon/sessions`; falls back to
 
 ## Limitations / Follow-Ups
 
-- **`eventBuffer` is unbounded.** `watchAll()` buffers every emitted event for the supervisor's lifetime. Long-running daemons with restart-heavy workers will leak memory. Follow-up: bounded ring-buffer with configurable retention + subscriber-abandonment cleanup.
+- Event buffer is bounded at 1000 events with FIFO eviction; `supervisor.health().metrics.eventDropCount` surfaces eviction count.
 - **Only subprocess backend ships in this package.** `in-process`, `tmux`, and `remote` backends are reserved kinds but not implemented — future peer L2 packages (e.g. `@koi/daemon-backend-tmux`).
 - **No direct integration with `SupervisionReconciler` yet.** That integration (wiring the supervisor's `start` into the reconciler's `SpawnFn`) is deferred to a follow-up issue.
 - **No subscriber-abandonment cleanup.** If a `watchAll` consumer abandons its iterator, the closed-over waker leaks until the next publish.
