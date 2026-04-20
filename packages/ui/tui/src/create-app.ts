@@ -23,8 +23,8 @@ import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
 import type { TuiStore } from "./state/store.js";
-import { wireStdinResurrection } from "./stdin-resurrection.js";
 import type { FetchModelsResult, ModelEntry } from "./state/types.js";
+import { wireStdinResurrection } from "./stdin-resurrection.js";
 import { StoreContext } from "./store-context.js";
 import { computeLayoutTier } from "./theme.js";
 import { TuiRoot } from "./tui-root.js";
@@ -585,12 +585,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       // fires "destroy" event, but solidRootDispose is already cleared above so
       // it won't be called twice (mountSolidRoot's once() listener is idempotent).
       //
-      // Unexpected destroy errors are captured and rethrown AFTER the remaining
-      // teardown runs, so a failing destroy never strands the resurrected TTY,
-      // the keepalive timer, or the done() deferred. Without this, #1915's
-      // replacement stream could leak on any non-EBADF/ENOENT destroy crash.
-      // let: mutable — captured in try/catch, rethrown after the finally block
-      let deferredDestroyError: unknown;
+      // stop() never rejects (matches the done()-contract comment at the top
+      // of this file: "Never rejects — stop() catches all errors internally").
+      // Unexpected destroy errors are logged via console.error but do NOT
+      // propagate — the CLI's post-stop cleanup (resume hint, run report,
+      // batcher dispose, filesystem backend close) must keep running even
+      // when the renderer crashes on teardown; otherwise a shutdown-path
+      // failure compounds into lost diagnostic output + leaked resources.
       if (activeRenderer !== undefined && injectedRenderer === undefined) {
         // #1915 — detach the external-destroy handler so renderer.destroy()'s
         // synchronous "destroy" emit doesn't invoke the resurrection close
@@ -616,7 +617,11 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           const hasErrnoCode = errno === "EBADF" || errno === "ENOENT";
           const hasRawModeMarker = e instanceof Error && /setRawMode|errno: 2/.test(e.message);
           const isStdinRawModeError = hasRawModeMarker && (hasErrnoCode || errno === undefined);
-          if (!isStdinRawModeError) deferredDestroyError = e;
+          if (!isStdinRawModeError) {
+            // Log unexpected renderer teardown failures so they surface in
+            // crash reports without tripping the non-throwing stop() contract.
+            console.error("createTuiApp.stop: renderer.destroy() threw", e);
+          }
         }
       }
       activeRenderer = undefined;
@@ -640,8 +645,6 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       currentDoneResolve?.();
       currentDoneResolve = null;
       currentDone = Promise.resolve();
-
-      if (deferredDestroyError !== undefined) throw deferredDestroyError;
     },
   };
 
