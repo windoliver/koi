@@ -2,7 +2,7 @@
 
 Versioned, session-scoped file lifecycle for agent-created outputs. Metadata in SQLite, bytes in a content-addressed blob store (`@koi/blob-cas`), single-writer advisory lock, crash-safe save protocol.
 
-This is Plan 2 of issue #1651. Plan 3 (#1920) added TTL + quota lifecycle — see [Lifecycle](#lifecycle). Plan 4 (#1921) moved blob-ready repair and Phase B tombstone drain off the open path onto a background worker — see [Startup recovery + background worker](#startup-recovery--background-worker). Plan 5 (#1922) added pluggable blob backends via `ArtifactStoreConfig.blobStore` — see [Pluggable blob backends](#pluggable-blob-backends). Plan 6 (#1923) will ship agent-facing tool governance.
+This is Plan 2 of issue #1651. Plan 3 (#1920) added TTL + quota lifecycle — see [Lifecycle](#lifecycle). Plan 4 (#1921) moved blob-ready repair and Phase B tombstone drain off the open path onto a background worker — see [Startup recovery + background worker](#startup-recovery--background-worker). Plan 5 (#1922) added pluggable blob backends via `ArtifactStoreConfig.blobStore` — see [Pluggable blob backends](#pluggable-blob-backends) and [Backend selection](#backend-selection). Plan 6 (#1923) finalized backend selection guidance and L3 roll-ups.
 
 ## Public surface
 
@@ -152,12 +152,26 @@ All `LifecyclePolicy` fields are optional and each must be a finite positive int
 
 `@koi/artifacts-s3` ships the first alternate backend (AWS S3 and S3-compatible stores — MinIO, Cloudflare R2, Backblaze B2). Full config surface, security model (explicit credentials, no env-var fallback), key layout, and cost notes live in [`docs/L2/artifacts-s3.md`](./artifacts-s3.md).
 
+## Backend selection
+
+Pick the backend that matches your deployment shape — semantics are identical, cost and operational characteristics are not.
+
+**Use filesystem (`createFilesystemBlobStore`, the default when `blobStore` is omitted)** for single-process hosts, local development, the `koi tui` default at `~/.koi/artifacts/`, and any deployment where artifact bytes do not need to outlive the host machine. Every put/has/delete is a local syscall — O(µs) — so sweeps and scavenges that touch thousands of blobs stay cheap. No network dependency, no credentials to rotate.
+
+**Use S3 (`createS3BlobStore` from `@koi/artifacts-s3`)** for multi-host fleets that need a shared blob layer, or when artifact retention must outlive the host lifetime (containers that scale to zero, ephemeral CI workers, cross-region DR). Trade-off: every put/has/delete is an HTTPS round-trip — O(tens of ms) — so bulk operations are noticeably slower than the filesystem backend and scavenger `list()` pages over the bucket. Single-artifact save/get latency is dominated by the hash + DB transaction, so it barely moves; Phase B drains and scavenges scale linearly with round-trip cost.
+
+**Delete cost (S3 only).** `delete(h)` issues `HeadObject` + `DeleteObject` so the backend can return `true` / `false` exactly like the filesystem CAS (S3's `DeleteObject` is idempotent and can't distinguish missing-vs-present in-band). Every Phase B tombstone delete is ~2 round-trips. On the save/get hot path this never fires; only the background worker's tombstone drain, terminal-delete branch, and scavenger pay it.
+
+**Security (S3 only).** Per spec §8, `createS3BlobStore` requires `region`, `bucket`, and `credentials` explicitly — it **never** reads AWS env vars or the SDK's default credential chain. Operators thread credentials from a vetted source (secret manager, sealed config, IAM role exchange). This rules out the failure mode where a misconfigured deployment silently picks up stale developer credentials.
+
+**Read-after-write.** Both backends satisfy the `BlobStore` contract. The filesystem CAS fsyncs the blob before `put` resolves; S3 has offered strong read-after-write consistency globally since December 2020 (same for MinIO, R2, B2). The positive-has gate (step 9 of the save protocol) is safe on either — no retry loop needed.
+
 ## L3 wiring
 
 `@koi/runtime` exposes an `artifacts: { store, sessionId }` config that produces a ComponentProvider attaching four agent-facing tools: `artifact_save`, `artifact_get`, `artifact_list`, `artifact_delete`. The TUI (`koi tui`) opens a per-process store at `~/.koi/artifacts/` and binds calls to the active TUI session. Advisory-lock contention (concurrent TUIs) logs to stderr and disables artifact tools for the second process rather than aborting the session.
 
 ## Testing
 
-- Unit: 210 tests in `packages/lib/artifacts/src/__tests__/` covering CRUD, ACL, validation, lock, migration, recovery, concurrent-save edge cases, (Plan 3) policy validation, quota accounting, Phase A sweep across TTL/quota/retention, Phase B drain (claim/delete/reconcile + resume-from-claimed), save-side tombstone reclaim, scavenger orphan detection, and (Plan 4) stale-intent grace-window drain, local-only open path, TTL-only open sweep, `drainBlobReadyZero` repair probes, background worker scaffolding (start/stop/runOnce), close-barrier iteration flush, and structured `onEvent` drift signals.
+- Unit: 218 tests in `packages/lib/artifacts/src/__tests__/` covering CRUD, ACL, validation, lock, migration, recovery, concurrent-save edge cases, (Plan 3) policy validation, quota accounting, Phase A sweep across TTL/quota/retention, Phase B drain (claim/delete/reconcile + resume-from-claimed), save-side tombstone reclaim, scavenger orphan detection, and (Plan 4) stale-intent grace-window drain, local-only open path, TTL-only open sweep, `drainBlobReadyZero` repair probes, background worker scaffolding (start/stop/runOnce), close-barrier iteration flush, and structured `onEvent` drift signals.
 - Integration: 5 standalone Golden tests + 1 ATIF trajectory-replay test in `packages/meta/runtime/src/__tests__/golden-replay.test.ts` (cassette: `fixtures/artifacts-roundtrip.trajectory.json`).
 - TUI corner cases (manual): concurrent-TUI degradation, bogus-id not_found, list filters, delete-then-get.
