@@ -1386,6 +1386,22 @@ describe("supervisor correctness hardening", () => {
     liveWorkers.clear();
   });
 
+  it("supervisor internal agentId propagation (prereq for health())", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 2,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    expect(supervisor.ok).toBe(true);
+    if (!supervisor.ok) return;
+    const started = await supervisor.value.start(makeRequest("agentid-1"));
+    expect(started.ok).toBe(true);
+    const list = supervisor.value.list();
+    expect(list.some((d) => d.agentId === agentId("agent-agentid-1"))).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
   it("shutdown() fails closed when a quarantined worker cannot be torn down", async () => {
     // If a watch fault leaves a ghost that refuses to die, shutdown must
     // report failure instead of returning ok while the process runs on.

@@ -1,4 +1,5 @@
 import type {
+  AgentId,
   KoiError,
   ProcessDescriptor,
   Result,
@@ -45,6 +46,7 @@ interface PoolEntry {
  */
 interface QuarantinedEntry {
   readonly backend: WorkerBackend;
+  readonly agentId: AgentId;
   readonly reason: string;
 }
 
@@ -57,6 +59,7 @@ interface QuarantinedEntry {
  * it to short-circuit the backoff sleep and advance the task immediately.
  */
 interface RestartingEntry {
+  readonly agentId: AgentId;
   cancelled: boolean;
   readonly done: Promise<void>;
   wake: (() => void) | undefined;
@@ -261,6 +264,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       resolveRestartDone = resolve;
     });
     const entry: RestartingEntry = {
+      agentId: request.agentId,
       cancelled: false,
       done: restartDonePromise,
       wake: undefined,
@@ -432,6 +436,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           // split-brain.
           quarantined.set(request.workerId, {
             backend,
+            agentId: request.agentId,
             reason: "spawn-timeout",
           });
           pendingSpawns--;
@@ -522,6 +527,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         // may still be alive.
         quarantined.set(request.workerId, {
           backend,
+          agentId: request.agentId,
           reason: "cancelled-during-spawn-teardown-failed",
         });
         pendingSpawns--;
@@ -651,6 +657,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           // keep activeIds reserved so a duplicate start() is rejected.
           quarantined.set(request.workerId, {
             backend: current.backend,
+            agentId: current.handle.agentId,
             reason: "watch-stream-fault-teardown-failed",
           });
           publishEvent({
