@@ -192,6 +192,20 @@ Inherited from `@koi/governance-core`:
 
 ---
 
+## `describeRules()` — backend introspection (gov-9)
+
+The pattern-backend implements the optional `describeRules?()` method on
+`GovernanceBackend` so `/governance` can render the active rule set:
+
+```typescript
+const backend = createPatternBackend({ rules: [...] });
+const descriptors = await backend.describeRules?.();
+// readonly { id: string; description: string; effect: "allow" | "deny" | "advise"; pattern?: string }[]
+```
+
+Backends that do not implement `describeRules` simply omit the rules section
+in the TUI view. Required for: `@koi/tui` `/governance` view.
+
 ## See Also
 
 - [`@koi/governance-core`](./governance-core.md) — middleware that consumes this config

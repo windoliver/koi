@@ -666,3 +666,27 @@ with `~` to distinguish them from turn durations.
 ESC handling now has 3-priority dispatch in `keyboard.ts`: when
 agent status is `processing` ESC interrupts the stream; otherwise
 if a modal is open ESC dismisses it; otherwise ESC navigates back.
+
+## /governance — governance surface (gov-9)
+
+When a `GovernanceController` is wired through the host bridge, the TUI
+exposes:
+
+1. **Status-line chip** — single composite cell on the right showing the most
+   stressed sensor: `gov: turn 12/50` (green), `gov: cost $1.40/$2.00` (yellow),
+   `⚠ gov: spawn 4/5` (red ≥80%). Hidden when no controller is attached.
+2. **Toast overlay** — top-right transient notification when `onAlert` fires
+   ("⚠ 80% of cost budget — $1.60 / $2.00"). Auto-dismisses after 8s. Multiple
+   alerts queue (max 3 visible). Fold-merge by `(variable, threshold)` key —
+   re-firing the same key replaces rather than stacks.
+3. **`/governance` view** — full-screen, four sections:
+   - **Sensors** — table of `(variable, current, limit, utilization%)`. Health is derived per-row from `utilization` against the configured alert thresholds, not a field on `SensorReading`.
+   - **Recent alerts** — view shows the 10 most recent alerts; the JSONL file is tail-evicted to 200 lines on bridge startup.
+   - **Active rules** — from `backend.describeRules?()`; section omitted if backend doesn't expose them.
+   - **Middleware capabilities** — `mw.describeCapabilities(ctx)` output for governance MW.
+4. **`/governance reset`** — clears the per-session alert dedup state in the
+   `@koi/governance-core` alert tracker so re-crossings fire alerts again.
+   No state mutation beyond dedup tracking.
+
+The TUI is read-only — it never calls `controller.record()` or mutates a
+backend. All updates flow from the host bridge via store actions.

@@ -13,7 +13,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { createInitialState } from "./state/initial.js";
 import { createStore } from "./state/store.js";
 import { StoreContext } from "./store-context.js";
-import { TuiRoot, resolveNavCommand } from "./tui-root.js";
+import { TuiRoot, executeGovernanceReset, resolveNavCommand } from "./tui-root.js";
 
 const OPTS = { width: 100, height: 30 };
 
@@ -134,6 +134,55 @@ describe("TuiRoot — modal overlay", () => {
 });
 
 // ---------------------------------------------------------------------------
+// gov-9 governance view + reset
+// ---------------------------------------------------------------------------
+
+describe("TuiRoot — gov-9 governance", () => {
+  test("nav:governance routes to GovernanceView", async () => {
+    const utils = await renderRoot();
+    await utils.renderOnce();
+    // Trigger the governance view via command select would go through a UI keystroke
+    // path; here, drive directly via dispatch since handleCommandSelect routes
+    // nav commands via store.dispatch({ kind: 'set_view', view: navView })
+    utils.store.dispatch({ kind: "set_view", view: "governance" });
+    await utils.renderOnce();
+    expect(utils.captureCharFrame()).toContain("Governance");
+    expect(utils.captureCharFrame()).toContain("No governance data");
+    utils.renderer.destroy();
+  });
+
+  test("executeGovernanceReset clears alerts AND notifies host", () => {
+    const initial = createInitialState();
+    const seeded = {
+      ...initial,
+      governance: {
+        ...initial.governance,
+        alerts: [
+          {
+            id: "a1",
+            ts: 1,
+            sessionId: "s",
+            variable: "cost_usd",
+            threshold: 0.8,
+            current: 1.6,
+            limit: 2,
+            utilization: 0.8,
+          },
+        ],
+      },
+    };
+    const store = createStore(seeded);
+    const onCommand = mock((_id: string, _args: string) => {});
+    expect(store.getState().governance.alerts).toHaveLength(1);
+    executeGovernanceReset(store, onCommand, "");
+    // Both behaviors verified:
+    expect(store.getState().governance.alerts).toHaveLength(0);
+    expect(onCommand).toHaveBeenCalledTimes(1);
+    expect(onCommand).toHaveBeenCalledWith("system:governance-reset", "");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Keyboard note
 // ---------------------------------------------------------------------------
 // The global keyboard handler logic (Ctrl+P, Ctrl+C, Esc routing to
@@ -158,5 +207,57 @@ describe("resolveNavCommand", () => {
     expect(resolveNavCommand("agent:compact")).toBeNull();
     expect(resolveNavCommand("session:new")).toBeNull();
     expect(resolveNavCommand("system:quit")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ToastOverlay integration
+// ---------------------------------------------------------------------------
+
+describe("TuiRoot — ToastOverlay", () => {
+  test("renders ToastOverlay with current toasts from store", async () => {
+    const utils = await renderRoot();
+    await utils.renderOnce();
+    // Initial state: no toasts → no toast glyphs in frame
+    expect(utils.captureCharFrame()).not.toContain("⚠");
+
+    utils.store.dispatch({
+      kind: "add_toast",
+      toast: {
+        id: "t1",
+        kind: "warn",
+        key: "test",
+        title: "Budget alert",
+        body: "$1.60 / $2.00",
+        ts: 0,
+      },
+    });
+    await utils.renderOnce();
+    expect(utils.captureCharFrame()).toContain("Budget alert");
+    expect(utils.captureCharFrame()).toContain("⚠");
+    utils.renderer.destroy();
+  });
+
+  test("auto-dismisses toast after autoDismissMs elapsed", async () => {
+    const utils = await renderRoot();
+    await utils.renderOnce();
+    utils.store.dispatch({
+      kind: "add_toast",
+      toast: {
+        id: "t-fast",
+        kind: "info",
+        key: "test",
+        title: "x",
+        body: "y",
+        ts: 0,
+        autoDismissMs: 20,
+      },
+    });
+    await utils.renderOnce();
+    expect(utils.store.getState().toasts).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 200));
+    await utils.renderOnce();
+    expect(utils.store.getState().toasts).toHaveLength(0);
+    utils.renderer.destroy();
   });
 });

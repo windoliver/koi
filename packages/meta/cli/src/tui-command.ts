@@ -41,6 +41,7 @@ import type {
   ComponentProvider,
   ContentBlock,
   EngineEvent,
+  GovernanceController,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
@@ -49,7 +50,7 @@ import type {
   TranscriptEntry,
   TranscriptEntryId,
 } from "@koi/core";
-import { sessionId } from "@koi/core";
+import { GOVERNANCE, sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
@@ -90,6 +91,7 @@ import { createCurrentModelMiddleware } from "./current-model-middleware.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
+import { createGovernanceBridge, type GovernanceBridge } from "./governance-bridge.js";
 import { loadManifestConfig } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
@@ -1605,6 +1607,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
+    ...(flags.maxSpendUsd > 0 ? { maxSpendUsd: flags.maxSpendUsd } : {}),
+    // Fallback model chain validation only runs when the router actually
+    // wired up. If router config validation failed above (modelRouterMiddleware
+    // === undefined), fallback models are unreachable — passing them to
+    // resolveCostConfig would refuse startup over models the runtime can't
+    // ever call.
+    ...(fallbackModels.length > 0 && modelRouterMiddleware !== undefined
+      ? { fallbackModelNames: fallbackModels }
+      : {}),
     // Manifest-driven opt-in for preset stacks + plugins. Omitted
     // when the user didn't pass --manifest, in which case the
     // factory defaults to activating every stack / every discovered
@@ -1720,6 +1731,43 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       return;
     }
     runtimeHandle = handle;
+    // Wire governance bridge when the agent has a GovernanceController
+    // component attached. In default sessions (no --max-spend or equivalent
+    // future flag), component() returns undefined and the bridge stays unset,
+    // leaving all governanceBridge?.xxx() call sites as no-ops.
+    try {
+      const governanceController = handle.runtime.agent.component<GovernanceController>(GOVERNANCE);
+      if (governanceController !== undefined) {
+        governanceBridge = createGovernanceBridge({
+          store,
+          controller: governanceController,
+          sessionId: tuiSessionId as string,
+          alertsPath: join(homedir(), ".koi", "governance-alerts.jsonl"),
+          // Static rule snapshot resolved by runtime-factory via
+          // backend.describeRules() — falls back to a synthetic default-allow
+          // entry until the manifest YAML loader (#1877) wires real rules.
+          rules: handle.governanceRules,
+          // Static capability mirror — matches the createGovernanceMiddleware's
+          // describeCapabilities() output. Hardcoded here to avoid plumbing the
+          // middleware instance back from runtime-factory just for one string.
+          capabilities: [
+            { label: "governance", description: "Policy gate + setpoint enforcement active" },
+          ],
+        });
+        // Seed up to 10 most-recent alerts from JSONL so /governance
+        // shows context across sessions instead of starting empty.
+        // TODO(gov-9): replace per-alert dispatch with a `replay_persisted_alerts`
+        // bulk action once seed counts grow past ~10 to avoid N reducer runs.
+        const recent = governanceBridge.loadRecentAlerts(10);
+        for (const alert of recent) {
+          store.dispatch({ kind: "add_governance_alert", alert });
+        }
+        // Initial snapshot push so the view has data before the first turn.
+        governanceBridge.pollSnapshot();
+      }
+    } catch (err: unknown) {
+      console.warn("[tui-command] governance bridge init failed:", err);
+    }
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
     // array on every turn, so without this push the model would see
@@ -1839,6 +1887,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     modelName,
     provider,
   });
+
+  // --- Governance bridge: wire @koi/governance-core controller into TUI ---
+  // Conditional: only created when the host has a GovernanceController
+  // attached to the agent. In default sessions (no governance flags), the
+  // bridge is undefined and all governanceBridge?.xxx() call sites no-op.
+  // Future work (e.g. --max-spend CLI flag) will instantiate a controller
+  // and the bridge will start surfacing alerts in /governance.
+  // let: justified — set inside the optional block (runtimeReady.then), read by
+  // call sites below that execute after the runtime resolves.
+  let governanceBridge: GovernanceBridge | undefined;
 
   // ---------------------------------------------------------------------------
   // 4. Helpers
@@ -2582,6 +2640,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         );
       }
     }
+    // Governance bridge dispose is a no-op (sync, no open handles), but
+    // calling it here keeps the pattern symmetric with future bridges that
+    // may hold timers or open file handles.
+    governanceBridge?.dispose();
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
@@ -3225,6 +3287,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               : {}),
           });
         }
+        // Refresh governance snapshot on EVERY settled turn — not only
+        // on token-producing turns. Early policy rejections, adapter
+        // usage gaps, and tool-only/degraded paths all close turns
+        // with zero token delta; the governance variables (turn_count,
+        // error_rate, duration_ms, spawn_count) still advance, and
+        // `/governance` + the status chip must not show stale values
+        // exactly when an operator needs them.
+        governanceBridge?.pollSnapshot();
 
         // Refresh trajectory + decision ledger data after each turn.
         // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
@@ -3984,6 +4054,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             tuiSessionId = newSid;
             viewedSessionId = newSid;
             costBridge.setSession(newSid as string, currentModelBox.current, provider);
+            governanceBridge?.setSession(newSid as string);
             store.dispatch({
               kind: "set_session_info",
               modelName: currentModelBox.current,
@@ -4313,6 +4384,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
           break;
         }
+        case "system:governance-reset":
+          // The TUI side already cleared its in-memory alerts via the
+          // optimistic dispatch from executeGovernanceReset() in tui-root.tsx.
+          // Here we reset the bridge's alert-tracker dedup so subsequent
+          // re-crossings of the same threshold re-fire toasts.
+          governanceBridge?.resetAlerts();
+          break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({
@@ -4541,6 +4619,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // back to it blocks writes (pre-existing safety contract).
           lastResetFailed = false;
           costBridge.setSession(targetSid as string, currentModelBox.current, provider);
+          governanceBridge?.setSession(targetSid as string);
           store.dispatch({
             kind: "set_session_info",
             modelName: currentModelBox.current,

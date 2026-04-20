@@ -107,6 +107,31 @@ describe("parseTuiFlags — --until-pass / --max-iter (#1624)", () => {
   });
 });
 
+describe("parseTuiFlags — --max-spend", () => {
+  test("defaults to 0 when omitted", () => {
+    const flags = parseTuiFlags([]);
+    expect(flags.maxSpendUsd).toBe(0);
+  });
+
+  test("parses a positive float", () => {
+    const flags = parseTuiFlags(["--max-spend", "1.50"]);
+    expect(flags.maxSpendUsd).toBe(1.5);
+  });
+
+  test("accepts 0 (explicit disable)", () => {
+    const flags = parseTuiFlags(["--max-spend", "0"]);
+    expect(flags.maxSpendUsd).toBe(0);
+  });
+
+  test("rejects negative", () => {
+    expect(() => parseTuiFlags(["--max-spend", "-1"])).toThrow(/non-negative/);
+  });
+
+  test("rejects non-numeric", () => {
+    expect(() => parseTuiFlags(["--max-spend", "abc"])).toThrow(/non-negative/);
+  });
+});
+
 describe("parseTuiFlags — --yolo / --dangerously-skip-permissions", () => {
   test("no flag → yolo is false", () => {
     expect(parseTuiFlags([]).yolo).toBe(false);

@@ -590,6 +590,7 @@ export type {
   PolicyEvaluator,
   PolicyRequest,
   PolicyRequestKind,
+  RuleDescriptor,
   Violation,
   ViolationFilter,
   ViolationPage,
