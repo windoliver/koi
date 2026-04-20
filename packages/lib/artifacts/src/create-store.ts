@@ -71,10 +71,10 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     if (
       !Number.isFinite(config.maxArtifactBytes) ||
       !Number.isInteger(config.maxArtifactBytes) ||
-      config.maxArtifactBytes < 0
+      config.maxArtifactBytes < 1
     ) {
       throw new Error(
-        `ArtifactStoreConfig.maxArtifactBytes must be a finite non-negative integer; got ${String(config.maxArtifactBytes)}.`,
+        `ArtifactStoreConfig.maxArtifactBytes must be a finite integer >= 1; got ${String(config.maxArtifactBytes)}. A zero value would cause every non-empty save to fail with invalid_input — surface the misconfiguration at startup instead.`,
       );
     }
   }

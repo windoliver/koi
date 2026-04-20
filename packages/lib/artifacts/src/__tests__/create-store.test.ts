@@ -57,6 +57,18 @@ describe("createArtifactStore (skeleton)", () => {
     ).rejects.toThrow(/maxRepairAttempts/);
   });
 
+  test.each([
+    { value: 0, label: "zero" },
+    { value: -1, label: "negative" },
+    { value: 0.5, label: "fractional" },
+    { value: Number.NaN, label: "NaN" },
+    { value: Number.POSITIVE_INFINITY, label: "Infinity" },
+  ])("rejects invalid maxArtifactBytes: $label", async ({ value }) => {
+    await expect(createArtifactStore({ dbPath, blobDir, maxArtifactBytes: value })).rejects.toThrow(
+      /maxArtifactBytes/,
+    );
+  });
+
   test("rejects non-memory SQLite URI dbPath", async () => {
     await expect(
       createArtifactStore({ dbPath: "file:/tmp/x.db?cache=shared", blobDir }),
