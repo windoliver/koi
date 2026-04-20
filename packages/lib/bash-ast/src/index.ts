@@ -15,6 +15,9 @@
  *                               contexts with a TUI/CLI prompt surface.
  *                               Closes #1634's full fail-closed loop.
  *   - `matchSimpleCommand()`  — pure matcher for BashRulePattern
+ *   - Per-command semantic specs (`specRm`, `specCp`, …, `specSsh`) +
+ *     `BUILTIN_SPECS` / `createSpecRegistry` / `registerSpec` — see
+ *     `./specs/index.ts` and `docs/L2/bash-ast.md`.
  *
  * See `docs/L2/bash-ast.md` for the full design rationale.
  */
@@ -29,4 +32,5 @@ export {
 } from "./classify.js";
 export { initializeBashAst } from "./init.js";
 export { matchSimpleCommand } from "./matcher.js";
+export * from "./specs/index.js";
 export type { AstAnalysis, Redirect, SimpleCommand } from "./types.js";
