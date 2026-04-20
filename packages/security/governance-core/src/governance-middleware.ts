@@ -57,6 +57,12 @@ function redactForAudit(req: PolicyRequest): PolicyRequest {
 
 export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): KoiMiddleware {
   const { backend, controller, cost, onAlert, onViolation, onUsage } = config;
+  // observerOnly = true silences the four `controller.record(...)` sites in
+  // this middleware (turn, token_usage, tool_success, tool_error). Hosts that
+  // run alongside `createGovernanceExtension()` from `@koi/engine-reconcile`
+  // must enable this — otherwise both layers record against the same
+  // controller and every variable double-counts.
+  const observerOnly = config.observerOnly === true;
   const alertTracker = createAlertTracker({
     thresholds: config.alertThresholds ?? DEFAULT_ALERT_THRESHOLDS,
     perVariableThresholds: config.perVariableThresholds,
@@ -313,6 +319,14 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     // those into controller state silently disables token/cost caps (NaN
     // comparisons fail; negatives offset legitimate usage). Latch degraded
     // and skip the record to preserve controller integrity.
+    //
+    // observerOnly does NOT exempt this latch. The engine extension's
+    // accounting path silently substitutes 0 for invalid sides — that's an
+    // accounting choice, not a safety choice. The middleware's degraded
+    // latch is the only fail-closed mechanism on malformed usage. Skipping
+    // it because "the recorder will handle it" creates a real bypass: the
+    // recorder accepts the bad input as zero spend, the cap never trips,
+    // and the operator has no signal that their usage stream is corrupt.
     const bad =
       !Number.isFinite(inputTokens) ||
       !Number.isFinite(outputTokens) ||
@@ -328,13 +342,15 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     }
     // Omit costUsd when undefined so the controller's per-token fallback
     // pricing runs. Passing 0 would be treated as authoritative zero spend.
-    await controller.record({
-      kind: "token_usage",
-      count: inputTokens + outputTokens,
-      inputTokens,
-      outputTokens,
-      ...(costUsd !== undefined ? { costUsd } : {}),
-    });
+    if (!observerOnly) {
+      await controller.record({
+        kind: "token_usage",
+        count: inputTokens + outputTokens,
+        inputTokens,
+        outputTokens,
+        ...(costUsd !== undefined ? { costUsd } : {}),
+      });
+    }
     const snap = await controller.snapshot();
     alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
 
@@ -416,6 +432,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       // wrap onAfterTurn in `.catch(noop)` (runtime finalizer does this),
       // which would swallow the throw. The latch ensures the next `gate()`
       // call still denies even when the thrown error is lost.
+      if (observerOnly) return;
       try {
         await controller.record({ kind: "turn" });
       } catch (e) {
@@ -470,7 +487,25 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       let terminalRecorded = false;
       const model = request.model ?? "unknown";
       const recordDeltaSoft = async (inputTokens: number, outputTokens: number): Promise<void> => {
-        if (inputTokens <= 0 && outputTokens <= 0) return;
+        // Validate FIRST so malformed sentinels (NaN / Infinity / negative)
+        // hit `recordTokenEvent`'s degraded latch before the both-zero
+        // early-exit silently drops them. A `(-1,-1)` sample would otherwise
+        // bypass containment in observer-only mode where this is the only
+        // fail-closed signal.
+        const malformed =
+          !Number.isFinite(inputTokens) ||
+          !Number.isFinite(outputTokens) ||
+          inputTokens < 0 ||
+          outputTokens < 0;
+        if (malformed) {
+          try {
+            await recordTokenEvent(ctx, model, inputTokens, outputTokens, undefined);
+          } catch (cause) {
+            latchDegraded("Stream accounting failed", cause, { model, phase: "stream" });
+          }
+          return;
+        }
+        if (inputTokens === 0 && outputTokens === 0) return;
         // Cost-calc failure is narrow — controller per-token fallback runs.
         // Do not latch globally; just warn + onViolation for observability.
         let costUsd: number | undefined;
@@ -517,25 +552,100 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
           costUsd: costUsd ?? 0,
         });
       };
+      // Per-chunk validation flag. Aggregation can mask malformed values
+      // (e.g., `-100` followed by `+100` collapses to 0), so we record the
+      // condition the moment any chunk side is non-finite/negative and use
+      // it to short-circuit the terminal `recordDeltaSoft` into the latch.
+      // let justified — mutated per chunk
+      let malformedChunkSeen = false;
+      const isInvalidSide = (n: number): boolean => !Number.isFinite(n) || n < 0;
       try {
         for await (const chunk of next(request)) {
+          // Stream contract violation: any chunk arriving after a terminal
+          // (`done` / `error`) is undefined behavior. In observer-only mode
+          // the malformedChunkSeen latch fires from the finally fallback —
+          // which is gated on `!terminalRecorded`, so a post-terminal
+          // malformed chunk would slip through without containment. Latch
+          // immediately on the first post-terminal chunk and stop iterating.
+          //
+          // Defense-in-depth caveat: the canonical consumer
+          // (`@koi/query-engine`'s `consumeModelStream`) returns immediately
+          // on `done`/`error` and `iterator.return()`s the wrapper, so the
+          // for-await above never observes a post-terminal chunk in normal
+          // operation. The check still guards against future consumers that
+          // continue pulling, and against host-side stream forks that
+          // bypass `consumeModelStream`. A consumer-level enforcement is
+          // tracked separately because it requires changes outside this
+          // package.
+          //
+          // Do NOT yield the post-terminal chunk: downstream middleware
+          // (the engine governance extension's wrapModelStream finally
+          // accumulates usage from yielded chunks) would otherwise record
+          // it against the current turn's `token_usage` / `cost_usd`,
+          // poisoning accounting before the degraded latch denies the
+          // next call. Drop the chunk and end iteration.
+          if (terminalRecorded) {
+            latchDegraded("Stream emitted chunk after terminal", undefined, {
+              model,
+              phase: "stream:post-terminal",
+              postTerminalKind: chunk.kind,
+            });
+            break;
+          }
           if (chunk.kind === "usage") {
-            accumulatedInputTokens += chunk.inputTokens;
-            accumulatedOutputTokens += chunk.outputTokens;
+            if (isInvalidSide(chunk.inputTokens) || isInvalidSide(chunk.outputTokens)) {
+              malformedChunkSeen = true;
+            } else {
+              accumulatedInputTokens += chunk.inputTokens;
+              accumulatedOutputTokens += chunk.outputTokens;
+            }
             yield chunk;
           } else if (chunk.kind === "error") {
             if (chunk.usage !== undefined) {
               errorUsageInputTokens = chunk.usage.inputTokens;
               errorUsageOutputTokens = chunk.usage.outputTokens;
+              if (
+                isInvalidSide(chunk.usage.inputTokens) ||
+                isInvalidSide(chunk.usage.outputTokens)
+              ) {
+                malformedChunkSeen = true;
+              }
             }
-            await recordDeltaSoft(
-              errorUsageInputTokens ?? accumulatedInputTokens,
-              errorUsageOutputTokens ?? accumulatedOutputTokens,
-            );
+            if (malformedChunkSeen) {
+              latchDegraded("Malformed token count from provider stream", undefined, {
+                model,
+                phase: "stream:error",
+              });
+            } else {
+              await recordDeltaSoft(
+                errorUsageInputTokens ?? accumulatedInputTokens,
+                errorUsageOutputTokens ?? accumulatedOutputTokens,
+              );
+            }
             terminalRecorded = true;
             yield chunk;
           } else if (chunk.kind === "done") {
-            await recordModelUsageSoft(ctx, chunk.response, model);
+            // `done` may carry final usage OR omit it. When the response
+            // includes well-formed terminal usage, prefer it as the
+            // authoritative sample — provisional/malformed mid-stream
+            // chunks should not poison a stream that ultimately reconciled
+            // to a valid total. Only latch degraded when the terminal
+            // itself is missing or malformed (no recovery path).
+            const doneUsage = chunk.response.usage;
+            const doneUsageWellFormed =
+              doneUsage !== undefined &&
+              !isInvalidSide(doneUsage.inputTokens) &&
+              !isInvalidSide(doneUsage.outputTokens);
+            if (doneUsageWellFormed) {
+              await recordModelUsageSoft(ctx, chunk.response, model);
+            } else if (malformedChunkSeen) {
+              latchDegraded("Malformed token count from provider stream", undefined, {
+                model,
+                phase: "stream:done",
+              });
+            } else {
+              await recordDeltaSoft(accumulatedInputTokens, accumulatedOutputTokens);
+            }
             terminalRecorded = true;
             yield chunk;
           } else {
@@ -545,12 +655,20 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       } finally {
         // Fallback: only fires when no terminal chunk was seen (aborted
         // iteration, mid-stream throw). Charges accumulated deltas so
-        // containment still works.
+        // containment still works. If any chunk was malformed, latch
+        // unconditionally — the accumulator may be a cancellation artifact.
         if (!terminalRecorded) {
-          await recordDeltaSoft(
-            errorUsageInputTokens ?? accumulatedInputTokens,
-            errorUsageOutputTokens ?? accumulatedOutputTokens,
-          );
+          if (malformedChunkSeen) {
+            latchDegraded("Malformed token count from provider stream", undefined, {
+              model,
+              phase: "stream:abort",
+            });
+          } else {
+            await recordDeltaSoft(
+              errorUsageInputTokens ?? accumulatedInputTokens,
+              errorUsageOutputTokens ?? accumulatedOutputTokens,
+            );
+          }
         }
       }
     },
@@ -573,17 +691,21 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       };
       try {
         const result = await next(request);
-        try {
-          await controller.record({ kind: "tool_success", toolName });
-        } catch (e) {
-          fireRecordFailure(e);
+        if (!observerOnly) {
+          try {
+            await controller.record({ kind: "tool_success", toolName });
+          } catch (e) {
+            fireRecordFailure(e);
+          }
         }
         return result;
       } catch (err) {
-        try {
-          await controller.record({ kind: "tool_error", toolName });
-        } catch (e) {
-          fireRecordFailure(e);
+        if (!observerOnly) {
+          try {
+            await controller.record({ kind: "tool_error", toolName });
+          } catch (e) {
+            fireRecordFailure(e);
+          }
         }
         throw err;
       }

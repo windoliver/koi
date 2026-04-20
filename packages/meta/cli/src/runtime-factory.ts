@@ -219,29 +219,63 @@ export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve governance cost config from the user's --max-spend flag and the
- * configured model name. When pricing is known, sets per-token rates so the
- * controller's per-token-fallback formula accumulates spend. When unknown,
- * only the limit is set — the cap will display in /governance but won't fire
- * until pricing is wired or the host computes costUsd externally.
+ * Resolve governance cost config from the user's --max-spend flag and every
+ * model the runtime might call. The controller stores ONE per-token rate
+ * pair, and the engine-reconcile extension's `controller.record({ kind:
+ * "token_usage" })` calls do not attach a per-call `costUsd`. That means a
+ * router fallback to a differently-priced model would accumulate spend
+ * against the primary's rate — silently breaking `--max-spend` for the
+ * fallback path.
+ *
+ * Validation rules (all enforced at startup, fail-fast):
+ *   1. Every model in the chain must have a `DEFAULT_PRICING` entry.
+ *   2. Every fallback's per-token rates must equal the primary's. Until
+ *      engine-reconcile records per-call `costUsd`, mixed-rate routing
+ *      cannot honor a single setpoint.
  */
 function resolveCostConfig(
   maxCostUsd: number,
-  modelName: string,
+  modelChain: readonly string[],
 ): {
   readonly maxCostUsd: number;
   readonly costPerInputToken: number;
   readonly costPerOutputToken: number;
 } {
-  const pricing = resolvePricing(modelName, DEFAULT_PRICING);
-  if (pricing === undefined) {
-    console.warn(
-      `[koi runtime] --max-spend $${maxCostUsd} set but model "${modelName}" has no pricing in DEFAULT_PRICING; ` +
-        `cap will display but won't accumulate. Add pricing via cost-aggregator's DEFAULT_PRICING table.`,
-    );
-    return { maxCostUsd, costPerInputToken: 0, costPerOutputToken: 0 };
+  if (modelChain.length === 0) {
+    throw new Error("koi: resolveCostConfig requires at least the primary model name");
   }
-  return { maxCostUsd, costPerInputToken: pricing.input, costPerOutputToken: pricing.output };
+  const unpriced = modelChain.filter((m) => resolvePricing(m, DEFAULT_PRICING) === undefined);
+  if (unpriced.length > 0) {
+    throw new Error(
+      `koi: --max-spend $${maxCostUsd} set but the following model(s) have no pricing in ` +
+        `DEFAULT_PRICING: ${unpriced.join(", ")}. The cost cap would not accumulate when the ` +
+        `router targets them. Add the missing models to @koi/cost-aggregator's DEFAULT_PRICING ` +
+        `table or omit --max-spend.`,
+    );
+  }
+  // unpriced.length === 0 guarantees every entry has pricing.
+  const [primary, ...fallbacks] = modelChain as readonly [string, ...string[]];
+  const primaryPricing = resolvePricing(primary, DEFAULT_PRICING) as NonNullable<
+    ReturnType<typeof resolvePricing>
+  >;
+  const mismatched = fallbacks.filter((m) => {
+    const p = resolvePricing(m, DEFAULT_PRICING);
+    return p?.input !== primaryPricing.input || p?.output !== primaryPricing.output;
+  });
+  if (mismatched.length > 0) {
+    throw new Error(
+      `koi: --max-spend $${maxCostUsd} set but fallback model(s) [${mismatched.join(", ")}] ` +
+        `have different per-token rates than primary "${primary}" ` +
+        `($${primaryPricing.input}/in, $${primaryPricing.output}/out). ` +
+        `The controller stores one rate pair, so mixed-pricing routing would mis-charge spend. ` +
+        `Use a fallback chain with matching pricing, drop --max-spend, or omit KOI_FALLBACK_MODEL.`,
+    );
+  }
+  return {
+    maxCostUsd,
+    costPerInputToken: primaryPricing.input,
+    costPerOutputToken: primaryPricing.output,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -384,11 +418,18 @@ export interface KoiRuntimeConfig {
    * fires a violation. When >0, the runtime resolves per-token pricing
    * for `modelName` via @koi/cost-aggregator's DEFAULT_PRICING and
    * configures `governance.cost.{maxCostUsd,costPerInputToken,costPerOutputToken}`.
-   * Unknown models log a warning and set only the limit (per-token
-   * rates stay at 0; cap won't fire but the value surfaces in /governance).
+   * Unknown models cause `createKoiRuntime` to throw at startup so the
+   * budget can never be silently ignored.
    * 0 (default) keeps cost tracking disabled.
    */
   readonly maxSpendUsd?: number | undefined;
+  /**
+   * Fallback model names from the model-router (KOI_FALLBACK_MODEL chain).
+   * Validated alongside the primary `modelName` when `--max-spend` is set —
+   * any unpriced entry refuses startup so a router fallback can never bypass
+   * the budget. Empty / undefined means no router is wired.
+   */
+  readonly fallbackModelNames?: readonly string[] | undefined;
   /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
@@ -2008,24 +2049,43 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         maxTokens: 1_000_000,
       },
       ...(config.maxSpendUsd !== undefined && config.maxSpendUsd > 0
-        ? { cost: resolveCostConfig(config.maxSpendUsd, modelName) }
+        ? {
+            cost: resolveCostConfig(config.maxSpendUsd, [
+              modelName,
+              ...(config.fallbackModelNames ?? []),
+            ]),
+          }
         : {}),
     };
     const sharedGovernanceController = createGovernanceController(sharedGovernanceConfig);
     const sharedGovernanceProvider = createSharedGovernanceProvider(sharedGovernanceController);
 
-    // L2 governance middleware — observer/recorder. Real gating happens via
-    // the engine extension's controller checks (which use the same controller).
-    // This middleware adds:
-    //   - trajectory span (middleware:koi:governance-core in /trajectory)
-    //   - compliance audit records (when backend.compliance is wired)
-    //   - per-call onAlert/onViolation hooks (more granular than bridge polling)
+    // L2 governance middleware — observer mode only. Setpoint accounting
+    // (turn / token_usage / tool outcomes) is owned by the engine extension
+    // `createGovernanceExtension()` from `@koi/engine-reconcile`, which
+    // `createKoi` always installs against this same controller. Letting both
+    // layers record would double-count every variable and trip caps at half
+    // the configured limit. `observerOnly: true` silences the middleware's
+    // four `controller.record(...)` sites while keeping:
+    //   - policy gate (`backend.evaluator.evaluate()`),
+    //   - snapshot-based onAlert dispatch,
+    //   - trajectory span (middleware:koi:governance-core in /trajectory),
+    //   - describeCapabilities() entry surfaced in /governance.
+    //
+    // Known limitation (off-by-one on turn_count): the engine extension
+    // records `kind: "turn"` in `onBeforeTurn` (record then check), so
+    // `maxTurns=N` denies on the Nth pre-gate and yields `N-1` completed
+    // turns. The middleware previously recorded post-turn (the correct
+    // semantics) but observer mode disables it to avoid the double-count.
+    // Tracked separately — fixing requires moving the engine extension's
+    // turn record to `onAfterTurn`, outside this PR's surface.
     const governanceBackend = createDefaultPatternBackend();
     const governanceRules = await resolveGovernanceRules(governanceBackend);
     const governanceMw = createGovernanceMiddleware({
       backend: governanceBackend,
       controller: sharedGovernanceController,
       cost: createPricingCostCalculator(),
+      observerOnly: true,
     });
 
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---

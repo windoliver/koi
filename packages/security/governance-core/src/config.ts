@@ -34,6 +34,25 @@ export interface GovernanceMiddlewareConfig {
   readonly onAlert?: AlertCallback;
   readonly onViolation?: ViolationCallback;
   readonly onUsage?: UsageCallback;
+  /**
+   * Observer-only mode — when true, the middleware SKIPS every
+   * `controller.record(...)` call (turn / token_usage / tool_success /
+   * tool_error). Use this when another component (typically the engine
+   * extension `createGovernanceExtension()` from `@koi/engine-reconcile`)
+   * is already recording the same events against the same controller —
+   * recording from both sources double-counts every variable and trips
+   * limits at half the configured cap.
+   *
+   * Even in observer mode the middleware still:
+   *   - calls `evaluator.evaluate()` to gate by policy rules,
+   *   - reads `controller.snapshot()` to fire `onAlert`,
+   *   - records compliance audit envelopes via `backend.compliance`,
+   *   - reports `describeCapabilities()` for trajectory.
+   *
+   * Default: false (recorder mode). Hosts that compose with the default
+   * `createKoi` engine adapter should set this to true.
+   */
+  readonly observerOnly?: boolean;
 }
 
 function err(message: string, context?: Record<string, unknown>): KoiError {

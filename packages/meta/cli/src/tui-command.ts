@@ -1534,6 +1534,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
     ...(flags.maxSpendUsd > 0 ? { maxSpendUsd: flags.maxSpendUsd } : {}),
+    // Fallback model chain validation only runs when the router actually
+    // wired up. If router config validation failed above (modelRouterMiddleware
+    // === undefined), fallback models are unreachable — passing them to
+    // resolveCostConfig would refuse startup over models the runtime can't
+    // ever call.
+    ...(fallbackModels.length > 0 && modelRouterMiddleware !== undefined
+      ? { fallbackModelNames: fallbackModels }
+      : {}),
     // Manifest-driven opt-in for preset stacks + plugins. Omitted
     // when the user didn't pass --manifest, in which case the
     // factory defaults to activating every stack / every discovered
@@ -4316,8 +4324,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             outputTokens: deltaOutput,
             costUsd: deltaCost,
           });
-          governanceBridge?.pollSnapshot();
         }
+        // Refresh governance snapshot on EVERY settled turn — not only on
+        // token-producing turns. Early policy rejections, adapter usage gaps,
+        // and tool-only/degraded paths all close turns with zero token delta;
+        // the governance variables (turn_count, error_rate, duration_ms,
+        // spawn_count) still advance, and `/governance` + the status chip must
+        // not show stale values exactly when an operator needs them.
+        governanceBridge?.pollSnapshot();
 
         // Refresh trajectory + decision ledger data after each turn.
         // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
