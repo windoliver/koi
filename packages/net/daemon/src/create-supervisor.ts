@@ -1066,7 +1066,17 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         reason: "stop-teardown-failed",
       });
     } else {
+      // Worker confirmed dead. Clear any stale quarantine, and release
+      // activeIds ourselves because the IIFE's tidy-cleanup may already
+      // have run (watch stream closed early, set the quarantine record,
+      // then the OS process finally died and our isAlive poll resolved).
+      // The IIFE's normal terminal-event branch would have released
+      // activeIds, but the tidy branch deliberately preserves it to
+      // protect an unconfirmed-death window — once stop() has confirmation
+      // of death, that protection is obsolete and we must release the
+      // reservation explicitly.
       quarantined.delete(id);
+      activeIds.delete(id);
     }
     // Belt-and-suspenders: abort the backend.watch AbortSignal AFTER teardown
     // so a backend that drops its watch stream without ever emitting a

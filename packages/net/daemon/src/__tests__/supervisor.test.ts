@@ -2276,6 +2276,74 @@ describe("supervisor watch AbortSignal plumbing", () => {
     await supervisor.value.shutdown("test");
   });
 
+  it("pool-path stop() releases activeIds when watch closed early then worker died", async () => {
+    // Regression guard: if the watch stream closes early (non-terminal),
+    // the IIFE tidy-cleanup quarantines and preserves activeIds — because
+    // at that moment the process might still be alive. Later, the process
+    // actually dies and stop()'s teardownWorker poll resolves "exited".
+    // The IIFE has already returned, so nobody else will release the id —
+    // stop() itself must clear both quarantine AND activeIds on success,
+    // or future start()s reject with permanent CONFLICT.
+    const live = new Map<string, { alive: boolean }>();
+    let closeWatch: (() => void) | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "watch-closes-then-dies",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate never actually kills (test flips `alive` manually mid-flow).
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        await new Promise<void>((resolve) => {
+          closeWatch = resolve;
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("close-then-die"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    const stopPromise = supervisor.value.stop(workerId("close-then-die"), "test");
+    // Let stop() enter teardownWorker, then close the watch stream early.
+    await new Promise((r) => setTimeout(r, 5));
+    if (closeWatch !== undefined) closeWatch();
+    // Let the IIFE tidy-cleanup run and record quarantine.
+    await new Promise((r) => setTimeout(r, 20));
+    // Now let the OS process actually die so teardownWorker's isAlive poll resolves.
+    const state = live.get(workerId("close-then-die"));
+    if (state !== undefined) state.alive = false;
+
+    const stopped = await stopPromise;
+    expect(stopped.ok).toBe(true);
+
+    // Fresh start with the same id must succeed — stop() released activeIds
+    // on success even though the IIFE tidy had preserved it.
+    const fresh = await supervisor.value.start(makeRequest("close-then-die"));
+    expect(fresh.ok).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
   it("tidy-cleanup liveness probe is bounded when isAlive hangs", async () => {
     // Regression guard: the post-loop tidy-cleanup's isAlive probe must
     // not block the IIFE indefinitely if the backend's isAlive hangs (the

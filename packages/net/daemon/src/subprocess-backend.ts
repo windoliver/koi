@@ -221,7 +221,16 @@ export function createSubprocessBackend(): WorkerBackend {
         //   - watch() will prune once it yields the terminal event
         //   - a fallback timer prunes if no watcher ever attaches
         state.pruneTimer = setTimeout(() => {
-          if (!state.terminalDelivered) workers.delete(request.workerId);
+          // Identity-check before deleting: if the supervisor aborted the
+          // watch before the terminal event was drained (terminalDelivered
+          // stays false) and a same-id respawn has already installed a
+          // fresh `state` into `workers`, an indiscriminate delete would
+          // evict the LIVE successor entry and lose track of a running
+          // process. Only delete if `workers.get(id)` is still this exact
+          // (stale) state reference.
+          if (!state.terminalDelivered && workers.get(request.workerId) === state) {
+            workers.delete(request.workerId);
+          }
         }, PRUNE_GRACE_MS);
       });
 
@@ -423,7 +432,14 @@ export function createSubprocessBackend(): WorkerBackend {
         clearTimeout(state.pruneTimer);
         state.pruneTimer = undefined;
       }
-      if (state.terminalDelivered) workers.delete(id);
+      // Identity-check: a same-id respawn may have replaced `workers[id]`
+      // with a fresh state between terminal delivery and this finally
+      // hook running. Deleting unconditionally would evict the live
+      // successor. Only remove when the map still points at the stale
+      // state we were watching.
+      if (state.terminalDelivered && workers.get(id) === state) {
+        workers.delete(id);
+      }
     }
   };
 
