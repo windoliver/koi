@@ -1,19 +1,29 @@
 import type {
   AgentId,
+  HeartbeatConfig,
   KoiError,
   ProcessDescriptor,
   Result,
   Supervisor,
   SupervisorConfig,
+  SupervisorHealth,
+  SupervisorHealthMetrics,
+  SupervisorHealthStatus,
   WorkerBackend,
   WorkerBackendKind,
   WorkerEvent,
   WorkerHandle,
+  WorkerHealth,
   WorkerId,
   WorkerRestartPolicy,
   WorkerSpawnRequest,
 } from "@koi/core";
-import { DEFAULT_WORKER_RESTART_POLICY, validateSupervisorConfig } from "@koi/core";
+import {
+  DEFAULT_HEARTBEAT_CONFIG,
+  DEFAULT_WORKER_RESTART_POLICY,
+  validateSupervisorConfig,
+} from "@koi/core";
+import { createHeartbeatMonitor } from "./heartbeat-monitor.js";
 
 /**
  * Internal pool entry. Mutable fields:
@@ -71,6 +81,18 @@ const BACKEND_PREFERENCE: readonly WorkerBackendKind[] = [
   "tmux",
   "remote",
 ];
+
+function deriveStatus(m: SupervisorHealthMetrics): {
+  readonly status: SupervisorHealthStatus;
+  readonly reasons: readonly string[];
+} {
+  if (m.shuttingDown) return { status: "unhealthy", reasons: ["shutting_down"] };
+  const reasons: string[] = [];
+  if (m.quarantinedCount > 0) reasons.push("quarantined_workers");
+  if (m.eventDropCount > 0) reasons.push("event_buffer_drops");
+  if (m.poolSize + m.pendingSpawnCount >= m.maxWorkers) reasons.push("at_capacity");
+  return { status: reasons.length > 0 ? "degraded" : "ok", reasons };
+}
 
 export function createSupervisor(config: SupervisorConfig): Result<Supervisor, KoiError> {
   const validated = validateSupervisorConfig(config);
@@ -137,6 +159,28 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     const pending = [...eventWakers];
     eventWakers.length = 0;
     for (const wake of pending) wake();
+  };
+
+  const heartbeatDefaults: HeartbeatConfig = config.heartbeat ?? DEFAULT_HEARTBEAT_CONFIG;
+
+  // Late-bound `stop` reference. The teardown callback only fires on a timer
+  // tick (async, long after `stop` is initialized), so a raw closure would
+  // work. The indirection makes the ordering explicit and robust against
+  // future reordering of the function declarations.
+  let stopRef: Supervisor["stop"] | undefined;
+  const healthMonitor = createHeartbeatMonitor({
+    publishEvent,
+    teardown: async (id, reason) => {
+      if (stopRef === undefined) return;
+      await stopRef(id, reason);
+    },
+    now: Date.now,
+  });
+
+  const isHeartbeatOptIn = (request: WorkerSpawnRequest): boolean => {
+    const hints = request.backendHints;
+    if (hints === undefined) return false;
+    return hints.heartbeat === true;
   };
 
   // Availability probes are bounded — a single slow backend must not block
@@ -566,6 +610,9 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       stopping: false,
     };
     pool.set(request.workerId, entry);
+    if (isHeartbeatOptIn(request)) {
+      healthMonitor.track(request.workerId, request.agentId, heartbeatDefaults);
+    }
     // Worker is admitted to the pool. Release the spawn-tracking promise
     // and capacity reservation — shutdown's normal pool-draining logic now
     // owns this worker's lifecycle. Do NOT release activeIds here; that
@@ -581,7 +628,12 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       try {
         for await (const ev of backend.watch(request.workerId)) {
           publishEvent(ev);
+          if (ev.kind === "heartbeat") {
+            healthMonitor.observe(ev.workerId);
+            continue;
+          }
           if (ev.kind !== "exited" && ev.kind !== "crashed") continue;
+          healthMonitor.untrack(ev.workerId);
 
           const current = pool.get(request.workerId);
           if (current === undefined) return;
@@ -650,6 +702,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         );
         current.resolveExited();
         pool.delete(request.workerId);
+        healthMonitor.untrack(request.workerId);
 
         if (!teardownResult.ok) {
           // Teardown failed — the old worker may still be alive. Record
@@ -784,11 +837,14 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
     // Signal "don't restart on next terminal event" — the watch loop consults
     // this flag when it observes exit/crash.
+    healthMonitor.untrack(id);
     entry.stopping = true;
 
     // Deadline-bounded terminate/kill. See teardownWorker for semantics.
     return teardownWorker(entry.backend, id, reason, entry.exitedPromise);
   };
+
+  stopRef = stop;
 
   const shutdown: Supervisor["shutdown"] = async (reason) => {
     shuttingDown = true;
@@ -853,6 +909,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     while (pendingRestarts.size > 0) {
       await Promise.all([...pendingRestarts]);
     }
+    healthMonitor.shutdown();
 
     // Drain quarantined workers — retry teardown for each. If any fail,
     // shutdown fails closed so callers don't mistake partial teardown for
@@ -940,5 +997,57 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     }
   };
 
-  return { ok: true, value: { start, stop, shutdown, list, watchAll } };
+  const health: Supervisor["health"] = () => {
+    const metrics: SupervisorHealthMetrics = {
+      poolSize: pool.size,
+      maxWorkers: config.maxWorkers,
+      quarantinedCount: quarantined.size,
+      restartingCount: restarting.size,
+      pendingSpawnCount: pendingSpawns,
+      eventDropCount: droppedCount,
+      shuttingDown,
+    };
+    const tracked = healthMonitor.snapshot();
+    const trackedIds = new Set(tracked.map((w) => w.workerId));
+    const extras: WorkerHealth[] = [];
+    for (const [id, entry] of pool) {
+      if (trackedIds.has(id)) continue;
+      extras.push({
+        workerId: id,
+        agentId: entry.handle.agentId,
+        state: entry.stopping ? "stopping" : "running",
+        lastHeartbeatAt: undefined,
+        heartbeatDeadlineAt: undefined,
+      });
+    }
+    for (const [id, q] of quarantined) {
+      if (trackedIds.has(id) || pool.has(id)) continue;
+      extras.push({
+        workerId: id,
+        agentId: q.agentId,
+        state: "quarantined",
+        lastHeartbeatAt: undefined,
+        heartbeatDeadlineAt: undefined,
+      });
+    }
+    for (const [id, r] of restarting) {
+      if (trackedIds.has(id) || pool.has(id)) continue;
+      extras.push({
+        workerId: id,
+        agentId: r.agentId,
+        state: "restarting",
+        lastHeartbeatAt: undefined,
+        heartbeatDeadlineAt: undefined,
+      });
+    }
+    const { status, reasons } = deriveStatus(metrics);
+    return {
+      status,
+      reasons,
+      metrics,
+      workers: [...tracked, ...extras],
+    } satisfies SupervisorHealth;
+  };
+
+  return { ok: true, value: { start, stop, shutdown, list, watchAll, health } };
 }

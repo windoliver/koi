@@ -1603,3 +1603,102 @@ describe("supervisor correctness hardening", () => {
     expect(sd.ok).toBe(true);
   });
 });
+
+describe("supervisor.health()", () => {
+  it("returns status:ok and empty workers on a fresh supervisor", () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const h = supervisor.value.health();
+    expect(h.status).toBe("ok");
+    expect(h.reasons).toEqual([]);
+    expect(h.workers).toEqual([]);
+    expect(h.metrics.poolSize).toBe(0);
+    expect(h.metrics.maxWorkers).toBe(4);
+    expect(h.metrics.shuttingDown).toBe(false);
+  });
+
+  it("returns status:degraded with reason 'at_capacity' when pool is full", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 1,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("cap-1"));
+    const h = supervisor.value.health();
+    expect(h.status).toBe("degraded");
+    expect(h.reasons).toContain("at_capacity");
+    await supervisor.value.shutdown("test");
+  });
+
+  it("returns status:unhealthy with reason 'shutting_down' during shutdown", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("sd-1"));
+    const shutdownPromise = supervisor.value.shutdown("test");
+    // Pull health mid-shutdown — shuttingDown flag is set synchronously.
+    const h = supervisor.value.health();
+    expect(h.status).toBe("unhealthy");
+    expect(h.reasons).toEqual(["shutting_down"]);
+    await shutdownPromise;
+  });
+
+  it("includes non-heartbeat-opted workers with lastHeartbeatAt undefined", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("no-hb"));
+    const h = supervisor.value.health();
+    const w = h.workers.find((x) => x.workerId === workerId("no-hb"));
+    expect(w).toBeDefined();
+    expect(w?.lastHeartbeatAt).toBeUndefined();
+    expect(w?.heartbeatDeadlineAt).toBeUndefined();
+    expect(w?.agentId).toBe(agentId("agent-no-hb"));
+    await supervisor.value.shutdown("test");
+  });
+
+  it("heartbeat-opt-in worker: lastHeartbeatAt advances on each observed heartbeat", async () => {
+    const { backend, heartbeat } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start({
+      workerId: workerId("hb-1"),
+      agentId: agentId("agent-hb-1"),
+      command: ["echo", "hb"],
+      backendHints: { heartbeat: true },
+    });
+    // Give the supervisor's watch IIFE a microtask to attach to the backend.
+    await new Promise((r) => setTimeout(r, 10));
+    heartbeat(workerId("hb-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const first = supervisor.value.health().workers.find((w) => w.workerId === workerId("hb-1"));
+    const firstTs = first?.lastHeartbeatAt;
+    expect(typeof firstTs).toBe("number");
+    await new Promise((r) => setTimeout(r, 20));
+    heartbeat(workerId("hb-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const second = supervisor.value.health().workers.find((w) => w.workerId === workerId("hb-1"));
+    expect(second?.lastHeartbeatAt).toBeGreaterThan(firstTs ?? 0);
+    await supervisor.value.shutdown("test");
+  });
+});

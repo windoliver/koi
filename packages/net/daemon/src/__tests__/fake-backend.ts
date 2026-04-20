@@ -20,6 +20,7 @@ interface FakeWorkerState {
 export interface FakeBackendControls {
   readonly backend: WorkerBackend;
   readonly crash: (id: WorkerId, at?: number) => void;
+  readonly heartbeat: (id: WorkerId, at?: number) => void;
   readonly exit: (id: WorkerId, code?: number) => void;
   readonly isAlive: (id: WorkerId) => boolean;
   readonly liveWorkerCount: () => number;
@@ -133,6 +134,11 @@ export function createFakeBackend(
         at,
         error: { code: "INTERNAL", message: "test crash", retryable: true },
       });
+    },
+    heartbeat: (id, at = Date.now()) => {
+      const s = workers.get(id);
+      if (s === undefined) return;
+      s.emit({ kind: "heartbeat", workerId: id, at });
     },
     exit: (id, code = 0) => {
       const s = workers.get(id);
