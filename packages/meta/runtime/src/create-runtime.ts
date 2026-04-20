@@ -35,6 +35,7 @@ import { createLspComponentProvider } from "@koi/lsp";
 import { createMemoryStore, type MemoryStore } from "@koi/memory-fs";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createBrowserProvider } from "@koi/tool-browser";
+import { createArtifactToolProvider } from "./artifact-tool-provider.js";
 
 // Process-wide shared spawn ledger — all runtimes on this process account against
 // the same cap when no explicit shared ledger is provided via RuntimeConfig.spawnLedger.
@@ -171,6 +172,22 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         })
       : undefined;
   const checkpointMw = checkpointHandle?.middleware;
+
+  // Artifact tools (@koi/artifacts) — wired as a ComponentProvider when
+  // config.artifacts is provided. The caller owns the store's lifecycle;
+  // dispose() does not call store.close(). All four tools
+  // (save/get/list/delete) bind to the single sessionId supplied here —
+  // Plan 6 (#1923) extends the provider to a per-agent scoping model.
+  const artifactsHandle =
+    config.artifacts !== undefined
+      ? {
+          store: config.artifacts.store,
+          provider: createArtifactToolProvider({
+            store: config.artifacts.store,
+            sessionId: config.artifacts.sessionId,
+          }),
+        }
+      : undefined;
 
   // Audit middleware (@koi/middleware-audit). When config.audit is provided,
   // construct the selected sink and install the middleware in the observe phase.
@@ -647,6 +664,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       agentWarnings,
       agentConflicts,
       checkpoint: checkpointHandle,
+      artifacts: artifactsHandle,
       filesystemBackend,
       filesystemProvider,
       browserProvider,

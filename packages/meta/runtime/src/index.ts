@@ -42,6 +42,9 @@ export {
   ACTIVITY_TERMINATED_WALL_CLOCK,
   applyActivityTimeout,
 } from "./apply-activity-timeout.js";
+// Artifact tool provider (@koi/artifacts wiring)
+export type { ArtifactToolProviderConfig } from "./artifact-tool-provider.js";
+export { createArtifactToolProvider } from "./artifact-tool-provider.js";
 export type { FileSystemTools } from "./create-filesystem-provider.js";
 // Filesystem dispatch + provider
 export {
