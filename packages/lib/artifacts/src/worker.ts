@@ -53,7 +53,7 @@ import type { Database } from "bun:sqlite";
 import type { BlobStore } from "@koi/blob-cas";
 import { drainBlobReadyZero } from "./drain-blob-ready-zero.js";
 import { createDrainTombstones } from "./drain-tombstones.js";
-import type { ArtifactStoreConfig, WorkerStats } from "./types.js";
+import type { ArtifactStoreConfig, ArtifactStoreEvent, WorkerStats } from "./types.js";
 
 const DEFAULT_WORKER_INTERVAL_MS = 30_000;
 
@@ -93,6 +93,13 @@ export interface CreateRepairWorkerArgs {
    */
   readonly maxRepairAttempts: number;
   /**
+   * Structured drift sink. Threaded verbatim into `drainBlobReadyZero`; see
+   * `ArtifactStoreConfig.onEvent` for the event contract. A throwing
+   * callback is swallowed inside the drain — it never escapes to the
+   * scheduled-tick or `runOnce` paths.
+   */
+  readonly onEvent?: (event: ArtifactStoreEvent) => void;
+  /**
    * Test-only iteration hook. Production callers leave this undefined and
    * the default iteration body runs `drainBlobReadyZero` then the Phase B
    * tombstone drain. Tests inject a custom async body to exercise timing /
@@ -118,6 +125,9 @@ export function createRepairWorker(args: CreateRepairWorkerArgs): RepairWorkerHa
       db: args.db,
       blobStore: args.blobStore,
       maxRepairAttempts: args.maxRepairAttempts,
+      // exactOptionalPropertyTypes: only spread when defined, never pass
+      // `onEvent: undefined` explicitly.
+      ...(args.onEvent !== undefined ? { onEvent: args.onEvent } : {}),
     });
     // Phase B second. `drainPendingBlobDeletes` returns `{ reclaimed }`;
     // the WorkerStats field is named `tombstonesDrained` (same concept,

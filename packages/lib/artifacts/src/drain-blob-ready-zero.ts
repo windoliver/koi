@@ -39,11 +39,21 @@
 
 import type { Database } from "bun:sqlite";
 import type { BlobStore } from "@koi/blob-cas";
+import { artifactId, sessionId } from "@koi/core";
+import type { ArtifactStoreEvent } from "./types.js";
 
 export interface DrainBlobReadyZeroArgs {
   readonly db: Database;
   readonly blobStore: BlobStore;
   readonly maxRepairAttempts: number;
+  /**
+   * Optional structured-event sink. Fires:
+   *   - `repair_exhausted` on terminal-delete (budget met)
+   *   - `transient_repair_error` when `blobStore.has` throws
+   * Below-budget increments are intentionally silent. A callback that throws
+   * is swallowed via console.warn so drain progress cannot be corrupted.
+   */
+  readonly onEvent?: (event: ArtifactStoreEvent) => void;
 }
 
 export interface DrainBlobReadyZeroStats {
@@ -56,6 +66,24 @@ interface BlobReadyZeroRow {
   readonly id: string;
   readonly content_hash: string;
   readonly repair_attempts: number;
+  readonly session_id: string;
+}
+
+/**
+ * Fire an event, isolating callback faults. A throwing consumer cannot
+ * corrupt drain progress — we swallow + warn and carry on to the next row.
+ * Kept private to this module: callers reach drift events via `onEvent`.
+ */
+function safeEmit(
+  onEvent: ((event: ArtifactStoreEvent) => void) | undefined,
+  event: ArtifactStoreEvent,
+): void {
+  if (onEvent === undefined) return;
+  try {
+    onEvent(event);
+  } catch (err: unknown) {
+    console.warn("[@koi/artifacts] onEvent callback threw; continuing drain", err);
+  }
 }
 
 function promoteIfStillPending(db: Database, id: string): number {
@@ -106,8 +134,12 @@ function bumpAndMaybeTerminal(
 export async function drainBlobReadyZero(
   args: DrainBlobReadyZeroArgs,
 ): Promise<DrainBlobReadyZeroStats> {
+  // `session_id` rides along so `repair_exhausted` events can route drift
+  // alerts by session. Cheap — the column is already indexed for quota.
   const rows = args.db
-    .query("SELECT id, content_hash, repair_attempts FROM artifacts WHERE blob_ready = 0")
+    .query(
+      "SELECT id, content_hash, repair_attempts, session_id FROM artifacts WHERE blob_ready = 0",
+    )
     .all() as ReadonlyArray<BlobReadyZeroRow>;
 
   // Running tallies. `let` is justified: we accumulate per-row outcomes.
@@ -122,9 +154,15 @@ export async function drainBlobReadyZero(
     let present: boolean;
     try {
       present = await args.blobStore.has(row.content_hash);
-    } catch {
+    } catch (err: unknown) {
       // Transient backend failure. Row untouched; repair_attempts not bumped.
       transientErrors++;
+      safeEmit(args.onEvent, {
+        kind: "transient_repair_error",
+        artifactId: artifactId(row.id),
+        contentHash: row.content_hash,
+        error: err,
+      });
       continue;
     }
 
@@ -135,7 +173,16 @@ export async function drainBlobReadyZero(
     }
 
     const outcome = bumpAndMaybeTerminal(args.db, row.id, row.content_hash, args.maxRepairAttempts);
-    if (outcome.terminallyDeleted) terminallyDeleted++;
+    if (outcome.terminallyDeleted) {
+      terminallyDeleted++;
+      safeEmit(args.onEvent, {
+        kind: "repair_exhausted",
+        artifactId: artifactId(row.id),
+        contentHash: row.content_hash,
+        sessionId: sessionId(row.session_id),
+        attempts: outcome.newAttempts,
+      });
+    }
   }
 
   return { promoted, terminallyDeleted, transientErrors };

@@ -167,6 +167,10 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       blobStore,
       config,
       maxRepairAttempts: config.maxRepairAttempts ?? 10,
+      // exactOptionalPropertyTypes: conditionally spread so we never pass
+      // `onEvent: undefined` through — the worker treats absent and
+      // `undefined` identically, but spreading matches the interface shape.
+      ...(config.onEvent !== undefined ? { onEvent: config.onEvent } : {}),
     });
     worker.start();
 

@@ -179,10 +179,51 @@ export interface ArtifactStoreConfig {
    * `maxRepairAttempts` / `staleIntentGraceMs`).
    */
   readonly workerIntervalMs?: number | "manual";
+  /**
+   * Structured drift signal (Plan 4 — spec §6.5 step 4c). Fires for repair
+   * events that operators should observe:
+   *
+   *   - `repair_exhausted` — a `blob_ready = 0` row was terminal-deleted
+   *     because its absence probe hit `maxRepairAttempts`. A steady stream
+   *     of these implies a systemic blob-write loss, not a transient outage.
+   *
+   *   - `transient_repair_error` — `blobStore.has()` threw during a repair
+   *     probe. The raw error is surfaced so operators can triage
+   *     backend-specific failure modes (5xx rate, DNS, quota).
+   *
+   * Default: no-op (no logging noise). The callback is synchronous; users
+   * that want async sinks must queue internally. A callback that throws is
+   * swallowed and logged once via console.warn — a bad observer cannot
+   * corrupt repair progress.
+   *
+   * Below-budget `repair_attempts` increments do NOT emit — those are
+   * expected and operationally silent.
+   */
+  readonly onEvent?: (event: ArtifactStoreEvent) => void;
   // Plan 5 (#1922) will add `blobStore: BlobStore` for pluggable backends —
   // still omitted from the public surface so the type never advertises a
   // field that would be rejected at runtime.
 }
+
+/**
+ * Structured drift signal surfaced by the background repair worker
+ * (Plan 4 — spec §6.5 step 4c). Kinds and fields are a stable public API
+ * — consumers pattern-match on `kind`.
+ */
+export type ArtifactStoreEvent =
+  | {
+      readonly kind: "repair_exhausted";
+      readonly artifactId: ArtifactId;
+      readonly contentHash: string;
+      readonly sessionId: SessionId;
+      readonly attempts: number;
+    }
+  | {
+      readonly kind: "transient_repair_error";
+      readonly artifactId: ArtifactId;
+      readonly contentHash: string;
+      readonly error: unknown;
+    };
 
 /**
  * Result of one worker iteration. Totals are per-iteration — they reset at

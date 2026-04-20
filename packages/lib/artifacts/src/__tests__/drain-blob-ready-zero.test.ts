@@ -16,8 +16,10 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { BlobStore } from "@koi/blob-cas";
+import { artifactId, sessionId } from "@koi/core";
 import { drainBlobReadyZero } from "../drain-blob-ready-zero.js";
 import { ALL_DDL } from "../schema.js";
+import type { ArtifactStoreEvent } from "../types.js";
 
 interface ArtifactRow {
   readonly id: string;
@@ -317,5 +319,182 @@ describe("drainBlobReadyZero", () => {
     expect(getTombstone(db, "3".repeat(64))).not.toBeNull();
     expect(getRow(db, "art_transient")?.repair_attempts).toBe(2); // unchanged
     expect(getRow(db, "art_transient")?.blob_ready).toBe(0);
+  });
+
+  describe("onEvent hook (structured drift signal)", () => {
+    test("fires repair_exhausted with correct fields when budget exhausted", async () => {
+      // Budget=1, repair_attempts starts at 0 → one absent probe hits the
+      // terminal-delete threshold. Row must be SELECTed with session_id so
+      // the event carries the owning session — operators route drift alerts
+      // by session, not artifact id.
+      const hash = "e".repeat(64);
+      insertArtifact(db, {
+        id: "art_terminal",
+        name: "f.txt",
+        hash,
+        blobReady: 0,
+        repairAttempts: 0,
+        sessionId: "sess_operator_pager",
+      });
+      const blobStore = mockBlobStoreHas(async () => false);
+      const events: Array<ArtifactStoreEvent> = [];
+
+      const stats = await drainBlobReadyZero({
+        db,
+        blobStore,
+        maxRepairAttempts: 1,
+        onEvent: (e) => events.push(e),
+      });
+
+      expect(stats).toEqual({ promoted: 0, terminallyDeleted: 1, transientErrors: 0 });
+      expect(events).toHaveLength(1);
+      const ev = events[0];
+      expect(ev).toBeDefined();
+      if (ev === undefined) throw new Error("unreachable: asserted above");
+      expect(ev.kind).toBe("repair_exhausted");
+      if (ev.kind !== "repair_exhausted") throw new Error("kind narrowing");
+      expect(ev.artifactId).toBe(artifactId("art_terminal"));
+      expect(ev.contentHash).toBe(hash);
+      expect(ev.sessionId).toBe(sessionId("sess_operator_pager"));
+      expect(ev.attempts).toBe(1);
+    });
+
+    test("fires transient_repair_error with raw throwable when has() throws", async () => {
+      const hash = "a".repeat(64);
+      insertArtifact(db, { id: "art_transient", name: "f.txt", hash, blobReady: 0 });
+      const boom = new Error("s3 5xx");
+      const blobStore = mockBlobStoreHas(async () => {
+        throw boom;
+      });
+      const events: Array<ArtifactStoreEvent> = [];
+
+      const stats = await drainBlobReadyZero({
+        db,
+        blobStore,
+        maxRepairAttempts: 10,
+        onEvent: (e) => events.push(e),
+      });
+
+      expect(stats).toEqual({ promoted: 0, terminallyDeleted: 0, transientErrors: 1 });
+      expect(events).toHaveLength(1);
+      const ev = events[0];
+      expect(ev).toBeDefined();
+      if (ev === undefined) throw new Error("unreachable: asserted above");
+      expect(ev.kind).toBe("transient_repair_error");
+      if (ev.kind !== "transient_repair_error") throw new Error("kind narrowing");
+      expect(ev.artifactId).toBe(artifactId("art_transient"));
+      expect(ev.contentHash).toBe(hash);
+      // Raw throwable preserved — operators inspect the original error.
+      expect(ev.error).toBe(boom);
+    });
+
+    test("no events when repair succeeds: promote and below-budget increment are silent", async () => {
+      // Promote path.
+      insertArtifact(db, {
+        id: "art_present",
+        name: "a.txt",
+        hash: "1".repeat(64),
+        blobReady: 0,
+      });
+      // Below-budget increment path.
+      insertArtifact(db, {
+        id: "art_below",
+        name: "b.txt",
+        hash: "2".repeat(64),
+        blobReady: 0,
+        repairAttempts: 1,
+      });
+      const blobStore: BlobStore = {
+        put: async () => {
+          throw new Error("mock: put not expected");
+        },
+        get: async () => {
+          throw new Error("mock: get not expected");
+        },
+        has: async (h) => {
+          if (h === "1".repeat(64)) return true;
+          if (h === "2".repeat(64)) return false;
+          throw new Error(`unexpected hash: ${h}`);
+        },
+        delete: async () => {
+          throw new Error("mock: delete not expected");
+        },
+        list: () => {
+          throw new Error("mock: list not expected");
+        },
+      };
+      const events: Array<ArtifactStoreEvent> = [];
+
+      const stats = await drainBlobReadyZero({
+        db,
+        blobStore,
+        maxRepairAttempts: 10,
+        onEvent: (e) => events.push(e),
+      });
+
+      expect(stats).toEqual({ promoted: 1, terminallyDeleted: 0, transientErrors: 0 });
+      // Silent: below-budget is expected behavior, not drift.
+      expect(events).toHaveLength(0);
+    });
+
+    test("omitting onEvent is a no-op — drain still completes normally", async () => {
+      const hash = "c".repeat(64);
+      insertArtifact(db, {
+        id: "art_terminal",
+        name: "f.txt",
+        hash,
+        blobReady: 0,
+        repairAttempts: 0,
+      });
+      const blobStore = mockBlobStoreHas(async () => false);
+
+      // No onEvent passed — must not throw.
+      const stats = await drainBlobReadyZero({ db, blobStore, maxRepairAttempts: 1 });
+
+      expect(stats).toEqual({ promoted: 0, terminallyDeleted: 1, transientErrors: 0 });
+      expect(getRow(db, "art_terminal")).toBeNull();
+      expect(getTombstone(db, hash)).not.toBeNull();
+    });
+
+    test("onEvent throwing does NOT abort the drain — remaining rows still processed", async () => {
+      // Two rows that would each produce an event. First callback throws —
+      // the second row must still be processed and its event still delivered.
+      insertArtifact(db, {
+        id: "art_first",
+        name: "a.txt",
+        hash: "1".repeat(64),
+        blobReady: 0,
+        repairAttempts: 0,
+      });
+      insertArtifact(db, {
+        id: "art_second",
+        name: "b.txt",
+        hash: "2".repeat(64),
+        blobReady: 0,
+        repairAttempts: 0,
+      });
+      const blobStore = mockBlobStoreHas(async () => false);
+      const seen: Array<ArtifactStoreEvent> = [];
+      let firstCall = true;
+
+      const stats = await drainBlobReadyZero({
+        db,
+        blobStore,
+        maxRepairAttempts: 1,
+        onEvent: (e) => {
+          seen.push(e);
+          if (firstCall) {
+            firstCall = false;
+            throw new Error("callback exploded");
+          }
+        },
+      });
+
+      // Both rows terminally deleted despite first callback throwing.
+      expect(stats).toEqual({ promoted: 0, terminallyDeleted: 2, transientErrors: 0 });
+      expect(seen).toHaveLength(2);
+      expect(getRow(db, "art_first")).toBeNull();
+      expect(getRow(db, "art_second")).toBeNull();
+    });
   });
 });
