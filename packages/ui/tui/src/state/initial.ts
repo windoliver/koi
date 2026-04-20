@@ -14,7 +14,7 @@ const INITIAL_METRICS: CumulativeMetrics = {
 };
 
 /** Create a fresh TUI state with sensible defaults. */
-export function createInitialState(): TuiState {
+export function createInitialState(modelName = ""): TuiState {
   return {
     messages: [],
     queuedSubmits: [],
@@ -23,6 +23,7 @@ export function createInitialState(): TuiState {
     connectionStatus: "disconnected",
     layoutTier: "normal",
     zoomLevel: 1,
+    modelName,
     sessionInfo: null,
     cumulativeMetrics: INITIAL_METRICS,
     agentStatus: "idle",

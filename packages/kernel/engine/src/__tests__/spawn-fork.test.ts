@@ -13,7 +13,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_FORK_MAX_TURNS } from "@koi/core";
-import { applyForkDenylist, applyForkMaxTurns } from "../spawn-child.js";
+import {
+  applyForkDenylist,
+  applyForkMaxTurns,
+  computeEffectiveSpawnLimits,
+} from "../spawn-child.js";
 
 // applyForkDenylist operates on a DENYLIST (set of tool names to exclude from the child).
 // Adding "Spawn" to the denylist means the tool cannot be inherited — the recursion guard.
@@ -88,5 +92,37 @@ describe("applyForkMaxTurns", () => {
   test("returns explicit maxTurns unchanged for non-fork spawns", () => {
     const result = applyForkMaxTurns(100, false);
     expect(result).toBe(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: computeEffectiveSpawnLimits wires fork cap for direct
+// spawnChildAgent callers (#review-G8)
+//
+// Previously DEFAULT_FORK_MAX_TURNS was only applied by create-agent-spawn-fn
+// before calling spawnChildAgent. A host that called spawnChildAgent directly
+// with { fork: true } and no limits got an uncapped fork — contradicting the
+// SpawnChildOptions.fork doc which promises DEFAULT_FORK_MAX_TURNS.
+// ---------------------------------------------------------------------------
+
+describe("computeEffectiveSpawnLimits", () => {
+  test("applies fork cap when fork=true and limits is undefined", () => {
+    const result = computeEffectiveSpawnLimits(undefined, true);
+    expect(result).toEqual({ maxTurns: DEFAULT_FORK_MAX_TURNS });
+  });
+
+  test("applies fork cap when fork=true and limits has no maxTurns", () => {
+    const result = computeEffectiveSpawnLimits({ maxTokens: 1_000 }, true);
+    expect(result).toEqual({ maxTokens: 1_000, maxTurns: DEFAULT_FORK_MAX_TURNS });
+  });
+
+  test("preserves explicit maxTurns over the fork default", () => {
+    const result = computeEffectiveSpawnLimits({ maxTurns: 5 }, true);
+    expect(result).toEqual({ maxTurns: 5 });
+  });
+
+  test("passes limits through unchanged when not a fork", () => {
+    expect(computeEffectiveSpawnLimits(undefined, false)).toBeUndefined();
+    expect(computeEffectiveSpawnLimits({ maxTurns: 30 }, false)).toEqual({ maxTurns: 30 });
   });
 });

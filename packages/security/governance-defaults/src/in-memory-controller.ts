@@ -63,7 +63,10 @@ interface MutableState {
   /** Concurrent live children — increments on spawn, decrements on spawn_release. */
   spawnCount: number;
   iterationStart: number;
+  /** Cumulative forge-event count (never decrements) — backs forge_budget. */
   forgeBudget: number;
+  /** Concurrent forge compile depth — increments on forge, decrements on forge_release. */
+  forgeDepth: number;
   readonly toolOutcomes: boolean[];
   contextOccupancy: number;
 }
@@ -184,6 +187,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
     spawnCount: 0,
     iterationStart: now(),
     forgeBudget: 0,
+    forgeDepth: 0,
     toolOutcomes: [],
     contextOccupancy: 0,
   };
@@ -341,22 +345,29 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         : { ok: true },
   };
 
-  // forge_depth in the default controller is a cumulative forge-event counter
-  // (same value as forge_budget) because the L0 `GovernanceEvent` union has no
-  // `forge_release` event — real nesting depth cannot be tracked without one.
-  // Hosts that need true depth accounting must supply their own controller.
+  // forge_depth tracks concurrent forge compile depth via the `forge` /
+  // `forge_release` pair, same discipline as spawn / spawn_release. Hosts that
+  // never emit `forge_release` will see forge_depth grow monotonically and
+  // eventually trip — that is the intended fail-closed behavior.
+  //
+  // NOTE: forge_depth is NOT a cumulative forge-count ceiling. Sequential
+  // `forge` / `forge_release` pairs will keep forge_depth at 0 and never trip
+  // `forgeDepthLimit`. Use `forge_budget` (cumulative, never decrements) as
+  // the lifetime-forge safety cap. Configuring only `forgeDepthLimit` without
+  // a matching `forgeBudgetLimit` is a weak defense against runaway forge
+  // activity if the host emits release events.
   const forgeDepthVar: GovernanceVariable = {
     name: GOVERNANCE_VARIABLES.FORGE_DEPTH,
-    read: () => state.forgeBudget,
+    read: () => state.forgeDepth,
     limit: forgeDepthLimit,
     retryable: false,
     description:
-      "Cumulative forge-event count. The L0 contract has no forge_release; depth is not modelled separately.",
+      "Concurrent forge compile depth (paired with forge_release). For cumulative forge-count caps use forge_budget.",
     check: (): GovernanceCheck =>
-      enforced(forgeDepthLimit) && state.forgeBudget >= forgeDepthLimit
+      enforced(forgeDepthLimit) && state.forgeDepth >= forgeDepthLimit
         ? fail(
             GOVERNANCE_VARIABLES.FORGE_DEPTH,
-            `forge_depth ${state.forgeBudget} reached limit ${forgeDepthLimit}`,
+            `forge_depth ${state.forgeDepth} reached limit ${forgeDepthLimit}`,
             false,
           )
         : { ok: true },
@@ -456,6 +467,11 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
       case "turn":
         state.turnCount += 1;
         return;
+      case "turn_refund": {
+        const refund = Number.isFinite(event.count) ? Math.max(0, event.count) : 0;
+        state.turnCount = Math.max(0, state.turnCount - refund);
+        return;
+      }
       case "spawn":
         // spawn_count tracks concurrent live children — depth is a property of
         // each controller (its own agentDepth), not a counter the parent mutates.
@@ -466,6 +482,17 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         return;
       case "forge":
         state.forgeBudget += 1;
+        state.forgeDepth += 1;
+        return;
+      case "forge_release":
+        // Non-idempotent decrement mirrors spawn_release (PR #1904). Events
+        // carry no correlation ID, so duplicate or out-of-order releases
+        // cannot be distinguished from legitimate ones. Host callers MUST
+        // wrap compile lifecycle in try/finally with a single guarded
+        // release; otherwise `forge_depth` will drift downward and allow
+        // excess concurrent compiles. The clamp at 0 prevents runaway
+        // underflow but cannot prevent bypass from spurious releases.
+        state.forgeDepth = Math.max(0, state.forgeDepth - 1);
         return;
       case "tool_error":
         state.toolOutcomes.push(false);

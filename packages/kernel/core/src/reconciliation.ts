@@ -75,6 +75,14 @@ export interface ReconcileRunnerConfig {
   readonly minReconcileIntervalMs: number;
   /** Maximum concurrent async reconciles. 0 = unlimited. Default: 10. */
   readonly maxConcurrentReconciles: number;
+  /** Interval between process-tick dequeues (ms). Default: 100. */
+  readonly processTickIntervalMs: number;
+  /**
+   * Maximum agents drained from the reconcile queue per tick. Caps work per
+   * tick to prevent event-loop starvation while letting bursts drain quickly.
+   * Default: 32.
+   */
+  readonly processBatchSize: number;
 }
 
 /** Sensible defaults for the reconcile runner. */
@@ -86,4 +94,6 @@ export const DEFAULT_RECONCILE_RUNNER_CONFIG: ReconcileRunnerConfig = {
   backoffCapMs: 30_000,
   minReconcileIntervalMs: 5_000,
   maxConcurrentReconciles: 10,
+  processTickIntervalMs: 100,
+  processBatchSize: 32,
 };

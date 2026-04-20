@@ -84,10 +84,12 @@ import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.
 import { createAuthInterceptor } from "./auth-interceptor.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
+import { createCurrentModelMiddleware } from "./current-model-middleware.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
 import { loadManifestConfig } from "./manifest.js";
+import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
@@ -95,6 +97,13 @@ import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js"
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
+import {
+  createSigusr1Handler,
+  generateTuiStartupHint,
+  removeStoredEarlySigusr1Handler,
+  SIGUSR1_EXIT_CODE,
+  SIGUSR1_SUPPORTED,
+} from "./tui-sigusr1.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -142,6 +151,28 @@ const SESSION_PREVIEW_MAX = 80;
  */
 function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
+}
+
+/**
+ * Defensive bounds on context-window values from provider `/models`.
+ *
+ * OpenRouter/OpenAI/Anthropic all report sane positive integers (8k..2M),
+ * but a broken provider, a forged response, or a future schema drift could
+ * send 0, negative, or pathological values. Both extremes break compaction:
+ * a tiny window forces thrash-truncation of every message; a huge window
+ * effectively disables compaction until the provider itself rejects the
+ * call. Validate before trusting.
+ *
+ * MIN=2048: below this, even a single system prompt + user turn overflows
+ * so the registry default is always safer. MAX=4_000_000: covers today's
+ * largest public windows (Anthropic's 1M) with headroom; anything larger
+ * is almost certainly a metadata bug.
+ */
+export function clampContextLength(raw: number | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  if (!Number.isFinite(raw) || !Number.isInteger(raw)) return undefined;
+  if (raw < 2048 || raw > 4_000_000) return undefined;
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,7 +1174,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 2. TUI state setup (P2-A: show TUI immediately, before runtime assembly)
   // ---------------------------------------------------------------------------
 
-  const store = createStore(createInitialState());
+  const store = createStore(createInitialState(modelName));
+
+  // Current-model middleware: holds a mutable box that the model-picker
+  // modal mutates via TuiRoot's `onModelSwitch` callback. Rewrites
+  // `request.model` on every turn so the next model stream uses the
+  // freshly picked model without rebuilding the runtime. Composed OUTER
+  // of `modelRouterMiddleware` so any fallback chain sees the latest
+  // host-picked model id.
+  const { middleware: currentModelMiddleware, box: currentModelBox } =
+    createCurrentModelMiddleware(modelName);
+
   // Persistent approval store — gracefully degrade if DB can't be opened
   // (corrupt file, permissions issue, etc.). TUI still works without it.
   // let: approvalStore is conditionally set based on DB availability
@@ -1397,6 +1438,105 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const yoloPermissionBackend = flags.yolo
     ? createPatternPermissionBackend({ rules: { allow: ["*"], deny: [], ask: [] } })
     : undefined;
+
+  // ---------------------------------------------------------------------------
+  // Shutdown latch — declared here (hoisted from its original position at
+  // line ~2274) so the interim SIGUSR1 teardown below and the full
+  // `shutdown()` further down share ONE idempotence flag (#1906 R4 review).
+  // Without a shared latch, SIGUSR1 during bootstrap kicks off interim
+  // teardown but bootstrap continues forward; a subsequent SIGUSR1 or
+  // graceful path would race the interim teardown. Consolidating to a
+  // single sentinel means the first shutdown request wins and every later
+  // signal — interim, full, or /quit — is a no-op.
+  // ---------------------------------------------------------------------------
+  // let: justified — set once on first shutdown request, shared across
+  // interim teardown, full shutdown, and section 4b upgrade.
+  let shutdownStarted = false;
+
+  // ---------------------------------------------------------------------------
+  // Interim SIGUSR1 handler (#1906 R1/R2/R4) — covers the window from this
+  // point through section 4b where the full `shutdown()` handler installs.
+  // SIGUSR1 during runtime/MCP bootstrap runs an ASYNC, ordered teardown
+  // (matching the normal shutdown sequencing: SIGTERM background tasks
+  // → await runtime.dispose → dispose filesystem backend → flush OTel →
+  // close approvals → dispose batcher → process.exit) with a 6s hard-exit
+  // failsafe so a wedged dispose cannot strand the user. Upgraded to the
+  // full handler at section 4b once `shutdown` is defined.
+  // ---------------------------------------------------------------------------
+  // Interim hard-exit failsafe: shorter than the full shutdown's 8s because
+  // there is strictly less to tear down this early in bootstrap.
+  const INTERIM_SHUTDOWN_HARD_EXIT_MS = 6_000;
+  // let: justified — set once, then cleared when the full handler takes over.
+  let interimSigusr1Handler: (() => void) | null = null;
+  if (SIGUSR1_SUPPORTED) {
+    const interimTeardown = async (exitCode: number): Promise<void> => {
+      // Use the shared `shutdownStarted` latch so a second SIGUSR1 during
+      // interim teardown — or an accidental later call from the full
+      // shutdown path — is a no-op. Flipping it before the first async step
+      // also means bootstrap code that later checks `shutdownStarted` can
+      // short-circuit instead of racing the teardown.
+      if (shutdownStarted) return;
+      shutdownStarted = true;
+      // Arm the hard-exit failsafe FIRST so even if an awaited step wedges
+      // we are not stranded. Unref'd so natural completion still lets
+      // the explicit process.exit below run when everything finishes.
+      const hardExit = setTimeout(() => {
+        process.exit(exitCode);
+      }, INTERIM_SHUTDOWN_HARD_EXIT_MS);
+      if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
+        (hardExit as { unref: () => void }).unref();
+      }
+      // Ref'd keepalive — mirror the full `shutdown()` pattern (line ~2326).
+      // Bun drops pending microtasks once the last real handle disappears,
+      // so without this interval the first `await runtime.dispose()` can
+      // let the event loop exit before the continuation resumes, skipping
+      // every subsequent cleanup step and the final `process.exit`. The
+      // hard-exit failsafe still guards against a wedged await.
+      const keepAlive = setInterval(() => {
+        /* ref'd keepalive only */
+      }, 1000);
+      try {
+        // Kick background-task SIGTERM synchronously so stubborn subprocesses
+        // start dying before we begin the async dispose chain.
+        try {
+          runtimeHandle?.shutdownBackgroundTasks();
+        } catch {}
+        try {
+          if (runtimeHandle !== null) {
+            await runtimeHandle.runtime.dispose();
+          }
+        } catch {}
+        try {
+          await resolvedFilesystemBackend?.dispose?.();
+        } catch {}
+        try {
+          await otelHandle?.shutdown();
+        } catch {}
+        try {
+          approvalStore?.close();
+        } catch {}
+        try {
+          batcher.dispose();
+        } catch {}
+      } finally {
+        clearInterval(keepAlive);
+        process.exit(exitCode);
+      }
+    };
+    interimSigusr1Handler = createSigusr1Handler({
+      shutdown: (code) => {
+        void interimTeardown(code);
+      },
+      write: (msg) => {
+        try {
+          process.stderr.write(msg);
+        } catch {}
+      },
+    });
+    removeStoredEarlySigusr1Handler();
+    process.on("SIGUSR1", interimSigusr1Handler);
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1411,6 +1551,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           bashElicitAutoApprove: true,
         }
       : {}),
+    currentModelMiddleware,
+    // Resolve budgetConfig per turn so a mid-session model switch picks up
+    // the new model's context window immediately.
+    getCurrentModel: () => ({
+      model: currentModelBox.current,
+      ...(currentModelBox.contextLength !== undefined
+        ? { contextLength: currentModelBox.contextLength }
+        : {}),
+    }),
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
     // TUI opts out of engine loop detection explicitly: the
     // per-submit iteration budget reset + governance caps below
@@ -1523,6 +1672,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
   }).then((handle) => {
+    // If an interim SIGUSR1 teardown started while createKoiRuntime was
+    // in flight (#1906 R10), the teardown couldn't dispose `handle`
+    // because it wasn't assigned yet. Dispose it here directly and do
+    // NOT assign `runtimeHandle` — otherwise the rest of bootstrap
+    // (transcript priming, /mcp refresh) would run against an
+    // already-disposed runtime.
+    if (shutdownStarted) {
+      handle.shutdownBackgroundTasks();
+      void handle.runtime.dispose().catch(() => {
+        /* best effort — hard-exit failsafe will still fire */
+      });
+      return;
+    }
     runtimeHandle = handle;
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
@@ -1614,6 +1776,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+  // let: preflight latch — set synchronously at onSubmit entry before the
+  // first await (runtimeReady / resetBarrier), cleared in finally. Closes
+  // the submit-then-switch race where `activeController` is still null
+  // during init waits, letting `onModelSwitch` observe the in-flight submit
+  // before the stream controller exists.
+  let submitInProgress = false;
+  // let: compaction latch — `/compact` snapshots and splices the live
+  // runtime transcript across `await` boundaries (token estimation +
+  // microcompact). Must block `onSubmit` (and vice versa) for the full
+  // compact duration, not just the entry check, otherwise a submit can
+  // start after the initial guard and append messages that the splice
+  // then silently drops or duplicates.
+  let compactInProgress = false;
   // let: promise tracking the in-flight `drainEngineStream` call.
   // `resetConversation()` must await this before truncating or
   // overwriting the session file, otherwise the session-transcript
@@ -2268,8 +2443,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // wedges. The failsafe is unref'd, so natural cleanup completion before
   // the timer fires still lets the process exit cleanly via `process.exit`.
   const SHUTDOWN_HARD_EXIT_MS = 8000;
-  // let: justified — set once on first shutdown call
-  let shutdownStarted = false;
+  // `shutdownStarted` is hoisted to the pre-createKoiRuntime block so
+  // interim SIGUSR1 teardown and this full shutdown share one latch
+  // (#1906 R4 review).
   const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
@@ -2459,6 +2635,44 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(exitCode);
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // 4b. Upgrade SIGUSR1 to the FULL graceful-shutdown handler (#1906 R10/R11)
+  // ---------------------------------------------------------------------------
+  //
+  // Progressive handler upgrade:
+  //   1. bin.ts inline early handler: bare `process.exit()` (process-start → runTuiCommand entry).
+  //   2. interim teardown handler: tears down what exists so far — runtime,
+  //      filesystem backend, otel, approvals, batcher — but cannot touch
+  //      appHandle, resetBarrier, abortActiveStream because they are not
+  //      declared yet. Installed right before createKoiRuntime.
+  //   3. Full handler (THIS section): routes into `shutdown()` which adds
+  //      abortActiveStream, resetBarrier wait, appHandle.stop, run-report,
+  //      resume hint, SIGKILL-escalation wait.
+  //
+  // Swap the interim handler out by reference so an embedding host's own
+  // SIGUSR1 listeners (if any) are not trampled. The interim teardown is
+  // no-longer reachable from here; the full handler supersedes it.
+  const onProcessSigusr1 = createSigusr1Handler({
+    shutdown: (code, reason) => {
+      void shutdown(code, reason);
+    },
+    write: (msg) => {
+      process.stderr.write(msg);
+    },
+  });
+  if (SIGUSR1_SUPPORTED && !shutdownStarted) {
+    // Skip the upgrade if the interim teardown is already in flight —
+    // installing the full handler now would let a fresh SIGUSR1 enter
+    // `shutdown()` concurrently with the interim teardown. The shared
+    // `shutdownStarted` latch makes `shutdown()` a no-op in that case,
+    // but there is no reason to wire up the listener at all.
+    if (interimSigusr1Handler !== null) {
+      process.removeListener("SIGUSR1", interimSigusr1Handler);
+      interimSigusr1Handler = null;
+    }
+    process.on("SIGUSR1", onProcessSigusr1);
+  }
 
   // ---------------------------------------------------------------------------
   // 5. Initialize tree-sitter for markdown rendering
@@ -2670,275 +2884,348 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       });
       return;
     }
-    // P2-A: block on runtime assembly if not yet ready.
-    // First submit waits for createKoiRuntime to complete; subsequent
-    // submits use the cached runtimeHandle (already resolved).
-    if (runtimeHandle === null) {
-      try {
-        await runtimeReady;
-      } catch (e: unknown) {
-        store.dispatch({
-          kind: "add_error",
-          code: "RUNTIME_INIT_ERROR",
-          message: `Runtime failed to initialize: ${e instanceof Error ? e.message : String(e)}`,
-        });
-        return;
-      }
-    }
-
-    // runtimeHandle is guaranteed non-null after runtimeReady resolves.
-    // The await above sets runtimeHandle; if it threw, we returned early.
-    if (runtimeHandle === null) return;
-    const handle = runtimeHandle;
-
-    // Wait for any pending session reset to complete before submitting.
-    // Prevents hitting stale task board or trajectory state.
-    await resetBarrier;
-
-    // Re-check `clearPersistFailed` after the barrier settles.
-    // The early guard above could pass even though a `/clear`
-    // was in flight: the reset IIFE only flips the flag INSIDE
-    // the async truncate path, so a submit dispatched before
-    // `onCommand: agent:clear` scheduled its truncate would
-    // see `clearPersistFailed === false`, await the barrier,
-    // and then (without this second check) proceed to append
-    // new turns onto an un-truncated transcript. Re-reading
-    // the flag here is cheap and closes the race cleanly.
-    if (clearPersistFailed) {
+    // Guard against overlapping submits: reject while a stream is in flight
+    // OR while a prior submit is still in its preflight (runtimeReady /
+    // resetBarrier) window — activeController is null during that window,
+    // so `submitInProgress` is the authoritative in-flight signal.
+    // Also reject during `/compact` so the splice doesn't race with
+    // session-transcript appends from this submit.
+    // The user can Ctrl+C (agent:interrupt) to abort the active stream first.
+    if (activeController !== null || submitInProgress) {
       store.dispatch({
         kind: "add_error",
-        code: "SUBMIT_AFTER_FAILED_CLEAR",
-        message:
-          "Submit is disabled because the most recent /clear or /new could not " +
-          "durably truncate this session's transcript. New turns would append to " +
-          "the pre-clear content and a later `--resume` would resurrect it. " +
-          "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+        code: "SUBMIT_IN_PROGRESS",
+        message: "A response is already streaming. Press Ctrl+C to interrupt it first.",
       });
       return;
     }
-    // Also re-check `lastResetFailed` — the in-memory reset
-    // (resetSessionState, transcript splice, batcher rotate)
-    // can fail independently of the durable truncate. If it
-    // threw before `runtimeHandle.transcript.splice(0)` ran,
-    // the UI has been cleared but the runtime transcript still
-    // contains pre-clear messages, and the next submit would
-    // run against stale history while the operator believes
-    // the session was wiped. Mirror the picker / rewind block
-    // logic and refuse here.
-    if (lastResetFailed) {
+    if (compactInProgress) {
       store.dispatch({
         kind: "add_error",
-        code: "SUBMIT_AFTER_FAILED_RESET",
-        message:
-          "Submit is disabled because the most recent session reset failed. " +
-          "The runtime may still hold stale conversation context. " +
-          "Quit and relaunch with `koi tui --resume <id>` to recover from a " +
-          "clean state.",
+        code: "SUBMIT_DURING_COMPACT",
+        message: "Cannot submit while /compact is in progress. Try again in a moment.",
       });
       return;
     }
-
-    // #11: include any pending clipboard images as image ContentBlocks
-    // alongside the text. Bridge clears pendingImages after dispatch so the
-    // next submit starts with an empty list.
-    const imageBlocks = pendingImages.map((img) => ({
-      kind: "image" as const,
-      url: img.url,
-    }));
-
-    const controller = new AbortController();
-    activeController = controller;
-
-    // Clear any stale SIGINT arm from a previous bg-wait hint (#1772
-    // review r2). If the user tapped Ctrl+C while idle with background
-    // work running, the handler was left armed for the duration of
-    // the double-tap window — if they then submit a new prompt inside
-    // that window, a single Ctrl+C to cancel the new turn would be
-    // treated as the second tap of the stale sequence and force-exit
-    // the TUI. `complete()` is a no-op when the handler is idle, so
-    // this is safe to call unconditionally at every turn start.
-    sigintHandler.complete();
-
-    // Inject a synthetic turn-boundary step so /trajectory can group steps
-    // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
-    // so we maintain our own counter here at the TUI session level.
-    const thisTurnIndex = tuiTurnCounter++;
-    await runtimeHandle.appendTrajectoryStep({
-      stepIndex: 0,
-      timestamp: Date.now(),
-      source: "system",
-      kind: "tool_call",
-      identifier: "koi:tui_turn_start",
-      outcome: "success",
-      durationMs: 0,
-      metadata: {
-        type: "tui_turn_start",
-        tuiTurnIndex: thisTurnIndex,
-      } as import("@koi/core").JsonObject,
-    });
-
+    // Take the preflight latch synchronously — before the first await — so
+    // `onModelSwitch` (and any re-entrant submit) can observe the in-flight
+    // state during runtime init / barrier waits. Cleared in the outer
+    // finally so early-return guards below also release the latch.
+    submitInProgress = true;
+    // Capture the reset generation synchronously so we can detect a
+    // `/clear` or `/new` (or any other `resetConversation()`) that lands
+    // during the preflight window. If the generation advances before we
+    // create the stream, abandon this submit — otherwise the captured
+    // `text` would execute AFTER the user's reset intent. `resetBarrier`
+    // alone is insufficient: a reset could complete between our await
+    // and stream creation without us noticing.
+    const submitResetGen = resetGeneration;
     try {
-      // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
-      // middleware composition, tool dispatch, and transcript management.
-      //
-      // Loop mode: each user turn becomes a runUntilPass invocation that
-      // iterates the agent against --until-pass until convergence. The
-      // multiplexing stream below surfaces all iterations' EngineEvents
-      // into drainEngineStream so the TUI renders each iteration's model
-      // output naturally.
-      // Task 11: check OAuth redirect URL interceptor before passing to engine.
-      // When a nexus local-bridge transport is wired and the user pastes a
-      // localhost redirect URL (e.g. http://localhost:8080/callback?code=...),
-      // the interceptor routes it to `transport.submitAuthCode(...)` and
-      // returns `{ intercepted: true }` so the text never reaches the model.
-      if (tuiAuthInterceptor !== undefined) {
-        const interceptResult = tuiAuthInterceptor(text, tuiAuthCorrelationId);
-        if (interceptResult.intercepted) {
-          // Show a brief notice so the user knows the URL was consumed.
+      // P2-A: block on runtime assembly if not yet ready.
+      // First submit waits for createKoiRuntime to complete; subsequent
+      // submits use the cached runtimeHandle (already resolved).
+      if (runtimeHandle === null) {
+        try {
+          await runtimeReady;
+        } catch (e: unknown) {
           store.dispatch({
-            kind: "add_user_message",
-            id: `auth-redirect-${Date.now()}`,
-            blocks: [
-              {
-                kind: "text",
-                text: "_OAuth redirect URL received — submitting to auth bridge..._",
-              },
-            ],
+            kind: "add_error",
+            code: "RUNTIME_INIT_ERROR",
+            message: `Runtime failed to initialize: ${e instanceof Error ? e.message : String(e)}`,
           });
-          activeController = null;
           return;
         }
       }
 
-      // #10: resolve @-mention file references before sending to the engine.
-      // Parses @path and @path#L10-20, reads files, injects content so the
-      // model sees the file directly without needing to call Glob/fs_read.
-      const resolved = resolveAtReferences(text, process.cwd());
-      const modelText =
-        resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+      // runtimeHandle is guaranteed non-null after runtimeReady resolves.
+      // The await above sets runtimeHandle; if it threw, we returned early.
+      if (runtimeHandle === null) return;
+      // Bail if a reset (e.g. `/clear`, `/new`) landed during runtime
+      // initialization. The submit was implicitly invalidated.
+      if (resetGeneration !== submitResetGen) return;
+      const handle = runtimeHandle;
 
-      let stream: AsyncIterable<EngineEvent>;
-      try {
-        stream = isLoopMode
-          ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
-          : handle.runtime.run({
-              kind: "text",
-              text: modelText,
-              signal: controller.signal,
-            });
-      } catch (err) {
+      // Wait for any pending session reset to complete before submitting.
+      // Prevents hitting stale task board or trajectory state.
+      await resetBarrier;
+      // Bail if a reset landed while we waited on the barrier (the barrier
+      // itself only signals completion, not invalidation of queued prompts).
+      if (resetGeneration !== submitResetGen) return;
+
+      // Re-check `clearPersistFailed` after the barrier settles.
+      // The early guard above could pass even though a `/clear`
+      // was in flight: the reset IIFE only flips the flag INSIDE
+      // the async truncate path, so a submit dispatched before
+      // `onCommand: agent:clear` scheduled its truncate would
+      // see `clearPersistFailed === false`, await the barrier,
+      // and then (without this second check) proceed to append
+      // new turns onto an un-truncated transcript. Re-reading
+      // the flag here is cheap and closes the race cleanly.
+      if (clearPersistFailed) {
         store.dispatch({
           kind: "add_error",
-          code: "RUNTIME_REJECTED",
-          message: err instanceof Error ? err.message : String(err),
+          code: "SUBMIT_AFTER_FAILED_CLEAR",
+          message:
+            "Submit is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. New turns would append to " +
+            "the pre-clear content and a later `--resume` would resurrect it. " +
+            "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
         });
-        pendingImages = [];
         return;
       }
-      pendingImages = [];
-      store.dispatch({
-        kind: "add_user_message",
-        id: `user-${Date.now()}`,
-        blocks: [{ kind: "text", text }, ...imageBlocks],
+      // Also re-check `lastResetFailed` — the in-memory reset
+      // (resetSessionState, transcript splice, batcher rotate)
+      // can fail independently of the durable truncate. If it
+      // threw before `runtimeHandle.transcript.splice(0)` ran,
+      // the UI has been cleared but the runtime transcript still
+      // contains pre-clear messages, and the next submit would
+      // run against stale history while the operator believes
+      // the session was wiped. Mirror the picker / rewind block
+      // logic and refuse here.
+      if (lastResetFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_FAILED_RESET",
+          message:
+            "Submit is disabled because the most recent session reset failed. " +
+            "The runtime may still hold stale conversation context. " +
+            "Quit and relaunch with `koi tui --resume <id>` to recover from a " +
+            "clean state.",
+        });
+        return;
+      }
+
+      // #11: include any pending clipboard images as image ContentBlocks
+      // alongside the text. Bridge clears pendingImages after dispatch so the
+      // next submit starts with an empty list.
+      const imageBlocks = pendingImages.map((img) => ({
+        kind: "image" as const,
+        url: img.url,
+      }));
+
+      const controller = new AbortController();
+      activeController = controller;
+
+      // Clear any stale SIGINT arm from a previous bg-wait hint (#1772
+      // review r2). If the user tapped Ctrl+C while idle with background
+      // work running, the handler was left armed for the duration of
+      // the double-tap window — if they then submit a new prompt inside
+      // that window, a single Ctrl+C to cancel the new turn would be
+      // treated as the second tap of the stale sequence and force-exit
+      // the TUI. `complete()` is a no-op when the handler is idle, so
+      // this is safe to call unconditionally at every turn start.
+      sigintHandler.complete();
+
+      // Inject a synthetic turn-boundary step so /trajectory can group steps
+      // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
+      // so we maintain our own counter here at the TUI session level.
+      const thisTurnIndex = tuiTurnCounter++;
+      await runtimeHandle.appendTrajectoryStep({
+        stepIndex: 0,
+        timestamp: Date.now(),
+        source: "system",
+        kind: "tool_call",
+        identifier: "koi:tui_turn_start",
+        outcome: "success",
+        durationMs: 0,
+        metadata: {
+          type: "tui_turn_start",
+          tuiTurnIndex: thisTurnIndex,
+        } as import("@koi/core").JsonObject,
       });
-      // Snapshot cumulative metrics BEFORE the drain — must copy values since
-      // store.getState() returns a SolidJS reactive proxy (reads reflect live state).
-      const cm = store.getState().cumulativeMetrics;
-      const inputBefore = cm.inputTokens;
-      const outputBefore = cm.outputTokens;
-      const costBefore = cm.costUsd;
-      const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
-      activeRunPromise = drainPromise;
-      const drainOutcome = await drainPromise;
 
-      // #1753 review rounds 4 + 7 + 9: post-turn bookkeeping is
-      // layered. `abandoned` and `failed` drains cannot advance any
-      // session state, so they return early. `engine_error` is a
-      // coherent terminal state — the error is already in the store
-      // and trace data was captured up to the failure — so cost
-      // delta + trajectory refresh must still run so operators can
-      // diagnose the failure, but the rewind budget must NOT be
-      // advanced (no rewindable checkpoint was produced).
-      if (drainOutcome === "abandoned" || drainOutcome === "failed") {
-        return;
-      }
-
-      // Count the turn for rewind boundary enforcement, but ONLY
-      // when the turn completed uninterrupted AND produced a
-      // real checkpoint. Aborted turns are filtered by the signal
-      // guard; engine-errored turns are filtered by `drainOutcome
-      // === "settled"` because ENGINE_ERRORs return `"engine_error"`
-      // (#1753 review round 9).
-      if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
-        postClearTurnCount += 1;
-      }
-      // #1884: unconditional "this process wrote something" marker.
-      // Set on every settled, uninterrupted turn — not gated on the
-      // rewind boundary — so the post-quit hint suppression knows
-      // whether a JSONL transcript was actually produced.
-      if (drainOutcome === "settled" && !controller.signal.aborted) {
-        anyTurnPersistedThisProcess = true;
-      }
-
-      // Feed the cost bridge with this turn's token delta.
-      const cmAfter = store.getState().cumulativeMetrics;
-      const deltaInput = cmAfter.inputTokens - inputBefore;
-      const deltaOutput = cmAfter.outputTokens - outputBefore;
-      if (deltaInput > 0 || deltaOutput > 0) {
-        // Compute per-turn cost delta from engine-reported costUsd.
-        // Handle null→number transition (first turn): costBefore is null,
-        // costAfter is the full cumulative — use it directly as the delta.
-        let deltaCost: number | undefined;
-        if (cmAfter.costUsd !== null) {
-          deltaCost = costBefore !== null ? cmAfter.costUsd - costBefore : cmAfter.costUsd;
-          if (deltaCost <= 0) deltaCost = undefined; // negative = correction, skip
+      try {
+        // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
+        // middleware composition, tool dispatch, and transcript management.
+        //
+        // Loop mode: each user turn becomes a runUntilPass invocation that
+        // iterates the agent against --until-pass until convergence. The
+        // multiplexing stream below surfaces all iterations' EngineEvents
+        // into drainEngineStream so the TUI renders each iteration's model
+        // output naturally.
+        // Task 11: check OAuth redirect URL interceptor before passing to engine.
+        // When a nexus local-bridge transport is wired and the user pastes a
+        // localhost redirect URL (e.g. http://localhost:8080/callback?code=...),
+        // the interceptor routes it to `transport.submitAuthCode(...)` and
+        // returns `{ intercepted: true }` so the text never reaches the model.
+        if (tuiAuthInterceptor !== undefined) {
+          const interceptResult = tuiAuthInterceptor(text, tuiAuthCorrelationId);
+          if (interceptResult.intercepted) {
+            // Show a brief notice so the user knows the URL was consumed.
+            store.dispatch({
+              kind: "add_user_message",
+              id: `auth-redirect-${Date.now()}`,
+              blocks: [
+                {
+                  kind: "text",
+                  text: "_OAuth redirect URL received — submitting to auth bridge..._",
+                },
+              ],
+            });
+            activeController = null;
+            return;
+          }
         }
-        costBridge.recordEngineDone({
-          inputTokens: deltaInput,
-          outputTokens: deltaOutput,
-          costUsd: deltaCost,
-        });
-      }
 
-      // Refresh trajectory + decision ledger data after each turn.
-      // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
-      // wrapMiddlewareWithTrace records MW spans asynchronously via
-      // void store.append(...). Without the delay, getLedger() reads
-      // before all spans are written.
-      //
-      // Capture trajectoryRefreshGen at scheduling time so a session
-      // reset that runs in the 500 ms window invalidates this refresh
-      // before it dispatches. Otherwise the post-reset store would be
-      // repopulated with this turn's stale trajectory. (#1764)
-      const submitGen = trajectoryRefreshGen;
-      void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
-        refreshTrajectoryData(
-          handle,
-          store,
-          handle.runtime.sessionId,
-          () => trajectoryRefreshGen === submitGen,
-        ),
-      );
+        // #10: resolve @-mention file references before sending to the engine.
+        // Parses @path and @path#L10-20, reads files, injects content so the
+        // model sees the file directly without needing to call Glob/fs_read.
+        const resolved = resolveAtReferences(text, process.cwd());
+        const modelText =
+          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+
+        let stream: AsyncIterable<EngineEvent>;
+        try {
+          stream = isLoopMode
+            ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
+            : handle.runtime.run({
+                kind: "text",
+                text: modelText,
+                signal: controller.signal,
+              });
+        } catch (err) {
+          store.dispatch({
+            kind: "add_error",
+            code: "RUNTIME_REJECTED",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          pendingImages = [];
+          return;
+        }
+        pendingImages = [];
+        store.dispatch({
+          kind: "add_user_message",
+          id: `user-${Date.now()}`,
+          blocks: [{ kind: "text", text }, ...imageBlocks],
+        });
+        // Snapshot cumulative metrics BEFORE the drain — must copy values since
+        // store.getState() returns a SolidJS reactive proxy (reads reflect live state).
+        const cm = store.getState().cumulativeMetrics;
+        const inputBefore = cm.inputTokens;
+        const outputBefore = cm.outputTokens;
+        const costBefore = cm.costUsd;
+        // Snapshot the active model at turn-start for per-turn cost
+        // attribution. If the user switches mid-turn via the picker, the
+        // bridge's live `modelName` would race with the HTTP call that's
+        // still in flight; pin to this value for this turn's recording.
+        //
+        // Under `KOI_FALLBACK_MODEL` routing, `request.model` is rewritten
+        // per target inside the router middleware, so the actually-served
+        // model may differ from `currentModelBox.current`. We don't yet
+        // plumb the router's selected target back through the engine
+        // events, so attribute fallback-routed turns to a distinct bucket
+        // ("<fallback-chain>") for display. Price lookup, however, MUST
+        // use a real model id — the synthetic bucket has no pricing entry
+        // and would silently zero out the estimate. Use the primary
+        // (startup) model id as the pricing proxy until true per-target
+        // attribution is plumbed through.
+        const fallbackActive = fallbackModels.length > 0;
+        const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
+        const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
+        const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
+        activeRunPromise = drainPromise;
+        const drainOutcome = await drainPromise;
+
+        // #1753 review rounds 4 + 7 + 9: post-turn bookkeeping is
+        // layered. `abandoned` and `failed` drains cannot advance any
+        // session state, so they return early. `engine_error` is a
+        // coherent terminal state — the error is already in the store
+        // and trace data was captured up to the failure — so cost
+        // delta + trajectory refresh must still run so operators can
+        // diagnose the failure, but the rewind budget must NOT be
+        // advanced (no rewindable checkpoint was produced).
+        if (drainOutcome === "abandoned" || drainOutcome === "failed") {
+          return;
+        }
+
+        // Count the turn for rewind boundary enforcement, but ONLY
+        // when the turn completed uninterrupted AND produced a
+        // real checkpoint. Aborted turns are filtered by the signal
+        // guard; engine-errored turns are filtered by `drainOutcome
+        // === "settled"` because ENGINE_ERRORs return `"engine_error"`
+        // (#1753 review round 9).
+        if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
+          postClearTurnCount += 1;
+        }
+        // #1884: unconditional "this process wrote something" marker.
+        // Set on every settled, uninterrupted turn — not gated on the
+        // rewind boundary — so the post-quit hint suppression knows
+        // whether a JSONL transcript was actually produced.
+        if (drainOutcome === "settled" && !controller.signal.aborted) {
+          anyTurnPersistedThisProcess = true;
+        }
+
+        // Feed the cost bridge with this turn's token delta.
+        const cmAfter = store.getState().cumulativeMetrics;
+        const deltaInput = cmAfter.inputTokens - inputBefore;
+        const deltaOutput = cmAfter.outputTokens - outputBefore;
+        if (deltaInput > 0 || deltaOutput > 0) {
+          // Compute per-turn cost delta from engine-reported costUsd.
+          // Handle null→number transition (first turn): costBefore is null,
+          // costAfter is the full cumulative — use it directly as the delta.
+          let deltaCost: number | undefined;
+          if (cmAfter.costUsd !== null) {
+            deltaCost = costBefore !== null ? cmAfter.costUsd - costBefore : cmAfter.costUsd;
+            if (deltaCost <= 0) deltaCost = undefined; // negative = correction, skip
+          }
+          costBridge.recordEngineDone({
+            inputTokens: deltaInput,
+            outputTokens: deltaOutput,
+            costUsd: deltaCost,
+            modelName: modelAtTurnStart,
+            ...(pricingModelAtTurnStart !== undefined
+              ? { pricingModel: pricingModelAtTurnStart }
+              : {}),
+          });
+        }
+
+        // Refresh trajectory + decision ledger data after each turn.
+        // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
+        // wrapMiddlewareWithTrace records MW spans asynchronously via
+        // void store.append(...). Without the delay, getLedger() reads
+        // before all spans are written.
+        //
+        // Capture trajectoryRefreshGen at scheduling time so a session
+        // reset that runs in the 500 ms window invalidates this refresh
+        // before it dispatches. Otherwise the post-reset store would be
+        // repopulated with this turn's stale trajectory. (#1764)
+        const submitGen = trajectoryRefreshGen;
+        void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
+          refreshTrajectoryData(
+            handle,
+            store,
+            handle.runtime.sessionId,
+            () => trajectoryRefreshGen === submitGen,
+          ),
+        );
+      } finally {
+        // Guard against cross-run races: only clear activeController and
+        // reset the SIGINT handler if THIS run is still the active one.
+        // If resetConversation() or a new submit replaced the controller
+        // mid-drain, this finally is stale and must not disarm the
+        // SIGINT state that now belongs to the newer run.
+        const isStillActive = activeController === controller;
+        if (isStillActive) {
+          activeController = null;
+          activeRunPromise = null;
+        }
+        // The active run has settled. Reset the double-tap window so a
+        // later Ctrl+C is treated as a fresh first tap rather than a
+        // late-arriving second tap of a cancellation that already
+        // completed. Only safe when this run is still the active one —
+        // a stale finally from a reset-and-replaced run must not
+        // disarm SIGINT state that now belongs to a newer turn.
+        if (isStillActive) {
+          sigintHandler.complete();
+        }
+      }
     } finally {
-      // Guard against cross-run races: only clear activeController and
-      // reset the SIGINT handler if THIS run is still the active one.
-      // If resetConversation() or a new submit replaced the controller
-      // mid-drain, this finally is stale and must not disarm the
-      // SIGINT state that now belongs to the newer run.
-      const isStillActive = activeController === controller;
-      if (isStillActive) {
-        activeController = null;
-        activeRunPromise = null;
-      }
-      // The active run has settled. Reset the double-tap window so a
-      // later Ctrl+C is treated as a fresh first tap rather than a
-      // late-arriving second tap of a cancellation that already
-      // completed. Only safe when this run is still the active one —
-      // a stale finally from a reset-and-replaced run must not
-      // disarm SIGINT state that now belongs to a newer turn.
-      if (isStillActive) {
-        sigintHandler.complete();
-      }
+      // Always release the preflight latch so a subsequent submit is
+      // accepted. Runs for both the happy-path stream completion and
+      // every early-return guard (runtime init failure, clear/reset
+      // failure, picker mode, etc.) between `submitInProgress = true`
+      // and this finally.
+      submitInProgress = false;
     }
   };
 
@@ -2980,6 +3267,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
     await submitQueue.submit(text);
   };
+
+  // If an interim SIGUSR1 teardown already flipped the shutdown latch
+  // during bootstrap, do not create the TUI app or start the renderer
+  // (#1906 R5). The interim teardown + hard-exit failsafe will terminate
+  // the process shortly; creating the TUI would just allocate more state
+  // for the teardown to race.
+  if (shutdownStarted) {
+    // Wait for the interim teardown's hard-exit failsafe (6s) to fire.
+    await new Promise<void>((resolve) => setTimeout(resolve, INTERIM_SHUTDOWN_HARD_EXIT_MS + 500));
+    // If for some reason we're still alive (teardown wedged, failsafe
+    // didn't fire), fall through to process.exit as a last resort.
+    process.exit(SIGUSR1_EXIT_CODE);
+  }
 
   const result = createTuiApp({
     store,
@@ -3636,10 +3936,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             lastResetFailed = false;
             tuiSessionId = newSid;
             viewedSessionId = newSid;
-            costBridge.setSession(newSid as string, modelName, provider);
+            costBridge.setSession(newSid as string, currentModelBox.current, provider);
             store.dispatch({
               kind: "set_session_info",
-              modelName,
+              modelName: currentModelBox.current,
               provider,
               sessionName: "",
               sessionId: newSid,
@@ -3658,7 +3958,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           });
           break;
         case "system:model": {
-          const lines = [`Model: ${modelName}`, `Provider: ${provider}`];
+          const lines = [`Model: ${currentModelBox.current}`, `Provider: ${provider}`];
           if (fallbackModels.length > 0) {
             lines.push(`Fallback: ${fallbackModels.join(", ")}`);
           }
@@ -3720,56 +4020,119 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            // Snapshot current transcript. microcompact is pure — we splice the
-            // result back into runtimeHandle.transcript below. /compact is a
-            // user-initiated command between turns, so there are no concurrent
-            // writers and the snapshot can't race with new appends.
-            const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
-            if (snapshot.length === 0) {
-              dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
+            // Refuse compaction while a submit is in flight or in its
+            // preflight window. `microcompact` snapshots + splices the
+            // runtime transcript, and the session-transcript middleware
+            // may append the in-flight turn's messages concurrently —
+            // running compact against that live buffer can drop or
+            // duplicate messages and desync the next turn's context.
+            // `submitInProgress` covers runtimeReady/resetBarrier;
+            // `activeController` covers the stream itself.
+            if (activeController !== null || submitInProgress || compactInProgress) {
+              store.dispatch({
+                kind: "add_error",
+                code: "COMPACT_IN_FLIGHT_TURN",
+                message:
+                  "Cannot /compact while a turn is in flight. Press Ctrl+C to " +
+                  "interrupt the active stream first, then try /compact again.",
+              });
               return;
             }
-            const originalTokens = await Promise.resolve(
-              HEURISTIC_ESTIMATOR.estimateMessages(snapshot),
-            );
-            // Halve the current budget, or 4k, whichever is larger. Preserves
-            // the 6 most recent messages so the active thread stays coherent.
-            const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
-            const preserveRecent = 6;
-            const result = await microcompact(
-              snapshot,
-              targetTokens,
-              preserveRecent,
-              HEURISTIC_ESTIMATOR,
-              modelName,
-            );
-            if (result.strategy === "noop") {
+            // Take the compact latch synchronously so a submit that
+            // arrives during our `await` boundaries (token estimation +
+            // microcompact) is rejected until we release it in `finally`.
+            compactInProgress = true;
+            // Capture the reset generation synchronously. If `/clear`,
+            // `/new`, a session switch, or a rewind lands between the
+            // snapshot below and the splice, the pre-reset messages we
+            // snapshotted would be written back over the user's cleared
+            // transcript, resurrecting context they explicitly dropped.
+            // Re-check before splicing and bail on mismatch.
+            const compactResetGen = resetGeneration;
+            try {
+              // Snapshot current transcript. microcompact is pure — we splice the
+              // result back into runtimeHandle.transcript below. The guards above
+              // plus the `compactInProgress` latch ensure no concurrent writer
+              // runs for the full compact duration, so the snapshot is consistent.
+              const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
+              if (snapshot.length === 0) {
+                dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
+                return;
+              }
+              const originalTokens = await Promise.resolve(
+                HEURISTIC_ESTIMATOR.estimateMessages(snapshot),
+              );
+              // Halve the current budget, or 4k, whichever is larger. Preserves
+              // the 6 most recent messages so the active thread stays coherent.
+              const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
+              const preserveRecent = 6;
+              const result = await microcompact(
+                snapshot,
+                targetTokens,
+                preserveRecent,
+                HEURISTIC_ESTIMATOR,
+                // Read live model from the middleware box so /compact after a
+                // model switch estimates against the currently-active model.
+                currentModelBox.current,
+              );
+              if (result.strategy === "noop") {
+                dispatchNotice(
+                  store,
+                  "compact-info",
+                  `[Compact: already compact (${result.compactedTokens} tokens)]`,
+                );
+                return;
+              }
+              // Re-check the in-flight guards immediately before mutating
+              // the transcript. `compactInProgress` blocks new submits, but
+              // belt-and-suspenders: if somehow the state changed, bail
+              // without splicing rather than corrupt the live buffer.
+              if (activeController !== null || submitInProgress) {
+                dispatchNotice(
+                  store,
+                  "compact-info",
+                  "[Compact: aborted — a turn started mid-compaction]",
+                );
+                return;
+              }
+              // Reset-generation check: if `/clear`, `/new`, a session
+              // switch, or a rewind landed between our snapshot and this
+              // splice, writing `result.messages` back would resurrect
+              // pre-reset content the user explicitly cleared. Bail.
+              if (resetGeneration !== compactResetGen) {
+                dispatchNotice(
+                  store,
+                  "compact-info",
+                  "[Compact: aborted — session was reset mid-compaction]",
+                );
+                return;
+              }
+              runtimeHandle.transcript.splice(
+                0,
+                runtimeHandle.transcript.length,
+                ...result.messages,
+              );
+              const dropped = snapshot.length - result.messages.length;
+              const partial = result.strategy === "micro-truncate-partial";
+              // UI-only notice: the dropped messages are gone from the model's
+              // view. We deliberately do NOT insert a transcript marker —
+              // pinned markers accumulate across repeat /compact calls (pair
+              // rescue keeps them even when nothing else can be dropped), and
+              // a `system:*` senderId would leak a hidden privileged prompt
+              // into every subsequent turn while being filtered from /export
+              // and resume surfaces. The user-facing notice below is the
+              // durable record; /trajectory can surface compactions separately
+              // if needed later.
               dispatchNotice(
                 store,
                 "compact-info",
-                `[Compact: already compact (${result.compactedTokens} tokens)]`,
+                `[Compact: ${result.originalTokens} → ${result.compactedTokens} tokens, ` +
+                  `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
+                  `${partial ? " (partial — still above target)" : ""}]`,
               );
-              return;
+            } finally {
+              compactInProgress = false;
             }
-            runtimeHandle.transcript.splice(0, runtimeHandle.transcript.length, ...result.messages);
-            const dropped = snapshot.length - result.messages.length;
-            const partial = result.strategy === "micro-truncate-partial";
-            // UI-only notice: the dropped messages are gone from the model's
-            // view. We deliberately do NOT insert a transcript marker —
-            // pinned markers accumulate across repeat /compact calls (pair
-            // rescue keeps them even when nothing else can be dropped), and
-            // a `system:*` senderId would leak a hidden privileged prompt
-            // into every subsequent turn while being filtered from /export
-            // and resume surfaces. The user-facing notice below is the
-            // durable record; /trajectory can surface compactions separately
-            // if needed later.
-            dispatchNotice(
-              store,
-              "compact-info",
-              `[Compact: ${result.originalTokens} → ${result.compactedTokens} tokens, ` +
-                `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
-                `${partial ? " (partial — still above target)" : ""}]`,
-            );
           })();
           break;
         case "agent:summarize":
@@ -3859,7 +4222,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             const engineSid = String(runtimeHandle.runtime.sessionId);
             const md = renderTranscriptMarkdown(displayable, {
               sessionId: engineSid,
-              modelName,
+              modelName: currentModelBox.current,
               provider,
             });
             const trimmed = args.trim();
@@ -4130,10 +4493,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // contaminated and the latch must stay sticky so switching
           // back to it blocks writes (pre-existing safety contract).
           lastResetFailed = false;
-          costBridge.setSession(targetSid as string, modelName, provider);
+          costBridge.setSession(targetSid as string, currentModelBox.current, provider);
           store.dispatch({
             kind: "set_session_info",
-            modelName,
+            modelName: currentModelBox.current,
             provider,
             sessionName: "",
             sessionId: targetSid,
@@ -4170,6 +4533,51 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     onTurnComplete: handleTurnComplete,
     // #10: @-mention file completion
     onAtQuery: handleAtQuery,
+    // Model picker — host-side /models fetch (L2 TUI has no network code).
+    //
+    // Refuse when KOI_FALLBACK_MODEL is set: the model-router's target list
+    // is frozen at startup and its per-target `executeForTarget` overrides
+    // request.model with the configured target id, so a mid-session switch
+    // would succeed in the UI while the HTTP call still runs on the
+    // startup/fallback chain. Fail loudly instead of silently routing the
+    // wrong model. Unset KOI_FALLBACK_MODEL and restart to switch models.
+    onFetchModels: (): Promise<FetchModelsResult> =>
+      fallbackModels.length > 0
+        ? Promise.resolve({
+            ok: false,
+            error:
+              "Model switching is disabled while KOI_FALLBACK_MODEL is set. Unset the env var and restart koi tui to pick a different model.",
+          })
+        : fetchAvailableModels({
+            provider,
+            ...(baseUrl !== undefined ? { baseUrl } : {}),
+            apiKey,
+          }),
+    // Model picker — mutate the current-model box so the next turn uses
+    // the freshly picked model. The store's `modelName` is updated by
+    // TuiRoot via the `model_switched` action; this callback updates the
+    // middleware-side source of truth.
+    //
+    // No-op when the router is active — the fetcher above already
+    // short-circuited with an error, but guard here too so a stale
+    // selection from an earlier fetch cannot mutate the box.
+    onModelSwitch: (model): boolean => {
+      if (fallbackModels.length > 0) return false;
+      // Refuse mid-turn switches. Two signals cover the full lifecycle:
+      //   - `submitInProgress`: set synchronously at onSubmit entry,
+      //     covers the preflight window (runtimeReady + resetBarrier)
+      //     before `activeController` is assigned.
+      //   - `activeController`: set just before stream drain, covers the
+      //     in-flight stream window until the finally clears it.
+      // Together they close the submit-then-switch race without needing
+      // to observe `agentStatus`, which only flips to "processing" after
+      // the first engine event.
+      if (activeController !== null || submitInProgress) return false;
+      currentModelBox.current = model.id;
+      currentModelBox.contextLength = clampContextLength(model.contextLength);
+      costBridge.setModelName(model.id);
+      return true;
+    },
   });
 
   if (!result.ok) {
@@ -4184,6 +4592,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const onProcessSigint = (): void => {
+    // Once any shutdown path (SIGUSR1, SIGTERM, SIGHUP, /quit) has flipped
+    // `shutdownStarted`, drop further SIGINTs. Without this, a Ctrl+C that
+    // lands during the 8 s cooperative shutdown window can re-enter the
+    // SIGINT state machine's `onForce`, kick a concurrent background-task
+    // teardown, and overwrite the in-flight shutdown's exit code. The
+    // SIGUSR1 handler relies on this invariant to preserve exit code 158
+    // (#1906).
+    if (shutdownStarted) return;
     sigintHandler.handleSignal();
   };
   // SIGTERM is a separate termination cause (supervisor/OOM/operator kill)
@@ -4198,6 +4614,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSighup = (): void => {
     void shutdown(129, "SIGHUP received (terminal hangup)");
   };
+  // SIGUSR1 (#1906): the full handler was already installed in section 4b
+  // so a signal during bootstrap (before this section runs) goes through
+  // `shutdown` instead of a bare process.exit. See 4b for the rationale.
   // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
   // the fd fires 'close'. Does NOT require resume() (avoids perturbing
   // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
@@ -4227,6 +4646,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
+  // SIGUSR1 is already armed from section 4b (#1906) — no install here.
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in
@@ -4234,6 +4654,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   tuiRunning = true;
   if (process.stdin.isTTY) {
     process.stdin.once("close", onStdinClose);
+  }
+
+  // Print the SIGUSR1 escape-hatch hint BEFORE start() takes over the
+  // terminal. OpenTUI enters the alternate screen buffer on start and
+  // restores the main buffer on exit, so the hint lands in the user's
+  // scrollback and is visible from any other terminal session that runs
+  // `ps` to recover the PID. See issue #1906. Skipped on Windows where
+  // SIGUSR1 does not exist (the hint would advertise a non-functional
+  // escape mechanism).
+  //
+  // Guarded: a stderr write failure (already-closed stream in an embedded
+  // caller or a detached test process) must not propagate, because the
+  // `try/finally` below is what removes the signal listeners installed
+  // above. Without this catch, a throw here would leak SIGINT/SIGTERM/
+  // SIGHUP/SIGUSR1 listeners into the host process.
+  if (SIGUSR1_SUPPORTED) {
+    try {
+      process.stderr.write(generateTuiStartupHint(process.pid));
+    } catch {
+      /* stderr unwritable — best-effort hint, never leak signal handlers */
+    }
   }
 
   try {
@@ -4256,7 +4697,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
     process.removeListener("SIGHUP", onProcessSighup);
+    process.removeListener("SIGUSR1", onProcessSigusr1);
     process.stdin.removeListener("close", onStdinClose);
+    // If `done()` resolved because `shutdown()` called `appHandle.stop()`,
+    // shutdown() is still mid-flight — it has more awaits (runtime.dispose,
+    // otel flush, resume hint) before reaching its final
+    // `process.exit(exitCode)`. Returning here would let bin.ts's
+    // `process.exit(0)` fire first, clobbering the intended SIGUSR1/SIGTERM
+    // exit code. Await a never-resolving promise so bin.ts cannot reach
+    // its own `process.exit` until shutdown completes (or the hard-exit
+    // failsafe fires — 8 s for the full path, 6 s for the interim).
+    if (shutdownStarted) {
+      await new Promise<never>(() => {
+        /* never resolves — shutdown() or its hard-exit failsafe owns the exit */
+      });
+    }
   }
 }
 

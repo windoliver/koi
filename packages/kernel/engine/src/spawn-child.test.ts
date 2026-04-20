@@ -269,6 +269,71 @@ describe("spawnChildAgent ledger integration", () => {
       expect(ledger.activeCount()).toBe(0);
     }
   });
+
+  test("fires total-process warning when active count reaches configured threshold", async () => {
+    const ledger = createInMemorySpawnLedger(3);
+    const warnings: unknown[] = [];
+    const spawnPolicy = {
+      ...DEFAULT_SPAWN_POLICY,
+      maxTotalProcesses: 3,
+      totalProcessWarningAt: 1,
+      onWarning: (info: unknown) => warnings.push(info),
+    };
+
+    const result = await spawnChildAgent(baseOptions({ spawnLedger: ledger, spawnPolicy }));
+    try {
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        kind: "total_processes",
+        current: 1,
+        limit: 3,
+        warningAt: 1,
+      });
+    } finally {
+      await result.runtime.dispose();
+    }
+  });
+
+  test("throws VALIDATION when totalProcessWarningAt is not below maxTotalProcesses", async () => {
+    const ledger = createInMemorySpawnLedger(3);
+    const spawnPolicy = {
+      ...DEFAULT_SPAWN_POLICY,
+      maxTotalProcesses: 3,
+      totalProcessWarningAt: 3,
+    };
+
+    try {
+      await spawnChildAgent(baseOptions({ spawnLedger: ledger, spawnPolicy }));
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("VALIDATION");
+        expect(e.message).toContain("totalProcessWarningAt");
+      }
+    }
+  });
+
+  test("releases ledger slot when total-process warning callback throws", async () => {
+    const ledger = createInMemorySpawnLedger(3);
+    const spawnPolicy = {
+      ...DEFAULT_SPAWN_POLICY,
+      maxTotalProcesses: 3,
+      totalProcessWarningAt: 1,
+      onWarning: () => {
+        throw new Error("warning callback failed");
+      },
+    };
+
+    try {
+      await spawnChildAgent(baseOptions({ spawnLedger: ledger, spawnPolicy }));
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(Error);
+      expect((e as Error).message).toBe("warning callback failed");
+      expect(ledger.activeCount()).toBe(0);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

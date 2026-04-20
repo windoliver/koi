@@ -106,15 +106,26 @@ function computeEffectiveTimeout(
 }
 
 /**
- * Create a promise that rejects after `ms` milliseconds with a TIMEOUT error.
- * The timer is unref'd so it doesn't keep the process alive.
+ * A timeout race handle with explicit cancellation for timer cleanup.
  */
-function createTimeoutRejection(
+interface TimeoutRace {
+  readonly promise: Promise<never>;
+  readonly cancel: () => void;
+}
+
+/**
+ * Create a cancellable promise that rejects after `ms` milliseconds with a
+ * TIMEOUT error. The timer is unref'd so it doesn't keep the process alive.
+ */
+function createTimeoutRace(
   timeout: EffectiveTimeout,
   limits: IterationLimits,
-): Promise<never> {
-  return new Promise<never>((_resolve, reject) => {
-    const timer = setTimeout(() => {
+  onTimeout?: () => void,
+): TimeoutRace {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
       const message =
         timeout.source === "inactivity"
           ? `Inactivity timeout: no activity for ${limits.maxInactivityMs}ms (limit: ${limits.maxInactivityMs}ms)`
@@ -134,6 +145,15 @@ function createTimeoutRejection(
       (timer as { unref: () => void }).unref();
     }
   });
+
+  return {
+    promise,
+    cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -232,10 +252,29 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       // Without this, a non-streaming provider that stops responding would
       // hang the session indefinitely (same risk as stalled streams).
       const timeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
-      const response =
-        timeout === undefined
-          ? await next(request)
-          : await Promise.race([next(request), createTimeoutRejection(timeout, limits)]);
+      let response: ModelResponse;
+      if (timeout === undefined) {
+        response = await next(request);
+      } else {
+        // Propagate timeout cancellation to cooperative providers.
+        const timeoutController = new AbortController();
+        const signal =
+          request.signal !== undefined
+            ? AbortSignal.any([request.signal, timeoutController.signal])
+            : timeoutController.signal;
+        const requestWithSignal = { ...request, signal };
+        const timeoutRace = createTimeoutRace(timeout, limits, () => {
+          timeoutController.abort();
+        });
+        const responsePromise = next(requestWithSignal);
+        // Prevent unhandled rejection when timeout wins and provider rejects later.
+        void responsePromise.catch(() => {});
+        try {
+          response = await Promise.race([responsePromise, timeoutRace.promise]);
+        } finally {
+          timeoutRace.cancel();
+        }
+      }
       touchActivity();
 
       trackUsage(response.usage?.inputTokens ?? 0, response.usage?.outputTokens ?? 0);
@@ -246,20 +285,43 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     wrapModelStream: (_ctx, request, next) => {
       checkLimits();
       touchActivity();
+      const timeoutController = new AbortController();
+      const signal =
+        request.signal !== undefined
+          ? AbortSignal.any([request.signal, timeoutController.signal])
+          : timeoutController.signal;
+      const requestWithSignal = { ...request, signal };
 
       return {
         async *[Symbol.asyncIterator]() {
-          const iter = next(request)[Symbol.asyncIterator]();
+          const iter = next(requestWithSignal)[Symbol.asyncIterator]();
+          // let justified: tracks whether provider stream ended naturally
+          let streamCompleted = false;
           try {
             for (;;) {
               // Race the next chunk against inactivity + wall-clock timeouts.
               // Without this, a stalled provider stream would hang indefinitely.
               const chunkTimeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
-              const result =
-                chunkTimeout === undefined
-                  ? await iter.next()
-                  : await Promise.race([iter.next(), createTimeoutRejection(chunkTimeout, limits)]);
-              if (result.done) break;
+              let result: IteratorResult<ModelChunk>;
+              if (chunkTimeout === undefined) {
+                result = await iter.next();
+              } else {
+                const chunkRace = createTimeoutRace(chunkTimeout, limits, () => {
+                  timeoutController.abort();
+                });
+                const nextChunk = iter.next();
+                // Prevent unhandled rejection when timeout wins and iterator rejects later.
+                void nextChunk.catch(() => {});
+                try {
+                  result = await Promise.race([nextChunk, chunkRace.promise]);
+                } finally {
+                  chunkRace.cancel();
+                }
+              }
+              if (result.done) {
+                streamCompleted = true;
+                break;
+              }
               const chunk = result.value;
               touchActivity();
               yield chunk;
@@ -271,6 +333,9 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
               }
             }
           } finally {
+            if (!streamCompleted && !timeoutController.signal.aborted) {
+              timeoutController.abort();
+            }
             // Cancel the underlying provider stream on timeout or early exit
             // to prevent leaked connections and background token consumption.
             await iter.return?.();
@@ -453,6 +518,49 @@ function checkNoProgress(
     }
   } else {
     noProgressState.set(toolId, { hash: outputHash, count: 1 });
+  }
+}
+
+const MAX_NO_PROGRESS_SERIALIZED_CHARS = 65_536;
+const NO_PROGRESS_TOO_LARGE = Symbol("no-progress-too-large");
+
+/**
+ * Serialize tool output for no-progress hashing, aborting early once the
+ * payload exceeds the configured character ceiling.
+ */
+function serializeOutputForNoProgress(output: unknown): string | undefined {
+  // let justified: mutable estimate shared across replacer callbacks
+  let approximateSize = 0;
+  try {
+    const serialized = JSON.stringify(output, (key, value) => {
+      approximateSize += key.length;
+      if (typeof value === "string") {
+        approximateSize += value.length;
+      } else if (typeof value === "number" || typeof value === "boolean" || value === null) {
+        approximateSize += String(value).length;
+      } else {
+        // Conservative structural overhead for objects/arrays and other literals.
+        approximateSize += 8;
+      }
+      if (approximateSize > MAX_NO_PROGRESS_SERIALIZED_CHARS) {
+        throw NO_PROGRESS_TOO_LARGE;
+      }
+      return value;
+    });
+    if (
+      serialized === undefined ||
+      serialized.length === 0 ||
+      serialized.length > MAX_NO_PROGRESS_SERIALIZED_CHARS
+    ) {
+      return undefined;
+    }
+    return serialized;
+  } catch (error: unknown) {
+    if (error === NO_PROGRESS_TOO_LARGE) {
+      return undefined;
+    }
+    // Circular refs or non-serializable output — skip no-progress check.
+    return undefined;
   }
 }
 
@@ -666,7 +774,14 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
           threshold: detection.threshold,
         };
         if (detection.onWarning !== undefined) {
-          detection.onWarning(info);
+          try {
+            detection.onWarning(info);
+          } catch (e: unknown) {
+            console.warn(
+              "[koi:loop-detector] onWarning callback failed, continuing",
+              e instanceof Error ? e.message : String(e),
+            );
+          }
         }
         if (shouldInject) {
           pendingWarnings = [...pendingWarnings, info];
@@ -691,15 +806,11 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
       const response = await next(request);
 
       // Post-call checks — hash output for no-progress detection.
-      // Safely serialize output, skipping check on circular refs or very large outputs.
+      // Serialize with an explicit size ceiling to avoid expensive work on
+      // oversized outputs.
       if (noProgressEnabled) {
-        let serialized: string | undefined;
-        try {
-          serialized = JSON.stringify(response.output);
-        } catch {
-          // Circular reference or non-serializable output — skip no-progress check
-        }
-        if (serialized !== undefined && serialized.length <= 65_536) {
+        const serialized = serializeOutputForNoProgress(response.output);
+        if (serialized !== undefined) {
           const outputHash = fnv1a(serialized);
           checkNoProgress(request.toolId, outputHash, noProgressState, noProgressThreshold);
         }
@@ -764,6 +875,12 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
     policy.fanOutWarningAt,
     "maxFanOut",
     policy.maxFanOut,
+  );
+  validateWarningThreshold(
+    "totalProcessWarningAt",
+    policy.totalProcessWarningAt,
+    "maxTotalProcesses",
+    policy.maxTotalProcesses,
   );
 
   // Build spawn tool ID set for O(1) lookup
@@ -896,36 +1013,9 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       directChildren++;
       spawnsThisTurn++;
 
-      // 5. Fire fan-out warning — at most once per session, and cover
-      //    BOTH enforcement paths. In the sequential turn-runner path
-      //    directChildren dips back to 0 between awaited spawns, so the
-      //    warning would never fire for same-turn bursts if it were
-      //    keyed only off directChildren (#1793).
-      if (
-        !firedFanOutWarning &&
-        policy.fanOutWarningAt !== undefined &&
-        policy.onWarning !== undefined
-      ) {
-        const concurrentTriggered = directChildren >= policy.fanOutWarningAt;
-        const burstTriggered = spawnsThisTurn >= policy.fanOutWarningAt;
-        if (concurrentTriggered || burstTriggered) {
-          firedFanOutWarning = true;
-          // Prefer whichever counter is higher so operators see the most
-          // pressing pressure first. On ties, prefer "concurrent" because
-          // in-flight children are the more immediate resource pressure.
-          const useBurst =
-            burstTriggered && (!concurrentTriggered || spawnsThisTurn > directChildren);
-          policy.onWarning({
-            kind: "fan_out",
-            reason: useBurst ? "per_turn_burst" : "concurrent",
-            current: useBurst ? spawnsThisTurn : directChildren,
-            limit: policy.maxFanOut,
-            warningAt: policy.fanOutWarningAt,
-          });
-        }
-      }
-
       // 6. Execute spawn:
+      //    - warning callback is inside this try so directChildren always
+      //      decrements even if onWarning throws.
       //    - directChildren always decrements (the in-flight slot is
       //      freed when this tool call unwinds).
       //    - spawnsThisTurn is NEVER refunded. This is deliberate:
@@ -940,6 +1030,35 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       //      spawns burn the per-turn budget — is bounded to
       //      maxFanOut per turn and recoverable on the next turn.
       try {
+        // 5. Fire fan-out warning — at most once per session, and cover
+        //    BOTH enforcement paths. In the sequential turn-runner path
+        //    directChildren dips back to 0 between awaited spawns, so the
+        //    warning would never fire for same-turn bursts if it were
+        //    keyed only off directChildren (#1793).
+        if (
+          !firedFanOutWarning &&
+          policy.fanOutWarningAt !== undefined &&
+          policy.onWarning !== undefined
+        ) {
+          const concurrentTriggered = directChildren >= policy.fanOutWarningAt;
+          const burstTriggered = spawnsThisTurn >= policy.fanOutWarningAt;
+          if (concurrentTriggered || burstTriggered) {
+            firedFanOutWarning = true;
+            // Prefer whichever counter is higher so operators see the most
+            // pressing pressure first. On ties, prefer "concurrent" because
+            // in-flight children are the more immediate resource pressure.
+            const useBurst =
+              burstTriggered && (!concurrentTriggered || spawnsThisTurn > directChildren);
+            policy.onWarning({
+              kind: "fan_out",
+              reason: useBurst ? "per_turn_burst" : "concurrent",
+              current: useBurst ? spawnsThisTurn : directChildren,
+              limit: policy.maxFanOut,
+              warningAt: policy.fanOutWarningAt,
+            });
+          }
+        }
+
         return await next(request);
       } finally {
         directChildren--;

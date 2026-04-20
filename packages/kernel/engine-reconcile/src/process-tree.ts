@@ -44,8 +44,12 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
       const { agentId, parentId } = event.entry;
       if (parentId !== undefined) {
         parentMap.set(agentId, parentId);
-        const siblings = childrenMap.get(parentId) ?? [];
-        childrenMap.set(parentId, [...siblings, agentId]);
+        const siblings = childrenMap.get(parentId);
+        if (siblings === undefined) {
+          childrenMap.set(parentId, [agentId]);
+        } else {
+          siblings.push(agentId);
+        }
       }
       // Ensure the agent has an entry in childrenMap even if it has no children
       if (!childrenMap.has(agentId)) {
@@ -63,10 +67,8 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
       if (parent !== undefined) {
         const siblings = childrenMap.get(parent);
         if (siblings !== undefined) {
-          childrenMap.set(
-            parent,
-            siblings.filter((id) => id !== agentId),
-          );
+          const idx = siblings.indexOf(agentId);
+          if (idx !== -1) siblings.splice(idx, 1);
         }
         parentMap.delete(agentId);
       }
@@ -86,6 +88,7 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
   function descendantsOf(id: AgentId): readonly AgentId[] {
     const result: AgentId[] = [];
     const queue: AgentId[] = [...childrenOf(id)];
+    const visited = new Set<string>([id]);
     // let justified: index pointer avoids O(n) shift per iteration
     let i = 0;
 
@@ -93,10 +96,12 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
       // biome-ignore lint/style/noNonNullAssertion: i < queue.length guarantees element exists
       const current = queue[i]!;
       i++;
+      if (visited.has(current)) continue;
+      visited.add(current);
       result.push(current);
       const children = childrenOf(current);
       for (const child of children) {
-        queue.push(child);
+        if (!visited.has(child)) queue.push(child);
       }
     }
 
@@ -104,9 +109,12 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
   }
 
   function depthOf(id: AgentId): number {
+    const visited = new Set<string>();
     let depth = 0;
     let current: AgentId | undefined = parentMap.get(id);
     while (current !== undefined) {
+      if (visited.has(current)) break; // cycle guard
+      visited.add(current);
       depth++;
       current = parentMap.get(current);
     }
@@ -119,8 +127,11 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
 
   function lineage(id: AgentId): readonly AgentId[] {
     const result: AgentId[] = [];
+    const visited = new Set<string>();
     let current: AgentId | undefined = spawnerMap.get(id);
     while (current !== undefined) {
+      if (visited.has(current)) break; // cycle guard
+      visited.add(current);
       result.push(current);
       current = spawnerMap.get(current);
     }

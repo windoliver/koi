@@ -28,6 +28,7 @@ exports[`createInitialState initial state shape 1`] = `
   "mcpServers": [],
   "messages": [],
   "modal": null,
+  "modelName": "",
   "planTasks": null,
   "pluginSummary": null,
   "queuedSubmits": [],

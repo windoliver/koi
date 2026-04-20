@@ -152,6 +152,27 @@ export function createReconcileRunner(deps: {
   // Result handling (shared between sync and async paths)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Schedule a deferred re-enqueue for `agentId` after `ms` has elapsed.
+   * Clears any existing timer for the same key first so back-to-back retry /
+   * recheck / error results don't leak stale timers (which would otherwise
+   * fire after the new timer's entry replaced the map slot, causing the
+   * eventual `backoffTimers.delete(key)` in the stale callback to nuke the
+   * new timer's bookkeeping and leave it undisposable).
+   */
+  function scheduleDeferredEnqueue(agentId: AgentId, key: string, ms: number): void {
+    backoffTimers.get(key)?.clear();
+    const handle = clock.setTimeout(() => {
+      if (!disposed) queue.enqueue(agentId);
+      // Only delete this specific handle's entry — if the slot has been
+      // overwritten by a newer timer in the meantime, leave it alone.
+      if (backoffTimers.get(key) === handle) {
+        backoffTimers.delete(key);
+      }
+    }, ms);
+    backoffTimers.set(key, handle);
+  }
+
   function handleResult(agentId: AgentId, key: string, result: ReconcileResult): void {
     switch (result.kind) {
       case "converged": {
@@ -163,11 +184,7 @@ export function createReconcileRunner(deps: {
       case "retry": {
         totalRetried += 1;
         consecutiveFailures.delete(key);
-        const timerHandle = clock.setTimeout(() => {
-          if (!disposed) queue.enqueue(agentId);
-          backoffTimers.delete(key);
-        }, result.afterMs);
-        backoffTimers.set(key, timerHandle);
+        scheduleDeferredEnqueue(agentId, key, result.afterMs);
         break;
       }
       case "terminal": {
@@ -179,11 +196,7 @@ export function createReconcileRunner(deps: {
       case "recheck": {
         totalReconciled += 1;
         consecutiveFailures.delete(key);
-        const recheckHandle = clock.setTimeout(() => {
-          if (!disposed) queue.enqueue(agentId);
-          backoffTimers.delete(key);
-        }, result.afterMs);
-        backoffTimers.set(key, recheckHandle);
+        scheduleDeferredEnqueue(agentId, key, result.afterMs);
         break;
       }
     }
@@ -201,11 +214,7 @@ export function createReconcileRunner(deps: {
       totalCircuitBroken += 1;
     } else {
       totalRetried += 1;
-      const failHandle = clock.setTimeout(() => {
-        if (!disposed) queue.enqueue(agentId);
-        backoffTimers.delete(key);
-      }, nextSleep);
-      backoffTimers.set(key, failHandle);
+      scheduleDeferredEnqueue(agentId, key, nextSleep);
     }
   }
 
@@ -323,16 +332,7 @@ export function createReconcileRunner(deps: {
   // Process tick — dequeue and reconcile (sync-first)
   // ---------------------------------------------------------------------------
 
-  function processTick(): void {
-    if (disposed) return;
-
-    // Concurrency cap: don't dequeue when async slots are exhausted
-    const max = config.maxConcurrentReconciles;
-    if (max > 0 && inFlightCount >= max) return;
-
-    const agentId = queue.dequeue();
-    if (agentId === undefined) return;
-
+  function processOne(agentId: AgentId): void {
     const manifest = deps.manifests.get(agentId);
     const ctx = {
       registry: deps.registry,
@@ -381,6 +381,25 @@ export function createReconcileRunner(deps: {
     }
   }
 
+  function processTick(): void {
+    if (disposed) return;
+
+    const max = config.maxConcurrentReconciles;
+    // Drain up to processBatchSize agents per tick. Caps work so we don't
+    // starve the event loop under a large sweep but removes the legacy
+    // one-per-100ms hard cap that capped throughput at 10/s.
+    const batchSize = Math.max(1, config.processBatchSize);
+    for (let i = 0; i < batchSize; i++) {
+      if (disposed) return;
+      // Respect the async concurrency cap across the batch, not just per-call.
+      if (max > 0 && inFlightCount >= max) return;
+
+      const agentId = queue.dequeue();
+      if (agentId === undefined) return;
+      processOne(agentId);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Public interface
   // ---------------------------------------------------------------------------
@@ -422,7 +441,7 @@ export function createReconcileRunner(deps: {
 
     processTickTimer = clock.setInterval(() => {
       processTick();
-    }, 100);
+    }, config.processTickIntervalMs);
 
     driftSweepTimer = clock.setInterval(() => {
       driftSweep();
