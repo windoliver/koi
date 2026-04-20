@@ -731,6 +731,14 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
     // Watch backend events for this worker — drive restart policy + exit
     // promise resolution. Fire-and-forget: lives as long as the worker.
+    //
+    // GENERATION SAFETY: every cleanup branch must verify that the current
+    // pool entry for `request.workerId` is STILL the entry this IIFE was
+    // started for (`pool.get(id) === entry`). After stop()+start() races,
+    // a stale watch coroutine may resume and operate on a successor
+    // generation by bare workerId — that would tear down or mutate the
+    // wrong worker. Stale generations exit silently; fresh entries are
+    // owned by their own IIFE.
     void (async () => {
       let terminalProcessed = false;
       try {
@@ -745,7 +753,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           healthMonitor.untrack(ev.workerId);
 
           const current = pool.get(request.workerId);
-          if (current === undefined) return;
+          // Generation guard: if the pool now holds a different entry, a
+          // newer start() superseded this generation while we were parked.
+          // Abandon cleanup silently — the new entry's IIFE is the owner.
+          if (current === undefined || current !== entry) return;
 
           // Resolve the exit promise FIRST so any awaiting stop() can unblock.
           current.resolveExited();
@@ -787,6 +798,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         //      confirm teardown and quarantine if needed.
         if (!terminalProcessed) {
           const current = pool.get(request.workerId);
+          // Generation guard: a fresh entry under the same id means a
+          // successor took over while we were parked. Exit silently — the
+          // new IIFE owns its own cleanup.
+          if (current !== undefined && current !== entry) return;
           const stopping = current?.stopping === true;
           if (shuttingDown || stopping) {
             // Expected completion under cancellation. But a non-terminal
@@ -864,6 +879,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         // worker is dead — quarantine it (drop pool+activeIds but DO NOT
         // respawn, since that would create a duplicate live worker).
         const current = pool.get(request.workerId);
+        // Generation guard: a successor entry means our generation is
+        // already retired. Do not teardown the new generation's worker
+        // and do not touch its activeIds. Exit silently.
+        if (current !== undefined && current !== entry) return;
         const syntheticError: KoiError = {
           code: "INTERNAL",
           message: `Backend watch stream closed: ${e instanceof Error ? e.message : String(e)}`,

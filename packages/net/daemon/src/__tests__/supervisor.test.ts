@@ -2276,6 +2276,94 @@ describe("supervisor watch AbortSignal plumbing", () => {
     await supervisor.value.shutdown("test");
   });
 
+  it("stale watch coroutine does not tear down a same-id successor generation", async () => {
+    // Regression guard: after stop()+start() with the same id, the
+    // pre-stop watch coroutine may still be exiting (signal observed but
+    // microtask not yet completed). When it resumes, post-loop /
+    // catch-branch cleanup MUST NOT touch the new generation's pool
+    // entry, exitedPromise, or activeIds. Generation safety: the IIFE
+    // verifies pool.get(id) === its captured entry before mutating.
+    const live = new Map<string, { alive: boolean; gen: number }>();
+    let nextGen = 0;
+    let releaseWatch: (() => void) | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "slow-watch-close",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        nextGen += 1;
+        live.set(req.workerId, { alive: true, gen: nextGen });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async (id) => {
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      kill: async (id) => {
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        // Park until (a) signal aborts AND (b) the test releases us. The
+        // double-await holds the IIFE's exit microtask back so a
+        // successor start() can install a new pool entry first.
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        await new Promise<void>((resolve) => {
+          releaseWatch = resolve;
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+
+    // Spawn generation 1 and stop it.
+    await supervisor.value.start(makeRequest("gen-race"));
+    await new Promise((r) => setTimeout(r, 10));
+    const stopped = await supervisor.value.stop(workerId("gen-race"), "test");
+    expect(stopped.ok).toBe(true);
+
+    // Spawn generation 2 BEFORE the stale watch coroutine completes.
+    const second = await supervisor.value.start(makeRequest("gen-race"));
+    expect(second.ok).toBe(true);
+
+    // Now release the stale watch — its post-loop runs against the
+    // successor's pool entry. The generation guard must reject the
+    // mutation.
+    if (releaseWatch !== undefined) releaseWatch();
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Successor must still be alive: pool entry present, isAlive true.
+    expect(supervisor.value.list().length).toBe(1);
+    expect(await backend.isAlive(workerId("gen-race"))).toBe(true);
+    expect(live.get(workerId("gen-race"))?.gen).toBe(2);
+
+    await supervisor.value.shutdown("test");
+  });
+
   it("pool-path stop() releases activeIds when watch closed early then worker died", async () => {
     // Regression guard: if the watch stream closes early (non-terminal),
     // the IIFE tidy-cleanup quarantines and preserves activeIds — because
