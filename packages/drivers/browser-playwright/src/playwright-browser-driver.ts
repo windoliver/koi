@@ -215,9 +215,20 @@ async function checkNavigationUrlAllowed(
     return validation(`Invalid URL: ${rawUrl}`);
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    // Non-HTTP(S) schemes (file://, data://, about:, chrome://) are not
-    // private-network rebinding vectors — let Playwright handle them.
-    return null;
+    // Non-HTTP(S) schemes cross a larger trust boundary than SSRF alone:
+    //   - file://      — local filesystem read
+    //   - chrome://    — privileged browser internal pages
+    //   - chrome-extension:// — extension surfaces
+    //   - data:        — inline payloads (exfiltration via tainted redirects)
+    //   - javascript:  — script execution context
+    // Default-deny everything except `about:` (used internally for cleanup
+    // parking after a private-address redirect reject). To intentionally
+    // navigate to a local file or other scheme, set blockPrivateAddresses: false
+    // (single combined opt-out for all driver-side navigation hardening).
+    if (url.protocol === "about:") return null;
+    return permission(
+      `Navigation to non-HTTP(S) scheme blocked: ${url.protocol}. Set blockPrivateAddresses: false to allow file://, chrome://, etc.`,
+    );
   }
   const hostname = url.hostname;
   // URL.hostname strips IPv6 brackets already; handle raw-bracket case defensively.

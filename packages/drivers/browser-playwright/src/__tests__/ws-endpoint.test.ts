@@ -324,6 +324,59 @@ describe("createPlaywrightBrowserDriver with wsEndpoint", () => {
     }
   });
 
+  test("non-HTTP(S) schemes (file://, chrome://, chrome-extension://) are default-denied", async () => {
+    const gotoSpy = mock(async () => undefined);
+    const existingContext = {
+      pages: () => [],
+      newPage: async () => ({
+        url: () => "about:blank",
+        title: async () => "",
+        on: () => {},
+        goto: gotoSpy,
+        close: async () => {},
+        route: async () => {},
+      }),
+      close: async () => {},
+      addInitScript: async () => {},
+      route: async () => {},
+    };
+    const fakeBrowser = {
+      contexts: () => [existingContext],
+      newContext: async () => {
+        throw new Error("should not create new context");
+      },
+      close: async () => {},
+    } as unknown as Browser;
+
+    const original = chromium.connectOverCDP;
+    (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+      (async () => fakeBrowser) as unknown as typeof chromium.connectOverCDP;
+
+    try {
+      const driver = createPlaywrightBrowserDriver({
+        wsEndpoint: "ws://127.0.0.1:45678/x",
+      });
+      for (const url of [
+        "file:///etc/passwd",
+        "chrome://settings",
+        "chrome-extension://abcd/popup.html",
+        "data:text/html,<script>alert(1)</script>",
+        "javascript:alert(1)",
+      ]) {
+        const result = await driver.navigate(url);
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.code).toBe("PERMISSION");
+        }
+      }
+      expect(gotoSpy).toHaveBeenCalledTimes(0);
+      await driver.dispose?.();
+    } finally {
+      (chromium as unknown as { connectOverCDP: typeof chromium.connectOverCDP }).connectOverCDP =
+        original;
+    }
+  });
+
   test("driver-level guard is a no-op when blockPrivateAddresses: false is explicitly set", async () => {
     const gotoSpy = mock(async () => undefined);
     const existingContext = {
