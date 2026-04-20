@@ -41,6 +41,15 @@ export interface MiddlewareCompositionInput {
   // --- Optional layers ---
 
   /**
+   * Current-model override middleware. Holds a host-owned mutable box of
+   * the "active model" string and rewrites `request.model` before the
+   * request reaches `modelRouter` / the adapter. Composed OUTER of
+   * modelRouter so router fallback chains see the latest model choice.
+   * Used by the TUI to implement mid-session model switching without
+   * rebuilding the runtime.
+   */
+  readonly currentModel?: KoiMiddleware | undefined;
+  /**
    * Model-router middleware (innermost model-call interceptor). When
    * set, routes each retry attempt through the provider failover
    * chain independently so retries benefit from fallback.
@@ -150,6 +159,9 @@ export function composeRuntimeMiddleware(
     // cannot observe or persist raw request/response data.
     ...(input.manifestMiddleware ?? []),
     // Zone C-bottom — optional innermost layers.
+    // `currentModel` wraps `modelRouter` from the outside so the router's
+    // fallback chain sees the latest host-picked model id.
+    ...(input.currentModel !== undefined ? [input.currentModel] : []),
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
     ...(input.goal !== undefined ? [input.goal] : []),
     ...(input.plan !== undefined ? [input.plan] : []),

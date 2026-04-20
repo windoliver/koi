@@ -165,6 +165,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     category: "system",
   },
   {
+    id: "system:model-switch",
+    label: "Switch model",
+    description: "Pick a model to use for the rest of this session",
+    category: "system",
+  },
+  {
     id: "system:cost",
     label: "Cost",
     description: "Show token usage and cost for this process",
