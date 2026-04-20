@@ -106,6 +106,7 @@
     "@opentelemetry/sdk-trace-base": "2.6.1",
     "@opentui/core": "0.1.96",
     "@opentui/solid": "0.1.96",
+    "re2-wasm": "1.0.2",
     "solid-js": "1.9.11"
   },
   "devDependencies": {
