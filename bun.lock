@@ -83,6 +83,14 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/artifacts": {
+      "name": "@koi/artifacts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/blob-cas": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/bash-ast": {
       "name": "@koi/bash-ast",
       "version": "0.0.0",
@@ -101,6 +109,10 @@
     },
     "packages/lib/bash-security": {
       "name": "@koi/bash-security",
+      "version": "0.0.0",
+    },
+    "packages/lib/blob-cas": {
+      "name": "@koi/blob-cas",
       "version": "0.0.0",
     },
     "packages/lib/channel-base": {
@@ -122,6 +134,7 @@
       "name": "@koi/checkpoint",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/blob-cas": "workspace:*",
         "@koi/core": "workspace:*",
       },
       "devDependencies": {
@@ -350,6 +363,15 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-turn-prelude": {
+      "name": "@koi/middleware-turn-prelude",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/task-board": "workspace:*",
+        "@koi/watch-patterns": "workspace:*",
+      },
+    },
     "packages/lib/model-registry": {
       "name": "@koi/model-registry",
       "version": "0.0.0",
@@ -519,6 +541,7 @@
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/watch-patterns": "workspace:*",
       },
     },
     "packages/lib/tools-builtin": {
@@ -559,6 +582,14 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/watch-patterns": {
+      "name": "@koi/watch-patterns",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "re2-wasm": "1.0.2",
+      },
+    },
     "packages/meta/cli": {
       "name": "@koi-agent/cli",
       "version": "0.1.0",
@@ -568,6 +599,7 @@
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -602,6 +634,7 @@
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/permissions": "workspace:*",
@@ -625,6 +658,7 @@
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
         "@koi/tui": "workspace:*",
+        "@koi/watch-patterns": "workspace:*",
         "@opentelemetry/api": "1.9.1",
         "@opentelemetry/exporter-trace-otlp-http": "0.214.0",
         "@opentelemetry/sdk-trace-base": "2.6.1",
@@ -656,6 +690,7 @@
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
         "@koi/agent-summary": "workspace:*",
+        "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
@@ -700,6 +735,7 @@
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
@@ -725,6 +761,7 @@
         "@koi/tools-web": "workspace:*",
         "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
+        "@koi/watch-patterns": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -1209,6 +1246,8 @@
 
     "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
 
+    "@koi/artifacts": ["@koi/artifacts@workspace:packages/lib/artifacts"],
+
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
@@ -1218,6 +1257,8 @@
     "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
+
+    "@koi/blob-cas": ["@koi/blob-cas@workspace:packages/lib/blob-cas"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
@@ -1319,6 +1360,8 @@
 
     "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
 
+    "@koi/middleware-turn-prelude": ["@koi/middleware-turn-prelude@workspace:packages/lib/middleware-turn-prelude"],
+
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
     "@koi/model-registry": ["@koi/model-registry@workspace:packages/lib/model-registry"],
@@ -1388,6 +1431,8 @@
     "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
+
+    "@koi/watch-patterns": ["@koi/watch-patterns@workspace:packages/lib/watch-patterns"],
 
     "@manypkg/find-root": ["@manypkg/find-root@1.1.0", "", { "dependencies": { "@babel/runtime": "^7.5.5", "@types/node": "^12.7.1", "find-up": "^4.1.0", "fs-extra": "^8.1.0" } }, "sha512-mki5uBvhHzO8kYYix/WRy2WX8S3B5wdVSc9D6KcU5lQNglP2yt58/VfLuAK49glRXChosY8ap2oJ1qgma3GUVA=="],
 
@@ -2158,6 +2203,8 @@
     "range-parser": ["range-parser@1.2.1", "", {}, "sha512-Hrgsx+orqoygnmhFbKaHE6c296J+HTAQXoxEF6gNupROmmGJRoyzfG3ccAveqCBrwr/2yxQ5BVd/GTl5agOwSg=="],
 
     "raw-body": ["raw-body@3.0.2", "", { "dependencies": { "bytes": "~3.1.2", "http-errors": "~2.0.1", "iconv-lite": "~0.7.0", "unpipe": "~1.0.0" } }, "sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA=="],
+
+    "re2-wasm": ["re2-wasm@1.0.2", "", {}, "sha512-VXUdgSiUrE/WZXn6gUIVVIsg0+Hp6VPZPOaHCay+OuFKy6u/8ktmeNEf+U5qSA8jzGGFsg8jrDNu1BeHpz2pJA=="],
 
     "read-yaml-file": ["read-yaml-file@1.1.0", "", { "dependencies": { "graceful-fs": "^4.1.5", "js-yaml": "^3.6.1", "pify": "^4.0.1", "strip-bom": "^3.0.0" } }, "sha512-VIMnQi/Z4HT2Fxuwg5KrY174U1VdUIASQVWXXyqtNRtxSr9IYkn1rsI6Tb6HsrHCmB7gVpNwX6JxPTHcH6IoTA=="],
 

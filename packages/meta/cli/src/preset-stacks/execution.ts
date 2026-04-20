@@ -51,13 +51,26 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import type { AgentId, ApprovalHandler, KoiMiddleware, ManagedTaskBoard } from "@koi/core";
+import type {
+  AgentId,
+  ApprovalHandler,
+  KoiMiddleware,
+  ManagedTaskBoard,
+  TaskItemId,
+} from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
+import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
+import type { BashOutputBuffer } from "@koi/tools-bash";
+import {
+  createBashBackgroundTool,
+  createBashOutputBuffer,
+  createBashToolWithHooks,
+} from "@koi/tools-bash";
+import { createPendingMatchStore } from "@koi/watch-patterns";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
 
 /** Key under `ctx.host` for the approval handler callback. */
@@ -349,6 +362,44 @@ export const executionStack: PresetStack = {
     // that skip background subprocesses still get the full
     // `task_*` tool set and the board stays in-memory for the
     // session.
+
+    // Maximum bytes of buffered bash output retained per task.
+    // Matches the default for incremental streaming (1 MB).
+    const MAX_OUTPUT_BYTES = 1_000_000;
+
+    // --- Watch-pattern store (rotated on session reset, like boardRef) ---
+    // let: mutable — replaced on session reset so the new session starts
+    // with an empty pending-match window.
+    let watchPatternStoreRef = { current: createPendingMatchStore() };
+
+    // --- Per-task output buffers (cleared on session reset) ---
+    // Keyed by TaskItemId. Created lazily by getOrCreateBuffer().
+    // let: mutable — replaced (new Map) on session reset.
+    let bashOutputBuffersRef: { current: Map<TaskItemId, BashOutputBuffer> } = {
+      current: new Map(),
+    };
+    // Tracks all TaskItemIds that ever had a buffer in the current session.
+    // Used by bufferReader to distinguish "evicted" (was in this set, now absent
+    // from the live map) from "never had a buffer" (not in this set at all).
+    // let: mutable — replaced (new Set) on session reset alongside bashOutputBuffersRef.
+    let everHadBufferRef: { current: Set<TaskItemId> } = { current: new Set() };
+
+    // LRU eviction: maximum number of terminal-task buffers retained.
+    // Live (in_progress) buffers are never evicted — only terminal ones count.
+    const TERMINAL_BUFFER_RETAIN = 32;
+    // let: mutable — cleared on session reset alongside bashOutputBuffersRef.
+    let terminalBufferOrder: TaskItemId[] = [];
+
+    function getOrCreateBuffer(id: TaskItemId): BashOutputBuffer {
+      let buf = bashOutputBuffersRef.current.get(id);
+      if (buf === undefined) {
+        buf = createBashOutputBuffer({ maxBytes: MAX_OUTPUT_BYTES });
+        bashOutputBuffersRef.current.set(id, buf);
+        everHadBufferRef.current.add(id);
+      }
+      return buf;
+    }
+
     // let: mutable — rotated on session reset
     let bgController = new AbortController();
     // let: mutable — incremented/decremented from async completions.
@@ -397,6 +448,31 @@ export const executionStack: PresetStack = {
                 elicit: bashElicit,
                 pathExtensions: effectivePaths,
                 home: effectiveHome,
+                getWatchStore: () => watchPatternStoreRef.current,
+                getOutputBuffer: (id) => getOrCreateBuffer(id),
+                markOutputBufferTerminal: (id) => {
+                  // Guard against late finalizers from a pre-reset session: if this
+                  // taskId is not tracked by the current session's refs, it was spawned
+                  // before the last onResetSession — treat as stale and no-op.
+                  // After a reset, both refs are replaced with fresh empty collections,
+                  // so any pre-reset taskId will fail both checks.
+                  const currentBuffers = bashOutputBuffersRef.current;
+                  const currentEverHad = everHadBufferRef.current;
+                  if (!currentBuffers.has(id) && !currentEverHad.has(id)) {
+                    return;
+                  }
+                  // Record this task as terminal (for LRU eviction order).
+                  // The buffer is KEPT so postmortem reads (task_output matches_only,
+                  // buffered-stdout on failed/killed) still work. Only evict when
+                  // more than TERMINAL_BUFFER_RETAIN terminal buffers have accumulated.
+                  terminalBufferOrder.push(id);
+                  if (terminalBufferOrder.length > TERMINAL_BUFFER_RETAIN) {
+                    const evictId = terminalBufferOrder.shift();
+                    if (evictId !== undefined) {
+                      currentBuffers.delete(evictId);
+                    }
+                  }
+                },
                 ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
               }),
           })
@@ -421,7 +497,28 @@ export const executionStack: PresetStack = {
     // drops out.
     const taskToolProviders =
       taskBoardToolsEnabled && agentId !== undefined
-        ? createTaskTools({ board: taskBoard, agentId }).map((tool) =>
+        ? createTaskTools({
+            board: taskBoard,
+            agentId,
+            // legacyReadOwner is intentionally unset (undefined by default).
+            // The CLI preset does NOT know whether the runtime is single-agent
+            // or multi-agent. Auto-binding legacyReadOwner to agentId would make
+            // each agent its own legacy owner in multi-agent runtimes, silently
+            // reopening the ACL the round-3 fix was designed to close.
+            // Runtimes that need legacy-task reads (tasks persisted before createdBy
+            // existed) must wire legacyReadOwner explicitly at their composition
+            // layer (typically to a single session/primary agent identity).
+            // Impact: pre-migration legacy tasks (createdBy === undefined) are no
+            // longer readable by default. Run a migration to backfill createdBy
+            // on existing task-board entries if access is needed.
+            bufferReader: (id) => {
+              const buf = bashOutputBuffersRef.current.get(id);
+              if (buf !== undefined) return buf;
+              // Distinguish evicted (was allocated this session) from never-buffered.
+              if (everHadBufferRef.current.has(id)) return "evicted" as const;
+              return undefined;
+            },
+          }).map((tool) =>
             createSingleToolProvider({
               name: `task-${tool.descriptor.name}`,
               toolName: tool.descriptor.name,
@@ -444,8 +541,18 @@ export const executionStack: PresetStack = {
         ? [createTaskAnchorMiddleware({ getBoard: () => taskBoard.snapshot() })]
         : [];
 
+    // --- @koi/middleware-turn-prelude: inject pending watch-pattern matches ---
+    // Runs at phase 'resolve' priority 200 (outer than task-anchor 345,
+    // semantic-retry 420) so the enriched prelude is present on every retry.
+    // Uses getStore() so session rotation (watchPatternStoreRef swap) is
+    // transparent — the new store is picked up on the next model call.
+    const turnPreludeMiddleware = createTurnPreludeMiddleware({
+      getStore: () => watchPatternStoreRef.current,
+      getTaskStatus: (id) => boardRef.current.snapshot().get(id)?.status,
+    });
+
     return {
-      middleware: taskAnchorMiddleware,
+      middleware: [...taskAnchorMiddleware, turnPreludeMiddleware],
       providers: [
         ...(bashBackgroundProvider !== undefined ? [bashBackgroundProvider] : []),
         ...taskToolProviders,
@@ -508,6 +615,15 @@ export const executionStack: PresetStack = {
         if (newBoard !== undefined) {
           boardRef.current = newBoard;
         }
+
+        // 7. Rotate watch-pattern store and output buffers so the new session
+        //    starts with a clean slate. dispose() cancels any active matchers
+        //    in the old store (optional — guarded with ?. for future-proofing).
+        watchPatternStoreRef.current.dispose?.();
+        watchPatternStoreRef = { current: createPendingMatchStore() };
+        bashOutputBuffersRef = { current: new Map() };
+        everHadBufferRef = { current: new Set() };
+        terminalBufferOrder = [];
       },
     };
   },

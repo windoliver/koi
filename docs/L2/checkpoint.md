@@ -12,6 +12,7 @@ Implements the capture and restore halves of #1625. At end of every turn, snapsh
 @koi/checkpoint              (L2, this package)
    │
    ├─ @koi/snapshot-store-sqlite   (L2, storage adapter)
+   ├─ @koi/blob-cas                (L0u, content-addressed filesystem blob store — shared with @koi/artifacts)
    ├─ @koi/core                    (L0, types: AgentSnapshot, FileOpRecord, CompensatingOp, SNAPSHOT_STATUS_KEY)
    ├─ @koi/hash                    (L0u, content hashing)
    ├─ @koi/git-utils                (L0u, git status for drift detection)
@@ -27,6 +28,8 @@ This package owns three concerns:
 The chain storage layer (`@koi/snapshot-store-sqlite`) is a separate L2 adapter so the deterministic-replay sibling package can reuse it.
 
 ## CAS blob store
+
+Blob storage is delegated to `@koi/blob-cas` (L0u). The same primitive backs `@koi/artifacts`, so the two packages share the CAS implementation — write/read semantics, directory sharding, fsync contract, and collision recovery.
 
 File contents are stored in a content-addressed directory:
 
@@ -112,6 +115,21 @@ Crash safety comes from **idempotency**, not from a coordinator: re-running `res
 ## Soft-fail contract
 
 If the capture step fails at end of turn (disk full, store error, etc.), the turn proceeds. The snapshot is recorded with `SNAPSHOT_STATUS_KEY = "incomplete"` in its metadata and is **skipped on rewind** with a user-visible warning. Checkpoint failure does NOT abort the agent loop — it is a recovery feature, not a correctness feature.
+
+## Stop-blocked contract (#1638)
+
+When `onAfterTurn` fires with `ctx.stopBlocked === true` (activity-timeout abort, stop-gate veto), the middleware fails closed — it never writes a `"complete"` snapshot for a partial turn. The chain of responses depends on whether the aborted turn had already mutated the workspace:
+
+| State | Behavior |
+|-------|----------|
+| `stopBlocked` + empty `fileOps` | Skip entirely; head stays on last good snapshot. |
+| `stopBlocked` + non-empty `fileOps`, rollback succeeds | Actively apply compensating ops to restore disk, discard buffer, head unchanged. |
+| `stopBlocked` + non-empty `fileOps`, rollback fails (`error` or `skipped-missing-blob`) | Persist an `incomplete` marker snapshot (empty `fileOps`, dropped ops in metadata `koi_rollback_dropped_ops`); head still not advanced. |
+| Rollback AND incomplete-persist BOTH fail | **Session quarantined:** `state.quarantine` set. Subsequent `wrapToolCall` on tracked tools throws; `onAfterTurn` for normal turns returns without capture. Quarantine is per-process only (lost on restart). |
+
+Resume-from-disk (`getOrCreateSession`) walks `parentIds` past any `incomplete` head to the nearest `complete` ancestor before seeding `parentNodeId`, so subsequent captures fork from a restorable base rather than a quarantined marker.
+
+Aborted turns do NOT participate in the "same-user-prompt" continuation heuristic — `lastCaptureHadOps` is reset to `false` on the `stopBlocked` branch so the next text-only turn cannot fold into the pre-abort turn's `userTurnIndex`. Incomplete sibling markers reuse the previous prompt's `userTurnIndex` to keep the live ancestor chain contiguous for restore planning's by-count walk.
 
 ## In-flight contract (queue between turns)
 

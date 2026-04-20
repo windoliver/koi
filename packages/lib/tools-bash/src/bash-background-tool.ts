@@ -21,13 +21,30 @@ import type {
   AgentId,
   JsonObject,
   ManagedTaskBoard,
+  MatchEntry,
+  PatternMatch,
+  PendingMatchStore,
   SandboxAdapter,
   SandboxProfile,
+  TaskItemId,
   Tool,
   ToolExecuteOptions,
+  WatchPattern,
 } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY, taskItemId } from "@koi/core";
-import { buildSafeEnv, type ExecResult, execSandboxed, spawnBash } from "./exec.js";
+import {
+  compilePatterns,
+  createLineBufferedMatcher,
+  type LineBufferedMatcher,
+} from "@koi/watch-patterns";
+import {
+  buildSafeEnv,
+  type ExecResult,
+  execSandboxed,
+  type SpawnBashCallbacks,
+  spawnBash,
+} from "./exec.js";
+import type { BashOutputBuffer } from "./output-buffer.js";
 
 /** Default timeout for background tasks — 30 minutes (long-running builds, installs). */
 const DEFAULT_BACKGROUND_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -113,6 +130,29 @@ export interface BashBackgroundToolConfig {
   readonly pathExtensions?: readonly string[] | undefined;
   /** Validated home directory for the subprocess environment — see BashToolConfig. */
   readonly home?: string | undefined;
+  /**
+   * Reactive pattern matcher store — when provided, matches from `watch_patterns`
+   * land here and surface via the turn-prelude middleware. See @koi/middleware-turn-prelude.
+   */
+  readonly getWatchStore?: (() => PendingMatchStore | undefined) | undefined;
+  /**
+   * Called when a background task enters a terminal state (completed, failed, or aborted).
+   *
+   * Use to signal that the per-task output buffer has transitioned to terminal state.
+   * The runtime may evict old terminal buffers (LRU) to bound memory, but live
+   * (in_progress) buffers are never evicted — postmortem reads for recently-terminal
+   * tasks remain available.
+   *
+   * Invoked from `runBackground`'s `finally` block, exactly once per task launch,
+   * after matcher cleanup completes.
+   */
+  readonly markOutputBufferTerminal?: ((taskId: TaskItemId) => void) | undefined;
+  /**
+   * Live-output buffer per task — when provided, stdout/stderr bytes are mirrored
+   * here so `task_output` can return partial output while a task is running and
+   * matched-line retrieval (matches_only=true) works after capture truncation.
+   */
+  readonly getOutputBuffer?: ((taskId: TaskItemId) => BashOutputBuffer | undefined) | undefined;
 }
 
 /** Shape of the tool's JSON response on successful task creation. */
@@ -185,6 +225,33 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
               "Human-readable description shown in task lists (e.g. 'Installing dependencies'). " +
               "Defaults to the command string.",
           },
+          watch_patterns: {
+            type: "array",
+            maxItems: 16,
+            items: {
+              type: "object",
+              required: ["pattern", "event"],
+              properties: {
+                pattern: {
+                  type: "string",
+                  description: "Regex source (RE2, ≤256 chars)",
+                },
+                event: {
+                  type: "string",
+                  description:
+                    "Strict identifier /^[a-z0-9_-]{1,64}$/ (reserved __-prefixed names rejected)",
+                },
+                flags: {
+                  type: "string",
+                  description:
+                    "Regex flags, default 'i'. 'g' and 'y' are rejected. 'u' is always added.",
+                },
+              },
+            },
+            description:
+              "Optional regex watchers fired on matching stdout/stderr lines. " +
+              "Matches surface as user-role notifications before the next model turn.",
+          },
         },
         required: ["command"],
       } as JsonObject,
@@ -252,6 +319,24 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
         };
       }
 
+      // Early validation of watch_patterns — compile before any task-board side effects.
+      // If the patterns are invalid (bad regex, bad event name, too many), reject without
+      // creating a task entry on the board.
+      const watchPatternsRaw = args.watch_patterns;
+      const hasWatchPatterns = Array.isArray(watchPatternsRaw) && watchPatternsRaw.length > 0;
+      let compiledWatchPatterns: ReturnType<typeof compilePatterns> | undefined;
+      if (hasWatchPatterns) {
+        compiledWatchPatterns = compilePatterns(watchPatternsRaw as readonly WatchPattern[]);
+        if (!compiledWatchPatterns.ok) {
+          return {
+            error: "Invalid watch_patterns",
+            category: "validation",
+            reason: compiledWatchPatterns.error.message,
+            pattern: "",
+          };
+        }
+      }
+
       // Register task on the board: pending → in_progress
       const id = taskItemId(await taskBoard.nextId());
       const addResult = await taskBoard.add({
@@ -259,6 +344,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
         subject: description.length > 80 ? `${description.slice(0, 77)}…` : description,
         description,
         activeForm: `Running: ${command.length > 60 ? `${command.slice(0, 57)}…` : command}`,
+        createdBy: agentId,
       });
       if (!addResult.ok) {
         return {
@@ -296,6 +382,37 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
       // owns this task id rather than the new session's board.
       const boundBoard = getBoundBoard?.() ?? taskBoard;
 
+      // Build matcher + store references now that we have `id`.
+      // compiledWatchPatterns is only set when hasWatchPatterns is true and compile succeeded.
+      const store = config.getWatchStore?.();
+      // Live-output buffer captured early so the matcher closure can reference it.
+      // (outputBuffer is also read again below for createCallbacks.)
+      const outputBufferForMatcher = config.getOutputBuffer?.(id);
+      let matcher: LineBufferedMatcher | undefined;
+      if (compiledWatchPatterns?.ok && store !== undefined) {
+        const buf = outputBufferForMatcher;
+        matcher = createLineBufferedMatcher(
+          compiledWatchPatterns.value,
+          (m) => {
+            store.record(m);
+          },
+          buf !== undefined
+            ? (m, line, matchStart, matchEnd) => {
+                buf.recordMatch(buildMatchEntry(m, line, matchStart, matchEnd));
+              }
+            : undefined,
+        );
+        store.registerMatcher(matcher);
+      }
+
+      // Live-output buffer for this task (optional — wired at L3 by tui-runtime).
+      // Re-use the instance already captured above for the matcher closure.
+      const outputBuffer = outputBufferForMatcher;
+
+      // Compose onStdout/onStderr — matcher writer + buffer writer.
+      // spawnBash and execSandboxed already accept SpawnBashCallbacks.
+      const callbacks: SpawnBashCallbacks | undefined = createCallbacks(id, matcher, outputBuffer);
+
       // Fire-and-forget: spawn subprocess, update task board on completion.
       // No await — returns the task ID to the agent immediately.
       // onSubprocessStart/End provide an authoritative live-process count for
@@ -311,6 +428,10 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
         sandboxProfile,
         combinedSignal,
         env,
+        matcher,
+        store,
+        callbacks,
+        config.markOutputBufferTerminal,
       ).finally(() => onSubprocessEnd?.());
 
       return {
@@ -346,6 +467,10 @@ async function runBackground(
   sandboxProfile: SandboxProfile | undefined,
   shutdownSignal: AbortSignal | undefined,
   env: Readonly<Record<string, string>>,
+  matcher: LineBufferedMatcher | undefined,
+  store: PendingMatchStore | undefined,
+  callbacks: SpawnBashCallbacks | undefined,
+  markOutputBufferTerminal: ((taskId: TaskItemId) => void) | undefined,
 ): Promise<void> {
   const fullCommand = `set -euo pipefail\n${command}`;
   try {
@@ -360,6 +485,7 @@ async function runBackground(
             DEFAULT_MAX_OUTPUT_BYTES,
             shutdownSignal,
             env,
+            callbacks,
           )
         : await spawnBash(
             fullCommand,
@@ -368,6 +494,7 @@ async function runBackground(
             DEFAULT_MAX_OUTPUT_BYTES,
             shutdownSignal,
             env,
+            callbacks,
           );
 
     // Build output string: stdout, then stderr if non-empty
@@ -425,5 +552,136 @@ async function runBackground(
       .catch(() => {
         /* already in terminal state */
       });
+  } finally {
+    if (matcher !== undefined) {
+      // Flush any trailing partial line on natural exit before cancelling.
+      try {
+        matcher.flush(id);
+      } catch {
+        /* flush errors must not break teardown */
+      }
+      store?.unregisterMatcher(matcher);
+      // cancel() is idempotent; safe to call even if store already called it.
+      try {
+        matcher.cancel();
+      } catch {
+        /* cancel errors must not break teardown */
+      }
+    }
+    // Signal that this task's output buffer has transitioned to terminal state.
+    // The runtime decides whether to evict the buffer (LRU) or keep it for
+    // postmortem reads — the tool itself never deletes the buffer.
+    markOutputBufferTerminal?.(id);
   }
+}
+
+/**
+ * Build a `MatchEntry` from a `PatternMatch` plus the raw line + regex span.
+ *
+ * Lines up to 4 KB are stored verbatim. Longer lines are windowed around the
+ * match with ≤256 bytes of context on each side; clipped byte counts are
+ * recorded so callers can reconstruct the original byte offset.
+ *
+ * `matchStart` / `matchEnd` are UTF-16 code-unit offsets into `line` as
+ * returned by `RE2.exec()`, which is consistent with `String.prototype.slice`.
+ */
+function buildMatchEntry(
+  match: PatternMatch,
+  line: string,
+  matchStart: number,
+  matchEnd: number,
+): MatchEntry {
+  const MAX_BYTES = 4096;
+  const origBytes = new TextEncoder().encode(line).byteLength;
+  if (origBytes <= MAX_BYTES) {
+    return {
+      event: match.event,
+      stream: match.stream,
+      lineNumber: match.lineNumber,
+      timestamp: match.timestamp,
+      line,
+      lineByteLength: origBytes,
+      lineClippedPrefixBytes: 0,
+      lineClippedSuffixBytes: 0,
+      lineOriginalByteLength: origBytes,
+      matchSpanUnits: { start: matchStart, end: matchEnd },
+    };
+  }
+  // Line exceeds cap — center the window on the match with ≤256 code-unit context.
+  const CTX = 256;
+  const windowStart = Math.max(0, matchStart - CTX);
+  const windowEnd = Math.min(line.length, matchEnd + CTX);
+  const windowed = line.slice(windowStart, windowEnd);
+  const enc = new TextEncoder();
+  const windowedBytes = enc.encode(windowed).byteLength;
+  const prefixClipped = enc.encode(line.slice(0, windowStart)).byteLength;
+  const suffixClipped = enc.encode(line.slice(windowEnd)).byteLength;
+  return {
+    event: match.event,
+    stream: match.stream,
+    lineNumber: match.lineNumber,
+    timestamp: match.timestamp,
+    line: windowed,
+    lineByteLength: windowedBytes,
+    lineClippedPrefixBytes: prefixClipped,
+    lineClippedSuffixBytes: suffixClipped,
+    lineOriginalByteLength: origBytes,
+    matchSpanUnits: { start: matchStart - windowStart, end: matchEnd - windowStart },
+  };
+}
+
+/**
+ * Compose optional matcher-write and buffer-write callbacks into a single
+ * `SpawnBashCallbacks` object for `spawnBash` / `execSandboxed`.
+ *
+ * Returns `undefined` when neither side is active so the zero-pattern fast
+ * path incurs no overhead vs. the pre-watch-patterns baseline.
+ */
+function createCallbacks(
+  id: ReturnType<typeof taskItemId>,
+  matcher: LineBufferedMatcher | undefined,
+  buffer: BashOutputBuffer | undefined,
+): SpawnBashCallbacks | undefined {
+  if (matcher === undefined && buffer === undefined) return undefined;
+
+  // Both streams always get a callback when any watcher is active.
+  // Capture locals so TS narrows them inside the closures.
+  const m = matcher;
+  const b = buffer;
+
+  const onStdout = (chunk: string): void => {
+    if (m !== undefined) {
+      try {
+        m.writeStdout(id, chunk);
+      } catch {
+        /* matcher errors must not break the spawn callback loop */
+      }
+    }
+    if (b !== undefined) {
+      try {
+        b.write("stdout", chunk);
+      } catch {
+        /* buffer errors must not break the spawn callback loop */
+      }
+    }
+  };
+
+  const onStderr = (chunk: string): void => {
+    if (m !== undefined) {
+      try {
+        m.writeStderr(id, chunk);
+      } catch {
+        /* matcher errors must not break the spawn callback loop */
+      }
+    }
+    if (b !== undefined) {
+      try {
+        b.write("stderr", chunk);
+      } catch {
+        /* buffer errors must not break the spawn callback loop */
+      }
+    }
+  };
+
+  return { onStdout, onStderr };
 }

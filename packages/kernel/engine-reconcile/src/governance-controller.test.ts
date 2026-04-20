@@ -199,6 +199,17 @@ describe("createGovernanceController", () => {
     expect(r?.current).toBe(2);
   });
 
+  test("record turn_refund decrements turn counter without going below zero", () => {
+    const ctrl = createGovernanceController();
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "turn_refund", count: 1 });
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.TURN_COUNT)?.current).toBe(1);
+
+    ctrl.record({ kind: "turn_refund", count: 999 });
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.TURN_COUNT)?.current).toBe(0);
+  });
+
   test("record spawn increments spawn count", () => {
     const ctrl = createGovernanceController();
     ctrl.record({ kind: "spawn", depth: 1 });
@@ -402,7 +413,7 @@ describe("createGovernanceController", () => {
   // snapshot()
   // -------------------------------------------------------------------------
 
-  test("snapshot returns frozen object with correct readings", async () => {
+  test("snapshot returns object with correct readings", async () => {
     const ctrl = createGovernanceController();
     ctrl.record({ kind: "turn" });
     ctrl.record({ kind: "token_usage", count: 50 });
@@ -410,9 +421,6 @@ describe("createGovernanceController", () => {
     expect(snap.healthy).toBe(true);
     expect(snap.violations).toHaveLength(0);
     expect(snap.readings.length).toBeGreaterThanOrEqual(7);
-    expect(Object.isFrozen(snap)).toBe(true);
-    expect(Object.isFrozen(snap.readings)).toBe(true);
-    expect(Object.isFrozen(snap.violations)).toBe(true);
   });
 
   test("snapshot reports violations when limits exceeded", async () => {

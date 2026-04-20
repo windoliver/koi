@@ -4,6 +4,7 @@ import type {
   AbortReason,
   Agent,
   AgentManifest,
+  ArtifactId,
   CapabilityFragment,
   ChannelAdapter,
   ChannelCapabilities,
@@ -56,6 +57,7 @@ import type {
 } from "../index.js";
 import {
   agentId,
+  artifactId,
   CREDENTIALS,
   DELEGATION,
   EVENTS,
@@ -1390,6 +1392,28 @@ describe("SessionId branding", () => {
   });
 });
 
+describe("ArtifactId branding", () => {
+  test("artifactId() returns branded type", () => {
+    const aid = artifactId("art_abc");
+    const _a: ArtifactId = aid;
+    void _a;
+    expect(aid).toBe(artifactId("art_abc"));
+  });
+
+  test("plain string is not assignable to ArtifactId", () => {
+    // @ts-expect-error — plain string is not assignable to ArtifactId
+    const _aid: ArtifactId = "plain-string";
+    void _aid;
+  });
+
+  test("ArtifactId is assignable to string", () => {
+    const aid = artifactId("art_xyz");
+    const _s: string = aid;
+    void _s;
+    expect(_s).toBe("art_xyz");
+  });
+});
+
 describe("RunId branding", () => {
   test("runId() returns branded type", () => {
     const rid = runId("run-1");
@@ -1497,6 +1521,20 @@ describe("branded ID cross-assignment prevention", () => {
     // @ts-expect-error — ToolCallId is not assignable to TurnId
     const _tid: TurnId = cid;
     void _tid;
+  });
+
+  test("ArtifactId is not assignable to SessionId", () => {
+    const aid = artifactId("id-1");
+    // @ts-expect-error — ArtifactId is not assignable to SessionId
+    const _sid: SessionId = aid;
+    void _sid;
+  });
+
+  test("SessionId is not assignable to ArtifactId", () => {
+    const sid = sessionId("id-1");
+    // @ts-expect-error — SessionId is not assignable to ArtifactId
+    const _aid: ArtifactId = sid;
+    void _aid;
   });
 });
 

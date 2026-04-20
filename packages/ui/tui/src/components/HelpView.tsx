@@ -16,6 +16,9 @@ const KEYBINDINGS = [
   { key: "Ctrl+C", action: "Interrupt agent" },
   { key: "Esc", action: "Dismiss modal · back to conversation" },
   { key: "Enter", action: "Submit message" },
+  { key: "Ctrl+Enter", action: "Interrupt current turn and send message" },
+  { key: "Meta+Enter", action: "Interrupt current turn and send message" },
+  { key: "Ctrl+K", action: "Interrupt current turn and send message" },
   { key: "Ctrl+J", action: "Insert newline in message" },
 ] as const;
 

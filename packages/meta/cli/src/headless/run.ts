@@ -150,6 +150,16 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
         if (timedOut) {
           exitCode = HEADLESS_EXIT.TIMEOUT;
           errMessage = "max-duration-ms exceeded";
+        } else if (event.output.metadata?.terminatedBy === "activity-timeout") {
+          // #1638: runtime-level activity-timeout wrapper also lands here
+          // with stopReason "interrupted". Its metadata flags this explicitly
+          // so we classify as TIMEOUT rather than generic AGENT_FAILURE.
+          exitCode = HEADLESS_EXIT.TIMEOUT;
+          const reason = event.output.metadata.terminationReason;
+          errMessage =
+            reason === "wall_clock"
+              ? "activity timeout: wall-clock limit exceeded"
+              : "activity timeout: inactivity limit exceeded";
         } else {
           const embeddedMessage = extractEngineErrorMessage(event.output.metadata);
           const mapped = mapStopReasonToExitCode(event.output.stopReason, embeddedMessage);

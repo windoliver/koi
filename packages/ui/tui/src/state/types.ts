@@ -372,6 +372,8 @@ export interface PlanTask {
 /** Complete TUI rendering state. */
 export interface TuiState {
   readonly messages: readonly TuiMessage[];
+  /** Mid-turn user submits accepted for dispatch after the active run settles. */
+  readonly queuedSubmits: readonly string[];
   readonly activeView: TuiView;
   readonly modal: TuiModal | null;
   readonly connectionStatus: ConnectionStatus;
@@ -529,6 +531,9 @@ export type TuiAction =
       readonly id: string;
       readonly blocks: readonly ContentBlock[];
     }
+  | { readonly kind: "enqueue_submit"; readonly text: string }
+  | { readonly kind: "dequeue_submit" }
+  | { readonly kind: "clear_submit_queue" }
   | { readonly kind: "set_view"; readonly view: TuiView }
   | { readonly kind: "set_mcp_status"; readonly servers: readonly McpServerInfo[] }
   | { readonly kind: "set_modal"; readonly modal: TuiModal | null }

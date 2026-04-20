@@ -115,6 +115,29 @@ describe("createRestartIntensityTracker", () => {
     expect(tracker.attemptsInWindow("child-b")).toBe(1);
   });
 
+  test("unrecord rolls back most recent attempt", () => {
+    const clock = createFakeClock(0);
+    const tracker = createRestartIntensityTracker({
+      maxRestarts: 5,
+      windowMs: 60_000,
+      clock,
+    });
+
+    tracker.record("child-a");
+    tracker.record("child-a");
+    expect(tracker.attemptsInWindow("child-a")).toBe(2);
+
+    tracker.unrecord("child-a");
+    expect(tracker.attemptsInWindow("child-a")).toBe(1);
+
+    tracker.unrecord("child-a");
+    expect(tracker.attemptsInWindow("child-a")).toBe(0);
+
+    // No-op when already empty
+    tracker.unrecord("child-a");
+    expect(tracker.attemptsInWindow("child-a")).toBe(0);
+  });
+
   test("zero maxRestarts means always exhausted", () => {
     const clock = createFakeClock(0);
     const tracker = createRestartIntensityTracker({

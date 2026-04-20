@@ -19,7 +19,8 @@
   "dependencies": {
     "@koi/bash-ast": "workspace:*",
     "@koi/bash-security": "workspace:*",
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/watch-patterns": "workspace:*"
   },
   "koi": {
     "optional": true

@@ -23,8 +23,26 @@ import {
   DEFAULT_UNSANDBOXED_POLICY,
   toolToken,
 } from "@koi/core";
+import { AgentEntity } from "./agent-entity.js";
 import { createKoi } from "./koi.js";
 import type { ForgeRuntime } from "./types.js";
+
+/**
+ * Access the concrete L1 lifecycle state attached to the runtime's agent.
+ *
+ * `KoiRuntime.agent` is typed as the L0 `Agent` interface which does not
+ * expose `lifecycle`. The L1 `AgentEntity` implementation does. The helper
+ * narrows safely via `instanceof` and throws on mismatch so tests fail with
+ * a clear diagnostic instead of `undefined` deref under a stale assumption.
+ */
+function agentLifecycleOf(
+  agent: import("@koi/core").Agent,
+): import("./lifecycle.js").AgentLifecycle {
+  if (!(agent instanceof AgentEntity)) {
+    throw new Error("expected runtime.agent to be an AgentEntity instance");
+  }
+  return agent.lifecycle;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1300,6 +1318,152 @@ describe("createKoi middleware hooks", () => {
     expect(() => {
       runtime.run({ kind: "text", text: "another" });
     }).toThrow(/poisoned/i);
+  }, 10_000);
+
+  test("#review-round1-F3: lifecycleSettleTimeoutMs rejects non-finite / negative / zero", async () => {
+    // The option is validated: Infinity, NaN, negative, zero, and
+    // non-number values all fall back to the 5s default. We assert the
+    // fallback path by passing junk and verifying construction succeeds
+    // — the option simply has no effect.
+    const junkValues: ReadonlyArray<number> = [
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      Number.NaN,
+      -1,
+      0,
+    ];
+    for (const v of junkValues) {
+      const runtime = await createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+        loopDetection: false,
+        lifecycleSettleTimeoutMs: v,
+      });
+      // Simply calling dispose should complete quickly — no timer
+      // overflow or immediate-fire behavior.
+      await runtime.dispose();
+    }
+  });
+
+  test("#review-round2-F1: sub-millisecond lifecycleSettleTimeoutMs clamps to 1ms (not 0)", async () => {
+    // A raw 0.5 value would Math.floor to 0 and turn setTimeout into an
+    // immediate-fire — poisoning every lifecycle transition instantly.
+    // The clamp to 1ms preserves the "be patient for at least one tick"
+    // contract.
+    const adapter: EngineAdapter = {
+      engineId: "noncooperative-subms",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        const hang = new Promise<void>(() => {});
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+            };
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      // Sub-ms value must be clamped to 1ms, NOT collapse to 0.
+      lifecycleSettleTimeoutMs: 0.5,
+    });
+
+    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
+    await iter.next();
+    const pendingNext = iter.next();
+    void pendingNext.catch(() => {});
+
+    // The runtime should reject via TIMEOUT; the test confirms it
+    // completed (success or rejection) without hanging.
+    const result = await Promise.race([
+      runtime.cycleSession?.().then(
+        () => "ok" as const,
+        () => "rejected" as const,
+      ),
+      new Promise<"watchdog">((r) => setTimeout(() => r("watchdog"), 2000)),
+    ]);
+    expect(result).not.toBe("watchdog");
+  }, 5_000);
+
+  test("#review-P11: lifecycleSettleTimeoutMs option shortens the poison window", async () => {
+    // Same wedged-adapter shape as the 5s test above, but with a custom
+    // 200ms settle timeout. cycleSession should reject in well under the
+    // default 5s so the option is demonstrably honored.
+    const adapter: EngineAdapter = {
+      engineId: "noncooperative-p11",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        const hang = new Promise<void>(() => {});
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            // let: mutable once-flag
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+            };
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      lifecycleSettleTimeoutMs: 200,
+    });
+
+    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
+    await iter.next();
+    const pendingNext = iter.next();
+    void pendingNext.catch(() => {});
+
+    const start = Date.now();
+    const result = await (async (): Promise<"rejected" | "fulfilled"> => {
+      try {
+        await runtime.cycleSession?.();
+        return "fulfilled";
+      } catch {
+        return "rejected";
+      }
+    })();
+
+    expect(result).toBe("rejected");
+    // Must have rejected in FAR less than the default 5s. Allow generous
+    // headroom (1.5s) for CI slowness.
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(150);
+    expect(elapsed).toBeLessThan(1500);
   }, 10_000);
 
   test("#1742: cycleSession waits for an in-flight run to settle instead of throwing", async () => {
@@ -4012,6 +4176,272 @@ describe("createKoi forge watch", () => {
     // but NOT again at turn boundaries because watch is active and dirty flag is false
     expect(toolDescriptors).toHaveBeenCalledTimes(1);
   });
+
+  test("eager forge refresh bounds itself on self-triggering watch (#review-round5-F1)", async () => {
+    // Pathological forge: every toolDescriptors() call re-fires the
+    // watch event. Without a hard cap on runRefresh, this hot-loops
+    // forever — saturating CPU/IO and flooding the backend. The cap
+    // bounds calls per eager refresh cycle.
+    // let justified: watch listener ref
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+    // let justified: mutable call counter
+    let toolDescriptorCallCount = 0;
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async (): Promise<readonly ToolDescriptor[]> => {
+        toolDescriptorCallCount++;
+        // Self-trigger every call to keep refreshPending permanently true.
+        watchListener?.({ kind: "saved", brickId: brickId("x") });
+        return [];
+      }),
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    // Adapter that never emits turn_end — so only the eager watch
+    // refresh path runs. If unbounded it hot-loops forever and the
+    // test times out.
+    const adapter: EngineAdapter = {
+      engineId: "hot-loop-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          // Trigger the first watch event to start the eager loop.
+          watchListener?.({ kind: "saved", brickId: brickId("start") });
+          // Let the eager loop run for a short window then complete.
+          await new Promise((r) => setTimeout(r, 150));
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "go" }));
+
+    // Bounded: session-start refresh (1) + eager cap (8) + small
+    // margin for timing slop. Without the cap this is unbounded.
+    expect(toolDescriptorCallCount).toBeLessThan(20);
+  }, 10_000);
+
+  test("forge refresh fails closed when drain cap is exhausted (#review-round4-F2)", async () => {
+    // Pathological forge: every toolDescriptors() call fires another
+    // watch event DURING its resolution, so forgeStateDirty is
+    // re-raised before each refresh completes. After DRAIN_CAP
+    // iterations the engine must refuse to start the next turn on
+    // possibly-stale middleware — instead yield a terminal `done`
+    // with stopReason=error, NOT silently proceed.
+    // let justified: watch listener captured from forge.watch()
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      // Every call to toolDescriptors re-fires the watch event,
+      // keeping forgeStateDirty pinned to true.
+      toolDescriptors: mock(async (): Promise<readonly ToolDescriptor[]> => {
+        watchListener?.({ kind: "saved", brickId: brickId("tool") });
+        return [];
+      }),
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "drain-cap-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          // Fire a watch event FIRST so forgeStateDirty=true before
+          // the turn boundary. Then toolDescriptors re-fires watch
+          // on every call, keeping dirty pinned.
+          watchListener?.({ kind: "saved", brickId: brickId("tool") });
+          // Fire a turn_end to trigger the drain loop on the next
+          // iteration.
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+          // If the drain throws, we never reach here. If it fails
+          // open, this second yield would execute.
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "go" }));
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done?.kind === "done") {
+      // The drain-cap throw must surface as a terminal error,
+      // not a successful completion.
+      expect(done.output.stopReason).toBe("error");
+    }
+  }, 10_000);
+
+  test("stale in-flight refresh doesn't clobber a newer committed refresh (#review-round1-F1)", async () => {
+    // Race: a slow refresh (state A) kicks off, then a faster refresh (state B)
+    // is issued later and commits first. When A's result finally returns, the
+    // monotonic sequence gate must reject it so the cache stays on B.
+    //
+    // Concretely: call 1 is the session-start refresh, call 2 is slow (A),
+    // call 3 is fast (B). With the sequence gate, B commits first (seq=3),
+    // then A's result (seq=2) is dropped on arrival.
+    const stateA: ToolDescriptor[] = [{ name: "tool-A", description: "stale", inputSchema: {} }];
+    const stateB: ToolDescriptor[] = [{ name: "tool-B", description: "fresh", inputSchema: {} }];
+
+    // let justified: mutable call counter
+    let call = 0;
+    // let justified: watch listener ref
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+    // let justified: captured at end-of-stream so we can assert final state
+    let capturedFinalTools: readonly ToolDescriptor[] = [];
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async (): Promise<readonly ToolDescriptor[]> => {
+        call++;
+        if (call === 1) return []; // session-start baseline
+        if (call === 2) {
+          // Slow refresh (state A) — returns LATE.
+          await new Promise((r) => setTimeout(r, 80));
+          return stateA;
+        }
+        // Fast refresh (state B) — returns FIRST at higher seq.
+        await new Promise((r) => setTimeout(r, 10));
+        return stateB;
+      }),
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "race-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (_input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Kick off the slow watch-triggered refresh first (state A).
+          watchListener?.({ kind: "saved", brickId: brickId("x") });
+          // Yield turn_end so the engine runs its turn-boundary refresh
+          // (state B) which SHOULD commit first.
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+          // Wait long enough for BOTH refreshes to fully settle.
+          await new Promise((r) => setTimeout(r, 150));
+          capturedFinalTools = _input.callHandlers?.tools ?? [];
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    const names = capturedFinalTools.map((t) => t.name);
+    expect(names).toContain("tool-B");
+    expect(names).not.toContain("tool-A");
+  });
+
+  test("concurrent watch events coalesce into bounded in-flight refreshes (#review-H10)", async () => {
+    // Previously a bursty watch source (e.g. MCP reconnect fan-out) fired
+    // one in-flight toolDescriptors() promise per event, racing to overwrite
+    // the descriptor cache in non-deterministic order. The coalescing guard
+    // allows at most one refresh at a time; queued events collapse to a
+    // single re-run so the last observed state always wins.
+    // let justified: mutable slow-refresh counter
+    let callIndex = 0;
+    // let justified: mutable watch listener ref
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
+
+    const toolDescriptors = mock(async (): Promise<readonly ToolDescriptor[]> => {
+      callIndex++;
+      // Simulate a slow backend so overlapping events have a chance to race.
+      await new Promise((r) => setTimeout(r, 20));
+      return [];
+    });
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors,
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
+        return () => {
+          watchListener = undefined;
+        };
+      },
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "coalesce-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (_input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Fire 50 watch events in a tight loop while the first refresh is
+          // still in flight. Without coalescing this would allocate 50
+          // in-flight toolDescriptors() promises.
+          for (let i = 0; i < 50; i++) {
+            watchListener?.({ kind: "saved", brickId: brickId(`t-${i}`) });
+          }
+          // Let all refreshes settle.
+          await new Promise((r) => setTimeout(r, 100));
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // Initial session-start refresh is call 1. The 50 bursty watch events
+    // collapse to AT MOST 2 additional refreshes (one in-flight + one
+    // queued re-run), regardless of how many events land during the await.
+    // Without the coalescing guard this would be 51.
+    expect(callIndex).toBeLessThanOrEqual(3);
+    expect(callIndex).toBeGreaterThanOrEqual(2); // initial + at least one from events
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4754,6 +5184,231 @@ describe("createKoi stop gate", () => {
     expect(turnEnds.length).toBe(DEFAULT_MAX_STOP_RETRIES);
   });
 
+  test("stop-gate block does NOT retry when run is aborted (#review-round4-F1)", async () => {
+    // Common race: user abort fires, adapter.inject throws, stop-gate
+    // block lands. Before the fix, retry launched a fresh adapter.stream
+    // — burning tokens after a user-visible stop. The abort check must
+    // short-circuit to `interrupted` before building pendingStopInput.
+    const { middleware } = blockingStopMiddleware(999); // always block
+    const controller = new AbortController();
+
+    let streamCallCount = 0;
+    const adapter: EngineAdapter = {
+      engineId: "abort-race",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        streamCallCount++;
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { kind: "done" as const, output: doneOutput() };
+          },
+        };
+      },
+      inject: async () => {
+        // Simulate abort-driven inject failure.
+        controller.abort("user cancelled");
+        throw new Error("aborted");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello", signal: controller.signal }));
+    // Exactly ONE adapter.stream() call — the abort short-circuits
+    // before launching a retry. Prior to the fix, this was 2.
+    expect(streamCallCount).toBe(1);
+  });
+
+  test("stop-gate retry survives adapter.inject throw (#review-round3-F2)", async () => {
+    // An unguarded `adapter.inject` throw inside the stop-gate block path
+    // used to hard-fail the retry, escalating a recoverable veto into a
+    // user-visible error. With the try/catch, the retry proceeds via
+    // `pendingStopInput` delivery.
+    const { middleware } = blockingStopMiddleware(1);
+    const { adapter: baseAdapter, streamCalls } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    // Wrap inject to throw on the stop-gate block call.
+    const adapter = {
+      ...baseAdapter,
+      inject: async (_msg: unknown): Promise<void> => {
+        throw new Error("simulated inject failure");
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+    const kinds = events.map((e) => e.kind);
+
+    // Retry must have proceeded — we expect the full sequence
+    // turn_start → turn_end (blocked) → turn_start → done.
+    expect(kinds).toEqual(["turn_start", "turn_end", "turn_start", "done"]);
+    expect(streamCalls.length).toBe(2);
+  });
+
+  test("agent.lifecycle.turnIndex is post-advance in onAfterTurn for blocked turns (#review-round3-F3)", async () => {
+    // Middleware's onAfterTurn hook must see the same lifecycle
+    // turnIndex value for blocked turns as for normal turns — i.e. the
+    // POST-advance value. Before round 3, blocked turns ran
+    // onAfterTurn BEFORE advance_turn, so middleware saw a stale
+    // off-by-one.
+    const observedInHook: number[] = [];
+    const recorderMiddleware: KoiMiddleware = {
+      name: "turnindex-recorder",
+      describeCapabilities: () => undefined,
+      onAfterTurn: async (_ctx) => {
+        // Read the live lifecycle value at hook time.
+        const lc = agentLifecycleOf(runtime.agent);
+        observedInHook.push(lc.state === "running" ? lc.turnIndex : -1);
+      },
+    };
+    const { middleware: blocker } = blockingStopMiddleware(1);
+    const { adapter } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [recorderMiddleware, blocker],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    // Exactly one onAfterTurn fires for the blocked turn (the retry
+    // completes normally without emitting turn_end). The observed
+    // value must be the post-advance 1, not the pre-advance 0.
+    expect(observedInHook).toEqual([1]);
+  });
+
+  test("agent.lifecycle.turnIndex advances across stop-gate block retries (#review-round2-F3)", async () => {
+    // Stop-gate blocks emit a synthetic turn_end. Without the advance_turn
+    // call in the block path (or with the wrong ordering), the lifecycle
+    // turnIndex observed at the blocked turn_end lags behind reality.
+    //
+    // Only ONE turn_end event is emitted in this scenario — the blocked
+    // one. The retry's normal completion yields `done` without a second
+    // turn_end. Lock in that the lifecycle turnIndex read AT the blocked
+    // turn_end event matches the post-advance value.
+    const { middleware } = blockingStopMiddleware(1);
+    const { adapter } = multiCallAdapter(
+      [[{ kind: "done", output: doneOutput() }], [{ kind: "done", output: doneOutput() }]],
+      { inject: true },
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    const snapshots: number[] = [];
+    for await (const event of runtime.run({ kind: "text", text: "hello" })) {
+      if (event.kind === "turn_end") {
+        const lc = agentLifecycleOf(runtime.agent);
+        snapshots.push(lc.state === "running" ? lc.turnIndex : -1);
+      }
+    }
+    // The single blocked turn_end must advance lifecycle turnIndex to 1
+    // BEFORE the yield so consumers see the post-advance value.
+    expect(snapshots).toEqual([1]);
+  });
+
+  test("agent.lifecycle.turnIndex advances on every turn_end (#review-round1-F4)", async () => {
+    // Pin the invariant that FSM turnIndex tracks the real running turn.
+    // Before the fix, `agent.lifecycle.turnIndex` stayed 0 for the agent's
+    // entire lifetime regardless of how many turns executed.
+    const turns = [
+      [{ kind: "turn_end" as const, turnIndex: 0 }],
+      [{ kind: "turn_end" as const, turnIndex: 1 }],
+      [{ kind: "done" as const, output: doneOutput() }],
+    ];
+    const adapter = mockAdapter(turns.flat());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      limits: { maxTurns: 10 },
+    });
+
+    // Observe lifecycle.turnIndex after each event so we can assert
+    // progression, not just the final value.
+    const observedTurnIndices: number[] = [];
+    for await (const event of runtime.run({ kind: "text", text: "go" })) {
+      if (event.kind === "turn_end") {
+        const lc = agentLifecycleOf(runtime.agent);
+        observedTurnIndices.push(lc.state === "running" ? lc.turnIndex : -1);
+      }
+    }
+    expect(observedTurnIndices).toEqual([1, 2]);
+  });
+
+  test("accumulates block feedback across consecutive retries (#review-H5)", async () => {
+    // Two consecutive stop-gate blocks then continue. Verify that the THIRD
+    // adapter.stream call sees BOTH block messages — not just the most
+    // recent one. Previously the first block's feedback was silently dropped
+    // when a second block fired.
+    const { middleware } = blockingStopMiddleware(2);
+    const { adapter, streamCalls } = multiCallAdapter(
+      [
+        [{ kind: "done", output: doneOutput() }], // 1st stream: blocked
+        [{ kind: "done", output: doneOutput() }], // 2nd stream: blocked again
+        [{ kind: "done", output: doneOutput() }], // 3rd stream: unblocked
+      ],
+      { inject: false }, // force pendingStopInput path so we can inspect messages
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [middleware],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    expect(streamCalls.length).toBe(3);
+
+    const [, retry1, retry2] = streamCalls;
+    if (!retry1 || !retry2) throw new Error("unexpected streamCalls count");
+
+    /** Extract the text-block content of a message for concise asserts. */
+    const textOf = (msg: InboundMessage): string =>
+      msg.content.flatMap((c) => (c.kind === "text" ? [c.text] : [])).join("");
+
+    // First retry (after 1st block) carries: originalUser + blockMessage#1
+    expect(retry1.kind).toBe("messages");
+    if (retry1.kind === "messages") {
+      expect(retry1.messages).toHaveLength(2);
+      const first = retry1.messages[1];
+      if (!first) throw new Error("missing block message 1");
+      expect(textOf(first)).toContain("blocked attempt 1");
+    }
+
+    // Second retry (after 2nd block) must carry: originalUser + block#1 + block#2
+    // Prior to the fix this only had [originalUser, blockMessage#2] — losing #1.
+    expect(retry2.kind).toBe("messages");
+    if (retry2.kind === "messages") {
+      expect(retry2.messages).toHaveLength(3);
+      const first = retry2.messages[1];
+      const second = retry2.messages[2];
+      if (!first || !second) throw new Error("missing accumulated block messages");
+      expect(textOf(first)).toContain("blocked attempt 1");
+      expect(textOf(second)).toContain("blocked attempt 2");
+    }
+  });
+
   test("onAfterTurn fires for stop-blocked turns", async () => {
     const { middleware, onAfterTurnCalls } = blockingStopMiddleware(1);
     const { adapter } = multiCallAdapter(
@@ -4771,6 +5426,52 @@ describe("createKoi stop gate", () => {
 
     // onAfterTurn for turn 0 was called with stopBlocked flag
     expect(onAfterTurnCalls).toContainEqual({ turnIndex: 0, stopBlocked: true });
+  });
+
+  test("#1638: adapter-emitted turn_end with stopBlocked propagates to onAfterTurn ctx", async () => {
+    // When applyActivityTimeout (or any other adapter-layer wrapper) injects
+    // a synthetic turn_end { stopBlocked: true } for a timed-out partial
+    // turn, createKoi must thread event.stopBlocked into the TurnContext
+    // passed to onAfterTurn. Otherwise middleware (checkpoint, task-anchor)
+    // would treat the aborted turn as a normal completion.
+    const observations: Array<{ readonly turnIndex: number; readonly stopBlocked: boolean }> = [];
+    const observerMw: KoiMiddleware = {
+      name: "observer",
+      describeCapabilities: () => undefined,
+      onAfterTurn: async (ctx) => {
+        observations.push({ turnIndex: ctx.turnIndex, stopBlocked: ctx.stopBlocked === true });
+      },
+    };
+
+    // Adapter emits a single turn_end carrying stopBlocked: true (the shape
+    // activity-timeout synthesizes mid-turn), followed by done.
+    const blockedAdapter: EngineAdapter = {
+      engineId: "stopblocked-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 0 };
+        yield { kind: "text_delta", delta: "partial" };
+        yield { kind: "turn_end", turnIndex: 0, stopBlocked: true };
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "interrupted",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: blockedAdapter,
+      middleware: [observerMw],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    expect(observations).toContainEqual({ turnIndex: 0, stopBlocked: true });
   });
 
   test("retry adapter stream is created after turn boundary (not before)", async () => {

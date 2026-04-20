@@ -37,6 +37,10 @@ import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
 import type {
   ApprovalHandler,
+  ComponentProvider,
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
   FileSystemBackend,
   InboundMessage,
   KoiMiddleware,
@@ -558,6 +562,13 @@ export interface KoiRuntimeConfig {
    * backend during rewind.
    */
   readonly filesystem?: FileSystemBackend | undefined;
+  /**
+   * Host-provided ComponentProviders appended after the core + stack
+   * providers and before plan-related providers. Used to wire host-owned
+   * subsystems that don't fit a preset stack (e.g. `@koi/artifacts`
+   * tools backed by a host-owned ArtifactStore). Order preserved.
+   */
+  readonly extraProviders?: readonly ComponentProvider[] | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -1347,7 +1358,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
-  const engineAdapter = createTranscriptAdapter({
+  const rawEngineAdapter = createTranscriptAdapter({
     engineId: config.engineId ?? "koi-tui",
     modelAdapter,
     transcript,
@@ -1378,6 +1389,58 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               : undefined,
           ),
   });
+  // TEMP #1638: dev-only env-var hook to engage applyActivityTimeout in the
+  // current `createTranscriptAdapter → createKoi` path so the wrapper can be
+  // exercised manually via TUI / headless before the #1459 createRuntime
+  // migration lands. Remove this block once the runtime path is the primary
+  // adapter factory for the CLI.
+  const idleWarn = Number(process.env.KOI_IDLE_WARN_MS);
+  const idleTerm = Number(process.env.KOI_IDLE_TERMINATE_MS);
+  const wall = Number(process.env.KOI_WALL_CLOCK_MS);
+  const timeoutEnabled = Number.isFinite(idleWarn) || Number.isFinite(wall);
+  const timeoutWrapped = timeoutEnabled
+    ? (await import("@koi/runtime")).applyActivityTimeout(rawEngineAdapter, {
+        ...(Number.isFinite(idleWarn) ? { idleWarnMs: idleWarn } : {}),
+        ...(Number.isFinite(idleTerm) ? { idleTerminateMs: idleTerm } : {}),
+        ...(Number.isFinite(wall) ? { maxDurationMs: wall } : {}),
+      })
+    : rawEngineAdapter;
+  // applyActivityTimeout's synthetic `done.metadata.terminatedBy` is
+  // outside createTranscriptAdapter's `explainNonCompletedStop` fallback
+  // scope (the fallback lives INSIDE the transcript adapter and never
+  // runs once the wrapper aborts the inner stream). Mirror the fallback
+  // here: when a timeout-authored `done` is about to be yielded, inject
+  // a visible `text_delta` so the TUI transcript surfaces the reason.
+  const engineAdapter: EngineAdapter = timeoutEnabled
+    ? {
+        ...timeoutWrapped,
+        stream(input: EngineInput): AsyncIterable<EngineEvent> {
+          return (async function* (): AsyncIterable<EngineEvent> {
+            for await (const ev of timeoutWrapped.stream(input)) {
+              if (ev.kind === "done" && ev.output.metadata?.terminatedBy === "activity-timeout") {
+                const reason = ev.output.metadata.terminationReason;
+                const elapsed =
+                  typeof ev.output.metadata.elapsedMs === "number"
+                    ? ev.output.metadata.elapsedMs
+                    : 0;
+                const label =
+                  reason === "idle"
+                    ? "inactivity"
+                    : reason === "wall_clock"
+                      ? "wall-clock"
+                      : String(reason ?? "unknown");
+                const secs = Math.round(elapsed / 1000);
+                yield {
+                  kind: "text_delta",
+                  delta: `\n[Turn interrupted by activity timeout (${label}) after ${secs}s.]\n`,
+                };
+              }
+              yield ev;
+            }
+          })();
+        },
+      }
+    : rawEngineAdapter;
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---
   // Intercepts tool inputs and network requests, redacting/blocking patterns
@@ -2025,6 +2088,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       providers: [
         ...coreProviders,
         ...stackContribution.providers,
+        ...(config.extraProviders ?? []),
         ...(planBundle !== undefined ? planBundle.providers : []),
         ...(planPersistBundle !== undefined ? planPersistBundle.providers : []),
       ],

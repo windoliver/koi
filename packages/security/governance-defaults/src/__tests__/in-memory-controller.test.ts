@@ -335,6 +335,17 @@ describe("createInMemoryController", () => {
       await controller.record({ kind: "turn" });
       expect(controller.reading("turn_count")?.current).toBe(2);
     });
+
+    test("turn_refund decrements turn_count without underflow", async () => {
+      const controller = createInMemoryController({ turnCountLimit: 3 });
+      await controller.record({ kind: "turn" });
+      await controller.record({ kind: "turn" });
+      await controller.record({ kind: "turn_refund", count: 1 });
+      expect(controller.reading("turn_count")?.current).toBe(1);
+
+      await controller.record({ kind: "turn_refund", count: 99 });
+      expect(controller.reading("turn_count")?.current).toBe(0);
+    });
   });
 
   describe("record(spawn) / record(spawn_release) — concurrent children semantics", () => {

@@ -52,6 +52,8 @@ export { createRollingWindow } from "./rolling-window.js";
 // controllers
 export type { SpawnChildFn, SupervisionReconciler } from "./supervision-reconciler.js";
 export { createSupervisionReconciler } from "./supervision-reconciler.js";
+export type { TerminatedSweeperConfig } from "./terminated-sweeper.js";
+export { createTerminatedSweeper } from "./terminated-sweeper.js";
 export { createTimeoutReconciler } from "./timeout-reconciler.js";
 export { createToolReconciler } from "./tool-reconciler.js";
 // transitions
