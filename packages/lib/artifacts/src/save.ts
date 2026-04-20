@@ -14,6 +14,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { BlobStore } from "@koi/blob-cas";
+import { readSessionBytes } from "./quota.js";
 import { ARTIFACT_COLUMNS, type ArtifactRow, rowToArtifact } from "./row-mapping.js";
 import type {
   Artifact,
@@ -40,6 +41,7 @@ export function createSaveArtifact(args: {
   readonly config: ArtifactStoreConfig;
 }): (input: SaveArtifactInput) => Promise<Result<Artifact, ArtifactError>> {
   const maxBytes = args.config.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
+  const maxSessionBytes = args.config.policy?.maxSessionBytes;
 
   return async (input) => {
     // Step 1: validate
@@ -50,6 +52,26 @@ export function createSaveArtifact(args: {
     const hasher = new Bun.CryptoHasher("sha256");
     hasher.update(input.data);
     const hash = hasher.digest("hex");
+
+    // Quota admission — runs BEFORE intent journaling so over-quota saves
+    // produce zero side effects (no pending_blob_puts row, no blob I/O).
+    // Only committed (blob_ready=1) rows count toward the total; in-flight
+    // saves are excluded to avoid rejecting legitimate saves below the real
+    // limit during repair windows. See quota.ts for the rationale.
+    if (maxSessionBytes !== undefined) {
+      const usedBytes = readSessionBytes(args.db, input.sessionId);
+      if (usedBytes + input.data.byteLength > maxSessionBytes) {
+        return {
+          ok: false,
+          error: {
+            kind: "quota_exceeded",
+            sessionId: input.sessionId,
+            usedBytes,
+            limitBytes: maxSessionBytes,
+          },
+        };
+      }
+    }
 
     // Step 3: journal intent (short tx, committed immediately)
     const intentId = `intent_${crypto.randomUUID()}`;

@@ -150,6 +150,93 @@ describe("saveArtifact", () => {
     );
   });
 
+  test("save succeeds when under maxSessionBytes quota", async () => {
+    await store.close();
+    store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      policy: { maxSessionBytes: 1000 },
+    });
+    const r = await store.saveArtifact({
+      sessionId: sessionId("sess_q"),
+      name: "small.txt",
+      data: new TextEncoder().encode("under quota"),
+      mimeType: "text/plain",
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("save returns quota_exceeded with accurate usedBytes + limitBytes when over", async () => {
+    await store.close();
+    // Limit is 15 bytes. First save (10 bytes) succeeds. Second save (10
+    // bytes) would take us to 20 — rejected.
+    store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      policy: { maxSessionBytes: 15 },
+    });
+    const sid = sessionId("sess_over");
+    const r1 = await store.saveArtifact({
+      sessionId: sid,
+      name: "first",
+      data: new Uint8Array(10),
+      mimeType: "application/octet-stream",
+    });
+    expect(r1.ok).toBe(true);
+    const r2 = await store.saveArtifact({
+      sessionId: sid,
+      name: "second",
+      data: new Uint8Array(10),
+      mimeType: "application/octet-stream",
+    });
+    expect(r2.ok).toBe(false);
+    if (r2.ok) throw new Error("unreachable");
+    expect(r2.error.kind).toBe("quota_exceeded");
+    if (r2.error.kind !== "quota_exceeded") throw new Error("unreachable");
+    expect(r2.error.sessionId).toBe(sid);
+    expect(r2.error.usedBytes).toBe(10);
+    expect(r2.error.limitBytes).toBe(15);
+  });
+
+  test("quota-exceeded save journals no pending_blob_puts intent", async () => {
+    const { Database } = await import("bun:sqlite");
+    await store.close();
+    store = await createArtifactStore({
+      dbPath,
+      blobDir,
+      policy: { maxSessionBytes: 5 },
+    });
+    const r = await store.saveArtifact({
+      sessionId: sessionId("sess_intentless"),
+      name: "too-big",
+      data: new Uint8Array(20),
+      mimeType: "application/octet-stream",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.error.kind).toBe("quota_exceeded");
+    await store.close();
+    // Inspect pending_blob_puts directly — must be empty since the quota
+    // check runs BEFORE intent journaling.
+    const db = new Database(dbPath);
+    const row = db.query("SELECT COUNT(*) AS n FROM pending_blob_puts").get() as {
+      readonly n: number;
+    };
+    db.close();
+    expect(row.n).toBe(0);
+  });
+
+  test("quota check is a no-op when policy.maxSessionBytes is undefined", async () => {
+    // Default config has no policy — large save succeeds.
+    const r = await store.saveArtifact({
+      sessionId: sessionId("sess_nolimit"),
+      name: "big",
+      data: new Uint8Array(10_000),
+      mimeType: "application/octet-stream",
+    });
+    expect(r.ok).toBe(true);
+  });
+
   test("pending_blob_puts is empty after successful save (intent retired)", async () => {
     // Access the underlying DB via a raw path — we don't export it publicly.
     // We'll instead save and verify the behavior indirectly: a subsequent save
