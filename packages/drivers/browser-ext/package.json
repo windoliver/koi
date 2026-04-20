@@ -1,0 +1,28 @@
+{
+  "name": "@koi/browser-ext",
+  "description": "Extension-injected browser session driver + native messaging host — attaches to user's live Chrome without restart (closes issue #1609)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./native-host": {
+      "types": "./dist/native-host/index.d.ts",
+      "import": "./dist/native-host/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}

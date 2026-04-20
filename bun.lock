@@ -16,6 +16,14 @@
         "typescript": "^6.0.2",
       },
     },
+    "packages/drivers/browser-ext": {
+      "name": "@koi/browser-ext",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/exec/hook-prompt": {
       "name": "@koi/hook-prompt",
       "version": "0.0.0",
@@ -1240,6 +1248,8 @@
     "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
+
+    "@koi/browser-ext": ["@koi/browser-ext@workspace:packages/drivers/browser-ext"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
