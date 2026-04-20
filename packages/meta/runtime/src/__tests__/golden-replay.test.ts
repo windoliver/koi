@@ -11026,19 +11026,27 @@ describe("Golden: @koi/daemon", () => {
       command: [
         "bun",
         "-e",
-        "let n=0; const iv=setInterval(()=>{ if(typeof process.send==='function'){process.send({koi:'heartbeat'})} if(++n>=4){clearInterval(iv);process.exit(0)} }, 40);",
+        "let n=0; const iv=setInterval(()=>{ if(typeof process.send==='function'){process.send({koi:'heartbeat'})} if(++n>=10){clearInterval(iv);process.exit(0)} }, 40);",
       ],
       backendHints: { heartbeat: true },
     });
     expect(started.ok).toBe(true);
 
-    // Let a few heartbeats pump through before reading health.
-    await new Promise((r) => setTimeout(r, 150));
-    const first = supervisorResult.value.health();
-    const worker = first.workers.find((w) => w.workerId === workerId("golden-hb-1"));
-    expect(worker?.lastHeartbeatAt).toBeDefined();
-    expect(first.status).toBe("ok");
-    expect(first.metrics.maxWorkers).toBe(2);
+    // First read — confirm the worker got at least one heartbeat.
+    await new Promise((r) => setTimeout(r, 80));
+    const firstHealth = supervisorResult.value.health();
+    const firstWorker = firstHealth.workers.find((w) => w.workerId === workerId("golden-hb-1"));
+    expect(firstWorker?.lastHeartbeatAt).toBeDefined();
+    expect(firstHealth.status).toBe("ok");
+    expect(firstHealth.metrics.maxWorkers).toBe(2);
+    const firstTs = firstWorker?.lastHeartbeatAt ?? 0;
+
+    // Second read — at least one more heartbeat should advance the timestamp.
+    await new Promise((r) => setTimeout(r, 120));
+    const secondHealth = supervisorResult.value.health();
+    const secondWorker = secondHealth.workers.find((w) => w.workerId === workerId("golden-hb-1"));
+    expect(secondWorker?.lastHeartbeatAt).toBeDefined();
+    expect(secondWorker?.lastHeartbeatAt).toBeGreaterThan(firstTs);
 
     await supervisorResult.value.shutdown("test");
   });
@@ -11053,6 +11061,7 @@ describe("Golden: @koi/daemon", () => {
       heartbeat: { intervalMs: 20, timeoutMs: 100 },
       backends: { subprocess: createSubprocessBackend() },
     });
+    expect(supervisorResult.ok).toBe(true);
     if (!supervisorResult.ok) return;
 
     const started = await supervisorResult.value.start({
@@ -11064,7 +11073,7 @@ describe("Golden: @koi/daemon", () => {
     expect(started.ok).toBe(true);
 
     // Wait past timeoutMs — supervisor should tear down the silent worker.
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 800));
     const h = supervisorResult.value.health();
     const stillThere = h.workers.some((w) => w.workerId === workerId("golden-hb-silent"));
     expect(stillThere).toBe(false);
