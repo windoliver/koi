@@ -101,6 +101,7 @@
     "@koi/tools-core": "workspace:*",
     "@koi/tools-web": "workspace:*",
     "@koi/tui": "workspace:*",
+    "@koi/violation-store-sqlite": "workspace:*",
     "@koi/watch-patterns": "workspace:*",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "0.214.0",
