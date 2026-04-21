@@ -1,13 +1,12 @@
 import { closeSync, openSync } from "node:fs";
 import type {
-  KoiError,
-  Result,
   WorkerBackend,
   WorkerEvent,
   WorkerHandle,
   WorkerId,
   WorkerSpawnRequest,
-} from "@koi/core";
+} from "@koi/core/daemon";
+import type { KoiError, Result } from "@koi/core/errors";
 
 interface SubprocState {
   readonly proc: ReturnType<typeof Bun.spawn>;

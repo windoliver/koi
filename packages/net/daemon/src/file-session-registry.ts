@@ -17,11 +17,10 @@ import type {
   BackgroundSessionRecord,
   BackgroundSessionRegistry,
   BackgroundSessionUpdate,
-  KoiError,
-  Result,
   WorkerId,
-} from "@koi/core";
-import { validateBackgroundSessionRecord } from "@koi/core";
+} from "@koi/core/daemon";
+import { validateBackgroundSessionRecord } from "@koi/core/daemon";
+import type { KoiError, Result } from "@koi/core/errors";
 
 /**
  * Allowed `workerId` shape for on-disk use. Restrictive by design: the id

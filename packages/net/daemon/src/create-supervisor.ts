@@ -1,7 +1,4 @@
 import type {
-  KoiError,
-  ProcessDescriptor,
-  Result,
   Supervisor,
   SupervisorConfig,
   WorkerBackend,
@@ -11,8 +8,10 @@ import type {
   WorkerId,
   WorkerRestartPolicy,
   WorkerSpawnRequest,
-} from "@koi/core";
-import { DEFAULT_WORKER_RESTART_POLICY, validateSupervisorConfig } from "@koi/core";
+} from "@koi/core/daemon";
+import { DEFAULT_WORKER_RESTART_POLICY, validateSupervisorConfig } from "@koi/core/daemon";
+import type { KoiError, Result } from "@koi/core/errors";
+import type { ProcessDescriptor } from "@koi/core/process-descriptor";
 
 /**
  * Internal pool entry. Mutable fields:
@@ -333,7 +332,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return {
         ok: false,
         error: {
-          code: "UNAVAILABLE",
+          code: "EXTERNAL",
           message: "Supervisor is shutting down; not accepting new workers",
           retryable: false,
         },
@@ -355,7 +354,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return {
         ok: false,
         error: {
-          code: "RESOURCE_EXHAUSTED",
+          code: "RATE_LIMIT",
           message: `Supervisor at maxWorkers=${config.maxWorkers}`,
           retryable: true,
         },
@@ -403,7 +402,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return {
         ok: false,
         error: {
-          code: "UNAVAILABLE",
+          code: "EXTERNAL",
           message: "No registered backend can handle this spawn",
           retryable: false,
         },
@@ -537,7 +536,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return {
         ok: false,
         error: {
-          code: "UNAVAILABLE",
+          code: "EXTERNAL",
           message: reason,
           retryable: false,
         },

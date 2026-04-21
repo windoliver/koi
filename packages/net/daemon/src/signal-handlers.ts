@@ -1,4 +1,4 @@
-import type { Supervisor } from "@koi/core";
+import type { Supervisor } from "@koi/core/daemon";
 
 export interface SignalHandlerOptions {
   /**
