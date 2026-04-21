@@ -35,6 +35,12 @@ afterEach(async () => {
   } else {
     delete process.env.OPENAI_API_KEY;
   }
+  // Restore module mocks — Bun's mock.module is process-global, so without
+  // this our mocks for @koi/dream / @koi/memory-fs / @koi/model-openai-compat
+  // would leak into other test files (e.g. memory-adapter.test.ts) loaded
+  // in the same process and cause "Expected: true, Received: undefined"
+  // failures because createMemoryStore would still return the mock object.
+  mock.restore();
 });
 
 // ---------------------------------------------------------------------------
