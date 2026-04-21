@@ -16,7 +16,7 @@ import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 import { deduplicateEntries, selectEntriesWithinBudget } from "@koi/validation";
 import { compactCollectiveMemory, shouldCompact } from "./compact.js";
 import { createDefaultExtractor, isInstruction } from "./extract-learnings.js";
-import { createExtractionPrompt, parseExtractionResponse } from "./extract-llm.js";
+import { createExtractionPrompt, parseExtractionResponseStrict } from "./extract-llm.js";
 import { formatCollectiveMemory } from "./inject.js";
 import type { CollectiveMemoryMiddlewareConfig } from "./types.js";
 
@@ -51,10 +51,14 @@ function getRedactor(): ReturnType<typeof createRedactor> {
 }
 
 function sanitizeOutput(text: string): string {
-  const truncated = text.length > MAX_OUTPUT_BYTES ? text.slice(0, MAX_OUTPUT_BYTES) : text;
-  const { text: redacted } = getRedactor().redactString(truncated);
+  // Redact BEFORE truncating: if a secret straddles the truncation boundary,
+  // truncating first would leave a partial secret prefix that no longer matches
+  // any redactor pattern, allowing the partial credential into persisted memory.
+  const { text: redacted } = getRedactor().redactString(text);
+  const truncated =
+    redacted.length > MAX_OUTPUT_BYTES ? redacted.slice(0, MAX_OUTPUT_BYTES) : redacted;
   // Escape untrusted-data boundary tokens to prevent injection breakout.
-  return redacted
+  return truncated
     .replaceAll("</untrusted-data>", "&lt;/untrusted-data&gt;")
     .replaceAll("<untrusted-data>", "&lt;untrusted-data&gt;");
 }
@@ -156,15 +160,26 @@ export function createCollectiveMemoryMiddleware(
   /**
    * Compatibility shim for the resolveBrickId config option. The documented
    * signature accepts EITHER a string agent name (legacy) OR a ResolveBrickContext
-   * (tenant-aware). To avoid silently breaking pre-existing string-only resolvers
-   * that destructure or compare the input as a string, we always try the context
-   * form first and fall back to a plain agentName string if the resolver returns
-   * undefined.
+   * (tenant-aware). Legacy string-only resolvers may throw if given an object
+   * (e.g. they call .startsWith() or destructure as a string), so we wrap the
+   * context-form probe in try/catch and fall back to the string form on either
+   * undefined OR a thrown error. Failures of the string fallback propagate so
+   * the caller can decide whether to skip persistence/injection.
    */
   function resolveBrickIdCompat(ctx: ReturnType<typeof resolveCtxFor>): string | undefined {
-    const fromCtx = config.resolveBrickId(ctx);
-    if (fromCtx !== undefined) return fromCtx;
-    return config.resolveBrickId(ctx.agentName);
+    try {
+      const fromCtx = config.resolveBrickId(ctx);
+      if (fromCtx !== undefined) return fromCtx;
+    } catch {
+      // Legacy string-only resolver threw on object input — fall through to
+      // the string form below.
+    }
+    try {
+      return config.resolveBrickId(ctx.agentName);
+    } catch {
+      // Both forms threw; treat as unresolved so caller skips persistence.
+      return undefined;
+    }
   }
 
   return {
@@ -221,9 +236,14 @@ export function createCollectiveMemoryMiddleware(
           maxTokens: config.extractionMaxTokens ?? 1024,
         });
 
-        const candidates = parseExtractionResponse(response.content).filter((c) =>
-          acceptLearning(c.content),
-        );
+        const parseResult = parseExtractionResponseStrict(response.content);
+        if (!parseResult.ok) {
+          // Malformed response: throw so the outer catch counts a failed end
+          // attempt and PRESERVES the buffer for retry. Distinct from the
+          // legitimate empty-candidates outcome below.
+          throw new Error(`extraction parse failed: ${parseResult.reason}`);
+        }
+        const candidates = parseResult.candidates.filter((c) => acceptLearning(c.content));
 
         if (candidates.length > 0) {
           const rawId = resolveBrickIdCompat(resolveCtxFor(ctx));

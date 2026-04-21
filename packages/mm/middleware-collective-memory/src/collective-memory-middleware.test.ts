@@ -151,6 +151,36 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(evt.kind).toBe("persistence-dropped");
     });
 
+    test("compat shim catches throw from string-only resolver given object input", async () => {
+      const store = createMockForgeStore();
+      // Pathological legacy resolver that calls .toLowerCase on input — throws on object
+      const throwingResolver = mock((input: unknown): string | undefined => {
+        // Force a TypeError on object input
+        const name = (input as string).toLowerCase();
+        return name === "researcher" ? "sha256:abc123" : undefined;
+      });
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({
+          forgeStore: store,
+          resolveBrickId: throwingResolver as (
+            input: string | { agentName: string },
+          ) => string | undefined,
+        }),
+      );
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      // wrapToolCall must NOT throw despite the resolver throwing on object input
+      await expect(mw.wrapToolCall?.(createTurnCtx(), req, next)).resolves.toBeDefined();
+
+      // Persist still ran via the string fallback path
+      expect(store.update).toHaveBeenCalled();
+      expect(throwingResolver).toHaveBeenCalledTimes(2);
+    });
+
     test("legacy string-only resolveBrickId still resolves bricks (compat shim)", async () => {
       const store = createMockForgeStore();
       // Legacy resolver: only handles strings, returns undefined for objects
@@ -975,6 +1005,38 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(modelCall).not.toHaveBeenCalled();
     });
 
+    test("preserves buffer + counts as failed attempt on malformed LLM response", async () => {
+      const onError = mock(() => undefined);
+      const modelCall = mock(
+        async (): Promise<ModelResponse> => ({
+          // Non-JSON response — parseExtractionResponseStrict returns ok:false
+          content: "I am sorry, I cannot extract anything useful here.",
+          model: "haiku",
+        }),
+      );
+      const store = createMockForgeStore();
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({ forgeStore: store, modelCall, onError }),
+      );
+
+      await mw.onSessionStart?.(createSessionCtx());
+      const next = mock(async () => ({ output: "rich worker output" }) satisfies ToolResponse);
+      await mw.wrapToolCall?.(
+        createTurnCtx(),
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
+        next,
+      );
+
+      // Three failed extraction attempts due to malformed responses
+      await mw.onSessionEnd?.(createSessionCtx());
+      await mw.onSessionEnd?.(createSessionCtx());
+      await mw.onSessionEnd?.(createSessionCtx());
+
+      // After MAX_END_ATTEMPTS the abandonment fires
+      expect(onError).toHaveBeenCalled();
+      expect(store.update).not.toHaveBeenCalled();
+    });
+
     test("preserves buffer when persistLearnings returns ok:false (load-failed)", async () => {
       // LLM returns valid candidates but the brick load fails on persist —
       // session buffer must be preserved so a later attempt can retry.
@@ -1145,6 +1207,47 @@ describe("secret redaction", () => {
     const content = persistedMemory.collectiveMemory?.entries?.[0]?.content ?? "";
     expect(content).not.toContain("sk-proj-abcdefghij1234567890abcdefghij");
     expect(content).toContain("[REDACTED]");
+  });
+
+  test("redacts secrets BEFORE truncating so boundary-spanning secrets are caught", async () => {
+    // Place a secret deep enough that it would be split by an 8KiB truncation
+    // boundary if redaction ran AFTER truncation. Padding to push the secret
+    // across the MAX_OUTPUT_BYTES boundary (8192 bytes).
+    const padding = "x".repeat(8180);
+    const secret = "sk-proj-abcdefghij1234567890abcdefghij";
+    const output = `[LEARNING:gotcha] Use cache. ${padding} ${secret} is the key`;
+    expect(output.length).toBeGreaterThan(8192);
+
+    const store = createMockForgeStore();
+    const mw = createCollectiveMemoryMiddleware(
+      createConfig({
+        forgeStore: store,
+        extractor: {
+          extract: (text: string) => {
+            if (text.includes("[LEARNING:gotcha]")) {
+              return [{ content: text, category: "gotcha", confidence: 1.0 }];
+            }
+            return [];
+          },
+        },
+      }),
+    );
+
+    await mw.onSessionStart?.(createSessionCtx());
+    const next = mock(async () => ({ output }) satisfies ToolResponse);
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "forge_agent", input: {} }, next);
+
+    const updateCalls = (store.update as ReturnType<typeof mock>).mock.calls;
+    if (updateCalls.length > 0) {
+      const persisted = (updateCalls[0] as unknown[])[1] as {
+        collectiveMemory?: { entries?: Array<{ content: string }> };
+      };
+      const content = persisted.collectiveMemory?.entries?.[0]?.content ?? "";
+      // The full secret (or any prefix of length >= 8 chars beyond "sk-proj-")
+      // should not appear in persisted content
+      expect(content).not.toContain(secret);
+      expect(content).not.toContain("sk-proj-abcdefghij");
+    }
   });
 
   test("redacts bearer tokens from worker output", async () => {

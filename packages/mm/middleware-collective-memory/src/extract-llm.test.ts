@@ -1,5 +1,37 @@
 import { describe, expect, test } from "bun:test";
-import { createExtractionPrompt, parseExtractionResponse } from "./extract-llm.js";
+import {
+  createExtractionPrompt,
+  parseExtractionResponse,
+  parseExtractionResponseStrict,
+} from "./extract-llm.js";
+
+describe("parseExtractionResponseStrict", () => {
+  test("returns ok:true with empty candidates for legitimate empty array", () => {
+    const result = parseExtractionResponseStrict("[]");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.candidates).toHaveLength(0);
+  });
+
+  test("returns ok:false reason='no-array-found' for non-JSON prose", () => {
+    const result = parseExtractionResponseStrict("Sorry, no learnings found.");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("no-array-found");
+  });
+
+  test("returns ok:false reason='json-parse-error' for malformed JSON", () => {
+    const result = parseExtractionResponseStrict("[{ malformed: not, valid: json }]");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("json-parse-error");
+  });
+
+  test("returns ok:true with candidates for valid array", () => {
+    const result = parseExtractionResponseStrict(
+      JSON.stringify([{ content: "valid learning", category: "gotcha" }]),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.candidates).toHaveLength(1);
+  });
+});
 
 describe("createExtractionPrompt", () => {
   test("wraps each output in untrusted-data tags", () => {

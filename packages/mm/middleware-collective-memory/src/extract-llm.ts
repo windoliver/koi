@@ -53,36 +53,64 @@ Worker outputs:
 ${wrapped}`;
 }
 
-export function parseExtractionResponse(response: string): readonly LearningCandidate[] {
-  try {
-    const arrayMatch = response.match(/\[[\s\S]*\]/);
-    if (arrayMatch === null) return [];
-
-    const parsed: unknown = JSON.parse(arrayMatch[0]);
-    if (!Array.isArray(parsed)) return [];
-
-    const results: LearningCandidate[] = [];
-    for (const raw of parsed) {
-      if (raw === null || typeof raw !== "object") continue;
-
-      const entry = raw as Record<string, unknown>;
-      const content = typeof entry.content === "string" ? entry.content.trim() : "";
-      if (content.length === 0) continue;
-
-      const rawCategory = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
-      const category: CollectiveMemoryCategory = isValidCategory(rawCategory)
-        ? rawCategory
-        : "context";
-
-      results.push({
-        content: content.length > MAX_ENTRY_LENGTH ? content.slice(0, MAX_ENTRY_LENGTH) : content,
-        category,
-        confidence: LLM_CONFIDENCE,
-      });
-    }
-
-    return results;
-  } catch (_e: unknown) {
-    return [];
+/**
+ * Strict variant: distinguishes "malformed response" from "empty array of
+ * candidates" so callers can preserve buffered state on parse failure.
+ *
+ *   { ok: true, candidates }     — parse succeeded; empty array means LLM said
+ *                                  no learnings worth keeping (legitimate).
+ *   { ok: false, reason, raw }   — response was malformed; caller should NOT
+ *                                  treat this as success.
+ */
+export function parseExtractionResponseStrict(response: string):
+  | { readonly ok: true; readonly candidates: readonly LearningCandidate[] }
+  | {
+      readonly ok: false;
+      readonly reason: "no-array-found" | "json-parse-error" | "not-an-array";
+      readonly raw: string;
+    } {
+  const arrayMatch = response.match(/\[[\s\S]*\]/);
+  if (arrayMatch === null) {
+    return { ok: false, reason: "no-array-found", raw: response };
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(arrayMatch[0]);
+  } catch (_e: unknown) {
+    return { ok: false, reason: "json-parse-error", raw: response };
+  }
+
+  if (!Array.isArray(parsed)) {
+    return { ok: false, reason: "not-an-array", raw: response };
+  }
+
+  const results: LearningCandidate[] = [];
+  for (const raw of parsed) {
+    if (raw === null || typeof raw !== "object") continue;
+
+    const entry = raw as Record<string, unknown>;
+    const content = typeof entry.content === "string" ? entry.content.trim() : "";
+    if (content.length === 0) continue;
+
+    const rawCategory = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+    const category: CollectiveMemoryCategory = isValidCategory(rawCategory)
+      ? rawCategory
+      : "context";
+
+    results.push({
+      content: content.length > MAX_ENTRY_LENGTH ? content.slice(0, MAX_ENTRY_LENGTH) : content,
+      category,
+      confidence: LLM_CONFIDENCE,
+    });
+  }
+
+  return { ok: true, candidates: results };
+}
+
+/** Legacy lossy variant kept for backwards compatibility. New code should
+ * prefer parseExtractionResponseStrict so it can react to malformed responses. */
+export function parseExtractionResponse(response: string): readonly LearningCandidate[] {
+  const result = parseExtractionResponseStrict(response);
+  return result.ok ? result.candidates : [];
 }
