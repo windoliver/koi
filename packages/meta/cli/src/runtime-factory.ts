@@ -26,9 +26,9 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
@@ -726,10 +726,13 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditSqlitePath?: string | undefined;
-  /** Absolute path to the SQLite DB backing the ViolationStore. When set,
-   *  policy-violation events are persisted to this DB and made queryable via
-   *  `governanceBackend.violations`. Opt-in; if omitted, violations are only
-   *  surfaced in-memory via the governance bridge. */
+  /** Path to the SQLite DB backing the ViolationStore.
+   *  - `undefined` (default): auto-wires to `~/.koi/violations.db` when
+   *    governance is enabled — mirrors the `~/.koi/governance-alerts.jsonl`
+   *    convention from gov-9 so `/governance` history works out of the box.
+   *  - Non-empty string: explicit override path.
+   *  - Empty string `""`: disables the store entirely (violations only
+   *    surfaced in-memory via the governance bridge for the current session). */
   readonly violationSqlitePath?: string | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
@@ -2292,10 +2295,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // in observer mode (observerOnly silences record() only, not
     // evaluator.evaluate()). Absent --policy-file, fall back to the default-
     // allow backend so /governance renders the synthetic descriptor.
-    // --- Violation store (opt-in via config.violationSqlitePath) ---
-    const violationStore =
+    // --- Violation store ---
+    // Auto-wires to ~/.koi/violations.db when governance is enabled (mirrors
+    // the governance-alerts.jsonl convention established by gov-9 — zero
+    // config required for /governance history backfill to work).
+    // Operators can override via --violation-sqlite=<path>.
+    // Explicit "" (empty string) disables the default.
+    const resolvedViolationPath =
       config.violationSqlitePath !== undefined
-        ? createSqliteViolationStore({ dbPath: config.violationSqlitePath })
+        ? config.violationSqlitePath.length > 0
+          ? config.violationSqlitePath
+          : undefined
+        : governanceEnabled
+          ? join(homedir(), ".koi", "violations.db")
+          : undefined;
+    if (resolvedViolationPath !== undefined) {
+      // Parent dir must exist before bun:sqlite opens the file.
+      const parent = dirname(resolvedViolationPath);
+      if (!existsSync(parent)) {
+        mkdirSync(parent, { recursive: true });
+      }
+    }
+    const violationStore =
+      resolvedViolationPath !== undefined
+        ? createSqliteViolationStore({ dbPath: resolvedViolationPath })
         : undefined;
 
     const rawGovernanceBackend = governanceEnabled

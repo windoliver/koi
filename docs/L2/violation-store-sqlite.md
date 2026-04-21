@@ -68,3 +68,15 @@ truncate the DB must drop and recreate the file.
 - `offset` — opaque cursor encoding the last-seen `id`
 
 Returns `ViolationPage { items, cursor?, total? }`.
+
+## Default wiring
+
+When governance is enabled, `runtime-factory.ts` auto-wires the store to
+`~/.koi/violations.db` — no flag required. This mirrors the
+`~/.koi/governance-alerts.jsonl` convention from gov-9 so `/governance`
+history backfill works out of the box.
+
+Operators override via `--violation-sqlite=<path>` (passed through as
+`KoiRuntimeConfig.violationSqlitePath`). Passing an empty string (`""`)
+disables the store entirely; violations are then only surfaced in-memory
+through the governance bridge for the current session.
