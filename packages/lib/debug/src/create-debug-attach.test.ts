@@ -184,6 +184,52 @@ describe("createDebugAttach", () => {
     expect(session.state().kind).toBe("detached");
   });
 
+  test("breakOn with error predicate throws VALIDATION error", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+
+    expect(() => session.breakOn({ kind: "error" })).toThrow("error breakpoints are not supported");
+  });
+
+  test("wrapToolCall preserves caller callId and emits tool_result", async () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    const eventKinds: string[] = [];
+    const callIds: string[] = [];
+    session.onDebugEvent((e) => eventKinds.push(e.kind));
+
+    const fakeCallId = "caller-provided-id";
+    const fakeRequest: import("@koi/core").ToolRequest = {
+      toolId: "my_tool",
+      callId: fakeCallId,
+      input: {},
+    };
+    const fakeNext = async (_r: import("@koi/core").ToolRequest) =>
+      ({ output: "ok", callId: fakeCallId }) as import("@koi/core").ToolResponse;
+
+    await middleware.wrapToolCall?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      fakeRequest,
+      fakeNext,
+    );
+
+    const engineEvents = session.events();
+    const startEvt = engineEvents.find((e) => e.kind === "tool_call_start") as Extract<
+      import("@koi/core").EngineEvent,
+      { kind: "tool_call_start" }
+    >;
+    const resultEvt = engineEvents.find((e) => e.kind === "tool_result");
+
+    expect(startEvt).toBeDefined();
+    expect(startEvt?.callId).toBe(fakeCallId);
+    expect(resultEvt).toBeDefined();
+  });
+
   test("resume on non-paused returns VALIDATION error", () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
@@ -231,6 +277,36 @@ describe("createDebugObserve", () => {
     createDebugAttach({ agent });
     const result = createDebugObserve(agent.pid.id, agent);
     expect(result.ok).toBe(true);
+  });
+
+  test("observer inspectComponent paginates arrays correctly", () => {
+    const agent = makeAgent();
+    // Attach and set a large array component on the agent
+    const largeArray = Array.from({ length: 100 }, (_, i) => i);
+    (agent.components() as Map<string, unknown>).set("test:list", largeArray);
+
+    const attachResult = createDebugAttach({ agent });
+    if (!attachResult.ok) return;
+
+    const observeResult = createDebugObserve(agent.pid.id, agent);
+    if (!observeResult.ok) return;
+    const observer = observeResult.value;
+
+    const snap = observer.inspectComponent(
+      "test:list" as import("@koi/core").SubsystemToken<number[]>,
+      {
+        limit: 10,
+        offset: 5,
+      },
+    );
+
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) return;
+    expect(snap.value.totalItems).toBe(100);
+    expect(snap.value.hasMore).toBe(true);
+    expect(Array.isArray(snap.value.data)).toBe(true);
+    expect((snap.value.data as number[]).length).toBe(10);
+    expect((snap.value.data as number[])[0]).toBe(5);
   });
 
   test("observer receives debug events", async () => {

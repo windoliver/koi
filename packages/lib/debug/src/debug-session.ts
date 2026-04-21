@@ -130,7 +130,8 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       const until = options?.until;
 
       if (until !== undefined) {
-        controller.addBreakpoint(until, { once: true, label: "step-until" });
+        const bpResult = controller.addBreakpoint(until, { once: true, label: "step-until" });
+        if (!bpResult.ok) return bpResult;
       } else {
         const targetTurn = controller.turnIndex() + count;
         controller.addBreakpoint(
@@ -189,7 +190,11 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
     },
 
     breakOn: (predicate: BreakpointPredicate, options?: BreakpointOptions): Breakpoint => {
-      return controller.addBreakpoint(predicate, options);
+      const result = controller.addBreakpoint(predicate, options);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      return result.value;
     },
 
     removeBreakpoint: (bpId: BreakpointId): boolean => controller.removeBreakpoint(bpId),

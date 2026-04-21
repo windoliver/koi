@@ -13,12 +13,14 @@ import type {
   DebugEvent,
   DebugSessionId,
   EngineEvent,
+  KoiError,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  Result,
   ToolCallId,
   ToolHandler,
   ToolRequest,
@@ -43,7 +45,7 @@ export interface DebugController {
   readonly addBreakpoint: (
     predicate: BreakpointPredicate,
     options?: BreakpointOptions,
-  ) => Breakpoint;
+  ) => Result<Breakpoint, KoiError>;
   readonly removeBreakpoint: (id: BreakpointId) => boolean;
   readonly breakpoints: () => readonly Breakpoint[];
   readonly releaseGate: () => void;
@@ -172,11 +174,12 @@ export function createDebugMiddleware(
     ): Promise<ToolResponse> => {
       if (!active) return next(request);
 
-      const callId: ToolCallId = toolCallId(crypto.randomUUID());
+      const callId: ToolCallId = toolCallId(request.callId ?? crypto.randomUUID());
 
       await processEvent({ kind: "tool_call_start", toolName: request.toolId, callId });
       const response = await next(request);
       await processEvent({ kind: "tool_call_end", callId, result: response.output });
+      await processEvent({ kind: "tool_result", callId, output: response.output });
 
       return response;
     },
@@ -234,7 +237,19 @@ export function createDebugMiddleware(
       }
     },
 
-    addBreakpoint: (predicate, options) => {
+    addBreakpoint: (predicate, options): Result<Breakpoint, KoiError> => {
+      if (predicate.kind === "error") {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              "error breakpoints are not supported: the debug middleware only observes " +
+              "turn and tool-call lifecycle events. Use a turn or tool_call breakpoint instead.",
+            retryable: false,
+          },
+        };
+      }
       bpCounter += 1;
       const id = breakpointId(`bp-${String(bpCounter)}`);
       const entry: BreakpointEntry = {
@@ -244,7 +259,7 @@ export function createDebugMiddleware(
         label: options?.label,
       };
       breakpointMap.set(id as string, entry);
-      return { id, predicate, once: entry.once, label: entry.label };
+      return { ok: true, value: { id, predicate, once: entry.once, label: entry.label } };
     },
 
     removeBreakpoint: (id) => breakpointMap.delete(id as string),

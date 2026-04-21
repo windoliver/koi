@@ -90,10 +90,18 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
 
       const limit = options?.limit ?? DEFAULT_INSPECT_LIMIT;
       const offset = options?.offset ?? 0;
+      const paginated = paginateData(value, offset, limit);
 
       return {
         ok: true,
-        value: { token: token as string, data: value, offset, limit, hasMore: false },
+        value: {
+          token: token as string,
+          data: paginated.data,
+          totalItems: paginated.totalItems,
+          offset,
+          limit,
+          hasMore: paginated.hasMore,
+        },
       };
     },
 
@@ -130,4 +138,31 @@ function isSerializable(value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+interface PaginatedResult {
+  readonly data: unknown;
+  readonly totalItems?: number | undefined;
+  readonly hasMore: boolean;
+}
+
+function paginateData(value: unknown, offset: number, limit: number): PaginatedResult {
+  if (Array.isArray(value)) {
+    return {
+      data: value.slice(offset, offset + limit),
+      totalItems: value.length,
+      hasMore: offset + limit < value.length,
+    };
+  }
+
+  if (value instanceof Map) {
+    const entries = [...value.entries()];
+    return {
+      data: Object.fromEntries(entries.slice(offset, offset + limit)),
+      totalItems: entries.length,
+      hasMore: offset + limit < entries.length,
+    };
+  }
+
+  return { data: value, hasMore: false };
 }
