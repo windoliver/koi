@@ -63,6 +63,14 @@ export interface CollectiveMemoryMiddlewareConfig {
   /** Max tokens for extraction response. Default: 1024. */
   readonly extractionMaxTokens?: number | undefined;
   /**
+   * Total input byte budget for the session-end LLM extraction prompt.
+   * Default: 32_768 (~8K tokens at 4 chars/token, comfortably under common
+   * model context windows). The middleware drops OLDEST buffered outputs
+   * first to fit, so the most recent learnings always make it into the prompt
+   * even on busy sessions.
+   */
+  readonly extractionInputBudget?: number | undefined;
+  /**
    * Persist learnings extracted from spawned-child tool outputs to the parent
    * agent's brick. Default: false. When false, spawn outputs are still observable
    * but are not written to any brick — child-attributed persistence requires the

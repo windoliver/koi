@@ -69,6 +69,27 @@ function generateEntryId(): string {
   return `cm_${ts}_${rand}`;
 }
 
+/**
+ * Drop oldest outputs until the total byte length fits the budget. Always
+ * preserves the most recent entries since they are most likely to contain the
+ * freshest learnings the extraction model should see.
+ */
+function trimOutputsToBudget(outputs: readonly string[], budget: number): readonly string[] {
+  if (budget <= 0) return [];
+  // Walk from the END forwards, accumulating size, and keep only what fits.
+  // let justified: cumulative byte counter
+  let total = 0;
+  // let justified: index of the first kept output (from the front)
+  let firstKept = outputs.length;
+  for (let i = outputs.length - 1; i >= 0; i--) {
+    const len = (outputs[i] ?? "").length;
+    if (total + len > budget) break;
+    total += len;
+    firstKept = i;
+  }
+  return outputs.slice(firstKept);
+}
+
 export function createCollectiveMemoryMiddleware(
   config: CollectiveMemoryMiddlewareConfig,
 ): KoiMiddleware {
@@ -85,6 +106,8 @@ export function createCollectiveMemoryMiddleware(
   // the middleware to run inside each child's session.
   const persistSpawnOutputs = config.persistSpawnOutputs ?? false;
   const validateLearning = config.validateLearning;
+  // ~32KB ~= 8K tokens at 4 chars/token; comfortably under common context windows.
+  const extractionInputBudget = config.extractionInputBudget ?? 32_768;
 
   function acceptLearning(content: string): boolean {
     if (isInstruction(content)) return false;
@@ -214,7 +237,11 @@ export function createCollectiveMemoryMiddleware(
         return;
       }
 
-      const outputs = state.outputs;
+      // Apply a hard input byte budget so oversized sessions degrade by partial
+      // extraction instead of producing a prompt that exceeds the model's context
+      // window. Drop OLDEST outputs first — most recent learnings are typically
+      // the most valuable to extract.
+      const outputs = trimOutputsToBudget(state.outputs, extractionInputBudget);
 
       // Keep the session state alive until extraction and persistence complete.
       // If any step fails, do NOT delete — the buffered outputs remain available
@@ -329,6 +356,14 @@ export function createCollectiveMemoryMiddleware(
             sessionId: ctx.session.sessionId,
             cause: persistResult.cause,
           });
+        } else {
+          // Memory changed in this session: clear the injected flag so the next
+          // wrapModelCall re-fetches and re-injects the updated brick. Without
+          // this, learnings persisted mid-session never reach later model turns.
+          const current = sessions.get(ctx.session.sessionId);
+          if (current !== undefined) {
+            sessions.set(ctx.session.sessionId, { ...current, injected: false });
+          }
         }
       } catch (cause: unknown) {
         // Thrown failure (e.g. forgeStore implementation throws): also surface.

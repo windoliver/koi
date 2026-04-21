@@ -129,6 +129,58 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(store.update).not.toHaveBeenCalled();
     });
 
+    test("clears injected flag after successful persistence so next turn re-injects", async () => {
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e0",
+            content: "initial learning",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const ctx = createTurnCtx();
+
+      // Turn 1: model call → injection happens (counts as 1 injected call)
+      const modelReq: ModelRequest = {
+        messages: [{ content: [{ kind: "text", text: "hi" }], senderId: "user", timestamp: NOW }],
+      };
+      let injectedCount = 0;
+      const modelNext = mock(async (r: ModelRequest): Promise<ModelResponse> => {
+        if (r.messages.length > 1) injectedCount++;
+        return { content: "", model: "test-model" };
+      });
+      await mw.wrapModelCall?.(ctx, modelReq, modelNext);
+      expect(injectedCount).toBe(1);
+
+      // Spawn tool call → persists new learning → should reset injected flag
+      const toolReq: ToolRequest = {
+        toolId: "forge_agent",
+        input: { agentName: "researcher" },
+      };
+      const toolResp: ToolResponse = { output: "[LEARNING:gotcha] new insight from spawn" };
+      const toolNext = mock(async () => toolResp);
+      await mw.wrapToolCall?.(ctx, toolReq, toolNext);
+
+      // Turn 2: model call after persistence → injection should re-run
+      await mw.wrapModelCall?.(ctx, modelReq, modelNext);
+      expect(injectedCount).toBe(2);
+
+      // Turn 3: model call without intervening write → injected flag persists, no re-injection
+      await mw.wrapModelCall?.(ctx, modelReq, modelNext);
+      expect(injectedCount).toBe(2);
+    });
+
     test("emits onError(persistence-dropped) when wrapToolCall persistence fails", async () => {
       const store = createMockForgeStore();
       // Make update fail with a non-CONFLICT error so persistLearnings returns ok:false
@@ -1003,6 +1055,45 @@ describe("createCollectiveMemoryMiddleware", () => {
       modelCall.mockClear();
       await mw.onSessionEnd?.(createSessionCtx());
       expect(modelCall).not.toHaveBeenCalled();
+    });
+
+    test("trims oldest outputs to fit extractionInputBudget before LLM call", async () => {
+      // Configure a tiny budget so only the most recent output should fit.
+      const capturedPrompts: string[] = [];
+      const modelCall = mock(async (req: ModelRequest): Promise<ModelResponse> => {
+        const text = (req.messages[0]?.content[0] as { text: string }).text;
+        capturedPrompts.push(text);
+        return { content: "[]", model: "haiku" };
+      });
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({
+          modelCall,
+          extractionInputBudget: 200, // very small budget
+        }),
+      );
+      await mw.onSessionStart?.(createSessionCtx());
+
+      // Push three outputs of 150 chars each — only the last should fit budget=200
+      const oldOutput = `OLD-${"a".repeat(146)}`; // 150 chars
+      const midOutput = `MID-${"b".repeat(146)}`;
+      const newOutput = `NEW-${"c".repeat(146)}`;
+
+      const next1 = mock(async () => ({ output: oldOutput }) satisfies ToolResponse);
+      const next2 = mock(async () => ({ output: midOutput }) satisfies ToolResponse);
+      const next3 = mock(async () => ({ output: newOutput }) satisfies ToolResponse);
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      await mw.wrapToolCall?.(createTurnCtx(), req, next1);
+      await mw.wrapToolCall?.(createTurnCtx(), req, next2);
+      await mw.wrapToolCall?.(createTurnCtx(), req, next3);
+
+      await mw.onSessionEnd?.(createSessionCtx());
+
+      expect(capturedPrompts).toHaveLength(1);
+      // Most recent output is preserved; older ones are dropped
+      expect(capturedPrompts[0]).toContain("NEW-");
+      expect(capturedPrompts[0]).not.toContain("OLD-");
+      expect(capturedPrompts[0]).not.toContain("MID-");
     });
 
     test("preserves buffer + counts as failed attempt on malformed LLM response", async () => {
