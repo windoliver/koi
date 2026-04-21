@@ -38,4 +38,22 @@ export interface CollectiveMemoryMiddlewareConfig {
   readonly extractionModel?: string | undefined;
   /** Max tokens for extraction response. Default: 1024. */
   readonly extractionMaxTokens?: number | undefined;
+  /**
+   * Persist learnings extracted from spawned-child tool outputs to the parent
+   * agent's brick. Default: false. When false, spawn outputs are still observable
+   * but are not written to any brick — child-attributed persistence requires the
+   * middleware to run inside the child's session, where its own onSessionEnd
+   * captures learnings against the child's brick.
+   *
+   * Enable only when you accept that learnings from all child types accumulate
+   * on the orchestrator's collective memory rather than per-worker bricks.
+   */
+  readonly persistSpawnOutputs?: boolean | undefined;
+  /**
+   * Optional caller-supplied validator for extracted learnings. Returns true if
+   * the learning is acceptable to persist. Runs AFTER the built-in
+   * isInstruction() denylist. Use this to enforce stricter policy (e.g. require
+   * declarative observation forms, reject paths/credentials/tool-invocation text).
+   */
+  readonly validateLearning?: ((content: string) => boolean) | undefined;
 }

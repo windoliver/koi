@@ -76,6 +76,17 @@ export function createCollectiveMemoryMiddleware(
   const dedupThreshold = config.dedupThreshold ?? COLLECTIVE_MEMORY_DEFAULTS.dedupThreshold;
   const autoCompact = config.autoCompact ?? true;
   const spawnToolIds = new Set<string>(config.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
+  // Default false: spawn-child outputs are NOT persisted to the parent's brick
+  // to avoid cross-agent memory contamination. Per-child persistence requires
+  // the middleware to run inside each child's session.
+  const persistSpawnOutputs = config.persistSpawnOutputs ?? false;
+  const validateLearning = config.validateLearning;
+
+  function acceptLearning(content: string): boolean {
+    if (isInstruction(content)) return false;
+    if (validateLearning !== undefined && !validateLearning(content)) return false;
+    return true;
+  }
 
   // outputs is a mutable array ref so concurrent push() calls in the same session
   // don't race: JS is single-threaded, so push on a shared ref is atomic.
@@ -114,7 +125,15 @@ export function createCollectiveMemoryMiddleware(
       const state = sessions.get(ctx.sessionId);
       sessions.delete(ctx.sessionId);
 
-      if (config.modelCall === undefined || state === undefined || state.outputs.length === 0) {
+      // Cross-spawn LLM extraction is gated by persistSpawnOutputs: the buffered
+      // outputs come from spawn-child tool results and would otherwise be
+      // attributed to the parent's brick.
+      if (
+        !persistSpawnOutputs ||
+        config.modelCall === undefined ||
+        state === undefined ||
+        state.outputs.length === 0
+      ) {
         return;
       }
 
@@ -134,8 +153,8 @@ export function createCollectiveMemoryMiddleware(
           maxTokens: config.extractionMaxTokens ?? 1024,
         });
 
-        const candidates = parseExtractionResponse(response.content).filter(
-          (c) => !isInstruction(c.content),
+        const candidates = parseExtractionResponse(response.content).filter((c) =>
+          acceptLearning(c.content),
         );
         if (candidates.length === 0) return;
 
@@ -152,6 +171,11 @@ export function createCollectiveMemoryMiddleware(
       const response: ToolResponse = await next(request);
 
       if (!spawnToolIds.has(request.toolId)) return response;
+      // Spawn-child outputs are not persisted to the parent's brick by default —
+      // attribution would contaminate the orchestrator's collective memory with
+      // learnings from arbitrary child agent types. Per-child persistence happens
+      // when the middleware runs inside the child's own session.
+      if (!persistSpawnOutputs) return response;
 
       const outputStr = sanitizeOutput(outputToString(response.output));
       if (outputStr.length === 0) return response;
@@ -163,18 +187,9 @@ export function createCollectiveMemoryMiddleware(
         state.outputs.push(outputStr);
       }
 
-      const candidates = extractor.extract(outputStr);
+      const candidates = extractor.extract(outputStr).filter((c) => acceptLearning(c.content));
       if (candidates.length === 0) return response;
 
-      // Learnings are persisted to the orchestrating (parent) agent's brick. The
-      // middleware interface does not expose a trusted child-brick identifier, so we
-      // cannot write to the spawned worker's brick without risking model-controlled
-      // input poisoning. Future runtime versions that surface a verified child identity
-      // via TurnContext can extend this to worker-level attribution.
-      // Known limitation: worker-type learnings accumulate on the parent, not the
-      // spawned agent's own brick. The parent's read path will inject these learnings
-      // into all future orchestration sessions, which provides cross-run benefit even
-      // without per-worker attribution.
       const rawId = config.resolveBrickId(ctx.session.agentId);
       if (rawId === undefined) return response;
 

@@ -58,6 +58,9 @@ function createConfig(
   return {
     forgeStore: createMockForgeStore(),
     resolveBrickId: (name: string) => (name === "researcher" ? "sha256:abc123" : undefined),
+    // Most existing tests exercise the write path explicitly; default to enabled
+    // here so tests stay focused on behavior rather than this opt-in flag.
+    persistSpawnOutputs: true,
     ...overrides,
   };
 }
@@ -120,6 +123,42 @@ describe("createCollectiveMemoryMiddleware", () => {
       const next = mock(async () => resp);
 
       await mw.wrapToolCall?.(createTurnCtx(), req, next);
+      expect(store.update).not.toHaveBeenCalled();
+    });
+
+    test("does NOT persist spawn outputs by default (persistSpawnOutputs unset)", async () => {
+      const store = createMockForgeStore();
+      // Override createConfig's default — call factory with explicit persistSpawnOutputs=undefined
+      const mw = createCollectiveMemoryMiddleware({
+        forgeStore: store,
+        resolveBrickId: (name) => (name === "researcher" ? "sha256:abc123" : undefined),
+      });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+
+      expect(store.update).not.toHaveBeenCalled();
+    });
+
+    test("applies validateLearning hook after built-in instruction filter", async () => {
+      const store = createMockForgeStore();
+      const validateLearning = mock((content: string) => !content.toLowerCase().includes("foo"));
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({ forgeStore: store, validateLearning }),
+      );
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate foo inputs" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+
+      expect(validateLearning).toHaveBeenCalled();
       expect(store.update).not.toHaveBeenCalled();
     });
 
