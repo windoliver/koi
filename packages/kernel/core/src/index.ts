@@ -1091,7 +1091,6 @@ export type {
   SupervisionStrategy,
 } from "./supervision.js";
 export { DEFAULT_CHILD_ISOLATION, DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
-export { validateSupervisionConfig } from "./validate-supervision.js";
 // system signal — operational/system events for the proactive intelligence layer
 export type {
   CompositionSchedulerEvent,
@@ -1196,6 +1195,7 @@ export type {
   UserSignal,
   UserSnapshot,
 } from "./user-model.js";
+export { validateSupervisionConfig } from "./validate-supervision.js";
 // validation utilities — runtime type guards and validators
 export {
   isModelChunk,
