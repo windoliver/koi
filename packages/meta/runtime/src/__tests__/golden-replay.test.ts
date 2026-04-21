@@ -11743,7 +11743,7 @@ describe("Golden: @koi/violation-store-sqlite", () => {
     try {
       const store = createSqliteViolationStore({ dbPath });
       store.record(
-        { rule: "rule-a", severity: "error", message: "agent-1 violation" },
+        { rule: "rule-a", severity: "critical", message: "agent-1 violation" },
         agentId("agent-1"),
         undefined,
         2_000,
