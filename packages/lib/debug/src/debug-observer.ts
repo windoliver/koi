@@ -70,12 +70,27 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
     id: observerId,
     agentId: agent.pid.id,
 
-    inspect: (tokens?: readonly SubsystemToken<unknown>[]): DebugSnapshot => buildSnapshot(tokens),
+    inspect: (tokens?: readonly SubsystemToken<unknown>[]): DebugSnapshot => {
+      if (!controller.isActive()) {
+        throw new Error("Observer is revoked: the debug session has been detached");
+      }
+      return buildSnapshot(tokens);
+    },
 
     inspectComponent: (
       token: SubsystemToken<unknown>,
       options?: InspectComponentOptions,
     ): Result<ComponentSnapshot, KoiError> => {
+      if (!controller.isActive()) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "Observer is revoked: the debug session has been detached",
+            retryable: false,
+          },
+        };
+      }
       const value = agent.component(token);
       if (value === undefined) {
         return {
@@ -119,7 +134,10 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
       };
     },
 
-    events: (limit?: number): readonly EngineEvent[] => controller.eventBuffer().tail(limit),
+    events: (limit?: number): readonly EngineEvent[] => {
+      if (!controller.isActive()) return [];
+      return controller.eventBuffer().tail(limit);
+    },
 
     onDebugEvent: (listener: (event: DebugEvent) => void): (() => void) => {
       listeners.add(listener);

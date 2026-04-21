@@ -86,7 +86,11 @@ export function createDebugMiddleware(
 
   function emitDebugEvent(event: DebugEvent): void {
     for (const listener of debugListeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch {
+        // Listener errors must never propagate into the debugged execution path
+      }
     }
   }
 
@@ -272,6 +276,29 @@ export function createDebugMiddleware(
             retryable: false,
           },
         };
+      }
+      if (predicate.kind === "event_kind") {
+        const OBSERVED_EVENT_KINDS = new Set([
+          "turn_start",
+          "turn_end",
+          "tool_call_start",
+          "tool_call_end",
+          "tool_result",
+          "text_delta",
+          "custom",
+        ]);
+        if (!OBSERVED_EVENT_KINDS.has(predicate.eventKind)) {
+          return {
+            ok: false,
+            error: {
+              code: "VALIDATION",
+              message:
+                `event_kind breakpoints for "${predicate.eventKind}" are not supported: ` +
+                `the debug middleware only observes: ${[...OBSERVED_EVENT_KINDS].join(", ")}.`,
+              retryable: false,
+            },
+          };
+        }
       }
       bpCounter += 1;
       const id = breakpointId(`bp-${String(bpCounter)}`);

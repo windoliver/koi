@@ -193,6 +193,43 @@ describe("createDebugAttach", () => {
     expect(() => session.breakOn({ kind: "error" })).toThrow("error breakpoints are not supported");
   });
 
+  test("breakOn with unsupported event_kind throws VALIDATION error", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "done" })).toThrow(
+      'event_kind breakpoints for "done" are not supported',
+    );
+  });
+
+  test("breakOn with supported event_kind does not throw", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "text_delta" })).not.toThrow();
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "custom" })).not.toThrow();
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "tool_result" })).not.toThrow();
+  });
+
+  test("throwing debug listener does not crash turn execution", async () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    // Register a listener that always throws
+    session.onDebugEvent(() => {
+      throw new Error("bad listener");
+    });
+
+    // Turn processing must not throw
+    await expect(fireTurnStart(middleware, 0)).resolves.toBeUndefined();
+  });
+
   test("wrapToolCall preserves caller callId and emits tool_result", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
@@ -417,6 +454,36 @@ describe("createDebugObserve", () => {
 
     const snap = observer.inspectComponent(
       "test:fn" as import("@koi/core").SubsystemToken<unknown>,
+    );
+    expect(snap.ok).toBe(false);
+    if (snap.ok) return;
+    expect(snap.error.code).toBe("VALIDATION");
+  });
+
+  test("observer methods are revoked after session detach", () => {
+    const agent = makeAgent();
+    (agent.components() as Map<string, unknown>).set("test:data", [1, 2, 3]);
+
+    const attachResult = createDebugAttach({ agent });
+    if (!attachResult.ok) return;
+    const { session } = attachResult.value;
+
+    const observeResult = createDebugObserve(agent.pid.id);
+    if (!observeResult.ok) return;
+    const observer = observeResult.value;
+
+    // Observer works before detach
+    expect(observer.events()).toBeDefined();
+
+    // Detach the session
+    session.detach();
+
+    // Observer access must now be revoked
+    expect(() => observer.inspect()).toThrow("revoked");
+    expect(observer.events()).toHaveLength(0);
+
+    const snap = observer.inspectComponent(
+      "test:data" as import("@koi/core").SubsystemToken<unknown>,
     );
     expect(snap.ok).toBe(false);
     if (snap.ok) return;
