@@ -189,13 +189,13 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
 
       let snapshot: unknown;
       try {
-        snapshot = JSON.parse(JSON.stringify(paginated.data));
+        snapshot = structuredClone(paginated.data);
       } catch {
         return {
           ok: false,
           error: {
             code: "VALIDATION",
-            message: `Component ${token as string} is not serializable; cannot expose a safe snapshot`,
+            message: `Component ${token as string} is not cloneable; cannot expose a safe snapshot`,
             retryable: false,
           },
         };
@@ -269,7 +269,7 @@ function estimateSize(value: unknown): number {
 
 function isSerializable(value: unknown): boolean {
   try {
-    JSON.stringify(value);
+    structuredClone(value);
     return true;
   } catch {
     return false;

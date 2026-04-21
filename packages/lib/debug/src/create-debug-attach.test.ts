@@ -440,12 +440,11 @@ describe("createDebugObserve", () => {
     expect(snapData[0]?.value).toBe(42);
   });
 
-  test("observer inspectComponent returns VALIDATION error for non-serializable component", () => {
+  test("observer inspectComponent returns VALIDATION error for non-cloneable component", () => {
     const agent = makeAgent();
-    // Circular reference causes JSON.stringify to throw
-    const circular: Record<string, unknown> = {};
-    circular.self = circular;
-    (agent.components() as Map<string, unknown>).set("test:fn", circular);
+    // Functions are not cloneable via structuredClone (DataCloneError)
+    const nonCloneable: Record<string, unknown> = { fn: () => "hello" };
+    (agent.components() as Map<string, unknown>).set("test:fn", nonCloneable);
 
     createDebugAttach({ agent });
     const observeResult = createDebugObserve(agent.pid.id);

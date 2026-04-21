@@ -49,7 +49,7 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
         token: key,
         typeHint: typeof value,
         approximateBytes: estimateSize(value),
-        serializable: isSerializable(value),
+        serializable: isCloneable(value),
       });
     }
 
@@ -109,13 +109,13 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
 
       let snapshot: unknown;
       try {
-        snapshot = JSON.parse(JSON.stringify(paginated.data));
+        snapshot = structuredClone(paginated.data);
       } catch {
         return {
           ok: false,
           error: {
             code: "VALIDATION",
-            message: `Component ${token as string} is not serializable; cannot expose a safe read-only snapshot`,
+            message: `Component ${token as string} is not cloneable; cannot expose a safe read-only snapshot`,
             retryable: false,
           },
         };
@@ -163,9 +163,9 @@ function estimateSize(value: unknown): number {
   }
 }
 
-function isSerializable(value: unknown): boolean {
+function isCloneable(value: unknown): boolean {
   try {
-    JSON.stringify(value);
+    structuredClone(value);
     return true;
   } catch {
     return false;
