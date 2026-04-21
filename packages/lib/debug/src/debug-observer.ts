@@ -165,21 +165,26 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
   };
 }
 
+/** Cheap, bounded metadata size estimate — see debug-session.ts for rationale. */
 function estimateSize(value: unknown): number {
-  try {
-    return JSON.stringify(value)?.length ?? 0;
-  } catch {
-    return 0;
+  if (typeof value === "string") return value.length;
+  if (typeof value === "number" || typeof value === "boolean") return 8;
+  if (value === null || value === undefined) return 0;
+  if (Array.isArray(value)) return value.length * 8;
+  if (value instanceof Map || value instanceof Set) return value.size * 16;
+  if (typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length * 16;
   }
+  return 0;
 }
 
+/** Cheap serializability heuristic — deep check deferred to inspectComponent. */
 function isCloneable(value: unknown): boolean {
-  try {
-    structuredClone(value);
-    return true;
-  } catch {
-    return false;
-  }
+  if (value === null || value === undefined) return true;
+  const t = typeof value;
+  if (t === "string" || t === "number" || t === "boolean") return true;
+  if (t === "function" || t === "symbol") return false;
+  return t === "object";
 }
 
 interface PaginatedResult {

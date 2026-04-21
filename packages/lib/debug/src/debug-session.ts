@@ -346,21 +346,36 @@ export function createDebugSessionInternal(
   return { session, detachWithReason: teardown };
 }
 
+/**
+ * Cheap, bounded size estimate for component metadata. Does NOT fully serialize
+ * large objects — uses type/shape heuristics to avoid CPU spikes on
+ * maps/transcripts/embeddings during routine inspect() calls.
+ */
 function estimateSize(value: unknown): number {
-  try {
-    return JSON.stringify(value)?.length ?? 0;
-  } catch {
-    return 0;
+  if (typeof value === "string") return value.length;
+  if (typeof value === "number" || typeof value === "boolean") return 8;
+  if (value === null || value === undefined) return 0;
+  if (Array.isArray(value)) return value.length * 8;
+  if (value instanceof Map || value instanceof Set) return value.size * 16;
+  if (typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length * 16;
   }
+  return 0;
 }
 
+/**
+ * Cheap serializability check based on type heuristics. Avoids full
+ * structuredClone on every component — defers deep cloning to explicit
+ * inspectComponent() calls which already use structuredClone at that point.
+ */
 function isSerializable(value: unknown): boolean {
-  try {
-    structuredClone(value);
-    return true;
-  } catch {
-    return false;
-  }
+  if (value === null || value === undefined) return true;
+  const t = typeof value;
+  if (t === "string" || t === "number" || t === "boolean") return true;
+  if (t === "function" || t === "symbol") return false;
+  // For objects: assume plain objects are serializable. Deep check happens
+  // later in inspectComponent() where structuredClone catches the real cases.
+  return t === "object";
 }
 
 interface PaginatedResult {
