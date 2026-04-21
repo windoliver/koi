@@ -27,5 +27,8 @@ export default defineConfig({
   // `__filename`. Bundling the JS into a single chunk breaks that lookup
   // because the .wasm is never copied into dist/. Keep it external so the
   // import resolves against node_modules at runtime where the wasm sits.
-  external: ["bun:sqlite", "re2-wasm"],
+  // playwright / playwright-core ship CJS files that require chromium-bidi
+  // CJS chunks which esbuild cannot resolve. Keep them external so they
+  // resolve from node_modules at runtime (installed by the consumer).
+  external: ["bun:sqlite", "re2-wasm", "playwright", "playwright-core"],
 });
