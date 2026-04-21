@@ -129,6 +129,63 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(store.update).not.toHaveBeenCalled();
     });
 
+    test("emits onError(persistence-dropped) when wrapToolCall persistence fails", async () => {
+      const store = createMockForgeStore();
+      // Make update fail with a non-CONFLICT error so persistLearnings returns ok:false
+      (store.update as ReturnType<typeof mock>).mockImplementation(async () => ({
+        ok: false as const,
+        error: { code: "STORE_DOWN", message: "store unavailable" },
+      }));
+      const onError = mock(() => undefined);
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store, onError }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+
+      expect(onError).toHaveBeenCalled();
+      const evt = (onError.mock.calls[0] as unknown[])[0] as { kind: string };
+      expect(evt.kind).toBe("persistence-dropped");
+    });
+
+    test("legacy string-only resolveBrickId still resolves bricks (compat shim)", async () => {
+      const store = createMockForgeStore();
+      // Legacy resolver: only handles strings, returns undefined for objects
+      const legacyResolver = mock((input: unknown): string | undefined => {
+        if (typeof input !== "string") return undefined;
+        return input === "researcher" ? "sha256:abc123" : undefined;
+      });
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({
+          forgeStore: store,
+          resolveBrickId: legacyResolver as (
+            input: string | { agentName: string },
+          ) => string | undefined,
+        }),
+      );
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+
+      // The compat shim should have first tried context form (got undefined) then
+      // fallen back to string form (got "sha256:abc123") so persistence ran.
+      expect(store.update).toHaveBeenCalled();
+      // Resolver was invoked twice — once with object, once with string fallback.
+      expect(legacyResolver).toHaveBeenCalledTimes(2);
+      const firstCallArg = (legacyResolver.mock.calls[0] as unknown[])[0];
+      const secondCallArg = (legacyResolver.mock.calls[1] as unknown[])[0];
+      expect(typeof firstCallArg).toBe("object");
+      expect(typeof secondCallArg).toBe("string");
+      expect(secondCallArg).toBe("researcher");
+    });
+
     test("partitions brick by userId/channelId/conversationId from session", async () => {
       const store = createMockForgeStore();
       const seenContexts: unknown[] = [];
@@ -736,8 +793,10 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.wrapModelCall?.(ctx, req, next);
       await mw.wrapModelCall?.(ctx, req, next);
 
-      // resolveBrickId called only once — second turn short-circuits via injected flag
-      expect(resolveBrickId).toHaveBeenCalledTimes(1);
+      // resolveBrickId is called by the compat shim twice in turn 1 (context form,
+      // then string fallback) when context returns undefined. Turn 2 short-circuits
+      // entirely via the injected flag. Total: 2 calls (both in turn 1, 0 in turn 2).
+      expect(resolveBrickId).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -914,6 +973,44 @@ describe("createCollectiveMemoryMiddleware", () => {
       modelCall.mockClear();
       await mw.onSessionEnd?.(createSessionCtx());
       expect(modelCall).not.toHaveBeenCalled();
+    });
+
+    test("preserves buffer when persistLearnings returns ok:false (load-failed)", async () => {
+      // LLM returns valid candidates but the brick load fails on persist —
+      // session buffer must be preserved so a later attempt can retry.
+      const store = createMockForgeStore();
+      // First load (persistLearnings) fails; allow a second attempt to succeed
+      let loadCount = 0;
+      (store.load as ReturnType<typeof mock>).mockImplementation(async () => {
+        loadCount++;
+        if (loadCount === 1) {
+          return { ok: false as const, error: { code: "STORE_BUSY", message: "transient" } };
+        }
+        return { ok: true as const, value: { collectiveMemory: undefined } };
+      });
+      const modelCall = mock(
+        async (): Promise<ModelResponse> => ({
+          content: JSON.stringify([{ content: "Validated learning", category: "gotcha" }]),
+          model: "haiku",
+        }),
+      );
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store, modelCall }));
+
+      await mw.onSessionStart?.(createSessionCtx());
+      const next = mock(async () => ({ output: "rich worker output" }) satisfies ToolResponse);
+      await mw.wrapToolCall?.(
+        createTurnCtx(),
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
+        next,
+      );
+
+      // First onSessionEnd: persist load fails → buffer preserved
+      await mw.onSessionEnd?.(createSessionCtx());
+      expect(store.update).not.toHaveBeenCalled();
+
+      // Second onSessionEnd: persist load succeeds → buffered outputs persisted
+      await mw.onSessionEnd?.(createSessionCtx());
+      expect(store.update).toHaveBeenCalled();
     });
 
     test("clears session buffer on successful extraction (no leak)", async () => {

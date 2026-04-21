@@ -153,6 +153,20 @@ export function createCollectiveMemoryMiddleware(
     };
   }
 
+  /**
+   * Compatibility shim for the resolveBrickId config option. The documented
+   * signature accepts EITHER a string agent name (legacy) OR a ResolveBrickContext
+   * (tenant-aware). To avoid silently breaking pre-existing string-only resolvers
+   * that destructure or compare the input as a string, we always try the context
+   * form first and fall back to a plain agentName string if the resolver returns
+   * undefined.
+   */
+  function resolveBrickIdCompat(ctx: ReturnType<typeof resolveCtxFor>): string | undefined {
+    const fromCtx = config.resolveBrickId(ctx);
+    if (fromCtx !== undefined) return fromCtx;
+    return config.resolveBrickId(ctx.agentName);
+  }
+
   return {
     name: "koi:collective-memory",
     priority: 305,
@@ -212,9 +226,22 @@ export function createCollectiveMemoryMiddleware(
         );
 
         if (candidates.length > 0) {
-          const rawId = config.resolveBrickId(resolveCtxFor(ctx));
+          const rawId = resolveBrickIdCompat(resolveCtxFor(ctx));
           if (rawId !== undefined) {
-            await persistLearnings(brickId(rawId), candidates, ctx.agentId, ctx.runId);
+            const persistResult = await persistLearnings(
+              brickId(rawId),
+              candidates,
+              ctx.agentId,
+              ctx.runId,
+            );
+            if (!persistResult.ok) {
+              // Persistence failed (load-failed, update-failed, or CAS exhausted).
+              // Throw so the outer catch counts this as a failed end attempt and
+              // preserves the buffer for retry.
+              throw new Error(`persistLearnings failed: ${persistResult.reason}`, {
+                cause: persistResult.cause,
+              });
+            }
           }
         }
 
@@ -266,13 +293,30 @@ export function createCollectiveMemoryMiddleware(
       const candidates = extractor.extract(outputStr).filter((c) => acceptLearning(c.content));
       if (candidates.length === 0) return response;
 
-      const rawId = config.resolveBrickId(resolveCtxFor(ctx.session));
+      const rawId = resolveBrickIdCompat(resolveCtxFor(ctx.session));
       if (rawId === undefined) return response;
 
       try {
-        await persistLearnings(brickId(rawId), candidates, ctx.session.agentId, ctx.session.runId);
-      } catch {
-        // Fire-and-forget: don't break tool call chain on persistence failure
+        const persistResult = await persistLearnings(
+          brickId(rawId),
+          candidates,
+          ctx.session.agentId,
+          ctx.session.runId,
+        );
+        if (!persistResult.ok) {
+          config.onError?.({
+            kind: "persistence-dropped",
+            sessionId: ctx.session.sessionId,
+            cause: persistResult.cause,
+          });
+        }
+      } catch (cause: unknown) {
+        // Thrown failure (e.g. forgeStore implementation throws): also surface.
+        config.onError?.({
+          kind: "persistence-dropped",
+          sessionId: ctx.session.sessionId,
+          cause,
+        });
       }
 
       return response;
@@ -291,7 +335,7 @@ export function createCollectiveMemoryMiddleware(
         return next(request);
       }
 
-      const rawId = config.resolveBrickId(resolveCtxFor(ctx.session));
+      const rawId = resolveBrickIdCompat(resolveCtxFor(ctx.session));
       if (rawId === undefined) {
         // No brick to inject from; mark injected so we don't repeat the lookup.
         sessions.set(ctx.session.sessionId, { ...state, injected: true });
@@ -429,12 +473,24 @@ export function createCollectiveMemoryMiddleware(
     },
   };
 
+  /**
+   * Returns a discriminated result so callers (e.g. onSessionEnd) can decide
+   * whether to clear buffered state. Throws on no path; communicates failure
+   * via { ok: false, reason }.
+   */
   async function persistLearnings(
     brick: BrickId,
     candidates: readonly { readonly content: string; readonly category: string }[],
     agentId: string,
     runId: string,
-  ): Promise<void> {
+  ): Promise<
+    | { readonly ok: true }
+    | {
+        readonly ok: false;
+        readonly reason: "load-failed" | "update-failed" | "conflict-exhausted";
+        readonly cause?: unknown;
+      }
+  > {
     const nowMs = Date.now();
 
     const newEntries: readonly CollectiveMemoryEntry[] = candidates.map((c) => ({
@@ -450,6 +506,8 @@ export function createCollectiveMemoryMiddleware(
     // Retry loop: re-read on CAS conflict so concurrent writers converge without data loss.
     // Uses exponential backoff with jitter to reduce thundering-herd under fan-out spawns.
     const MAX_ATTEMPTS = 5;
+    // let justified: tracks the last error for the abandoned-retries result
+    let lastConflict: unknown;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
         // let justified: mutable delay for backoff jitter
@@ -458,7 +516,7 @@ export function createCollectiveMemoryMiddleware(
       }
 
       const loadResult = await config.forgeStore.load(brick);
-      if (!loadResult.ok) return;
+      if (!loadResult.ok) return { ok: false, reason: "load-failed", cause: loadResult.error };
 
       const existing: CollectiveMemory =
         loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
@@ -493,11 +551,15 @@ export function createCollectiveMemoryMiddleware(
         ...(storeVersion !== undefined ? { expectedVersion: storeVersion } : {}),
       });
 
-      if (updateResult.ok) return;
+      if (updateResult.ok) return { ok: true };
       // On conflict (CONFLICT error) retry with a fresh load; on other errors bail.
       const errCode = (updateResult.error as { code?: string } | undefined)?.code;
-      if (errCode !== "CONFLICT") return;
+      if (errCode !== "CONFLICT") {
+        return { ok: false, reason: "update-failed", cause: updateResult.error };
+      }
+      lastConflict = updateResult.error;
     }
+    return { ok: false, reason: "conflict-exhausted", cause: lastConflict };
   }
 
   async function incrementAccessCounts(
