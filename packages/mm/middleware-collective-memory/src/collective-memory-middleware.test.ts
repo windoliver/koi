@@ -440,7 +440,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.wrapModelCall?.(createTurnCtx(), req, next);
 
       expect(captured).toBeDefined();
-      const msgs = captured!.messages;
+      const msgs = captured?.messages ?? [];
       // [0] = trusted system framing message
       expect(msgs[0]?.senderId).toBe("system:collective-memory");
       const framingText = (msgs[0]?.content[0] as { text: string }).text;
