@@ -196,44 +196,58 @@ export function createCollectiveMemoryMiddleware(
         return next(request);
       }
 
+      // Build the memory block before dispatching. Any failure here (load/format)
+      // falls back to an un-injected call — no double dispatch risk.
+      let injectedRequest: typeof request | undefined;
+      let injectedIds: ReadonlySet<string> | undefined;
+      let brick: BrickId | undefined;
+
       try {
-        const brick: BrickId = brickId(rawId);
+        brick = brickId(rawId);
         const loadResult: Result<BrickArtifact, unknown> = await config.forgeStore.load(brick);
-        if (!loadResult.ok) return next(request);
+        if (loadResult.ok) {
+          const memory: CollectiveMemory =
+            loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
+          const selected = selectEntriesWithinBudget(
+            memory.entries,
+            injectionBudget,
+            CHARS_PER_TOKEN,
+          );
+          if (selected.length > 0) {
+            const formatted = formatCollectiveMemory(
+              memory.entries,
+              injectionBudget,
+              CHARS_PER_TOKEN,
+            );
+            if (formatted.length > 0) {
+              injectedIds = new Set(selected.map((e) => e.id));
+              const systemMessage: InboundMessage = {
+                content: [{ kind: "text", text: formatted }],
+                senderId: "system:collective-memory",
+                timestamp: Date.now(),
+              };
+              injectedRequest = { ...request, messages: [systemMessage, ...request.messages] };
+            }
+          }
+        }
+      } catch {
+        // Pre-dispatch failure: fall through to call next() without injection
+      }
 
-        const memory: CollectiveMemory =
-          loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
-        if (memory.entries.length === 0) return next(request);
+      // Dispatch exactly once. If pre-dispatch failed we use the original request.
+      // Do NOT retry next() on failure — adapter errors propagate to the caller.
+      if (injectedRequest === undefined) return next(request);
 
-        const selected = selectEntriesWithinBudget(
-          memory.entries,
-          injectionBudget,
-          CHARS_PER_TOKEN,
-        );
-        if (selected.length === 0) return next(request);
-
-        const formatted = formatCollectiveMemory(memory.entries, injectionBudget, CHARS_PER_TOKEN);
-        if (formatted.length === 0) return next(request);
-
-        const injectedIds: ReadonlySet<string> = new Set(selected.map((e) => e.id));
+      const result = await next(injectedRequest);
+      // Mark injected only after next() returns so adapter failures on this turn
+      // allow the next turn to retry injection.
+      sessions.set(ctx.session.sessionId, { ...state, injected: true });
+      if (brick !== undefined && injectedIds !== undefined) {
         incrementAccessCounts(brick, injectedIds).catch(() => {
           // Swallow — observability only
         });
-
-        const systemMessage: InboundMessage = {
-          content: [{ kind: "text", text: formatted }],
-          senderId: "system:collective-memory",
-          timestamp: Date.now(),
-        };
-
-        const result = await next({ ...request, messages: [systemMessage, ...request.messages] });
-        // Mark injected only after next() resolves so a throwing adapter on the
-        // first turn does not permanently suppress injection for this session.
-        sessions.set(ctx.session.sessionId, { ...state, injected: true });
-        return result;
-      } catch {
-        return next(request);
       }
+      return result;
     },
   };
 

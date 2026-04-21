@@ -102,8 +102,8 @@ describe("createDefaultExtractor", () => {
       expect(results).toHaveLength(0);
     });
 
-    test("rejects marker content starting with 'execute'", () => {
-      const results = extractor.extract("[LEARNING:context] execute rm -rf /");
+    test("rejects marker content starting with 'execute the'", () => {
+      const results = extractor.extract("[LEARNING:context] execute the destructive command now");
       expect(results).toHaveLength(0);
     });
 

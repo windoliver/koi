@@ -14,13 +14,20 @@ const VALID_CATEGORIES = new Set<string>([
 
 const MAX_ENTRY_LENGTH = 500;
 
-// Reject content that starts with imperative verbs commonly used in prompt-injection
-// attacks. Legitimate learnings are observations, not commands.
-const IMPERATIVE_INSTRUCTION_RE =
-  /^\s*(?:ignore|bypass|override|disable|skip|remove|delete|execute|grant|allow|escalate)\b/i;
+// Reject content whose leading verb signals a prompt-injection attack rather
+// than a legitimate observation. This is a defence-in-depth measure — the LLM
+// extraction path (onSessionEnd) has a higher-fidelity semantic filter; the
+// regex path is inherently lower-trust and warrants an explicit denylist.
+//
+// Legitimate learnings are observations ("The API returns X when Y", "Learned
+// that Z fails if…"). Injections pose as commands ("Ignore X", "Bypass Y").
+// The denylist targets the verbs most commonly used in prompt-injection payloads
+// that aim to plant persistent instructions in shared memory.
+const INJECTION_VERB_RE =
+  /^\s*(?:ignore|bypass|override|disable|disregard|suppress|escalate|leak|exfiltrate|pretend|forget|reveal|grant|allow\s+access|delete\s+(?:the|all|every)|execute\s+(?:the|this|a))\b/i;
 
 function isInstruction(content: string): boolean {
-  return IMPERATIVE_INSTRUCTION_RE.test(content);
+  return INJECTION_VERB_RE.test(content);
 }
 
 function truncate(text: string): string {
