@@ -502,7 +502,7 @@ export function createCollectiveMemoryMiddleware(
         sessions.set(ctx.session.sessionId, {
           ...current,
           // Only commit injected=true if no write landed during dispatch.
-          injected: epochAdvanced ? false : true,
+          injected: !epochAdvanced,
           inFlightInjection: undefined,
         });
         resolveInFlight?.();
