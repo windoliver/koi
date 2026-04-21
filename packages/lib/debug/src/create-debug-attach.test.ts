@@ -184,45 +184,22 @@ describe("createDebugAttach", () => {
     expect(session.state().kind).toBe("detached");
   });
 
-  test("breakOn with error predicate throws VALIDATION error", () => {
+  test("breakOn accepts any BreakpointPredicate from the @koi/core contract", () => {
+    // Lenient acceptance: addBreakpoint never rejects a valid predicate. Those
+    // kinds this middleware does not observe (error, event_kind=done,
+    // event_kind=tool_result) simply never fire, rather than failing at
+    // registration time. This preserves type-level compat with @koi/core.
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
     if (!result.ok) return;
     const { session } = result.value;
 
-    expect(() => session.breakOn({ kind: "error" })).toThrow("error breakpoints are not supported");
-  });
-
-  test("breakOn with unsupported event_kind throws VALIDATION error", () => {
-    const agent = makeAgent();
-    const result = createDebugAttach({ agent });
-    if (!result.ok) return;
-    const { session } = result.value;
-
-    expect(() => session.breakOn({ kind: "event_kind", eventKind: "done" })).toThrow(
-      'event_kind breakpoints for "done" are not supported',
-    );
-  });
-
-  test("breakOn with supported event_kind does not throw", () => {
-    const agent = makeAgent();
-    const result = createDebugAttach({ agent });
-    if (!result.ok) return;
-    const { session } = result.value;
-
+    expect(() => session.breakOn({ kind: "error" })).not.toThrow();
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "done" })).not.toThrow();
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "tool_result" })).not.toThrow();
     expect(() => session.breakOn({ kind: "event_kind", eventKind: "text_delta" })).not.toThrow();
     expect(() => session.breakOn({ kind: "event_kind", eventKind: "custom" })).not.toThrow();
     expect(() => session.breakOn({ kind: "event_kind", eventKind: "tool_call_end" })).not.toThrow();
-  });
-
-  test("breakOn with tool_result event_kind throws (not observed by this middleware)", () => {
-    const agent = makeAgent();
-    const result = createDebugAttach({ agent });
-    if (!result.ok) return;
-    const { session } = result.value;
-    expect(() => session.breakOn({ kind: "event_kind", eventKind: "tool_result" })).toThrow(
-      "tool_result",
-    );
   });
 
   test("throwing debug listener does not crash turn execution", async () => {
@@ -1016,7 +993,7 @@ describe("teardown cancels termination watcher on every path", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("stale-session replacement cancels old watcher and invalidates old handle", () => {
+  test("stale-session teardown on same Agent cancels watcher and revokes handle", () => {
     const agent = makeAgent("watcher-replaced") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -1024,14 +1001,13 @@ describe("teardown cancels termination watcher on every path", () => {
     if (!first.ok) return;
     const oldSession = first.value.session;
 
-    // Force stale by terminating agent, then re-attach with a fresh (living) agent
-    // sharing the same id — replacement path runs teardown on the old bundle.
+    // Terminate the agent + re-attach the SAME Agent object — stale path runs
+    // teardown on the old bundle (replacement/agent_terminated cleanup).
     agent.state = "terminated";
-    const freshAgent = makeAgent("watcher-replaced");
-    const second = createDebugAttach({ agent: freshAgent });
+    const second = createDebugAttach({ agent });
     expect(second.ok).toBe(true);
 
-    // Old session handle must be revoked after replacement teardown
+    // Old session handle must be revoked after stale teardown
     expect(() => oldSession.inspect()).toThrow("detached");
     if (second.ok) second.value.session.detach();
   });
@@ -1149,19 +1125,23 @@ describe("registry isolation for same-ID agents", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("attaching a different Agent object with same ID returns CONFLICT (no silent eviction)", () => {
+  test("attaching a different Agent object with same ID gets its own slot (no eviction, no CONFLICT)", () => {
     const a1 = makeAgent("same-id-runtime");
     const firstAttach = createDebugAttach({ agent: a1 });
     expect(firstAttach.ok).toBe(true);
 
-    // Different Agent object, same pid.id — must NOT evict the existing session
+    // Different Agent object, same pid.id — per-Agent-reference isolation means
+    // this attaches SUCCESSFULLY to its own slot (no eviction of a1's session).
     const a2 = makeAgent("same-id-runtime");
     const secondAttach = createDebugAttach({ agent: a2 });
-    expect(secondAttach.ok).toBe(false);
-    if (secondAttach.ok) return;
-    expect(secondAttach.error.code).toBe("CONFLICT");
+    expect(secondAttach.ok).toBe(true);
 
-    if (firstAttach.ok) firstAttach.value.session.detach();
+    // a1's session is still live
+    if (firstAttach.ok) {
+      expect(() => firstAttach.value.session.inspect()).not.toThrow();
+      firstAttach.value.session.detach();
+    }
+    if (secondAttach.ok) secondAttach.value.session.detach();
   });
 
   test("same Agent object attached twice still returns CONFLICT", () => {
@@ -1319,6 +1299,51 @@ describe("tool event disambiguation", () => {
     // Model-announced tool calls must NOT emit tool_call_start engine events
     // (to prevent duplicate firing when wrapToolCall also emits it on execution)
     expect(toolStarts).toHaveLength(0);
+  });
+});
+
+describe("registry isolation: per-Agent-object keying", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("two Agent objects with same pid.id both have active debug sessions", () => {
+    const a1 = makeAgent("iso-id");
+    const a2 = makeAgent("iso-id");
+    const r1 = createDebugAttach({ agent: a1 });
+    const r2 = createDebugAttach({ agent: a2 });
+    expect(r1.ok && r2.ok).toBe(true);
+    if (r1.ok) expect(r1.value.session.agentId).toBe(a1.pid.id);
+    if (r2.ok) expect(r2.value.session.agentId).toBe(a2.pid.id);
+    if (r1.ok) r1.value.session.detach();
+    if (r2.ok) r2.value.session.detach();
+  });
+
+  test("same Agent object still CONFLICTs on re-attach", () => {
+    const a = makeAgent("iso-same");
+    const r1 = createDebugAttach({ agent: a });
+    const r2 = createDebugAttach({ agent: a });
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(false);
+    if (r2.ok) return;
+    expect(r2.error.code).toBe("CONFLICT");
+  });
+});
+
+describe("tool_call BP fires on model-announced calls (denied/blocked visibility)", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("tool_call predicate matches custom model_tool_call_announced event", async () => {
+    const { matchesBreakpoint } = await import("./breakpoint-matcher.js");
+    const announcedEvent = {
+      kind: "custom" as const,
+      type: "model_tool_call_announced",
+      data: { toolName: "bash", callId: "call-1" },
+    };
+    const ctx = { event: announcedEvent, turnIndex: 0 };
+    expect(matchesBreakpoint({ kind: "tool_call" }, ctx)).toBe(true);
+    expect(matchesBreakpoint({ kind: "tool_call", toolName: "bash" }, ctx)).toBe(true);
+    expect(matchesBreakpoint({ kind: "tool_call", toolName: "other" }, ctx)).toBe(false);
   });
 });
 

@@ -33,7 +33,6 @@ import {
   DEBUG_MIDDLEWARE_NAME,
   DEBUG_MIDDLEWARE_PRIORITY,
   MAX_EVENT_PAYLOAD_BYTES,
-  SUPPORTED_EVENT_KINDS,
 } from "./constants.js";
 import type { EventRingBuffer } from "./event-ring-buffer.js";
 import type { BreakpointEntry, GateControl } from "./types.js";
@@ -369,32 +368,13 @@ export function createDebugMiddleware(
     },
 
     addBreakpoint: (predicate, options, internalOptions): Result<Breakpoint, KoiError> => {
-      if (predicate.kind === "error") {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message:
-              "error breakpoints are not supported: the debug middleware only observes " +
-              "turn and tool-call lifecycle events. Use a turn or tool_call breakpoint instead.",
-            retryable: false,
-          },
-        };
-      }
-      if (predicate.kind === "event_kind") {
-        if (!(SUPPORTED_EVENT_KINDS as readonly string[]).includes(predicate.eventKind)) {
-          return {
-            ok: false,
-            error: {
-              code: "VALIDATION",
-              message:
-                `event_kind breakpoints for "${predicate.eventKind}" are not supported: ` +
-                `the debug middleware only observes: ${SUPPORTED_EVENT_KINDS.join(", ")}.`,
-              retryable: false,
-            },
-          };
-        }
-      }
+      // Lenient acceptance: the public BreakpointPredicate contract in @koi/core
+      // is broader than this middleware can honor (no done/error engine events,
+      // no synthetic tool_result). Rather than rejecting unsupported predicates
+      // and breaking type-level compatibility, we accept them and let the
+      // matcher decide at event time. Unsupported predicates simply never fire.
+      // Callers can check SUPPORTED_EVENT_KINDS to see which kinds this
+      // middleware observes.
       bpCounter += 1;
       const id = breakpointId(`bp-${String(bpCounter)}`);
       const entry: BreakpointEntry = {

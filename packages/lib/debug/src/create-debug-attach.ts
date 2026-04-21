@@ -41,41 +41,47 @@ export interface DebugAttachResult {
 // Module-level single-attach tracking
 // ---------------------------------------------------------------------------
 
-// let justified: module-level map enforcing single-attach per agent
-const activeDebugSessions = new Map<string, DebugBundle>();
+// let justified: registry keyed by Agent object reference (not just pid.id string)
+// so two distinct Agent instances with the same pid.id (e.g. cross-runtime
+// namespace collisions on a shared host) do NOT contend for the same slot.
+// Each Agent object gets its own debug session; CONFLICT is detected per
+// Agent reference, not per ID.
+const activeDebugSessions = new Map<Agent, DebugBundle>();
+
+function findBundleByAgentId(key: string): DebugBundle | undefined {
+  for (const bundle of activeDebugSessions.values()) {
+    if ((bundle.agent.pid.id as string) === key) return bundle;
+  }
+  return undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Attach a debug session to an agent. Returns CONFLICT if already attached. */
+/** Attach a debug session to an agent. Returns CONFLICT if this Agent already has one. */
 export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttachResult, KoiError> {
-  const agentKey = config.agent.pid.id as string;
-
-  const existingBundle = activeDebugSessions.get(agentKey);
+  const existingBundle = activeDebugSessions.get(config.agent);
   if (existingBundle !== undefined) {
     const agentTerminated = existingBundle.agent.state === "terminated";
     const controllerLive = existingBundle.controller.isActive();
-    // Any live bundle is a CONFLICT — even if caller passes a different Agent
-    // object with the same pid.id (could be cross-runtime namespace collision;
-    // refuse to evict rather than tear down the wrong session). Callers must
-    // explicitly detach the existing session before re-attaching.
+    // CONFLICT on the SAME Agent object — different Agent objects with the
+    // same pid.id get their own slots (no cross-runtime eviction).
     if (controllerLive && !agentTerminated) {
       return {
         ok: false,
         error: {
           code: "CONFLICT",
-          message: `Agent ${agentKey} already has a debug session attached`,
+          message: `Agent ${String(config.agent.pid.id)} already has a debug session attached`,
           retryable: false,
         },
       };
     }
-    // Safe to clean up: either agent terminated, or controller already deactivated.
     const replacementReason: "user" | "agent_terminated" | "replaced" = agentTerminated
       ? "agent_terminated"
       : "replaced";
     existingBundle.teardown(replacementReason);
-    activeDebugSessions.delete(agentKey);
+    activeDebugSessions.delete(config.agent);
   }
 
   const bufferSize = config.bufferSize ?? DEFAULT_EVENT_BUFFER_SIZE;
@@ -109,9 +115,9 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
 
   const terminationWatcher: ReturnType<typeof setInterval> = setInterval(() => {
     if (config.agent.state === "terminated") {
-      if (activeDebugSessions.get(agentKey) === bundle) {
+      if (activeDebugSessions.get(config.agent) === bundle) {
         teardown("agent_terminated");
-        activeDebugSessions.delete(agentKey);
+        activeDebugSessions.delete(config.agent);
       } else {
         clearInterval(terminationWatcher);
       }
@@ -128,14 +134,14 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
     middleware,
     teardown,
   };
-  activeDebugSessions.set(agentKey, bundle);
+  activeDebugSessions.set(config.agent, bundle);
 
   // Wrap detach so the public session.detach() path also clears the watcher
   const wrappedSession: DebugSession = {
     ...session,
     detach: () => {
       teardown("user");
-      activeDebugSessions.delete(agentKey);
+      activeDebugSessions.delete(config.agent);
     },
   };
 
@@ -147,7 +153,7 @@ const AGENT_TERMINATION_POLL_MS = 250;
 /** @internal Use session.createObserver() instead. Kept for testing convenience only. */
 export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiError> {
   const key = agentId as string;
-  const bundle = activeDebugSessions.get(key);
+  const bundle = findBundleByAgentId(key);
   if (bundle === undefined) {
     return {
       ok: false,
@@ -160,7 +166,7 @@ export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiE
   }
   if (bundle.agent.state === "terminated") {
     bundle.teardown("agent_terminated");
-    activeDebugSessions.delete(key);
+    activeDebugSessions.delete(bundle.agent);
     return {
       ok: false,
       error: {
@@ -184,16 +190,16 @@ export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiE
 /** Check if an agent has an active debug session. Eagerly cleans up stale/terminated entries. */
 export function hasDebugSession(agentId: AgentId): boolean {
   const key = agentId as string;
-  const bundle = activeDebugSessions.get(key);
+  const bundle = findBundleByAgentId(key);
   if (bundle === undefined) return false;
   if (bundle.agent.state === "terminated") {
     bundle.teardown("agent_terminated");
-    activeDebugSessions.delete(key);
+    activeDebugSessions.delete(bundle.agent);
     return false;
   }
   if (!bundle.controller.isActive()) {
     bundle.teardown("replaced");
-    activeDebugSessions.delete(key);
+    activeDebugSessions.delete(bundle.agent);
     return false;
   }
   return true;
