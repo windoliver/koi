@@ -1084,12 +1084,14 @@ export {
 } from "./spawn.js";
 // supervision — Erlang/OTP-style hierarchical fault recovery
 export type {
+  ChildIsolation,
   ChildSpec,
   RestartType,
   SupervisionConfig,
   SupervisionStrategy,
 } from "./supervision.js";
-export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
+export { DEFAULT_CHILD_ISOLATION, DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
+export { validateSupervisionConfig } from "./validate-supervision.js";
 // system signal — operational/system events for the proactive intelligence layer
 export type {
   CompositionSchedulerEvent,
