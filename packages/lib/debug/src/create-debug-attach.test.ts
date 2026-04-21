@@ -636,14 +636,28 @@ describe("createDebugAttach — stale session auto-expiry", () => {
     expect(first.ok).toBe(true);
     if (!first.ok) return;
 
-    // Simulate external deactivation (e.g. agent terminated by runtime) without calling detach
-    // We access the internal controller via the session's detach path for test purposes
-    // Calling clearAllDebugSessions deactivates controllers
     clearAllDebugSessions();
 
     // Re-attach should succeed (stale entry cleaned up)
     const second = createDebugAttach({ agent });
     expect(second.ok).toBe(true);
+  });
+
+  test("re-attach succeeds when agent state transitions to terminated without detach", () => {
+    // Build a mutable agent mock so we can simulate termination
+    const agentMut = makeAgent("term-agent") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    const first = createDebugAttach({ agent: agentMut });
+    expect(first.ok).toBe(true);
+
+    // Simulate runtime termination of the agent — no session.detach() called
+    agentMut.state = "terminated";
+
+    // Re-attach should detect stale entry and succeed
+    const second = createDebugAttach({ agent: agentMut });
+    expect(second.ok).toBe(true);
+    if (second.ok) second.value.session.detach();
   });
 });
 

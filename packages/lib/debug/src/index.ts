@@ -10,11 +10,7 @@ export {
   DEFAULT_EVENT_BUFFER_SIZE,
 } from "./constants.js";
 export type { DebugAttachConfig, DebugAttachResult } from "./create-debug-attach.js";
-export {
-  clearAllDebugSessions,
-  createDebugAttach,
-  hasDebugSession,
-} from "./create-debug-attach.js";
+export { createDebugAttach, hasDebugSession } from "./create-debug-attach.js";
 export type { EventRingBuffer } from "./event-ring-buffer.js";
 // Ring buffer (useful for custom event consumers)
 export { createEventRingBuffer } from "./event-ring-buffer.js";

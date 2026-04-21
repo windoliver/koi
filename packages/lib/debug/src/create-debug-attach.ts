@@ -52,7 +52,9 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
 
   const existingBundle = activeDebugSessions.get(agentKey);
   if (existingBundle !== undefined) {
-    if (existingBundle.controller.isActive()) {
+    const agentTerminated = existingBundle.agent.state === "terminated";
+    const controllerLive = existingBundle.controller.isActive();
+    if (controllerLive && !agentTerminated) {
       return {
         ok: false,
         error: {
@@ -62,7 +64,8 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
         },
       };
     }
-    // Stale entry: controller was deactivated (e.g. agent terminated) without explicit detach
+    // Stale: agent terminated or controller deactivated without explicit detach — clean up
+    existingBundle.controller.deactivate();
     activeDebugSessions.delete(agentKey);
   }
 

@@ -918,7 +918,6 @@ describe("Golden: @koi/model-router", () => {
 import type { Agent, AgentManifest, ProcessId, ProcessState } from "@koi/core";
 import { agentId } from "@koi/core";
 import {
-  clearAllDebugSessions,
   createDebugAttach,
   createEventRingBuffer,
   DEBUG_MIDDLEWARE_NAME,
@@ -1151,7 +1150,6 @@ describe("Golden: @koi/debug", () => {
     expect(session.state().kind).toBe("attached");
 
     session.detach();
-    clearAllDebugSessions();
   });
 
   test("single-attach enforcement: second attach returns CONFLICT", () => {
@@ -1165,7 +1163,6 @@ describe("Golden: @koi/debug", () => {
     expect(second.error.code).toBe("CONFLICT");
 
     if (first.ok) first.value.session.detach();
-    clearAllDebugSessions();
   });
 
   test("hasDebugSession lifecycle: false → true → false after detach", () => {
@@ -1178,7 +1175,6 @@ describe("Golden: @koi/debug", () => {
 
     if (result.ok) result.value.session.detach();
     expect(hasDebugSession(agent.pid.id)).toBe(false);
-    clearAllDebugSessions();
   });
 
   test("hasDebugSession returns false when no session attached", () => {
