@@ -539,6 +539,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/tool-exec": {
+      "name": "@koi/tool-exec",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/tools-core": "workspace:*",
+      },
+    },
     "packages/lib/tool-notebook": {
       "name": "@koi/tool-notebook",
       "version": "0.0.0",
@@ -667,6 +675,7 @@
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
         "@koi/token-estimator": "workspace:*",
+        "@koi/tool-exec": "workspace:*",
         "@koi/tool-notebook": "workspace:*",
         "@koi/tools-bash": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
@@ -772,6 +781,7 @@
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
         "@koi/tool-browser": "workspace:*",
+        "@koi/tool-exec": "workspace:*",
         "@koi/tool-notebook": "workspace:*",
         "@koi/tools-bash": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
@@ -1529,6 +1539,8 @@
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 
     "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/lib/tool-browser"],
+
+    "@koi/tool-exec": ["@koi/tool-exec@workspace:packages/lib/tool-exec"],
 
     "@koi/tool-notebook": ["@koi/tool-notebook@workspace:packages/lib/tool-notebook"],
 

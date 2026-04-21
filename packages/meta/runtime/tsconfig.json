@@ -31,6 +31,7 @@
     { "path": "../../lib/tasks" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/tools-core" },
+    { "path": "../../lib/tool-exec" },
     { "path": "../../lib/tools-web" },
     { "path": "../../lib/url-safety" },
     { "path": "../../lib/tool-browser" },

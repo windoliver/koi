@@ -95,6 +95,7 @@
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",
     "@koi/token-estimator": "workspace:*",
+    "@koi/tool-exec": "workspace:*",
     "@koi/tool-notebook": "workspace:*",
     "@koi/tools-bash": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
