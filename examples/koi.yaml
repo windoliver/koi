@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------
+# Koi agent manifest — annotated sample.
+#
+# Copy this file into your project as `koi.yaml` and run:
+#
+#     koi tui --manifest ./koi.yaml
+#     koi start --manifest ./koi.yaml --prompt "…"
+#
+# Every section except `model:` is optional. Uncomment the blocks you
+# want to customize and delete the rest.
+# ---------------------------------------------------------------------------
+
+# ---- Required ---------------------------------------------------------------
+
+model:
+  # Any OpenAI-compatible model id. Examples:
+  #   anthropic/claude-sonnet-4-6
+  #   google/gemini-2.0-flash-001
+  #   openai/gpt-4o-mini
+  name: anthropic/claude-sonnet-4-6
+
+# ---- Optional: system prompt ------------------------------------------------
+
+# instructions: ./SYSTEM.md        # path to a markdown file, or inline string
+
+# ---- Optional: preset stacks (zone A) ---------------------------------------
+
+# Opt into a subset of built-in stacks. Omit to activate every stack in
+# DEFAULT_STACKS. An empty list deactivates every stack (core middleware only).
+#
+# stacks: [observability, execution, skills]
+
+# ---- Optional: plugins ------------------------------------------------------
+
+# Opt into a subset of plugins discovered in ~/.koi/plugins. Omit to activate
+# every discovered plugin. An empty list deactivates every plugin.
+#
+# plugins: []
+
+# ---- Optional: user-controlled middleware (zone B) --------------------------
+
+# Zone B runs between preset stacks (zone A) and the required security core
+# (zone C). Core names (hook, permissions, exfiltrationGuard, …) are rejected.
+#
+# middleware:
+#   - "@koi/middleware-audit":
+#       filePath: ./session.audit.ndjson
+#   - name: "@koi/middleware-audit"
+#     options:
+#       filePath: ./session-secondary.audit.ndjson
+#     enabled: false
+
+# ---- Optional: filesystem backend ------------------------------------------
+
+# filesystem:
+#   backend: local                 # or "nexus" with options.transport/mountUri
+#   operations: [read, write, edit]
+
+# ---- Optional: governance defaults (gov-10) --------------------------------
+
+# Every field here is a default for the matching CLI flag. CLI flags always
+# win. `koi start --no-governance` ignores this section entirely.
+#
+#   --max-spend          →  maxSpend
+#   --max-turns          →  maxTurns
+#   --max-spawn-depth    →  maxSpawnDepth
+#   --policy-file        →  policyFile
+#   --alert-threshold    →  alertThresholds  (repeatable)
+
+# governance:
+#   maxSpend: 2.50                 # USD; non-negative finite number
+#   maxTurns: 50                   # positive integer
+#   maxSpawnDepth: 3               # positive integer
+#   policyFile: ./policies/default.yaml   # relative paths anchor to this file
+#   alertThresholds: [0.7, 0.9]    # numbers in (0, 1]
+
+# ---- Optional: background subprocesses (TUI-only) --------------------------
+
+# Controls the `bash_background` tool (detached shell subprocess launch).
+# `koi start` rejects `true` — use `koi tui` for background subprocess flows.
+#
+# backgroundSubprocesses: false

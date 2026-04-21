@@ -21,6 +21,7 @@ prompt
 plan-work.md
 demo-strategy.md
 koi.yaml
+!examples/koi.yaml
 .claude/worktrees/
 .codex-tmp/
 concierge/

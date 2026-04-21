@@ -1,3 +1,5 @@
+import type { GovernanceFlags } from "./governance-flags.js";
+import { parseGovernanceFlags } from "./governance-flags.js";
 import type { BaseFlags } from "./shared.js";
 import { ParseError, resolveLogFormat, typedParseArgs } from "./shared.js";
 
@@ -98,6 +100,13 @@ export interface StartFlags extends BaseFlags {
   readonly allowTools: readonly string[];
   /** Hard timeout in ms. undefined = no timeout. Headless-only. */
   readonly maxDurationMs: number | undefined;
+  /**
+   * Governance CLI surface (gov-10). Bundled object keeps the flag module
+   * free-standing — per-flag validation, conflict detection, and defaults
+   * all live in `args/governance-flags.ts` so `koi start` and `koi tui`
+   * share one surface.
+   */
+  readonly governance: GovernanceFlags;
 }
 
 export function parseStartFlags(rest: readonly string[]): StartFlags {
@@ -119,6 +128,12 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     readonly headless: boolean | undefined;
     readonly "allow-tool": string[] | undefined;
     readonly "max-duration-ms": string | undefined;
+    readonly "max-spend": string | undefined;
+    readonly "max-turns": string | undefined;
+    readonly "max-spawn-depth": string | undefined;
+    readonly "policy-file": string | undefined;
+    readonly "alert-threshold": string[] | undefined;
+    readonly "no-governance": boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -143,6 +158,12 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
         headless: { type: "boolean", default: false },
         "allow-tool": { type: "string", multiple: true },
         "max-duration-ms": { type: "string" },
+        "max-spend": { type: "string" },
+        "max-turns": { type: "string" },
+        "max-spawn-depth": { type: "string" },
+        "policy-file": { type: "string" },
+        "alert-threshold": { type: "string", multiple: true },
+        "no-governance": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -289,6 +310,18 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     }
   }
 
+  const governance = parseGovernanceFlags(
+    {
+      "max-spend": values["max-spend"],
+      "max-turns": values["max-turns"],
+      "max-spawn-depth": values["max-spawn-depth"],
+      "policy-file": values["policy-file"],
+      "alert-threshold": values["alert-threshold"],
+      "no-governance": values["no-governance"],
+    },
+    skipValidators,
+  );
+
   return {
     command: "start" as const,
     version: versionRequested,
@@ -314,6 +347,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     headless,
     allowTools,
     maxDurationMs,
+    governance,
   };
 }
 
