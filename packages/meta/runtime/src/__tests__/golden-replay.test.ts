@@ -11805,3 +11805,71 @@ describe("Golden: @koi/tool-exec", () => {
     expect(finalReply).toContain("15");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-collective-memory
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-collective-memory", () => {
+  test("extraction pipeline: markers take priority over heuristics", async () => {
+    const { createDefaultExtractor } = await import("@koi/middleware-collective-memory");
+    const extractor = createDefaultExtractor();
+
+    const output = [
+      "[LEARNING:gotcha] Always pin exact versions in CI lockfiles",
+      "I learned that the API requires OAuth2 tokens for all endpoints",
+      "[LEARNING:pattern] Use exponential backoff with jitter for retries",
+    ].join("\n");
+
+    const results = extractor.extract(output);
+
+    // At least 3 learnings extracted (2 markers + 1 heuristic)
+    expect(results.length).toBeGreaterThanOrEqual(3);
+
+    // Markers (confidence 1.0) sorted before heuristics (confidence 0.7)
+    expect(results[0]?.confidence).toBe(1.0);
+    expect(results[1]?.confidence).toBe(1.0);
+
+    // Categories correct
+    const categories = results.map((r) => r.category);
+    expect(categories).toContain("gotcha");
+    expect(categories).toContain("pattern");
+    expect(categories).toContain("heuristic");
+  });
+
+  test("inject + compact pipeline preserves invariants", async () => {
+    const { formatCollectiveMemory, shouldCompact, compactCollectiveMemory } = await import(
+      "@koi/middleware-collective-memory"
+    );
+    const { DEFAULT_COLLECTIVE_MEMORY } = await import("@koi/core");
+
+    const now = 1_700_000_000_000;
+    const entries = Array.from({ length: 60 }, (_, i) => ({
+      id: `e${String(i)}`,
+      content: `learning entry number ${String(i)} about some topic`,
+      category: (["gotcha", "heuristic", "pattern"][i % 3] ?? "context") as
+        | "gotcha"
+        | "heuristic"
+        | "pattern",
+      source: { agentId: "agent", runId: "run", timestamp: now },
+      createdAt: now,
+      accessCount: i % 5,
+      lastAccessedAt: now,
+    }));
+
+    const memory = { ...DEFAULT_COLLECTIVE_MEMORY, entries, totalTokens: 9500 };
+
+    // Should trigger compaction (60 > 50 entries, 9500 > 8000 tokens)
+    expect(shouldCompact(memory)).toBe(true);
+
+    // Compaction reduces entries and increments generation
+    const compacted = compactCollectiveMemory(memory);
+    expect(compacted.entries.length).toBeLessThan(entries.length);
+    expect(compacted.generation).toBe(1);
+    expect(compacted.lastCompactedAt).toBeDefined();
+
+    // Injection formatting works on compacted memory
+    const formatted = formatCollectiveMemory(compacted.entries, 2000);
+    expect(formatted).toContain("## Collective Memory");
+  });
+});

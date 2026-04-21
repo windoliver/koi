@@ -38,6 +38,7 @@
     { "path": "../../lib/tool-notebook" },
     { "path": "../../lib/lsp" },
     { "path": "../../mm/dream" },
+    { "path": "../../mm/middleware-collective-memory" },
     { "path": "../../mm/memory" },
     { "path": "../../mm/memory-fs" },
     { "path": "../../mm/memory-team-sync" },
