@@ -12,6 +12,8 @@ export type { DeployFlags } from "./deploy.js";
 export { isDeployFlags, parseDeployFlags } from "./deploy.js";
 export type { DoctorFlags } from "./doctor.js";
 export { isDoctorFlags, parseDoctorFlags } from "./doctor.js";
+export type { DreamFlags } from "./dream.js";
+export { isDreamFlags, parseDreamFlags } from "./dream.js";
 export type { InitFlags } from "./init.js";
 export { isInitFlags, parseInitFlags } from "./init.js";
 export type { LogsFlags } from "./logs.js";
@@ -45,6 +47,8 @@ import type { DeployFlags } from "./deploy.js";
 import { parseDeployFlags } from "./deploy.js";
 import type { DoctorFlags } from "./doctor.js";
 import { parseDoctorFlags } from "./doctor.js";
+import type { DreamFlags } from "./dream.js";
+import { parseDreamFlags } from "./dream.js";
 import type { InitFlags } from "./init.js";
 import { parseInitFlags } from "./init.js";
 import type { LogsFlags } from "./logs.js";
@@ -77,6 +81,7 @@ export type CliFlags =
   | LogsFlags
   | StatusFlags
   | DoctorFlags
+  | DreamFlags
   | StopFlags
   | DeployFlags
   | McpFlags
@@ -97,6 +102,7 @@ export type KnownCommand =
   | "logs"
   | "status"
   | "doctor"
+  | "dream"
   | "stop"
   | "deploy"
   | "mcp"
@@ -112,6 +118,7 @@ const KNOWN_COMMANDS: ReadonlyArray<KnownCommand> = [
   "logs",
   "status",
   "doctor",
+  "dream",
   "stop",
   "deploy",
   "mcp",
@@ -140,6 +147,7 @@ const COMMAND_PARSERS: Readonly<Record<KnownCommand, CommandParser>> = {
   logs: parseLogsFlags,
   status: parseStatusFlags,
   doctor: parseDoctorFlags,
+  dream: parseDreamFlags,
   stop: parseStopFlags,
   deploy: parseDeployFlags,
   mcp: parseMcpFlags,

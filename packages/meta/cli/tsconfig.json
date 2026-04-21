@@ -18,6 +18,7 @@
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../lib/plugins" },
     { "path": "../../lib/query-engine" },
+    { "path": "../../mm/middleware-dream" },
     { "path": "../../mm/middleware-extraction" },
     { "path": "../../lib/middleware-otel" },
     { "path": "../../lib/middleware-task-anchor" },

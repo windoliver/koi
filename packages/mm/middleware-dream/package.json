@@ -1,0 +1,23 @@
+{
+  "name": "@koi/middleware-dream",
+  "description": "Dream consolidation middleware — fires memory consolidation in the background after session end",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/dream": "workspace:*"
+  }
+}
