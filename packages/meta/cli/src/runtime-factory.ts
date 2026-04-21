@@ -45,10 +45,12 @@ import type {
   FileSystemBackend,
   GovernanceBackend,
   GovernanceController,
+  GovernanceVerdict,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
   PermissionBackend,
+  PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
   SessionId,
@@ -82,6 +84,7 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
+import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
 import {
   buildInheritedMiddlewareForChildren,
   composeRuntimeMiddleware,
@@ -722,6 +725,11 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditSqlitePath?: string | undefined;
+  /** Absolute path to the SQLite DB backing the ViolationStore. When set,
+   *  policy-violation events are persisted to this DB and made queryable via
+   *  `governanceBackend.violations`. Opt-in; if omitted, violations are only
+   *  surfaced in-memory via the governance bridge. */
+  readonly violationSqlitePath?: string | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -2266,6 +2274,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // in observer mode (observerOnly silences record() only, not
     // evaluator.evaluate()). Absent --policy-file, fall back to the default-
     // allow backend so /governance renders the synthetic descriptor.
+    // --- Violation store (opt-in via config.violationSqlitePath) ---
+    const violationStore =
+      config.violationSqlitePath !== undefined
+        ? createSqliteViolationStore({ dbPath: config.violationSqlitePath })
+        : undefined;
+
     const rawGovernanceBackend = governanceEnabled
       ? config.governanceRules !== undefined && config.governanceRules.length > 0
         ? createPatternBackend({ rules: config.governanceRules, defaultDeny: false })
@@ -2276,8 +2290,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       complianceRecorders.length > 0 ? fanOutComplianceRecorder(complianceRecorders) : undefined;
 
     const governanceBackend =
-      rawGovernanceBackend !== undefined && complianceRecorder !== undefined
-        ? { ...rawGovernanceBackend, compliance: complianceRecorder }
+      rawGovernanceBackend !== undefined
+        ? {
+            ...rawGovernanceBackend,
+            ...(complianceRecorder !== undefined ? { compliance: complianceRecorder } : {}),
+            ...(violationStore !== undefined ? { violations: violationStore } : {}),
+          }
         : rawGovernanceBackend;
     const governanceRules: readonly RuleDescriptor[] =
       governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
@@ -2295,6 +2313,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             // list and falls back to its default when undefined.
             ...(config.governanceAlertThresholds !== undefined
               ? { alertThresholds: config.governanceAlertThresholds }
+              : {}),
+            // Persist every violation to the SQLite store when configured.
+            // Additive — does not remove any other subscribers (e.g. bridge).
+            ...(violationStore !== undefined
+              ? {
+                  onViolation: (verdict: GovernanceVerdict, request: PolicyRequest) => {
+                    if (verdict.ok) return;
+                    for (const v of verdict.violations) {
+                      violationStore.record(v, request.agentId, undefined, request.timestamp);
+                    }
+                  },
+                }
               : {}),
           })
         : undefined;
@@ -2886,6 +2916,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               );
             }
           })();
+        }
+        if (violationStore !== undefined) {
+          try {
+            violationStore.close();
+          } catch (err) {
+            console.warn(
+              `[koi/${hostId}] ViolationStore shutdown failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
         return hadWork;
       },
