@@ -23,7 +23,8 @@ interface DebugBundle {
   readonly session: DebugSession;
   readonly controller: DebugController;
   readonly middleware: KoiMiddleware;
-  readonly detachWithReason: (reason: "user" | "agent_terminated" | "replaced") => void;
+  /** Tears down session + controller + cancels termination watcher. */
+  readonly teardown: (reason: "user" | "agent_terminated" | "replaced") => void;
 }
 
 export interface DebugAttachConfig {
@@ -70,7 +71,7 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
     const replacementReason: "user" | "agent_terminated" | "replaced" = agentTerminated
       ? "agent_terminated"
       : "replaced";
-    existingBundle.detachWithReason(replacementReason);
+    existingBundle.teardown(replacementReason);
     activeDebugSessions.delete(agentKey);
   }
 
@@ -92,40 +93,46 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
     controller,
   });
 
+  // Agent-termination watcher: polls agent.state so a paused gate is always
+  // released even if no one explicitly calls session.detach(). Without this,
+  // an external agent kill while paused would hang the turn runner forever.
+  let tornDown = false;
+  const teardown = (reason: "user" | "agent_terminated" | "replaced"): void => {
+    if (tornDown) return;
+    tornDown = true;
+    clearInterval(terminationWatcher);
+    detachWithReason(reason);
+  };
+
+  const terminationWatcher: ReturnType<typeof setInterval> = setInterval(() => {
+    if (config.agent.state === "terminated") {
+      if (activeDebugSessions.get(agentKey) === bundle) {
+        teardown("agent_terminated");
+        activeDebugSessions.delete(agentKey);
+      } else {
+        clearInterval(terminationWatcher);
+      }
+    }
+  }, AGENT_TERMINATION_POLL_MS);
+  if (typeof terminationWatcher === "object" && "unref" in terminationWatcher) {
+    (terminationWatcher as { unref: () => void }).unref();
+  }
+
   const bundle: DebugBundle = {
     agent: config.agent,
     session,
     controller,
     middleware,
-    detachWithReason,
+    teardown,
   };
   activeDebugSessions.set(agentKey, bundle);
 
-  // Agent-termination watcher: polls agent.state so a paused gate is always
-  // released even if no one explicitly calls session.detach(). Without this,
-  // an external agent kill while paused would hang the turn runner forever.
-  const terminationWatcher: ReturnType<typeof setInterval> = setInterval(() => {
-    if (config.agent.state === "terminated") {
-      clearInterval(terminationWatcher);
-      if (activeDebugSessions.get(agentKey) === bundle) {
-        detachWithReason("agent_terminated");
-        activeDebugSessions.delete(agentKey);
-      }
-    }
-  }, AGENT_TERMINATION_POLL_MS);
-  // Don't keep the process alive just for the watcher (Node.js / Bun convention)
-  if (typeof terminationWatcher === "object" && "unref" in terminationWatcher) {
-    (terminationWatcher as { unref: () => void }).unref();
-  }
-
-  // Wrap detach to clean up module-level tracking + stop the watcher
-  const originalDetach = session.detach;
+  // Wrap detach so the public session.detach() path also clears the watcher
   const wrappedSession: DebugSession = {
     ...session,
     detach: () => {
-      clearInterval(terminationWatcher);
+      teardown("user");
       activeDebugSessions.delete(agentKey);
-      return originalDetach();
     },
   };
 
@@ -149,7 +156,7 @@ export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiE
     };
   }
   if (bundle.agent.state === "terminated") {
-    bundle.detachWithReason("agent_terminated");
+    bundle.teardown("agent_terminated");
     activeDebugSessions.delete(key);
     return {
       ok: false,
@@ -177,12 +184,12 @@ export function hasDebugSession(agentId: AgentId): boolean {
   const bundle = activeDebugSessions.get(key);
   if (bundle === undefined) return false;
   if (bundle.agent.state === "terminated") {
-    bundle.detachWithReason("agent_terminated");
+    bundle.teardown("agent_terminated");
     activeDebugSessions.delete(key);
     return false;
   }
   if (!bundle.controller.isActive()) {
-    bundle.detachWithReason("replaced");
+    bundle.teardown("replaced");
     activeDebugSessions.delete(key);
     return false;
   }
@@ -192,7 +199,7 @@ export function hasDebugSession(agentId: AgentId): boolean {
 /** Clear all debug sessions. For testing cleanup only. */
 export function clearAllDebugSessions(): void {
   for (const [, bundle] of activeDebugSessions) {
-    bundle.controller.deactivate();
+    bundle.teardown("replaced");
   }
   activeDebugSessions.clear();
 }

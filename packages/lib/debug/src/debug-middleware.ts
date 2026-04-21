@@ -32,6 +32,7 @@ import { matchesBreakpoint } from "./breakpoint-matcher.js";
 import {
   DEBUG_MIDDLEWARE_NAME,
   DEBUG_MIDDLEWARE_PRIORITY,
+  MAX_EVENT_PAYLOAD_BYTES,
   SUPPORTED_EVENT_KINDS,
 } from "./constants.js";
 import type { EventRingBuffer } from "./event-ring-buffer.js";
@@ -72,6 +73,26 @@ export interface DebugMiddlewareResult {
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
+
+/** Truncate large payloads to a byte budget before retaining in the event buffer. */
+function truncatePayload(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length <= MAX_EVENT_PAYLOAD_BYTES) return value;
+    return `${value.slice(0, MAX_EVENT_PAYLOAD_BYTES)}…[truncated ${value.length - MAX_EVENT_PAYLOAD_BYTES} bytes]`;
+  }
+  if (value === null || value === undefined) return value;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized !== undefined && serialized.length <= MAX_EVENT_PAYLOAD_BYTES) return value;
+    return {
+      __truncated: true,
+      approximateBytes: serialized?.length ?? 0,
+      preview: serialized?.slice(0, 256),
+    };
+  } catch {
+    return { __truncated: true, reason: "non-serializable" };
+  }
+}
 
 export function createDebugMiddleware(
   eventBuffer: EventRingBuffer,
@@ -193,14 +214,15 @@ export function createDebugMiddleware(
       await processEvent({ kind: "tool_call_start", toolName: request.toolId, callId });
       try {
         const response = await next(request);
-        await processEvent({ kind: "tool_call_end", callId, result: response.output });
-        await processEvent({ kind: "tool_result", callId, output: response.output });
+        const truncatedOutput = truncatePayload(response.output);
+        await processEvent({ kind: "tool_call_end", callId, result: truncatedOutput });
+        await processEvent({ kind: "tool_result", callId, output: truncatedOutput });
         return response;
       } catch (e: unknown) {
         await processEvent({
           kind: "custom",
           type: "tool_call_error",
-          data: { callId: callId as string, error: String(e) },
+          data: { callId: callId as string, error: String(e).slice(0, MAX_EVENT_PAYLOAD_BYTES) },
         });
         throw e;
       }
@@ -222,7 +244,7 @@ export function createDebugMiddleware(
         await processEvent({
           kind: "custom",
           type: "model_call_error",
-          data: { error: String(e) },
+          data: { error: String(e).slice(0, MAX_EVENT_PAYLOAD_BYTES) },
         });
         throw e;
       }
@@ -245,12 +267,15 @@ export function createDebugMiddleware(
           // failure paths (malformed tool args, thinking stalls, usage overruns,
           // terminal done/error). Untyped chunks are preserved as custom events.
           if (chunk.kind === "text_delta") {
-            await processEvent({ kind: "text_delta", delta: chunk.delta });
+            await processEvent({
+              kind: "text_delta",
+              delta: truncatePayload(chunk.delta) as string,
+            });
           } else if (chunk.kind === "thinking_delta") {
             await processEvent({
               kind: "custom",
               type: "thinking_delta",
-              data: { delta: chunk.delta },
+              data: { delta: truncatePayload(chunk.delta) },
             });
           } else if (chunk.kind === "tool_call_start") {
             await processEvent({
@@ -262,7 +287,7 @@ export function createDebugMiddleware(
             await processEvent({
               kind: "custom",
               type: "tool_call_delta",
-              data: { callId: chunk.callId as string, delta: chunk.delta },
+              data: { callId: chunk.callId as string, delta: truncatePayload(chunk.delta) },
             });
           } else if (chunk.kind === "tool_call_end") {
             await processEvent({ kind: "tool_call_end", callId: chunk.callId, result: undefined });
@@ -277,7 +302,7 @@ export function createDebugMiddleware(
               kind: "custom",
               type: "model_stream_error",
               data: {
-                message: chunk.message,
+                message: String(chunk.message).slice(0, MAX_EVENT_PAYLOAD_BYTES),
                 code: chunk.code,
                 retryable: chunk.retryable ?? null,
               },
@@ -292,7 +317,7 @@ export function createDebugMiddleware(
         await processEvent({
           kind: "custom",
           type: "model_call_error",
-          data: { error: String(e) },
+          data: { error: String(e).slice(0, MAX_EVENT_PAYLOAD_BYTES) },
         });
         throw e;
       }

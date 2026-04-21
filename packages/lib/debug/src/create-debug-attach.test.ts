@@ -1002,6 +1002,81 @@ describe("agent-termination watcher", () => {
   });
 });
 
+describe("teardown cancels termination watcher on every path", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("stale-session replacement cancels old watcher and invalidates old handle", () => {
+    const agent = makeAgent("watcher-replaced") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    const first = createDebugAttach({ agent });
+    if (!first.ok) return;
+    const oldSession = first.value.session;
+
+    // Force stale by terminating agent, then re-attach with a fresh (living) agent
+    // sharing the same id — replacement path runs teardown on the old bundle.
+    agent.state = "terminated";
+    const freshAgent = makeAgent("watcher-replaced");
+    const second = createDebugAttach({ agent: freshAgent });
+    expect(second.ok).toBe(true);
+
+    // Old session handle must be revoked after replacement teardown
+    expect(() => oldSession.inspect()).toThrow("detached");
+    if (second.ok) second.value.session.detach();
+  });
+
+  test("clearAllDebugSessions cancels watchers for all sessions", () => {
+    const agentA = makeAgent("watcher-clear-a");
+    const agentB = makeAgent("watcher-clear-b");
+    const aResult = createDebugAttach({ agent: agentA });
+    const bResult = createDebugAttach({ agent: agentB });
+    expect(aResult.ok && bResult.ok).toBe(true);
+
+    clearAllDebugSessions();
+
+    expect(hasDebugSession(agentA.pid.id)).toBe(false);
+    expect(hasDebugSession(agentB.pid.id)).toBe(false);
+  });
+});
+
+describe("event payload truncation", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("tool_call_end and tool_result payloads are truncated above byte budget", async () => {
+    const agent = makeAgent("truncate-agent");
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    // Generate a tool output that exceeds the 16KiB payload budget
+    const hugeOutput = "x".repeat(50_000);
+
+    const fakeRequest: import("@koi/core").ToolRequest = {
+      toolId: "huge_tool",
+      input: {},
+    };
+    const fakeNext = async (r: import("@koi/core").ToolRequest) =>
+      ({ toolId: r.toolId, output: hugeOutput }) as import("@koi/core").ToolResponse;
+
+    await middleware.wrapToolCall?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      fakeRequest,
+      fakeNext,
+    );
+
+    const events = session.events();
+    const toolEnd = events.find((e) => e.kind === "tool_call_end");
+    expect(toolEnd).toBeDefined();
+    if (toolEnd?.kind !== "tool_call_end") return;
+    // The retained payload must be ≤ budget + suffix, not the full 50k
+    const retainedSize = typeof toolEnd.result === "string" ? toolEnd.result.length : 0;
+    expect(retainedSize).toBeLessThan(50_000);
+    expect(retainedSize).toBeLessThan(17_000); // ~16 KiB + suffix
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", () => {
     const { createDebugMiddleware } =
