@@ -34,6 +34,23 @@ function outputToString(output: unknown): string {
   return "";
 }
 
+// Redact common secret patterns before any string enters collective memory.
+// This prevents API keys, tokens, and passwords from being persisted across runs.
+const SECRET_PATTERNS: readonly RegExp[] = [
+  /(?:^|[\s'"`=:,({[])((?:sk|pk|rk|ek|ak|xox[baprs])-[A-Za-z0-9_-]{8,})/gm,
+  /\b((?:eyJ)[A-Za-z0-9_-]{20,}\.(?:eyJ)[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})\b/g,
+  /(?:password|passwd|secret|token|api[_-]?key|auth[_-]?key)\s*[:=]\s*['"`]?([^\s'"`]{8,})['"`]?/gi,
+  /\bbearer\s+([A-Za-z0-9_\-.]{20,})/gi,
+];
+
+function redactSecrets(text: string): string {
+  let out = text;
+  for (const pattern of SECRET_PATTERNS) {
+    out = out.replace(pattern, (match, secret: string) => match.replace(secret, "[REDACTED]"));
+  }
+  return out;
+}
+
 function generateEntryId(): string {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 8);
@@ -117,7 +134,7 @@ export function createCollectiveMemoryMiddleware(
 
       if (!SPAWN_TOOL_IDS.has(request.toolId)) return response;
 
-      const outputStr = outputToString(response.output);
+      const outputStr = redactSecrets(outputToString(response.output));
       if (outputStr.length === 0) return response;
 
       if (config.modelCall !== undefined && sessionOutputs.length < MAX_SESSION_OUTPUTS) {
@@ -168,7 +185,7 @@ export function createCollectiveMemoryMiddleware(
         if (formatted.length === 0) return next(request);
 
         const injectedIds: ReadonlySet<string> = new Set(selected.map((e) => e.id));
-        incrementAccessCounts(brick, memory, injectedIds).catch(() => {
+        incrementAccessCounts(brick, injectedIds).catch(() => {
           // Swallow — observability only
         });
 
@@ -191,11 +208,6 @@ export function createCollectiveMemoryMiddleware(
     agentId: string,
     runId: string,
   ): Promise<void> {
-    const loadResult = await config.forgeStore.load(brick);
-    if (!loadResult.ok) return;
-
-    const existing: CollectiveMemory =
-      loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
     const nowMs = Date.now();
 
     const newEntries: readonly CollectiveMemoryEntry[] = candidates.map((c) => ({
@@ -208,66 +220,77 @@ export function createCollectiveMemoryMiddleware(
       lastAccessedAt: nowMs,
     }));
 
-    const merged = [...existing.entries, ...newEntries];
-    const deduped = deduplicateEntries(merged, dedupThreshold, nowMs);
-    const totalTokens = deduped.reduce(
-      (sum, e) => sum + Math.ceil(e.content.length / CHARS_PER_TOKEN),
-      0,
-    );
+    // Retry loop: re-read on CAS conflict so concurrent writers converge without data loss.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const loadResult = await config.forgeStore.load(brick);
+      if (!loadResult.ok) return;
 
-    // let justified: mutable for conditional compaction
-    let updated: CollectiveMemory = {
-      entries: deduped,
-      totalTokens,
-      generation: existing.generation,
-      lastCompactedAt: existing.lastCompactedAt,
-    };
+      const existing: CollectiveMemory =
+        loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
+      const storeVersion = loadResult.value.storeVersion;
 
-    if (autoCompact && shouldCompact(updated, maxEntries, maxTokens)) {
-      updated = compactCollectiveMemory(updated, {
-        maxEntries,
-        maxTokens,
-        coldAgeDays,
-        dedupThreshold,
-      });
-    }
+      const merged = [...existing.entries, ...newEntries];
+      const deduped = deduplicateEntries(merged, dedupThreshold, nowMs);
+      const totalTokens = deduped.reduce(
+        (sum, e) => sum + Math.ceil(e.content.length / CHARS_PER_TOKEN),
+        0,
+      );
 
-    const updateResult = await config.forgeStore.update(brick, { collectiveMemory: updated });
+      // let justified: mutable for conditional compaction
+      let updated: CollectiveMemory = {
+        entries: deduped,
+        totalTokens,
+        generation: existing.generation,
+        lastCompactedAt: existing.lastCompactedAt,
+      };
 
-    // Retry once on generation conflict
-    if (!updateResult.ok && updateResult.error !== undefined) {
-      const retryLoad = await config.forgeStore.load(brick);
-      if (retryLoad.ok) {
-        const fresh = retryLoad.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
-        const reMerged = [...fresh.entries, ...newEntries];
-        const reDeduped = deduplicateEntries(reMerged, dedupThreshold, nowMs);
-        const reTokens = reDeduped.reduce(
-          (sum, e) => sum + Math.ceil(e.content.length / CHARS_PER_TOKEN),
-          0,
-        );
-        await config.forgeStore.update(brick, {
-          collectiveMemory: {
-            entries: reDeduped,
-            totalTokens: reTokens,
-            generation: fresh.generation,
-            lastCompactedAt: fresh.lastCompactedAt,
-          },
+      if (autoCompact && shouldCompact(updated, maxEntries, maxTokens)) {
+        updated = compactCollectiveMemory(updated, {
+          maxEntries,
+          maxTokens,
+          coldAgeDays,
+          dedupThreshold,
         });
       }
+
+      const updateResult = await config.forgeStore.update(brick, {
+        collectiveMemory: updated,
+        ...(storeVersion !== undefined ? { expectedVersion: storeVersion } : {}),
+      });
+
+      if (updateResult.ok) return;
+      // On conflict (CONFLICT error) retry with a fresh load; on other errors bail.
+      const errCode = (updateResult.error as { code?: string } | undefined)?.code;
+      if (errCode !== "CONFLICT") return;
     }
   }
 
   async function incrementAccessCounts(
     brick: BrickId,
-    memory: CollectiveMemory,
     injectedIds: ReadonlySet<string>,
   ): Promise<void> {
-    const nowMs = Date.now();
-    const updatedEntries = memory.entries.map((e) =>
-      injectedIds.has(e.id) ? { ...e, accessCount: e.accessCount + 1, lastAccessedAt: nowMs } : e,
-    );
-    await config.forgeStore.update(brick, {
-      collectiveMemory: { ...memory, entries: updatedEntries },
-    });
+    // Reload to avoid overwriting entries written by concurrent wrapToolCall calls.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const loadResult = await config.forgeStore.load(brick);
+      if (!loadResult.ok) return;
+
+      const memory: CollectiveMemory =
+        loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
+      const storeVersion = loadResult.value.storeVersion;
+      const nowMs = Date.now();
+
+      const updatedEntries = memory.entries.map((e) =>
+        injectedIds.has(e.id) ? { ...e, accessCount: e.accessCount + 1, lastAccessedAt: nowMs } : e,
+      );
+
+      const updateResult = await config.forgeStore.update(brick, {
+        collectiveMemory: { ...memory, entries: updatedEntries },
+        ...(storeVersion !== undefined ? { expectedVersion: storeVersion } : {}),
+      });
+
+      if (updateResult.ok) return;
+      const errCode = (updateResult.error as { code?: string } | undefined)?.code;
+      if (errCode !== "CONFLICT") return;
+    }
   }
 }

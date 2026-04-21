@@ -501,3 +501,132 @@ describe("createCollectiveMemoryMiddleware", () => {
     });
   });
 });
+
+describe("secret redaction", () => {
+  test("redacts sk- style API keys from worker output before extraction", async () => {
+    const store = createMockForgeStore();
+    const mw = createCollectiveMemoryMiddleware(
+      createConfig({
+        forgeStore: store,
+        extractor: {
+          extract: (text: string) => {
+            // Capture what text was passed after redaction
+            if (text.includes("[LEARNING:gotcha]")) {
+              return [{ content: text, category: "gotcha", confidence: 1.0 }];
+            }
+            return [];
+          },
+        },
+      }),
+    );
+
+    await mw.onSessionStart?.(createSessionCtx());
+    const next = mock(
+      async () =>
+        ({
+          output: "[LEARNING:gotcha] Always validate. sk-proj-abc12345678 is the key",
+        }) satisfies ToolResponse,
+    );
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+
+    const updateCalls = (store.update as ReturnType<typeof mock>).mock.calls;
+    expect(updateCalls.length).toBeGreaterThan(0);
+    const persistedMemory = (updateCalls[0] as unknown[])[1] as {
+      collectiveMemory?: { entries?: Array<{ content: string }> };
+    };
+    const content = persistedMemory.collectiveMemory?.entries?.[0]?.content ?? "";
+    expect(content).not.toContain("sk-proj-abc12345678");
+    expect(content).toContain("[REDACTED]");
+  });
+
+  test("redacts bearer tokens from worker output", async () => {
+    let capturedText = "";
+    const mw = createCollectiveMemoryMiddleware(
+      createConfig({
+        extractor: {
+          extract: (text: string) => {
+            capturedText = text;
+            return [];
+          },
+        },
+      }),
+    );
+
+    await mw.onSessionStart?.(createSessionCtx());
+    const next = mock(
+      async () =>
+        ({
+          output:
+            "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.signature123456",
+        }) satisfies ToolResponse,
+    );
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+
+    expect(capturedText).not.toContain("eyJhbGciOiJSUzI1NiJ9");
+    expect(capturedText).toContain("[REDACTED]");
+  });
+});
+
+describe("optimistic locking", () => {
+  test("passes storeVersion as expectedVersion on update", async () => {
+    const brick = createMockBrick({ storeVersion: 7 });
+    const store: ForgeStore = {
+      save: mock(async () => ({ ok: true as const, value: undefined })),
+      load: mock(async () => ({ ok: true as const, value: brick })),
+      search: mock(async () => ({ ok: true as const, value: [] as readonly BrickArtifact[] })),
+      remove: mock(async () => ({ ok: true as const, value: undefined })),
+      update: mock(async () => ({ ok: true as const, value: undefined })),
+      exists: mock(async () => ({ ok: true as const, value: true })),
+    } as unknown as ForgeStore;
+
+    const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+
+    await mw.onSessionStart?.(createSessionCtx());
+    const next = mock(
+      async () =>
+        ({
+          output: "[LEARNING:gotcha] Always check storeVersion",
+        }) satisfies ToolResponse,
+    );
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+
+    const updateCalls = (store.update as ReturnType<typeof mock>).mock.calls;
+    expect(updateCalls.length).toBeGreaterThan(0);
+    const updateArg = (updateCalls[0] as unknown[])[1] as { expectedVersion?: number };
+    expect(updateArg.expectedVersion).toBe(7);
+  });
+
+  test("retries on CONFLICT and succeeds on second attempt", async () => {
+    let callCount = 0;
+    const store: ForgeStore = {
+      save: mock(async () => ({ ok: true as const, value: undefined })),
+      load: mock(async () => ({
+        ok: true as const,
+        value: createMockBrick({ storeVersion: callCount }),
+      })),
+      search: mock(async () => ({ ok: true as const, value: [] as readonly BrickArtifact[] })),
+      remove: mock(async () => ({ ok: true as const, value: undefined })),
+      update: mock(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return { ok: false as const, error: { code: "CONFLICT", message: "conflict" } };
+        }
+        return { ok: true as const, value: undefined };
+      }),
+      exists: mock(async () => ({ ok: true as const, value: true })),
+    } as unknown as ForgeStore;
+
+    const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+
+    await mw.onSessionStart?.(createSessionCtx());
+    const next = mock(
+      async () =>
+        ({
+          output: "[LEARNING:pattern] Retry on conflict",
+        }) satisfies ToolResponse,
+    );
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+
+    expect(callCount).toBe(2);
+  });
+});
