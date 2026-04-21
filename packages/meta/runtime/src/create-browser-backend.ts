@@ -54,10 +54,7 @@ export async function createBrowserBackend(config: BrowserBackendConfig): Promis
     }
     case "browser-ext": {
       const [{ createExtensionBrowserDriver }, { createPlaywrightBrowserDriver }] =
-        await Promise.all([
-          import("@koi/browser-ext"),
-          import("@koi/browser-playwright"),
-        ]);
+        await Promise.all([import("@koi/browser-ext"), import("@koi/browser-playwright")]);
       const { kind: _kind, ...extConfig } = config;
       return createExtensionBrowserDriver({
         ...extConfig,

@@ -92,6 +92,7 @@ export function parseAtReferences(text: string): readonly AtReference[] {
 
   // Quoted paths first (higher priority)
   for (const match of text.matchAll(AT_QUOTED_RE)) {
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const filePath = match[1]!;
     const lineStart = match[2] !== undefined ? Number.parseInt(match[2], 10) : undefined;
     const lineEnd = match[3] !== undefined ? Number.parseInt(match[3], 10) : undefined;
@@ -109,6 +110,7 @@ export function parseAtReferences(text: string): readonly AtReference[] {
   for (const match of text.matchAll(AT_UNQUOTED_RE)) {
     // Skip if this position was already captured by a quoted match
     if (quotedStarts.has(match.index)) continue;
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const filePath = match[1]!;
     // Skip if it starts with a quote (partial match of a quoted ref)
     if (filePath.startsWith('"')) continue;

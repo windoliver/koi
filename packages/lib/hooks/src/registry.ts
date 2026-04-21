@@ -257,7 +257,6 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
     // narrowed `callSignal?.aborted` to false, but the signal can flip
     // during the executeHooks() await. The explicit-undefined form sidesteps
     // that narrowing.
-    // biome-ignore lint/complexity/useOptionalChain: narrowing workaround
     const callerCancelled = callSignal?.aborted && !state.controller.signal.aborted;
 
     // Un-consume once-hooks that failed — they get another chance,

@@ -244,7 +244,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // by graceMs while disposers drain). Bootstrap itself must honor
   // --max-duration-ms exactly — there's no teardown during setup to justify
   // grace, and adding it would silently extend the advertised hard timeout.
-  const SHUTDOWN_GRACE_MS = 10_000;
+  const _SHUTDOWN_GRACE_MS = 10_000;
 
   // Absolute deadline anchored at process entry. Every phase (bootstrap,
   // engine run, teardown) computes its remaining budget from this single

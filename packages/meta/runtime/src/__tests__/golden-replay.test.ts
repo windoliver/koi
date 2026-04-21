@@ -11871,6 +11871,10 @@ describe("Golden: @koi/middleware-collective-memory", () => {
     // Injection formatting works on compacted memory
     const formatted = formatCollectiveMemory(compacted.entries, 2000);
     expect(formatted).toContain("## Collective Memory");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/browser-ext (standalone API coverage)
 // ---------------------------------------------------------------------------
 

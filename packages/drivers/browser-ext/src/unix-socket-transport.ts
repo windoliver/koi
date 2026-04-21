@@ -148,7 +148,7 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
     await writer.write(JSON.stringify(frame));
   }
 
-  function waitFor<TFrame extends DriverFrame>(
+  function _waitFor<TFrame extends DriverFrame>(
     predicate: (frame: DriverFrame) => frame is TFrame,
   ): Promise<TFrame> {
     return new Promise<TFrame>((resolve, reject) => {

@@ -35,7 +35,7 @@ function isIpv6Private(hostname: string): boolean {
   if (mappedHex) return isIpv4Private(mappedHex);
   // IPv4-compatible IPv6 (deprecated but still parseable): ::127.0.0.1
   const compat = /^::([\d.]+)$/.exec(normalized);
-  if (compat?.[1] && compat[1].includes(".")) return isIpv4Private(compat[1]);
+  if (compat?.[1]?.includes(".")) return isIpv4Private(compat[1]);
   if (normalized.startsWith("fc")) return true;
   if (normalized.startsWith("fd")) return true;
   if (normalized.startsWith("fe8")) return true;

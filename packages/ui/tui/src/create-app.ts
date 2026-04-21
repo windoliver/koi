@@ -124,7 +124,7 @@ export interface CreateTuiAppConfig {
    * Called when the user selects a model in the picker. Host mutates the
    * current-model middleware box so subsequent turns use the new model.
    */
-  readonly onModelSwitch?: ((model: ModelEntry) => boolean | void) | undefined;
+  readonly onModelSwitch?: ((model: ModelEntry) => boolean | undefined) | undefined;
 }
 
 // ---------------------------------------------------------------------------
