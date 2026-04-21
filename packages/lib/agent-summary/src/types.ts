@@ -122,6 +122,11 @@ export type SummaryEvent =
   | { readonly kind: "cache.hit"; readonly hash: string }
   | { readonly kind: "cache.miss"; readonly hash: string }
   | {
+      readonly kind: "inflight.join";
+      readonly hash: string;
+      readonly waitedMs: number;
+    }
+  | {
       readonly kind: "cache.read_fail";
       readonly hash: string;
       readonly error: KoiError;
@@ -159,6 +164,7 @@ export interface AgentSummaryDeps {
   readonly modelCall: (req: ModelRequest) => Promise<ModelResponse>;
   readonly cache?: SummaryCache;
   readonly clock?: () => number;
+  readonly inFlightTimeoutMs?: number;
   readonly onEvent?: (e: SummaryEvent) => void;
 }
 
@@ -178,14 +184,31 @@ export interface AgentSummary {
 export const ERROR_CODES = {
   VALIDATION: "VALIDATION",
   NOT_FOUND: "NOT_FOUND",
-  DEGRADED_TRANSCRIPT: "DEGRADED_TRANSCRIPT",
-  RANGE_COMPACTED: "RANGE_COMPACTED",
-  SESSION_COMPACTED: "SESSION_COMPACTED",
-  MODEL_ERROR: "MODEL_ERROR",
-  PARSE_ERROR: "PARSE_ERROR",
+  EXTERNAL: "EXTERNAL",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
+
+/**
+ * Summary-specific failure reasons carried in `KoiError.context.reason`.
+ * The top-level `KoiError.code` remains in the shared core taxonomy.
+ */
+export const ERROR_REASONS = {
+  SESSION_EMPTY: "session-empty",
+  SESSION_ALL_SKIPPED: "session-all-skipped",
+  SESSION_COMPACTED: "session-compacted",
+  SESSION_PARSE_ERROR: "session-parse-error",
+  SESSION_STRICT: "session-strict",
+  SESSION_CRASH_ONLY_TURN: "session-crash-only-turn",
+  RANGE_COMPACTED: "range-compacted",
+  RANGE_STRICT: "range-strict",
+  RANGE_CRASH_NO_PREFIX: "range-crash-no-prefix",
+  RANGE_TAIL_CRASH: "range-tail-crash",
+  MODEL_ERROR: "model-error",
+  PARSE_ERROR: "parse-error",
+} as const;
+
+export type ErrorReason = (typeof ERROR_REASONS)[keyof typeof ERROR_REASONS];
 
 export type {
   KoiError,

@@ -100,6 +100,102 @@ describe("factory — happy paths", () => {
     expect(events.filter((x) => x.kind === "cache.hit").length).toBe(1);
   });
 
+  test("concurrent identical summarizeSession calls coalesce into one modelCall", async () => {
+    const entries = [e("u1", "user"), e("a1", "assistant")];
+    let calls = 0;
+    const summary = createAgentSummary({
+      transcript: mockTranscript({ entries, skipped: [] }),
+      modelCall: async () => {
+        calls++;
+        await Bun.sleep(25);
+        return { text: goodJson };
+      },
+    });
+    const [a, b, c] = await Promise.all([
+      summary.summarizeSession(SID),
+      summary.summarizeSession(SID),
+      summary.summarizeSession(SID),
+    ]);
+    expect(a.ok && b.ok && c.ok).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  test("concurrent identical summarizeSession calls coalesce before cache reads", async () => {
+    const entries = [e("u1", "user"), e("a1", "assistant")];
+    let cacheGets = 0;
+    let modelCalls = 0;
+    const summary = createAgentSummary({
+      transcript: mockTranscript({ entries, skipped: [] }),
+      cache: {
+        get: async () => {
+          cacheGets++;
+          await Bun.sleep(20);
+          return undefined;
+        },
+        set: async () => {},
+      },
+      modelCall: async () => {
+        modelCalls++;
+        await Bun.sleep(20);
+        return { text: goodJson };
+      },
+    });
+
+    const [a, b, c] = await Promise.all([
+      summary.summarizeSession(SID),
+      summary.summarizeSession(SID),
+      summary.summarizeSession(SID),
+    ]);
+
+    expect(a.ok && b.ok && c.ok).toBe(true);
+    expect(cacheGets).toBe(1);
+    expect(modelCalls).toBe(1);
+  });
+
+  test("coalesced callers emit inflight.join telemetry with wait duration", async () => {
+    const entries = [e("u1", "user"), e("a1", "assistant")];
+    const events: SummaryEvent[] = [];
+    const summary = createAgentSummary({
+      transcript: mockTranscript({ entries, skipped: [] }),
+      modelCall: async () => {
+        await Bun.sleep(20);
+        return { text: goodJson };
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+    const [a, b] = await Promise.all([
+      summary.summarizeSession(SID),
+      summary.summarizeSession(SID),
+    ]);
+    expect(a.ok && b.ok).toBe(true);
+    const joined = events.find((ev) => ev.kind === "inflight.join");
+    expect(joined !== undefined).toBe(true);
+    if (joined && joined.kind === "inflight.join") {
+      expect(joined.waitedMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("mutating returned summary does not poison cached result", async () => {
+    const entries = [e("u1", "user")];
+    const summary = createAgentSummary({
+      transcript: mockTranscript({ entries, skipped: [] }),
+      modelCall: canned(),
+    });
+    const first = await summary.summarizeSession(SID);
+    expect(first.ok).toBe(true);
+    if (!first.ok || first.value.kind !== "clean") {
+      throw new Error("expected first call to return kind: clean");
+    }
+    (first.value.summary as unknown as { goal: string }).goal = "tampered-by-caller";
+
+    const second = await summary.summarizeSession(SID);
+    expect(second.ok).toBe(true);
+    if (!second.ok || second.value.kind !== "clean") {
+      throw new Error("expected second call to return kind: clean");
+    }
+    expect(second.value.summary.goal).toBe("do the thing");
+  });
+
   test("distinct sessionIds don't share cache", async () => {
     const entries = [e("u1", "user")];
     let calls = 0;
@@ -117,7 +213,7 @@ describe("factory — happy paths", () => {
 });
 
 describe("factory — range integrity", () => {
-  test("compacted transcript → RANGE (VALIDATION) range-compacted", async () => {
+  test("compacted transcript → VALIDATION + range-compacted", async () => {
     const entries = [e("c1", "compaction"), e("u1", "user")];
     const summary = createAgentSummary({
       transcript: mockTranscript({ entries, skipped: [] }),
@@ -125,7 +221,10 @@ describe("factory — range integrity", () => {
     });
     const r = await summary.summarizeRange(SID, 0, 0);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.context?.reason).toBe("range-compacted");
+    if (!r.ok) {
+      expect(r.error.code).toBe("VALIDATION");
+      expect(r.error.context?.reason).toBe("range-compacted");
+    }
   });
 
   test("parse_error skip → range-strict", async () => {
@@ -225,7 +324,10 @@ describe("factory — session integrity", () => {
     });
     const r = await summary.summarizeSession(SID);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.context?.reason).toBe("session-compacted");
+    if (!r.ok) {
+      expect(r.error.code).toBe("VALIDATION");
+      expect(r.error.context?.reason).toBe("session-compacted");
+    }
   });
 
   test("compacted + allowCompacted: true → kind: compacted", async () => {
@@ -365,7 +467,7 @@ describe("factory — parse retry + cache fault paths", () => {
     expect(call).toBe(2);
   });
 
-  test("parse fails twice → EXTERNAL with parse.fail event", async () => {
+  test("parse fails twice → EXTERNAL with parse-error reason + parse.fail event", async () => {
     const events: SummaryEvent[] = [];
     const summary = createAgentSummary({
       transcript: mockTranscript({ entries, skipped: [] }),
@@ -374,10 +476,14 @@ describe("factory — parse retry + cache fault paths", () => {
     });
     const r = await summary.summarizeSession(SID);
     expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe("EXTERNAL");
+      expect(r.error.context?.reason).toBe("parse-error");
+    }
     expect(events.some((x) => x.kind === "parse.fail")).toBe(true);
   });
 
-  test("modelCall rejection → EXTERNAL MODEL error (retryable)", async () => {
+  test("modelCall rejection → EXTERNAL with model-error reason (retryable)", async () => {
     const summary = createAgentSummary({
       transcript: mockTranscript({ entries, skipped: [] }),
       modelCall: async () => {
@@ -386,7 +492,38 @@ describe("factory — parse retry + cache fault paths", () => {
     });
     const r = await summary.summarizeSession(SID);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.retryable).toBe(true);
+    if (!r.ok) {
+      expect(r.error.code).toBe("EXTERNAL");
+      expect(r.error.retryable).toBe(true);
+      expect(r.error.context?.reason).toBe("model-error");
+    }
+  });
+
+  test("hung modelCall times out and clears inflight slot for retry", async () => {
+    let calls = 0;
+    const summary = createAgentSummary({
+      transcript: mockTranscript({ entries, skipped: [] }),
+      inFlightTimeoutMs: 20,
+      modelCall: async () => {
+        calls++;
+        if (calls === 1) {
+          return await new Promise<ModelResponse>(() => {});
+        }
+        return { text: goodJson };
+      },
+    });
+
+    const first = await summary.summarizeSession(SID);
+    expect(first.ok).toBe(false);
+    if (!first.ok) {
+      expect(first.error.code).toBe("EXTERNAL");
+      expect(first.error.context?.reason).toBe("model-error");
+      expect(first.error.context?.timeout).toBe(true);
+    }
+
+    const second = await summary.summarizeSession(SID);
+    expect(second.ok).toBe(true);
+    expect(calls).toBe(2);
   });
 
   test("cache.get rejection emits cache.read_fail and recomputes", async () => {
