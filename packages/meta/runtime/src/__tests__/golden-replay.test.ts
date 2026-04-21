@@ -9749,6 +9749,50 @@ describe("Golden: @koi/dream", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/middleware-dream
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-dream", () => {
+  test("factory creates middleware with correct name and priority", async () => {
+    const { createDreamMiddleware } = await import("@koi/middleware-dream");
+
+    const mw = createDreamMiddleware({
+      memoryDir: "/tmp/test-dream",
+      listMemories: async () => [],
+      writeMemory: async () => undefined,
+      deleteMemory: async () => undefined,
+      modelCall: async () => ({ content: "", model: "test" }),
+    });
+
+    expect(mw.name).toBe("koi:dream");
+    expect(mw.priority).toBe(320);
+    expect(typeof mw.onSessionEnd).toBe("function");
+  });
+
+  test("describeCapabilities returns undefined (dream injects no context fragments)", async () => {
+    const { createDreamMiddleware } = await import("@koi/middleware-dream");
+
+    const mw = createDreamMiddleware({
+      memoryDir: "/tmp/test-dream",
+      listMemories: async () => [],
+      writeMemory: async () => undefined,
+      deleteMemory: async () => undefined,
+      modelCall: async () => ({ content: "", model: "test" }),
+    });
+
+    const mockCtx = {
+      session: { agentId: "test", sessionId: "s1", runId: "r1", metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<typeof mw.describeCapabilities>[0];
+
+    expect(mw.describeCapabilities(mockCtx)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/memory-team-sync
 // ---------------------------------------------------------------------------
 

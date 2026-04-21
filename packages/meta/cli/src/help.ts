@@ -149,6 +149,21 @@ Options:
   -h, --help             Show this help
 `;
 
+const dreamHelp = `koi dream — Run dream memory consolidation
+
+Usage:
+  koi dream [options]
+
+Options:
+      --memory-dir <path>  Path to memory directory (default: ~/.koi/memory)
+      --model <name>       Model name for consolidation
+      --model-url <url>    OpenAI-compatible base URL
+      --api-key <key>      API key (overrides OPENROUTER_API_KEY / OPENAI_API_KEY)
+      --force              Skip gate check and run consolidation immediately
+      --json               Emit JSON instead of text
+  -h, --help               Show this help
+`;
+
 const stopHelp = `koi stop — Stop the running service
 
 Usage:
@@ -236,6 +251,7 @@ export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   logs: logsHelp,
   status: statusHelp,
   doctor: doctorHelp,
+  dream: dreamHelp,
   stop: stopHelp,
   deploy: deployHelp,
   mcp: mcpHelp,

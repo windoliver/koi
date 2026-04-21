@@ -150,6 +150,32 @@ The gated registry fails closed on corrupt state — all plugins blocked until `
 enabled plugins via `createGatedRegistry` and wires their skills, hooks, and MCP servers into the
 session. Plugin middleware names are collected but not resolved (no factory registry yet).
 
+### `koi dream`
+
+Run dream memory consolidation immediately. Useful as a manual trigger or scheduled cron job
+that complements the in-session `dreamStack` middleware (which fires the gate on `onSessionEnd`).
+
+```bash
+koi dream                          # Run only when the gate is triggered
+koi dream --force                  # Bypass the gate check
+koi dream --json                   # Emit { ok, data: { merged, pruned, unchanged, durationMs } }
+koi dream --memory-dir <path>      # Override default memory directory
+koi dream --model <name>           # Override consolidation model
+koi dream --model-url <url>        # Override base URL (default: OPENROUTER_BASE_URL or openrouter.ai)
+```
+
+API key is read from `OPENROUTER_API_KEY` (preferred) or `OPENAI_API_KEY` — the `--api-key` flag
+was deliberately removed to avoid argv credential exposure (`ps`/process logs).
+
+**Cross-process safety:** acquires `<memoryDir>/.dream.lock` via O_EXCL with PID liveness check.
+A live owner short-circuits with "already running"; a dead-PID lock is evicted and the run proceeds.
+The lock is `pid:timestamp` and only released if the token still matches at exit.
+
+**Wiring partner:** the `dreamStack` preset (`packages/meta/cli/src/preset-stacks/dream.ts`) wires
+`@koi/middleware-dream` into both `koi tui` and `koi start` so every session-end bumps the gate
+counter. The CLI command and the middleware share the same `.dream-gate.json` and `.dream.lock`
+files, so manual + automatic invocations coexist safely.
+
 ### `koi tui`
 
 Interactive terminal console. Opens a full-screen OpenTUI terminal UI with progressive model streaming,
@@ -423,6 +449,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/audit-sink-sqlite` | L2 | WAL-mode SQLite audit sink — opt-in via `KOI_AUDIT_SQLITE` env var, parallel to NDJSON sink. Collision guard prevents dual-writer corruption (#1849) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
+| `@koi/middleware-dream` | L2 | Background dream-consolidation gate — `onSessionEnd` hook bumps `<memoryDir>/.dream-gate.json` via atomic `mutateGateState` (in-process mutex chain + cross-process O_EXCL on `.dream-gate.lock`). When the gate fires, fire-and-forget `runDreamConsolidation` runs under `.dream.lock` (PID-bearing). Wired via the `dreamStack` preset; no-op when `ctx.modelAdapter` is undefined. Companion CLI: `koi dream` |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
 | `@koi/middleware-planning` | L2 | `koi_plan_write` tool + write_plan middleware — opt-in via `KOI_PLANNING_ENABLED=true`. Per-turn authorization, epoch-based session-recycle isolation, teardown abort signal, and a deterministic `commitToken` for CAS-safe durable persistence. Auto-paired with `@koi/middleware-plan-persist` to make plans survive restart. (#1836, #1842) |
 | `@koi/middleware-plan-persist` | L2 | File-backed persistence for `koi_plan_write` — auto-wired alongside planning when `KOI_PLANNING_ENABLED=true`. Mirrors every commit to `<cwd>/.koi/plans/_active/<sha256(sessionId)>.md` via exclusive-link commit, exposes `koi_plan_save` / `koi_plan_load` tools for git-diffable named checkpoints under `.koi/plans/<ts>-<slug>.md`, and a `restoreFromJournal(sessionId)` API on the runtime handle. Active-journal files are NOT loadable through `koi_plan_load` to prevent cross-session disclosure (#1842) |
