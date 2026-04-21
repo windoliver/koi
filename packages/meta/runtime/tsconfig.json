@@ -47,7 +47,6 @@
     { "path": "../../net/daemon" },
     { "path": "../../net/mcp" },
     { "path": "../../net/mcp-server" },
-    { "path": "../../lib/middleware-goal" },
     { "path": "../../lib/middleware-plan-persist" },
     { "path": "../../lib/middleware-planning" },
     { "path": "../../lib/middleware-report" },

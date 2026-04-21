@@ -87,7 +87,6 @@ Options:
       --agent <id>                 Agent id (multi-agent manifests)
       --session <id>               Session id to open
       --resume <id>                Resume a prior session (loads transcript)
-      --goal <text>                Inject a goal; repeatable
       --until-pass <arg>           Convergence loop verifier argv; repeatable
       --max-iter <n>               Max loop iterations (default 10)
       --verifier-timeout <ms>      Per-iteration verifier timeout (default 120000)

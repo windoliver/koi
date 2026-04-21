@@ -16,7 +16,6 @@
  *   @koi/tool-notebook        — notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell
  *   @koi/session              — JSONL transcript recording (optional, via config.session)
  *   @koi/engine               — system prompt middleware (optional, via config.systemPrompt)
- *   @koi/middleware-goal       — adaptive goal reminders (optional, via config.goals)
  *   @koi/skills-runtime        — three-tier skill discovery (bundled → user → project)
  *   @koi/skill-tool            — on-demand skill loading meta-tool (Skill)
  *
@@ -68,7 +67,6 @@ import { createPatternBackend } from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
-import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -633,13 +631,6 @@ export interface KoiRuntimeConfig {
    */
   readonly systemPrompt?: string | undefined;
   /**
-   * Goal objectives for the middleware-goal adaptive reminder system.
-   * When provided, createGoalMiddleware is installed in the middleware stack
-   * to inject goal reminders and detect drift/completion.
-   * When omitted, no goal middleware is installed.
-   */
-  readonly goals?: readonly string[] | undefined;
-  /**
    * Session transcript config for JSONL recording + session resume.
    * When omitted, no session transcript middleware is installed.
    */
@@ -1129,7 +1120,6 @@ export function resolveMaxDurationMs(hostDefault?: number): number {
     // distinct raw value so mistakes are visible without log spam.
     if (lastWarnedInvalidEnv !== raw) {
       lastWarnedInvalidEnv = raw;
-      // biome-ignore lint/suspicious/noConsole: operator-visible startup diagnostic.
       console.warn(
         `[koi] ignoring KOI_MAX_DURATION_MS=${JSON.stringify(raw)}: ` +
           "expected an unsigned decimal integer (ms) or '0' to disable. " +
@@ -1548,14 +1538,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // time. After session reset, resolver.load() sees fresh files but the model still
   // sees the old descriptor listing. Full fix requires hot-swappable tool descriptors
   // in createKoi — tracked as a known limitation. The system prompt skill snapshot
-  // --- @koi/middleware-goal: adaptive goal reminders (optional) ---
-  // Only installed when the caller provides objectives. Injects goal blocks
-  // into model messages and tracks drift/completion across turns.
-  const goalMw =
-    config.goals !== undefined && config.goals.length > 0
-      ? createGoalMiddleware({ objectives: config.goals })
-      : undefined;
-
   // --- @koi/middleware-planning + @koi/middleware-plan-persist ---
   // Opt-in via `config.planningEnabled`. When on, both bundles are
   // wired together: plan-persist's `onPlanUpdate` is plugged into
@@ -2182,7 +2164,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     let pendingReportText: string | undefined;
     if (config.reportEnabled === true) {
       const reportHandle = createReportMiddleware({
-        objective: config.goals?.join("; "),
         onReport: (_report, formatted) => {
           // #1862: buffer the formatted text instead of printing
           // immediately. onReport fires during runtime.dispose() →
@@ -2308,7 +2289,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ...(config.modelRouterMiddleware !== undefined
         ? { modelRouter: config.modelRouterMiddleware }
         : {}),
-      ...(goalMw !== undefined ? { goal: goalMw } : {}),
       // Plan is a dedicated zone-C-bottom slot so it runs INSIDE the
       // permissions filter. That's required for its prompt-visibility
       // gate — if permissions removes write_plan from request.tools,

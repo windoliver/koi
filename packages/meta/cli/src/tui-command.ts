@@ -1640,7 +1640,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
-    ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
     ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
       ? { maxSpendUsd: governance.maxSpendUsd }
       : {}),

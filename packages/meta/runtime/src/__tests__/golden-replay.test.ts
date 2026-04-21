@@ -46,7 +46,6 @@ import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
-import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPlanMiddleware, WRITE_PLAN_TOOL_NAME } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
@@ -448,18 +447,39 @@ describe("Full-loop replay: tool-use cassette → createKoi → live ATIF", () =
 });
 
 // ---------------------------------------------------------------------------
-// Golden: @koi/middleware-goal + @koi/middleware-report (cassette replay)
+// Regression: @koi/middleware-goal removed (#1848)
 // ---------------------------------------------------------------------------
 
-describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
-  test("both MW compose through createKoi with tool-use cassette", async () => {
+describe("Removal regression: @koi/middleware-goal (#1848)", () => {
+  test("goal middleware package is not importable at runtime", async () => {
+    // Package directory was deleted; Bun's resolver should fail to locate
+    // the module. This locks the removal so a stray dependency cannot
+    // silently reintroduce the MW via transitive install.
+    await expect(import("@koi/middleware-goal" as string)).rejects.toThrow();
+  });
+
+  test("goal middleware is not re-exported from @koi/runtime", async () => {
+    // Ensure no surviving export surface. If someone re-adds the package
+    // and forgets to gate it, this test catches the leak via runtime
+    // export inspection.
+    const runtimeModule = (await import("@koi/runtime")) as Record<string, unknown>;
+    expect("createGoalMiddleware" in runtimeModule).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-report (cassette replay)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-report", () => {
+  test("MW composes through createKoi with tool-use cassette", async () => {
     const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
-    const trajDir = `/tmp/koi-mw-goal-report-${Date.now()}`;
+    const trajDir = `/tmp/koi-mw-report-${Date.now()}`;
     trajDirs.push(trajDir);
-    const docId = "replay-goal-report";
+    const docId = "replay-report";
 
     const store = createAtifDocumentStore(
-      { agentName: "goal-report-test" },
+      { agentName: "report-test" },
       createFsAtifDelegate(trajDir),
     );
     const clock = createMonotonicClock();
@@ -467,7 +487,7 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     const { middleware: eventTrace } = createEventTraceMiddleware({
       store,
       docId,
-      agentName: "goal-report-test",
+      agentName: "report-test",
       clock,
     });
 
@@ -480,24 +500,17 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       description: "bypass",
     });
 
-    // @koi/middleware-goal
-    const completed: string[] = [];
-    const goalMw = createGoalMiddleware({
-      objectives: ["Compute the sum of two numbers"],
-      onComplete: (obj) => completed.push(obj),
-    });
-
     // @koi/middleware-report
     const reportHandle = createReportMiddleware({
-      objective: "Golden query: tool-use with goal + report MW",
+      objective: "Golden query: tool-use with report MW",
     });
 
     const adapter = createCassetteAdapter(cassette.chunks);
 
     const runtime = await createKoi({
-      manifest: { name: "goal-report-test", version: "0.1.0", model: { name: MODEL } },
+      manifest: { name: "report-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, goalMw, reportHandle.middleware, permHandle].map((mw) =>
+      middleware: [eventTrace, reportHandle.middleware, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
@@ -521,13 +534,9 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     await runtime.dispose();
     await new Promise((r) => setTimeout(r, 300));
 
-    // Validate ATIF has MW spans for both new middlewares
     const steps = await store.getDocument(docId);
     const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
     const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
-
-    // @koi/middleware-goal spans present
-    expect(mwNames.has("goal")).toBe(true);
 
     // @koi/middleware-report spans present
     expect(mwNames.has("report")).toBe(true);
@@ -546,28 +555,10 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     );
     expect(modelSteps.length).toBeGreaterThanOrEqual(1);
 
-    // @koi/middleware-goal: MW span present with outcome (proves the
-    // middleware actually ran, not just registered). onComplete timing
-    // and callback behavior are exhaustively covered by 90 per-package
-    // unit tests; the runtime golden test focuses on wiring correctness.
-    const goalSpan = mwSpans.find((s) => s.metadata?.middlewareName === "goal");
-    expect(goalSpan).toBeDefined();
-    expect(goalSpan?.outcome).toBe("success");
-
-    // Goal spans must carry decision metadata (injection + completion state)
-    const goalModelSpan = mwSpans.find(
-      (s) =>
-        s.metadata?.middlewareName === "goal" &&
-        (s.metadata?.hook === "wrapModelCall" || s.metadata?.hook === "wrapModelStream"),
-    );
-    if (goalModelSpan !== undefined) {
-      const goalDecisions = goalModelSpan.metadata?.decisions as readonly JsonObject[] | undefined;
-      // Goal only reports when injecting — if present, must have objectives + totalCount
-      if (goalDecisions !== undefined && goalDecisions.length > 0) {
-        expect(typeof goalDecisions[0]?.totalCount).toBe("number");
-        expect(goalDecisions[0]?.goalBlock).toBeDefined();
-      }
-    }
+    // Report span present with success outcome
+    const reportSpan = mwSpans.find((s) => s.metadata?.middlewareName === "report");
+    expect(reportSpan).toBeDefined();
+    expect(reportSpan?.outcome).toBe("success");
   }, 15000);
 });
 
@@ -1010,281 +1001,6 @@ describe("Golden: @koi/middleware-plan-persist", () => {
     const finalResponse = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
     expect(finalResponse).toMatch(/\.koi\/plans\/\d{8}-\d{6}-auth-refactor\.md/);
   });
-});
-
-// ---------------------------------------------------------------------------
-// Golden: @koi/middleware-goal callback-mode (detectCompletions via onAfterTurn)
-// ---------------------------------------------------------------------------
-
-describe("Golden: @koi/middleware-goal callback-mode (detectCompletions)", () => {
-  test("detectCompletions callback fires at turn boundary via onAfterTurn", async () => {
-    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
-    const trajDir = `/tmp/koi-callback-goal-${Date.now()}`;
-    trajDirs.push(trajDir);
-    const docId = "replay-callback-goal";
-
-    const store = createAtifDocumentStore(
-      { agentName: "callback-goal-test" },
-      createFsAtifDelegate(trajDir),
-    );
-    const clock = createMonotonicClock();
-    const { middleware: eventTrace } = createEventTraceMiddleware({
-      store,
-      docId,
-      agentName: "callback-goal-test",
-      clock,
-    });
-
-    const permBackend = createPermissionBackend({
-      mode: "bypass",
-      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
-    });
-    const permMiddleware = createPermissionsMiddleware({
-      backend: permBackend,
-      description: "bypass",
-    });
-
-    // Track callback invocations, per-turn payloads, and completions
-    const callbackPayloads: {
-      readonly responseTexts: readonly string[];
-      readonly ids: readonly string[];
-    }[] = [];
-    const completed: string[] = [];
-
-    const goalMw = createGoalMiddleware({
-      objectives: ["Compute the sum of two numbers"],
-      baseInterval: 1, // inject every turn so detection has content
-      onComplete: (obj) => completed.push(obj),
-      detectCompletions: (responseTexts, items) => {
-        // Callback invoked once per turn with buffered response texts.
-        // Detect completion when response contains the expected result "12".
-        const ids = items
-          .filter((item) => !item.completed && responseTexts.some((t) => t.includes("12")))
-          .map((item) => item.id);
-        callbackPayloads.push({ responseTexts: [...responseTexts], ids });
-        return ids;
-      },
-    });
-
-    const adapter = createCassetteAdapter(cassette.chunks, { useTurnRunner: true });
-
-    const runtime = await createKoi({
-      manifest: { name: "callback-goal-test", version: "0.1.0", model: { name: MODEL } },
-      adapter,
-      middleware: [eventTrace, goalMw, permMiddleware].map((mw) =>
-        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
-      ),
-      providers: [
-        createSingleToolProvider({
-          name: "add-numbers",
-          toolName: "add_numbers",
-          createTool: () => addTool,
-        }),
-        createBuiltinSearchProvider({ cwd: process.cwd() }),
-      ],
-      loopDetection: false,
-    });
-
-    const events: EngineEvent[] = [];
-    for await (const e of runtime.run({
-      kind: "text",
-      text: "Use the add_numbers tool to compute 7 + 5.",
-    })) {
-      events.push(e);
-    }
-
-    await runtime.dispose();
-    await new Promise((r) => setTimeout(r, 300));
-
-    // 1. Turn lifecycle: exact turn_end count and ordering.
-    // The adapter's runTurn() emits turn_start/turn_end per internal turn,
-    // and the L1 engine emits its own turn_start before each adapter turn.
-    // Two internal turns (tool-use + text response) produce exactly 2 turn_end events.
-    const turnEnds = events.filter((e) => e.kind === "turn_end");
-    expect(turnEnds.length).toBe(2);
-
-    // Verify turn_end events have sequential turn indices
-    const turnEndIndices = turnEnds.map((e) => (e as { readonly turnIndex: number }).turnIndex);
-    expect(turnEndIndices).toEqual([0, 1]);
-
-    // Verify turn_start precedes each turn_end (structural ordering)
-    const turnStarts = events.filter((e) => e.kind === "turn_start");
-    expect(turnStarts.length).toBeGreaterThanOrEqual(2);
-
-    // done event: assert successful terminal completion shape, not just presence.
-    // A regression ending with "max_turns" or "error" must fail this test.
-    const doneEvent = events.find((e) => e.kind === "done") as
-      | {
-          readonly kind: "done";
-          readonly output: {
-            readonly stopReason: string;
-            readonly metrics: { readonly turns: number };
-          };
-        }
-      | undefined;
-    expect(doneEvent).toBeDefined();
-    expect(doneEvent?.output.stopReason).toBe("completed");
-    expect(doneEvent?.output.metrics.turns).toBe(2);
-
-    // 2. Per-turn callback buffering correctness.
-    // Both turns buffer text (matching wrapModelCall semantics).
-    // Turn 0 (tool-use cassette with empty text) and turn 1 (text "12").
-    expect(callbackPayloads.length).toBe(2);
-
-    // Turn 0 (tool-use): cassette has no text_delta, so buffered text is
-    // the empty done.response.content fallback. No completion detected.
-    expect(callbackPayloads[0]?.ids).toEqual([]);
-
-    // Turn 1 (text response "12"): detects completion via ID.
-    expect(callbackPayloads[1]?.ids).toEqual(["goal-0"]);
-    // Verify the callback received the actual response text "12"
-    expect(callbackPayloads[1]?.responseTexts.some((t) => t.includes("12"))).toBe(true);
-    // Verify exactly one entry per turn (no cross-turn leakage)
-    expect(callbackPayloads[1]?.responseTexts.length).toBe(1);
-
-    // 3. onComplete fired exactly once at turn boundary (not mid-turn, not duplicated)
-    expect(completed.length).toBe(1);
-    expect(completed[0]).toBe("Compute the sum of two numbers");
-
-    // 4. ATIF structural validation — verify step kinds, middleware span
-    // metadata, and per-turn coverage produced by the callback-mode path.
-    const steps = await store.getDocument(docId);
-
-    // Model call steps: two model invocations (turn 0: tool-use, turn 1: text)
-    const modelSteps = steps.filter(
-      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
-    );
-    expect(modelSteps.length).toBe(2);
-    expect(modelSteps.every((s) => s.outcome === "success")).toBe(true);
-
-    // Tool call step: add_numbers executed successfully
-    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
-    expect(toolSteps.length).toBe(1);
-    expect(toolSteps[0]?.outcome).toBe("success");
-
-    // Middleware spans: goal + permissions, with correct metadata
-    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
-
-    // Goal MW spans: exactly 2 wrapModelStream spans (one per model turn),
-    // proving per-turn stream interception and ATIF tracing for both turns.
-    const goalSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "goal");
-    expect(goalSpans.every((s) => s.outcome === "success")).toBe(true);
-    const goalStreamSpans = goalSpans.filter((s) => s.metadata?.hook === "wrapModelStream");
-    expect(goalStreamSpans.length).toBe(2);
-    // Verify metadata fields on each goal stream span
-    for (const span of goalStreamSpans) {
-      expect(span.metadata?.phase).toBe("resolve");
-      expect(span.metadata?.priority).toBe(340);
-      expect(span.metadata?.nextCalled).toBe(true);
-    }
-
-    // Permissions MW spans: exactly 2 wrapModelStream spans (one per turn)
-    const permSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "permissions");
-    expect(permSpans.every((s) => s.outcome === "success")).toBe(true);
-    const permStreamSpans = permSpans.filter((s) => s.metadata?.hook === "wrapModelStream");
-    expect(permStreamSpans.length).toBe(2);
-  }, 15000);
-
-  test("error terminal does not flush partial text or complete goals", async () => {
-    // Negative path: model streams partial text then emits an error chunk.
-    // The eager flush in wrapModelStream must NOT score this text as
-    // completion evidence. Goal state must remain unchanged.
-    const errorChunks: readonly ModelChunk[] = [
-      { kind: "text_delta" as const, delta: "I computed 12 for you" },
-      {
-        kind: "error" as const,
-        message: "provider rate limit",
-        retryable: true,
-      },
-    ];
-
-    const errorDetectedIds: string[][] = [];
-    const errorCompleted: string[] = [];
-
-    const errorGoalMw = createGoalMiddleware({
-      objectives: ["Compute the sum of two numbers"],
-      baseInterval: 1,
-      onComplete: (obj) => errorCompleted.push(obj),
-      detectCompletions: (responseTexts, items) => {
-        const ids = items
-          .filter((item) => !item.completed && responseTexts.some((t) => t.includes("12")))
-          .map((item) => item.id);
-        errorDetectedIds.push(ids);
-        return ids;
-      },
-    });
-
-    // Single-turn adapter that streams partial text then errors
-    const errorAdapter: EngineAdapter = {
-      engineId: "error-replay",
-      capabilities: { text: true, images: false, files: false, audio: false },
-      terminals: {
-        modelCall: async (): Promise<ModelResponse> => ({ content: "fallback", model: MODEL }),
-        modelStream: (): AsyncIterable<ModelChunk> => toAsyncIterable(errorChunks),
-        toolCall: async (_request: ToolRequest): Promise<ToolResponse> => ({ output: "unused" }),
-      },
-      stream(input: EngineInput): AsyncIterable<EngineEvent> {
-        const h = input.callHandlers;
-        if (!h) {
-          return (async function* () {
-            yield {
-              kind: "done" as const,
-              output: {
-                content: [],
-                stopReason: "error" as const,
-                metrics: {
-                  totalTokens: 0,
-                  inputTokens: 0,
-                  outputTokens: 0,
-                  turns: 0,
-                  durationMs: 0,
-                },
-              },
-            };
-          })();
-        }
-        const messages: InboundMessage[] = [
-          {
-            senderId: "user",
-            timestamp: Date.now(),
-            content: [{ kind: "text", text: "compute 7+5" }],
-          },
-        ];
-        return runTurn({ callHandlers: h, messages, signal: input.signal, maxTurns: 1 });
-      },
-    };
-
-    const permBackend = createPermissionBackend({
-      mode: "bypass",
-      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
-    });
-
-    const runtime = await createKoi({
-      manifest: { name: "error-goal-test", version: "0.1.0", model: { name: MODEL } },
-      adapter: errorAdapter,
-      middleware: [
-        errorGoalMw,
-        createPermissionsMiddleware({ backend: permBackend, description: "bypass" }),
-      ],
-      loopDetection: false,
-    });
-
-    for await (const _e of runtime.run({ kind: "text", text: "compute 7+5" })) {
-      /* drain */
-    }
-
-    await runtime.dispose();
-
-    // Partial text "I computed 12 for you" was streamed before error, but
-    // the eager flush must NOT have persisted it to responseBuffer.
-    // detectCompletions must NOT have been called with that text.
-    const completedIds = errorDetectedIds.flat();
-    expect(completedIds).toEqual([]);
-
-    // onComplete must NOT have fired — no goal should be marked complete
-    // from a failed turn's partial output.
-    expect(errorCompleted).toEqual([]);
-  }, 15000);
 });
 
 // ---------------------------------------------------------------------------
@@ -8790,7 +8506,7 @@ describe("Golden: @koi/skill-tool", () => {
 // Add new middleware here when introducing new L2 packages.
 
 describe("CI enforcement: all decision-making L2 middleware emit decisions metadata", () => {
-  test("permissions, hooks, goal, skill-injector all produce decisions in MW spans", async () => {
+  test("permissions, hooks, skill-injector all produce decisions in MW spans", async () => {
     const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
     const trajDir = `/tmp/koi-decisions-enforcement-${Date.now()}`;
     trajDirs.push(trajDir);
@@ -8831,12 +8547,6 @@ describe("CI enforcement: all decision-making L2 middleware emit decisions metad
     const permHandle = createPermissionsMiddleware({
       backend: permBackend,
       description: "enforcement-test (bypass)",
-    });
-
-    // @koi/middleware-goal
-    const { createGoalMiddleware } = await import("@koi/middleware-goal");
-    const goalMw = createGoalMiddleware({
-      objectives: ["Compute the sum using the add_numbers tool."],
     });
 
     // @koi/skills-runtime — skill-injector
@@ -8881,7 +8591,7 @@ describe("CI enforcement: all decision-making L2 middleware emit decisions metad
         model: { name: MODEL },
       },
       adapter,
-      middleware: [eventTrace, hookMw, hookObserverMw, permHandle, goalMw, injector].map((mw) =>
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle, injector].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
@@ -8934,7 +8644,6 @@ describe("CI enforcement: all decision-making L2 middleware emit decisions metad
 
     assertDecisions("permissions");
     assertDecisions("hooks");
-    assertDecisions("goal");
     assertDecisions("skill-injector");
   }, 20000);
 });
