@@ -13,6 +13,17 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
+import { Readable } from "node:stream";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+import { createS3BlobStore } from "@koi/artifacts-s3";
+import { runBlobStoreContract } from "@koi/blob-cas/contract";
 import type {
   Agent,
   EngineAdapter,
@@ -57,6 +68,8 @@ import {
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createPendingMatchStore } from "@koi/watch-patterns";
+import { sdkStreamMixin } from "@smithy/util-stream";
+import { type AwsClientStub, mockClient } from "aws-sdk-client-mock";
 import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
@@ -11753,5 +11766,177 @@ describe("Golden: @koi/artifacts", () => {
     const agentSteps = doc.steps.filter((s) => s.source === "agent");
     const finalReply = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
     expect(finalReply.toLowerCase()).toContain("golden trajectory");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/artifacts-s3 (Plan 5 / Task 6)
+//
+// Standalone, no-LLM coverage for the S3 backend wiring. No real AWS calls —
+// aws-sdk-client-mock intercepts every SDK command and routes it through a
+// tiny in-memory `Map<Key, bytes>` simulator. This mirrors the simulator in
+// `packages/lib/artifacts-s3/src/__tests__/contract.test.ts`; the copy here
+// keeps the runtime tests self-contained and avoids exposing a test helper
+// from the `src/` surface of artifacts-s3.
+//
+// Two tests exercise the package at the levels that matter to the runtime:
+//   1. `createS3BlobStore` satisfies the shared `runBlobStoreContract` suite
+//      — same invariants as every other BlobStore impl.
+//   2. `createArtifactStore({ dbPath: ":memory:", blobStore: s3Store })` opens
+//      against the S3-backed store and round-trips a save/get — proves the
+//      Plan 5 `blobStore` override wires end-to-end through the real artifact
+//      store factory with the real S3 client plumbing (mocked at the SDK).
+// ---------------------------------------------------------------------------
+
+// Hoisted imports live at the top of the file (see Plan 5 `Golden: @koi/artifacts-s3`
+// block below). Biome requires all `import` statements to appear before any other
+// top-level statement.
+const S3_GOLDEN_BUCKET = "koi-runtime-golden-bucket";
+const S3_GOLDEN_MAX_KEYS = 1000;
+
+function s3BodyFromBytes(data: Uint8Array): ReturnType<typeof sdkStreamMixin> {
+  const stream = new Readable();
+  stream.push(data);
+  stream.push(null);
+  return sdkStreamMixin(stream);
+}
+
+function s3NamedError(name: string, message: string): Error {
+  const err = new Error(message);
+  err.name = name;
+  return err;
+}
+
+// Install the in-memory S3 simulator on a mocked client and return the backing
+// map so the caller can assert it actually received bytes. Mirrors the helper
+// in `packages/lib/artifacts-s3/src/__tests__/contract.test.ts`.
+function installS3Simulator(mock: AwsClientStub<S3Client>): Map<string, Uint8Array> {
+  const store = new Map<string, Uint8Array>();
+
+  mock.on(PutObjectCommand).callsFake((input: { Key?: string; Body?: unknown }) => {
+    if (input.Key === undefined) throw new Error("simulator: PutObject missing Key");
+    if (!(input.Body instanceof Uint8Array)) {
+      throw new Error("simulator: PutObject Body must be Uint8Array");
+    }
+    store.set(input.Key, input.Body);
+    return {};
+  });
+
+  mock.on(GetObjectCommand).callsFake((input: { Key?: string }) => {
+    if (input.Key === undefined) throw new Error("simulator: GetObject missing Key");
+    const bytes = store.get(input.Key);
+    if (bytes === undefined) throw s3NamedError("NoSuchKey", "The specified key does not exist.");
+    return { Body: s3BodyFromBytes(bytes) };
+  });
+
+  mock.on(HeadObjectCommand).callsFake((input: { Key?: string }) => {
+    if (input.Key === undefined) throw new Error("simulator: HeadObject missing Key");
+    if (!store.has(input.Key)) throw s3NamedError("NotFound", "Not Found");
+    return {};
+  });
+
+  mock.on(DeleteObjectCommand).callsFake((input: { Key?: string }) => {
+    if (input.Key === undefined) throw new Error("simulator: DeleteObject missing Key");
+    store.delete(input.Key);
+    return {};
+  });
+
+  mock
+    .on(ListObjectsV2Command)
+    .callsFake((input: { Prefix?: string; ContinuationToken?: string; MaxKeys?: number }) => {
+      const prefix = input.Prefix ?? "";
+      const maxKeys = input.MaxKeys ?? S3_GOLDEN_MAX_KEYS;
+      const allKeys = Array.from(store.keys())
+        .filter((k) => k.startsWith(prefix))
+        .sort();
+      const startIdx = input.ContinuationToken !== undefined ? Number(input.ContinuationToken) : 0;
+      const endIdx = Math.min(startIdx + maxKeys, allKeys.length);
+      const page = allKeys.slice(startIdx, endIdx);
+      const truncated = endIdx < allKeys.length;
+      return {
+        Contents: page.map((Key) => ({ Key })),
+        IsTruncated: truncated,
+        ...(truncated ? { NextContinuationToken: String(endIdx) } : {}),
+      };
+    });
+
+  return store;
+}
+
+describe("Golden: @koi/artifacts-s3 — BlobStore contract", () => {
+  // One mock for the whole describe; `reset()` in the factory clears handlers
+  // and recorded calls between contract scenarios so each gets a fresh bucket.
+  const s3Mock = mockClient(S3Client);
+
+  runBlobStoreContract({
+    label: "artifacts-s3-runtime-golden",
+    createStore: async () => {
+      s3Mock.reset();
+      installS3Simulator(s3Mock);
+      const store = createS3BlobStore({
+        bucket: S3_GOLDEN_BUCKET,
+        region: "us-east-1",
+        credentials: {
+          accessKeyId: "AKIA000000EXAMPLE",
+          secretAccessKey: "secret/example/key",
+        },
+      });
+      return {
+        store,
+        cleanup: () => {
+          s3Mock.reset();
+        },
+      };
+    },
+  });
+});
+
+describe("Golden: @koi/artifacts-s3 — createArtifactStore override", () => {
+  test("save/get round-trips through S3-backed blobStore", async () => {
+    const { createArtifactStore } = await import("@koi/artifacts");
+    const { sessionId } = await import("@koi/core");
+
+    const s3Mock = mockClient(S3Client);
+    const simulatorStore = installS3Simulator(s3Mock);
+
+    const s3Store = createS3BlobStore({
+      bucket: S3_GOLDEN_BUCKET,
+      region: "us-east-1",
+      credentials: {
+        accessKeyId: "AKIA000000EXAMPLE",
+        secretAccessKey: "secret/example/key",
+      },
+    });
+
+    const artifactStore = await createArtifactStore({
+      dbPath: ":memory:",
+      blobStore: s3Store,
+    });
+    try {
+      const owner = sessionId("sess-s3-golden");
+      const saved = await artifactStore.saveArtifact({
+        sessionId: owner,
+        name: "s3-golden.txt",
+        data: new TextEncoder().encode("hello s3"),
+        mimeType: "text/plain",
+      });
+      expect(saved.ok).toBe(true);
+      if (!saved.ok) return;
+      expect(saved.value.size).toBe(8);
+      expect(saved.value.version).toBe(1);
+
+      const got = await artifactStore.getArtifact(saved.value.id, { sessionId: owner });
+      expect(got.ok).toBe(true);
+      if (!got.ok) return;
+      expect(new TextDecoder().decode(got.value.data)).toBe("hello s3");
+      expect(got.value.meta.contentHash).toBe(saved.value.contentHash);
+
+      // The S3 simulator actually holds the bytes — proves the override wired
+      // through to the S3 client, not a silent fallback to a filesystem path.
+      expect(simulatorStore.size).toBeGreaterThan(0);
+    } finally {
+      await artifactStore.close();
+      s3Mock.reset();
+    }
   });
 });

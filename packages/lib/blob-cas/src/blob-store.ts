@@ -12,9 +12,37 @@
  * consistency (global since Dec 2020).
  */
 
-import { readdirSync, statSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { blobPath, hasBlob, readBlob, writeBlobFromBytes } from "./cas-store.js";
+
+/**
+ * Backend-agnostic store-id sentinel (spec §3.0 Layer 2). The sentinel is a
+ * well-known blob at the backend root that pairs the metadata DB with the
+ * blob backend by UUID. Filesystem backends write `<blobDir>/.store-id`;
+ * remote backends (S3, etc.) use a backend-native analogue (e.g.
+ * `<prefix>/__store_id__`).
+ *
+ * `readStoreId()` returns `undefined` when the sentinel is absent (first
+ * open). `writeStoreId(uuid)` is idempotent (overwrites any existing value)
+ * and must be durable — after it resolves, a subsequent readStoreId() on
+ * a fresh process must observe the new value.
+ */
+export interface StoreIdSentinel {
+  readonly readStoreId: () => Promise<string | undefined>;
+  readonly writeStoreId: (uuid: string) => Promise<void>;
+}
 
 export interface BlobStore {
   readonly put: (data: Uint8Array) => Promise<string>;
@@ -22,6 +50,14 @@ export interface BlobStore {
   readonly has: (hash: string) => Promise<boolean>;
   readonly delete: (hash: string) => Promise<boolean>;
   readonly list: () => AsyncIterable<string>;
+  /**
+   * Optional: backend-native store-id sentinel. Every built-in factory
+   * (`createFilesystemBlobStore`, `createS3BlobStore`) populates this so
+   * `@koi/artifacts` can pair DB ↔ backend without assuming a filesystem.
+   * Third-party `BlobStore`s that omit it cannot be used with
+   * `createArtifactStore`.
+   */
+  readonly sentinel?: StoreIdSentinel;
 }
 
 /**
@@ -35,7 +71,90 @@ export function createFilesystemBlobStore(blobDir: string): BlobStore {
     has: (hash) => Promise.resolve(hasBlob(blobDir, hash)),
     delete: (hash) => deleteBlob(blobDir, hash),
     list: () => listBlobs(blobDir),
+    sentinel: createFilesystemSentinel(blobDir),
   };
+}
+
+const SENTINEL_FILENAME = ".store-id";
+const SENTINEL_TMP_PREFIX = ".store-id.tmp";
+
+/**
+ * Build the filesystem-backed `StoreIdSentinel`. Reads `<blobDir>/.store-id`
+ * verbatim (no format validation — callers enforce UUID shape). Writes via
+ * tmp + fsync + rename + fsync-dir so the sentinel is durable past power
+ * loss, matching the atomic-publish contract used elsewhere in the CAS.
+ */
+function createFilesystemSentinel(blobDir: string): StoreIdSentinel {
+  return {
+    readStoreId: async () => readSentinelFromFs(blobDir),
+    writeStoreId: async (uuid) => writeSentinelToFs(blobDir, uuid),
+  };
+}
+
+function readSentinelFromFs(blobDir: string): string | undefined {
+  const path = join(blobDir, SENTINEL_FILENAME);
+  if (!existsSync(path)) return undefined;
+  const content = readFileSync(path, "utf8").trim();
+  return content === "" ? undefined : content;
+}
+
+/**
+ * Durably write the sentinel file via tmp + fsync + rename + fsync-dir.
+ * Atomic replace guarantees the final pathname resolves to either the old
+ * complete contents or the new complete contents — never a torn partial —
+ * and fsync at each step guarantees durability under power loss.
+ */
+function writeSentinelToFs(blobDir: string, id: string): void {
+  const target = join(blobDir, SENTINEL_FILENAME);
+  const tmp = join(blobDir, `${SENTINEL_TMP_PREFIX}.${process.pid}.${crypto.randomUUID()}`);
+  const data = new TextEncoder().encode(id);
+
+  const fd = openSync(tmp, "w");
+  try {
+    let written = 0;
+    while (written < data.byteLength) {
+      written += writeSync(fd, data, written, data.byteLength - written);
+    }
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+
+  try {
+    renameSync(tmp, target);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
+
+  // fsync the parent directory so the rename itself is durable. Only swallow
+  // known-unsupported codes (ENOSYS/EINVAL on platforms that don't support
+  // dir fsync). Real I/O / permission errors propagate so bootstrap doesn't
+  // report a paired store_id when the sentinel rename isn't durable.
+  let dirFd: number;
+  try {
+    dirFd = openSync(blobDir, "r");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOSYS" || code === "EINVAL") return;
+    throw err;
+  }
+  try {
+    fsyncSync(dirFd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOSYS" || code === "EINVAL") {
+      // Platform doesn't support fsync on directories — tolerate.
+    } else {
+      throw err;
+    }
+  } finally {
+    closeSync(dirFd);
+  }
 }
 
 const HASH_SHARD_LEN = 2;

@@ -1,3 +1,5 @@
+import type { GovernanceFlags } from "./governance-flags.js";
+import { parseGovernanceFlags } from "./governance-flags.js";
 import type { BaseFlags } from "./shared.js";
 import { ParseError, typedParseArgs } from "./shared.js";
 
@@ -50,13 +52,13 @@ export interface TuiFlags extends BaseFlags {
    */
   readonly yolo: boolean;
   /**
-   * Maximum cumulative spend in USD before the governance controller
-   * fires a violation. Cost is computed via per-model pricing from
-   * @koi/cost-aggregator's DEFAULT_PRICING table; when the model is
-   * unknown, the limit shows in /governance but accumulation stays at 0
-   * until pricing is available. 0 disables the cap (default).
+   * Governance CLI surface (gov-10). Bundled object keeps the flag module
+   * free-standing — per-flag validation, conflict detection, and defaults
+   * all live in `args/governance-flags.ts` so `koi start` and `koi tui`
+   * share one surface. Use `governance.maxSpendUsd ?? 0` to keep the
+   * pre-gov-10 "0 disables the cap" semantics at the call site.
    */
-  readonly maxSpendUsd: number;
+  readonly governance: GovernanceFlags;
 }
 
 export function parseTuiFlags(rest: readonly string[]): TuiFlags {
@@ -74,6 +76,11 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly yolo: boolean | undefined;
     readonly "dangerously-skip-permissions": boolean | undefined;
     readonly "max-spend": string | undefined;
+    readonly "max-turns": string | undefined;
+    readonly "max-spawn-depth": string | undefined;
+    readonly "policy-file": string | undefined;
+    readonly "alert-threshold": string[] | undefined;
+    readonly "no-governance": boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -94,6 +101,11 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         yolo: { type: "boolean", default: false },
         "dangerously-skip-permissions": { type: "boolean", default: false },
         "max-spend": { type: "string" },
+        "max-turns": { type: "string" },
+        "max-spawn-depth": { type: "string" },
+        "policy-file": { type: "string" },
+        "alert-threshold": { type: "string", multiple: true },
+        "no-governance": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -140,6 +152,18 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     }
   }
 
+  const governance = parseGovernanceFlags(
+    {
+      "max-spend": values["max-spend"],
+      "max-turns": values["max-turns"],
+      "max-spawn-depth": values["max-spawn-depth"],
+      "policy-file": values["policy-file"],
+      "alert-threshold": values["alert-threshold"],
+      "no-governance": values["no-governance"],
+    },
+    skipValidators,
+  );
+
   return {
     command: "tui" as const,
     version: versionRequested,
@@ -155,7 +179,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
     yolo: (values.yolo ?? false) || (values["dangerously-skip-permissions"] ?? false),
-    maxSpendUsd: resolveMaxSpendSafe(values["max-spend"], skipValidators),
+    governance,
   };
 }
 
@@ -179,26 +203,6 @@ function resolveVerifierTimeoutMsSafe(raw: string | undefined, skip: boolean): n
     }
   }
   return resolveVerifierTimeoutMs(raw);
-}
-
-function resolveMaxSpendSafe(raw: string | undefined, skip: boolean): number {
-  if (skip) {
-    try {
-      return resolveMaxSpend(raw);
-    } catch {
-      return 0;
-    }
-  }
-  return resolveMaxSpend(raw);
-}
-
-function resolveMaxSpend(raw: string | undefined): number {
-  if (raw === undefined) return 0;
-  const parsed = Number.parseFloat(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new ParseError(`--max-spend must be a non-negative finite number (USD), got '${raw}'`);
-  }
-  return parsed;
 }
 
 // Strict positive-integer regex. parseInt alone accepts trailing junk

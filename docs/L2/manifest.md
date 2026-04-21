@@ -96,6 +96,12 @@ middleware:                                   # NEW — zone B
     options:
       filePath: ./session-secondary.audit.ndjson
     enabled: false                            # declared but turned off
+governance:                                   # NEW — gov-10 defaults
+  maxSpend: 2.50                              # CLI --max-spend wins if also set
+  maxTurns: 50
+  maxSpawnDepth: 3
+  policyFile: ./policies/default.yaml
+  alertThresholds: [0.7, 0.9]
 # trustedHost is NOT accepted in koi.yaml — it is host-controlled only.
 # See the "Security opt-outs" section below.
 #
@@ -162,6 +168,59 @@ Every enabled opt-out logs a bright startup warning. Today no `koi
 tui` / `koi start` CLI flag exposes this — it exists only as a
 programmatic contract for embedders, which is the deliberate
 friction for security-critical relaxations.
+
+---
+
+## Governance defaults (gov-10)
+
+A copy-ready annotated manifest lives at
+[`examples/koi.yaml`](../../examples/koi.yaml) with a companion policy
+file at `examples/policies/default.yaml`. Copy both into your project and
+uncomment the blocks you want.
+
+The `governance:` block supplies defaults for the matching CLI flags:
+`--max-spend`, `--max-turns`, `--max-spawn-depth`, `--policy-file`,
+`--alert-threshold`. CLI flags **always win** over manifest values; the
+manifest only fills in fields the CLI did not pass. `--no-governance`
+ignores this section entirely.
+
+```yaml
+model:
+  name: claude-sonnet-4-6
+governance:
+  maxSpend: 2.50              # USD; non-negative finite number
+  maxTurns: 50                # positive integer
+  maxSpawnDepth: 3            # positive integer
+  policyFile: ./policies/default.yaml   # relative paths anchor to manifest dir
+  alertThresholds: [0.7, 0.9]           # numbers in (0, 1]
+```
+
+**Precedence rules:**
+- `--max-spend 0.50` + manifest `maxSpend: 2.50` → CLI wins, cap is `0.50`.
+- `--no-governance` + manifest `governance: {…}` → governance disabled, manifest ignored (no error).
+- Manifest section absent → CLI flags applied verbatim, defaults fill the rest.
+
+**Policy file format** matches the `--policy-file` schema (array of
+`PatternRule`, see `@koi/governance-defaults`). Relative `policyFile`
+paths are resolved against the manifest's directory so a checked-in
+manifest works regardless of the CLI's cwd.
+
+```yaml
+# Example: ./policies/default.yaml
+- match:
+    toolId: web_fetch
+  decision: deny
+  rule: no-web-fetch
+  severity: warning
+  message: web_fetch is disabled in this profile
+- match:
+    kind: model_call
+    model: claude-opus-4-7
+  decision: allow
+```
+
+Validation runs at boot — a malformed `policyFile` exits with code 2
+before any model call.
 
 ---
 

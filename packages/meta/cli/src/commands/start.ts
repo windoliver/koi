@@ -22,12 +22,14 @@ import type {
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
+import type { PatternRule } from "@koi/governance-defaults";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { resolveFileSystem } from "@koi/runtime";
 import { createJsonlTranscript } from "@koi/session";
+import { mergeGovernanceFlags } from "../args/governance-flags.js";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { ndjsonSafeStringify } from "../headless/ndjson-safe-stringify.js";
@@ -42,6 +44,7 @@ import {
 } from "../headless/run.js";
 import { loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
+import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { createKoiRuntime } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
@@ -378,6 +381,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
+  let manifestGovernance: import("../manifest.js").ManifestGovernanceConfig | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -398,6 +402,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       manifestResult.value.middleware !== undefined
         ? [...manifestResult.value.middleware]
         : undefined;
+    manifestGovernance = manifestResult.value.governance;
 
     // Fail fast on settings that `koi start` cannot honor, rather
     // than silently discarding them. A shared manifest that targets
@@ -634,12 +639,58 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
   const otelHandle = otelEnabled ? initOtelSdk("headless") : undefined;
 
+  // Merge manifest governance defaults under the CLI flags — CLI always
+  // wins. `--no-governance` disables everything regardless of manifest.
+  const governance = mergeGovernanceFlags(
+    flags.governance,
+    manifestGovernance !== undefined
+      ? {
+          maxSpendUsd: manifestGovernance.maxSpend,
+          maxTurns: manifestGovernance.maxTurns,
+          maxSpawnDepth: manifestGovernance.maxSpawnDepth,
+          policyFilePath: manifestGovernance.policyFile,
+          alertThresholds: manifestGovernance.alertThresholds,
+        }
+      : undefined,
+  );
+
+  // Load --policy-file rules at boot so a malformed YAML/JSON refuses to
+  // start, rather than waiting for the first tool call to surface a syntax
+  // error (gov-10 agent instructions).
+  let governanceRules: readonly PatternRule[] | undefined;
+  if (governance.enabled && governance.policyFilePath !== undefined) {
+    try {
+      governanceRules = await loadPolicyFile(governance.policyFilePath);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (flags.headless) {
+        return bail(`policy-file rejected: ${msg}`, 2);
+      }
+      process.stderr.write(`koi start: ${msg}\n`);
+      process.exit(2);
+    }
+  }
+
   let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>>;
   try {
     runtimeHandle = await createKoiRuntime({
       modelAdapter,
       modelName: model,
       disableUserHooks,
+      ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
+        ? { maxSpendUsd: governance.maxSpendUsd }
+        : {}),
+      ...(governance.enabled && governance.maxTurns !== undefined
+        ? { maxTurns: governance.maxTurns }
+        : {}),
+      ...(governance.enabled && governance.maxSpawnDepth !== undefined
+        ? { maxSpawnDepth: governance.maxSpawnDepth }
+        : {}),
+      ...(governance.enabled && governance.alertThresholds !== undefined
+        ? { governanceAlertThresholds: governance.alertThresholds }
+        : {}),
+      ...(governance.enabled && governanceRules !== undefined ? { governanceRules } : {}),
+      ...(governance.enabled ? {} : { governanceDisabled: true }),
       // Contain fs_* tools to the workspace in headless. With
       // allowExternalPaths=true (the default for interactive hosts),
       // a `--allow-tool fs_read` whitelist would still let the model

@@ -108,19 +108,19 @@ describe("parseTuiFlags — --until-pass / --max-iter (#1624)", () => {
 });
 
 describe("parseTuiFlags — --max-spend", () => {
-  test("defaults to 0 when omitted", () => {
+  test("defaults to undefined when omitted", () => {
     const flags = parseTuiFlags([]);
-    expect(flags.maxSpendUsd).toBe(0);
+    expect(flags.governance.maxSpendUsd).toBeUndefined();
   });
 
   test("parses a positive float", () => {
     const flags = parseTuiFlags(["--max-spend", "1.50"]);
-    expect(flags.maxSpendUsd).toBe(1.5);
+    expect(flags.governance.maxSpendUsd).toBe(1.5);
   });
 
   test("accepts 0 (explicit disable)", () => {
     const flags = parseTuiFlags(["--max-spend", "0"]);
-    expect(flags.maxSpendUsd).toBe(0);
+    expect(flags.governance.maxSpendUsd).toBe(0);
   });
 
   test("rejects negative", () => {

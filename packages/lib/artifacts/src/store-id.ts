@@ -3,26 +3,19 @@
  * `store_id`. Prevents two different DBs from sharing the same blob backend
  * (which would let one's sweep delete the other's blobs).
  *
+ * The sentinel is backend-agnostic — it routes through `blobStore.sentinel`
+ * (see `@koi/blob-cas`). Filesystem backends persist it at
+ * `<blobDir>/.store-id`; remote backends (S3, etc.) use a backend-native
+ * key (e.g. `<prefix>/__store_id__`). This module enforces UUID shape +
+ * pairing invariants uniformly across backends.
+ *
  * Layer 1 (advisory lock) is in lock.ts.
  */
 
 import type { Database } from "bun:sqlite";
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeSync,
-} from "node:fs";
-import { join } from "node:path";
 import type { BlobStore } from "@koi/blob-cas";
 
 const STORE_ID_KEY = "store_id";
-const SENTINEL_FILENAME = ".store-id";
-const SENTINEL_TMP_PREFIX = ".store-id.tmp";
 // UUID v4 format; reject any other sentinel value as corrupt.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -33,79 +26,46 @@ export function readStoreIdFromDb(db: Database): string | undefined {
   return row?.value;
 }
 
-function readSentinelFromFs(blobDir: string): string | undefined {
-  const path = join(blobDir, SENTINEL_FILENAME);
-  if (!existsSync(path)) return undefined;
-  const content = readFileSync(path, "utf8").trim();
-  if (!content) return undefined;
+async function readSentinel(blobStore: BlobStore): Promise<string | undefined> {
+  if (blobStore.sentinel === undefined) {
+    throw new Error(
+      "BlobStore is missing its store-id sentinel; every built-in factory populates `sentinel` — third-party backends must do the same",
+    );
+  }
+  const content = await blobStore.sentinel.readStoreId();
+  if (content === undefined) return undefined;
+  const trimmed = content.trim();
+  if (trimmed === "") return undefined;
   // A malformed sentinel (truncated / corrupted write / wrong format) is a
   // corruption signal — reject rather than silently self-heal a garbage ID
   // into the DB.
-  if (!UUID_RE.test(content)) {
+  if (!UUID_RE.test(trimmed)) {
     throw new Error(
-      `Blob backend sentinel (${path}) contains a malformed store_id; operator must repair or reset explicitly`,
+      "Blob backend sentinel contains a malformed store_id; operator must repair or reset explicitly",
     );
   }
-  return content;
+  return trimmed;
+}
+
+async function writeSentinel(blobStore: BlobStore, id: string): Promise<void> {
+  if (blobStore.sentinel === undefined) {
+    throw new Error(
+      "BlobStore is missing its store-id sentinel; cannot pair metadata DB with an unsentineled backend",
+    );
+  }
+  await blobStore.sentinel.writeStoreId(id);
 }
 
 /**
- * Durably write the sentinel file via tmp + fsync + rename + fsync-dir.
- * Atomic replace guarantees the final pathname resolves to either the old
- * complete contents or the new complete contents — never a torn partial —
- * and fsync at each step guarantees durability under power loss.
+ * Detect the "sentinel already exists" signal surfaced by conditional-create
+ * backends (S3's `IfNoneMatch: "*"` branch). The phrase "already exists" is
+ * the stable wording used in the S3 backend's thrown Error message — keep
+ * both backends aligned on this literal so this check doesn't false-positive
+ * on unrelated failures (credentials, transport).
  */
-function writeSentinelToFs(blobDir: string, id: string): void {
-  const target = join(blobDir, SENTINEL_FILENAME);
-  const tmp = join(blobDir, `${SENTINEL_TMP_PREFIX}.${process.pid}.${crypto.randomUUID()}`);
-  const data = new TextEncoder().encode(id);
-
-  const fd = openSync(tmp, "w");
-  try {
-    let written = 0;
-    while (written < data.byteLength) {
-      written += writeSync(fd, data, written, data.byteLength - written);
-    }
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-
-  try {
-    renameSync(tmp, target);
-  } catch (err) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      /* best-effort cleanup */
-    }
-    throw err;
-  }
-
-  // fsync the parent directory so the rename itself is durable. Only swallow
-  // known-unsupported codes (ENOSYS/EINVAL on platforms that don't support
-  // dir fsync). Real I/O / permission errors propagate so bootstrap doesn't
-  // report a paired store_id when the sentinel rename isn't durable.
-  let dirFd: number;
-  try {
-    dirFd = openSync(blobDir, "r");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "ENOSYS" || code === "EINVAL") return;
-    throw err;
-  }
-  try {
-    fsyncSync(dirFd);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "ENOSYS" || code === "EINVAL") {
-      // Platform doesn't support fsync on directories — tolerate.
-    } else {
-      throw err;
-    }
-  } finally {
-    closeSync(dirFd);
-  }
+function isSentinelAlreadyExistsError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.message.includes("already exists");
 }
 
 function writeStoreIdToDb(db: Database, id: string): void {
@@ -130,11 +90,10 @@ async function blobStoreHasAnyBlobs(blobStore: BlobStore): Promise<boolean> {
 
 export async function ensureStoreIdPair(args: {
   readonly db: Database;
-  readonly blobDir: string;
   readonly blobStore: BlobStore;
 }): Promise<string> {
   const dbId = readStoreIdFromDb(args.db);
-  const sentinelId = readSentinelFromFs(args.blobDir);
+  const sentinelId = await readSentinel(args.blobStore);
 
   if (dbId !== undefined && sentinelId !== undefined) {
     if (dbId !== sentinelId) {
@@ -157,7 +116,7 @@ export async function ensureStoreIdPair(args: {
 
   if (dbId !== undefined && sentinelId === undefined) {
     if (storeIsEmpty) {
-      writeSentinelToFs(args.blobDir, dbId);
+      await writeSentinel(args.blobStore, dbId);
       return dbId;
     }
     throw new Error(
@@ -184,8 +143,28 @@ export async function ensureStoreIdPair(args: {
   // after sentinel but before DB, next open sees sentinel-present/DB-missing
   // with an empty store and self-heals. If we crash before sentinel, next
   // open sees both-missing and retries bootstrap from scratch.
+  //
+  // Race window with conditional-create backends (e.g. S3 with
+  // `IfNoneMatch: "*"`): two processes both read an absent sentinel and
+  // race to write. The backend lets only one win; the loser sees an
+  // "already exists" error. Re-read the sentinel and compare — in practice
+  // the loser's `crypto.randomUUID()` never matches the winner's, so we
+  // surface the standard pairing-mismatch error. Keeping the branches
+  // symmetric means a test can still hit the match path if it seeds an
+  // identical UUID, but production will always mismatch.
   const fresh = crypto.randomUUID();
-  writeSentinelToFs(args.blobDir, fresh);
+  try {
+    await writeSentinel(args.blobStore, fresh);
+  } catch (err) {
+    if (!isSentinelAlreadyExistsError(err)) throw err;
+    const raced = await readSentinel(args.blobStore);
+    if (raced === undefined) throw err;
+    if (raced !== fresh) {
+      throw new Error("Blob backend is paired with a different ArtifactStore; refusing to open");
+    }
+    writeStoreIdToDb(args.db, raced);
+    return raced;
+  }
   writeStoreIdToDb(args.db, fresh);
   return fresh;
 }
