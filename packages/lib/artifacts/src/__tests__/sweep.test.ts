@@ -202,7 +202,9 @@ describe("sweepArtifacts Phase A", () => {
   });
 
   test("shared artifact's share row CASCADEs when parent row is reaped", async () => {
-    const store = await open(ctx, { ttlMs: 1 });
+    // Use ttlMs: 50 so shareArtifact (called within ~1ms of save) succeeds
+    // before expiry, while still expiring well before the 120ms sweep window.
+    const store = await open(ctx, { ttlMs: 50 });
     const art = await save(store, "sess_a", "s.txt", "shared");
 
     const shareRes = await store.shareArtifact(art.id, sessionId("sess_b"), {
@@ -210,7 +212,7 @@ describe("sweepArtifacts Phase A", () => {
     });
     expect(shareRes.ok).toBe(true);
 
-    await new Promise<void>((r) => setTimeout(r, 10));
+    await new Promise<void>((r) => setTimeout(r, 120));
 
     await store.sweepArtifacts();
 
