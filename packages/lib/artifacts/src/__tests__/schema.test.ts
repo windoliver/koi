@@ -43,6 +43,35 @@ describe("schema", () => {
     db.close();
   });
 
+  test("pending_blob_deletes has claimed_at INTEGER nullable default NULL (Plan 3)", () => {
+    const db = openDatabase({ dbPath: ":memory:" });
+    const info = db.query("PRAGMA table_info(pending_blob_deletes)").all() as ReadonlyArray<{
+      readonly name: string;
+      readonly type: string;
+      readonly notnull: number;
+      readonly dflt_value: string | null;
+    }>;
+    const claimedAt = info.find((r) => r.name === "claimed_at");
+    expect(claimedAt).toBeDefined();
+    expect(claimedAt?.type).toBe("INTEGER");
+    // notnull=0 means nullable
+    expect(claimedAt?.notnull).toBe(0);
+    // default NULL — PRAGMA returns null for no default literal
+    expect(claimedAt?.dflt_value).toBeNull();
+
+    // Inserting without claimed_at stores NULL.
+    db.exec("INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES ('deadbeef', 1000)");
+    const row = db
+      .query("SELECT hash, enqueued_at, claimed_at FROM pending_blob_deletes WHERE hash='deadbeef'")
+      .get() as {
+      readonly hash: string;
+      readonly enqueued_at: number;
+      readonly claimed_at: number | null;
+    };
+    expect(row.claimed_at).toBeNull();
+    db.close();
+  });
+
   test("CASCADE drops shares when the artifact is deleted", () => {
     const db = openDatabase({ dbPath: ":memory:" });
     db.exec(

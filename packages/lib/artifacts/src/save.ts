@@ -8,12 +8,16 @@
  *   6. COMMIT
  *   7. Post-commit blob repair: put + has + UPDATE blob_ready=1
  *
- * Plan 2 defers TTL stamping + quota admission + maxVersionsPerName to
- * Plan 3. expires_at is always NULL here.
+ * Plan 3 stamps `expires_at` at save time via `computeExpiresAt(now, policy)`
+ * — the value is frozen on the row and never recomputed from live policy on
+ * subsequent reads (freeze-at-save semantics, spec §4 / §6.1). When no policy
+ * or no `ttlMs` is configured, `expires_at` is persisted as NULL.
  */
 
 import type { Database } from "bun:sqlite";
 import type { BlobStore } from "@koi/blob-cas";
+import { computeExpiresAt } from "./policy.js";
+import { readSessionBytes } from "./quota.js";
 import { ARTIFACT_COLUMNS, type ArtifactRow, rowToArtifact } from "./row-mapping.js";
 import type {
   Artifact,
@@ -40,6 +44,8 @@ export function createSaveArtifact(args: {
   readonly config: ArtifactStoreConfig;
 }): (input: SaveArtifactInput) => Promise<Result<Artifact, ArtifactError>> {
   const maxBytes = args.config.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
+  const policy = args.config.policy;
+  const maxSessionBytes = policy?.maxSessionBytes;
 
   return async (input) => {
     // Step 1: validate
@@ -50,6 +56,26 @@ export function createSaveArtifact(args: {
     const hasher = new Bun.CryptoHasher("sha256");
     hasher.update(input.data);
     const hash = hasher.digest("hex");
+
+    // Quota admission — runs BEFORE intent journaling so over-quota saves
+    // produce zero side effects (no pending_blob_puts row, no blob I/O).
+    // Only committed (blob_ready=1) rows count toward the total; in-flight
+    // saves are excluded to avoid rejecting legitimate saves below the real
+    // limit during repair windows. See quota.ts for the rationale.
+    if (maxSessionBytes !== undefined) {
+      const usedBytes = readSessionBytes(args.db, input.sessionId);
+      if (usedBytes + input.data.byteLength > maxSessionBytes) {
+        return {
+          ok: false,
+          error: {
+            kind: "quota_exceeded",
+            sessionId: input.sessionId,
+            usedBytes,
+            limitBytes: maxSessionBytes,
+          },
+        };
+      }
+    }
 
     // Step 3: journal intent (short tx, committed immediately)
     const intentId = `intent_${crypto.randomUUID()}`;
@@ -113,19 +139,49 @@ export function createSaveArtifact(args: {
         }
       }
 
-      // Observe tombstone claim state + reclaim
+      // Observe tombstone claim state + conditionally reclaim.
+      //
+      // Three branches per spec §6.1 step 5 + §6.3 race analysis:
+      //   (a) no tombstone → normal path, no interaction.
+      //   (b) tombstone with claimed_at IS NULL → Phase B has not claimed;
+      //       reclaim by DELETE gated on `claimed_at IS NULL` (guards against
+      //       a concurrent claim tx between our SELECT and DELETE). If the
+      //       gated DELETE hits 0 rows, Phase B claimed during the window —
+      //       fall through to the claimed branch and re-put post-commit.
+      //   (c) tombstone with claimed_at IS NOT NULL → Phase B owns this
+      //       tombstone. Leave it alone (Phase B's reconcile will remove
+      //       it) and set needsRePut = true so we unconditionally re-put
+      //       after commit — Phase B's blob delete may run any time.
       const tomb = args.db
         .query("SELECT claimed_at FROM pending_blob_deletes WHERE hash = ?")
         .get(hash) as { readonly claimed_at: number | null } | null;
-      const needsRePut = tomb !== null && tomb.claimed_at !== null;
-      args.db.query("DELETE FROM pending_blob_deletes WHERE hash = ?").run(hash);
+      let needsRePut = false;
+      if (tomb !== null) {
+        if (tomb.claimed_at === null) {
+          const del = args.db
+            .query("DELETE FROM pending_blob_deletes WHERE hash = ? AND claimed_at IS NULL")
+            .run(hash);
+          if (del.changes === 0) {
+            // Phase B claimed between our SELECT and our DELETE. Leave the
+            // tombstone (Phase B owns it) and re-put post-commit.
+            needsRePut = true;
+          }
+        } else {
+          // Phase B already owns the tombstone. Don't touch it.
+          needsRePut = true;
+        }
+      }
 
       // Insert artifact row (always blob_ready=0). Do NOT retire the intent
       // yet — we keep it as a durable recovery signal until post-commit repair
       // promotes the row to blob_ready=1. The intent is also updated to point
       // at this specific row's id so recovery can target it directly (not
       // collapse by hash — spec §6.1).
+      //
+      // expires_at is frozen at save time from the live policy. Later policy
+      // changes never recompute or resurrect this value (spec §4 / §6.1).
       const newId = `art_${crypto.randomUUID()}`;
+      const expiresAt = computeExpiresAt(now, policy);
       args.db
         .query(
           `INSERT INTO artifacts
@@ -142,7 +198,7 @@ export function createSaveArtifact(args: {
           hash,
           JSON.stringify(input.tags ?? []),
           now,
-          null, // Plan 3 stamps expires_at from policy.ttlMs
+          expiresAt,
         );
 
       // Bind the intent to the specific artifact row so recovery can target it.
