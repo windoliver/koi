@@ -915,6 +915,18 @@ describe("Golden: @koi/model-router", () => {
 // Golden: @koi/middleware-otel (#1628)
 // ---------------------------------------------------------------------------
 
+import type { Agent, AgentManifest, ProcessId, ProcessState } from "@koi/core";
+import { agentId } from "@koi/core";
+import {
+  clearAllDebugSessions,
+  createDebugAttach,
+  createDebugObserve,
+  createEventRingBuffer,
+  DEBUG_MIDDLEWARE_NAME,
+  DEBUG_MIDDLEWARE_PRIORITY,
+  hasDebugSession,
+  matchesBreakpoint,
+} from "@koi/debug";
 import { createOtelMiddleware } from "@koi/middleware-otel";
 
 // ---------------------------------------------------------------------------
@@ -1102,5 +1114,130 @@ describe("Golden: @koi/middleware-otel", () => {
         metadata: { requestModel: "claude-opus-4-6", responseModel: "claude-opus-4-6" },
       });
     }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/debug
+// ---------------------------------------------------------------------------
+
+function makeDebugAgent(id = "debug-agent-1"): Agent {
+  const components = new Map<string, unknown>();
+  const aid = agentId(id);
+  const pid: ProcessId = { id: aid, name: id, type: "worker", depth: 0 };
+  return {
+    pid,
+    manifest: {} as AgentManifest,
+    state: "running" as ProcessState,
+    component: <T>(token: import("@koi/core").SubsystemToken<T>) =>
+      components.get(token as string) as T | undefined,
+    has: (token) => components.has(token as string),
+    hasAll: (...tokens) => tokens.every((t) => components.has(t as string)),
+    query: () => new Map(),
+    components: () => components,
+  };
+}
+
+describe("Golden: @koi/debug", () => {
+  test("createDebugAttach returns middleware with correct identity", () => {
+    const agent = makeDebugAgent();
+    const result = createDebugAttach({ agent });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const { middleware, session } = result.value;
+    expect(middleware.name).toBe(DEBUG_MIDDLEWARE_NAME);
+    expect(middleware.priority).toBe(DEBUG_MIDDLEWARE_PRIORITY);
+    expect(session.agentId).toBe(agent.pid.id);
+    expect(session.state().kind).toBe("attached");
+
+    session.detach();
+    clearAllDebugSessions();
+  });
+
+  test("single-attach enforcement: second attach returns CONFLICT", () => {
+    const agent = makeDebugAgent("conflict-agent");
+    const first = createDebugAttach({ agent });
+    expect(first.ok).toBe(true);
+
+    const second = createDebugAttach({ agent });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("CONFLICT");
+
+    if (first.ok) first.value.session.detach();
+    clearAllDebugSessions();
+  });
+
+  test("hasDebugSession lifecycle: false → true → false after detach", () => {
+    const agent = makeDebugAgent("lifecycle-agent");
+    expect(hasDebugSession(agent.pid.id)).toBe(false);
+
+    const result = createDebugAttach({ agent });
+    expect(result.ok).toBe(true);
+    expect(hasDebugSession(agent.pid.id)).toBe(true);
+
+    if (result.ok) result.value.session.detach();
+    expect(hasDebugSession(agent.pid.id)).toBe(false);
+    clearAllDebugSessions();
+  });
+
+  test("createDebugObserve returns NOT_FOUND when no session attached", () => {
+    const agent = makeDebugAgent("no-session-agent");
+    const result = createDebugObserve(agent.pid.id, agent);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("createEventRingBuffer wraps and evicts correctly", () => {
+    const buf = createEventRingBuffer(3);
+    expect(buf.size()).toBe(0);
+    expect(buf.capacity()).toBe(3);
+
+    buf.push({ kind: "turn_start", turnIndex: 0 });
+    buf.push({ kind: "turn_start", turnIndex: 1 });
+    buf.push({ kind: "turn_start", turnIndex: 2 });
+    buf.push({ kind: "turn_start", turnIndex: 3 }); // evicts turn 0
+
+    expect(buf.size()).toBe(3);
+    const tail = buf.tail();
+    expect(
+      (tail[0] as Extract<import("@koi/core").EngineEvent, { kind: "turn_start" }>).turnIndex,
+    ).toBe(1);
+    expect(
+      (tail[2] as Extract<import("@koi/core").EngineEvent, { kind: "turn_start" }>).turnIndex,
+    ).toBe(3);
+  });
+
+  test("matchesBreakpoint: turn predicate matches turn_start at specific index", () => {
+    expect(
+      matchesBreakpoint(
+        { kind: "turn", turnIndex: 5 },
+        { event: { kind: "turn_start", turnIndex: 5 }, turnIndex: 5 },
+      ),
+    ).toBe(true);
+    expect(
+      matchesBreakpoint(
+        { kind: "turn", turnIndex: 5 },
+        { event: { kind: "turn_start", turnIndex: 4 }, turnIndex: 4 },
+      ),
+    ).toBe(false);
+  });
+
+  test("matchesBreakpoint: tool_call predicate matches by toolName", () => {
+    const callId = "tc-1" as import("@koi/core").ToolCallId;
+    expect(
+      matchesBreakpoint(
+        { kind: "tool_call", toolName: "bash" },
+        { event: { kind: "tool_call_start", toolName: "bash", callId }, turnIndex: 0 },
+      ),
+    ).toBe(true);
+    expect(
+      matchesBreakpoint(
+        { kind: "tool_call", toolName: "bash" },
+        { event: { kind: "tool_call_start", toolName: "glob", callId }, turnIndex: 0 },
+      ),
+    ).toBe(false);
   });
 });

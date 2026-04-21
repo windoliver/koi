@@ -718,6 +718,7 @@
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
         "@koi/daemon": "workspace:*",
+        "@koi/debug": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
