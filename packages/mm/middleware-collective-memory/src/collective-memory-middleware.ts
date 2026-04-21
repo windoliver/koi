@@ -19,7 +19,9 @@ import { createExtractionPrompt, parseExtractionResponse } from "./extract-llm.j
 import { formatCollectiveMemory } from "./inject.js";
 import type { CollectiveMemoryMiddlewareConfig } from "./types.js";
 
-const SPAWN_TOOL_IDS = new Set(["task", "parallel_task", "delegate"]);
+// Default spawn tool IDs matching the engine-compose runtime.
+// Callers can override via config.spawnToolIds.
+const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = ["forge_agent", "Spawn"];
 const MAX_SESSION_OUTPUTS = 20;
 
 function outputToString(output: unknown): string {
@@ -67,6 +69,7 @@ export function createCollectiveMemoryMiddleware(
   const injectionBudget = config.injectionBudget ?? COLLECTIVE_MEMORY_DEFAULTS.injectionBudget;
   const dedupThreshold = config.dedupThreshold ?? COLLECTIVE_MEMORY_DEFAULTS.dedupThreshold;
   const autoCompact = config.autoCompact ?? true;
+  const spawnToolIds = new Set<string>(config.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
 
   type SessionState = { injected: boolean; outputs: readonly string[] };
   // Per-session state keyed by sessionId — prevents concurrent sessions from
@@ -138,7 +141,7 @@ export function createCollectiveMemoryMiddleware(
     async wrapToolCall(ctx, request: ToolRequest, next): Promise<ToolResponse> {
       const response: ToolResponse = await next(request);
 
-      if (!SPAWN_TOOL_IDS.has(request.toolId)) return response;
+      if (!spawnToolIds.has(request.toolId)) return response;
 
       const outputStr = redactSecrets(outputToString(response.output));
       if (outputStr.length === 0) return response;

@@ -30,6 +30,8 @@ export interface CollectiveMemoryMiddlewareConfig {
   readonly injectionBudget?: number | undefined;
   readonly dedupThreshold?: number | undefined;
   readonly autoCompact?: boolean | undefined;
+  /** Spawn tool IDs to intercept for learning extraction. Defaults to ["forge_agent", "Spawn"]. */
+  readonly spawnToolIds?: readonly string[] | undefined;
   /** Model call for LLM-based post-session extraction. If absent, only regex extraction runs. */
   readonly modelCall?: ((request: ModelRequest) => Promise<ModelResponse>) | undefined;
   /** Model to use for extraction requests. */

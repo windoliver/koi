@@ -102,7 +102,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const store = createMockForgeStore();
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
 
-      const req: ToolRequest = { toolId: "task", input: { agentName: "researcher" } };
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
       const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
       const next = mock(async () => resp);
 
@@ -127,7 +127,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const store = createMockForgeStore();
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
 
-      const req: ToolRequest = { toolId: "task", input: { agentName: "researcher" } };
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
       const resp: ToolResponse = { output: "Task completed successfully." };
       const next = mock(async () => resp);
 
@@ -141,7 +141,7 @@ describe("createCollectiveMemoryMiddleware", () => {
         createConfig({ forgeStore: store, resolveBrickId: () => undefined }),
       );
 
-      const req: ToolRequest = { toolId: "task", input: { agentName: "unknown" } };
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "unknown" } };
       const resp: ToolResponse = { output: "[LEARNING:gotcha] Something important" };
       const next = mock(async () => resp);
 
@@ -156,7 +156,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       });
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
 
-      const req: ToolRequest = { toolId: "task", input: { agentName: "researcher" } };
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
       const resp: ToolResponse = { output: "[LEARNING:gotcha] Important learning" };
       const next = mock(async () => resp);
 
@@ -168,7 +168,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const store = createMockForgeStore();
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
 
-      const req: ToolRequest = { toolId: "task", input: { agentName: "researcher" } };
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
       const resp: ToolResponse = { output: { result: "[LEARNING:gotcha] Object output learning" } };
       const next = mock(async () => resp);
 
@@ -180,7 +180,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const store = createMockForgeStore();
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
 
-      const req: ToolRequest = { toolId: "task", input: { agentName: "researcher" } };
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
       const resp: ToolResponse = { output: null };
       const next = mock(async () => resp);
 
@@ -192,7 +192,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const store = createMockForgeStore();
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
 
-      const req: ToolRequest = { toolId: "task", input: {} };
+      const req: ToolRequest = { toolId: "forge_agent", input: {} };
       const resp: ToolResponse = { output: "[LEARNING:pattern] Session agent fallback" };
       const next = mock(async () => resp);
 
@@ -216,7 +216,7 @@ describe("createCollectiveMemoryMiddleware", () => {
         createConfig({ forgeStore: store, maxEntries: 50, autoCompact: true }),
       );
 
-      const req: ToolRequest = { toolId: "task", input: { agentName: "researcher" } };
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
       const resp: ToolResponse = { output: "[LEARNING:gotcha] Trigger compaction" };
       const next = mock(async () => resp);
 
@@ -371,7 +371,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       );
       await mw.wrapToolCall?.(
         createTurnCtx(),
-        { toolId: "task", input: { agentName: "researcher" } },
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
         next,
       );
 
@@ -403,7 +403,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       );
       await mw.wrapToolCall?.(
         createTurnCtx(),
-        { toolId: "task", input: { agentName: "researcher" } },
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
         next,
       );
       await mw.onSessionEnd?.(createSessionCtx());
@@ -420,7 +420,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const next = mock(async () => ({ output: "Some output" }) satisfies ToolResponse);
       await mw.wrapToolCall?.(
         createTurnCtx(),
-        { toolId: "task", input: { agentName: "researcher" } },
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
         next,
       );
 
@@ -437,7 +437,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const next = mock(async () => ({ output: "First session output" }) satisfies ToolResponse);
       await mw.wrapToolCall?.(
         createTurnCtx(),
-        { toolId: "task", input: { agentName: "researcher" } },
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
         next,
       );
       await mw.onSessionEnd?.(createSessionCtx());
@@ -467,7 +467,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       const next = mock(async () => ({ output: "Some output" }) satisfies ToolResponse);
       await mw.wrapToolCall?.(
         createTurnCtx(),
-        { toolId: "task", input: { agentName: "researcher" } },
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
         next,
       );
       await mw.onSessionEnd?.(createSessionCtx());
@@ -491,7 +491,7 @@ describe("createCollectiveMemoryMiddleware", () => {
 
       await mw.onSessionStart?.(createSessionCtx());
       const next = mock(async () => ({ output: "Some output" }) satisfies ToolResponse);
-      await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+      await mw.wrapToolCall?.(createTurnCtx(), { toolId: "forge_agent", input: {} }, next);
 
       (store.update as ReturnType<typeof mock>).mockClear();
       await mw.onSessionEnd?.(createSessionCtx());
@@ -527,7 +527,7 @@ describe("secret redaction", () => {
           output: "[LEARNING:gotcha] Always validate. sk-proj-abc12345678 is the key",
         }) satisfies ToolResponse,
     );
-    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "forge_agent", input: {} }, next);
 
     const updateCalls = (store.update as ReturnType<typeof mock>).mock.calls;
     expect(updateCalls.length).toBeGreaterThan(0);
@@ -560,7 +560,7 @@ describe("secret redaction", () => {
             "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.signature123456",
         }) satisfies ToolResponse,
     );
-    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "forge_agent", input: {} }, next);
 
     expect(capturedText).not.toContain("eyJhbGciOiJSUzI1NiJ9");
     expect(capturedText).toContain("[REDACTED]");
@@ -588,7 +588,7 @@ describe("optimistic locking", () => {
           output: "[LEARNING:gotcha] Always check storeVersion",
         }) satisfies ToolResponse,
     );
-    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "forge_agent", input: {} }, next);
 
     const updateCalls = (store.update as ReturnType<typeof mock>).mock.calls;
     expect(updateCalls.length).toBeGreaterThan(0);
@@ -625,7 +625,7 @@ describe("optimistic locking", () => {
           output: "[LEARNING:pattern] Retry on conflict",
         }) satisfies ToolResponse,
     );
-    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "task", input: {} }, next);
+    await mw.wrapToolCall?.(createTurnCtx(), { toolId: "forge_agent", input: {} }, next);
 
     expect(callCount).toBe(2);
   });
@@ -739,7 +739,7 @@ describe("session isolation", () => {
     // Supply agentName pointing to a DIFFERENT agent's brick
     await mw.wrapToolCall?.(
       createTurnCtx("researcher"),
-      { toolId: "task", input: { agentName: "other-agent" } },
+      { toolId: "forge_agent", input: { agentName: "other-agent" } },
       next,
     );
 
