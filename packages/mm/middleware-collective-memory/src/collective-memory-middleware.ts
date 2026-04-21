@@ -50,15 +50,36 @@ function getRedactor(): ReturnType<typeof createRedactor> {
   return _redactor;
 }
 
+// Fraction of MAX_OUTPUT_BYTES reserved for the output's HEAD when windowing.
+// The remainder holds the TAIL, which typically contains late-session summaries
+// and [LEARNING:*] markers worth preserving.
+const HEAD_TAIL_HEAD_BYTES = 3_072;
+const HEAD_TAIL_ELLIPSIS = "\n...\n[truncated middle]\n...\n";
+
 function sanitizeOutput(text: string): string {
   // Redact BEFORE truncating: if a secret straddles the truncation boundary,
   // truncating first would leave a partial secret prefix that no longer matches
   // any redactor pattern, allowing the partial credential into persisted memory.
   const { text: redacted } = getRedactor().redactString(text);
-  const truncated =
-    redacted.length > MAX_OUTPUT_BYTES ? redacted.slice(0, MAX_OUTPUT_BYTES) : redacted;
+
+  // Head + tail windowing: keep the first HEAD_TAIL_HEAD_BYTES (preamble /
+  // early context) plus the most recent bytes (late-session summaries and
+  // [LEARNING:*] markers) separated by an explicit ellipsis marker. Previously
+  // a simple head-truncate dropped everything after the first 8 KiB, which
+  // systematically missed the tail where workers commonly emit final takeaways.
+  // let justified: computed window assembly
+  let windowed: string;
+  if (redacted.length <= MAX_OUTPUT_BYTES) {
+    windowed = redacted;
+  } else {
+    const tailBytes = MAX_OUTPUT_BYTES - HEAD_TAIL_HEAD_BYTES - HEAD_TAIL_ELLIPSIS.length;
+    const head = redacted.slice(0, HEAD_TAIL_HEAD_BYTES);
+    const tail = redacted.slice(redacted.length - tailBytes);
+    windowed = `${head}${HEAD_TAIL_ELLIPSIS}${tail}`;
+  }
+
   // Escape untrusted-data boundary tokens to prevent injection breakout.
-  return truncated
+  return windowed
     .replaceAll("</untrusted-data>", "&lt;/untrusted-data&gt;")
     .replaceAll("<untrusted-data>", "&lt;untrusted-data&gt;");
 }
@@ -306,21 +327,26 @@ export function createCollectiveMemoryMiddleware(
 
         if (candidates.length > 0) {
           const rawId = resolveBrickIdCompat(resolveCtxFor(ctx));
-          if (rawId !== undefined) {
-            const persistResult = await persistLearnings(
-              brickId(rawId),
-              candidates,
-              ctx.agentId,
-              ctx.runId,
-            );
-            if (!persistResult.ok) {
-              // Persistence failed (load-failed, update-failed, or CAS exhausted).
-              // Throw so the outer catch counts this as a failed end attempt and
-              // preserves the buffer for retry.
-              throw new Error(`persistLearnings failed: ${persistResult.reason}`, {
-                cause: persistResult.cause,
-              });
-            }
+          if (rawId === undefined) {
+            // Unresolved brick at session end is NOT a benign skip: we have
+            // extracted, accepted learnings with nowhere to write them. Throw
+            // so the outer catch counts this as a failed end attempt and
+            // PRESERVES the buffer. onError fires after MAX_END_ATTEMPTS so
+            // operators can recover (e.g. after late tenant metadata arrives).
+            throw new Error("persistLearnings failed: brick-unresolved");
+          }
+          const persistResult = await persistLearnings(
+            brickId(rawId),
+            candidates,
+            ctx.agentId,
+            ctx.runId,
+          );
+          if (!persistResult.ok) {
+            // Persistence failed (load-failed, update-failed, CAS exhausted,
+            // or no-store-version). Throw so outer catch preserves the buffer.
+            throw new Error(`persistLearnings failed: ${persistResult.reason}`, {
+              cause: persistResult.cause,
+            });
           }
         }
 
@@ -446,8 +472,11 @@ export function createCollectiveMemoryMiddleware(
 
       const rawId = resolveBrickIdCompat(resolveCtxFor(ctx.session));
       if (rawId === undefined) {
-        // No brick to inject from; mark injected so we don't repeat the lookup.
-        sessions.set(ctx.session.sessionId, { ...state, injected: true });
+        // Unresolved brick is treated as TRANSIENT — do NOT mark injected.
+        // Tenant metadata may populate on a later turn, or the resolver may be
+        // in a recoverable failure state. Skipping this turn's injection and
+        // retrying on the next turn is strictly safer than permanently
+        // disabling collective memory for the rest of the session.
         return next(request);
       }
 

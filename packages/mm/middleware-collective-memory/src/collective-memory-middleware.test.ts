@@ -1162,8 +1162,13 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect((store.load as ReturnType<typeof mock>).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
-    test("marks injected=true after resolveBrickId returns undefined to avoid repeated lookups", async () => {
-      const resolveBrickId = mock((_id: string): string | undefined => undefined);
+    test("retries brick resolution on every turn when unresolved (transient)", async () => {
+      // Unresolved brick is treated as transient, not sticky — if tenant
+      // metadata becomes available on a later turn, collective memory must
+      // start working again without a session restart.
+      const resolveBrickId = mock(
+        (_id: string | { agentName: string }): string | undefined => undefined,
+      );
       const mw = createCollectiveMemoryMiddleware(createConfig({ resolveBrickId }));
       await mw.onSessionStart?.(createSessionCtx("unknown"));
 
@@ -1178,10 +1183,8 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.wrapModelCall?.(ctx, req, next);
       await mw.wrapModelCall?.(ctx, req, next);
 
-      // resolveBrickId is called once per turn-1 (context form, returns undefined,
-      // no string fallback because the resolver did not throw). Turn 2 short-circuits
-      // via the injected flag. Total: 1 call.
-      expect(resolveBrickId).toHaveBeenCalledTimes(1);
+      // Both turns call resolveBrickId — unresolved bricks are NOT sticky.
+      expect((resolveBrickId.mock.calls.length ?? 0) >= 2).toBe(true);
     });
   });
 
@@ -1323,6 +1326,47 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.onSessionEnd?.(createSessionCtx());
       expect(modelCall).toHaveBeenCalledTimes(2);
       expect(store.update).toHaveBeenCalledTimes(1);
+    });
+
+    test("unresolved brick at session end preserves buffer + emits onError after MAX_END_ATTEMPTS", async () => {
+      const onError = mock(() => undefined);
+      const modelCall = mock(
+        async (): Promise<ModelResponse> => ({
+          content: JSON.stringify([{ content: "Valid learning to persist", category: "gotcha" }]),
+          model: "haiku",
+        }),
+      );
+      const store = createMockForgeStore();
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({
+          forgeStore: store,
+          modelCall,
+          onError,
+          // Resolver returns undefined for every input (no tenant metadata).
+          resolveBrickId: () => undefined,
+        }),
+      );
+      await mw.onSessionStart?.(createSessionCtx());
+      const next = mock(
+        async () => ({ output: "worker output with learnings" }) satisfies ToolResponse,
+      );
+      await mw.wrapToolCall?.(
+        createTurnCtx(),
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
+        next,
+      );
+
+      // Three onSessionEnd attempts — each sees unresolved brick + non-empty candidates
+      await mw.onSessionEnd?.(createSessionCtx());
+      await mw.onSessionEnd?.(createSessionCtx());
+      await mw.onSessionEnd?.(createSessionCtx());
+
+      // No write ever happened, but onError fires after abandon
+      expect(store.update).not.toHaveBeenCalled();
+      expect(onError).toHaveBeenCalledTimes(1);
+      const evt = (onError.mock.calls[0] as unknown[])[0] as { kind: string; attempts: number };
+      expect(evt.kind).toBe("extraction-abandoned");
+      expect(evt.attempts).toBe(3);
     });
 
     test("abandons buffer + emits onError after MAX_END_ATTEMPTS failures", async () => {
@@ -1604,6 +1648,33 @@ describe("secret redaction", () => {
     const content = persistedMemory.collectiveMemory?.entries?.[0]?.content ?? "";
     expect(content).not.toContain("sk-proj-abcdefghij1234567890abcdefghij");
     expect(content).toContain("[REDACTED]");
+  });
+
+  test("head+tail windowing preserves late-session [LEARNING] markers past 8 KiB", async () => {
+    // Reviewer's concern: front-truncating drops late-session summaries. Emit a
+    // learning marker at the VERY END of a ~20 KiB output and verify the
+    // middleware still captures it.
+    const middlePadding = "x".repeat(20_000);
+    const output = `Task start.\n${middlePadding}\n[LEARNING:gotcha] Late-session insight worth keeping`;
+
+    const store = createMockForgeStore();
+    const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+    await mw.onSessionStart?.(createSessionCtx());
+
+    const next = mock(async () => ({ output }) satisfies ToolResponse);
+    await mw.wrapToolCall?.(
+      createTurnCtx(),
+      { toolId: "forge_agent", input: { agentName: "researcher" } },
+      next,
+    );
+
+    expect(store.update).toHaveBeenCalled();
+    const updateCalls = (store.update as ReturnType<typeof mock>).mock.calls;
+    const persisted = (updateCalls[0] as unknown[])[1] as {
+      collectiveMemory?: { entries?: Array<{ content: string }> };
+    };
+    const contents = persisted.collectiveMemory?.entries?.map((e) => e.content) ?? [];
+    expect(contents.some((c) => c.includes("Late-session insight worth keeping"))).toBe(true);
   });
 
   test("redacts secrets BEFORE truncating so boundary-spanning secrets are caught", async () => {
