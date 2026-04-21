@@ -45,5 +45,7 @@ export function formatCollectiveMemory(
   }
 
   if (sections.length === 0) return "";
-  return `## Collective Memory\n\n${sections.join("\n\n")}`;
+  // Wrap in boundary tags so the model treats this as retrieved context, not instructions.
+  const body = `## Collective Memory\n\n${sections.join("\n\n")}`;
+  return `<koi:collective-memory>\n${body}\n</koi:collective-memory>`;
 }

@@ -524,7 +524,8 @@ describe("secret redaction", () => {
     const next = mock(
       async () =>
         ({
-          output: "[LEARNING:gotcha] Always validate. sk-proj-abc12345678 is the key",
+          output:
+            "[LEARNING:gotcha] Always validate. sk-proj-abcdefghij1234567890abcdefghij is the key",
         }) satisfies ToolResponse,
     );
     await mw.wrapToolCall?.(createTurnCtx(), { toolId: "forge_agent", input: {} }, next);
@@ -535,7 +536,7 @@ describe("secret redaction", () => {
       collectiveMemory?: { entries?: Array<{ content: string }> };
     };
     const content = persistedMemory.collectiveMemory?.entries?.[0]?.content ?? "";
-    expect(content).not.toContain("sk-proj-abc12345678");
+    expect(content).not.toContain("sk-proj-abcdefghij1234567890abcdefghij");
     expect(content).toContain("[REDACTED]");
   });
 

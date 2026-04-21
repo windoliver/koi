@@ -34,6 +34,8 @@ describe("formatCollectiveMemory", () => {
       [createEntry("Always use --frozen-lockfile in CI", "gotcha")],
       2000,
     );
+    expect(result).toContain("<koi:collective-memory>");
+    expect(result).toContain("</koi:collective-memory>");
     expect(result).toContain("## Collective Memory");
     expect(result).toContain("### Gotchas");
     expect(result).toContain("- Always use --frozen-lockfile in CI");

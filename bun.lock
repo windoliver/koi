@@ -846,6 +846,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/redaction": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/validation": "workspace:*",
       },

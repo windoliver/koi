@@ -8,6 +8,7 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../mm/token-estimator" },
-    { "path": "../../lib/validation" }
+    { "path": "../../lib/validation" },
+    { "path": "../../security/redaction" }
   ]
 }

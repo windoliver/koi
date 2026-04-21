@@ -11,6 +11,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { brickId, COLLECTIVE_MEMORY_DEFAULTS, DEFAULT_COLLECTIVE_MEMORY } from "@koi/core";
+import { createAllSecretPatterns, createRedactor } from "@koi/redaction";
 import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 import { deduplicateEntries, selectEntriesWithinBudget } from "@koi/validation";
 import { compactCollectiveMemory, shouldCompact } from "./compact.js";
@@ -23,6 +24,8 @@ import type { CollectiveMemoryMiddlewareConfig } from "./types.js";
 // Callers can override via config.spawnToolIds.
 const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = ["forge_agent", "Spawn"];
 const MAX_SESSION_OUTPUTS = 20;
+// Truncate worker output before persisting to bound memory usage.
+const MAX_OUTPUT_BYTES = 8_192;
 
 function outputToString(output: unknown): string {
   if (typeof output === "string") return output;
@@ -36,21 +39,24 @@ function outputToString(output: unknown): string {
   return "";
 }
 
-// Redact common secret patterns before any string enters collective memory.
-// This prevents API keys, tokens, and passwords from being persisted across runs.
-const SECRET_PATTERNS: readonly RegExp[] = [
-  /(?:^|[\s'"`=:,({[])((?:sk|pk|rk|ek|ak|xox[baprs])-[A-Za-z0-9_-]{8,})/gm,
-  /\b((?:eyJ)[A-Za-z0-9_-]{20,}\.(?:eyJ)[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})\b/g,
-  /(?:password|passwd|secret|token|api[_-]?key|auth[_-]?key)\s*[:=]\s*['"`]?([^\s'"`]{8,})['"`]?/gi,
-  /\bbearer\s+([A-Za-z0-9_\-.]{20,})/gi,
-];
+// Lazily initialized centralized redactor — compiled once, reused across calls.
+// let justified: lazy singleton to avoid compiling patterns on module load
+let _redactor: ReturnType<typeof createRedactor> | undefined;
 
-function redactSecrets(text: string): string {
-  let out = text;
-  for (const pattern of SECRET_PATTERNS) {
-    out = out.replace(pattern, (match, secret: string) => match.replace(secret, "[REDACTED]"));
+function getRedactor(): ReturnType<typeof createRedactor> {
+  if (_redactor === undefined) {
+    _redactor = createRedactor({ patterns: createAllSecretPatterns() });
   }
-  return out;
+  return _redactor;
+}
+
+function sanitizeOutput(text: string): string {
+  const truncated = text.length > MAX_OUTPUT_BYTES ? text.slice(0, MAX_OUTPUT_BYTES) : text;
+  const { text: redacted } = getRedactor().redactString(truncated);
+  // Escape untrusted-data boundary tokens to prevent injection breakout.
+  return redacted
+    .replaceAll("</untrusted-data>", "&lt;/untrusted-data&gt;")
+    .replaceAll("<untrusted-data>", "&lt;untrusted-data&gt;");
 }
 
 function generateEntryId(): string {
@@ -143,7 +149,7 @@ export function createCollectiveMemoryMiddleware(
 
       if (!spawnToolIds.has(request.toolId)) return response;
 
-      const outputStr = redactSecrets(outputToString(response.output));
+      const outputStr = sanitizeOutput(outputToString(response.output));
       if (outputStr.length === 0) return response;
 
       const state = getSession(ctx.session.sessionId);
