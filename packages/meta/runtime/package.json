@@ -46,6 +46,7 @@
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-dream": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",
+    "@koi/middleware-collective-memory": "workspace:*",
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/dream": "workspace:*",
     "@koi/middleware-plan-persist": "workspace:*",
