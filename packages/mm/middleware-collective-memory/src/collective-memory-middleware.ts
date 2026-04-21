@@ -126,6 +126,13 @@ export function createCollectiveMemoryMiddleware(
     injected: boolean;
     outputs: string[];
     inFlightInjection?: Promise<void>;
+    /**
+     * Messages built by the first concurrent caller. Stored so that other
+     * callers awaiting inFlightInjection can prepend the SAME injection block
+     * to their own request — preventing two parallel callers from observing
+     * different prompts (one injected, one bare).
+     */
+    pendingInjection?: readonly InboundMessage[];
     /** Count of failed onSessionEnd extraction attempts; used to bound retries. */
     endAttempts: number;
   };
@@ -184,24 +191,29 @@ export function createCollectiveMemoryMiddleware(
    * Compatibility shim for the resolveBrickId config option. The documented
    * signature accepts EITHER a string agent name (legacy) OR a ResolveBrickContext
    * (tenant-aware). Legacy string-only resolvers may throw if given an object
-   * (e.g. they call .startsWith() or destructure as a string), so we wrap the
-   * context-form probe in try/catch and fall back to the string form on either
-   * undefined OR a thrown error. Failures of the string fallback propagate so
-   * the caller can decide whether to skip persistence/injection.
+   * (e.g. they call .startsWith() or destructure as a string).
+   *
+   * Fail-closed semantics for tenant partitioning:
+   *   - If the context-form call THROWS, treat as a legacy string-only resolver
+   *     and retry with the agent name.
+   *   - If the context-form call RETURNS undefined, trust the resolver's
+   *     intent — DO NOT fall back to agent-name. A tenant-aware resolver that
+   *     returns undefined for missing tenant metadata is signaling "do not
+   *     resolve a brick for this caller", and falling back to the agent-only
+   *     brick would bleed across tenants.
    */
   function resolveBrickIdCompat(ctx: ReturnType<typeof resolveCtxFor>): string | undefined {
     try {
-      const fromCtx = config.resolveBrickId(ctx);
-      if (fromCtx !== undefined) return fromCtx;
+      // Tenant-aware path: trust whatever the resolver returns (including undefined).
+      return config.resolveBrickId(ctx);
     } catch {
-      // Legacy string-only resolver threw on object input — fall through to
-      // the string form below.
-    }
-    try {
-      return config.resolveBrickId(ctx.agentName);
-    } catch {
-      // Both forms threw; treat as unresolved so caller skips persistence.
-      return undefined;
+      // Legacy string-only resolver threw on object input — retry with the
+      // string form for backward compatibility.
+      try {
+        return config.resolveBrickId(ctx.agentName);
+      } catch {
+        return undefined;
+      }
     }
   }
 
@@ -384,9 +396,17 @@ export function createCollectiveMemoryMiddleware(
       // Serialize concurrent first-turn injections via a shared in-flight promise.
       // If the in-flight load fails, the promise is cleared so the next turn retries.
       if (state.inFlightInjection !== undefined) {
-        // Wait for the concurrent in-flight injection to complete; then proceed
-        // with a plain (un-injected) call — the concurrent caller already injected.
+        // Wait for the concurrent in-flight injection to complete.
         await state.inFlightInjection.catch(() => undefined);
+        // Apply the same injection block that the leading caller built, so two
+        // parallel callers in the same session both see the injected context.
+        // If the leading caller failed (no pendingInjection cached), proceed
+        // with the bare request.
+        const refreshed = sessions.get(ctx.session.sessionId);
+        const cached = refreshed?.pendingInjection;
+        if (cached !== undefined && cached.length > 0) {
+          return next({ ...request, messages: [...cached, ...request.messages] });
+        }
         return next(request);
       }
 
@@ -425,7 +445,11 @@ export function createCollectiveMemoryMiddleware(
         else resolveInFlight?.();
       };
 
-      // Helper: commit injected=true and clear the in-flight gate.
+      // Helper: commit injected=true and clear the in-flight gate. The pending
+      // injection cache is left intact so concurrent waiters that awoke before
+      // this microtask completed can still read it; the next turn (after the
+      // gate clears) will see injected=true and short-circuit, so the cache is
+      // never consulted again.
       const commitInjected = (): void => {
         const current = getSession(ctx.session.sessionId);
         sessions.set(ctx.session.sessionId, {
@@ -485,10 +509,22 @@ export function createCollectiveMemoryMiddleware(
               senderId: "collective-memory",
               timestamp: ts,
             };
+            const injectionMessages = [framingMessage, dataMessage] as const;
             injectedRequest = {
               ...request,
-              messages: [framingMessage, dataMessage, ...request.messages],
+              messages: [...injectionMessages, ...request.messages],
             };
+            // Cache the injection block in session state so concurrent callers
+            // awaiting the in-flight promise can prepend the SAME messages to
+            // their own request — preventing the race where parallel callers
+            // observe different prompts.
+            const current = sessions.get(ctx.session.sessionId);
+            if (current !== undefined) {
+              sessions.set(ctx.session.sessionId, {
+                ...current,
+                pendingInjection: injectionMessages,
+              });
+            }
           }
         }
       } catch (err) {

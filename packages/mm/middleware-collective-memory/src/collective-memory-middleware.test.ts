@@ -233,11 +233,15 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(throwingResolver).toHaveBeenCalledTimes(2);
     });
 
-    test("legacy string-only resolveBrickId still resolves bricks (compat shim)", async () => {
+    test("legacy string-only resolveBrickId (THROWS on object) falls back to string form", async () => {
+      // The compat shim falls back to the string form ONLY when the context
+      // form throws. A legacy resolver that throws on non-string input must
+      // still resolve bricks via the string fallback.
       const store = createMockForgeStore();
-      // Legacy resolver: only handles strings, returns undefined for objects
       const legacyResolver = mock((input: unknown): string | undefined => {
-        if (typeof input !== "string") return undefined;
+        if (typeof input !== "string") {
+          throw new TypeError("legacy resolver expects a string");
+        }
         return input === "researcher" ? "sha256:abc123" : undefined;
       });
       const mw = createCollectiveMemoryMiddleware(
@@ -256,16 +260,44 @@ describe("createCollectiveMemoryMiddleware", () => {
 
       await mw.wrapToolCall?.(createTurnCtx(), req, next);
 
-      // The compat shim should have first tried context form (got undefined) then
-      // fallen back to string form (got "sha256:abc123") so persistence ran.
+      // String fallback succeeded → persistence ran
       expect(store.update).toHaveBeenCalled();
-      // Resolver was invoked twice — once with object, once with string fallback.
+      // Resolver was invoked twice — once with object (threw), once with string fallback
       expect(legacyResolver).toHaveBeenCalledTimes(2);
-      const firstCallArg = (legacyResolver.mock.calls[0] as unknown[])[0];
-      const secondCallArg = (legacyResolver.mock.calls[1] as unknown[])[0];
-      expect(typeof firstCallArg).toBe("object");
-      expect(typeof secondCallArg).toBe("string");
-      expect(secondCallArg).toBe("researcher");
+      expect(typeof (legacyResolver.mock.calls[0] as unknown[])[0]).toBe("object");
+      expect(typeof (legacyResolver.mock.calls[1] as unknown[])[0]).toBe("string");
+    });
+
+    test("tenant-aware resolver returning undefined does NOT fall back (fail-closed)", async () => {
+      // A tenant-aware resolver that intentionally returns undefined (e.g. because
+      // userId is missing) must NOT trigger fallback to agent-name resolution,
+      // since that would bleed across tenants.
+      const store = createMockForgeStore();
+      const tenantResolver = mock((input: string | { agentName: string }): string | undefined => {
+        if (typeof input === "string") {
+          // If the shim falls back to string form, return a brick anyway —
+          // this is what we want to PROVE doesn't happen.
+          return "sha256:agent-only-brick";
+        }
+        // Tenant-aware path: refuse to resolve when userId is absent
+        return undefined;
+      });
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({ forgeStore: store, resolveBrickId: tenantResolver }),
+      );
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+
+      // No fallback to string form → no persistence
+      expect(store.update).not.toHaveBeenCalled();
+      // Resolver invoked exactly once (object form only)
+      expect(tenantResolver).toHaveBeenCalledTimes(1);
+      expect(typeof (tenantResolver.mock.calls[0] as unknown[])[0]).toBe("object");
     });
 
     test("partitions brick by userId/channelId/conversationId from session", async () => {
@@ -680,7 +712,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(result).toBe(resp);
     });
 
-    test("concurrent model calls inject only once (one-shot gate)", async () => {
+    test("concurrent model calls share the same injection block (no nondeterministic skip)", async () => {
       const memory: CollectiveMemory = {
         entries: [
           {
@@ -713,10 +745,17 @@ describe("createCollectiveMemoryMiddleware", () => {
         return { content: "", model: "test-model" };
       });
 
-      // Launch two concurrent model calls before either resolves — only one should inject
+      // Launch two concurrent model calls before either resolves. BOTH callers
+      // must see the injected context (no nondeterministic prompt skew); the
+      // waiter consumes the cached pendingInjection rather than running its own.
       await Promise.all([mw.wrapModelCall?.(ctx, req, next), mw.wrapModelCall?.(ctx, req, next)]);
 
-      expect(injectedCount).toBe(1);
+      expect(injectedCount).toBe(2);
+      // Verify the data carrier message is the same logical block in both calls
+      const call0Messages = (next.mock.calls[0] as [ModelRequest])[0].messages;
+      const call1Messages = (next.mock.calls[1] as [ModelRequest])[0].messages;
+      expect(call0Messages[1]?.senderId).toBe("collective-memory");
+      expect(call1Messages[1]?.senderId).toBe("collective-memory");
     });
 
     test("load returning ok=false (Result-shaped failure) retries on next turn", async () => {
@@ -875,10 +914,10 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.wrapModelCall?.(ctx, req, next);
       await mw.wrapModelCall?.(ctx, req, next);
 
-      // resolveBrickId is called by the compat shim twice in turn 1 (context form,
-      // then string fallback) when context returns undefined. Turn 2 short-circuits
-      // entirely via the injected flag. Total: 2 calls (both in turn 1, 0 in turn 2).
-      expect(resolveBrickId).toHaveBeenCalledTimes(2);
+      // resolveBrickId is called once per turn-1 (context form, returns undefined,
+      // no string fallback because the resolver did not throw). Turn 2 short-circuits
+      // via the injected flag. Total: 1 call.
+      expect(resolveBrickId).toHaveBeenCalledTimes(1);
     });
   });
 
