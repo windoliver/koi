@@ -51,3 +51,13 @@ export async function readBakedNodePath(wrapperPath: string): Promise<string | n
     return null;
   }
 }
+
+export async function readBakedHostEntrypointPath(wrapperPath: string): Promise<string | null> {
+  try {
+    const content = await readFile(wrapperPath, "utf8");
+    const match = /^exec "[^"]+" "([^"]+)" "\$@"$/m.exec(content);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}

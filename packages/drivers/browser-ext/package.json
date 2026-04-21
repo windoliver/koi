@@ -29,7 +29,7 @@
     "playwright": "^1.49.0"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && bun extension/build.ts",
     "build:extension": "bun extension/build.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",

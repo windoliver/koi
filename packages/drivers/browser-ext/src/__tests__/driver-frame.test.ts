@@ -72,10 +72,23 @@ describe("DriverFrameSchema — happy paths", () => {
         data: "aGVsbG8=",
       },
     ],
-    ["admin_clear_grants", { kind: "admin_clear_grants", scope: "all" }],
+    [
+      "admin_clear_grants",
+      {
+        kind: "admin_clear_grants",
+        requestId: "12345678-1234-4234-8234-123456789abc",
+        scope: "all",
+      },
+    ],
     [
       "admin_clear_grants_ack",
-      { kind: "admin_clear_grants_ack", ok: true, clearedOrigins: [], detachedTabs: [] },
+      {
+        kind: "admin_clear_grants_ack",
+        requestId: "12345678-1234-4234-8234-123456789abc",
+        ok: true,
+        clearedOrigins: [],
+        detachedTabs: [],
+      },
     ],
     ["bye", { kind: "bye" }],
   ] as const)("accepts valid %s frame", (_name, frame) => {

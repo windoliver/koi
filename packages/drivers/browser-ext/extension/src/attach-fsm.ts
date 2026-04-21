@@ -208,6 +208,12 @@ export function createAttachFsm(deps: {
 
       const current = tabStates.get(frame.tabId);
       if (current?.phase !== "attaching" || current.startedAt !== startedAt) {
+        // State was invalidated while chrome.debugger.attach() was in flight
+        // (install-id revocation, committed navigation, tab closed, etc).
+        // The debugger IS now attached though — returning silently would
+        // leave Chrome attached to a tab the FSM no longer tracks, violating
+        // the revocation boundary. Compensate by tearing it back down.
+        await detachDebugger(frame.tabId);
         return true;
       }
 

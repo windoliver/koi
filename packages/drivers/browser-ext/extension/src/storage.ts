@@ -16,9 +16,18 @@ export interface LocalStorageState {
   readonly extensionName: string;
 }
 
+/**
+ * Per-tab/document one-time consent grant. We track `origin` so
+ * origin-scoped admin revocation can target only matching entries, instead
+ * of widening to a global wipe that affects unrelated sessions.
+ */
+export interface AllowOnceGrantRecord {
+  readonly origin: string;
+}
+
 export interface SessionStorageState {
   readonly browserSessionId: string | null;
-  readonly allowOnceGrants: Record<string, true>;
+  readonly allowOnceGrants: Record<string, AllowOnceGrantRecord>;
   readonly recentlyRetiredSessionIds: readonly string[];
 }
 
@@ -32,11 +41,12 @@ export interface ExtensionStorage {
   readonly getPrivateOriginAllowlist: () => Promise<readonly string[]>;
   readonly setPrivateOriginAllowlist: (origins: readonly string[]) => Promise<void>;
   readonly clearPrivateOriginAllowlist: () => Promise<readonly string[]>;
-  readonly getAllowOnceGrants: () => Promise<Record<string, true>>;
-  readonly grantAllowOnce: (tabId: number, documentId: string) => Promise<void>;
+  readonly getAllowOnceGrants: () => Promise<Record<string, AllowOnceGrantRecord>>;
+  readonly grantAllowOnce: (tabId: number, documentId: string, origin: string) => Promise<void>;
   readonly hasAllowOnceGrant: (tabId: number, documentId: string) => Promise<boolean>;
   readonly clearAllowOnceGrants: () => Promise<readonly string[]>;
   readonly revokeAllowOnceForTab: (tabId: number) => Promise<void>;
+  readonly revokeAllowOnceForOrigin: (origin: string) => Promise<readonly string[]>;
   readonly getInstanceId: () => Promise<string>;
   readonly getBrowserSessionId: () => Promise<string>;
   readonly getInstallId: () => Promise<string | null>;
@@ -57,9 +67,13 @@ const AlwaysGrantsSchema: z.ZodType<Record<string, AlwaysGrantRecord>> = z.recor
   AlwaysGrantRecordSchema,
 );
 
-const AllowOnceGrantsSchema: z.ZodType<Record<string, true>> = z.record(
+const AllowOnceGrantRecordSchema: z.ZodType<AllowOnceGrantRecord> = z.object({
+  origin: z.string(),
+});
+
+const AllowOnceGrantsSchema: z.ZodType<Record<string, AllowOnceGrantRecord>> = z.record(
   z.string(),
-  z.literal(true),
+  AllowOnceGrantRecordSchema,
 );
 
 const _LocalStateSchema: z.ZodType<LocalStorageState> = z.object({
@@ -229,21 +243,21 @@ export function createExtensionStorage(): ExtensionStorage {
       await storageSet(chrome.storage.local, { "koi.privateOriginAllowlist": [] });
       return local.privateOriginAllowlist;
     },
-    async getAllowOnceGrants(): Promise<Record<string, true>> {
+    async getAllowOnceGrants(): Promise<Record<string, AllowOnceGrantRecord>> {
       return (await this.getSessionState()).allowOnceGrants;
     },
-    async grantAllowOnce(tabId: number, documentId: string): Promise<void> {
+    async grantAllowOnce(tabId: number, documentId: string, origin: string): Promise<void> {
       const session = await this.getSessionState();
       await storageSet(chrome.storage.session, {
         "koi.allowOnceGrants": {
           ...session.allowOnceGrants,
-          [allowOnceKey(tabId, documentId)]: true,
+          [allowOnceKey(tabId, documentId)]: { origin },
         },
       });
     },
     async hasAllowOnceGrant(tabId: number, documentId: string): Promise<boolean> {
       const grants = await this.getAllowOnceGrants();
-      return grants[allowOnceKey(tabId, documentId)] === true;
+      return grants[allowOnceKey(tabId, documentId)] !== undefined;
     },
     async clearAllowOnceGrants(): Promise<readonly string[]> {
       const session = await this.getSessionState();
@@ -252,11 +266,25 @@ export function createExtensionStorage(): ExtensionStorage {
     },
     async revokeAllowOnceForTab(tabId: number): Promise<void> {
       const session = await this.getSessionState();
-      const next: Record<string, true> = {};
+      const next: Record<string, AllowOnceGrantRecord> = {};
       for (const [key, value] of Object.entries(session.allowOnceGrants)) {
         if (!key.startsWith(`${tabId}:`)) next[key] = value;
       }
       await storageSet(chrome.storage.session, { "koi.allowOnceGrants": next });
+    },
+    async revokeAllowOnceForOrigin(origin: string): Promise<readonly string[]> {
+      const session = await this.getSessionState();
+      const next: Record<string, AllowOnceGrantRecord> = {};
+      const removed: string[] = [];
+      for (const [key, value] of Object.entries(session.allowOnceGrants)) {
+        if (value.origin === origin) {
+          removed.push(key);
+          continue;
+        }
+        next[key] = value;
+      }
+      await storageSet(chrome.storage.session, { "koi.allowOnceGrants": next });
+      return removed;
     },
     async getInstanceId(): Promise<string> {
       const local = await this.getLocalState();

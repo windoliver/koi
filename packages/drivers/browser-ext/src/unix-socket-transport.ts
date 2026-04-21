@@ -160,6 +160,39 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
     });
   }
 
+  // Bounded-waiter variant: every RPC-style call uses this so a lost reply
+  // cannot wedge the driver indefinitely. On timeout we remove the waiter
+  // from `pending` (same guarantee as detach()) so a late reply cannot
+  // satisfy a stale waiter and poison the next retry.
+  const DEFAULT_RPC_TIMEOUT_MS = 15_000;
+  function waitForBounded<TFrame extends DriverFrame>(
+    predicate: (frame: DriverFrame) => frame is TFrame,
+    label: string,
+    timeoutMs: number = DEFAULT_RPC_TIMEOUT_MS,
+  ): Promise<TFrame> {
+    return new Promise<TFrame>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const entry: PendingFrameWaiter<DriverFrame> = {
+        predicate,
+        resolve: (frame: DriverFrame): void => {
+          if (timer) clearTimeout(timer);
+          resolve(frame as TFrame);
+        },
+        reject: (err: Error): void => {
+          if (timer) clearTimeout(timer);
+          reject(err);
+        },
+      };
+      pending.push(entry);
+      timer = setTimeout(() => {
+        const idx = pending.indexOf(entry);
+        if (idx >= 0) pending.splice(idx, 1);
+        reject(new Error(`${label} timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+  }
+
   async function startReader(activeSocket: Socket | Duplex): Promise<void> {
     try {
       for await (const payload of createFrameReader(activeSocket)) {
@@ -221,18 +254,20 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
     async hello(frame: HelloFrame): Promise<HelloAckOkFrame | HelloAckFailFrame> {
       // Register the waiter BEFORE writing so a fast host reply cannot race
       // past an un-registered listener and be dropped.
-      const waiter = waitFor(
+      const waiter = waitForBounded(
         (candidate): candidate is HelloAckOkFrame | HelloAckFailFrame =>
           candidate.kind === "hello_ack",
+        "hello_ack",
       );
       await writeFrame(frame);
       return waiter;
     },
     async listTabs(): Promise<TabsFrame> {
       const requestId = randomUUID();
-      const waiter = waitFor(
+      const waiter = waitForBounded(
         (candidate): candidate is TabsFrame =>
           candidate.kind === "tabs" && candidate.requestId === requestId,
+        "list_tabs",
       );
       await writeFrame({ kind: "list_tabs", requestId });
       return waiter;
@@ -240,9 +275,10 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
     async openTab(url?: string): Promise<Extract<DriverFrame, { kind: "tab_opened" }>> {
       type AckFrame = Extract<DriverFrame, { kind: "tab_opened" }>;
       const requestId = randomUUID();
-      const waiter = waitFor(
+      const waiter = waitForBounded(
         (candidate): candidate is AckFrame =>
           candidate.kind === "tab_opened" && candidate.requestId === requestId,
+        "open_tab",
       );
       const frame: DriverFrame =
         url !== undefined ? { kind: "open_tab", requestId, url } : { kind: "open_tab", requestId };
@@ -252,17 +288,24 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
     async closeTab(tabId: number): Promise<Extract<DriverFrame, { kind: "tab_closed" }>> {
       type AckFrame = Extract<DriverFrame, { kind: "tab_closed" }>;
       const requestId = randomUUID();
-      const waiter = waitFor(
+      const waiter = waitForBounded(
         (candidate): candidate is AckFrame =>
           candidate.kind === "tab_closed" && candidate.requestId === requestId,
+        "close_tab",
       );
       await writeFrame({ kind: "close_tab", requestId, tabId });
       return waiter;
     },
     async adminClearGrants(frame: AdminClearGrantsFrame): Promise<AdminClearGrantsAckFrame> {
-      const waiter = waitFor(
+      // Correlate by requestId — admin_clear_grants is destructive and
+      // retriable after timeout; without explicit correlation a late ack
+      // from a prior invocation can satisfy a newer caller's waiter and
+      // misreport stale cleared-origins/detached-tabs.
+      const waiter = waitForBounded(
         (candidate): candidate is AdminClearGrantsAckFrame =>
-          candidate.kind === "admin_clear_grants_ack",
+          candidate.kind === "admin_clear_grants_ack" && candidate.requestId === frame.requestId,
+        "admin_clear_grants_ack",
+        35_000, // admin flow has 30s internal ack window; allow a little slack.
       );
       await writeFrame(frame as DriverFrame);
       return waiter;
@@ -270,9 +313,10 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
     async attach(
       frame: Extract<DriverFrame, { kind: "attach" }>,
     ): Promise<AttachAckOkFrame | AttachAckFailFrame> {
-      const waiter = waitFor(
+      const waiter = waitForBounded(
         (candidate): candidate is AttachAckOkFrame | AttachAckFailFrame =>
           candidate.kind === "attach_ack" && candidate.attachRequestId === frame.attachRequestId,
+        "attach_ack",
       );
       await writeFrame(frame);
       return waiter;

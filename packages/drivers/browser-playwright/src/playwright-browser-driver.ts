@@ -292,12 +292,18 @@ async function checkNavigationUrlAllowed(
  * version deliberately skipped those assuming a tool-layer check,
  * which is not guaranteed in borrowed-context setups.
  */
+// The handler type Playwright's page.route() accepts. Returned by
+// `installPageRebindingGuard` so dispose() can call
+// `page.unroute("**", handler)` — stripping ONLY our handler rather than
+// every "**" route installed by the caller.
+type RouteHandler = Parameters<Page["route"]>[1];
+
 async function installPageRebindingGuard(
   page: Page,
   blockPrivateAddresses: boolean,
-): Promise<void> {
-  if (!blockPrivateAddresses) return;
-  await page.route("**", async (route) => {
+): Promise<RouteHandler | null> {
+  if (!blockPrivateAddresses) return null;
+  const handler: RouteHandler = async (route) => {
     const req = route.request();
     // Phase 1 scope: only gate main-frame document navigations. Blocking
     // arbitrary subresources via Node DNS breaks legitimate live pages on
@@ -359,7 +365,9 @@ async function installPageRebindingGuard(
       return;
     }
     await route.continue();
-  });
+  };
+  await page.route("**", handler);
+  return handler;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +513,14 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
   // `ctx.pages()` must return STABLE tabIds across successive tabList calls,
   // so callers that do `tabList → select → act` see the same id both times.
   const pageToTabId = new WeakMap<Page, string>();
+  // Borrowed-context cleanup bookkeeping: per-page route-handler map + the
+  // context listener we registered, so dispose() can deregister both
+  // instead of leaking handlers into caller state. Keyed by Page so
+  // dispose can call page.unroute("**", handler) for ONLY our handler,
+  // not any unrelated "**" routes the caller may have installed.
+  const borrowedGuardedPages = new Map<Page, RouteHandler>();
+  let borrowedPageHandler: ((page: Page) => void) | null = null;
+  let borrowedPageContext: BrowserContext | null = null;
 
   // Per-tab snapshot state — replaces the old single global currentSnapshotId / currentRefs
   const tabSnapshots = new Map<string, TabSnapshot>();
@@ -548,10 +564,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         tabs.set(id, page);
         // Install the rebinding guard on caller-owned pages the driver is
         // about to interact with — SSRF protection must not depend on
-        // whether we `adopted` the page via ensurePage() first.
-        await installPageRebindingGuard(page, config.blockPrivateAddresses !== false).catch(
-          () => {},
-        );
+        // whether we `adopted` the page via ensurePage() first. Track the
+        // returned handler so dispose() can unroute OUR handler only.
+        const guardHandler = await installPageRebindingGuard(
+          page,
+          config.blockPrivateAddresses !== false,
+        ).catch(() => null);
+        if (guardHandler !== null) borrowedGuardedPages.set(page, guardHandler);
         // Attach console listener so console() has a buffer populated when
         // the caller selects this tab. Observation-only, no page mutation.
         attachConsoleListener(page, id);
@@ -698,9 +717,20 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         // popup / window.open / target=_blank gap where site code spawns
         // pages outside of the driver's ensurePage() path.
         if (config.blockPrivateAddresses !== false && borrowedContext) {
-          ctx.on("page", (newPage: Page) => {
-            void installPageRebindingGuard(newPage, true).catch(() => {});
-          });
+          // Track borrowed pages we install the rebinding guard on so we
+          // can call page.unroute() during dispose(). Without this cleanup,
+          // disposing the driver leaves the caller's browser with our
+          // navigation-blocking handler still attached to each page.
+          const handler = (newPage: Page): void => {
+            void installPageRebindingGuard(newPage, true)
+              .then((guardHandler) => {
+                if (guardHandler !== null) borrowedGuardedPages.set(newPage, guardHandler);
+              })
+              .catch(() => {});
+          };
+          ctx.on("page", handler);
+          borrowedPageHandler = handler;
+          borrowedPageContext = ctx;
         }
         if (config.blockPrivateAddresses !== false && !borrowedContext) {
           await ctx.route("**", async (route) => {
@@ -811,7 +841,15 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       // owns vs borrows". Without it on adopted pages, a click-triggered
       // form submit or link navigation from a public page could still
       // reach RFC1918 / localhost — defeating blockPrivateAddresses.
-      await installPageRebindingGuard(page, config.blockPrivateAddresses !== false);
+      const ensureGuardHandler = await installPageRebindingGuard(
+        page,
+        config.blockPrivateAddresses !== false,
+      );
+      // Track on borrowed (adopted) pages so dispose() removes OUR handler
+      // specifically — not every "**" route on a caller-owned page.
+      if (adopted && ensureGuardHandler !== null) {
+        borrowedGuardedPages.set(page, ensureGuardHandler);
+      }
       const tabId = newTabId();
       tabs.set(tabId, page);
       if (!adopted) {
@@ -1665,6 +1703,28 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       // Invalidate all tab snapshots and console buffers
       tabSnapshots.clear();
       tabConsoleLogs.clear();
+
+      // Deregister the borrowed-context page listener + uninstall the
+      // per-page rebinding-guard routes. Without this cleanup, disposing
+      // the driver leaves our `page.route("**")` and `ctx.on("page")`
+      // handlers attached to the caller's pages, which keeps blocking
+      // their navigations after the driver is gone.
+      if (borrowedPageContext !== null && borrowedPageHandler !== null) {
+        try {
+          borrowedPageContext.off("page", borrowedPageHandler);
+        } catch {
+          // Ignore — context may already be closed.
+        }
+      }
+      for (const [page, handler] of borrowedGuardedPages) {
+        // Handler-specific unroute: page.unroute(pattern) with no handler
+        // strips every "**" route including ones the caller may have
+        // installed. Always pass our exact handler.
+        await page.unroute("**", handler).catch(() => undefined);
+      }
+      borrowedGuardedPages.clear();
+      borrowedPageHandler = null;
+      borrowedPageContext = null;
 
       // Only close tabs the driver CREATED. Adopted pages on borrowed
       // contexts (browser-ext / cdpEndpoint / wsEndpoint) belong to the

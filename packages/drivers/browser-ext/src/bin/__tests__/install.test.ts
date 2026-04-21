@@ -21,6 +21,9 @@ describe("runInstallCommand", () => {
         ensureExtensionBundle: async (dir) => {
           calls.push(`bundle:${dir}`);
         },
+        ensureHostEntrypoint: async () => {
+          // no-op — fake packageRoot in tests
+        },
         generateInstallId: async (dir) => {
           calls.push(`installId:${dir}`);
           return "a".repeat(64);
@@ -60,7 +63,8 @@ describe("runInstallCommand", () => {
       "bundle:/repo/packages/drivers/browser-ext/dist/extension",
       "installId:/tmp/home/.koi/browser-ext",
       "auth:/tmp/home/.koi/browser-ext",
-      "wrapper:/tmp/home/.koi/browser-ext/bin/native-host:/opt/homebrew/bin/node:/repo/packages/drivers/browser-ext/dist/bin/native-host-main.js",
+      "copy:/repo/packages/drivers/browser-ext/dist:/tmp/home/.koi/browser-ext/runtime",
+      "wrapper:/tmp/home/.koi/browser-ext/bin/native-host:/opt/homebrew/bin/node:/tmp/home/.koi/browser-ext/runtime/bin/native-host-main.js",
       `manifests:5:/tmp/home/.koi/browser-ext/bin/native-host:chrome-extension://${"a".repeat(32)}/`,
       "copy:/repo/packages/drivers/browser-ext/dist/extension:/tmp/home/.koi/browser-ext/extension",
     ]);

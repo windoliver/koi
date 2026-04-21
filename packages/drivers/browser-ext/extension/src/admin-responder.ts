@@ -55,20 +55,13 @@ export async function respondToAdminClearGrants(deps: {
   let clearedPrivateOrigins: readonly string[];
 
   if (scope === "origin" && targetOrigin !== undefined) {
-    // Scoped revocation: remove the persistent always-grant AND the
-    // private-origin allowlist entry for this origin. For one-time grants:
-    // they are keyed by (tabId, documentId), not origin, so we cannot
-    // selectively enumerate "all tabs that had an allow_once for this
-    // origin" — detached tabs are not represented in the live FSM, so an
-    // origin-only sweep via attached-state would leave dormant entries
-    // behind. The conservative safe fallback is to wipe ALL allow_once
-    // grants during an origin-scoped revocation: allow_once is by
-    // construction session-scoped (chrome.storage.session is cleared on
-    // browser restart), and losing unrelated allow_once entries just
-    // costs an extra one-time consent prompt for those other origins.
+    // Scoped revocation: remove the persistent always-grant, the
+    // private-origin allowlist entry, AND every allow_once grant whose
+    // stored origin matches — allow_once records now track origin so we
+    // can revoke precisely without wiping unrelated tabs' consent state.
     //
-    // Other origins' persistent `always` grants and private-origin
-    // allowlist entries stay intact.
+    // Other origins' grants (always + allow_once + privateOriginAllowlist)
+    // stay intact.
     await deps.storage.removeAlwaysGrant(targetOrigin);
     const priv = await deps.storage.getPrivateOriginAllowlist();
     const filteredPriv = priv.filter((o) => o !== targetOrigin);
@@ -76,7 +69,7 @@ export async function respondToAdminClearGrants(deps: {
     if (removedFromPriv) {
       await deps.storage.setPrivateOriginAllowlist(filteredPriv);
     }
-    await deps.storage.clearAllowOnceGrants();
+    await deps.storage.revokeAllowOnceForOrigin(targetOrigin);
     clearedOrigins = [targetOrigin];
     clearedPrivateOrigins = removedFromPriv ? [targetOrigin] : [];
   } else {

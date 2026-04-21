@@ -6,7 +6,7 @@ import { listDiscoveryCandidates } from "../discovery-client.js";
 import { readInstallId } from "../native-host/index.js";
 import { statSecretFile } from "./auth-files.js";
 import { getBrowserInstallTargets, type SupportedPlatform } from "./browsers.js";
-import { readBakedNodePath } from "./host-wrapper.js";
+import { readBakedHostEntrypointPath, readBakedNodePath } from "./host-wrapper.js";
 import { readNativeMessagingManifests } from "./nm-manifest.js";
 import { detectNodeBinary } from "./node-detect.js";
 
@@ -57,6 +57,14 @@ export async function runStatusCommand(
       const bakedPath = await readBakedNodePath(wrapperPath);
       if (bakedPath !== null) {
         await stat(bakedPath);
+      }
+      // Also validate the host JS entrypoint Chrome will execute via the
+      // wrapper. Without this, status reports ok:true whenever Node exists
+      // even if the wrapper's script target has been deleted (e.g. after a
+      // cache eviction of a bunx install location).
+      const entrypointPath = await readBakedHostEntrypointPath(wrapperPath);
+      if (entrypointPath !== null) {
+        await stat(entrypointPath);
       }
       return {
         status: "ok" as const,
