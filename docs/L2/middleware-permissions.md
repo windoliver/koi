@@ -2,6 +2,10 @@
 
 Controls which tools an AI agent is allowed to use. Sits between the LLM and tools, enforcing allow/deny/ask policies with pluggable backends, decision caching, audit logging, and circuit breaker resilience.
 
+## Recent updates
+
+- `createPatternPermissionBackend` now explicitly exposes `supportsDefaultDenyMarker: true` on the returned backend object, preserving default-deny marker behavior across strict TypeScript builds while keeping the public backend contract unchanged.
+
 ---
 
 ## Why It Exists

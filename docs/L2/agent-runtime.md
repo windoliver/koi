@@ -6,6 +6,12 @@ Agent definition model — built-in and custom agent loading with validation.
 
 Provides the `AgentDefinition` loading pipeline: parse Markdown agent files, validate with Zod, register with priority-based dedup, and adapt to the L0 `AgentResolver` contract.
 
+## Recent updates
+
+- Custom agent loading now fails closed for malformed frontmatter and missing delimiters. If a broken definition can still reveal an intended `name`, that `agentType` slot is poisoned so lower-priority definitions cannot silently take over.
+- Directory scans now ignore non-files explicitly and parse only `.md` files, preventing accidental directory entries from being treated as agent definitions.
+- `createDefinitionResolver().list()` now returns cached immutable summaries, and `resolve()` caps long "available agents" NOT_FOUND hints for large catalogs.
+
 ## Agent Definition Model
 
 An `AgentDefinition` (L0 type in `@koi/core`) wraps an `AgentManifest` with discovery metadata:
