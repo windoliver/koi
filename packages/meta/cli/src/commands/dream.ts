@@ -66,7 +66,7 @@ export async function run(flags: CliFlags): Promise<ExitCodeType> {
   const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY;
   if (apiKey === undefined) {
     process.stderr.write(
-      "error: no API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY, or pass --api-key\n",
+      "error: no API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable.\n",
     );
     return ExitCode.FAILURE;
   }

@@ -199,6 +199,132 @@ describe("run()", () => {
     expect(stdoutChunks.join("")).toContain("already running");
   });
 
+  it("OPENAI_API_KEY works when OPENROUTER_API_KEY is unset", async () => {
+    delete process.env.OPENROUTER_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-openai-test";
+
+    mock.module("@koi/dream", () => ({
+      shouldDream: () => true,
+      runDreamConsolidation: async () => ({ merged: 0, pruned: 0, unchanged: 0, durationMs: 0 }),
+    }));
+    mock.module("@koi/memory-fs", () => ({
+      createMemoryStore: () => ({
+        list: async () => [],
+        write: async () => ({ action: "created", record: {} }),
+        delete: async () => ({ deleted: true }),
+      }),
+    }));
+    mock.module("@koi/model-openai-compat", () => ({
+      createOpenAICompatAdapter: () => ({ complete: async () => ({ content: "", model: "test" }) }),
+    }));
+
+    const mod = await import(`./dream.js?t=${String(Date.now())}`);
+    const stdoutChunks: string[] = [];
+    const spy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      stdoutChunks.push(String(chunk));
+      return true;
+    });
+
+    const result = await (mod as { run: (f: unknown) => Promise<number> }).run(
+      makeDreamFlags({ force: true }),
+    );
+    spy.mockRestore();
+    expect(result).toBe(ExitCode.OK);
+    expect(stdoutChunks.join("")).toContain("Dream complete");
+  });
+
+  it("--json emits valid JSON with merged/pruned/unchanged keys", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-test-key";
+
+    mock.module("@koi/dream", () => ({
+      shouldDream: () => true,
+      runDreamConsolidation: async () => ({ merged: 2, pruned: 1, unchanged: 4, durationMs: 7 }),
+    }));
+    mock.module("@koi/memory-fs", () => ({
+      createMemoryStore: () => ({
+        list: async () => [],
+        write: async () => ({ action: "created", record: {} }),
+        delete: async () => ({ deleted: true }),
+      }),
+    }));
+    mock.module("@koi/model-openai-compat", () => ({
+      createOpenAICompatAdapter: () => ({ complete: async () => ({ content: "", model: "test" }) }),
+    }));
+
+    const mod = await import(`./dream.js?t=${String(Date.now())}`);
+    const stdoutChunks: string[] = [];
+    const spy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      stdoutChunks.push(String(chunk));
+      return true;
+    });
+
+    const result = await (mod as { run: (f: unknown) => Promise<number> }).run(
+      makeDreamFlags({ force: true, json: true }),
+    );
+    spy.mockRestore();
+    expect(result).toBe(ExitCode.OK);
+    const parsed = JSON.parse(stdoutChunks.join("")) as {
+      ok: boolean;
+      data: { merged: number; pruned: number; unchanged: number; durationMs: number };
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.data.merged).toBe(2);
+    expect(parsed.data.pruned).toBe(1);
+    expect(parsed.data.unchanged).toBe(4);
+    expect(typeof parsed.data.durationMs).toBe("number");
+  });
+
+  it("evicts stale lock owned by dead PID and runs consolidation", async () => {
+    process.env.OPENROUTER_API_KEY = "sk-test-key";
+    await writeFile(join(testDir, ".dream.lock"), `99999:${String(Date.now())}`);
+
+    mock.module("@koi/dream", () => ({
+      shouldDream: () => true,
+      runDreamConsolidation: async () => ({ merged: 1, pruned: 0, unchanged: 0, durationMs: 0 }),
+    }));
+    mock.module("@koi/memory-fs", () => ({
+      createMemoryStore: () => ({
+        list: async () => [],
+        write: async () => ({ action: "created", record: {} }),
+        delete: async () => ({ deleted: true }),
+      }),
+    }));
+    mock.module("@koi/model-openai-compat", () => ({
+      createOpenAICompatAdapter: () => ({ complete: async () => ({ content: "", model: "test" }) }),
+    }));
+
+    const mod = await import(`./dream.js?t=${String(Date.now())}`);
+    const stdoutChunks: string[] = [];
+    const spy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+      stdoutChunks.push(String(chunk));
+      return true;
+    });
+
+    const result = await (mod as { run: (f: unknown) => Promise<number> }).run(
+      makeDreamFlags({ force: true }),
+    );
+    spy.mockRestore();
+    expect(result).toBe(ExitCode.OK);
+    expect(stdoutChunks.join("")).toContain("Dream complete");
+  });
+
+  it("error message no longer references removed --api-key flag", async () => {
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    const { run } = await import("./dream.js");
+    const stderrChunks: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    });
+    await run(makeDreamFlags());
+    spy.mockRestore();
+    const out = stderrChunks.join("");
+    expect(out).not.toContain("--api-key");
+    expect(out).toContain("environment variable");
+  });
+
   it("successful run: prints merged/pruned/unchanged counts", async () => {
     process.env.OPENROUTER_API_KEY = "sk-test-key";
 

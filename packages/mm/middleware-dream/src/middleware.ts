@@ -11,7 +11,7 @@ import { readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CapabilityFragment, KoiMiddleware, SessionContext, TurnContext } from "@koi/core";
 import { runDreamConsolidation, shouldDream } from "@koi/dream";
-import { loadGateState, saveGateState } from "./gate-state.js";
+import { mutateGateState } from "./gate-state.js";
 import type { DreamMiddlewareConfig } from "./types.js";
 
 const LOCK_FILE = ".dream.lock";
@@ -122,12 +122,10 @@ async function runConsolidationBackground(
 
     // Monotonic gate update: subtract only the sessions consumed by this run.
     // Sessions that arrived while consolidation was running are preserved.
-    const current = await loadGateState(config.memoryDir);
-    const remaining = Math.max(0, current.sessionsSinceDream - sessionBaseline);
-    await saveGateState(config.memoryDir, {
+    await mutateGateState(config.memoryDir, (current) => ({
       lastDreamAt: Date.now(),
-      sessionsSinceDream: remaining,
-    });
+      sessionsSinceDream: Math.max(0, current.sessionsSinceDream - sessionBaseline),
+    }));
   } catch (e: unknown) {
     config.onDreamError?.(e);
   } finally {
@@ -155,17 +153,15 @@ export function createDreamMiddleware(config: DreamMiddlewareConfig): KoiMiddlew
     },
 
     async onSessionEnd(_ctx: SessionContext): Promise<void> {
-      let state = await loadGateState(config.memoryDir);
-
-      state = {
-        lastDreamAt: state.lastDreamAt,
-        sessionsSinceDream: state.sessionsSinceDream + 1,
-      };
-
+      let state: Awaited<ReturnType<typeof mutateGateState>>;
       try {
-        await saveGateState(config.memoryDir, state);
+        state = await mutateGateState(config.memoryDir, (current) => ({
+          lastDreamAt: current.lastDreamAt,
+          sessionsSinceDream: current.sessionsSinceDream + 1,
+        }));
       } catch {
         // Don't block session cleanup on persistence failures
+        return;
       }
 
       const gateOptions: {

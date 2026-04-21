@@ -157,4 +157,114 @@ describe("createDreamMiddleware", () => {
     } as unknown as Parameters<typeof mw.describeCapabilities>[0];
     expect(mw.describeCapabilities(ctx)).toBeUndefined();
   });
+
+  it("two sequential onSessionEnd calls increment counter to 2", async () => {
+    const runConsolidationSpy = spyOn(dreamModule, "runDreamConsolidation");
+    const config = makeConfig({ minSessionsSinceLastDream: 99, minTimeSinceLastDreamMs: 0 });
+    const mw = createDreamMiddleware(config);
+
+    await mw.onSessionEnd?.(makeSessionCtx());
+    await mw.onSessionEnd?.(makeSessionCtx());
+
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(join(TEST_DIR, ".dream-gate.json"), "utf8");
+    const state = JSON.parse(raw) as { sessionsSinceDream: number };
+    expect(state.sessionsSinceDream).toBe(2);
+    expect(runConsolidationSpy).not.toHaveBeenCalled();
+    runConsolidationSpy.mockRestore();
+  });
+
+  it("gate state is NOT zeroed when consolidation fails", async () => {
+    const runConsolidationSpy = spyOn(dreamModule, "runDreamConsolidation").mockRejectedValue(
+      new Error("boom"),
+    );
+    const config = makeConfig({ minSessionsSinceLastDream: 1, minTimeSinceLastDreamMs: 0 });
+    const mw = createDreamMiddleware(config);
+
+    await mw.onSessionEnd?.(makeSessionCtx());
+    await new Promise((r) => setTimeout(r, 100));
+
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(join(TEST_DIR, ".dream-gate.json"), "utf8");
+    const state = JSON.parse(raw) as { sessionsSinceDream: number; lastDreamAt: number };
+    // After failure: counter still 1, lastDreamAt untouched (0)
+    expect(state.sessionsSinceDream).toBe(1);
+    expect(state.lastDreamAt).toBe(0);
+    runConsolidationSpy.mockRestore();
+  });
+
+  it("lock is released after consolidation failure", async () => {
+    const runConsolidationSpy = spyOn(dreamModule, "runDreamConsolidation").mockRejectedValue(
+      new Error("boom"),
+    );
+    const config = makeConfig({ minSessionsSinceLastDream: 1, minTimeSinceLastDreamMs: 0 });
+    const mw = createDreamMiddleware(config);
+
+    await mw.onSessionEnd?.(makeSessionCtx());
+    await new Promise((r) => setTimeout(r, 100));
+
+    const { access } = await import("node:fs/promises");
+    let lockExists = true;
+    try {
+      await access(join(TEST_DIR, ".dream.lock"));
+    } catch {
+      lockExists = false;
+    }
+    expect(lockExists).toBe(false);
+    runConsolidationSpy.mockRestore();
+  });
+
+  it("evicts stale lock with dead PID and proceeds", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    // PID 99999 is unlikely to be a live process on macOS/Linux test runners
+    await writeFile(join(TEST_DIR, ".dream.lock"), `99999:${String(Date.now())}`, { flag: "w" });
+
+    const runConsolidationSpy = spyOn(dreamModule, "runDreamConsolidation").mockResolvedValue({
+      merged: 0,
+      pruned: 0,
+      unchanged: 0,
+      durationMs: 1,
+    });
+    const config = makeConfig({ minSessionsSinceLastDream: 1, minTimeSinceLastDreamMs: 0 });
+    const mw = createDreamMiddleware(config);
+
+    await mw.onSessionEnd?.(makeSessionCtx());
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(runConsolidationSpy).toHaveBeenCalledTimes(1);
+    runConsolidationSpy.mockRestore();
+  });
+
+  it("monotonic update preserves session increments during consolidation", async () => {
+    let resolveConsolidation: (() => void) | undefined;
+    const consolidationPromise = new Promise<void>((r) => {
+      resolveConsolidation = r;
+    });
+    const runConsolidationSpy = spyOn(dreamModule, "runDreamConsolidation").mockImplementation(
+      async () => {
+        await consolidationPromise;
+        return { merged: 0, pruned: 0, unchanged: 0, durationMs: 1 };
+      },
+    );
+
+    const config = makeConfig({ minSessionsSinceLastDream: 1, minTimeSinceLastDreamMs: 0 });
+    const mw = createDreamMiddleware(config);
+
+    // Session 1: triggers consolidation (baseline=1, sessionsSinceDream=1)
+    await mw.onSessionEnd?.(makeSessionCtx());
+    // Sessions 2 & 3 land while consolidation is in-flight
+    await mw.onSessionEnd?.(makeSessionCtx());
+    await mw.onSessionEnd?.(makeSessionCtx());
+
+    // Now let consolidation finish — monotonic update should preserve sessions 2 & 3
+    resolveConsolidation?.();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(join(TEST_DIR, ".dream-gate.json"), "utf8");
+    const state = JSON.parse(raw) as { sessionsSinceDream: number };
+    // After consolidation: max(0, 3 - 1) = 2 sessions remain
+    expect(state.sessionsSinceDream).toBe(2);
+    runConsolidationSpy.mockRestore();
+  });
 });
