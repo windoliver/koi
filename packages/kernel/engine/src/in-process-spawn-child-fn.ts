@@ -53,7 +53,7 @@ export function createInProcessSpawnChildFn(
     if (entry !== undefined && !isPromise(entry)) {
       if (entry.metadata.childSpecName !== childSpec.name) {
         console.warn(
-          `[in-process-spawn-child-fn] delegate did not set metadata.childSpecName for child "${childSpec.name}" — position-based fallback will apply`,
+          `[in-process-spawn-child-fn] delegate did not set metadata.childSpecName="${childSpec.name}" on child ${childId} — position-based fallback will apply`,
         );
       }
     }
