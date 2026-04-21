@@ -191,12 +191,14 @@ export function createCollectiveMemoryMiddleware(
       const state = getSession(ctx.session.sessionId);
       if (state.injected) return next(request);
 
+      // Optimistically mark injected before any I/O so concurrent model calls
+      // in the same session don't both prepend the collective-memory message.
+      // Trade-off: a transient load failure will not be retried on the next turn;
+      // this is acceptable because duplicate injection is worse than a missed injection.
+      sessions.set(ctx.session.sessionId, { ...state, injected: true });
+
       const rawId = config.resolveBrickId(ctx.session.agentId);
-      if (rawId === undefined) {
-        // Mark injected so we don't retry on every turn when brick is unavailable.
-        sessions.set(ctx.session.sessionId, { ...state, injected: true });
-        return next(request);
-      }
+      if (rawId === undefined) return next(request);
 
       // Build the memory block before dispatching. Any failure here (load/format)
       // falls back to an un-injected call — no double dispatch risk.
@@ -241,9 +243,6 @@ export function createCollectiveMemoryMiddleware(
       if (injectedRequest === undefined) return next(request);
 
       const result = await next(injectedRequest);
-      // Mark injected only after next() returns so adapter failures on this turn
-      // allow the next turn to retry injection.
-      sessions.set(ctx.session.sessionId, { ...state, injected: true });
       if (brick !== undefined && injectedIds !== undefined) {
         incrementAccessCounts(brick, injectedIds).catch(() => {
           // Swallow — observability only

@@ -368,7 +368,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(result).toBe(resp);
     });
 
-    test("retries injection when next() throws on first injected turn", async () => {
+    test("concurrent model calls inject only once (one-shot gate)", async () => {
       const memory: CollectiveMemory = {
         entries: [
           {
@@ -395,47 +395,22 @@ describe("createCollectiveMemoryMiddleware", () => {
       };
       const ctx = createTurnCtx();
 
-      // next() throws on the first injected call; error propagates (no retry from middleware).
-      // Second wrapModelCall should retry injection since injected flag was not set.
-      let callCount = 0;
+      let injectedCount = 0;
       const next = mock(async (r: ModelRequest): Promise<ModelResponse> => {
-        callCount++;
-        if (callCount === 1) throw new Error("adapter transient failure");
+        if (r.messages.length > 1) injectedCount++;
         return { content: "", model: "test-model" };
       });
 
-      // First wrapModelCall: next() throws → error propagates to caller
-      await expect(mw.wrapModelCall?.(ctx, req, next)).rejects.toThrow("adapter transient failure");
+      // Launch two concurrent model calls before either resolves — only one should inject
+      await Promise.all([mw.wrapModelCall?.(ctx, req, next), mw.wrapModelCall?.(ctx, req, next)]);
 
-      // Second wrapModelCall: injected flag not set, so retries injection → succeeds
-      await mw.wrapModelCall?.(ctx, req, next);
-
-      // Second call to next() should have the injected system message
-      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+      expect(injectedCount).toBe(1);
     });
 
-    test("retries injection on next turn when brick load fails transiently", async () => {
-      const memory: CollectiveMemory = {
-        entries: [
-          {
-            id: "e1",
-            content: "Some learning",
-            category: "heuristic",
-            source: { agentId: "a", runId: "r", timestamp: NOW },
-            createdAt: NOW,
-            accessCount: 1,
-            lastAccessedAt: NOW,
-          },
-        ],
-        totalTokens: 10,
-        generation: 1,
-      };
-      const store = createMockForgeStore({ collectiveMemory: memory });
-      let callCount = 0;
+    test("transient brick load failure skips injection and marks session done (no retry)", async () => {
+      const store = createMockForgeStore();
       (store.load as ReturnType<typeof mock>).mockImplementation(async () => {
-        callCount++;
-        if (callCount === 1) throw new Error("transient failure");
-        return { ok: true, value: { collectiveMemory: memory, storeVersion: "v1" } };
+        throw new Error("transient failure");
       });
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
       await mw.onSessionStart?.(createSessionCtx());
@@ -458,10 +433,12 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.wrapModelCall?.(ctx, req, next);
       await mw.wrapModelCall?.(ctx, req, next);
 
-      // First call: load threw, no injection
+      // Both calls use the original request (no injection); second call short-circuits
+      // via the injected flag set before I/O to prevent concurrent injection.
       expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
-      // Second call: load succeeded, injection happened
-      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
+      // Load called only once — second turn sees injected=true and skips
+      expect(store.load).toHaveBeenCalledTimes(1);
     });
 
     test("marks injected=true after resolveBrickId returns undefined to avoid repeated lookups", async () => {

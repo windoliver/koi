@@ -24,7 +24,7 @@ const MAX_ENTRY_LENGTH = 500;
 // The denylist targets the verbs most commonly used in prompt-injection payloads
 // that aim to plant persistent instructions in shared memory.
 const INJECTION_VERB_RE =
-  /^\s*(?:ignore|bypass|override|disable|disregard|suppress|escalate|leak|exfiltrate|pretend|forget|reveal|grant|allow\s+access|delete\s+(?:the|all|every)|execute\s+(?:the|this|a))\b/i;
+  /^\s*(?:ignore|bypass|override|disable|disregard|suppress|escalate|leak|exfiltrate|pretend|forget|reveal|grant|allow\s+access|delete\s+(?:the|all|every)|execute\s+(?:the|this|a)|run\s+with\b|use\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared)\s+\w+|access\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared|secret|vault|credential))\b/i;
 
 export function isInstruction(content: string): boolean {
   return INJECTION_VERB_RE.test(content);
