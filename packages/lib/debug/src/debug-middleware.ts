@@ -74,24 +74,30 @@ export interface DebugMiddlewareResult {
 // Factory
 // ---------------------------------------------------------------------------
 
-/** Truncate large payloads to a byte budget before retaining in the event buffer. */
+/**
+ * Bound the retained event payload to fixed-size metadata + shallow preview.
+ * Never fully serializes arbitrary objects — callers who need full data should
+ * use inspectComponent (which has proper pagination + structured cloning).
+ */
 function truncatePayload(value: unknown): unknown {
   if (typeof value === "string") {
     if (value.length <= MAX_EVENT_PAYLOAD_BYTES) return value;
     return `${value.slice(0, MAX_EVENT_PAYLOAD_BYTES)}…[truncated ${value.length - MAX_EVENT_PAYLOAD_BYTES} bytes]`;
   }
-  if (value === null || value === undefined) return value;
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized !== undefined && serialized.length <= MAX_EVENT_PAYLOAD_BYTES) return value;
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
     return {
-      __truncated: true,
-      approximateBytes: serialized?.length ?? 0,
-      preview: serialized?.slice(0, 256),
+      __summary: "array",
+      length: value.length,
+      firstItemType: value.length > 0 ? typeof value[0] : undefined,
     };
-  } catch {
-    return { __truncated: true, reason: "non-serializable" };
   }
+  const keys = Object.keys(value as Record<string, unknown>);
+  return {
+    __summary: "object",
+    keyCount: keys.length,
+    keys: keys.slice(0, 16),
+  };
 }
 
 export function createDebugMiddleware(

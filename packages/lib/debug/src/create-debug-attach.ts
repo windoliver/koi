@@ -54,9 +54,13 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
 
   const existingBundle = activeDebugSessions.get(agentKey);
   if (existingBundle !== undefined) {
+    // Same ID but different Agent object = namespace collision from a different
+    // runtime/owner. Treat as replacement rather than CONFLICT: the old bundle
+    // belongs to a different agent instance entirely.
+    const sameAgent = existingBundle.agent === config.agent;
     const agentTerminated = existingBundle.agent.state === "terminated";
     const controllerLive = existingBundle.controller.isActive();
-    if (controllerLive && !agentTerminated) {
+    if (sameAgent && controllerLive && !agentTerminated) {
       return {
         ok: false,
         error: {
@@ -66,8 +70,7 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
         },
       };
     }
-    // Stale: agent terminated or controller deactivated without explicit detach — clean up.
-    // Call session.detach() so the old handle is uniformly unusable (not just controller).
+    // Stale / replacement / namespace-collision: clean up the old bundle.
     const replacementReason: "user" | "agent_terminated" | "replaced" = agentTerminated
       ? "agent_terminated"
       : "replaced";

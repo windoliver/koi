@@ -1077,6 +1077,98 @@ describe("event payload truncation", () => {
   });
 });
 
+describe("payload truncation avoids full serialization", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("large object output is replaced with shape summary (not serialized)", async () => {
+    const agent = makeAgent("bounded-agent");
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    // Build an object that would be expensive to fully serialize
+    const huge: Record<string, unknown> = {};
+    for (let i = 0; i < 5_000; i++) {
+      huge[`k${i}`] = "value-" + i;
+    }
+
+    const fakeRequest: import("@koi/core").ToolRequest = { toolId: "t", input: {} };
+    const fakeNext = async (r: import("@koi/core").ToolRequest) =>
+      ({ toolId: r.toolId, output: huge }) as import("@koi/core").ToolResponse;
+
+    await middleware.wrapToolCall?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      fakeRequest,
+      fakeNext,
+    );
+
+    const events = session.events();
+    const toolEnd = events.find((e) => e.kind === "tool_call_end");
+    expect(toolEnd).toBeDefined();
+    if (toolEnd?.kind !== "tool_call_end") return;
+    // Must be a bounded summary, not the full 5000-key object
+    expect(toolEnd.result).toMatchObject({ __summary: "object" });
+  });
+
+  test("large array output is replaced with shape summary", async () => {
+    const agent = makeAgent("bounded-array");
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    const hugeArray = Array.from({ length: 10_000 }, (_, i) => i);
+    const fakeRequest: import("@koi/core").ToolRequest = { toolId: "t", input: {} };
+    const fakeNext = async (r: import("@koi/core").ToolRequest) =>
+      ({ toolId: r.toolId, output: hugeArray }) as import("@koi/core").ToolResponse;
+
+    await middleware.wrapToolCall?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      fakeRequest,
+      fakeNext,
+    );
+
+    const events = session.events();
+    const toolEnd = events.find((e) => e.kind === "tool_call_end");
+    if (toolEnd?.kind !== "tool_call_end") return;
+    expect(toolEnd.result).toMatchObject({ __summary: "array", length: 10_000 });
+  });
+});
+
+describe("registry isolation for same-ID agents", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("attaching a different Agent object with same ID treats old as replaced (not CONFLICT)", () => {
+    const a1 = makeAgent("same-id-runtime");
+    const firstAttach = createDebugAttach({ agent: a1 });
+    expect(firstAttach.ok).toBe(true);
+    if (!firstAttach.ok) return;
+    const oldSession = firstAttach.value.session;
+
+    // Different Agent object, same pid.id — simulates cross-runtime namespace collision
+    const a2 = makeAgent("same-id-runtime");
+    const secondAttach = createDebugAttach({ agent: a2 });
+    expect(secondAttach.ok).toBe(true);
+    if (!secondAttach.ok) return;
+
+    // Old session from a1 must be revoked
+    expect(() => oldSession.inspect()).toThrow("detached");
+    secondAttach.value.session.detach();
+  });
+
+  test("same Agent object attached twice still returns CONFLICT", () => {
+    const a = makeAgent("same-obj");
+    const first = createDebugAttach({ agent: a });
+    expect(first.ok).toBe(true);
+
+    const second = createDebugAttach({ agent: a });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe("CONFLICT");
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", () => {
     const { createDebugMiddleware } =
