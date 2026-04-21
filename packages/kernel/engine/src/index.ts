@@ -169,6 +169,12 @@ export { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js
 export { disposeAll } from "./dispose.js";
 // group operations
 export { listByGroup, signalGroup } from "./group-operations.js";
+// in-process spawn child fn adapter
+export type {
+  CreateInProcessSpawnChildFnOptions,
+  InProcessSpawnDelegate,
+} from "./in-process-spawn-child-fn.js";
+export { createInProcessSpawnChildFn } from "./in-process-spawn-child-fn.js";
 // inbox queue
 export { createInboxQueue } from "./inbox-queue.js";
 // inherited channel proxy
