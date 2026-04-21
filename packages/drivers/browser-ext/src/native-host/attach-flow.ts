@@ -97,13 +97,31 @@ export function createAttachCoordinator(deps: {
     },
 
     handleAttachAckFromExtension(frame): void {
-      const entry = inFlight.findByTabAndRequest(frame.tabId, frame.attachRequestId);
+      // Match on (tabId, attachRequestId, leaseToken) — NOT just the first
+      // two fields. attachRequestId alone is not unique across clients
+      // (two authenticated drivers can legitimately or accidentally reuse
+      // the same id), so lookup must be scoped by the lease that
+      // originated the attach. Otherwise a second client can steal the
+      // first client's ack and be committed as the tab owner.
+      const entry = inFlight.findByTabRequestLease(
+        frame.tabId,
+        frame.attachRequestId,
+        frame.leaseToken,
+      );
       if (!entry) return;
       inFlight.delete(entry.clientId, entry.attachRequestId);
 
       if (entry.abandoned) {
         if (frame.ok) {
+          // Attach succeeded AFTER the originating driver disconnected (or
+          // another abandon path fired). The debugger session is live but
+          // has no committed owner, so we must explicitly detach — otherwise
+          // Chrome is stuck attached to a tab nobody tracks, future attach
+          // requests bounce as `already_attached`, and recovery needs
+          // manual browser intervention. `abandon_attach` alone only
+          // cleaned up pending_consent/attaching, not this late-success case.
           sendNm({ kind: "abandon_attach", leaseToken: frame.leaseToken });
+          sendNm({ kind: "detach", sessionId: frame.sessionId, tabId: frame.tabId });
         }
         return;
       }

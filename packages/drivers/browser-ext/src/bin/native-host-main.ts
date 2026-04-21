@@ -43,7 +43,14 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
+  // Funnel every non-signal completion through shutdown() too. Several
+  // internal failure paths (stdin EOF, watchdog expiry, protocol negotiation
+  // failure) resolve waitUntilDone() via `done()` alone; the socket unlink +
+  // discovery-file cleanup lives in shutdown(). Exiting directly here would
+  // leave stale sockets and discovery records behind and make restart
+  // behavior depend on best-effort stale-file reaping.
   await handle.waitUntilDone();
+  await handle.shutdown().catch(() => {});
   process.exit(0);
 }
 

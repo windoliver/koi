@@ -21,6 +21,18 @@ export interface InFlightMap {
     tabId: number,
     attachRequestId: string,
   ) => InFlightAttach | undefined;
+  /**
+   * Lease-bound lookup. Attach acks MUST match the same (tabId,
+   * attachRequestId, leaseToken) triple that originated the request —
+   * otherwise a second client reusing attachRequestId (retries, bugs,
+   * or deliberate collision) could resolve the other client's in-flight
+   * entry and steal the ack.
+   */
+  readonly findByTabRequestLease: (
+    tabId: number,
+    attachRequestId: string,
+    leaseToken: string,
+  ) => InFlightAttach | undefined;
   readonly size: () => number;
 }
 
@@ -47,6 +59,18 @@ export function createInFlightMap(): InFlightMap {
     findByTabAndRequest: (tabId, attachRequestId) => {
       for (const entry of map.values()) {
         if (entry.tabId === tabId && entry.attachRequestId === attachRequestId) return entry;
+      }
+      return undefined;
+    },
+    findByTabRequestLease: (tabId, attachRequestId, leaseToken) => {
+      for (const entry of map.values()) {
+        if (
+          entry.tabId === tabId &&
+          entry.attachRequestId === attachRequestId &&
+          entry.leaseToken === leaseToken
+        ) {
+          return entry;
+        }
       }
       return undefined;
     },

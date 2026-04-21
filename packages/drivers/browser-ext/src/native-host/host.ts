@@ -556,6 +556,24 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         return;
       }
       case "close_tab": {
+        // Tenant-isolation gate: reject ONLY if another authenticated
+        // client currently owns the tab via a committed attach session.
+        // Unowned tabs (the normal case for cleanup flows like closing a
+        // tab that was opened earlier) are permitted — tabList surfaces
+        // them, so agents must be able to close them. Admin role also
+        // always allowed.
+        const isAdmin = driverRoles.get(clientId) === "admin";
+        const owner = ownership.get(frame.tabId);
+        const heldByOtherClient = owner?.phase === "committed" && owner.clientId !== clientId;
+        if (heldByOtherClient && !isAdmin) {
+          drivers.get(clientId)?.send({
+            kind: "tab_closed",
+            requestId: frame.requestId,
+            ok: false,
+            error: "no_permission: tab is held by another client's active attach session",
+          });
+          return;
+        }
         const hostRequestId = randomUUID();
         pendingTabOps.set(hostRequestId, {
           clientId,
@@ -618,9 +636,13 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         // Reject malformed requests up-front so operator mistakes
         // ({ scope: "origin" } without `origin`) don't quietly succeed
         // with an empty cleared-origins ack.
+        // Driver→host→extension requestId: echoed back to the driver on the
+        // ack so the DriverClient can correlate concurrent/retry flows.
+        const driverRequestId = frame.requestId;
         if (frame.scope === "origin" && (!frame.origin || frame.origin.length === 0)) {
           drivers.get(clientId)?.send({
             kind: "admin_clear_grants_ack",
+            requestId: driverRequestId,
             ok: false,
             reason: "PERMISSION",
           });
@@ -650,6 +672,7 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           if (result.ok) {
             drivers.get(clientId)?.send({
               kind: "admin_clear_grants_ack",
+              requestId: driverRequestId,
               ok: true,
               clearedOrigins: result.clearedOrigins ?? [],
               detachedTabs: result.detachedTabs ?? [],
@@ -659,6 +682,7 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
 
           drivers.get(clientId)?.send({
             kind: "admin_clear_grants_ack",
+            requestId: driverRequestId,
             ok: false,
             reason: result.error ?? "timeout",
           });

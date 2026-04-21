@@ -57,7 +57,7 @@ describe("connect-native", () => {
     const storage = createExtensionStorage();
     await storage.setAlwaysGrant("https://example.com", "2026-04-20T00:00:00.000Z");
     await storage.setPrivateOriginAllowlist(["http://localhost:3000"]);
-    await storage.grantAllowOnce(42, "doc-1");
+    await storage.grantAllowOnce(42, "doc-1", "https://example.com");
     await storage.setInstallId("a".repeat(64));
 
     const connection = createNativeConnection({

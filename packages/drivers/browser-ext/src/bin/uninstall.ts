@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -53,9 +53,16 @@ async function defaultRemoveRuntimeFiles(baseDir: string): Promise<readonly stri
   const entries = await readdir(baseDir, { withFileTypes: true }).catch(() => []);
   const removed: string[] = [];
   for (const entry of entries) {
-    // Remove everything including the deployed extension bundle. Leaving it
-    // behind after uninstall is a leftover trust artifact; rollback must be
-    // complete.
+    // Preserve the deployed `extension/` directory. Chrome references the
+    // loaded unpacked extension at that path; deleting it while Chrome still
+    // has the extension registered strands a broken extension in the
+    // browser that the user cannot fix without a manual reload/reinstall.
+    // Uninstall instructs the user to remove the extension from
+    // chrome://extensions themselves; the files stay until they do.
+    // Also preserve `runtime/` (the native-host JS bundle): native-messaging
+    // manifests reference its wrapper; deleting it would break the
+    // extension-side reconnect path before the user removes the extension.
+    if (entry.name === "extension" || entry.name === "runtime") continue;
     const path = join(baseDir, entry.name);
     await rm(path, { recursive: true, force: true });
     removed.push(path);
@@ -133,6 +140,7 @@ export async function runUninstallCommand(
         } else {
           const clearAck = await client.adminClearGrants({
             kind: "admin_clear_grants",
+            requestId: randomUUID(),
             scope: "all",
           });
           if (clearAck.ok === true) {

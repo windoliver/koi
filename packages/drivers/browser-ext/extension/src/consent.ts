@@ -76,7 +76,7 @@ export function createConsentManager(storage: ExtensionStorage): ConsentManager 
     }
 
     if (buttonIndex === 0 || result === "allow_once") {
-      await storage.grantAllowOnce(choice.tabId, choice.documentId);
+      await storage.grantAllowOnce(choice.tabId, choice.documentId, choice.origin);
       choice.resolve("allow_once");
       return;
     }

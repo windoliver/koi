@@ -23,7 +23,7 @@ describe("extension storage", () => {
   test("writes and reads allow_once and always grants", async () => {
     const storage = createExtensionStorage();
 
-    await storage.grantAllowOnce(42, "doc-1");
+    await storage.grantAllowOnce(42, "doc-1", "https://example.com");
     await storage.setAlwaysGrant("https://example.com", "2026-04-20T00:00:00.000Z");
 
     expect(await storage.hasAllowOnceGrant(42, "doc-1")).toBe(true);

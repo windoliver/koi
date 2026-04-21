@@ -90,6 +90,7 @@ export interface InstallCommandDependencies {
   readonly getBrowserInstallTargets?: typeof getBrowserInstallTargets;
   readonly ensureExtensionBundle?: (dir: string) => Promise<void>;
   readonly readLocalExtensionId?: (packageRoot: string) => Promise<string>;
+  readonly ensureHostEntrypoint?: (path: string) => Promise<void>;
 }
 
 async function defaultCopyExtensionBundle(from: string, to: string): Promise<void> {
@@ -98,7 +99,18 @@ async function defaultCopyExtensionBundle(from: string, to: string): Promise<voi
 }
 
 async function ensureExtensionBundle(dir: string): Promise<void> {
+  // Require BOTH manifest.json AND extension-id.txt in the shipped bundle.
+  // extension-id.txt is what the native-messaging manifest's allowed_origins
+  // references; a bundle missing it means the installer would fall back to
+  // a repo-local dev id that does not correspond to the bundle actually
+  // being copied — producing a silently broken install where Chrome
+  // refuses the native host connection.
   await readFile(join(dir, "manifest.json"), "utf8");
+  await readFile(join(dir, "extension-id.txt"), "utf8");
+}
+
+async function ensureHostEntrypoint(path: string): Promise<void> {
+  await readFile(path);
 }
 
 export async function runInstallCommand(
@@ -114,12 +126,18 @@ export async function runInstallCommand(
   const platform = options.platform ?? (process.platform as SupportedPlatform);
   const authDir = join(homeDir, ".koi", "browser-ext");
   const wrapperPath = join(authDir, "bin", "native-host");
-  // Wrapper exec's this production entrypoint — it builds a NativeHostConfig
-  // from env/install layout and calls runNativeHost(). The `dist/native-host/
-  // index.js` barrel is re-exports only and would never start the host.
-  const hostEntrypointPath = join(packageRoot, "dist", "bin", "native-host-main.js");
   const extensionSourceDir = join(packageRoot, "dist", "extension");
   const extensionDeployDir = join(authDir, "extension");
+  // Copy the ENTIRE native-host runtime tree into a durable location under
+  // authDir and point the wrapper at that copy. The previous layout baked
+  // `packageRoot/dist/bin/native-host-main.js` into the wrapper — fine for
+  // source-tree dev, but with `bunx @koi/browser-ext install` packageRoot
+  // is a transient bun cache location that can be evicted after install.
+  // That leaves Chrome pointed at a vanished path.
+  const runtimeSourceDir = join(packageRoot, "dist");
+  const runtimeDeployDir = join(authDir, "runtime");
+  const hostEntrypointSourcePath = join(runtimeSourceDir, "bin", "native-host-main.js");
+  const hostEntrypointPath = join(runtimeDeployDir, "bin", "native-host-main.js");
 
   const detectNode = deps.detectNodeBinary ?? detectNodeBinary;
   const generateInstall = deps.generateInstallId ?? generateInstallId;
@@ -134,11 +152,30 @@ export async function runInstallCommand(
   const verifyBundle = deps.ensureExtensionBundle ?? ensureExtensionBundle;
 
   await verifyBundle(extensionSourceDir);
+  // Verify the production host entrypoint exists in the source tree before
+  // we copy it. A partial build that lacks the entrypoint would otherwise
+  // succeed install-time and fail at chrome.runtime.connectNative() runtime.
+  const verifyHostEntrypoint = deps.ensureHostEntrypoint ?? ensureHostEntrypoint;
+  await verifyHostEntrypoint(hostEntrypointSourcePath).catch((err: unknown) => {
+    throw new Error(
+      `browser-ext install: host entrypoint missing at ${hostEntrypointSourcePath}. ` +
+        "Run `bun run build` in @koi/browser-ext before install. " +
+        `(cause: ${err instanceof Error ? err.message : String(err)})`,
+    );
+  });
   const readExtensionId = deps.readLocalExtensionId ?? readLocalExtensionId;
+  // Prefer the extension id derived from the bundle we're about to copy —
+  // NOT a source-tree fallback that could diverge from the deployed
+  // artifact. This keeps allowed_origins locked to the actual bundle.
   const extensionId = await readExtensionId(packageRoot);
   const node = detectNode();
   const installId = await generateInstall(authDir);
   await writeAuth(authDir);
+  // Copy the native-host runtime into the managed install dir BEFORE writing
+  // the wrapper so the wrapper points at a durable path that survives
+  // removal of the transient packageRoot (bunx cache eviction, package
+  // upgrade, monorepo checkout moves).
+  await copyBundle(runtimeSourceDir, runtimeDeployDir);
   await writeWrapper(wrapperPath, node.executablePath, hostEntrypointPath);
   const manifests = await writeManifests({
     targets: browserTargets,

@@ -140,12 +140,14 @@ export interface ByeFrame {
 
 export interface AdminClearGrantsFrame {
   readonly kind: "admin_clear_grants";
+  readonly requestId: string;
   readonly scope: "all" | "origin";
   readonly origin?: string | undefined;
 }
 
 export interface AdminClearGrantsAckOkFrame {
   readonly kind: "admin_clear_grants_ack";
+  readonly requestId: string;
   readonly ok: true;
   readonly clearedOrigins: readonly string[];
   readonly detachedTabs: readonly number[];
@@ -153,6 +155,7 @@ export interface AdminClearGrantsAckOkFrame {
 
 export interface AdminClearGrantsAckFailFrame {
   readonly kind: "admin_clear_grants_ack";
+  readonly requestId: string;
   readonly ok: false;
   readonly reason: "PERMISSION" | "timeout";
 }
@@ -352,18 +355,21 @@ export const DriverFrameSchema: z.ZodType<DriverFrame> = z.union([
   z.object({ kind: z.literal("bye") }),
   z.object({
     kind: z.literal("admin_clear_grants"),
+    requestId: UUID,
     scope: z.enum(["all", "origin"]),
     origin: z.string().optional(),
   }),
   z.discriminatedUnion("ok", [
     z.object({
       kind: z.literal("admin_clear_grants_ack"),
+      requestId: UUID,
       ok: z.literal(true),
       clearedOrigins: z.array(z.string()),
       detachedTabs: z.array(z.number().int()),
     }),
     z.object({
       kind: z.literal("admin_clear_grants_ack"),
+      requestId: UUID,
       ok: z.literal(false),
       reason: z.enum(["PERMISSION", "timeout"]),
     }),
