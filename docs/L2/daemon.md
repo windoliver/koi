@@ -88,7 +88,7 @@ All of the following live in `@koi/core` and are consumed by this package:
 
 | Type | Purpose |
 |------|---------|
-| `WorkerBackend` | Swappable execution substrate (kind/spawn/terminate/kill/isAlive/watch) |
+| `WorkerBackend` | Swappable execution substrate (kind/spawn/terminate/kill/isAlive/watch). `watch(id, signal?)` accepts an optional `AbortSignal`; the supervisor aborts it on `stop()`/`shutdown()` so backends that can't guarantee terminal event emission still release their watch-stream resources. |
 | `WorkerBackendKind` | `"in-process" \| "subprocess" \| "tmux" \| "remote"` |
 | `WorkerSpawnRequest` | Spawn payload (workerId, agentId, command, cwd?, env?, backendHints?) |
 | `WorkerHandle` | Per-worker runtime handle (signal, startedAt, backendKind) |
@@ -266,6 +266,16 @@ Restart budget enforced by `maxRestarts` within `maxRestartWindowMs` (sliding wi
 - If deadline wins: `backend.kill(id)` fires (SIGKILL equivalent), entry removed, `{ ok: true }`
 
 Workers not in the pool return `{ ok: false, error.code: "NOT_FOUND" }`.
+
+### Watch Cancellation
+
+Each pool worker owns an `AbortController`; its signal is passed into
+`backend.watch(id, signal)`. After the deadline-bounded terminate/kill
+completes, `stop()` aborts the signal so any backend still holding a watch
+stream releases it. Backends that emit the terminal event naturally ignore
+the abort (the for-await already exited); backends that stall or drop the
+stream without emitting a terminal event honor the abort and exit their
+generator, so the supervisor's watch IIFE never leaks past stop()/shutdown().
 
 ### Backend Selection
 
