@@ -129,6 +129,86 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(store.update).not.toHaveBeenCalled();
     });
 
+    test("partitions brick by userId/channelId/conversationId from session", async () => {
+      const store = createMockForgeStore();
+      const seenContexts: unknown[] = [];
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({
+          forgeStore: store,
+          resolveBrickId: (input) => {
+            seenContexts.push(input);
+            if (typeof input === "string") return undefined;
+            return `brick:${input.agentName}:${input.userId ?? "_"}:${input.channelId ?? "_"}`;
+          },
+        }),
+      );
+
+      const ctxA: TurnContext = {
+        session: {
+          agentId: "researcher",
+          sessionId: "sA" as TurnContext["session"]["sessionId"],
+          runId: "r1" as TurnContext["session"]["runId"],
+          userId: "user-1",
+          channelId: "channel-x",
+          metadata: {},
+        },
+        turnIndex: 0,
+        turnId: "t1" as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(ctxA, req, next);
+
+      // The resolveBrickId hook saw the tenant-scoped context object
+      const lastCtx = seenContexts[seenContexts.length - 1] as Record<string, unknown>;
+      expect(lastCtx.userId).toBe("user-1");
+      expect(lastCtx.channelId).toBe("channel-x");
+      expect(lastCtx.agentName).toBe("researcher");
+    });
+
+    test("falls back to session.metadata for tenant fields when top-level missing", async () => {
+      const store = createMockForgeStore();
+      const seenContexts: unknown[] = [];
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({
+          forgeStore: store,
+          resolveBrickId: (input) => {
+            seenContexts.push(input);
+            if (typeof input === "string") return undefined;
+            return `brick:${input.agentName}:${input.userId ?? "_"}`;
+          },
+        }),
+      );
+
+      const ctxMetaOnly: TurnContext = {
+        session: {
+          agentId: "researcher",
+          sessionId: "sM" as TurnContext["session"]["sessionId"],
+          runId: "rM" as TurnContext["session"]["runId"],
+          metadata: { userId: "user-from-metadata", conversationId: "conv-meta" },
+        },
+        turnIndex: 0,
+        turnId: "tM" as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(ctxMetaOnly, req, next);
+
+      const lastCtx = seenContexts[seenContexts.length - 1] as Record<string, unknown>;
+      expect(lastCtx.userId).toBe("user-from-metadata");
+      expect(lastCtx.conversationId).toBe("conv-meta");
+    });
+
     test("does NOT persist spawn outputs by default (persistSpawnOutputs unset)", async () => {
       const store = createMockForgeStore();
       // Override createConfig's default — call factory with explicit persistSpawnOutputs=undefined
@@ -718,6 +798,60 @@ describe("createCollectiveMemoryMiddleware", () => {
       );
 
       await expect(mw.onSessionEnd?.(createSessionCtx())).resolves.toBeUndefined();
+    });
+
+    test("preserves session buffer on extraction failure so retry can recover", async () => {
+      // First call to modelCall fails; second call succeeds. Session state must
+      // survive between calls so the second onSessionEnd can re-extract.
+      let modelCalls = 0;
+      const modelCall = mock(async (): Promise<ModelResponse> => {
+        modelCalls++;
+        if (modelCalls === 1) throw new Error("LLM transient failure");
+        return {
+          content: JSON.stringify([{ content: "Validated learning", category: "gotcha" }]),
+          model: "haiku",
+        };
+      });
+      const store = createMockForgeStore();
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store, modelCall }));
+
+      await mw.onSessionStart?.(createSessionCtx());
+      const next = mock(async () => ({ output: "rich worker output" }) satisfies ToolResponse);
+      await mw.wrapToolCall?.(
+        createTurnCtx(),
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
+        next,
+      );
+
+      // First onSessionEnd: modelCall throws; buffer must be preserved
+      await mw.onSessionEnd?.(createSessionCtx());
+      expect(store.update).not.toHaveBeenCalled();
+
+      // Second onSessionEnd: modelCall succeeds; buffered outputs are extracted and persisted
+      await mw.onSessionEnd?.(createSessionCtx());
+      expect(modelCall).toHaveBeenCalledTimes(2);
+      expect(store.update).toHaveBeenCalledTimes(1);
+    });
+
+    test("clears session buffer on successful extraction (no leak)", async () => {
+      const modelCall = mock(
+        async (): Promise<ModelResponse> => ({ content: "[]", model: "haiku" }),
+      );
+      const mw = createCollectiveMemoryMiddleware(createConfig({ modelCall }));
+
+      await mw.onSessionStart?.(createSessionCtx());
+      const next = mock(async () => ({ output: "out" }) satisfies ToolResponse);
+      await mw.wrapToolCall?.(
+        createTurnCtx(),
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
+        next,
+      );
+
+      await mw.onSessionEnd?.(createSessionCtx());
+      // A second onSessionEnd should be a no-op since the buffer was cleared
+      modelCall.mockClear();
+      await mw.onSessionEnd?.(createSessionCtx());
+      expect(modelCall).not.toHaveBeenCalled();
     });
 
     test("resets session outputs after onSessionEnd", async () => {

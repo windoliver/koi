@@ -112,22 +112,39 @@ export function createCollectiveMemoryMiddleware(
     return fresh;
   }
 
-  /** Build the tenant-scoped resolve context from a session, dropping undefined fields. */
+  /**
+   * Build the tenant-scoped resolve context from a session, dropping undefined fields.
+   *
+   * SessionContext exposes userId/channelId/conversationId as top-level optional
+   * fields in @koi/core L0, but some runtime adapters carry tenant identity
+   * inside session.metadata instead. Read both locations so the partition keys
+   * are populated regardless of which surface the runtime uses.
+   */
   function resolveCtxFor(session: {
     readonly agentId: string;
     readonly userId?: string;
     readonly channelId?: string;
     readonly conversationId?: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
   }): { readonly agentName: string } & Partial<{
     readonly userId: string;
     readonly channelId: string;
     readonly conversationId: string;
   }> {
+    const meta = session.metadata;
+    const fromMeta = (key: string): string | undefined => {
+      if (meta === undefined) return undefined;
+      const v = meta[key];
+      return typeof v === "string" && v.length > 0 ? v : undefined;
+    };
+    const userId = session.userId ?? fromMeta("userId");
+    const channelId = session.channelId ?? fromMeta("channelId");
+    const conversationId = session.conversationId ?? fromMeta("conversationId");
     return {
       agentName: session.agentId,
-      ...(session.userId !== undefined ? { userId: session.userId } : {}),
-      ...(session.channelId !== undefined ? { channelId: session.channelId } : {}),
-      ...(session.conversationId !== undefined ? { conversationId: session.conversationId } : {}),
+      ...(userId !== undefined ? { userId } : {}),
+      ...(channelId !== undefined ? { channelId } : {}),
+      ...(conversationId !== undefined ? { conversationId } : {}),
     };
   }
 
@@ -151,22 +168,26 @@ export function createCollectiveMemoryMiddleware(
 
     async onSessionEnd(ctx): Promise<void> {
       const state = sessions.get(ctx.sessionId);
-      sessions.delete(ctx.sessionId);
 
-      // Cross-spawn LLM extraction is gated by persistSpawnOutputs: the buffered
-      // outputs come from spawn-child tool results and would otherwise be
-      // attributed to the parent's brick.
+      // Fast path: nothing to extract. Safe to drop session state immediately.
       if (
         !persistSpawnOutputs ||
         config.modelCall === undefined ||
         state === undefined ||
         state.outputs.length === 0
       ) {
+        sessions.delete(ctx.sessionId);
         return;
       }
 
       const outputs = state.outputs;
 
+      // Keep the session state alive until extraction and persistence complete.
+      // If any step fails, do NOT delete — the buffered outputs remain available
+      // to a subsequent retry (e.g. a follow-up onSessionEnd dispatch from the
+      // runtime, or operator-driven recovery). The session state is a small
+      // bounded buffer (MAX_SESSION_OUTPUTS); leaking it on a hard failure is
+      // preferable to silently losing learnings.
       try {
         const prompt = createExtractionPrompt(outputs);
         const response = await config.modelCall({
@@ -184,14 +205,22 @@ export function createCollectiveMemoryMiddleware(
         const candidates = parseExtractionResponse(response.content).filter((c) =>
           acceptLearning(c.content),
         );
-        if (candidates.length === 0) return;
 
-        const rawId = config.resolveBrickId(resolveCtxFor(ctx));
-        if (rawId === undefined) return;
+        if (candidates.length > 0) {
+          const rawId = config.resolveBrickId(resolveCtxFor(ctx));
+          if (rawId !== undefined) {
+            await persistLearnings(brickId(rawId), candidates, ctx.agentId, ctx.runId);
+          }
+        }
 
-        await persistLearnings(brickId(rawId), candidates, ctx.agentId, ctx.runId);
+        // Successful extraction (including a legitimate empty-candidates result):
+        // safe to clear the session buffer.
+        sessions.delete(ctx.sessionId);
       } catch (_e: unknown) {
-        // Fire-and-forget: don't fail session cleanup on extraction error
+        // Extraction or persistence failed. Leave the session state in place
+        // so a later retry can re-attempt. The runtime may invoke onSessionEnd
+        // again, or operators can inspect the buffered outputs for diagnostics.
+        // Do NOT swallow silently without preserving the buffer.
       }
     },
 
