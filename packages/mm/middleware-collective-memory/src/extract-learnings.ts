@@ -26,7 +26,7 @@ const MAX_ENTRY_LENGTH = 500;
 const INJECTION_VERB_RE =
   /^\s*(?:ignore|bypass|override|disable|disregard|suppress|escalate|leak|exfiltrate|pretend|forget|reveal|grant|allow\s+access|delete\s+(?:the|all|every)|execute\s+(?:the|this|a))\b/i;
 
-function isInstruction(content: string): boolean {
+export function isInstruction(content: string): boolean {
   return INJECTION_VERB_RE.test(content);
 }
 

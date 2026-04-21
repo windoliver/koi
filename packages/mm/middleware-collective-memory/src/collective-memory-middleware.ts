@@ -15,7 +15,7 @@ import { createAllSecretPatterns, createRedactor } from "@koi/redaction";
 import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 import { deduplicateEntries, selectEntriesWithinBudget } from "@koi/validation";
 import { compactCollectiveMemory, shouldCompact } from "./compact.js";
-import { createDefaultExtractor } from "./extract-learnings.js";
+import { createDefaultExtractor, isInstruction } from "./extract-learnings.js";
 import { createExtractionPrompt, parseExtractionResponse } from "./extract-llm.js";
 import { formatCollectiveMemory } from "./inject.js";
 import type { CollectiveMemoryMiddlewareConfig } from "./types.js";
@@ -134,7 +134,9 @@ export function createCollectiveMemoryMiddleware(
           maxTokens: config.extractionMaxTokens ?? 1024,
         });
 
-        const candidates = parseExtractionResponse(response.content);
+        const candidates = parseExtractionResponse(response.content).filter(
+          (c) => !isInstruction(c.content),
+        );
         if (candidates.length === 0) return;
 
         const rawId = config.resolveBrickId(ctx.agentId);
@@ -270,7 +272,15 @@ export function createCollectiveMemoryMiddleware(
     }));
 
     // Retry loop: re-read on CAS conflict so concurrent writers converge without data loss.
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // Uses exponential backoff with jitter to reduce thundering-herd under fan-out spawns.
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        // let justified: mutable delay for backoff jitter
+        const delayMs = Math.min(50 * 2 ** (attempt - 1), 400) + Math.random() * 20;
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      }
+
       const loadResult = await config.forgeStore.load(brick);
       if (!loadResult.ok) return;
 
