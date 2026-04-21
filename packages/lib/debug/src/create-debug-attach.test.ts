@@ -1209,6 +1209,44 @@ describe("detach-during-pause event ordering", () => {
   });
 });
 
+describe("step() pauses on failure paths (not just turn_end)", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("step from tool_call_start pauses on tool_call_error when tool throws", async () => {
+    const agent = makeAgent("step-error");
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    session.breakOn({ kind: "event_kind", eventKind: "tool_call_start" });
+
+    const fakeRequest: import("@koi/core").ToolRequest = { toolId: "bad_tool", input: {} };
+    const fakeNext = async (
+      _r: import("@koi/core").ToolRequest,
+    ): Promise<import("@koi/core").ToolResponse> => {
+      throw new Error("boom");
+    };
+
+    const callPromise = middleware.wrapToolCall?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      fakeRequest,
+      fakeNext,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.state().kind).toBe("paused");
+
+    // Step — arms turn_end + custom BPs. Tool will throw → custom event fires → re-pause
+    session.step();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.state().kind).toBe("paused");
+
+    // Resume to let the throw propagate
+    session.resume();
+    await expect(callPromise).rejects.toThrow("boom");
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", () => {
     const { createDebugMiddleware } =

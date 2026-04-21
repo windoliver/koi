@@ -178,14 +178,21 @@ export function createDebugSessionInternal(
           pausedEvent.kind !== "turn_end";
 
         if (isIntraTurn) {
-          // Paused on an intra-turn event — step to end of current turn so remaining
-          // tool/model events in this turn still execute but control returns before
-          // the next turn begins (prevents skipping into next-turn side-effects)
-          const bpResult = controller.addBreakpoint(
+          // Paused on an intra-turn event — arm two one-shot BPs so step()
+          // pauses deterministically on BOTH normal turn-end AND the error
+          // custom events (tool_call_error, model_call_error). If the turn
+          // fails before turn_end fires, the custom event still catches the
+          // failure path instead of silently losing the debugger.
+          const bpEnd = controller.addBreakpoint(
             { kind: "event_kind", eventKind: "turn_end" },
             { once: true, label: "step-event" },
           );
-          if (!bpResult.ok) return bpResult;
+          if (!bpEnd.ok) return bpEnd;
+          const bpErr = controller.addBreakpoint(
+            { kind: "event_kind", eventKind: "custom" },
+            { once: true, label: "step-event" },
+          );
+          if (!bpErr.ok) return bpErr;
         } else {
           const targetTurn = controller.turnIndex() + count;
           const bpResult = controller.addBreakpoint(
