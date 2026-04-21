@@ -55,6 +55,12 @@ Options:
                                      Hard timeout: calls process.exit on expiry, so in-process
                                      embedders should invoke via subprocess if they need to
                                      survive the deadline.
+      --max-spend <usd>            Cumulative spend cap before governance fires (USD)
+      --max-turns <n>              Turn cap per run before governance fires
+      --max-spawn-depth <n>        Sub-agent spawn-depth cap before governance fires
+      --policy-file <path>         YAML/JSON file with governance rules (validated at boot)
+      --alert-threshold <pct>      Per-variable alert threshold in (0, 1]; repeatable (default 0.8, 0.95)
+      --no-governance              Disable governance wiring (mutually exclusive with gov flags)
   -h, --help                       Show this help
 `;
 
@@ -87,6 +93,12 @@ Options:
       --verifier-timeout <ms>      Per-iteration verifier timeout (default 120000)
       --allow-side-effects         Required with --until-pass
       --verifier-inherit-env       Forward parent env to verifier subprocess
+      --max-spend <usd>            Cumulative spend cap before governance fires (USD)
+      --max-turns <n>              Turn cap per run before governance fires
+      --max-spawn-depth <n>        Sub-agent spawn-depth cap before governance fires
+      --policy-file <path>         YAML/JSON file with governance rules (validated at boot)
+      --alert-threshold <pct>      Per-variable alert threshold in (0, 1]; repeatable (default 0.8, 0.95)
+      --no-governance              Disable governance wiring (mutually exclusive with gov flags)
   -h, --help                       Show this help
 `;
 

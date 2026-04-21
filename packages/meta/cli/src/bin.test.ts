@@ -509,6 +509,83 @@ describe("bin.ts", () => {
     });
   });
 
+  describe("start command — governance flags (gov-10)", () => {
+    const NO_KEY = { OPENROUTER_API_KEY: "" } as const;
+
+    test("--max-spend parses as known flag", async () => {
+      const r = await runBin(["start", "--max-spend", "1.50"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--max-turns parses as known flag", async () => {
+      const r = await runBin(["start", "--max-turns", "10"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--max-spawn-depth parses as known flag", async () => {
+      const r = await runBin(["start", "--max-spawn-depth", "3"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--policy-file parses as known flag", async () => {
+      const r = await runBin(["start", "--policy-file", "/tmp/does-not-exist.yaml"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--alert-threshold parses as known flag (repeatable)", async () => {
+      const r = await runBin(
+        ["start", "--alert-threshold", "0.7", "--alert-threshold", "0.9"],
+        NO_KEY,
+      );
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--no-governance parses as known flag", async () => {
+      const r = await runBin(["start", "--no-governance"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--no-governance + --max-spend exits 1 with conflict message", async () => {
+      const r = await runBin(["start", "--no-governance", "--max-spend", "1"], NO_KEY);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--no-governance cannot be combined with --max-spend");
+    });
+
+    test("--max-turns with non-integer exits 1", async () => {
+      const r = await runBin(["start", "--max-turns", "abc"], NO_KEY);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--max-turns");
+    });
+
+    test("--alert-threshold out of (0, 1] exits 1", async () => {
+      const r = await runBin(["start", "--alert-threshold", "1.5"], NO_KEY);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--alert-threshold");
+    });
+
+    test("start --help lists every governance flag", async () => {
+      const r = await runBin(["start", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("--max-spend");
+      expect(r.stdout).toContain("--max-turns");
+      expect(r.stdout).toContain("--max-spawn-depth");
+      expect(r.stdout).toContain("--policy-file");
+      expect(r.stdout).toContain("--alert-threshold");
+      expect(r.stdout).toContain("--no-governance");
+    });
+
+    test("tui --help lists every governance flag", async () => {
+      const r = await runBin(["tui", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("--max-spend");
+      expect(r.stdout).toContain("--max-turns");
+      expect(r.stdout).toContain("--max-spawn-depth");
+      expect(r.stdout).toContain("--policy-file");
+      expect(r.stdout).toContain("--alert-threshold");
+      expect(r.stdout).toContain("--no-governance");
+    });
+  });
+
   describe("SIGUSR1 early handler (#1906)", () => {
     // Windows does not deliver SIGUSR1. Skip the integration there —
     // the platform gate is covered by the unit test in tui-sigusr1.test.ts.

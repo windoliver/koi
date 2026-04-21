@@ -63,6 +63,7 @@ import { createGovernanceController, createKoi } from "@koi/engine";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
+import type { PatternRule } from "@koi/governance-defaults";
 import { createPatternBackend } from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
@@ -126,6 +127,14 @@ export { MAX_TRAJECTORY_STEPS };
  * and keeps runaway agent loops bounded on the same order as before.
  */
 const DEFAULT_MAX_TURNS = 25;
+
+/**
+ * Default spawn fan-out used when --max-spawn-depth is set without a
+ * companion fan-out override. Matches DEFAULT_GOVERNANCE_CONFIG.spawn.maxFanOut
+ * in @koi/engine-reconcile so the runtime-factory does not silently widen
+ * the engine's default when the operator only tightens depth.
+ */
+const DEFAULT_MAX_FAN_OUT = 5;
 
 /** Maximum messages retained in the transcript context window.
  * Matches the default for `koi start --context-window` (100).
@@ -287,11 +296,12 @@ function resolveCostConfig(
 // ---------------------------------------------------------------------------
 
 /**
- * Default-allow pattern backend with no rules. Until the manifest YAML rules
- * loader (#1877) lands, we have no real rules to evaluate, so the backend
- * accepts every call and `describeRules()` returns []. The runtime
- * synthesizes a `default-allow` descriptor below so the /governance "Active
- * rules" section renders something the operator can read.
+ * Default-allow pattern backend with no rules. Used when the caller did not
+ * pass `--policy-file` / `manifest.governance.policyFile` (gov-10). With no
+ * rules to evaluate, the backend accepts every call and `describeRules()`
+ * returns []. The runtime synthesizes a `default-allow` descriptor below so
+ * the /governance "Active rules" section renders something the operator can
+ * read.
  */
 function createDefaultPatternBackend(): GovernanceBackend {
   return createPatternBackend({ rules: [], defaultDeny: false });
@@ -300,7 +310,8 @@ function createDefaultPatternBackend(): GovernanceBackend {
 /** Synthetic descriptor used when the backend reports no rules. */
 const SYNTHETIC_DEFAULT_ALLOW: RuleDescriptor = {
   id: "default-allow",
-  description: "no rules configured; all calls allowed (manifest YAML loader #1877 pending)",
+  description:
+    "no rules configured; all calls allowed (pass --policy-file or set manifest.governance.policyFile)",
   effect: "allow",
   pattern: "*",
 };
@@ -434,6 +445,35 @@ export interface KoiRuntimeConfig {
    * the budget. Empty / undefined means no router is wired.
    */
   readonly fallbackModelNames?: readonly string[] | undefined;
+  /**
+   * Maximum number of completed turns before the governance controller fires
+   * a violation. Wired from `--max-turns`. Overrides `DEFAULT_MAX_TURNS`.
+   */
+  readonly maxTurns?: number | undefined;
+  /**
+   * Maximum depth of spawned sub-agents before the governance controller
+   * fires a violation. Wired from `--max-spawn-depth`.
+   */
+  readonly maxSpawnDepth?: number | undefined;
+  /**
+   * Per-variable alert thresholds for the L2 governance middleware. Each
+   * entry must be in (0, 1]. Overrides the default `[0.8, 0.95]` when set.
+   * Wired from the repeatable `--alert-threshold` flag.
+   */
+  readonly governanceAlertThresholds?: readonly number[] | undefined;
+  /**
+   * Pattern rules for the L2 governance backend's `backend.evaluator`. Wired
+   * from `--policy-file`. Undefined means "no rules configured" and the
+   * synthetic `default-allow` descriptor shows in `/governance`.
+   */
+  readonly governanceRules?: readonly PatternRule[] | undefined;
+  /**
+   * When true, skip the governance wiring entirely — no controller, backend,
+   * middleware, or bridge is installed. Wired from `--no-governance`. Hosts
+   * using a custom governance stack (or running without one) pass this to
+   * avoid the default observer-mode middleware.
+   */
+  readonly governanceDisabled?: boolean | undefined;
   /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
@@ -2141,13 +2181,29 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     //   3. The bridge (via runtime.agent.component(GOVERNANCE) post-createKoi)
     // We contribute it via a GLOBAL_FORGED-priority ComponentProvider so it
     // wins over the BUNDLED-priority provider createKoi installs automatically.
+    //
+    // `--no-governance` short-circuits the whole block: no shared controller,
+    // no backend, no middleware, no extra provider. createKoi's bundled
+    // governance provider still fires with engine defaults (so iteration
+    // caps continue to bound runaway loops), but the host gets none of the
+    // observer/bridge surface. Use this for CI runners that have their own
+    // audit stack and do not want the default alerting path.
+    const governanceEnabled = config.governanceDisabled !== true;
     const resolvedDurationForGov = resolveMaxDurationMs(config.defaultMaxDurationMs);
     const sharedGovernanceConfig: Partial<GovernanceConfig> = {
       iteration: {
-        maxTurns: DEFAULT_MAX_TURNS,
+        // --max-turns narrows the per-run turn budget. Default stays at
+        // DEFAULT_MAX_TURNS so unset behavior is unchanged.
+        maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
         maxDurationMs: resolvedDurationForGov,
         maxTokens: 1_000_000,
       },
+      // --max-spawn-depth overrides the engine's default spawn.maxDepth.
+      // Left unset when undefined so `createDefaultGovernanceConfig` can
+      // fill in the engine's built-in default (3).
+      ...(config.maxSpawnDepth !== undefined
+        ? { spawn: { maxDepth: config.maxSpawnDepth, maxFanOut: DEFAULT_MAX_FAN_OUT } }
+        : {}),
       ...(config.maxSpendUsd !== undefined && config.maxSpendUsd > 0
         ? {
             cost: resolveCostConfig(config.maxSpendUsd, [
@@ -2157,8 +2213,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         : {}),
     };
-    const sharedGovernanceController = createGovernanceController(sharedGovernanceConfig);
-    const sharedGovernanceProvider = createSharedGovernanceProvider(sharedGovernanceController);
+    const sharedGovernanceController = governanceEnabled
+      ? createGovernanceController(sharedGovernanceConfig)
+      : undefined;
+    const sharedGovernanceProvider =
+      sharedGovernanceController !== undefined
+        ? createSharedGovernanceProvider(sharedGovernanceController)
+        : undefined;
 
     // L2 governance middleware — observer mode only. Setpoint accounting
     // (turn / token_usage / tool outcomes) is owned by the engine extension
@@ -2179,14 +2240,34 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // semantics) but observer mode disables it to avoid the double-count.
     // Tracked separately — fixing requires moving the engine extension's
     // turn record to `onAfterTurn`, outside this PR's surface.
-    const governanceBackend = createDefaultPatternBackend();
-    const governanceRules = await resolveGovernanceRules(governanceBackend);
-    const governanceMw = createGovernanceMiddleware({
-      backend: governanceBackend,
-      controller: sharedGovernanceController,
-      cost: createPricingCostCalculator(),
-      observerOnly: true,
-    });
+    // --policy-file rules feed the backend's policy gate, which still runs
+    // in observer mode (observerOnly silences record() only, not
+    // evaluator.evaluate()). Absent --policy-file, fall back to the default-
+    // allow backend so /governance renders the synthetic descriptor.
+    const governanceBackend = governanceEnabled
+      ? config.governanceRules !== undefined && config.governanceRules.length > 0
+        ? createPatternBackend({ rules: config.governanceRules, defaultDeny: false })
+        : createDefaultPatternBackend()
+      : undefined;
+    const governanceRules: readonly RuleDescriptor[] =
+      governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
+    const governanceMw =
+      governanceEnabled &&
+      governanceBackend !== undefined &&
+      sharedGovernanceController !== undefined
+        ? createGovernanceMiddleware({
+            backend: governanceBackend,
+            controller: sharedGovernanceController,
+            cost: createPricingCostCalculator(),
+            observerOnly: true,
+            // --alert-threshold overrides the default [0.8, 0.95]. Passed
+            // unconditionally when set — governance-middleware validates the
+            // list and falls back to its default when undefined.
+            ...(config.governanceAlertThresholds !== undefined
+              ? { alertThresholds: config.governanceAlertThresholds }
+              : {}),
+          })
+        : undefined;
 
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
@@ -2217,7 +2298,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // middleware flows through the separate `manifestMiddleware`
       // slot and is composed strictly INSIDE the security core
       // layers, regardless of array position here.
-      presetExtras: [...stackContribution.middleware, ...auditPresetExtras, governanceMw],
+      presetExtras: [
+        ...stackContribution.middleware,
+        ...auditPresetExtras,
+        ...(governanceMw !== undefined ? [governanceMw] : []),
+      ],
       manifestMiddleware: zoneBMiddleware,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
@@ -2311,8 +2396,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       providers: [
         // sharedGovernanceProvider must come first (GLOBAL_FORGED priority = 50)
         // so it wins over createKoi's bundled governance provider (priority = 100).
-        // Lower number wins per ECS priority resolution.
-        sharedGovernanceProvider,
+        // Lower number wins per ECS priority resolution. Omitted when
+        // governance is disabled — createKoi's bundled default provider then
+        // supplies the controller used by engine-reconcile's extension.
+        ...(sharedGovernanceProvider !== undefined ? [sharedGovernanceProvider] : []),
         ...coreProviders,
         ...stackContribution.providers,
         ...(config.extraProviders ?? []),

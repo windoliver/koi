@@ -251,6 +251,35 @@ export interface ManifestConfig {
    * before any adapter/subprocess is created.
    */
   readonly filesystem: FileSystemConfig | undefined;
+  /**
+   * Governance defaults (gov-10). Each field supplies a default for the
+   * matching CLI flag (`--max-spend`, `--max-turns`, `--max-spawn-depth`,
+   * `--policy-file`, `--alert-threshold`). CLI flags, when passed, win
+   * over manifest values. `--no-governance` ignores this section entirely.
+   *
+   *   governance:
+   *     maxSpend: 2.50
+   *     maxTurns: 50
+   *     maxSpawnDepth: 3
+   *     policyFile: ./policies/default.yaml
+   *     alertThresholds: [0.7, 0.9]
+   */
+  readonly governance: ManifestGovernanceConfig | undefined;
+}
+
+/**
+ * Governance defaults lifted from the manifest. Shapes mirror the CLI
+ * `--max-*` / `--alert-threshold` flags so the merge step is a direct
+ * field-by-field override. `policyFile` is anchored to the manifest's
+ * directory so relative paths are not silently rebound to the CLI cwd
+ * when a shared manifest is checked into a repo.
+ */
+export interface ManifestGovernanceConfig {
+  readonly maxSpend: number | undefined;
+  readonly maxTurns: number | undefined;
+  readonly maxSpawnDepth: number | undefined;
+  readonly policyFile: string | undefined;
+  readonly alertThresholds: readonly number[] | undefined;
 }
 
 /**
@@ -374,6 +403,11 @@ export async function loadManifestConfig(
     return middlewareResult;
   }
 
+  const governanceResult = parseManifestGovernance(raw.governance, path);
+  if (!governanceResult.ok) {
+    return governanceResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -473,7 +507,109 @@ export async function loadManifestConfig(
       backgroundSubprocesses,
       filesystem,
       middleware: middlewareResult.value,
+      governance: governanceResult.value,
     },
+  };
+}
+
+/**
+ * Parse the manifest `governance:` section. Accepts any subset of:
+ *   maxSpend (non-negative float)
+ *   maxTurns (positive int)
+ *   maxSpawnDepth (positive int)
+ *   policyFile (non-empty string — anchored to manifest dir if relative)
+ *   alertThresholds (array of floats in (0, 1])
+ *
+ * Returns `{ ok: true, value: undefined }` when the section is absent so
+ * shared manifests without governance defaults stay unchanged.
+ */
+function parseManifestGovernance(
+  raw: unknown,
+  manifestPath: string,
+): ParseResult<ManifestGovernanceConfig | undefined> {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        "manifest.governance must be an object, e.g. governance: { maxSpend: 2.50, maxTurns: 50 }",
+    };
+  }
+  const rec = raw as Record<string, unknown>;
+
+  let maxSpend: number | undefined;
+  if (rec.maxSpend !== undefined) {
+    if (typeof rec.maxSpend !== "number" || !Number.isFinite(rec.maxSpend) || rec.maxSpend < 0) {
+      return {
+        ok: false,
+        error: "manifest.governance.maxSpend must be a non-negative finite number (USD)",
+      };
+    }
+    maxSpend = rec.maxSpend;
+  }
+
+  let maxTurns: number | undefined;
+  if (rec.maxTurns !== undefined) {
+    if (!Number.isInteger(rec.maxTurns) || (rec.maxTurns as number) < 1) {
+      return {
+        ok: false,
+        error: "manifest.governance.maxTurns must be a positive integer",
+      };
+    }
+    maxTurns = rec.maxTurns as number;
+  }
+
+  let maxSpawnDepth: number | undefined;
+  if (rec.maxSpawnDepth !== undefined) {
+    if (!Number.isInteger(rec.maxSpawnDepth) || (rec.maxSpawnDepth as number) < 1) {
+      return {
+        ok: false,
+        error: "manifest.governance.maxSpawnDepth must be a positive integer",
+      };
+    }
+    maxSpawnDepth = rec.maxSpawnDepth as number;
+  }
+
+  let policyFile: string | undefined;
+  if (rec.policyFile !== undefined) {
+    if (typeof rec.policyFile !== "string" || rec.policyFile.length === 0) {
+      return {
+        ok: false,
+        error: "manifest.governance.policyFile must be a non-empty string",
+      };
+    }
+    // Anchor relative paths to the manifest directory so shared manifests
+    // keep working when the CLI is invoked from a different cwd — mirrors
+    // the filesystem/mountUri anchoring above.
+    policyFile = isAbsolute(rec.policyFile)
+      ? rec.policyFile
+      : resolvePath(dirname(resolvePath(manifestPath)), rec.policyFile);
+  }
+
+  let alertThresholds: readonly number[] | undefined;
+  if (rec.alertThresholds !== undefined) {
+    if (!Array.isArray(rec.alertThresholds) || rec.alertThresholds.length === 0) {
+      return {
+        ok: false,
+        error: "manifest.governance.alertThresholds must be a non-empty array of numbers in (0, 1]",
+      };
+    }
+    for (const t of rec.alertThresholds) {
+      if (typeof t !== "number" || !Number.isFinite(t) || t <= 0 || t > 1) {
+        return {
+          ok: false,
+          error: `manifest.governance.alertThresholds entries must each be a number in (0, 1], got ${JSON.stringify(t)}`,
+        };
+      }
+    }
+    alertThresholds = rec.alertThresholds as readonly number[];
+  }
+
+  return {
+    ok: true,
+    value: { maxSpend, maxTurns, maxSpawnDepth, policyFile, alertThresholds },
   };
 }
 
