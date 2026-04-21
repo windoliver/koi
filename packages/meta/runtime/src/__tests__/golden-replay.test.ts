@@ -11693,3 +11693,80 @@ describe("Golden: @koi/artifacts-s3 — createArtifactStore override", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/violation-store-sqlite — record + getViolations roundtrip
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/violation-store-sqlite", () => {
+  test("record + flush + getViolations roundtrip", async () => {
+    const { tmpdir } = await import("node:os");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { createSqliteViolationStore } = await import("@koi/violation-store-sqlite");
+    const { agentId, sessionId } = await import("@koi/core");
+
+    const dir = mkdtempSync(join(tmpdir(), "gq-vstore-"));
+    const dbPath = join(dir, "v.db");
+    try {
+      const store = createSqliteViolationStore({ dbPath });
+      store.record(
+        { rule: "no-external-api", severity: "warning", message: "denied" },
+        agentId("agent-gold"),
+        "sess-gold",
+        1_000,
+      );
+      store.flush();
+      const page = await store.getViolations({
+        sessionId: sessionId("sess-gold"),
+        limit: 10,
+      });
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]?.rule).toBe("no-external-api");
+      expect(page.items[0]?.severity).toBe("warning");
+      expect(page.items[0]?.message).toBe("denied");
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("multiple records with different agents are queryable by agentId", async () => {
+    const { tmpdir } = await import("node:os");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { createSqliteViolationStore } = await import("@koi/violation-store-sqlite");
+    const { agentId } = await import("@koi/core");
+
+    const dir = mkdtempSync(join(tmpdir(), "gq-vstore-multi-"));
+    const dbPath = join(dir, "v.db");
+    try {
+      const store = createSqliteViolationStore({ dbPath });
+      store.record(
+        { rule: "rule-a", severity: "error", message: "agent-1 violation" },
+        agentId("agent-1"),
+        undefined,
+        2_000,
+      );
+      store.record(
+        { rule: "rule-b", severity: "info", message: "agent-2 violation" },
+        agentId("agent-2"),
+        undefined,
+        3_000,
+      );
+      store.flush();
+
+      const page1 = await store.getViolations({ agentId: agentId("agent-1"), limit: 10 });
+      expect(page1.items).toHaveLength(1);
+      expect(page1.items[0]?.rule).toBe("rule-a");
+
+      const page2 = await store.getViolations({ agentId: agentId("agent-2"), limit: 10 });
+      expect(page2.items).toHaveLength(1);
+      expect(page2.items[0]?.rule).toBe("rule-b");
+
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
