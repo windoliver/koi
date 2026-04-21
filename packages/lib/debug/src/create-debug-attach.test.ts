@@ -550,3 +550,78 @@ describe("createDebugAttach — bufferSize validation", () => {
     expect(errEvt).toBeDefined();
   });
 });
+
+describe("turn breakpoint fires once per turn", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("turn breakpoint does not double-fire on turn_end", () => {
+    const { matchesBreakpoint } =
+      require("./breakpoint-matcher.js") as typeof import("./breakpoint-matcher.js");
+    const turnStartCtx = { event: { kind: "turn_start" as const, turnIndex: 0 }, turnIndex: 0 };
+    const turnEndCtx = { event: { kind: "turn_end" as const, turnIndex: 0 }, turnIndex: 0 };
+    const predicate = { kind: "turn" as const };
+    expect(matchesBreakpoint(predicate, turnStartCtx)).toBe(true);
+    expect(matchesBreakpoint(predicate, turnEndCtx)).toBe(false);
+  });
+});
+
+describe("step() count validation", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("step with count 0 returns VALIDATION error", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+    const stepped = session.step({ count: 0 });
+    expect(stepped.ok).toBe(false);
+    if (stepped.ok) return;
+    expect(stepped.error.code).toBe("VALIDATION");
+  });
+
+  test("step with negative count returns VALIDATION error", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+    const stepped = session.step({ count: -3 });
+    expect(stepped.ok).toBe(false);
+    if (stepped.ok) return;
+    expect(stepped.error.code).toBe("VALIDATION");
+  });
+});
+
+describe("observer.detach() revokes read access", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("observer methods are revoked after observer.detach() even when session still active", () => {
+    const agent = makeAgent();
+    (agent.components() as Map<string, unknown>).set("test:data", [1, 2, 3]);
+
+    const attachResult = createDebugAttach({ agent });
+    if (!attachResult.ok) return;
+    const { session } = attachResult.value;
+
+    const observeResult = createDebugObserve(agent.pid.id);
+    if (!observeResult.ok) return;
+    const observer = observeResult.value;
+
+    // Detach only the observer (session still active)
+    observer.detach();
+    expect(() => observer.inspect()).toThrow("revoked");
+    expect(observer.events()).toHaveLength(0);
+    const snap = observer.inspectComponent(
+      "test:data" as import("@koi/core").SubsystemToken<unknown>,
+    );
+    expect(snap.ok).toBe(false);
+    if (snap.ok) return;
+    expect(snap.error.code).toBe("VALIDATION");
+
+    // Session itself still works
+    expect(session.events()).toBeDefined();
+    session.detach();
+  });
+});

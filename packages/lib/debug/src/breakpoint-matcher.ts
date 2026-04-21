@@ -9,7 +9,7 @@ export interface MatchContext {
 export function matchesBreakpoint(predicate: BreakpointPredicate, ctx: MatchContext): boolean {
   switch (predicate.kind) {
     case "turn": {
-      if (ctx.event.kind !== "turn_start" && ctx.event.kind !== "turn_end") return false;
+      if (ctx.event.kind !== "turn_start") return false;
       if (predicate.turnIndex !== undefined) return ctx.turnIndex === predicate.turnIndex;
       if (predicate.every !== undefined) {
         // every <= 0 is invalid — never matches

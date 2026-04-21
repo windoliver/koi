@@ -34,9 +34,9 @@ describe("matchesBreakpoint", () => {
       );
     });
 
-    test("matches turn_end", () => {
+    test("does not match turn_end (fires only at turn_start)", () => {
       expect(matchesBreakpoint({ kind: "turn" }, { event: turnEndEvent(0), turnIndex: 0 })).toBe(
-        true,
+        false,
       );
     });
 

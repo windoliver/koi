@@ -129,6 +129,17 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       const count = options?.count ?? 1;
       const until = options?.until;
 
+      if (until === undefined && (!Number.isInteger(count) || count <= 0)) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `step count must be a positive integer, got ${String(count)}`,
+            retryable: false,
+          },
+        };
+      }
+
       if (until !== undefined) {
         const bpResult = controller.addBreakpoint(until, { once: true, label: "step-until" });
         if (!bpResult.ok) return bpResult;
