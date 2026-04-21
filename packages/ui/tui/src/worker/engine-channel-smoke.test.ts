@@ -39,8 +39,9 @@ test("real worker: receives 3 text deltas and engine_done via channel", async ()
   // Kick off the stub using WorkerEngineInput (clone-safe, no callHandlers/signal)
   channel.send({ kind: "stream_start", input: { kind: "text", text: "ping" } });
 
-  // Allow all messages + microtasks + batcher flush to settle
-  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  // Allow all messages + microtasks + batcher flush to settle.
+  // 500ms budget for slow CI runners (100ms was insufficient under load).
+  await new Promise<void>((resolve) => setTimeout(resolve, 500));
 
   const state = store.getState();
   // After a healthy turn the channel is still connected (#1753):
