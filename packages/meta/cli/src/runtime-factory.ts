@@ -63,7 +63,11 @@ import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
 import type { PatternRule } from "@koi/governance-defaults";
-import { createPatternBackend } from "@koi/governance-defaults";
+import {
+  createAuditSinkComplianceRecorder,
+  createPatternBackend,
+  fanOutComplianceRecorder,
+} from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -2061,6 +2065,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
       | undefined;
     const auditPresetExtras: KoiMiddleware[] = [];
+    // Compliance recorders accumulated from each active audit sink.
+    // Used later to populate governanceBackend.compliance.
+    const complianceRecorders: import("@koi/core").ComplianceRecorder[] = [];
     if (config.auditNdjsonPath !== undefined) {
       // Collision guard: refuse to start if the legacy host-level
       // audit path (env-driven KOI_AUDIT_NDJSON / config.auditNdjsonPath)
@@ -2094,6 +2101,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(auditSink, {
+          sessionId: config.session?.sessionId ?? "no-session",
+        }),
+      );
       auditPresetExtras.push(auditMw);
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
@@ -2149,6 +2161,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(sqliteSink, {
+          sessionId: config.session?.sessionId ?? "no-session",
+        }),
+      );
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
       auditPresetExtras.push(sqliteAuditMw);
       auditSqliteMwForShutdown = {
@@ -2248,11 +2265,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // in observer mode (observerOnly silences record() only, not
     // evaluator.evaluate()). Absent --policy-file, fall back to the default-
     // allow backend so /governance renders the synthetic descriptor.
-    const governanceBackend = governanceEnabled
+    const rawGovernanceBackend = governanceEnabled
       ? config.governanceRules !== undefined && config.governanceRules.length > 0
         ? createPatternBackend({ rules: config.governanceRules, defaultDeny: false })
         : createDefaultPatternBackend()
       : undefined;
+
+    const complianceRecorder =
+      complianceRecorders.length > 0 ? fanOutComplianceRecorder(complianceRecorders) : undefined;
+
+    const governanceBackend =
+      rawGovernanceBackend !== undefined && complianceRecorder !== undefined
+        ? { ...rawGovernanceBackend, compliance: complianceRecorder }
+        : rawGovernanceBackend;
     const governanceRules: readonly RuleDescriptor[] =
       governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
     const governanceMw =
