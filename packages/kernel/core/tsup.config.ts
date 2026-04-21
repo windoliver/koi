@@ -66,7 +66,9 @@ export default defineConfig({
       composite: false,
     },
   },
-  clean: true,
+  // Pre-push runs build and typecheck in parallel; both can trigger core build.
+  // Disabling clean avoids dist unlink races between concurrent tsup processes.
+  clean: false,
   treeshake: true,
   target: "node22",
 });
