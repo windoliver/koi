@@ -156,10 +156,12 @@ export async function runInstallCommand(
   options: InstallCommandOptions = {},
   deps: InstallCommandDependencies = {},
 ): Promise<InstallCommandResult> {
-  if (options.dev === false) {
-    throw new Error("Phase 1 only supports the dev extension build. Release install is TODO.");
-  }
-
+  // The dev and release install paths are identical — same dist/ bundle,
+  // same wrapper, same native-messaging manifests. `options.dev` is kept
+  // for forward compatibility (future signed-store install flow may differ),
+  // but we no longer hard-fail on `dev: false`. Both paths go through
+  // bundle verification + asset checks below, so a stale/incomplete build
+  // is caught regardless.
   const homeDir = options.homeDir ?? homedir();
   const packageRoot = options.packageRoot ?? PACKAGE_ROOT;
   const platform = options.platform ?? (process.platform as SupportedPlatform);

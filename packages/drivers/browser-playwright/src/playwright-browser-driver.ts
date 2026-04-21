@@ -297,51 +297,66 @@ async function installPageRebindingGuard(
   if (!blockPrivateAddresses) return null;
   const handler: RouteHandler = async (route) => {
     const req = route.request();
-    // Phase 1 scope: only gate main-frame document navigations. Blocking
-    // arbitrary subresources via Node DNS breaks legitimate live pages on
-    // split-horizon / VPN / mDNS hosts that Chromium can resolve but Node
-    // cannot. Full SSRF enforcement for subresources belongs at the CDP
-    // Fetch layer where Chromium's resolver is the source of truth.
     const isMainFrameNav = req.isNavigationRequest() && req.frame() === page.mainFrame();
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(req.url());
+    } catch {
+      // Malformed URL — default-deny at any scope.
+      await route.abort("accessdenied");
+      return;
+    }
+    const protocol = parsedUrl.protocol;
+    const host = parsedUrl.hostname;
+    const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+    const isIpLiteral =
+      /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+
+    // ----- UNCONDITIONAL (applies to subresources too) ---------------------
+    // The concrete SSRF attack is a public page doing something like
+    // `fetch("http://127.0.0.1:8080/admin")`. Those checks are cheap (no
+    // DNS) and precise, so we apply them to EVERY request type — not only
+    // main-frame navigations. Split-horizon/VPN/mDNS hostnames are NOT
+    // blocked here (no DNS); full hostname enforcement still runs below
+    // for main-frame navigations only.
+
+    // 1. Block literal private IPs on any request type. `fetch` /
+    //    XHR / <img> / <script> / WebSocket to 127.0.0.1 / 10.0.0.0/8 /
+    //    172.16.0.0/12 / 192.168.0.0/16 / 169.254.0.0/16 / IPv6 loopback
+    //    / link-local / IPv4-mapped IPv6 are all denied.
+    if (isIpLiteral && isPrivateIp(bare)) {
+      await route.abort("accessdenied");
+      return;
+    }
+    // 2. Block `localhost` / `*.localhost` on any request type. OS DNS
+    //    rules vary, so name-based enforcement is required.
+    if (bare === "localhost" || bare.endsWith(".localhost")) {
+      await route.abort("accessdenied");
+      return;
+    }
+    // 3. Block ws:// / wss:// to IP literals in the private ranges via
+    //    the same rule above (handled by isIpLiteral + isPrivateIp). For
+    //    other non-HTTP(S) schemes at the subresource level (data:, blob:),
+    //    Chromium/Playwright rarely surface them to route(). Let Chromium
+    //    handle those; we focus on the concrete SSRF vector.
+
+    // ----- MAIN-FRAME-ONLY (hostname DNS + scheme strictness) --------------
     if (!isMainFrameNav) {
       await route.continue();
       return;
     }
-    try {
-      const url = new URL(req.url());
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        // Default-deny non-HTTP(S) schemes on page-driven navigations
-        // (window.location, window.open, etc.) — matches the driver-level
-        // policy in checkNavigationUrlAllowed. `about:` remains allowed
-        // for internal cleanup (e.g. parking after a private-address abort).
-        if (url.protocol === "about:") {
-          await route.continue();
-          return;
-        }
-        await route.abort("accessdenied");
-        return;
-      }
-      const host = url.hostname;
-      const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-      // IP literals (IPv4 dotted + IPv6 / IPv4-mapped IPv6).
-      const isIpLiteral =
-        /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
-      if (isIpLiteral) {
-        if (isPrivateIp(bare)) {
-          await route.abort("accessdenied");
-          return;
-        }
+    if (protocol !== "http:" && protocol !== "https:") {
+      if (protocol === "about:") {
         await route.continue();
         return;
       }
-      // Explicit localhost handling — DNS rules vary by OS.
-      if (bare === "localhost" || bare.endsWith(".localhost")) {
-        await route.abort("accessdenied");
-        return;
-      }
-      // Resolve ALL addresses. Multi-record hostnames with mixed public/private
-      // entries must be denied — Node's single-address lookup is not guaranteed
-      // to match the address Chromium picks.
+      await route.abort("accessdenied");
+      return;
+    }
+    try {
+      // Resolve ALL addresses for main-frame navigations. Multi-record
+      // hostnames with mixed public/private entries must be denied — Node's
+      // single-address lookup isn't guaranteed to match what Chromium picks.
       const addresses = await dnsPromises.lookup(bare, { all: true, verbatim: true });
       for (const { address } of addresses) {
         if (isPrivateIp(address)) {
@@ -350,9 +365,9 @@ async function installPageRebindingGuard(
         }
       }
     } catch {
-      // DNS lookup failure on a main-frame navigation → fail closed. This is
-      // the conservative path for the navigation gate; subresources were
-      // already filtered above.
+      // DNS failure on a main-frame navigation → fail closed. Subresources
+      // already passed through the literal-IP check above; they bypass
+      // hostname resolution to preserve split-horizon/intranet pages.
       await route.abort("accessdenied");
       return;
     }
@@ -740,46 +755,51 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         if (config.blockPrivateAddresses !== false && !borrowedContext) {
           await ctx.route("**", async (route) => {
             const req = route.request();
-            // Phase 1 scope: only gate main-frame document navigations. A
-            // blanket Node-DNS gate on ALL subresources breaks legitimate
-            // pages that rely on split-horizon / VPN / mDNS / hosts-file
-            // names Chromium can resolve but Node cannot (images/scripts/
-            // XHRs would silently fail). Full SSRF enforcement for
-            // subresources belongs at the CDP Fetch layer where Chromium's
-            // resolver is the source of truth.
+            let parsedUrl: URL;
+            try {
+              parsedUrl = new URL(req.url());
+            } catch {
+              await route.abort("accessdenied");
+              return;
+            }
+            const protocol = parsedUrl.protocol;
+            const host = parsedUrl.hostname;
+            const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+            const isIpLiteral =
+              /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+
+            // UNCONDITIONAL: block literal private IPs + localhost on ALL
+            // request types (fetch/XHR/image/script/WebSocket/navigation).
+            // Cheap (no DNS), precise, closes the concrete SSRF attack
+            // `fetch("http://127.0.0.1/admin")` from a public page.
+            if (isIpLiteral && isPrivateIp(bare)) {
+              await route.abort("accessdenied");
+              return;
+            }
+            if (bare === "localhost" || bare.endsWith(".localhost")) {
+              await route.abort("accessdenied");
+              return;
+            }
+
+            // MAIN-FRAME ONLY: scheme strictness + hostname DNS resolution.
+            // Subresources with hostnames bypass DNS so intranet/VPN/mDNS
+            // pages aren't broken; the literal-IP check above still protects
+            // against the concrete private-address attack vector.
             const topFrame = req.frame();
             const isMainFrameNav = req.isNavigationRequest() && topFrame.parentFrame() === null;
             if (!isMainFrameNav) {
               await route.continue();
               return;
             }
-            try {
-              const url = new URL(req.url());
-              if (url.protocol !== "http:" && url.protocol !== "https:") {
-                if (url.protocol === "about:") {
-                  await route.continue();
-                  return;
-                }
-                await route.abort("accessdenied");
-                return;
-              }
-              const host = url.hostname;
-              const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-              const isIpLiteral =
-                /^\d+(\.\d+){3}$/.test(bare) ||
-                (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
-              if (isIpLiteral) {
-                if (isPrivateIp(bare)) {
-                  await route.abort("accessdenied");
-                  return;
-                }
+            if (protocol !== "http:" && protocol !== "https:") {
+              if (protocol === "about:") {
                 await route.continue();
                 return;
               }
-              if (bare === "localhost" || bare.endsWith(".localhost")) {
-                await route.abort("accessdenied");
-                return;
-              }
+              await route.abort("accessdenied");
+              return;
+            }
+            try {
               const addresses = await dnsPromises.lookup(bare, {
                 all: true,
                 verbatim: true,
@@ -791,11 +811,6 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
                 }
               }
             } catch {
-              // Main-frame navigation + Node DNS failure → fail closed. At
-              // this narrow scope we accept potential false negatives on
-              // browser-only-resolvable intranet hosts; operators who need
-              // those can disable the guard entirely with
-              // blockPrivateAddresses: false.
               await route.abort("accessdenied");
               return;
             }
