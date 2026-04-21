@@ -55,7 +55,36 @@ async function saveGateState(path: string, state: GateState): Promise<void> {
 // Command entry point
 // ---------------------------------------------------------------------------
 
-export async function run(flags: CliFlags): Promise<ExitCodeType> {
+/**
+ * Optional dependency overrides — for tests only. Production callers (bin.ts)
+ * pass nothing and the real implementations are loaded via dynamic import.
+ *
+ * Tests inject fakes here to avoid `mock.module()`, which is process-global
+ * in Bun and would leak across test files (e.g. the dream tests' fake
+ * @koi/memory-fs would break memory-adapter tests in the same process).
+ */
+export interface DreamDeps {
+  readonly shouldDream: typeof import("@koi/dream").shouldDream;
+  readonly runDreamConsolidation: typeof import("@koi/dream").runDreamConsolidation;
+  readonly createMemoryStore: typeof import("@koi/memory-fs").createMemoryStore;
+  readonly createOpenAICompatAdapter: typeof import("@koi/model-openai-compat").createOpenAICompatAdapter;
+}
+
+async function loadDeps(): Promise<DreamDeps> {
+  const [dreamMod, memoryFs, modelMod] = await Promise.all([
+    import("@koi/dream"),
+    import("@koi/memory-fs"),
+    import("@koi/model-openai-compat"),
+  ]);
+  return {
+    shouldDream: dreamMod.shouldDream,
+    runDreamConsolidation: dreamMod.runDreamConsolidation,
+    createMemoryStore: memoryFs.createMemoryStore,
+    createOpenAICompatAdapter: modelMod.createOpenAICompatAdapter,
+  };
+}
+
+export async function run(flags: CliFlags, depsOverride?: DreamDeps): Promise<ExitCodeType> {
   if (!isDreamFlags(flags)) return ExitCode.FAILURE;
 
   const memoryDir = flags.memoryDir ?? join(homedir(), ".koi", "memory");
@@ -77,16 +106,8 @@ export async function run(flags: CliFlags): Promise<ExitCodeType> {
   // Ensure memory directory exists before any file operations
   await mkdir(memoryDir, { recursive: true });
 
-  // Lazy imports to keep startup fast
-  const [
-    { shouldDream, runDreamConsolidation },
-    { createMemoryStore },
-    { createOpenAICompatAdapter },
-  ] = await Promise.all([
-    import("@koi/dream"),
-    import("@koi/memory-fs"),
-    import("@koi/model-openai-compat"),
-  ]);
+  const { shouldDream, runDreamConsolidation, createMemoryStore, createOpenAICompatAdapter } =
+    depsOverride ?? (await loadDeps());
 
   const gateState = await loadGateState(gatePath);
 
