@@ -249,3 +249,5 @@ Every tracked file op on a snapshot carries the `callId` of the tool invocation 
 ## Layer
 
 L2 — depends on `@koi/core` (L0), `@koi/snapshot-store-sqlite` (L2 storage adapter), `@koi/hash` (L0u), `@koi/git-utils` (L0u), `@koi/errors` (L0u).
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

@@ -99,7 +99,7 @@ describe("shareArtifact + revokeShare", () => {
 
   test("ACL probe-resistance: non-owner on any op → identical not_found shape", async () => {
     const art = await save("sess_a", "x.txt", "x");
-    const fake = ("art_" + crypto.randomUUID()) as never;
+    const fake = `art_${crypto.randomUUID()}` as never;
     const operations = [
       () => store.getArtifact(art.id, { sessionId: sessionId("sess_b") }),
       () => store.getArtifact(fake, { sessionId: sessionId("sess_b") }),

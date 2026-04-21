@@ -1,0 +1,1787 @@
+/**
+ * Playwright implementation of BrowserDriver.
+ *
+ * Single persistent Browser + BrowserContext per driver instance.
+ * Pages (tabs) are tracked in a Map<tabId, Page>.
+ *
+ * Per-tab snapshot state: each tab has its own snapshotId, refs, and
+ * refCounter — switching tabs does not invalidate another tab's refs.
+ *
+ * Ref resolution priority:
+ *   1. Native aria-ref → page.locator('[aria-ref="..."]') — O(1) direct lookup
+ *   2. getByRole(role, {name}).nth(nthIndex) — fallback with nth deduplication
+ *
+ * CDP connection: set cdpEndpoint to connect to an existing Chrome instance.
+ * Stealth: set stealth:true to hide navigator.webdriver and disable AutomationControlled.
+ */
+
+import { promises as dnsPromises } from "node:dns";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseAriaYaml, translatePlaywrightError, VALID_ROLES } from "@koi/browser-a11y";
+import type {
+  BrowserActionOptions,
+  BrowserConsoleEntry,
+  BrowserConsoleLevel,
+  BrowserConsoleOptions,
+  BrowserConsoleResult,
+  BrowserDriver,
+  BrowserEvaluateOptions,
+  BrowserEvaluateResult,
+  BrowserFormField,
+  BrowserNavigateOptions,
+  BrowserNavigateResult,
+  BrowserRefInfo,
+  BrowserScreenshotOptions,
+  BrowserScreenshotResult,
+  BrowserScrollOptions,
+  BrowserSnapshotOptions,
+  BrowserSnapshotResult,
+  BrowserTabCloseOptions,
+  BrowserTabFocusOptions,
+  BrowserTabInfo,
+  BrowserTabNewOptions,
+  BrowserTraceOptions,
+  BrowserTraceResult,
+  BrowserTypeOptions,
+  BrowserUploadFile,
+  BrowserUploadOptions,
+  BrowserWaitOptions,
+  KoiError,
+  Result,
+} from "@koi/core";
+import { internal, notFound, permission, staleRef, validation } from "@koi/core";
+import type { Browser, BrowserContext, FrameLocator, Locator, Page } from "playwright";
+
+/** Playwright-typed role guard — same validation as isAriaRole, returns Playwright's AriaRole. */
+type AriaRole = Parameters<Page["getByRole"]>[0];
+function isAriaRole(role: string): role is AriaRole {
+  return VALID_ROLES.has(role);
+}
+
+export interface PlaywrightDriverConfig {
+  /**
+   * Inject an already-launched Browser instance.
+   * When provided, `dispose()` will NOT close this browser — the caller manages lifecycle.
+   */
+  readonly browser?: Browser;
+  /**
+   * Connect to an existing Chrome/Chromium instance via CDP.
+   * Example: "ws://localhost:9222" (start Chrome with --remote-debugging-port=9222).
+   * When provided, `dispose()` will NOT close the browser — the caller manages lifecycle.
+   * Ignored when `browser` is provided.
+   */
+  readonly cdpEndpoint?: string;
+  /**
+   * Connect to a CDP WebSocket endpoint (e.g. ws://127.0.0.1:<port>/...). When set,
+   * takes precedence over `cdpEndpoint`. Used by `@koi/browser-ext` to connect via a
+   * loopback WebSocket bridged to a Chrome extension's chrome.debugger API through
+   * a Koi native messaging host.
+   *
+   * Passed as the first argument to Playwright's `chromium.connectOverCDP(endpointURL, options)`
+   * — the modern non-deprecated form.
+   */
+  readonly wsEndpoint?: string;
+  /**
+   * Optional HTTP headers to send with the CDP WebSocket upgrade. Required when the
+   * target endpoint enforces auth (e.g. `@koi/browser-ext`'s loopback bridge requires
+   * `Authorization: Bearer <token>` per spec §7.1). Forwarded verbatim to Playwright's
+   * `connectOverCDP(..., { headers })` option.
+   */
+  readonly wsHeaders?: Readonly<Record<string, string>>;
+  /** Run headless (default: true). Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided. */
+  readonly headless?: boolean;
+  /** Browser launch timeout in ms (default: 30000). Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided. */
+  readonly launchTimeout?: number;
+  /**
+   * Enable basic stealth mode (default: false).
+   * Applies Chromium launch flags and injects navigator/chrome patches.
+   * Covers common bot detection: navigator.webdriver, AutomationControlled flag,
+   * navigator.plugins, navigator.languages, window.chrome runtime stub.
+   * Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided (caller controls stealth).
+   */
+  readonly stealth?: boolean;
+  /**
+   * Absolute path to a Chromium user data directory for persistent profiles.
+   * Reuses cookies, localStorage, IndexedDB, and extensions across driver instances.
+   * Uses `chromium.launchPersistentContext()` — mutually exclusive with `browser` and
+   * `cdpEndpoint` (those options take precedence if also provided).
+   * Example: '/Users/alice/.koi/profiles/work'
+   */
+  readonly userDataDir?: string;
+  /**
+   * Block navigations that resolve to private/link-local IP addresses.
+   * Prevents DNS rebinding attacks by re-resolving hostnames at request time.
+   * Default: true (secure by default).
+   */
+  readonly blockPrivateAddresses?: boolean;
+}
+
+// Timeout defaults and maximum caps (ms)
+const NAVIGATE_DEFAULT_MS = 15_000;
+const NAVIGATE_MAX_MS = 60_000;
+const ACTION_DEFAULT_MS = 3_000;
+const ACTION_MAX_MS = 10_000;
+const WAIT_DEFAULT_MS = 5_000;
+const WAIT_MAX_MS = 30_000;
+const EVALUATE_DEFAULT_MS = 5_000;
+const EVALUATE_MAX_MS = 10_000;
+const LAUNCH_DEFAULT_MS = 30_000;
+
+/**
+ * Maximum entries per tab before FIFO eviction kicks in.
+ * 200 entries is enough context for agent debugging without unbounded growth.
+ * In practice, agents inspect the last 50 entries (console() default limit).
+ */
+const CONSOLE_BUFFER_CAP = 200;
+
+// ---------------------------------------------------------------------------
+// DNS rebinding protection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the IP address falls within a private, loopback, or link-local range.
+ * Used by the DNS rebinding route guard to block navigations that resolve to
+ * internal addresses — catches post-TTL rebinding that bypasses static URL analysis.
+ *
+ * Inlined here (not imported from @koi/tool-browser) to avoid L2 peer violations.
+ */
+function isPrivateIpv4(ip: string): boolean {
+  return (
+    /^127\./.test(ip) ||
+    /^10\./.test(ip) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+    /^192\.168\./.test(ip) ||
+    /^169\.254\./.test(ip) ||
+    ip === "0.0.0.0"
+  );
+}
+
+/** Decodes `::ffff:AABB:CCDD` (Node's normalized form of IPv4-mapped IPv6) to dotted-quad. */
+function ipv4FromMappedHex(lower: string): string | null {
+  // Expect `::ffff:XXXX:XXXX` with two 1-4 hex groups after ffff.
+  const m = /^::ffff:([\da-f]{1,4}):([\da-f]{1,4})$/.exec(lower);
+  if (!m || m[1] === undefined || m[2] === undefined) return null;
+  const hi = parseInt(m[1], 16);
+  const lo = parseInt(m[2], 16);
+  if (Number.isNaN(hi) || Number.isNaN(lo) || hi > 0xffff || lo > 0xffff) return null;
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+function isPrivateIp(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  // IPv4 direct
+  if (isPrivateIpv4(lower)) return true;
+  // IPv4-mapped IPv6 dotted-quad form — e.g. ::ffff:127.0.0.1
+  const mapped = /^::ffff:([\d.]+)$/.exec(lower);
+  if (mapped?.[1]) return isPrivateIpv4(mapped[1]);
+  // IPv4-mapped IPv6 hex form (Node's URL parser normalizes dotted to this) —
+  // e.g. ::ffff:7f00:1 (which represents 127.0.0.1).
+  const hexIpv4 = ipv4FromMappedHex(lower);
+  if (hexIpv4) return isPrivateIpv4(hexIpv4);
+  // Legacy IPv4-compatible IPv6 — e.g. ::127.0.0.1 (deprecated but still possible)
+  const compat = /^::([\d.]+)$/.exec(lower);
+  if (compat?.[1]?.includes(".")) return isPrivateIpv4(compat[1]);
+  // IPv6 loopback / link-local / unique local
+  if (lower === "::1") return true;
+  if (/^fe[89ab][\da-f]?:/.test(lower)) return true; // fe80::/10 link-local
+  if (/^f[cd][\da-f]{2}:/.test(lower)) return true; // fc00::/7 unique local
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // belt & suspenders for fc/fd prefix
+  return false;
+}
+
+/**
+ * Driver-level private-address guard. Runs on EVERY navigation before
+ * `page.goto()`, regardless of whether the context is owned or borrowed.
+ * This complements the context `route()` guard (which only runs on owned
+ * contexts — borrowed contexts belong to the caller and can't be mutated).
+ *
+ * Rejects when `blockPrivateAddresses !== false` and:
+ *   - the URL's hostname is a private IP literal (loopback, RFC1918, link-local, etc.).
+ *   - OR the hostname resolves via DNS to a private IP at request time.
+ *
+ * Returns null when the URL is allowed; returns a KoiError otherwise.
+ */
+async function checkNavigationUrlAllowed(
+  rawUrl: string,
+  blockPrivateAddresses: boolean,
+): Promise<KoiError | null> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return validation(`Invalid URL: ${rawUrl}`);
+  }
+  // Scheme validation is ALWAYS enforced — decoupled from
+  // blockPrivateAddresses. Non-HTTP(S) schemes cross a larger trust
+  // boundary than SSRF alone (file:// = local filesystem, chrome:// /
+  // chrome-extension:// = privileged browser surfaces, data: = inline
+  // payloads, javascript: = script execution). `blockPrivateAddresses`
+  // controls private-IP/hostname enforcement only; it is NOT a blanket
+  // opt-out that also unlocks privileged schemes.
+  if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "about:") {
+    return permission(
+      `Navigation to non-HTTP(S) scheme blocked: ${url.protocol}. Allowed: http://, https://, about:.`,
+    );
+  }
+  if (blockPrivateAddresses === false) return null;
+  const hostname = url.hostname;
+  // URL.hostname strips IPv6 brackets already; handle raw-bracket case defensively.
+  const bare =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  // IP literal detection: IPv4 (digits + dots only) or IPv6 (contains a colon).
+  const isIpLiteral =
+    /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+  if (isIpLiteral) {
+    if (isPrivateIp(bare)) {
+      return permission(
+        `Navigation to private IP blocked: ${bare}. Set blockPrivateAddresses: false to override.`,
+      );
+    }
+    // Public IP literal — allowed.
+    return null;
+  }
+  // Hostname — resolve and check. "localhost" needs an explicit check because
+  // DNS resolution rules vary by OS (it may return 127.0.0.1 OR ::1 OR skip DNS entirely).
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return permission(
+      `Navigation to private hostname blocked: ${hostname}. Set blockPrivateAddresses: false to override.`,
+    );
+  }
+  try {
+    // Resolve ALL addresses for the hostname. A hostname that publishes both
+    // public and private A/AAAA records must be denied — Node's single-address
+    // lookup is not guaranteed to match the address Chromium picks.
+    const addresses = await dnsPromises.lookup(hostname, { all: true, verbatim: true });
+    for (const { address } of addresses) {
+      if (isPrivateIp(address)) {
+        return permission(
+          `Navigation to private-address-resolving hostname blocked: ${hostname} → ${address}. Set blockPrivateAddresses: false to override.`,
+        );
+      }
+    }
+  } catch {
+    // Node DNS lookup failed. Do NOT fail-closed here: split-horizon / VPN /
+    // mDNS / enterprise intranet hostnames routinely resolve in Chromium
+    // (which may use a different resolver, hosts file, or system DOH
+    // config) but not in Node. Failing closed here would break legitimate
+    // intranet targets. The main-frame route guard and literal-IP checks
+    // above already block the concrete SSRF vectors; hostname enforcement
+    // for browser-only resolvers is Chromium's job, not ours.
+  }
+  return null;
+}
+
+/**
+ * Installs a per-page route handler that aborts navigation requests to
+ * private addresses BEFORE the request is committed. Runs on every page
+ * created by the driver — crucial for borrowed contexts (cdpEndpoint /
+ * wsEndpoint paths where we cannot install a context-level guard).
+ *
+ * Unlike the context-level guard, this per-page handler also catches IP
+ * literal navigations (e.g. `http://127.0.0.1/`) — the context-level
+ * version deliberately skipped those assuming a tool-layer check,
+ * which is not guaranteed in borrowed-context setups.
+ */
+// The handler type Playwright's page.route() accepts. Returned by
+// `installPageRebindingGuard` so dispose() can call
+// `page.unroute("**", handler)` — stripping ONLY our handler rather than
+// every "**" route installed by the caller.
+type RouteHandler = Parameters<Page["route"]>[1];
+
+async function installPageRebindingGuard(
+  page: Page,
+  blockPrivateAddresses: boolean,
+): Promise<RouteHandler | null> {
+  if (!blockPrivateAddresses) return null;
+  const handler: RouteHandler = async (route) => {
+    const req = route.request();
+    const isMainFrameNav = req.isNavigationRequest() && req.frame() === page.mainFrame();
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(req.url());
+    } catch {
+      // Malformed URL — default-deny at any scope.
+      await route.abort("accessdenied");
+      return;
+    }
+    const protocol = parsedUrl.protocol;
+    const host = parsedUrl.hostname;
+    const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+    const isIpLiteral =
+      /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+
+    // ----- UNCONDITIONAL (applies to subresources too) ---------------------
+    // The concrete SSRF attack is a public page doing something like
+    // `fetch("http://127.0.0.1:8080/admin")`. Those checks are cheap (no
+    // DNS) and precise, so we apply them to EVERY request type — not only
+    // main-frame navigations. Split-horizon/VPN/mDNS hostnames are NOT
+    // blocked here (no DNS); full hostname enforcement still runs below
+    // for main-frame navigations only.
+
+    // 1. Block literal private IPs on any request type. `fetch` /
+    //    XHR / <img> / <script> / WebSocket to 127.0.0.1 / 10.0.0.0/8 /
+    //    172.16.0.0/12 / 192.168.0.0/16 / 169.254.0.0/16 / IPv6 loopback
+    //    / link-local / IPv4-mapped IPv6 are all denied.
+    if (isIpLiteral && isPrivateIp(bare)) {
+      await route.abort("accessdenied");
+      return;
+    }
+    // 2. Block `localhost` / `*.localhost` on any request type. OS DNS
+    //    rules vary, so name-based enforcement is required.
+    if (bare === "localhost" || bare.endsWith(".localhost")) {
+      await route.abort("accessdenied");
+      return;
+    }
+    // 3. Block ws:// / wss:// to IP literals in the private ranges via
+    //    the same rule above (handled by isIpLiteral + isPrivateIp). For
+    //    other non-HTTP(S) schemes at the subresource level (data:, blob:),
+    //    Chromium/Playwright rarely surface them to route(). Let Chromium
+    //    handle those; we focus on the concrete SSRF vector.
+
+    // ----- MAIN-FRAME-ONLY (hostname DNS + scheme strictness) --------------
+    if (!isMainFrameNav) {
+      await route.continue();
+      return;
+    }
+    if (protocol !== "http:" && protocol !== "https:") {
+      if (protocol === "about:") {
+        await route.continue();
+        return;
+      }
+      await route.abort("accessdenied");
+      return;
+    }
+    try {
+      // Resolve ALL addresses for main-frame navigations. Multi-record
+      // hostnames with mixed public/private entries must be denied — Node's
+      // single-address lookup isn't guaranteed to match what Chromium picks.
+      const addresses = await dnsPromises.lookup(bare, { all: true, verbatim: true });
+      for (const { address } of addresses) {
+        if (isPrivateIp(address)) {
+          await route.abort("accessdenied");
+          return;
+        }
+      }
+    } catch {
+      // DNS failure on a main-frame navigation → fail closed. Subresources
+      // already passed through the literal-IP check above; they bypass
+      // hostname resolution to preserve split-horizon/intranet pages.
+      await route.abort("accessdenied");
+      return;
+    }
+    await route.continue();
+  };
+  await page.route("**", handler);
+  return handler;
+}
+
+// ---------------------------------------------------------------------------
+// Console helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a Playwright ConsoleMessage type string to a BrowserConsoleLevel.
+ * Returns null for structural/grouping types that carry no signal for agents.
+ */
+function normalizeConsoleType(type: string): BrowserConsoleLevel | null {
+  switch (type) {
+    case "log":
+    case "trace":
+      return "log";
+    case "warning":
+      return "warning";
+    case "error":
+      return "error";
+    case "debug":
+      return "debug";
+    case "info":
+      return "info";
+    case "assert":
+      // assert fires when assertion fails — map to error for agent visibility
+      return "error";
+    case "dir":
+    case "dirxml":
+    case "table":
+    case "group":
+    case "groupCollapsed":
+    case "groupEnd":
+    case "count":
+    case "countReset":
+    case "time":
+    case "timeLog":
+    case "timeEnd":
+    case "clear":
+    case "startGroup":
+    case "startGroupCollapsed":
+    case "endGroup":
+      return null;
+    default:
+      return "log";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stealth init script — injected at BrowserContext level
+// ---------------------------------------------------------------------------
+
+/**
+ * JavaScript snippet injected into every page at BrowserContext level when stealth is enabled.
+ * Covers the most commonly checked bot-detection signals without any extra dependencies.
+ * Exported so CDP callers can apply the same patches to their own contexts.
+ */
+export const STEALTH_INIT_SCRIPT = `
+// 1. navigator.webdriver — primary automation flag
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// 2. navigator.plugins — real Chrome always has at least one plugin; headless has none
+if (navigator.plugins.length === 0) {
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => Object.setPrototypeOf(
+      [{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 0 }],
+      PluginArray.prototype
+    ),
+  });
+}
+
+// 3. navigator.languages — ensure realistic browser language preferences
+Object.defineProperty(navigator, 'languages', { get: () => Object.freeze(['en-US', 'en']) });
+
+// 4. window.chrome — real Chrome exposes a runtime stub; headless Chromium does not
+if (typeof window.chrome === 'undefined') {
+  Object.defineProperty(window, 'chrome', { value: Object.freeze({ runtime: {} }), configurable: true });
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a raw timeout option to a validated ms value.
+ * Returns {ok: false} if the value exceeds maxMs, {ok: true, value: ms} otherwise.
+ */
+function resolveTimeout(
+  raw: number | undefined,
+  defaultMs: number,
+  maxMs: number,
+  label: string,
+):
+  | { readonly ok: false; readonly error: KoiError }
+  | { readonly ok: true; readonly value: number } {
+  const ms = raw ?? defaultMs;
+  if (ms > maxMs) {
+    return {
+      ok: false,
+      error: validation(`${label} timeout ${ms}ms exceeds maximum ${maxMs}ms`),
+    };
+  }
+  return { ok: true, value: ms };
+}
+
+// ---------------------------------------------------------------------------
+// Per-tab snapshot state
+// ---------------------------------------------------------------------------
+
+interface TabSnapshot {
+  readonly snapshotId: string;
+  readonly refs: Readonly<Record<string, BrowserRefInfo>>;
+  readonly refCounter: number;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {}): BrowserDriver {
+  // Whether we own the browser lifecycle (launched it ourselves)
+  const ownsLifecycle = !config.browser && !config.cdpEndpoint && !config.wsEndpoint;
+
+  let browser: Browser | null = config.browser ?? null;
+  let browserContext: BrowserContext | null = null;
+  // Tracks whether the current `browserContext` was borrowed from an external browser
+  // (cdpEndpoint/wsEndpoint path with a pre-existing context). Borrowed contexts
+  // belong to the caller — we MUST NOT install routes/init-scripts on them and
+  // MUST NOT close them on dispose().
+  let borrowedContext = false;
+  // Promise caches prevent concurrent callers from launching two browsers/contexts.
+  // Without these, two simultaneous ensureBrowser() calls would both see null and both launch.
+  let browserInitPromise: Promise<Browser> | null = null; // intentional mutation: set once on first call
+  let contextInitPromise: Promise<BrowserContext> | null = null; // intentional mutation: set once on first call
+  let tabCounter = 0;
+  const tabs = new Map<string, Page>();
+  // Tabs this driver CREATED (vs. adopted from a borrowed context). On
+  // dispose() we close only driver-owned tabs — adopted pages belong to
+  // the caller and must stay open.
+  const ownedTabIds = new Set<string>();
+  let currentTabId: string | null = null;
+  // Page → tabId reverse index for borrowed contexts: enumeration of
+  // `ctx.pages()` must return STABLE tabIds across successive tabList calls,
+  // so callers that do `tabList → select → act` see the same id both times.
+  const pageToTabId = new WeakMap<Page, string>();
+  // Borrowed-context cleanup bookkeeping: per-page route-handler map + the
+  // context listener we registered, so dispose() can deregister both
+  // instead of leaking handlers into caller state. Keyed by Page so
+  // dispose can call page.unroute("**", handler) for ONLY our handler,
+  // not any unrelated "**" routes the caller may have installed.
+  const borrowedGuardedPages = new Map<Page, RouteHandler>();
+  let borrowedPageHandler: ((page: Page) => void) | null = null;
+  let borrowedPageContext: BrowserContext | null = null;
+
+  // Per-tab snapshot state — replaces the old single global currentSnapshotId / currentRefs
+  const tabSnapshots = new Map<string, TabSnapshot>();
+
+  // Per-tab console log buffer (FIFO, capped at CONSOLE_BUFFER_CAP entries per tab)
+  const tabConsoleLogs = new Map<string, BrowserConsoleEntry[]>();
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
+
+  function newTabId(): string {
+    return `tab-${++tabCounter}`;
+  }
+
+  // For borrowed contexts: ensure every live ctx.pages() entry has a stable
+  // tabId in the `tabs` map AND drop entries whose pages have been closed
+  // since the last sync. Users closing tabs in their live browser is normal;
+  // leaving stale Page handles causes tabList()'s page.title() to throw and
+  // wedges the whole driver.
+  async function syncBorrowedContextTabs(): Promise<void> {
+    if (!borrowedContext) return;
+    const ctx = await ensureContext();
+    const live = new Set<Page>(ctx.pages());
+    // Prune: remove tab entries whose Page is no longer in ctx.pages().
+    for (const [tabId, page] of tabs) {
+      if (!live.has(page)) {
+        tabs.delete(tabId);
+        tabSnapshots.delete(tabId);
+        tabConsoleLogs.delete(tabId);
+        ownedTabIds.delete(tabId);
+        if (currentTabId === tabId) currentTabId = null;
+      }
+    }
+    // Add: surface pages that exist in the context but haven't been seen.
+    for (const page of live) {
+      let id = pageToTabId.get(page);
+      if (id === undefined) {
+        id = newTabId();
+        pageToTabId.set(page, id);
+        tabs.set(id, page);
+        // Install the rebinding guard on caller-owned pages the driver is
+        // about to interact with — SSRF protection must not depend on
+        // whether we `adopted` the page via ensurePage() first. Track the
+        // returned handler so dispose() can unroute OUR handler only.
+        const guardHandler = await installPageRebindingGuard(
+          page,
+          config.blockPrivateAddresses !== false,
+        ).catch(() => null);
+        if (guardHandler !== null) borrowedGuardedPages.set(page, guardHandler);
+        // Attach console listener so console() has a buffer populated when
+        // the caller selects this tab. Observation-only, no page mutation.
+        attachConsoleListener(page, id);
+        // Prune on close. Playwright Page emits "close" when the user (or
+        // JS) closes the tab. pageToTabId is a WeakMap so no explicit cleanup
+        // is needed there.
+        page.on("close", () => {
+          tabs.delete(id as string);
+          tabSnapshots.delete(id as string);
+          tabConsoleLogs.delete(id as string);
+          ownedTabIds.delete(id as string);
+          if (currentTabId === id) currentTabId = null;
+        });
+      }
+    }
+  }
+
+  function invalidateTabSnapshot(tabId: string): void {
+    tabSnapshots.delete(tabId);
+  }
+
+  function attachConsoleListener(page: Page, tabId: string): void {
+    tabConsoleLogs.set(tabId, []);
+    page.on("console", (msg) => {
+      const level = normalizeConsoleType(msg.type());
+      if (level === null) return;
+      const loc = msg.location();
+      const entry: BrowserConsoleEntry = {
+        level,
+        text: msg.text(),
+        ...(loc.url ? { url: loc.url } : {}),
+        ...(loc.lineNumber ? { line: loc.lineNumber } : {}),
+      };
+      const buf = tabConsoleLogs.get(tabId);
+      if (buf === undefined) return;
+      buf.push(entry); // intentional mutation: buf is a private per-tab ring buffer owned by this closure
+      if (buf.length > CONSOLE_BUFFER_CAP) buf.shift(); // intentional mutation: FIFO eviction of oldest entry
+    });
+  }
+
+  async function ensureBrowser(): Promise<Browser> {
+    if (browser) return browser;
+    // Promise cache: concurrent callers share one launch and all await the same result.
+    if (!browserInitPromise) {
+      browserInitPromise = (async (): Promise<Browser> => {
+        // intentional assignment: set promise cache once
+        // Lazy-import playwright so the CLI bundle does not pull in playwright
+        // (and its unresolvable chromium-bidi CJS internals) at startup.
+        const { chromium } = await import("playwright");
+        if (config.wsEndpoint && config.cdpEndpoint) {
+          console.warn(
+            "[@koi/browser-playwright] Both wsEndpoint and cdpEndpoint were provided; wsEndpoint takes precedence.",
+          );
+        }
+        if (config.wsEndpoint) {
+          // Use the modern string-first form — the object-form `wsEndpoint` property
+          // is deprecated (Playwright recommends `endpointURL` or positional arg).
+          return chromium.connectOverCDP(config.wsEndpoint, {
+            timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+            ...(config.wsHeaders ? { headers: { ...config.wsHeaders } } : {}),
+          });
+        }
+        if (config.cdpEndpoint) {
+          return chromium.connectOverCDP(config.cdpEndpoint, {
+            timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+          });
+        }
+        const launchArgs = config.stealth
+          ? [
+              "--disable-blink-features=AutomationControlled",
+              "--no-first-run",
+              "--no-default-browser-check",
+            ]
+          : [];
+        return chromium.launch({
+          headless: config.headless ?? true,
+          timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+          args: launchArgs,
+          ...(config.stealth ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
+        });
+      })();
+    }
+    try {
+      browser = await browserInitPromise; // intentional assignment: cache resolved browser for sync access
+    } catch (e: unknown) {
+      browserInitPromise = null; // intentional reset: allow retry on next call instead of caching rejection forever
+      throw e;
+    }
+    return browser;
+  }
+
+  async function ensureContext(): Promise<BrowserContext> {
+    if (browserContext) return browserContext;
+    // Promise cache: concurrent callers share one context creation and all await the same result.
+    if (!contextInitPromise) {
+      contextInitPromise = (async (): Promise<BrowserContext> => {
+        // intentional assignment: set promise cache once
+        let ctx: BrowserContext;
+        // Persistent context path: userDataDir bypasses ensureBrowser() entirely.
+        // chromium.launchPersistentContext() returns a BrowserContext directly.
+        if (config.userDataDir && !config.browser && !config.cdpEndpoint && !config.wsEndpoint) {
+          const { chromium } = await import("playwright");
+          const launchArgs = config.stealth
+            ? [
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+              ]
+            : [];
+          ctx = await chromium.launchPersistentContext(config.userDataDir, {
+            headless: config.headless ?? true,
+            timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+            args: launchArgs,
+            ...(config.stealth ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
+          });
+        } else {
+          const b = await ensureBrowser();
+          // For CDP/WS connections, reuse the default context if one exists —
+          // but flag it as borrowed so we don't mutate or close caller state.
+          if (config.cdpEndpoint || config.wsEndpoint) {
+            const contexts = b.contexts();
+            if (contexts.length > 1) {
+              // Ambiguous: multiple browser contexts attached (e.g. user
+              // has an incognito window, or another automation client is
+              // already bound). Picking contexts[0] silently would operate
+              // on the wrong session. Fail closed — the caller must
+              // isolate the target (close other contexts) or supply an
+              // explicit selector in a future API revision.
+              throw new Error(
+                `Ambiguous CDP/ws attach target: ${contexts.length} browser contexts found. ` +
+                  "Refusing to auto-bind — close other contexts (incognito windows, other " +
+                  "automation clients) or restart the browser with only one context.",
+              );
+            }
+            const existing = contexts[0];
+            if (existing) {
+              ctx = existing;
+              borrowedContext = true;
+            } else {
+              ctx = await b.newContext();
+            }
+          } else {
+            ctx = await b.newContext();
+          }
+        }
+        // Inject stealth script at context level — covers all pages and window.open() tabs.
+        // Skipped for external-transport paths (caller owns stealth policy for their browser).
+        if (config.stealth && !config.browser && !config.cdpEndpoint && !config.wsEndpoint) {
+          await ctx.addInitScript(STEALTH_INIT_SCRIPT);
+        }
+
+        // DNS rebinding guard — re-resolve hostnames at request time for document navigations.
+        // Catches post-TTL rebinding that bypasses the static URL check in url-security.ts.
+        // Default: enabled (blockPrivateAddresses !== false).
+        // Skipped on borrowed contexts: we must not install route handlers on a context
+        // that the caller also drives. The tool-layer url-security check still applies
+        // to navigations issued by Koi's own `navigate` tool calls.
+        // Borrowed contexts: we cannot install ctx.route() without affecting
+        // caller-owned routing, but we CAN listen for newly-created pages
+        // and install a per-page rebinding guard on each. This closes the
+        // popup / window.open / target=_blank gap where site code spawns
+        // pages outside of the driver's ensurePage() path.
+        if (config.blockPrivateAddresses !== false && borrowedContext) {
+          // Track borrowed pages we install the rebinding guard on so we
+          // can call page.unroute() during dispose(). Without this cleanup,
+          // disposing the driver leaves the caller's browser with our
+          // navigation-blocking handler still attached to each page.
+          const handler = (newPage: Page): void => {
+            void installPageRebindingGuard(newPage, true)
+              .then((guardHandler) => {
+                if (guardHandler !== null) borrowedGuardedPages.set(newPage, guardHandler);
+              })
+              .catch(() => {});
+          };
+          ctx.on("page", handler);
+          borrowedPageHandler = handler;
+          borrowedPageContext = ctx;
+        }
+        if (config.blockPrivateAddresses !== false && !borrowedContext) {
+          await ctx.route("**", async (route) => {
+            const req = route.request();
+            let parsedUrl: URL;
+            try {
+              parsedUrl = new URL(req.url());
+            } catch {
+              await route.abort("accessdenied");
+              return;
+            }
+            const protocol = parsedUrl.protocol;
+            const host = parsedUrl.hostname;
+            const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+            const isIpLiteral =
+              /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+
+            // UNCONDITIONAL: block literal private IPs + localhost on ALL
+            // request types (fetch/XHR/image/script/WebSocket/navigation).
+            // Cheap (no DNS), precise, closes the concrete SSRF attack
+            // `fetch("http://127.0.0.1/admin")` from a public page.
+            if (isIpLiteral && isPrivateIp(bare)) {
+              await route.abort("accessdenied");
+              return;
+            }
+            if (bare === "localhost" || bare.endsWith(".localhost")) {
+              await route.abort("accessdenied");
+              return;
+            }
+
+            // MAIN-FRAME ONLY: scheme strictness + hostname DNS resolution.
+            // Subresources with hostnames bypass DNS so intranet/VPN/mDNS
+            // pages aren't broken; the literal-IP check above still protects
+            // against the concrete private-address attack vector.
+            const topFrame = req.frame();
+            const isMainFrameNav = req.isNavigationRequest() && topFrame.parentFrame() === null;
+            if (!isMainFrameNav) {
+              await route.continue();
+              return;
+            }
+            if (protocol !== "http:" && protocol !== "https:") {
+              if (protocol === "about:") {
+                await route.continue();
+                return;
+              }
+              await route.abort("accessdenied");
+              return;
+            }
+            try {
+              const addresses = await dnsPromises.lookup(bare, {
+                all: true,
+                verbatim: true,
+              });
+              for (const { address } of addresses) {
+                if (isPrivateIp(address)) {
+                  await route.abort("accessdenied");
+                  return;
+                }
+              }
+            } catch {
+              await route.abort("accessdenied");
+              return;
+            }
+            await route.continue();
+          });
+        }
+
+        return ctx;
+      })();
+    }
+    try {
+      browserContext = await contextInitPromise; // intentional assignment: cache resolved context for sync access
+    } catch (e: unknown) {
+      contextInitPromise = null; // intentional reset: allow retry on next call instead of caching rejection forever
+      throw e;
+    }
+    return browserContext;
+  }
+
+  async function ensurePage(): Promise<{ readonly page: Page; readonly tabId: string }> {
+    if (currentTabId === null) {
+      const ctx = await ensureContext();
+      let page: Page;
+      let adopted = false;
+      // On a borrowed context (CDP/ws endpoint — e.g., browser-ext attached
+      // tab), adopt the single existing page. If the context has no pages,
+      // create one (edge case: fresh browser). If it has multiple, refuse
+      // rather than guess which one the caller wanted.
+      if (borrowedContext) {
+        const existingPages = ctx.pages();
+        if (existingPages.length === 0) {
+          page = await ctx.newPage();
+        } else if (existingPages.length === 1) {
+          page = existingPages[0] as Page;
+          adopted = true;
+        } else {
+          throw new Error(
+            `Ambiguous borrowed context: ${existingPages.length} pages present; cannot auto-select. ` +
+              "Use browser-ext's selectTargetTab() to pick a tab before interaction.",
+          );
+        }
+      } else {
+        page = await ctx.newPage();
+      }
+      // Private-address rebinding guard applies on BOTH owned and adopted
+      // pages: the trust boundary we care about here is "user's browser
+      // must not reach internal addresses from public pages", not "driver
+      // owns vs borrows". Without it on adopted pages, a click-triggered
+      // form submit or link navigation from a public page could still
+      // reach RFC1918 / localhost — defeating blockPrivateAddresses.
+      const ensureGuardHandler = await installPageRebindingGuard(
+        page,
+        config.blockPrivateAddresses !== false,
+      );
+      // Track on borrowed (adopted) pages so dispose() removes OUR handler
+      // specifically — not every "**" route on a caller-owned page.
+      if (adopted && ensureGuardHandler !== null) {
+        borrowedGuardedPages.set(page, ensureGuardHandler);
+      }
+      const tabId = newTabId();
+      tabs.set(tabId, page);
+      if (!adopted) {
+        ownedTabIds.add(tabId);
+      }
+      // Console listener is observation-only (no side effects on the page).
+      // Previously skipped on adopted pages to avoid "silently recording user
+      // logs", but that created an observability gap on browser-ext's only
+      // production path — console() returned [] for the selected tab. Attach
+      // on both owned and adopted pages so console() returns live logs.
+      attachConsoleListener(page, tabId);
+      currentTabId = tabId;
+    }
+    // Snapshot currentTabId into a local so concurrent tab-management calls
+    // can't swap the tab out from under us between awaits. All downstream
+    // helpers must be passed `tabId` explicitly instead of re-reading the
+    // module-level `currentTabId`.
+    const tabId = currentTabId;
+    const page = tabs.get(tabId);
+    if (!page) {
+      throw new Error(`internal: currentTabId "${tabId}" has no page`);
+    }
+    return { page, tabId };
+  }
+
+  function _getActiveTabId(): string | null {
+    return currentTabId;
+  }
+
+  /** Returns a STALE_REF error if snapshotId is provided but doesn't match the given tab's. */
+  function checkSnapshotId(
+    tabId: string,
+    snapshotId: string | undefined,
+  ): Result<void, KoiError> | null {
+    if (snapshotId === undefined) return null;
+    const snap = tabSnapshots.get(tabId);
+    if (!snap || snapshotId !== snap.snapshotId) {
+      return {
+        ok: false,
+        error: staleRef(
+          snapshotId,
+          "call browser_snapshot to get fresh refs — the page changed since this snapshot was taken",
+        ),
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Resolve a ref to a Playwright Locator, optionally scoped inside an iframe.
+   *
+   * Priority:
+   *   1. Native aria-ref → direct attribute selector (O(1))
+   *   2. getByRole(role, {name}).nth(nthIndex) — with deduplication
+   *
+   * When frameSelector is provided, all resolution is done via page.frameLocator(),
+   * which supports cross-origin iframes without explicit context switching.
+   */
+  function getLocator(
+    page: Page,
+    tabId: string,
+    ref: string,
+    frameSelector?: string,
+  ): Locator | null {
+    const snap = tabSnapshots.get(tabId);
+    if (!snap) return null;
+    const refInfo = snap.refs[ref];
+    if (!refInfo) return null;
+
+    const root: Page | FrameLocator = frameSelector ? page.frameLocator(frameSelector) : page;
+
+    // Strategy 1: native aria-ref direct attribute lookup
+    if (refInfo.ariaRef) {
+      return root.locator(`[aria-ref="${refInfo.ariaRef}"]`);
+    }
+
+    // Strategy 2: getByRole with nth deduplication
+    if (!isAriaRole(refInfo.role)) return null;
+    const role = refInfo.role; // narrowed to AriaRole by isAriaRole guard above
+    const nthIndex = refInfo.nthIndex ?? 0;
+    if (refInfo.name) {
+      return root.getByRole(role, { name: refInfo.name, exact: true }).nth(nthIndex);
+    }
+    return root.getByRole(role).nth(nthIndex);
+  }
+
+  /** Get a Locator or return a STALE_REF/NOT_FOUND error Result. */
+  function requireLocator(
+    page: Page,
+    tabId: string,
+    ref: string,
+    frameSelector?: string,
+  ): { readonly locator: Locator } | { readonly error: Result<never, KoiError> } {
+    const locator = getLocator(page, tabId, ref, frameSelector);
+    if (!locator) {
+      return {
+        error: {
+          ok: false,
+          error: staleRef(
+            ref,
+            "call browser_snapshot to refresh refs — this ref is not in the current snapshot",
+          ),
+        },
+      };
+    }
+    return { locator };
+  }
+
+  // ---------------------------------------------------------------------------
+  // BrowserDriver implementation
+  // ---------------------------------------------------------------------------
+
+  return {
+    name: "playwright",
+
+    async snapshot(
+      options?: BrowserSnapshotOptions,
+    ): Promise<Result<BrowserSnapshotResult, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+
+        const locator = options?.selector
+          ? page.locator(options.selector).first()
+          : page.locator("body");
+        const yamlText = await locator.ariaSnapshot();
+
+        if (!yamlText) {
+          return {
+            ok: false,
+            error: internal("Accessibility snapshot returned empty — page may not be fully loaded"),
+          };
+        }
+
+        const { text, refs, truncated, title: yamlTitle } = parseAriaYaml(yamlText, options);
+
+        // Generate a new snapshotId and store per-tab state under the tab we
+        // resolved at ensurePage() time — NOT the current `currentTabId`,
+        // which an overlapping tabFocus() could have swapped.
+        const prevCounter = tabSnapshots.get(activeTabId)?.refCounter ?? 0;
+        const refCounter = prevCounter + 1;
+        const snapshotId = `snap-${activeTabId}-${refCounter}`;
+        tabSnapshots.set(activeTabId, {
+          snapshotId,
+          refs,
+          refCounter,
+        });
+
+        // Use title from YAML if extracted, fall back to IPC only when absent
+        const title = yamlTitle ?? (await page.title());
+
+        return {
+          ok: true,
+          value: {
+            snapshot: text,
+            snapshotId,
+            refs,
+            truncated,
+            url: page.url(),
+            title,
+          },
+        };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_snapshot", e) };
+      }
+    },
+
+    async navigate(
+      url: string,
+      options?: BrowserNavigateOptions,
+    ): Promise<Result<BrowserNavigateResult, KoiError>> {
+      try {
+        // Driver-level private-address gate — runs BEFORE page.goto, regardless
+        // of context ownership. Borrowed contexts (cdpEndpoint/wsEndpoint paths
+        // where we reused the caller's default context) cannot have the route()
+        // guard installed; this check covers them.
+        const blockPrivate = config.blockPrivateAddresses !== false;
+        const guardErr = await checkNavigationUrlAllowed(url, blockPrivate);
+        if (guardErr) return { ok: false, error: guardErr };
+
+        const { page, tabId: activeTabId } = await ensurePage();
+
+        const t = resolveTimeout(
+          options?.timeout,
+          NAVIGATE_DEFAULT_MS,
+          NAVIGATE_MAX_MS,
+          "navigate",
+        );
+        if (!t.ok) return t;
+
+        invalidateTabSnapshot(activeTabId);
+
+        await page.goto(url, {
+          waitUntil: options?.waitUntil ?? "load",
+          timeout: t.value,
+        });
+
+        // Post-navigation redirect check — covers server-side 30x redirects
+        // to private addresses on borrowed contexts (where ctx.route() was
+        // skipped). On owned contexts this is defense-in-depth since
+        // ctx.route() already aborted the redirect request.
+        const finalUrlErr = await checkNavigationUrlAllowed(page.url(), blockPrivate);
+        if (finalUrlErr) {
+          // Park the page at about:blank so the private-address response is
+          // no longer reachable, then report the error.
+          await page.goto("about:blank", { timeout: 1000 }).catch(() => undefined);
+          return { ok: false, error: finalUrlErr };
+        }
+
+        return {
+          ok: true,
+          value: {
+            url: page.url(),
+            title: await page.title(),
+          },
+        };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_navigate", e) };
+      }
+    },
+
+    async click(ref: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
+        if (stale) return stale;
+
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
+        if ("error" in found) return found.error;
+
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "click");
+        if (!t.ok) return t;
+
+        await found.locator.click({ timeout: t.value });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_click", e) };
+      }
+    },
+
+    async hover(ref: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
+        if (stale) return stale;
+
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
+        if ("error" in found) return found.error;
+
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "hover");
+        if (!t.ok) return t;
+
+        await found.locator.hover({ timeout: t.value });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_hover", e) };
+      }
+    },
+
+    async press(key: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: _activeTabId } = await ensurePage();
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "press");
+        if (!t.ok) return t;
+
+        await page.keyboard.press(key);
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_press", e) };
+      }
+    },
+
+    async type(
+      ref: string,
+      value: string,
+      options?: BrowserTypeOptions,
+    ): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
+        if (stale) return stale;
+
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
+        if ("error" in found) return found.error;
+
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "type");
+        if (!t.ok) return t;
+
+        if (options?.clear) {
+          await found.locator.clear({ timeout: t.value });
+        }
+        await found.locator.fill(value, { timeout: t.value });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_type", e) };
+      }
+    },
+
+    async select(
+      ref: string,
+      value: string,
+      options?: BrowserActionOptions,
+    ): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
+        if (stale) return stale;
+
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
+        if ("error" in found) return found.error;
+
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "select");
+        if (!t.ok) return t;
+
+        await found.locator.selectOption(value, { timeout: t.value });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_select", e) };
+      }
+    },
+
+    async fillForm(
+      fields: readonly BrowserFormField[],
+      options?: BrowserActionOptions,
+    ): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
+        if (stale) return stale;
+
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "fill_form");
+        if (!t.ok) return t;
+
+        // Pass 1: validate all refs before touching any field (atomic guarantee)
+        const resolved: Array<{ readonly locator: Locator; readonly field: BrowserFormField }> = [];
+        for (const field of fields) {
+          const found = requireLocator(page, activeTabId, field.ref, options?.frameSelector);
+          if ("error" in found) return found.error;
+          resolved.push({ locator: found.locator, field });
+        }
+
+        // Pass 2: fill — parallel when caller opts in, sequential otherwise
+        if (options?.parallel) {
+          await Promise.all(
+            resolved.map(async ({ locator, field }) => {
+              if (field.clear) await locator.clear({ timeout: t.value });
+              await locator.fill(field.value, { timeout: t.value });
+            }),
+          );
+        } else {
+          for (const { locator, field } of resolved) {
+            if (field.clear) await locator.clear({ timeout: t.value });
+            await locator.fill(field.value, { timeout: t.value });
+          }
+        }
+
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_fill_form", e) };
+      }
+    },
+
+    async scroll(options: BrowserScrollOptions): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+
+        if (options.kind === "element") {
+          const stale = checkSnapshotId(activeTabId, options.snapshotId);
+          if (stale) return stale;
+
+          const found = requireLocator(page, activeTabId, options.ref);
+          if ("error" in found) return found.error;
+
+          const t = resolveTimeout(options.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "scroll");
+          if (!t.ok) return t;
+
+          await found.locator.scrollIntoViewIfNeeded({ timeout: t.value });
+        } else {
+          const directionMap: Readonly<Record<string, readonly [number, number]>> = {
+            up: [0, -1],
+            down: [0, 1],
+            left: [-1, 0],
+            right: [1, 0],
+          };
+          const dir = directionMap[options.direction] ?? ([0, 1] as const);
+          const amount = options.amount ?? 400;
+          await page.mouse.wheel(dir[0] * amount, dir[1] * amount);
+        }
+
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_scroll", e) };
+      }
+    },
+
+    async screenshot(
+      options?: BrowserScreenshotOptions,
+    ): Promise<Result<BrowserScreenshotResult, KoiError>> {
+      try {
+        const { page, tabId: _activeTabId } = await ensurePage();
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "screenshot");
+        if (!t.ok) return t;
+
+        const quality = options?.quality ?? 80;
+        const fullPage = options?.fullPage ?? false;
+
+        const buffer = await page.screenshot({
+          fullPage,
+          type: quality < 100 ? "jpeg" : "png",
+          ...(quality < 100 ? { quality } : {}),
+          timeout: t.value,
+        });
+
+        const mimeType = quality < 100 ? "image/jpeg" : "image/png";
+        const viewportSize = page.viewportSize();
+        const width = viewportSize?.width ?? 1280;
+        const height = viewportSize?.height ?? 720;
+
+        return {
+          ok: true,
+          value: {
+            data: buffer.toString("base64"),
+            mimeType,
+            width,
+            height,
+          },
+        };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_screenshot", e) };
+      }
+    },
+
+    async wait(options: BrowserWaitOptions): Promise<Result<void, KoiError>> {
+      try {
+        const { page } = await ensurePage();
+
+        if (options.kind === "timeout") {
+          const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");
+          if (!t.ok) return t;
+          await page.waitForTimeout(t.value);
+        } else if (options.kind === "selector") {
+          const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");
+          if (!t.ok) return t;
+          await page.waitForSelector(options.selector, {
+            state: options.state ?? "visible",
+            timeout: t.value,
+          });
+        } else {
+          const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");
+          if (!t.ok) return t;
+          await page.waitForNavigation({
+            waitUntil: options.event ?? "load",
+            timeout: t.value,
+          });
+        }
+
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_wait", e) };
+      }
+    },
+
+    async tabNew(options?: BrowserTabNewOptions): Promise<Result<BrowserTabInfo, KoiError>> {
+      try {
+        // Driver-level private-address gate for the tabNew-with-url path.
+        if (options?.url) {
+          const guardErr = await checkNavigationUrlAllowed(
+            options.url,
+            config.blockPrivateAddresses !== false,
+          );
+          if (guardErr) return { ok: false, error: guardErr };
+        }
+
+        const ctx = await ensureContext();
+        const page = await ctx.newPage();
+        await installPageRebindingGuard(page, config.blockPrivateAddresses !== false);
+        const tabId = newTabId();
+        tabs.set(tabId, page);
+        ownedTabIds.add(tabId);
+        attachConsoleListener(page, tabId);
+        const previousTabId = currentTabId;
+
+        if (options?.url) {
+          const t = resolveTimeout(
+            options.timeout,
+            NAVIGATE_DEFAULT_MS,
+            NAVIGATE_MAX_MS,
+            "tab_new",
+          );
+          if (!t.ok) {
+            await page.close();
+            tabs.delete(tabId);
+            tabConsoleLogs.delete(tabId);
+            return t;
+          }
+          try {
+            await page.goto(options.url, { timeout: t.value });
+          } catch (gotoErr: unknown) {
+            // Navigation failed — clean up the new page and restore previous tab focus
+            await page.close().catch(() => undefined);
+            tabs.delete(tabId);
+            tabConsoleLogs.delete(tabId);
+            currentTabId = previousTabId; // intentional restore: goto() failed, revert to previous tab
+            throw gotoErr;
+          }
+          // Post-navigation redirect check — defense-in-depth against public
+          // URLs that redirect to private addresses. The per-page route guard
+          // aborts these at request time for owned transports, but we still
+          // validate the final URL as a safety net.
+          const finalErr = await checkNavigationUrlAllowed(
+            page.url(),
+            config.blockPrivateAddresses !== false,
+          );
+          if (finalErr) {
+            await page.close().catch(() => undefined);
+            tabs.delete(tabId);
+            tabConsoleLogs.delete(tabId);
+            currentTabId = previousTabId;
+            return { ok: false, error: finalErr };
+          }
+        }
+
+        // New tab becomes the active tab only after successful navigation (or no URL requested).
+        currentTabId = tabId;
+
+        return {
+          ok: true,
+          value: {
+            tabId,
+            url: page.url(),
+            title: await page.title(),
+          },
+        };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_tab_new", e) };
+      }
+    },
+
+    async tabClose(
+      tabId?: string,
+      _options?: BrowserTabCloseOptions,
+    ): Promise<Result<void, KoiError>> {
+      try {
+        const targetId = tabId ?? currentTabId;
+        if (!targetId) {
+          return { ok: false, error: notFound("No tab to close") };
+        }
+        const page = tabs.get(targetId);
+        if (!page) {
+          return { ok: false, error: notFound(`Tab "${targetId}" not found`) };
+        }
+        // Only close tabs the driver CREATED. Adopted pages on borrowed
+        // contexts (cdpEndpoint/wsEndpoint) belong to the caller — closing
+        // them would destroy the user's live tab.
+        if (!ownedTabIds.has(targetId)) {
+          return {
+            ok: false,
+            error: permission(
+              `Tab "${targetId}" was adopted from a borrowed browser context and cannot be closed through this driver. Close it in the owning browser directly.`,
+            ),
+          };
+        }
+        await page.close();
+        tabs.delete(targetId);
+        ownedTabIds.delete(targetId);
+        invalidateTabSnapshot(targetId);
+        tabConsoleLogs.delete(targetId);
+
+        if (currentTabId === targetId) {
+          // Single-pass iterator — avoids allocating a full array just to get the last key.
+          let lastKey: string | null = null;
+          for (const k of tabs.keys()) lastKey = k;
+          currentTabId = lastKey;
+        }
+
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_tab_close", e) };
+      }
+    },
+
+    async tabFocus(
+      tabId: string,
+      _options?: BrowserTabFocusOptions,
+    ): Promise<Result<BrowserTabInfo, KoiError>> {
+      try {
+        const page = tabs.get(tabId);
+        if (!page) {
+          return { ok: false, error: notFound(`Tab "${tabId}" not found`) };
+        }
+        // bringToFront() has no built-in timeout; guard against infinite hangs.
+        // Timer handle is cleared on normal resolution to avoid dangling rejections.
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("bringToFront timed out")), 10_000);
+          page.bringToFront().then(
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            (e: unknown) => {
+              clearTimeout(timer);
+              reject(e);
+            },
+          );
+        });
+        currentTabId = tabId;
+        // Note: we do NOT invalidate the tab's snapshot — per-tab caching preserves it
+
+        return {
+          ok: true,
+          value: {
+            tabId,
+            url: page.url(),
+            title: await page.title(),
+          },
+        };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_tab_focus", e) };
+      }
+    },
+
+    async tabList(): Promise<Result<readonly BrowserTabInfo[], KoiError>> {
+      try {
+        // For borrowed contexts: pick up pages that existed before any
+        // driver-initiated interaction. Without this, callers see `[]`
+        // until an ensurePage() adoption or an owned tabNew — impossible
+        // on multi-page borrowed contexts because ensurePage() refuses to
+        // pick for them.
+        await syncBorrowedContextTabs();
+        // Fire all CDP title() calls in parallel — one round-trip per tab concurrently.
+        const entries = [...tabs.entries()];
+        const value = await Promise.all(
+          entries.map(async ([tabId, page]) => ({
+            tabId,
+            url: page.url(),
+            title: await page.title(),
+          })),
+        );
+        return { ok: true, value };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_tab_list", e) };
+      }
+    },
+
+    async console(
+      options?: BrowserConsoleOptions,
+    ): Promise<Result<BrowserConsoleResult, KoiError>> {
+      const buf = currentTabId !== null ? (tabConsoleLogs.get(currentTabId) ?? []) : [];
+      const MAX_LIMIT = 200;
+      const limit = Math.min(options?.limit ?? 50, MAX_LIMIT);
+      const levels = options?.levels;
+      const filtered = levels ? buf.filter((e) => levels.includes(e.level)) : buf;
+      const total = filtered.length;
+      const entries = filtered.slice(-limit);
+      if (options?.clear === true && currentTabId !== null) {
+        tabConsoleLogs.set(currentTabId, []);
+      }
+      return { ok: true, value: { entries, total } };
+    },
+
+    async evaluate(
+      script: string,
+      options?: BrowserEvaluateOptions,
+    ): Promise<Result<BrowserEvaluateResult, KoiError>> {
+      // Reject evaluate() on borrowed contexts (CDP / ws endpoint). There's
+      // no safe way to cancel page.evaluate() — on timeout the script keeps
+      // running and can continue mutating user state (double-submits, leaked
+      // writes). Destructive cleanup (goto about:blank / page.close) would
+      // discard the user's tab contents. Neither option is acceptable on a
+      // live user browser session; reject at the API boundary instead.
+      //
+      // Callers that need programmatic eval on the user's tab should use
+      // snapshot + click/type/fillForm flows which are cancellable and
+      // idempotent per-operation.
+      if (borrowedContext) {
+        return {
+          ok: false,
+          error: permission(
+            "evaluate() is not supported on borrowed contexts (browser-ext / cdpEndpoint / " +
+              "wsEndpoint). page.evaluate() cannot be cancelled safely on a live user session; " +
+              "use snapshot + click/type/fillForm for scripted interaction instead.",
+          ),
+        };
+      }
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+        const t = resolveTimeout(
+          options?.timeout,
+          EVALUATE_DEFAULT_MS,
+          EVALUATE_MAX_MS,
+          "evaluate",
+        );
+        if (!t.ok) return t;
+
+        // page.evaluate() has no native timeout and no cancellation primitive.
+        // A Promise.race timeout leaves the page-side script running — side
+        // effects from the script can continue after the driver returns an
+        // error (double-submits, leaked mutations, inconsistent retries).
+        //
+        // On timeout, we INVALIDATE THE JS EXECUTION CONTEXT by navigating
+        // the page to about:blank. That forcibly terminates whatever the
+        // script was doing and surfaces `STALE_REF` / fresh-snapshot semantics
+        // to the caller via the existing invalidation path.
+        let timedOut = false;
+        const value: unknown = await Promise.race([
+          page.evaluate(script),
+          new Promise<never>((_resolve, reject) => {
+            setTimeout(() => {
+              timedOut = true;
+              reject(new Error(`evaluate timed out after ${t.value}ms`));
+            }, t.value);
+          }),
+        ]).catch(async (err: unknown) => {
+          if (timedOut) {
+            // On borrowed contexts (CDP/ws endpoint), the page belongs to the
+            // user's live browser session (e.g., browser-ext attached tab).
+            // Destructive cleanup (goto about:blank or page.close) would
+            // discard user state / form data — unacceptable.
+            //
+            // Reserve destructive cleanup for driver-OWNED pages only. On
+            // borrowed contexts we just return a timeout and let the still-
+            // running script finish (it may still mutate state, but that's
+            // better than forcibly blanking the user's live tab).
+            if (borrowedContext) {
+              throw err;
+            }
+            // Driver-owned page: kill the execution context so the still-running
+            // script cannot mutate state after we return an error. Escalate:
+            //   1. goto about:blank — cleanest; keeps the tab usable. KEEP in map.
+            //   2. page.close() if (1) fails — tab is gone. DROP from map.
+            //   3. If both fail — renderer wedged. DROP from map anyway so the
+            //      caller gets a fresh page on next ensurePage().
+            let cleanup: "navigated" | "closed" | "abandoned" = "abandoned";
+            try {
+              await page.goto("about:blank", { timeout: 1000 });
+              cleanup = "navigated";
+            } catch {
+              // goto failed — escalate.
+            }
+            if (cleanup === "abandoned") {
+              try {
+                await page.close({ runBeforeUnload: false });
+                cleanup = "closed";
+              } catch {
+                // page.close() also failed — remains "abandoned".
+              }
+            }
+            // Snapshot is stale no matter what — script may have mutated state.
+            // Invalidate under the tab we resolved at ensurePage(), not a
+            // possibly-raced currentTabId.
+            invalidateTabSnapshot(activeTabId);
+            // Only drop from tabs map when the page is actually gone or abandoned.
+            // If goto succeeded, the page is alive at about:blank and should
+            // remain managed so dispose() / tabList() / tabClose() can find it.
+            if (cleanup !== "navigated") {
+              tabs.delete(activeTabId);
+              tabConsoleLogs.delete(activeTabId);
+              if (currentTabId === activeTabId) {
+                // Recover the driver so subsequent calls don't wedge on a
+                // dangling tabId: promote to any surviving tab, or null out
+                // so the next ensurePage() creates a fresh page.
+                const survivor = tabs.keys().next().value;
+                currentTabId = survivor ?? null;
+              }
+            }
+          }
+          throw err;
+        });
+        return { ok: true, value: { value } };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_evaluate", e) };
+      }
+    },
+
+    async upload(
+      ref: string,
+      files: readonly BrowserUploadFile[],
+      options?: BrowserUploadOptions,
+    ): Promise<Result<void, KoiError>> {
+      try {
+        const { page, tabId: activeTabId } = await ensurePage();
+        const stale = checkSnapshotId(activeTabId, options?.snapshotId);
+        if (stale) return stale;
+
+        const found = requireLocator(page, activeTabId, ref, options?.frameSelector);
+        if ("error" in found) return found.error;
+
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "upload");
+        if (!t.ok) return t;
+
+        // Convert base64 content to Buffer payloads for Playwright setInputFiles
+        const payloads = files.map((f) => ({
+          name: f.name,
+          mimeType: f.mimeType ?? "application/octet-stream",
+          buffer: Buffer.from(f.content, "base64"),
+        }));
+
+        await found.locator.setInputFiles(payloads, { timeout: t.value });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_upload", e) };
+      }
+    },
+
+    async traceStart(options?: BrowserTraceOptions): Promise<Result<void, KoiError>> {
+      try {
+        const ctx = await ensureContext();
+        // Refuse on borrowed contexts — tracing captures every tab/page in the
+        // context, including ones the caller owns. Would exfiltrate unrelated
+        // browsing data when the driver is attached via cdpEndpoint/wsEndpoint
+        // to a live browser session.
+        if (borrowedContext) {
+          return {
+            ok: false,
+            error: permission(
+              "browser_trace_start refused on borrowed-context transports (cdpEndpoint/wsEndpoint). Tracing would capture caller-owned tabs. Use a driver-owned browser (launch mode) if tracing is needed.",
+            ),
+          };
+        }
+        await ctx.tracing.start({
+          snapshots: options?.snapshots ?? true,
+          screenshots: true,
+          sources: false,
+          ...(options?.title !== undefined ? { title: options.title } : {}),
+        });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_trace_start", e) };
+      }
+    },
+
+    async traceStop(): Promise<Result<BrowserTraceResult, KoiError>> {
+      try {
+        const ctx = await ensureContext();
+        if (borrowedContext) {
+          return {
+            ok: false,
+            error: permission(
+              "browser_trace_stop refused on borrowed-context transports. Tracing was never allowed to start on this transport.",
+            ),
+          };
+        }
+        const tracePath = join(tmpdir(), `koi-trace-${Date.now()}.zip`);
+        await ctx.tracing.stop({ path: tracePath });
+        return { ok: true, value: { path: tracePath } };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_trace_stop", e) };
+      }
+    },
+
+    async dispose(): Promise<void> {
+      // Invalidate all tab snapshots and console buffers
+      tabSnapshots.clear();
+      tabConsoleLogs.clear();
+
+      // Deregister the borrowed-context page listener + uninstall the
+      // per-page rebinding-guard routes. Without this cleanup, disposing
+      // the driver leaves our `page.route("**")` and `ctx.on("page")`
+      // handlers attached to the caller's pages, which keeps blocking
+      // their navigations after the driver is gone.
+      if (borrowedPageContext !== null && borrowedPageHandler !== null) {
+        try {
+          borrowedPageContext.off("page", borrowedPageHandler);
+        } catch {
+          // Ignore — context may already be closed.
+        }
+      }
+      for (const [page, handler] of borrowedGuardedPages) {
+        // Handler-specific unroute: page.unroute(pattern) with no handler
+        // strips every "**" route including ones the caller may have
+        // installed. Always pass our exact handler.
+        await page.unroute("**", handler).catch(() => undefined);
+      }
+      borrowedGuardedPages.clear();
+      borrowedPageHandler = null;
+      borrowedPageContext = null;
+
+      // Only close tabs the driver CREATED. Adopted pages on borrowed
+      // contexts (browser-ext / cdpEndpoint / wsEndpoint) belong to the
+      // caller — closing them would destroy the user's live tab.
+      for (const [tabId, page] of tabs) {
+        if (ownedTabIds.has(tabId)) {
+          await page.close().catch(() => undefined);
+        }
+      }
+      tabs.clear();
+      ownedTabIds.clear();
+      currentTabId = null;
+
+      if (browserContext) {
+        // Only close the context if we created it ourselves. Borrowed contexts
+        // (reused from an external browser on cdpEndpoint/wsEndpoint paths)
+        // belong to the caller — closing them would take down their pages.
+        if (!borrowedContext) {
+          await browserContext.close().catch(() => undefined);
+        }
+        browserContext = null;
+        borrowedContext = false;
+        contextInitPromise = null; // intentional mutation: reset so a new driver can be re-initialized after dispose
+      }
+
+      // Only close browser if we launched it (not injected and not CDP)
+      if (ownsLifecycle && browser) {
+        await browser.close().catch(() => undefined);
+        browser = null;
+        browserInitPromise = null; // intentional mutation: reset so a new driver can be re-initialized after dispose
+      }
+    },
+  };
+}
+
+// Re-export for consumers who want to use VALID_ROLES or isAriaRole directly
+export { isAriaRole, VALID_ROLES };

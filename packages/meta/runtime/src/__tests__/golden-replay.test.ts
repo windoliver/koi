@@ -11873,3 +11873,138 @@ describe("Golden: @koi/middleware-collective-memory", () => {
     expect(formatted).toContain("## Collective Memory");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/browser-ext (standalone API coverage)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/browser-ext", () => {
+  test("createExtensionBrowserDriver factory returns a BrowserDriver-shaped transport", async () => {
+    const { createExtensionBrowserDriver } = await import("@koi/browser-ext");
+    const driver: import("@koi/core").BrowserDriver = createExtensionBrowserDriver({
+      instancesDir: "/tmp/koi-browser-ext-golden",
+      authToken: "golden-token",
+    });
+
+    expect(driver.name).toBe("browser-ext");
+    expect(typeof driver.tabList).toBe("function");
+    expect(typeof driver.snapshot).toBe("function");
+    expect(typeof driver.navigate).toBe("function");
+    expect(typeof driver.dispose).toBe("function");
+  });
+
+  test("public export surface stays stable", async () => {
+    const browserExt = await import("@koi/browser-ext");
+
+    expect(Object.keys(browserExt).sort()).toEqual([
+      "createDriverClient",
+      "createExtensionBrowserDriver",
+      "createLoopbackWebSocketBridge",
+    ]);
+  });
+
+  test("browser tools can be enumerated from the extension driver", async () => {
+    const { createExtensionBrowserDriver } = await import("@koi/browser-ext");
+    const { OPERATIONS, createBrowserProvider, createMockAgent } = await import(
+      "@koi/tool-browser"
+    );
+    const { isAttachResult, toolToken } = await import("@koi/core");
+
+    const driver = createExtensionBrowserDriver({
+      instancesDir: "/tmp/koi-browser-ext-golden",
+      authToken: "golden-token",
+    });
+    const provider = createBrowserProvider({ backend: driver });
+    const agent = createMockAgent();
+    const attached = await provider.attach(agent);
+    const components = isAttachResult(attached) ? attached.components : attached;
+
+    for (const operation of OPERATIONS) {
+      expect(components.has(toolToken(`browser_${operation}`) as string)).toBe(true);
+    }
+
+    await provider.detach?.(agent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/browser-playwright (standalone API coverage)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/browser-playwright", () => {
+  test("createPlaywrightBrowserDriver is exported and returns a function", async () => {
+    const pw = await import("@koi/browser-playwright");
+    expect(typeof pw.createPlaywrightBrowserDriver).toBe("function");
+    expect(typeof pw.detectInstalledBrowsers).toBe("function");
+    expect(typeof pw.STEALTH_INIT_SCRIPT).toBe("string");
+    expect(pw.STEALTH_INIT_SCRIPT.length).toBeGreaterThan(0);
+  });
+
+  test("public export surface stays stable", async () => {
+    const pw = await import("@koi/browser-playwright");
+    expect(Object.keys(pw).sort()).toEqual([
+      "STEALTH_INIT_SCRIPT",
+      "createPlaywrightBrowserDriver",
+      "detectInstalledBrowsers",
+    ]);
+  });
+});
+
+// Production wiring: both L2 browser drivers compose into the runtime
+// through createBrowserBackend. Verifies the discriminated-union config
+// surface that callers of RuntimeConfig.browser.backend use.
+describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
+  test("kind=playwright constructs a BrowserDriver", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    // Headless launch mode — don't actually launch, just verify construction.
+    const driver = await createBrowserBackend({ kind: "playwright", headless: true });
+    expect(typeof driver.name).toBe("string");
+    expect(typeof driver.snapshot).toBe("function");
+    expect(typeof driver.navigate).toBe("function");
+    expect(typeof driver.dispose).toBe("function");
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext constructs an ExtensionBrowserDriver with auto-composed delegate", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = await createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test",
+      authToken: "1234567890abcdef",
+    });
+    expect(driver.name).toBe("browser-ext");
+    // ExtensionBrowserDriver surface includes the extra attachLoopbackBridge
+    // + selectTargetTab methods beyond the BrowserDriver contract.
+    expect(
+      typeof (driver as unknown as { attachLoopbackBridge: unknown }).attachLoopbackBridge,
+    ).toBe("function");
+    expect(typeof (driver as unknown as { selectTargetTab: unknown }).selectTargetTab).toBe(
+      "function",
+    );
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext auto-wires createPlaywrightDriver factory by default", async () => {
+    // Contract: if the caller does NOT supply createPlaywrightDriver, the
+    // factory auto-composes @koi/browser-playwright via connectOverCDP on
+    // the extension's loopback WS bridge. Verify the composition seam by
+    // checking the driver advertises the composed surface (attachLoopback
+    // + selectTargetTab exist) without the caller importing @koi/browser-
+    // playwright directly.
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = (await createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test-auto",
+      authToken: "1234567890abcdef",
+    })) as unknown as {
+      readonly name: string;
+      readonly attachLoopbackBridge: unknown;
+      readonly selectTargetTab: unknown;
+      readonly dispose?: () => Promise<void>;
+    };
+    expect(driver.name).toBe("browser-ext");
+    expect(typeof driver.attachLoopbackBridge).toBe("function");
+    expect(typeof driver.selectTargetTab).toBe("function");
+    await driver.dispose?.();
+  });
+});

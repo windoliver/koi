@@ -1,0 +1,39 @@
+{
+  "name": "@koi/browser-ext",
+  "description": "MV3 extension + native-messaging host for attaching to user's live Chrome",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "koi-browser-ext": "./dist/bin/koi-browser-ext.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./native-host": {
+      "types": "./dist/native-host/index.d.ts",
+      "import": "./dist/native-host/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "ws": "^8.18.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.280",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.11",
+    "playwright": "^1.49.0"
+  },
+  "scripts": {
+    "build": "tsup && bun extension/build.ts",
+    "build:extension": "bun extension/build.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}
