@@ -43,6 +43,16 @@ interface PoolEntry {
    * event no longer leak one IIFE per abandoned worker.
    */
   readonly watchController: AbortController;
+  /**
+   * Resolves once the watch IIFE has finished every cleanup path (terminal
+   * branch, post-loop tidy, or fault catch). `stop()`'s success path awaits
+   * this before deciding whether to release `activeIds`, so the IIFE's
+   * stillAlive→quarantine reconciliation runs FIRST and a duplicate
+   * `start()` cannot slip into the window between teardown success and
+   * IIFE re-acquisition of the reservation.
+   */
+  readonly cleanupSettled: Promise<void>;
+  readonly resolveCleanupSettled: () => void;
   restartAttempts: number;
   restartTimestamps: number[];
   stopping: boolean;
@@ -713,6 +723,11 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       resolveExited = resolve;
     });
 
+    let resolveCleanupSettled: () => void = () => {};
+    const cleanupSettled = new Promise<void>((resolve) => {
+      resolveCleanupSettled = resolve;
+    });
+
     const watchController = new AbortController();
     const entry: PoolEntry = {
       handle: spawned.value,
@@ -721,6 +736,8 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       exitedPromise,
       resolveExited,
       watchController,
+      cleanupSettled,
+      resolveCleanupSettled,
       restartAttempts: 0,
       restartTimestamps: [],
       stopping: false,
@@ -1006,7 +1023,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
         scheduleRestart(current, request, policy, recentTimestamps, now);
       }
-    })();
+    })().finally(() => entry.resolveCleanupSettled());
 
     return { ok: true, value: spawned.value };
   };
@@ -1113,18 +1130,6 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         agentId: entry.handle.agentId,
         reason: "stop-teardown-failed",
       });
-    } else {
-      // Worker confirmed dead. Clear any stale quarantine, and release
-      // activeIds ourselves because the IIFE's tidy-cleanup may already
-      // have run (watch stream closed early, set the quarantine record,
-      // then the OS process finally died and our isAlive poll resolved).
-      // The IIFE's normal terminal-event branch would have released
-      // activeIds, but the tidy branch deliberately preserves it to
-      // protect an unconfirmed-death window — once stop() has confirmation
-      // of death, that protection is obsolete and we must release the
-      // reservation explicitly.
-      quarantined.delete(id);
-      activeIds.delete(id);
     }
     // Belt-and-suspenders: abort the backend.watch AbortSignal AFTER teardown
     // so a backend that drops its watch stream without ever emitting a
@@ -1135,6 +1140,34 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // chance to actually stop the OS process, and teardownWorker would return
     // "ok" while the process was still alive.
     entry.watchController.abort();
+    // Wait (bounded) for the watch IIFE to fully settle before releasing
+    // activeIds. Without this, there is a window between stop()'s teardown
+    // success (false-positive isAlive=dead) and the IIFE's post-loop
+    // stillAlive check where activeIds would be free, letting a duplicate
+    // start() race in. The IIFE's stillAlive branch re-acquires activeIds
+    // and sets a quarantine; we then read the quarantine state to decide
+    // whether to release.
+    //
+    // Bound: shutdownDeadlineMs. A degraded backend that hangs in its
+    // watch generator after abort cannot stall stop() indefinitely; if
+    // the IIFE doesn't settle in time we conservatively skip the release
+    // (treat as quarantined-by-timeout) so a still-live worker stays
+    // protected. The IIFE's eventual cleanup will still drop the
+    // reservation if the worker truly dies.
+    const settleDeadlineMs = Math.max(config.shutdownDeadlineMs, 50);
+    let settleHandle: ReturnType<typeof setTimeout> | undefined;
+    const settleDeadline = new Promise<"deadline">((resolve) => {
+      settleHandle = setTimeout(() => resolve("deadline"), settleDeadlineMs);
+    });
+    const settled = await Promise.race([
+      entry.cleanupSettled.then(() => "settled" as const),
+      settleDeadline,
+    ]);
+    clearTimeout(settleHandle);
+    if (settled === "settled" && teardownResult.ok && !quarantined.has(id)) {
+      // Confirmed dead AND no concurrent path quarantined. Safe to release.
+      activeIds.delete(id);
+    }
     return teardownResult;
   };
 

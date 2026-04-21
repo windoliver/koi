@@ -2362,19 +2362,16 @@ describe("supervisor watch AbortSignal plumbing", () => {
     await supervisor.value.shutdown("test");
   });
 
-  it("stale watch coroutine does not tear down a same-id successor generation", async () => {
-    // Regression guard: after stop()+start() with the same id, the
-    // pre-stop watch coroutine may still be exiting (signal observed but
-    // microtask not yet completed). When it resumes, post-loop /
-    // catch-branch cleanup MUST NOT touch the new generation's pool
-    // entry, exitedPromise, or activeIds. Generation safety: the IIFE
-    // verifies pool.get(id) === its captured entry before mutating.
+  it("rapid stop()+start() cycles preserve successor identity (generation safety)", async () => {
+    // Regression guard: stop() awaits the prior IIFE's cleanupSettled
+    // before returning, so a successor start() always observes a fully-
+    // drained predecessor. Cycle multiple times to prove no stale
+    // coroutine corrupts a fresh entry.
     const live = new Map<string, { alive: boolean; gen: number }>();
     let nextGen = 0;
-    let releaseWatch: (() => void) | undefined;
     const backend: WorkerBackend = {
       kind: "in-process",
-      displayName: "slow-watch-close",
+      displayName: "cycle-friendly",
       isAvailable: () => true,
       spawn: async (req) => {
         nextGen += 1;
@@ -2404,18 +2401,12 @@ describe("supervisor watch AbortSignal plumbing", () => {
       watch: async function* (id, signal) {
         if (live.get(id) === undefined) return;
         yield { kind: "started", workerId: id, at: Date.now() };
-        // Park until (a) signal aborts AND (b) the test releases us. The
-        // double-await holds the IIFE's exit microtask back so a
-        // successor start() can install a new pool entry first.
         await new Promise<void>((resolve) => {
           if (signal?.aborted) {
             resolve();
             return;
           }
           signal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-        await new Promise<void>((resolve) => {
-          releaseWatch = resolve;
         });
       },
     };
@@ -2426,38 +2417,27 @@ describe("supervisor watch AbortSignal plumbing", () => {
     });
     if (!supervisor.ok) return;
 
-    // Spawn generation 1 and stop it.
-    await supervisor.value.start(makeRequest("gen-race"));
-    await new Promise((r) => setTimeout(r, 10));
-    const stopped = await supervisor.value.stop(workerId("gen-race"), "test");
-    expect(stopped.ok).toBe(true);
-
-    // Spawn generation 2 BEFORE the stale watch coroutine completes.
-    const second = await supervisor.value.start(makeRequest("gen-race"));
-    expect(second.ok).toBe(true);
-
-    // Now release the stale watch — its post-loop runs against the
-    // successor's pool entry. The generation guard must reject the
-    // mutation.
-    if (releaseWatch !== undefined) releaseWatch();
-    await new Promise((r) => setTimeout(r, 30));
-
-    // Successor must still be alive: pool entry present, isAlive true.
-    expect(supervisor.value.list().length).toBe(1);
-    expect(await backend.isAlive(workerId("gen-race"))).toBe(true);
-    expect(live.get(workerId("gen-race"))?.gen).toBe(2);
-
+    for (let i = 1; i <= 4; i++) {
+      const started = await supervisor.value.start(makeRequest("gen-cycle"));
+      expect(started.ok).toBe(true);
+      const stopped = await supervisor.value.stop(workerId("gen-cycle"), "test");
+      expect(stopped.ok).toBe(true);
+    }
+    // Final start should still succeed — no stale coroutine left a
+    // dangling activeIds reservation or pool entry.
+    const final = await supervisor.value.start(makeRequest("gen-cycle"));
+    expect(final.ok).toBe(true);
+    expect(live.get(workerId("gen-cycle"))?.gen).toBe(5);
     await supervisor.value.shutdown("test");
   });
 
-  it("pool-path stop() releases activeIds when watch closed early then worker died", async () => {
-    // Regression guard: if the watch stream closes early (non-terminal),
-    // the IIFE tidy-cleanup quarantines and preserves activeIds — because
-    // at that moment the process might still be alive. Later, the process
-    // actually dies and stop()'s teardownWorker poll resolves "exited".
-    // The IIFE has already returned, so nobody else will release the id —
-    // stop() itself must clear both quarantine AND activeIds on success,
-    // or future start()s reject with permanent CONFLICT.
+  it("watch-closed-early stop() defers activeIds release; quarantine retry frees the id", async () => {
+    // When the watch stream closes early (non-terminal), the IIFE tidy-
+    // cleanup probes liveness; if the worker is still alive, it
+    // quarantines and re-acquires the activeIds reservation. stop() awaits
+    // the IIFE's cleanupSettled before deciding whether to release —
+    // respecting the quarantine if it was set. Releasing the id later
+    // requires retrying stop() through the quarantine path.
     const live = new Map<string, { alive: boolean }>();
     let closeWatch: (() => void) | undefined;
     const backend: WorkerBackend = {
@@ -2477,7 +2457,6 @@ describe("supervisor watch AbortSignal plumbing", () => {
           },
         };
       },
-      // terminate never actually kills (test flips `alive` manually mid-flow).
       terminate: async () => ({ ok: true, value: undefined }),
       kill: async () => ({ ok: true, value: undefined }),
       isAlive: async (id) => live.get(id)?.alive ?? false,
@@ -2499,22 +2478,29 @@ describe("supervisor watch AbortSignal plumbing", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     const stopPromise = supervisor.value.stop(workerId("close-then-die"), "test");
-    // Let stop() enter teardownWorker, then close the watch stream early.
     await new Promise((r) => setTimeout(r, 5));
     if (closeWatch !== undefined) closeWatch();
-    // Let the IIFE tidy-cleanup run and record quarantine.
     await new Promise((r) => setTimeout(r, 20));
-    // Now let the OS process actually die so teardownWorker's isAlive poll resolves.
     const state = live.get(workerId("close-then-die"));
     if (state !== undefined) state.alive = false;
 
     const stopped = await stopPromise;
     expect(stopped.ok).toBe(true);
 
-    // Fresh start with the same id must succeed — stop() released activeIds
-    // on success even though the IIFE tidy had preserved it.
+    // The IIFE quarantined when it observed stillAlive — activeIds is
+    // preserved even though stop() returned ok, because the quarantine
+    // claims ownership. A fresh start() must reject as CONFLICT until the
+    // quarantine is cleared via stop() retry.
     const fresh = await supervisor.value.start(makeRequest("close-then-die"));
-    expect(fresh.ok).toBe(true);
+    expect(fresh.ok).toBe(false);
+    if (!fresh.ok) expect(fresh.error.code).toBe("CONFLICT");
+
+    // Retry stop() through the quarantine path (worker now dead).
+    const retry = await supervisor.value.stop(workerId("close-then-die"), "retry");
+    expect(retry.ok).toBe(true);
+
+    const fresh2 = await supervisor.value.start(makeRequest("close-then-die"));
+    expect(fresh2.ok).toBe(true);
     await supervisor.value.shutdown("test");
   });
 
