@@ -1,6 +1,6 @@
 {
   "name": "@koi/browser-a11y",
-  "description": "Accessibility-tree serializer + Playwright error translator — pure L0u helpers shared by browser-playwright and browser-ext",
+  "description": "Accessibility-tree serializer + Playwright error translator (L0u)",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,6 +1,6 @@
 {
   "name": "@koi/browser-playwright",
-  "description": "Playwright implementation of BrowserDriver — CDP-over-Playwright driver for agent browser automation, with optional wsEndpoint transport for extension bridging",
+  "description": "Playwright BrowserDriver with CDP + wsEndpoint transports",
   "version": "0.0.0",
   "private": true,
   "type": "module",
