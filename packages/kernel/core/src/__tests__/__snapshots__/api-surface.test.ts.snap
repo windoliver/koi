@@ -876,7 +876,18 @@ interface WorkerBackend {
     readonly terminate: (id: WorkerId, reason: string) => Promise<Result<void, KoiError>>;
     readonly kill: (id: WorkerId) => Promise<Result<void, KoiError>>;
     readonly isAlive: (id: WorkerId) => Promise<boolean>;
-    readonly watch: (id: WorkerId) => AsyncIterable<WorkerEvent>;
+    /**
+     * Observe worker lifecycle events. Implementations MUST exit cleanly (return
+     * from the async iterator) when \`signal\` fires, releasing any resources the
+     * backend holds for this watch call. Callers (supervisor's watch IIFE) use
+     * this to cancel outstanding watches on \`stop()\`/\`shutdown()\` so backends
+     * that cannot guarantee terminal event emission (tmux, remote RPC, managed
+     * cluster) do not leak one iterator per abandoned worker.
+     *
+     * \`signal\` is optional to preserve back-compat with adapters that iterate
+     * \`watch()\` directly in tests; production callers SHOULD always pass one.
+     */
+    readonly watch: (id: WorkerId, signal?: AbortSignal) => AsyncIterable<WorkerEvent>;
     /**
      * True if this backend emits \`WorkerEvent.heartbeat\` when a worker signals
      * liveness. When undefined/false, the supervisor rejects \`backendHints.heartbeat\`

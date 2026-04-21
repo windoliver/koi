@@ -127,11 +127,22 @@ export function createFakeBackend(
       return { ok: true, value: undefined };
     },
     isAlive: async (id) => workers.get(id)?.alive ?? false,
-    watch: async function* (id) {
+    watch: async function* (id, signal) {
       const s = workers.get(id);
       if (s === undefined) return;
+      if (signal?.aborted) return;
       // See subprocess-backend for full rationale on cursor + cancellation.
       let cancelResolve: (() => void) | undefined;
+      // AbortSignal: supervisor aborts on stop()/shutdown() so parked
+      // awaits exit even when the backend never emits terminal events.
+      const onAbort = (): void => {
+        if (cancelResolve !== undefined) {
+          const r = cancelResolve;
+          cancelResolve = undefined;
+          r();
+        }
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       try {
         let cursor = 0;
         // Phase 1: drain existing lifecycle events.
@@ -152,6 +163,7 @@ export function createFakeBackend(
         }
         // Phase 4: always-drain-then-await with cancellation.
         while (true) {
+          if (signal?.aborted) return;
           while (cursor < s.events.length) {
             const ev = s.events[cursor++];
             if (ev === undefined) break;
@@ -179,6 +191,7 @@ export function createFakeBackend(
           if (ev.kind === "exited" || ev.kind === "crashed") return;
         }
       } finally {
+        signal?.removeEventListener("abort", onAbort);
         if (cancelResolve !== undefined) {
           const r = cancelResolve;
           cancelResolve = undefined;

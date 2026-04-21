@@ -221,7 +221,16 @@ export function createSubprocessBackend(): WorkerBackend {
         //   - watch() will prune once it yields the terminal event
         //   - a fallback timer prunes if no watcher ever attaches
         state.pruneTimer = setTimeout(() => {
-          if (!state.terminalDelivered) workers.delete(request.workerId);
+          // Identity-check before deleting: if the supervisor aborted the
+          // watch before the terminal event was drained (terminalDelivered
+          // stays false) and a same-id respawn has already installed a
+          // fresh `state` into `workers`, an indiscriminate delete would
+          // evict the LIVE successor entry and lose track of a running
+          // process. Only delete if `workers.get(id)` is still this exact
+          // (stale) state reference.
+          if (!state.terminalDelivered && workers.get(request.workerId) === state) {
+            workers.delete(request.workerId);
+          }
         }, PRUNE_GRACE_MS);
       });
 
@@ -273,9 +282,11 @@ export function createSubprocessBackend(): WorkerBackend {
     return workers.get(id)?.alive ?? false;
   };
 
-  const watch = async function* (id: WorkerId): AsyncIterable<WorkerEvent> {
+  const watch = async function* (id: WorkerId, signal?: AbortSignal): AsyncIterable<WorkerEvent> {
     const state = workers.get(id);
     if (state === undefined) return;
+    // Early-abort short-circuit: caller aborted before we even started.
+    if (signal?.aborted) return;
     // Cancellation wiring: iterator.return() (called by test helpers or
     // the supervisor during shutdown) must unblock a parked await even
     // when no backend events are arriving. The pattern: remember the
@@ -283,6 +294,19 @@ export function createSubprocessBackend(): WorkerBackend {
     // the finally block. Without this, a stalled iterator could hang
     // indefinitely on its next() promise while waiting for cancellation.
     let cancelResolve: (() => void) | undefined;
+    // AbortSignal plumbing: supervisor aborts on stop()/shutdown() so a
+    // parked await exits even when the backend never emits a terminal
+    // event (pathological adapters or backends under stress). We attach
+    // one listener that resolves the currently-parked cancelResolve.
+    // Removed in finally.
+    const onAbort = (): void => {
+      if (cancelResolve !== undefined) {
+        const r = cancelResolve;
+        cancelResolve = undefined;
+        r();
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       // We track our position in state.events explicitly (not via for..of)
       // because we need to re-drain after yielding the lastHeartbeat
@@ -344,6 +368,7 @@ export function createSubprocessBackend(): WorkerBackend {
       // drained, state.alive flips false, and a naive `while(alive)` exit
       // leaves the terminal event buffered but unseen).
       while (true) {
+        if (signal?.aborted) return;
         // Drain any events appended since the last iteration (including
         // during the yield pause of whatever we just yielded).
         while (cursor < state.events.length) {
@@ -389,6 +414,9 @@ export function createSubprocessBackend(): WorkerBackend {
         }
       }
     } finally {
+      // Detach abort listener so the AbortSignal doesn't retain this
+      // closure past the generator's lifetime.
+      signal?.removeEventListener("abort", onAbort);
       // Wake any parked Promise so iterator.return() can complete
       // bounded. Without this, a consumer timing out and calling return
       // would hang on a Promise that only resolves via a new event.
@@ -400,11 +428,26 @@ export function createSubprocessBackend(): WorkerBackend {
       // Prune the worker state once a watcher has drained it. The
       // fallback prune timer set in proc.exited.then is cleared here so
       // we don't double-delete or prune after a legitimate consumer.
-      if (state.pruneTimer !== undefined) {
+      //
+      // BUT: only clear the fallback timer when terminal was actually
+      // delivered. If abort fired between proc.exited and terminal drain
+      // (terminalDelivered stays false), clearing the timer would strand
+      // the dead state in `workers` forever — no later code path prunes
+      // it, since the watcher has already exited. Leaving the timer
+      // armed means the fallback prunes the entry after PRUNE_GRACE_MS,
+      // identity-checked against `workers.get(id) === state`.
+      if (state.terminalDelivered && state.pruneTimer !== undefined) {
         clearTimeout(state.pruneTimer);
         state.pruneTimer = undefined;
       }
-      if (state.terminalDelivered) workers.delete(id);
+      // Identity-check: a same-id respawn may have replaced `workers[id]`
+      // with a fresh state between terminal delivery and this finally
+      // hook running. Deleting unconditionally would evict the live
+      // successor. Only remove when the map still points at the stale
+      // state we were watching.
+      if (state.terminalDelivered && workers.get(id) === state) {
+        workers.delete(id);
+      }
     }
   };
 
