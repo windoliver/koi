@@ -669,3 +669,33 @@ Both scripts test:
 | `GOVERNANCE_ALLOW` | `GovernanceVerdict` | Frozen singleton `{ ok: true }` |
 | `VIOLATION_SEVERITY_ORDER` | `readonly ViolationSeverity[]` | `["info", "warning", "critical"]` |
 | `DEFAULT_VIOLATION_QUERY_LIMIT` | `number` | `100` |
+
+---
+
+## Wiring (current)
+
+````markdown
+                     ┌────────────────────────┐
+ audit-ndjson / ──►  │ AuditSink              │
+ audit-sqlite        └──────────┬─────────────┘
+                                │ sink.log()
+                                ▼
+                  ┌──────────────────────────┐
+                  │ AuditSinkComplianceRecorder│  ◄── ctx.sessionId
+                  └──────────┬───────────────┘
+                             │ recordCompliance()
+                             ▼
+                  GovernanceBackend.compliance
+
+ ─────────────────────────────────────────────
+
+ deny verdict ─► onViolation callback ─► SqliteViolationStore.record()
+                                         ▲
+                                         │ getViolations({ sessionId, limit })
+                                         │
+ /governance ◄── bridge.loadRecentViolations(n)
+````
+
+Both pipes are optional. `compliance` is auto-wired from the active audit
+sink(s) (fan-out when more than one). `violations` is opt-in via
+`--violation-sqlite=<path>`.

@@ -67,6 +67,15 @@ interface NdjsonAuditSinkConfig {
 
 ---
 
+## Compliance events
+
+When this sink is wired via `--audit-ndjson`, `runtime-factory.ts` also wraps
+it in `createAuditSinkComplianceRecorder` from `@koi/governance-defaults`.
+Every governance verdict produces one extra NDJSON line with
+`kind: "compliance_event"` — no separate flag required.
+
+---
+
 ## See Also
 
 - `@koi/middleware-audit` — the middleware that writes to this sink
