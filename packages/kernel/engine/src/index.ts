@@ -212,3 +212,6 @@ export type {
   SpawnChildOptions,
   SpawnChildResult,
 } from "./types.js";
+// wire supervision
+export type { SupervisionWiring, WireSupervisionOptions } from "./wire-supervision.js";
+export { wireSupervision } from "./wire-supervision.js";
