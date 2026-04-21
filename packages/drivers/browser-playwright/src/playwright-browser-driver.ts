@@ -52,7 +52,6 @@ import type {
 } from "@koi/core";
 import { internal, notFound, permission, staleRef, validation } from "@koi/core";
 import type { Browser, BrowserContext, FrameLocator, Locator, Page } from "playwright";
-import { chromium } from "playwright";
 
 /** Playwright-typed role guard — same validation as isAriaRole, returns Playwright's AriaRole. */
 type AriaRole = Parameters<Page["getByRole"]>[0];
@@ -182,7 +181,7 @@ function isPrivateIp(ip: string): boolean {
   if (hexIpv4) return isPrivateIpv4(hexIpv4);
   // Legacy IPv4-compatible IPv6 — e.g. ::127.0.0.1 (deprecated but still possible)
   const compat = /^::([\d.]+)$/.exec(lower);
-  if (compat?.[1] && compat[1].includes(".")) return isPrivateIpv4(compat[1]);
+  if (compat?.[1]?.includes(".")) return isPrivateIpv4(compat[1]);
   // IPv6 loopback / link-local / unique local
   if (lower === "::1") return true;
   if (/^fe[89ab][\da-f]?:/.test(lower)) return true; // fe80::/10 link-local
@@ -624,6 +623,9 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     if (!browserInitPromise) {
       browserInitPromise = (async (): Promise<Browser> => {
         // intentional assignment: set promise cache once
+        // Lazy-import playwright so the CLI bundle does not pull in playwright
+        // (and its unresolvable chromium-bidi CJS internals) at startup.
+        const { chromium } = await import("playwright");
         if (config.wsEndpoint && config.cdpEndpoint) {
           console.warn(
             "[@koi/browser-playwright] Both wsEndpoint and cdpEndpoint were provided; wsEndpoint takes precedence.",
@@ -676,6 +678,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         // Persistent context path: userDataDir bypasses ensureBrowser() entirely.
         // chromium.launchPersistentContext() returns a BrowserContext directly.
         if (config.userDataDir && !config.browser && !config.cdpEndpoint && !config.wsEndpoint) {
+          const { chromium } = await import("playwright");
           const launchArgs = config.stealth
             ? [
                 "--disable-blink-features=AutomationControlled",
@@ -895,7 +898,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     return { page, tabId };
   }
 
-  function getActiveTabId(): string | null {
+  function _getActiveTabId(): string | null {
     return currentTabId;
   }
 
@@ -1130,7 +1133,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async press(key: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
       try {
-        const { page, tabId: activeTabId } = await ensurePage();
+        const { page, tabId: _activeTabId } = await ensurePage();
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "press");
         if (!t.ok) return t;
 
@@ -1268,7 +1271,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       options?: BrowserScreenshotOptions,
     ): Promise<Result<BrowserScreenshotResult, KoiError>> {
       try {
-        const { page, tabId: activeTabId } = await ensurePage();
+        const { page, tabId: _activeTabId } = await ensurePage();
         const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "screenshot");
         if (!t.ok) return t;
 

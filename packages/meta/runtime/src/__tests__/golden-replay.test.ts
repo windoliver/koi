@@ -11953,7 +11953,7 @@ describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
   test("kind=playwright constructs a BrowserDriver", async () => {
     const { createBrowserBackend } = await import("../create-browser-backend.js");
     // Headless launch mode — don't actually launch, just verify construction.
-    const driver = createBrowserBackend({ kind: "playwright", headless: true });
+    const driver = await createBrowserBackend({ kind: "playwright", headless: true });
     expect(typeof driver.name).toBe("string");
     expect(typeof driver.snapshot).toBe("function");
     expect(typeof driver.navigate).toBe("function");
@@ -11963,7 +11963,7 @@ describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
 
   test("kind=browser-ext constructs an ExtensionBrowserDriver with auto-composed delegate", async () => {
     const { createBrowserBackend } = await import("../create-browser-backend.js");
-    const driver = createBrowserBackend({
+    const driver = await createBrowserBackend({
       kind: "browser-ext",
       instancesDir: "/tmp/koi-browser-ext-factory-test",
       authToken: "1234567890abcdef",
@@ -11988,11 +11988,11 @@ describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
     // + selectTargetTab exist) without the caller importing @koi/browser-
     // playwright directly.
     const { createBrowserBackend } = await import("../create-browser-backend.js");
-    const driver = createBrowserBackend({
+    const driver = (await createBrowserBackend({
       kind: "browser-ext",
       instancesDir: "/tmp/koi-browser-ext-factory-test-auto",
       authToken: "1234567890abcdef",
-    }) as unknown as {
+    })) as unknown as {
       readonly name: string;
       readonly attachLoopbackBridge: unknown;
       readonly selectTargetTab: unknown;

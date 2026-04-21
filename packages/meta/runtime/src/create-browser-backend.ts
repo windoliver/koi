@@ -13,13 +13,14 @@
  * construction, wsHeaders plumbing). The resulting driver is passed to
  * `RuntimeConfig.browser.backend` — the runtime owns dispose() lifecycle from
  * there.
+ *
+ * Imports of @koi/browser-playwright and @koi/browser-ext are deferred to
+ * call time via dynamic import() so that the CLI bundle does not pull in
+ * playwright (and its non-resolvable chromium-bidi CJS internals) at startup.
  */
 
-import { createExtensionBrowserDriver, type ExtensionDriverConfig } from "@koi/browser-ext";
-import {
-  createPlaywrightBrowserDriver,
-  type PlaywrightDriverConfig,
-} from "@koi/browser-playwright";
+import type { ExtensionDriverConfig } from "@koi/browser-ext";
+import type { PlaywrightDriverConfig } from "@koi/browser-playwright";
 import type { BrowserDriver } from "@koi/core";
 
 export type BrowserBackendConfig =
@@ -44,13 +45,19 @@ export type BrowserBackendConfig =
  * than one runtime instance (see `RuntimeConfig.browser` docs on unshared
  * backends).
  */
-export function createBrowserBackend(config: BrowserBackendConfig): BrowserDriver {
+export async function createBrowserBackend(config: BrowserBackendConfig): Promise<BrowserDriver> {
   switch (config.kind) {
     case "playwright": {
+      const { createPlaywrightBrowserDriver } = await import("@koi/browser-playwright");
       const { kind: _kind, ...pwConfig } = config;
       return createPlaywrightBrowserDriver(pwConfig);
     }
     case "browser-ext": {
+      const [{ createExtensionBrowserDriver }, { createPlaywrightBrowserDriver }] =
+        await Promise.all([
+          import("@koi/browser-ext"),
+          import("@koi/browser-playwright"),
+        ]);
       const { kind: _kind, ...extConfig } = config;
       return createExtensionBrowserDriver({
         ...extConfig,

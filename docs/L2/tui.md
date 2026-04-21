@@ -8,6 +8,10 @@
 
 ## Recent additions
 
+- **`engine-channel-smoke.test.ts` settle budget increase**: bumped from 100ms to 500ms to fix intermittent CI failures on loaded runners where the Worker thread message dispatch took longer than 100ms to settle.
+
+
+
 - **Mid-turn submit queue + interrupt-send input flow (#1907)**: `InputArea`/`processInputKey` now distinguish submit intent: plain Enter submits in `"queue"` mode, modified Enter (`Ctrl+Enter` / `Meta+Enter` when the terminal reports it) submits in `"interrupt"` mode, `Ctrl+K` is the reliable interrupt-send fallback for terminals that cannot distinguish modified Enter, and `Ctrl+J` remains the universal newline fallback. While an assistant turn is still running, queued user messages are rendered inline in the conversation as normal `You:` rows instead of surfacing a `SUBMIT_IN_PROGRESS` error or a separate queue counter chip.
 - **`system:model-switch` command + `ModelPicker` modal (#1902)**: new entry in `COMMAND_DEFINITIONS` under the System category. Palette label "Switch model", slash-command `/model`. Opens a full-screen fuzzy-search picker sourced by a host-provided `onFetchModels` callback (CLI fetches OpenRouter/OpenAI `/models` at picker-open). Selection dispatches `model_switched` to the store (updates top-level `modelName` AND mirrors into `sessionInfo.modelName` so diagnostics stay in sync) and calls the host's `onModelSwitch`, which returns `boolean` — `false` when the host rejects the switch (active run, `KOI_FALLBACK_MODEL` set). The picker cache is invalidated on rejection so the next open re-fetches. Model ids are sanitized at host ingress (allowlist + length cap) before reaching the TUI. Command count is now 24.
 - **`model_switched` reducer action**: reducer in `state/reduce.ts` updates `state.modelName` and mirrors the new id into `state.sessionInfo.modelName` when set. StatusBar reads from `state.modelName`; doctor view and transcript exports read from `state.sessionInfo`, so the mirror keeps them consistent after a mid-session switch.

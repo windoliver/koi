@@ -11,7 +11,6 @@
 
 import { existsSync } from "node:fs";
 import { platform } from "node:os";
-import { chromium } from "playwright";
 
 export interface DetectedBrowser {
   /** Human-readable name (e.g. "Google Chrome", "Playwright Chromium"). */
@@ -101,6 +100,7 @@ export async function detectInstalledBrowsers(): Promise<readonly DetectedBrowse
 
   // Playwright bundled Chromium — always available when playwright is installed
   try {
+    const { chromium } = await import("playwright");
     const bundledPath = chromium.executablePath();
     if (bundledPath && existsSync(bundledPath)) {
       found.push({
