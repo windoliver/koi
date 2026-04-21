@@ -930,6 +930,16 @@ export interface KoiRuntimeHandle {
    * Undefined when violations persistence is not configured.
    */
   readonly violationStore: ViolationStore | undefined;
+  /**
+   * The assembled governance backend — present when governance is enabled
+   * (`governanceEnabled === true`). Exposes `.compliance` (ComplianceRecorder)
+   * when `auditSqlitePath` is set, and `.violations` (ViolationStore) when
+   * `violationSqlitePath` is set. Undefined when `governanceDisabled: true`.
+   *
+   * Integration tests use this field to verify wiring without synthesising
+   * a full verdict (Task 13 / #1393).
+   */
+  readonly governanceBackend: GovernanceBackend | undefined;
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -2670,6 +2680,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       governanceAlertThresholds: config.governanceAlertThresholds,
       governanceEnabled,
       violationStore,
+      governanceBackend,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a
