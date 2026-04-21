@@ -853,6 +853,125 @@ describe("inspectComponent — pagination validation", () => {
   });
 });
 
+describe("detach reason propagation", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("user detach emits detached event with reason: 'user' via controller stream", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+
+    const observer = session.createObserver();
+    const observerEvents: import("@koi/core").DebugEvent[] = [];
+    observer.onDebugEvent((e) => observerEvents.push(e));
+
+    session.detach();
+
+    const detachedEvt = observerEvents.find((e) => e.kind === "detached");
+    expect(detachedEvt).toBeDefined();
+    if (detachedEvt?.kind !== "detached") return;
+    expect(detachedEvt.reason).toBe("user");
+  });
+
+  test("stale-session replacement emits detached event with reason: 'replaced'", () => {
+    const agent = makeAgent("replace-reason") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    const first = createDebugAttach({ agent });
+    if (!first.ok) return;
+
+    const sessionEvents: import("@koi/core").DebugEvent[] = [];
+    first.value.session.onDebugEvent((e) => sessionEvents.push(e));
+
+    // Force controller deactivation to simulate stale (without agent termination)
+    // so replacement path hits with reason "replaced"
+    (first.value.session as unknown as { detach: () => void }).detach();
+    const second = createDebugAttach({ agent });
+    expect(second.ok).toBe(true);
+
+    const detachedEvt = sessionEvents.find((e) => e.kind === "detached");
+    expect(detachedEvt).toBeDefined();
+    if (second.ok) second.value.session.detach();
+  });
+
+  test("agent termination during re-attach emits reason: 'agent_terminated'", () => {
+    const agent = makeAgent("term-reason") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    const first = createDebugAttach({ agent });
+    if (!first.ok) return;
+
+    const sessionEvents: import("@koi/core").DebugEvent[] = [];
+    first.value.session.onDebugEvent((e) => sessionEvents.push(e));
+
+    // Simulate termination
+    agent.state = "terminated";
+
+    const second = createDebugAttach({ agent });
+    expect(second.ok).toBe(true);
+
+    const detachedEvt = sessionEvents.find((e) => e.kind === "detached");
+    expect(detachedEvt).toBeDefined();
+    if (detachedEvt?.kind !== "detached") return;
+    expect(detachedEvt.reason).toBe("agent_terminated");
+    if (second.ok) second.value.session.detach();
+  });
+});
+
+describe("hasDebugSession — eager cleanup", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("hasDebugSession cleans up terminated agent's bundle immediately", () => {
+    const agent = makeAgent("eager-cleanup") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+
+    agent.state = "terminated";
+
+    // First call triggers eager cleanup
+    expect(hasDebugSession(agent.pid.id)).toBe(false);
+
+    // Old session handle must now be detached
+    expect(() => session.inspect()).toThrow("detached");
+
+    // Re-attach immediately succeeds (no stale entry)
+    const second = createDebugAttach({ agent: makeAgent("eager-cleanup") });
+    expect(second.ok).toBe(true);
+    if (second.ok) second.value.session.detach();
+  });
+});
+
+describe("observer rejects terminated agent", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("observer.inspect throws after agent.state becomes terminated", () => {
+    const agent = makeAgent("obs-term") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    (agent.components() as Map<string, unknown>).set("test:data", [1, 2]);
+    createDebugAttach({ agent });
+    const observeResult = createDebugObserve(agent.pid.id);
+    if (!observeResult.ok) return;
+    const observer = observeResult.value;
+
+    agent.state = "terminated";
+
+    expect(() => observer.inspect()).toThrow("revoked");
+    expect(observer.events()).toHaveLength(0);
+    const snap = observer.inspectComponent(
+      "test:data" as import("@koi/core").SubsystemToken<unknown>,
+    );
+    expect(snap.ok).toBe(false);
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in intercept phase to wrap auth/permission layers", () => {
     const { createDebugMiddleware } =

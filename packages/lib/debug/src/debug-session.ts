@@ -28,7 +28,21 @@ export interface CreateDebugSessionConfig {
   readonly sessionId?: string | undefined;
 }
 
+type DetachReason = "user" | "agent_terminated" | "replaced";
+
+export interface CreateDebugSessionResult {
+  readonly session: DebugSession;
+  /** Internal teardown with a specific detach reason (for lifecycle-driven revocation). */
+  readonly detachWithReason: (reason: DetachReason) => void;
+}
+
 export function createDebugSession(config: CreateDebugSessionConfig): DebugSession {
+  return createDebugSessionInternal(config).session;
+}
+
+export function createDebugSessionInternal(
+  config: CreateDebugSessionConfig,
+): CreateDebugSessionResult {
   const { agent, controller } = config;
   const id = debugSessionId(crypto.randomUUID());
   const snapshotSessionId = config.sessionId ?? (id as string);
@@ -107,19 +121,24 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
     };
   }
 
+  function teardown(reason: DetachReason): void {
+    if (detached) return;
+    detached = true;
+    // Emit detached through controller BEFORE deactivation so observers see it
+    controller.emitEvent({ kind: "detached", debugSessionId: id, reason });
+    if (controller.isPaused()) {
+      controller.releaseGate();
+    }
+    controller.deactivate();
+    unsubMw();
+  }
+
   const session: DebugSession = {
     id,
     agentId: agent.pid.id,
 
     detach: (): void => {
-      if (detached) return;
-      detached = true;
-      if (controller.isPaused()) {
-        controller.releaseGate();
-      }
-      controller.deactivate();
-      unsubMw();
-      emitToSession({ kind: "detached", debugSessionId: id, reason: "user" });
+      teardown("user");
     },
 
     step: (options?: StepOptions): Result<void, KoiError> => {
@@ -310,7 +329,7 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
     },
   };
 
-  return session;
+  return { session, detachWithReason: teardown };
 }
 
 function estimateSize(value: unknown): number {

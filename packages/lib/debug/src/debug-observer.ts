@@ -71,7 +71,7 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
     agentId: agent.pid.id,
 
     inspect: (tokens?: readonly SubsystemToken<unknown>[]): DebugSnapshot => {
-      if (detached || !controller.isActive()) {
+      if (detached || !controller.isActive() || agent.state === "terminated") {
         throw new Error("Observer is revoked: the debug session has been detached");
       }
       return buildSnapshot(tokens);
@@ -81,7 +81,7 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
       token: SubsystemToken<unknown>,
       options?: InspectComponentOptions,
     ): Result<ComponentSnapshot, KoiError> => {
-      if (detached || !controller.isActive()) {
+      if (detached || !controller.isActive() || agent.state === "terminated") {
         return {
           ok: false,
           error: {
@@ -145,7 +145,7 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
     },
 
     events: (limit?: number): readonly EngineEvent[] => {
-      if (detached || !controller.isActive()) return [];
+      if (detached || !controller.isActive() || agent.state === "terminated") return [];
       return controller.eventBuffer().tail(limit);
     },
 

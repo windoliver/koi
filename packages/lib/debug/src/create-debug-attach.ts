@@ -11,7 +11,7 @@ import { DEFAULT_EVENT_BUFFER_SIZE } from "./constants.js";
 import type { DebugController } from "./debug-middleware.js";
 import { createDebugMiddleware } from "./debug-middleware.js";
 import { createDebugObserver } from "./debug-observer.js";
-import { createDebugSession } from "./debug-session.js";
+import { createDebugSessionInternal } from "./debug-session.js";
 import { createEventRingBuffer } from "./event-ring-buffer.js";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +23,7 @@ interface DebugBundle {
   readonly session: DebugSession;
   readonly controller: DebugController;
   readonly middleware: KoiMiddleware;
+  readonly detachWithReason: (reason: "user" | "agent_terminated" | "replaced") => void;
 }
 
 export interface DebugAttachConfig {
@@ -66,7 +67,10 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
     }
     // Stale: agent terminated or controller deactivated without explicit detach — clean up.
     // Call session.detach() so the old handle is uniformly unusable (not just controller).
-    existingBundle.session.detach();
+    const replacementReason: "user" | "agent_terminated" | "replaced" = agentTerminated
+      ? "agent_terminated"
+      : "replaced";
+    existingBundle.detachWithReason(replacementReason);
     activeDebugSessions.delete(agentKey);
   }
 
@@ -83,9 +87,18 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
   }
   const eventBuffer = createEventRingBuffer(bufferSize);
   const { middleware, controller } = createDebugMiddleware(eventBuffer);
-  const session = createDebugSession({ agent: config.agent, controller });
+  const { session, detachWithReason } = createDebugSessionInternal({
+    agent: config.agent,
+    controller,
+  });
 
-  const bundle: DebugBundle = { agent: config.agent, session, controller, middleware };
+  const bundle: DebugBundle = {
+    agent: config.agent,
+    session,
+    controller,
+    middleware,
+    detachWithReason,
+  };
   activeDebugSessions.set(agentKey, bundle);
 
   // Wrap detach to clean up module-level tracking
@@ -103,13 +116,26 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
 
 /** @internal Use session.createObserver() instead. Kept for testing convenience only. */
 export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiError> {
-  const bundle = activeDebugSessions.get(agentId as string);
+  const key = agentId as string;
+  const bundle = activeDebugSessions.get(key);
   if (bundle === undefined) {
     return {
       ok: false,
       error: {
         code: "NOT_FOUND",
         message: `No debug session for agent ${agentId as string}`,
+        retryable: false,
+      },
+    };
+  }
+  if (bundle.agent.state === "terminated") {
+    bundle.detachWithReason("agent_terminated");
+    activeDebugSessions.delete(key);
+    return {
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: `Debug session for agent ${agentId as string} was revoked (agent terminated)`,
         retryable: false,
       },
     };
@@ -125,12 +151,21 @@ export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiE
   };
 }
 
-/** Check if an agent has an active debug session. */
+/** Check if an agent has an active debug session. Eagerly cleans up stale/terminated entries. */
 export function hasDebugSession(agentId: AgentId): boolean {
-  const bundle = activeDebugSessions.get(agentId as string);
+  const key = agentId as string;
+  const bundle = activeDebugSessions.get(key);
   if (bundle === undefined) return false;
-  if (bundle.agent.state === "terminated") return false;
-  return bundle.controller.isActive();
+  if (bundle.agent.state === "terminated") {
+    bundle.detachWithReason("agent_terminated");
+    activeDebugSessions.delete(key);
+    return false;
+  }
+  if (!bundle.controller.isActive()) {
+    activeDebugSessions.delete(key);
+    return false;
+  }
+  return true;
 }
 
 /** Clear all debug sessions. For testing cleanup only. */

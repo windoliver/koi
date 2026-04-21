@@ -56,6 +56,8 @@ export interface DebugController {
   readonly pausedEvent: () => EngineEvent | undefined;
   readonly pausedBreakpointId: () => BreakpointId | undefined;
   readonly setSessionId: (id: DebugSessionId) => void;
+  /** Emit a debug event through the controller's event stream (reaches session + observer subscribers). */
+  readonly emitEvent: (event: DebugEvent) => void;
 }
 
 export interface DebugMiddlewareResult {
@@ -342,6 +344,9 @@ export function createDebugMiddleware(
     pausedBreakpointId: () => pausedBpId,
     setSessionId: (sid) => {
       debugSessId = sid;
+    },
+    emitEvent: (event) => {
+      emitDebugEvent(event);
     },
   };
 
