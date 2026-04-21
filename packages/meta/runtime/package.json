@@ -22,6 +22,7 @@
     "@koi/core": "workspace:*",
     "@koi/cost-aggregator": "workspace:*",
     "@koi/daemon": "workspace:*",
+    "@koi/debug": "workspace:*",
     "@koi/decision-ledger": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-compose": "workspace:*",

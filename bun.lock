@@ -181,6 +181,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/debug": {
+      "name": "@koi/debug",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/decision-ledger": {
       "name": "@koi/decision-ledger",
       "version": "0.0.0",
@@ -711,6 +718,7 @@
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
         "@koi/daemon": "workspace:*",
+        "@koi/debug": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -1379,6 +1387,8 @@
     "@koi/cost-aggregator": ["@koi/cost-aggregator@workspace:packages/lib/cost-aggregator"],
 
     "@koi/daemon": ["@koi/daemon@workspace:packages/net/daemon"],
+
+    "@koi/debug": ["@koi/debug@workspace:packages/lib/debug"],
 
     "@koi/decision-ledger": ["@koi/decision-ledger@workspace:packages/lib/decision-ledger"],
 

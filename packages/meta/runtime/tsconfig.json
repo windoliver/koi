@@ -53,6 +53,7 @@
     { "path": "../../lib/middleware-task-anchor" },
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-otel" },
+    { "path": "../../lib/debug" },
     { "path": "../../lib/middleware-semantic-retry" },
     { "path": "../../lib/middleware-strict-agentic" },
     { "path": "../../lib/outcome-evaluator" },
