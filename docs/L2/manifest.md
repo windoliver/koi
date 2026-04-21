@@ -171,6 +171,57 @@ friction for security-critical relaxations.
 
 ---
 
+## Default manifest auto-discovery (#1959)
+
+When `--manifest` is omitted, `koi tui` and `koi start` look for a default
+manifest in the current working directory. The first matching file wins:
+
+1. `./koi.yaml`
+2. `./koi.yml`
+3. `./koi.manifest.yaml`
+4. `./koi.manifest.yml`
+
+Explicit `--manifest <path>` always overrides discovery. Set
+`KOI_NO_AUTO_MANIFEST=1` to skip discovery entirely (useful for CI jobs
+that want strict explicit configuration).
+
+Committing `koi.yaml` at the repo root lets contributors run `koi tui`
+or `koi start` with no extra flags and get the project's configured
+model, stacks, filesystem mounts, governance caps, and middleware.
+
+---
+
+## Nexus filesystem + inline OAuth
+
+The [`examples/koi.yaml`](../../examples/koi.yaml) template includes a
+commented `filesystem:` block for wiring `nexus-fs` connectors. Uncomment
+the connector URIs you want — each OAuth-gated connector prompts inline
+the first time an agent tool hits it, with loopback-callback flow (no
+copy/paste). Token persistence is handled by nexus in
+`$NEXUS_STATE_DIR` (default `$HOME/.nexus/auth/`).
+
+OAuth client credentials come from environment variables:
+
+```bash
+# Google connectors: gdrive, gmail, calendar
+export NEXUS_OAUTH_GOOGLE_CLIENT_ID="<client-id>.apps.googleusercontent.com"
+export NEXUS_OAUTH_GOOGLE_CLIENT_SECRET="<secret>"
+
+# Slack
+export NEXUS_OAUTH_SLACK_CLIENT_ID="<client-id>"
+export NEXUS_OAUTH_SLACK_CLIENT_SECRET="<secret>"
+```
+
+The first tool call that touches an unauthenticated connector (e.g.
+`fs_list /gdrive/my-drive`) triggers an `AuthenticationError` from
+`nexus-fs`. Koi's bridge catches it, emits an `auth_required`
+notification to the TUI channel, and the user sees an inline message
+with the authorization URL. After clicking authorize in their browser,
+the loopback callback captures the code, nexus exchanges it for a
+token, and the original tool call retries automatically.
+
+---
+
 ## Governance defaults (gov-10)
 
 A copy-ready annotated manifest lives at

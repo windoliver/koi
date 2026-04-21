@@ -116,6 +116,37 @@ interface NexusFileSystemFullConfig extends NexusFileSystemConfig {
 declare function createNexusFileSystem(config: NexusFileSystemFullConfig): FileSystemBackend;
 
 /**
+ * Multi-mount Nexus backend.
+ *
+ * Wraps N \`createNexusFileSystem\` sub-backends (one per reported mount) and
+ * dispatches each op to the backend whose mount prefix matches the input path.
+ * Exposes a synthetic \`list("/")\` so callers can discover mounts without
+ * needing out-of-band knowledge of what the bridge reported.
+ *
+ * Used by \`@koi/runtime\`'s \`resolveFileSystemAsync\` when the local bridge
+ * reports two or more mounts (e.g., \`local://./\` + \`gdrive://my-drive\`).
+ * For single-mount configs, call \`createNexusFileSystem\` directly — this
+ * wrapper's overhead only pays for itself when there are actual routing
+ * decisions to make.
+ */
+
+interface MultiMountConfig {
+    readonly transport: NexusTransport;
+    /**
+     * Mount paths as reported by the bridge's \`ready\` notification
+     * (e.g., \`["/local/workspace", "/gdrive"]\`). Each must begin with \`/\`
+     * and be unique. Order matters for overlapping prefixes: earlier entries
+     * win, so \`/local/a\` must precede \`/local/a/b\` if both are present.
+     */
+    readonly mountPoints: readonly string[];
+}
+/**
+ * Create a routing backend that dispatches each op to the right sub-backend
+ * based on the leading mount-prefix of the input path.
+ */
+declare function createNexusMultiMountFileSystem(config: MultiMountConfig): FileSystemBackend;
+
+/**
  * Inline JSON-RPC 2.0 transport for Nexus server.
  *
  * Will be extracted to @koi/nexus-client when a second consumer exists.
@@ -131,7 +162,7 @@ declare function createHttpTransport(config: NexusFileSystemConfig): NexusTransp
 /** Validate NexusFileSystemConfig at the system boundary. */
 declare function validateNexusFileSystemConfig(config: unknown): Result<NexusFileSystemConfig, KoiError>;
 
-export { BridgeNotification, type LocalTransportConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createAuthNotificationHandler, createHttpTransport, createLocalTransport, createNexusFileSystem, validateNexusFileSystemConfig };
+export { BridgeNotification, type LocalTransportConfig, type MultiMountConfig, NexusFileSystemConfig, type NexusFileSystemFullConfig, NexusTransport, createAuthNotificationHandler, createHttpTransport, createLocalTransport, createNexusFileSystem, createNexusMultiMountFileSystem, validateNexusFileSystemConfig };
 "
 `;
 

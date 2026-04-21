@@ -42,7 +42,7 @@ import {
   HEADLESS_EXIT,
   runHeadless,
 } from "../headless/run.js";
-import { loadManifestConfig } from "../manifest.js";
+import { discoverDefaultManifest, loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
@@ -378,12 +378,18 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // permission backend cannot enforce backend-aware approvals for
   // remote/bridge storage, which would silently grant a repo-local
   // manifest unreviewed access to data outside the workspace.
-  let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestFilesystemOps: readonly ("read" | "write" | "edit" | "list")[] | undefined;
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("../manifest.js").ManifestGovernanceConfig | undefined;
-  if (flags.manifest !== undefined) {
-    const manifestResult = await loadManifestConfig(flags.manifest);
+  // Auto-discover `./koi.yaml` (or variants) when --manifest is omitted.
+  // Explicit flag always wins. Pass `KOI_NO_AUTO_MANIFEST=1` to skip discovery
+  // (e.g. for CI or non-interactive jobs that want strict explicit config).
+  const resolvedManifestPath =
+    flags.manifest ??
+    (process.env.KOI_NO_AUTO_MANIFEST === "1" ? undefined : discoverDefaultManifest(process.cwd()));
+  if (resolvedManifestPath !== undefined) {
+    const manifestResult = await loadManifestConfig(resolvedManifestPath);
     if (!manifestResult.ok) {
       // Manifest error can include filesystem paths, user-provided values,
       // or schema diagnostics. Safe to classify but don't forward raw text
@@ -515,7 +521,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         );
       }
 
-      manifestFilesystemOps = fs.operations ?? (["read"] as const);
+      manifestFilesystemOps = fs.operations ?? (["read", "list"] as const);
       // Sync resolver is sufficient — OAuth mounts were rejected above,
       // and the async path (local bridge subprocess) is only needed for
       // OAuth-gated mounts.

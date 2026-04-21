@@ -169,10 +169,12 @@ export interface FileSystemConfig {
   /** Backend-specific configuration, validated by the L2 dispatch factory. */
   readonly options?: JsonObject;
   /**
-   * Which filesystem operations to expose as tools. Default: ["read"].
+   * Which filesystem operations to expose as tools. Default: ["read", "list"].
    * Write/edit require explicit opt-in to prevent accidental mutation grants.
+   * `list` is a read-only discovery primitive; multi-mount Nexus backends
+   * rely on `list("/")` for mount-name enumeration.
    */
-  readonly operations?: readonly ("read" | "write" | "edit")[];
+  readonly operations?: readonly ("read" | "write" | "edit" | "list")[];
 }
 
 /**

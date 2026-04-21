@@ -38,10 +38,39 @@
  *                                  #   per-host.
  */
 
+import { existsSync } from "node:fs";
 import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
 import { loadConfig } from "@koi/config";
 import type { FileSystemConfig } from "@koi/core";
 import { validateFileSystemConfig } from "@koi/runtime";
+
+/**
+ * Default manifest filenames checked by `discoverDefaultManifest` in order.
+ * The first existing file wins. Mirrors how `.mcp.json` is auto-discovered.
+ */
+const DEFAULT_MANIFEST_FILENAMES: readonly string[] = [
+  "koi.yaml",
+  "koi.yml",
+  "koi.manifest.yaml",
+  "koi.manifest.yml",
+];
+
+/**
+ * Return the path of the first default-named manifest found in `cwd`, or
+ * `undefined` if none exist. Callers use this when `--manifest` is omitted
+ * so projects with a committed `koi.yaml` work out-of-the-box.
+ *
+ * Resolution order: `koi.yaml` → `koi.yml` → `koi.manifest.yaml` →
+ * `koi.manifest.yml`. Only the first match is returned — callers should
+ * not attempt to merge multiple defaults.
+ */
+export function discoverDefaultManifest(cwd: string): string | undefined {
+  for (const name of DEFAULT_MANIFEST_FILENAMES) {
+    const candidate = resolvePath(cwd, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
 
 /**
  * Absolutize a `local://` mountUri against the manifest directory so relative
@@ -111,10 +140,12 @@ function anchorFilesystemPaths(config: FileSystemConfig, manifestDir: string): F
   }
 
   if (nextMountUri === opts.mountUri && nextRoot === opts.root) return config;
-  return {
-    ...config,
-    options: { ...opts, mountUri: nextMountUri, root: nextRoot },
-  };
+  // Only spread root when it was present in the input — otherwise we'd inject
+  // `root: undefined`, which breaks the `.strict()` Zod schema in
+  // resolve-filesystem.ts (unknown key) and blocks startup.
+  const nextOptions: Record<string, unknown> = { ...opts, mountUri: nextMountUri };
+  if ("root" in opts) nextOptions.root = nextRoot;
+  return { ...config, options: nextOptions };
 }
 
 /**
@@ -465,17 +496,20 @@ export async function loadManifestConfig(
           : Array.isArray(mountUri)
             ? (mountUri as unknown[])
             : [];
-      // Runtime `resolveFileSystemAsync` rejects multi-mount local-bridge
-      // configs because createNexusFileSystem accepts only one mountPoint
-      // prefix (#1777 review round 9). Validating the runtime invariant
-      // at parse time turns "looks valid, fails later on startup" into a
-      // clean error before any subprocess spawn.
-      if (candidates.length > 1) {
+      // Multi-mount is supported via createNexusMultiMountFileSystem, which
+      // routes ops to the sub-backend whose reported mount prefix matches the
+      // input path. We still reject mixing mountPoint override with multi-mount
+      // since the override addresses only one namespace.
+      if (
+        candidates.length > 1 &&
+        typeof (filesystem.options as Record<string, unknown>).mountPoint === "string"
+      ) {
         return {
           ok: false,
           error:
-            "manifest.filesystem.options.mountUri may declare at most one URI on this host. " +
-            "Multi-mount local-bridge configs are not yet supported by the runtime resolver.",
+            "manifest.filesystem.options.mountPoint cannot be combined with a multi-entry mountUri — " +
+            "the override selects a single namespace while the bridge reports several. " +
+            "Omit mountPoint to let each mount route to its own sub-backend.",
         };
       }
       if (!(options?.allowOAuthSchemes === true)) {

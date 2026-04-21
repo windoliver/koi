@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadManifestConfig } from "./manifest.js";
+import { discoverDefaultManifest, loadManifestConfig } from "./manifest.js";
 
 // Regression tests for #1777 — manifest.filesystem must be parsed,
 // validated, and surfaced so `koi start --manifest` / `koi tui --manifest`
@@ -151,10 +151,35 @@ describe("loadManifestConfig: filesystem block", () => {
     expect(mountUri[0]).toContain(`${dir}/a`);
   });
 
-  test("rejects multi-mount arrays (runtime does not support them yet)", async () => {
-    // Regression for #1777 round 9: the runtime `resolveFileSystemAsync`
-    // throws on multi-mount local-bridge configs. Fail fast at parse
-    // time instead of at runtime assembly.
+  test("does not inject root: undefined when root is absent", async () => {
+    // Regression: anchorFilesystemPaths was unconditionally spreading
+    // `root: nextRoot` even when `opts.root` was undefined. That injected
+    // an explicit `root: undefined` key whenever mountUri was rebuilt
+    // (every array case), which then failed the `.strict()` Zod schema
+    // in resolve-filesystem.ts and blocked `koi tui --manifest` startup.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountUri:",
+        '      - "local:///tmp/koi-no-root"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const options = (result.value.filesystem?.options ?? {}) as Record<string, unknown>;
+    expect("root" in options).toBe(false);
+  });
+
+  test("accepts multi-mount arrays (runtime dispatches via multi-mount router)", async () => {
+    // `resolveFileSystemAsync` now routes each op to the sub-backend whose
+    // reported mount prefix matches. Parse-time validation must let the
+    // manifest through so the runtime can wire the router.
     const p = writeManifest(
       [
         "model:",
@@ -169,9 +194,32 @@ describe("loadManifestConfig: filesystem block", () => {
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const options = (result.value.filesystem?.options ?? {}) as Record<string, unknown>;
+    expect(options.mountUri).toEqual(["local:///tmp/a", "local:///tmp/b"]);
+  });
+
+  test("rejects multi-mount combined with explicit mountPoint override", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountPoint: fs",
+        "    mountUri:",
+        '      - "local:///tmp/a"',
+        '      - "local:///tmp/b"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.toLowerCase()).toContain("multi-mount");
+    expect(result.error).toContain("mountPoint");
+    expect(result.error).toContain("multi-entry mountUri");
   });
 
   test("rejects non-local:// mountUri schemes (OAuth gate)", async () => {
@@ -337,5 +385,61 @@ describe("loadManifestConfig: governance block (gov-10)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("governance");
+  });
+});
+
+describe("discoverDefaultManifest (#1959)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-default-manifest-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("returns undefined when no default manifest exists", () => {
+    expect(discoverDefaultManifest(dir)).toBeUndefined();
+  });
+
+  test("finds koi.yaml", () => {
+    writeFileSync(join(dir, "koi.yaml"), "model:\n  name: x");
+    expect(discoverDefaultManifest(dir)).toBe(join(dir, "koi.yaml"));
+  });
+
+  test("finds koi.yml as fallback", () => {
+    writeFileSync(join(dir, "koi.yml"), "model:\n  name: x");
+    expect(discoverDefaultManifest(dir)).toBe(join(dir, "koi.yml"));
+  });
+
+  test("finds koi.manifest.yaml as fallback", () => {
+    writeFileSync(join(dir, "koi.manifest.yaml"), "model:\n  name: x");
+    expect(discoverDefaultManifest(dir)).toBe(join(dir, "koi.manifest.yaml"));
+  });
+
+  test("koi.yaml wins over koi.manifest.yaml when both exist", () => {
+    writeFileSync(join(dir, "koi.yaml"), "model:\n  name: a");
+    writeFileSync(join(dir, "koi.manifest.yaml"), "model:\n  name: b");
+    expect(discoverDefaultManifest(dir)).toBe(join(dir, "koi.yaml"));
+  });
+
+  test("koi.yaml wins over koi.yml when both exist", () => {
+    writeFileSync(join(dir, "koi.yaml"), "model:\n  name: a");
+    writeFileSync(join(dir, "koi.yml"), "model:\n  name: b");
+    expect(discoverDefaultManifest(dir)).toBe(join(dir, "koi.yaml"));
+  });
+
+  test("loadManifestConfig reads the discovered default", async () => {
+    writeFileSync(
+      join(dir, "koi.yaml"),
+      ["model:", "  name: google/gemini-2.0-flash-001"].join("\n"),
+    );
+    const discovered = discoverDefaultManifest(dir);
+    expect(discovered).toBeDefined();
+    if (discovered === undefined) return;
+    const result = await loadManifestConfig(discovered);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.modelName).toBe("google/gemini-2.0-flash-001");
   });
 });

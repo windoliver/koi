@@ -19,6 +19,7 @@ Usage:
 """
 
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -28,6 +29,20 @@ import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
+
+
+async def _aw(value):
+    """Accept both sync and async SlimNexusFS method results.
+
+    nexus.fs's SlimNexusFS ships some releases with sync methods and others
+    with coroutines. `inspect.isawaitable` catches coroutines, futures, and
+    anything with `__await__`, and returns the plain value unchanged for sync
+    implementations so the bridge works with either ABI.
+    """
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
 
 # CRITICAL: stdout is the JSON-RPC channel.
 # Redirect ALL print() / library output to stderr BEFORE importing nexus.fs
@@ -375,9 +390,9 @@ async def dispatch(fs, method, params):
     path = params.get("path", "/")
 
     if method == "read":
-        data = await fs.read(path)
+        data = await _aw(fs.read(path))
         content = data.decode("utf-8") if isinstance(data, bytes) else str(data)
-        stat = await fs.stat(path) or {}
+        stat = (await _aw(fs.stat(path))) or {}
         return {"content": content, "metadata": stat}
 
     if method == "write":
@@ -390,7 +405,7 @@ async def dispatch(fs, method, params):
         # Treat missing file or missing etag as conflict — prevents
         # resurrecting deleted files with stale content.
         if if_match is not None:
-            current_stat = await fs.stat(path)
+            current_stat = await _aw(fs.stat(path))
             if current_stat is None:
                 raise ConflictError(
                     f"Conflict: file was deleted (expected etag {if_match}, file no longer exists)"
@@ -405,7 +420,7 @@ async def dispatch(fs, method, params):
                     f"Conflict: file was modified (expected etag {if_match}, got {current_etag})"
                 )
 
-        result = await fs.write(path, raw) or {}
+        result = (await _aw(fs.write(path, raw))) or {}
         size = len(raw)
         return {"bytes_written": size, "size": size, **result}
 
@@ -417,7 +432,7 @@ async def dispatch(fs, method, params):
         # Capture etag before read for OCC guard on write.
         # Fail closed: if the backend doesn't provide etags, refuse
         # to perform a non-preview edit (can't detect concurrent mods).
-        pre_stat = await fs.stat(path)
+        pre_stat = await _aw(fs.stat(path))
         pre_etag = pre_stat.get("etag") if pre_stat else None
 
         if not preview and pre_etag is None:
@@ -437,7 +452,7 @@ async def dispatch(fs, method, params):
                     f"Conflict: file was modified before edit (expected etag {if_match}, got {pre_etag})"
                 )
 
-        data = await fs.read(path)
+        data = await _aw(fs.read(path))
         content = data.decode("utf-8") if isinstance(data, bytes) else str(data)
 
         applied = 0
@@ -469,7 +484,7 @@ async def dispatch(fs, method, params):
             # support on the facade (tracked for nexus-fs enhancement).
             # For the HTTP transport, Nexus server handles if_match
             # atomically, so this gap only affects the local bridge.
-            post_stat = await fs.stat(path)
+            post_stat = await _aw(fs.stat(path))
             post_etag = post_stat.get("etag") if post_stat else None
             if post_etag is None:
                 raise ConflictError(
@@ -479,14 +494,14 @@ async def dispatch(fs, method, params):
                 raise ConflictError(
                     f"Conflict: file was modified during edit (etag changed from {pre_etag} to {post_etag})"
                 )
-            await fs.write(path, content.encode("utf-8"))
+            await _aw(fs.write(path, content.encode("utf-8")))
 
         return {"edits_applied": applied}
 
     if method == "list":
         detail = params.get("details", params.get("detail", False))
         recursive = params.get("recursive", True)
-        entries = await fs.ls(path, detail=detail, recursive=recursive)
+        entries = await _aw(fs.ls(path, detail=detail, recursive=recursive))
 
         if detail and entries and isinstance(entries[0], dict):
             files = entries
@@ -507,7 +522,7 @@ async def dispatch(fs, method, params):
         flags = re.IGNORECASE if ignore_case else 0
         regex = re.compile(pattern_str, flags)
 
-        file_list = await fs.ls(search_path, detail=False, recursive=True)
+        file_list = await _aw(fs.ls(search_path, detail=False, recursive=True))
         results = []
         skipped = []
 
@@ -518,7 +533,7 @@ async def dispatch(fs, method, params):
             if file_pattern and not fnmatch.fnmatch(fp, file_pattern):
                 continue
             try:
-                data = await fs.read(fp)
+                data = await _aw(fs.read(fp))
                 # Only skip binary/non-decodable files; re-raise other errors.
                 try:
                     text = data.decode("utf-8") if isinstance(data, bytes) else str(data)
@@ -540,22 +555,22 @@ async def dispatch(fs, method, params):
         return {"results": results, "skipped": skipped}
 
     if method == "delete":
-        await fs.delete(path)
+        await _aw(fs.delete(path))
         return {"deleted": True}
 
     if method == "rename":
         old_path = params.get("old_path", "")
         new_path = params.get("new_path", "")
-        await fs.rename(old_path, new_path)
+        await _aw(fs.rename(old_path, new_path))
         return {"renamed": True}
 
     if method == "stat":
-        result = await fs.stat(path)
+        result = await _aw(fs.stat(path))
         return {"metadata": result or {}}
 
     if method == "mkdir":
         parents = params.get("parents", True)
-        await fs.mkdir(path, parents=parents)
+        await _aw(fs.mkdir(path, parents=parents))
         return {"created": True}
 
     raise NotImplementedError(f"Unknown method: {method}")
@@ -711,7 +726,7 @@ async def main():
         response = await handle_request(fs, request)
         _write(response)
 
-    await fs.close()
+    await _aw(fs.close())
 
 
 if __name__ == "__main__":

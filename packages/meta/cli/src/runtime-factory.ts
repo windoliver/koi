@@ -739,7 +739,7 @@ export interface KoiRuntimeConfig {
    * honor a `manifest.filesystem.operations` gate pass the resolved
    * list through here. Honored by `buildCoreProviders`.
    */
-  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit" | "list")[] | undefined;
   /**
    * Active filesystem backend to use for `fs_read`, `fs_write`, and
    * `fs_edit` tools, AND for the checkpoint preset stack's backend

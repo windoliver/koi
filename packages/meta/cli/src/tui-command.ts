@@ -94,7 +94,7 @@ import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
 import { createGovernanceBridge, type GovernanceBridge } from "./governance-bridge.js";
-import { loadManifestConfig } from "./manifest.js";
+import { discoverDefaultManifest, loadManifestConfig } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { loadPolicyFile } from "./policy-file.js";
@@ -1053,16 +1053,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // For nexus with local-bridge transport, the TUI wires the OAuth auth
   // loop: createAuthNotificationHandler (outbound) + createAuthInterceptor
   // (inbound) so the user can complete OAuth flows inline.
-  let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestFilesystemOps: readonly ("read" | "write" | "edit" | "list")[] | undefined;
   // Full filesystem config for nexus async resolution — stored here so the
   // async resolve can run just before createKoiRuntime (after TUI setup).
   let manifestFilesystemConfig: import("@koi/core").FileSystemConfig | undefined;
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
-  if (flags.manifest !== undefined) {
+  // Auto-discover `./koi.yaml` (or variants) when --manifest is omitted so
+  // projects with a committed manifest work out-of-the-box. Explicit flag
+  // always wins. Pass `KOI_NO_AUTO_MANIFEST=1` to skip discovery.
+  const resolvedManifestPath =
+    flags.manifest ??
+    (process.env.KOI_NO_AUTO_MANIFEST === "1" ? undefined : discoverDefaultManifest(process.cwd()));
+  if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
-    const manifestResult = await loadManifestConfig(flags.manifest, { allowOAuthSchemes: true });
+    const manifestResult = await loadManifestConfig(resolvedManifestPath, {
+      allowOAuthSchemes: true,
+    });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
       process.exit(1);
@@ -1085,7 +1093,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // need a true read-only posture should also omit `execution`
       // from `manifest.stacks`.
       manifestFilesystemConfig = manifestResult.value.filesystem;
-      manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
+      manifestFilesystemOps =
+        manifestResult.value.filesystem.operations ?? (["read", "list"] as const);
     }
     manifestMiddleware =
       manifestResult.value.middleware !== undefined

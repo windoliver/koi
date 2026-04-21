@@ -16,15 +16,16 @@ import type {
 import { createServiceProvider, DEFAULT_UNSANDBOXED_POLICY, FILESYSTEM } from "@koi/core";
 import {
   createFsEditTool,
+  createFsListTool,
   createFsReadTool,
   createFsWriteTool,
   type FsToolOptions,
 } from "@koi/tools-builtin";
 
 /** Filesystem operations exposed as tools. */
-type FsOperation = "read" | "write" | "edit";
+type FsOperation = "read" | "write" | "edit" | "list";
 
-const _FS_OPERATIONS: readonly FsOperation[] = ["read", "write", "edit"] as const;
+const _FS_OPERATIONS: readonly FsOperation[] = ["read", "write", "edit", "list"] as const;
 
 const FS_TOOL_FACTORIES: Readonly<
   Record<
@@ -40,6 +41,8 @@ const FS_TOOL_FACTORIES: Readonly<
   read: createFsReadTool,
   write: createFsWriteTool,
   edit: createFsEditTool,
+  // list has no path guard (read-only, no file content returned) — ignore fsToolOptions.
+  list: (backend, prefix, policy) => createFsListTool(backend, prefix, policy),
 } as const;
 
 /** Resolved filesystem tools — both instances (for execution) and descriptors (for advertisement). */
@@ -55,10 +58,12 @@ export interface FileSystemTools {
  * and their descriptors (for advertisement in callHandlers.tools).
  */
 /**
- * Default: read-only. Write/edit require explicit opt-in to prevent
- * accidental mutation grants when enabling filesystem.
+ * Default: read-only (read + list). Write/edit require explicit opt-in to
+ * prevent accidental mutation grants when enabling filesystem. List is
+ * included because it's a discovery primitive — multi-mount Nexus backends
+ * rely on `list("/")` for mount-name enumeration.
  */
-const DEFAULT_FS_OPERATIONS: readonly FsOperation[] = ["read"] as const;
+const DEFAULT_FS_OPERATIONS: readonly FsOperation[] = ["read", "list"] as const;
 
 export function createFileSystemTools(
   backend: FileSystemBackend,
@@ -134,6 +139,7 @@ export function createFileSystemProvider(
           read: (b, p, pol) => createFsReadTool(b, p, pol, fsToolOptions),
           write: (b, p, pol) => createFsWriteTool(b, p, pol, fsToolOptions),
           edit: (b, p, pol) => createFsEditTool(b, p, pol, fsToolOptions),
+          list: (b, p, pol) => createFsListTool(b, p, pol),
         }
       : FS_TOOL_FACTORIES;
 

@@ -56,6 +56,35 @@ model:
 #   backend: local                 # or "nexus" with options.transport/mountUri
 #   operations: [read, write, edit]
 
+# ---- Optional: Nexus multi-connector filesystem (OAuth-gated) --------------
+
+# Wire gdrive / gmail / slack / calendar / local CAS mounts via nexus-fs.
+# Requires: pip install nexus-ai-fs. Connectors needing OAuth will prompt
+# inline the first time a tool call touches them (loopback flow — no paste).
+# Token persists in $NEXUS_STATE_DIR (default: $HOME/.nexus/auth/).
+#
+# OAuth client credentials come from environment variables:
+#   Google connectors (gdrive, gmail, calendar):
+#     export NEXUS_OAUTH_GOOGLE_CLIENT_ID="<client-id>.apps.googleusercontent.com"
+#     export NEXUS_OAUTH_GOOGLE_CLIENT_SECRET="<secret>"
+#   Slack:
+#     export NEXUS_OAUTH_SLACK_CLIENT_ID="<client-id>"
+#     export NEXUS_OAUTH_SLACK_CLIENT_SECRET="<secret>"
+#
+# filesystem:
+#   backend: nexus
+#   operations: [read, list]       # add write/edit for read-write mounts
+#   options:
+#     transport: local             # spawn bridge subprocess via pythonPath
+#     mountUri:
+#       - "local:///tmp/my-workspace"  # CAS-backed local workspace (no OAuth)
+#       - "gdrive://my-drive"          # Google Drive  (OAuth: Google)
+#       - "gmail://my-inbox"           # Gmail         (OAuth: Google)
+#       - "calendar://my-cal"          # Google Calendar (OAuth: Google)
+#       - "slack://my-workspace"       # Slack         (OAuth: Slack)
+#     pythonPath: python3
+#     authTimeoutMs: 300000        # max wait for user to complete OAuth (ms)
+
 # ---- Optional: governance defaults (gov-10) --------------------------------
 
 # Every field here is a default for the matching CLI flag. CLI flags always

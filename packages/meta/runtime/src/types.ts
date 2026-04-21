@@ -225,10 +225,10 @@ export interface RuntimeConfig {
    * pre-created `FileSystemBackend` (e.g., from `resolveFileSystemAsync()`).
    * Ignored when `filesystem` is a `FileSystemConfig` — operations come from the config.
    *
-   * Default: `["read"]` (the `createFileSystemProvider` default).
-   * Set explicitly to `["read", "write", "edit"]` to restore mutation tools.
+   * Default: `["read", "list"]` (the `createFileSystemProvider` default).
+   * Set explicitly to `["read", "write", "edit", "list"]` to restore mutation tools.
    */
-  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit" | "list")[] | undefined;
 
   /**
    * Session transcript configuration. When provided, wires a JSONL-backed
