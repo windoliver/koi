@@ -123,6 +123,22 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(store.update).not.toHaveBeenCalled();
     });
 
+    test("treats agent_spawn as a spawn tool by default", async () => {
+      const store = createMockForgeStore();
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = {
+        toolId: "agent_spawn",
+        input: { agentName: "researcher" },
+      };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] agent_spawn fires on completion" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+      expect(store.update).toHaveBeenCalled();
+    });
+
     test("skips when no learnings found in output", async () => {
       const store = createMockForgeStore();
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
@@ -350,6 +366,76 @@ describe("createCollectiveMemoryMiddleware", () => {
 
       const result = await mw.wrapModelCall?.(createTurnCtx(), req, next);
       expect(result).toBe(resp);
+    });
+
+    test("retries injection on next turn when brick load fails transiently", async () => {
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e1",
+            content: "Some learning",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      let callCount = 0;
+      (store.load as ReturnType<typeof mock>).mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) throw new Error("transient failure");
+        return { ok: true, value: { collectiveMemory: memory, storeVersion: "v1" } };
+      });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ModelRequest = {
+        messages: [
+          { content: [{ kind: "text", text: "Hello" }], senderId: "user", timestamp: NOW },
+        ],
+      };
+      const ctx = createTurnCtx();
+      const next = mock(
+        async (r: ModelRequest) =>
+          ({
+            content: "",
+            model: "test-model",
+            _len: r.messages.length,
+          }) as unknown as ModelResponse,
+      );
+
+      await mw.wrapModelCall?.(ctx, req, next);
+      await mw.wrapModelCall?.(ctx, req, next);
+
+      // First call: load threw, no injection
+      expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
+      // Second call: load succeeded, injection happened
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+    });
+
+    test("marks injected=true after resolveBrickId returns undefined to avoid repeated lookups", async () => {
+      const resolveBrickId = mock((_id: string): string | undefined => undefined);
+      const mw = createCollectiveMemoryMiddleware(createConfig({ resolveBrickId }));
+      await mw.onSessionStart?.(createSessionCtx("unknown"));
+
+      const req: ModelRequest = {
+        messages: [
+          { content: [{ kind: "text", text: "Hello" }], senderId: "user", timestamp: NOW },
+        ],
+      };
+      const next = mock(async () => ({ content: "", model: "test-model" }) satisfies ModelResponse);
+      const ctx = createTurnCtx("unknown");
+
+      await mw.wrapModelCall?.(ctx, req, next);
+      await mw.wrapModelCall?.(ctx, req, next);
+
+      // resolveBrickId called only once — second turn short-circuits via injected flag
+      expect(resolveBrickId).toHaveBeenCalledTimes(1);
     });
   });
 

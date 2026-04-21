@@ -22,7 +22,7 @@ import type { CollectiveMemoryMiddlewareConfig } from "./types.js";
 
 // Default spawn tool IDs matching the engine-compose runtime.
 // Callers can override via config.spawnToolIds.
-const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = ["forge_agent", "Spawn"];
+const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = ["forge_agent", "Spawn", "agent_spawn"];
 const MAX_SESSION_OUTPUTS = 20;
 // Truncate worker output before persisting to bound memory usage.
 const MAX_OUTPUT_BYTES = 8_192;
@@ -181,10 +181,13 @@ export function createCollectiveMemoryMiddleware(
     async wrapModelCall(ctx, request, next) {
       const state = getSession(ctx.session.sessionId);
       if (state.injected) return next(request);
-      sessions.set(ctx.session.sessionId, { ...state, injected: true });
 
       const rawId = config.resolveBrickId(ctx.session.agentId);
-      if (rawId === undefined) return next(request);
+      if (rawId === undefined) {
+        // Mark injected so we don't retry on every turn when brick is unavailable.
+        sessions.set(ctx.session.sessionId, { ...state, injected: true });
+        return next(request);
+      }
 
       try {
         const brick: BrickId = brickId(rawId);
@@ -204,6 +207,9 @@ export function createCollectiveMemoryMiddleware(
 
         const formatted = formatCollectiveMemory(memory.entries, injectionBudget, CHARS_PER_TOKEN);
         if (formatted.length === 0) return next(request);
+
+        // Mark injected only after we have confirmed there is something to inject.
+        sessions.set(ctx.session.sessionId, { ...state, injected: true });
 
         const injectedIds: ReadonlySet<string> = new Set(selected.map((e) => e.id));
         incrementAccessCounts(brick, injectedIds).catch(() => {
