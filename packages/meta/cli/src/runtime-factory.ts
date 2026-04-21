@@ -2316,12 +2316,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               : {}),
             // Persist every violation to the SQLite store when configured.
             // Additive — does not remove any other subscribers (e.g. bridge).
+            // sessionId is captured from ambient config so the bridge's
+            // `loadRecentViolations({ sessionId })` query can find them.
             ...(violationStore !== undefined
               ? {
                   onViolation: (verdict: GovernanceVerdict, request: PolicyRequest) => {
                     if (verdict.ok) return;
+                    const sid = config.session?.sessionId ?? "no-session";
                     for (const v of verdict.violations) {
-                      violationStore.record(v, request.agentId, undefined, request.timestamp);
+                      violationStore.record(v, request.agentId, sid, request.timestamp);
                     }
                   },
                 }
