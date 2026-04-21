@@ -63,6 +63,19 @@ export interface CollectiveMemoryMiddlewareConfig {
   /** Max tokens for extraction response. Default: 1024. */
   readonly extractionMaxTokens?: number | undefined;
   /**
+   * Opt-in compatibility for legacy string-only resolveBrickId implementations.
+   *
+   * Default: false (fail-closed). When the context-form call throws, the brick
+   * is treated as unresolved and persistence/injection is skipped — preventing
+   * a tenant-aware resolver that throws on malformed metadata from silently
+   * leaking across tenants via the agent-only brick.
+   *
+   * Set to true ONLY when wiring a known legacy `(agentName: string) => brickId`
+   * resolver that cannot be updated. With this flag enabled, an exception from
+   * the context-form call triggers a retry with just the agent name string.
+   */
+  readonly enableLegacyResolverCompat?: boolean | undefined;
+  /**
    * Total input byte budget for the session-end LLM extraction prompt.
    * Default: 32_768 (~8K tokens at 4 chars/token, comfortably under common
    * model context windows). The middleware drops OLDEST buffered outputs

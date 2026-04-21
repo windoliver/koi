@@ -158,6 +158,57 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(capturedPrompts[0]).not.toContain("OUT-4\n");
     });
 
+    test("write that lands during in-flight model call leaves injected=false so next turn refetches", async () => {
+      // Sequence:
+      //   T1 wrapModelCall starts, builds injection from memory v1, awaits next()
+      //   wrapToolCall lands DURING next() → persists → clears injected, bumps writeEpoch
+      //   T1 next() returns → commitInjected sees epoch advanced → does NOT set injected=true
+      //   T2 wrapModelCall sees injected=false → re-fetches updated memory
+      const initialMemory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e0",
+            content: "INITIAL",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: initialMemory });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const ctx = createTurnCtx();
+      const modelReq: ModelRequest = {
+        messages: [{ content: [{ kind: "text", text: "Hi" }], senderId: "user", timestamp: NOW }],
+      };
+
+      // Schedule wrapToolCall to fire during T1's next() dispatch
+      const t1Next = mock(async (_r: ModelRequest): Promise<ModelResponse> => {
+        // Mid-dispatch: persist new learnings concurrently
+        const toolReq: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+        const toolResp: ToolResponse = { output: "[LEARNING:gotcha] new insight mid-flight" };
+        await mw.wrapToolCall?.(ctx, toolReq, async () => toolResp);
+        return { content: "", model: "test-model" };
+      });
+
+      await mw.wrapModelCall?.(ctx, modelReq, t1Next);
+
+      // T2: should re-fetch (injected NOT committed in T1 due to epoch advance)
+      const t2Next = mock(
+        async (_r: ModelRequest): Promise<ModelResponse> => ({ content: "", model: "test-model" }),
+      );
+      await mw.wrapModelCall?.(ctx, modelReq, t2Next);
+
+      // Load was called twice — once per wrapModelCall turn — proving T2 re-fetched
+      expect((store.load as ReturnType<typeof mock>).mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
     test("clears injected flag after successful persistence so next turn re-injects", async () => {
       const memory: CollectiveMemory = {
         entries: [
@@ -232,11 +283,9 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(evt.kind).toBe("persistence-dropped");
     });
 
-    test("compat shim catches throw from string-only resolver given object input", async () => {
+    test("compat shim catches throw from string-only resolver given object input (opt-in)", async () => {
       const store = createMockForgeStore();
-      // Pathological legacy resolver that calls .toLowerCase on input — throws on object
       const throwingResolver = mock((input: unknown): string | undefined => {
-        // Force a TypeError on object input
         const name = (input as string).toLowerCase();
         return name === "researcher" ? "sha256:abc123" : undefined;
       });
@@ -246,6 +295,8 @@ describe("createCollectiveMemoryMiddleware", () => {
           resolveBrickId: throwingResolver as (
             input: string | { agentName: string },
           ) => string | undefined,
+          // Opt-in to legacy compat so a throw triggers string fallback
+          enableLegacyResolverCompat: true,
         }),
       );
       await mw.onSessionStart?.(createSessionCtx());
@@ -254,18 +305,48 @@ describe("createCollectiveMemoryMiddleware", () => {
       const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
       const next = mock(async () => resp);
 
-      // wrapToolCall must NOT throw despite the resolver throwing on object input
       await expect(mw.wrapToolCall?.(createTurnCtx(), req, next)).resolves.toBeDefined();
 
-      // Persist still ran via the string fallback path
+      // String fallback succeeded → persistence ran
       expect(store.update).toHaveBeenCalled();
       expect(throwingResolver).toHaveBeenCalledTimes(2);
     });
 
-    test("legacy string-only resolveBrickId (THROWS on object) falls back to string form", async () => {
-      // The compat shim falls back to the string form ONLY when the context
-      // form throws. A legacy resolver that throws on non-string input must
-      // still resolve bricks via the string fallback.
+    test("throwing resolver is fail-closed by default (no agent-only fallback)", async () => {
+      const store = createMockForgeStore();
+      const throwingResolver = mock((input: unknown): string | undefined => {
+        if (typeof input !== "string") {
+          throw new TypeError("validation error in tenant resolver");
+        }
+        // If fallback ran, return a brick anyway — this should NOT happen
+        return "sha256:agent-only-leaked";
+      });
+      const mw = createCollectiveMemoryMiddleware(
+        createConfig({
+          forgeStore: store,
+          resolveBrickId: throwingResolver as (
+            input: string | { agentName: string },
+          ) => string | undefined,
+          // Default enableLegacyResolverCompat: false (fail-closed)
+        }),
+      );
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+
+      // Fail-closed: no fallback to string → no persistence
+      expect(store.update).not.toHaveBeenCalled();
+      // Resolver was invoked exactly once (object form, threw); no string fallback
+      expect(throwingResolver).toHaveBeenCalledTimes(1);
+    });
+
+    test("legacy string-only resolveBrickId (THROWS on object) falls back to string form (opt-in)", async () => {
+      // With enableLegacyResolverCompat:true, a legacy resolver that throws on
+      // non-string input still resolves bricks via the string fallback.
       const store = createMockForgeStore();
       const legacyResolver = mock((input: unknown): string | undefined => {
         if (typeof input !== "string") {
@@ -279,6 +360,7 @@ describe("createCollectiveMemoryMiddleware", () => {
           resolveBrickId: legacyResolver as (
             input: string | { agentName: string },
           ) => string | undefined,
+          enableLegacyResolverCompat: true,
         }),
       );
       await mw.onSessionStart?.(createSessionCtx());

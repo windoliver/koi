@@ -108,6 +108,10 @@ export function createCollectiveMemoryMiddleware(
   const validateLearning = config.validateLearning;
   // ~32KB ~= 8K tokens at 4 chars/token; comfortably under common context windows.
   const extractionInputBudget = config.extractionInputBudget ?? 32_768;
+  // Default false: tenant-aware resolvers that throw on validation errors must
+  // NOT silently fall back to the agent-only brick. Callers explicitly opt in
+  // when wiring an unmodifiable legacy string-only resolver.
+  const enableLegacyResolverCompat = config.enableLegacyResolverCompat ?? false;
 
   function acceptLearning(content: string): boolean {
     if (isInstruction(content)) return false;
@@ -135,6 +139,14 @@ export function createCollectiveMemoryMiddleware(
     pendingInjection?: readonly InboundMessage[];
     /** Count of failed onSessionEnd extraction attempts; used to bound retries. */
     endAttempts: number;
+    /**
+     * Monotonically incremented on each successful persistLearnings in
+     * wrapToolCall. wrapModelCall captures the epoch at the start of an
+     * injection attempt and only commits injected=true if the epoch hasn't
+     * advanced — preventing a write that lands DURING an in-flight model call
+     * from being overwritten by a stale commit.
+     */
+    writeEpoch: number;
   };
   // After this many failed extraction attempts, abandon the buffer to bound
   // memory growth. The session state is cleared and onError is invoked.
@@ -146,7 +158,7 @@ export function createCollectiveMemoryMiddleware(
   function getSession(sessionId: string): SessionState {
     const existing = sessions.get(sessionId);
     if (existing !== undefined) return existing;
-    const fresh: SessionState = { injected: false, outputs: [], endAttempts: 0 };
+    const fresh: SessionState = { injected: false, outputs: [], endAttempts: 0, writeEpoch: 0 };
     sessions.set(sessionId, fresh);
     return fresh;
   }
@@ -188,27 +200,27 @@ export function createCollectiveMemoryMiddleware(
   }
 
   /**
-   * Compatibility shim for the resolveBrickId config option. The documented
-   * signature accepts EITHER a string agent name (legacy) OR a ResolveBrickContext
-   * (tenant-aware). Legacy string-only resolvers may throw if given an object
-   * (e.g. they call .startsWith() or destructure as a string).
+   * Compatibility shim for the resolveBrickId config option. Fail-closed by
+   * default: any exception from the context-form resolver is treated as a hard
+   * resolution failure (return undefined) so a tenant-aware resolver that
+   * throws on malformed metadata does not silently bleed into the agent-only
+   * brick. Returning undefined from the context-form is also trusted as-is.
    *
-   * Fail-closed semantics for tenant partitioning:
-   *   - If the context-form call THROWS, treat as a legacy string-only resolver
-   *     and retry with the agent name.
-   *   - If the context-form call RETURNS undefined, trust the resolver's
-   *     intent — DO NOT fall back to agent-name. A tenant-aware resolver that
-   *     returns undefined for missing tenant metadata is signaling "do not
-   *     resolve a brick for this caller", and falling back to the agent-only
-   *     brick would bleed across tenants.
+   * When enableLegacyResolverCompat is true, exceptions instead trigger a
+   * retry with just the agent name — for callers who must wire an
+   * unmodifiable legacy `(agentName: string) => brickId` resolver and accept
+   * the cross-tenant risk that follows.
    */
   function resolveBrickIdCompat(ctx: ReturnType<typeof resolveCtxFor>): string | undefined {
     try {
       // Tenant-aware path: trust whatever the resolver returns (including undefined).
       return config.resolveBrickId(ctx);
     } catch {
-      // Legacy string-only resolver threw on object input — retry with the
-      // string form for backward compatibility.
+      if (!enableLegacyResolverCompat) {
+        // Fail-closed: throwing tenant-aware resolvers must not fall back.
+        return undefined;
+      }
+      // Opt-in legacy compat: retry with the agent name string.
       try {
         return config.resolveBrickId(ctx.agentName);
       } catch {
@@ -232,7 +244,12 @@ export function createCollectiveMemoryMiddleware(
     },
 
     async onSessionStart(ctx): Promise<void> {
-      sessions.set(ctx.sessionId, { injected: false, outputs: [] as string[], endAttempts: 0 });
+      sessions.set(ctx.sessionId, {
+        injected: false,
+        outputs: [] as string[],
+        endAttempts: 0,
+        writeEpoch: 0,
+      });
     },
 
     async onSessionEnd(ctx): Promise<void> {
@@ -377,16 +394,17 @@ export function createCollectiveMemoryMiddleware(
           });
         } else {
           // Memory changed in this session: clear the injected flag AND the
-          // pendingInjection cache so the next wrapModelCall re-fetches and
-          // re-injects the updated brick. Without clearing pendingInjection,
-          // a concurrent waiter could still prepend the stale memory block
-          // captured before this write happened.
+          // pendingInjection cache, AND bump writeEpoch. The epoch lets a
+          // concurrent in-flight wrapModelCall detect that a write landed during
+          // its dispatch and skip the stale commitInjected, so the NEXT turn
+          // re-fetches the updated brick.
           const current = sessions.get(ctx.session.sessionId);
           if (current !== undefined) {
             sessions.set(ctx.session.sessionId, {
               ...current,
               injected: false,
               pendingInjection: undefined,
+              writeEpoch: current.writeEpoch + 1,
             });
           }
         }
@@ -465,16 +483,26 @@ export function createCollectiveMemoryMiddleware(
         else resolveInFlight?.();
       };
 
-      // Helper: commit injected=true and clear the in-flight gate. The pending
-      // injection cache is left intact so concurrent waiters that awoke before
-      // this microtask completed can still read it; the next turn (after the
-      // gate clears) will see injected=true and short-circuit, so the cache is
-      // never consulted again.
+      // Capture the writeEpoch at the start of this injection attempt. If a
+      // concurrent wrapToolCall persists new learnings between now and when
+      // commitInjected() runs, the epoch advances and we MUST NOT commit
+      // injected=true (the dispatched prompt used pre-write memory; the next
+      // turn must re-fetch).
+      const epochAtStart = state.writeEpoch;
+
+      // Helper: commit injected=true and clear the in-flight gate ONLY when no
+      // intervening write has advanced the epoch. The pending injection cache
+      // is left intact so concurrent waiters that awoke before this microtask
+      // completed can still read it; the next turn (after the gate clears)
+      // will see injected=true and short-circuit, so the cache is never
+      // consulted again.
       const commitInjected = (): void => {
         const current = getSession(ctx.session.sessionId);
+        const epochAdvanced = current.writeEpoch !== epochAtStart;
         sessions.set(ctx.session.sessionId, {
           ...current,
-          injected: true,
+          // Only commit injected=true if no write landed during dispatch.
+          injected: epochAdvanced ? false : true,
           inFlightInjection: undefined,
         });
         resolveInFlight?.();
