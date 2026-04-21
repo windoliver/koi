@@ -625,3 +625,36 @@ describe("observer.detach() revokes read access", () => {
     session.detach();
   });
 });
+
+describe("createDebugAttach — stale session auto-expiry", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("re-attach succeeds after controller is deactivated externally (stale entry)", () => {
+    const agent = makeAgent();
+    const first = createDebugAttach({ agent });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Simulate external deactivation (e.g. agent terminated by runtime) without calling detach
+    // We access the internal controller via the session's detach path for test purposes
+    // Calling clearAllDebugSessions deactivates controllers
+    clearAllDebugSessions();
+
+    // Re-attach should succeed (stale entry cleaned up)
+    const second = createDebugAttach({ agent });
+    expect(second.ok).toBe(true);
+  });
+});
+
+describe("debug middleware phase", () => {
+  test("debug middleware is in intercept phase to wrap auth/permission layers", () => {
+    const { createDebugMiddleware } =
+      require("./debug-middleware.js") as typeof import("./debug-middleware.js");
+    const { createEventRingBuffer } =
+      require("./event-ring-buffer.js") as typeof import("./event-ring-buffer.js");
+    const buf = createEventRingBuffer(10);
+    const { middleware } = createDebugMiddleware(buf);
+    expect(middleware.phase).toBe("intercept");
+  });
+});

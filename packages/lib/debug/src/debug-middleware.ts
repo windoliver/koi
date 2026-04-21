@@ -152,6 +152,7 @@ export function createDebugMiddleware(
   const middleware: KoiMiddleware = {
     name: DEBUG_MIDDLEWARE_NAME,
     priority: DEBUG_MIDDLEWARE_PRIORITY,
+    phase: "intercept",
 
     describeCapabilities: (): ReturnType<NonNullable<KoiMiddleware["describeCapabilities"]>> => {
       if (!active) return undefined;

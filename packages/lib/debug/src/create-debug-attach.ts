@@ -50,15 +50,20 @@ const activeDebugSessions = new Map<string, DebugBundle>();
 export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttachResult, KoiError> {
   const agentKey = config.agent.pid.id as string;
 
-  if (activeDebugSessions.has(agentKey)) {
-    return {
-      ok: false,
-      error: {
-        code: "CONFLICT",
-        message: `Agent ${agentKey} already has a debug session attached`,
-        retryable: false,
-      },
-    };
+  const existingBundle = activeDebugSessions.get(agentKey);
+  if (existingBundle !== undefined) {
+    if (existingBundle.controller.isActive()) {
+      return {
+        ok: false,
+        error: {
+          code: "CONFLICT",
+          message: `Agent ${agentKey} already has a debug session attached`,
+          retryable: false,
+        },
+      };
+    }
+    // Stale entry: controller was deactivated (e.g. agent terminated) without explicit detach
+    activeDebugSessions.delete(agentKey);
   }
 
   const bufferSize = config.bufferSize ?? DEFAULT_EVENT_BUFFER_SIZE;
