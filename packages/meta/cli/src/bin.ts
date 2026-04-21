@@ -32,7 +32,6 @@ Commands:
   logs [manifest]        View service logs
   status [manifest]      Check service status
   doctor [manifest]      Diagnose service health
-  dream [options]        Run dream memory consolidation
   stop [manifest]        Stop the service
   deploy [manifest]      Install/uninstall OS service
   plugin <subcommand>    Manage plugins (install, remove, enable, disable, update, list)
