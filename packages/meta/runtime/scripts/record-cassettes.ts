@@ -81,7 +81,6 @@ import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
-import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -1215,11 +1214,6 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     signalWriter: retryBroker,
   });
 
-  // @koi/middleware-goal — objective tracking (fires decisions on injection turns)
-  const goalMw = createGoalMiddleware({
-    objectives: [config.prompt.slice(0, 120)],
-  });
-
   // @koi/skills-runtime — skill-injector (fires decisions when skills are attached)
   // Lazy agent ref: middleware created before createKoi, agent wired after assembly.
   const agentRef: { current?: Agent } = {};
@@ -1236,7 +1230,6 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     hookObserverMw,
     exfiltrationGuard,
     permHandle,
-    goalMw,
     skillInjectorMw,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),

@@ -308,14 +308,6 @@
         "zod": "4.3.6",
       },
     },
-    "packages/lib/middleware-goal": {
-      "name": "@koi/middleware-goal",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-    },
     "packages/lib/middleware-otel": {
       "name": "@koi/middleware-otel",
       "version": "0.0.0",
@@ -642,7 +634,6 @@
         "@koi/middleware-dream": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
-        "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
@@ -745,7 +736,6 @@
         "@koi/middleware-dream": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
-        "@koi/middleware-goal": "workspace:*",
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
@@ -1455,8 +1445,6 @@
     "@koi/middleware-exfiltration-guard": ["@koi/middleware-exfiltration-guard@workspace:packages/security/middleware-exfiltration-guard"],
 
     "@koi/middleware-extraction": ["@koi/middleware-extraction@workspace:packages/mm/middleware-extraction"],
-
-    "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
 
     "@koi/middleware-memory-recall": ["@koi/middleware-memory-recall@workspace:packages/mm/middleware-memory-recall"],
 

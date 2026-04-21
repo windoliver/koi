@@ -149,3 +149,9 @@ describe("parseTuiFlags — --yolo / --dangerously-skip-permissions", () => {
     expect(parseTuiFlags(["--yolo", "--dangerously-skip-permissions"]).yolo).toBe(true);
   });
 });
+
+describe("parseTuiFlags — --goal removed (#1848)", () => {
+  test("--goal is rejected as unknown option", () => {
+    expect(() => parseTuiFlags(["--goal", "anything"])).toThrow(ParseError);
+  });
+});

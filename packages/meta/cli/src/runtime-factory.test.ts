@@ -873,3 +873,6 @@ describe("createKoiRuntime — trustedHost enforcement", () => {
     expect(err.name).toBe("RequiredMiddlewareError");
   });
 });
+
+// #1848: `KoiRuntimeConfig.goals` removed. TypeScript enforces this at
+// compile time; no runtime test needed.

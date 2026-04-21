@@ -9,7 +9,7 @@
  * composition.
  *
  * Why a tagged record instead of a positional argument list:
- *   - Optional slots (modelRouter, goal, otel) stay `undefined`-friendly
+ *   - Optional slots (modelRouter, otel) stay `undefined`-friendly
  *     without `null`-sentinel gymnastics at the call site.
  *   - Adding a new slot doesn't silently shift existing arguments.
  *   - The field names document the canonical middleware layer vocabulary.
@@ -55,8 +55,6 @@ export interface MiddlewareCompositionInput {
    * chain independently so retries benefit from fallback.
    */
   readonly modelRouter?: KoiMiddleware | undefined;
-  /** Goal reminder middleware — injected when the host supplies objectives. */
-  readonly goal?: KoiMiddleware | undefined;
   /**
    * Planning middleware — injects `write_plan` tool semantics. Composed
    * INSIDE permissions so its prompt-visibility gate sees the final
@@ -121,7 +119,6 @@ export interface MiddlewareCompositionInput {
  *                                         already-redacted traffic
  *   [zone C-bottom]
  *             modelRouter?
- *             goal?
  *             systemPrompt?
  *             sessionTranscript?
  *
@@ -137,7 +134,7 @@ export interface MiddlewareCompositionInput {
  * can commit to `koi.yaml` from adding a middleware that logs raw
  * prompts or tool inputs before the guard runs.
  *
- * Zone C-bottom (modelRouter/goal/systemPrompt/sessionTranscript)
+ * Zone C-bottom (modelRouter/systemPrompt/sessionTranscript)
  * sits innermost because those layers need to be the last thing
  * touching the model payload: modelRouter routes the final call,
  * systemPrompt injects the final instructions, sessionTranscript
@@ -163,7 +160,6 @@ export function composeRuntimeMiddleware(
     // fallback chain sees the latest host-picked model id.
     ...(input.currentModel !== undefined ? [input.currentModel] : []),
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
-    ...(input.goal !== undefined ? [input.goal] : []),
     ...(input.plan !== undefined ? [input.plan] : []),
     ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
@@ -208,7 +204,7 @@ export function composeRuntimeMiddleware(
  * instance is safe because its state is keyed by sessionId — parent
  * and child have distinct sessionIds, so they never alias.
  *
- * Exports / lifecycle / optional innermost (modelRouter, goal,
+ * Exports / lifecycle / optional innermost (modelRouter,
  * sessionTranscript) are NOT inherited — they are per-runtime state
  * that does not make sense to share with a child agent.
  *
