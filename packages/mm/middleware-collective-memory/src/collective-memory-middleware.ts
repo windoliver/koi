@@ -90,7 +90,16 @@ export function createCollectiveMemoryMiddleware(
 
   // outputs is a mutable array ref so concurrent push() calls in the same session
   // don't race: JS is single-threaded, so push on a shared ref is atomic.
-  type SessionState = { injected: boolean; outputs: string[] };
+  // inFlightInjection serializes concurrent first-turn injections without
+  // permanently disabling injection on transient load failures: callers await
+  // the same promise; if it resolves with a successful injection, `injected`
+  // becomes true; if it failed, the promise field is cleared so the next turn
+  // can retry.
+  type SessionState = {
+    injected: boolean;
+    outputs: string[];
+    inFlightInjection?: Promise<void>;
+  };
   // Per-session state keyed by sessionId — prevents concurrent sessions from
   // clobbering each other's injection flag or buffered outputs.
   const sessions = new Map<string, SessionState>();
@@ -101,6 +110,25 @@ export function createCollectiveMemoryMiddleware(
     const fresh: SessionState = { injected: false, outputs: [] };
     sessions.set(sessionId, fresh);
     return fresh;
+  }
+
+  /** Build the tenant-scoped resolve context from a session, dropping undefined fields. */
+  function resolveCtxFor(session: {
+    readonly agentId: string;
+    readonly userId?: string;
+    readonly channelId?: string;
+    readonly conversationId?: string;
+  }): { readonly agentName: string } & Partial<{
+    readonly userId: string;
+    readonly channelId: string;
+    readonly conversationId: string;
+  }> {
+    return {
+      agentName: session.agentId,
+      ...(session.userId !== undefined ? { userId: session.userId } : {}),
+      ...(session.channelId !== undefined ? { channelId: session.channelId } : {}),
+      ...(session.conversationId !== undefined ? { conversationId: session.conversationId } : {}),
+    };
   }
 
   return {
@@ -158,7 +186,7 @@ export function createCollectiveMemoryMiddleware(
         );
         if (candidates.length === 0) return;
 
-        const rawId = config.resolveBrickId(ctx.agentId);
+        const rawId = config.resolveBrickId(resolveCtxFor(ctx));
         if (rawId === undefined) return;
 
         await persistLearnings(brickId(rawId), candidates, ctx.agentId, ctx.runId);
@@ -190,7 +218,7 @@ export function createCollectiveMemoryMiddleware(
       const candidates = extractor.extract(outputStr).filter((c) => acceptLearning(c.content));
       if (candidates.length === 0) return response;
 
-      const rawId = config.resolveBrickId(ctx.session.agentId);
+      const rawId = config.resolveBrickId(resolveCtxFor(ctx.session));
       if (rawId === undefined) return response;
 
       try {
@@ -206,23 +234,42 @@ export function createCollectiveMemoryMiddleware(
       const state = getSession(ctx.session.sessionId);
       if (state.injected) return next(request);
 
-      // Optimistically mark injected before any I/O so concurrent model calls
-      // in the same session don't both prepend the collective-memory message.
-      // Trade-off: a transient load failure will not be retried on the next turn;
-      // this is acceptable because duplicate injection is worse than a missed injection.
-      sessions.set(ctx.session.sessionId, { ...state, injected: true });
+      // Serialize concurrent first-turn injections via a shared in-flight promise.
+      // If the in-flight load fails, the promise is cleared so the next turn retries.
+      if (state.inFlightInjection !== undefined) {
+        // Wait for the concurrent in-flight injection to complete; then proceed
+        // with a plain (un-injected) call — the concurrent caller already injected.
+        await state.inFlightInjection.catch(() => undefined);
+        return next(request);
+      }
 
-      const rawId = config.resolveBrickId(ctx.session.agentId);
-      if (rawId === undefined) return next(request);
+      const rawId = config.resolveBrickId(resolveCtxFor(ctx.session));
+      if (rawId === undefined) {
+        // No brick to inject from; mark injected so we don't repeat the lookup.
+        sessions.set(ctx.session.sessionId, { ...state, injected: true });
+        return next(request);
+      }
 
       // Build the memory block before dispatching. Any failure here (load/format)
-      // falls back to an un-injected call — no double dispatch risk.
+      // clears the in-flight gate so a later turn can retry.
+      const brick: BrickId = brickId(rawId);
       let injectedRequest: typeof request | undefined;
       let injectedIds: ReadonlySet<string> | undefined;
-      let brick: BrickId | undefined;
+
+      // let justified: assigned via inFlightInjection promise resolution
+      let resolveInFlight: (() => void) | undefined;
+      // let justified: assigned via inFlightInjection promise rejection
+      let rejectInFlight: ((err: unknown) => void) | undefined;
+      const inFlight = new Promise<void>((resolve, reject) => {
+        resolveInFlight = resolve;
+        rejectInFlight = reject;
+      });
+      // Attach a no-op catch immediately so a rejection without concurrent
+      // awaiters does not surface as an unhandled promise rejection.
+      inFlight.catch(() => undefined);
+      sessions.set(ctx.session.sessionId, { ...state, inFlightInjection: inFlight });
 
       try {
-        brick = brickId(rawId);
         const loadResult: Result<BrickArtifact, unknown> = await config.forgeStore.load(brick);
         if (loadResult.ok) {
           const memory: CollectiveMemory =
@@ -249,16 +296,29 @@ export function createCollectiveMemoryMiddleware(
             }
           }
         }
-      } catch {
-        // Pre-dispatch failure: fall through to call next() without injection
+        // Mark injected and clear in-flight gate ONLY on a clean (non-throwing) attempt.
+        // This commits the one-shot semantics for both successful injection and
+        // legitimate "no entries to inject" outcomes.
+        const current = getSession(ctx.session.sessionId);
+        sessions.set(ctx.session.sessionId, {
+          ...current,
+          injected: true,
+          inFlightInjection: undefined,
+        });
+        resolveInFlight?.();
+      } catch (err) {
+        // Pre-dispatch failure (transient load error): clear in-flight gate so a
+        // later turn in this session can retry injection. Do NOT mark injected.
+        const current = getSession(ctx.session.sessionId);
+        sessions.set(ctx.session.sessionId, { ...current, inFlightInjection: undefined });
+        rejectInFlight?.(err);
+        return next(request);
       }
 
-      // Dispatch exactly once. If pre-dispatch failed we use the original request.
-      // Do NOT retry next() on failure — adapter errors propagate to the caller.
       if (injectedRequest === undefined) return next(request);
 
       const result = await next(injectedRequest);
-      if (brick !== undefined && injectedIds !== undefined) {
+      if (injectedIds !== undefined) {
         incrementAccessCounts(brick, injectedIds).catch(() => {
           // Swallow — observability only
         });

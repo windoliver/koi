@@ -18,10 +18,34 @@ export interface LearningExtractor {
   readonly extract: (output: string) => readonly LearningCandidate[];
 }
 
+/**
+ * Context exposed to brick-id resolution. The middleware passes the agent name
+ * plus optional tenant-scoping fields drawn from the session metadata so callers
+ * can partition collective memory per user/channel/conversation when needed.
+ */
+export interface ResolveBrickContext {
+  readonly agentName: string;
+  /** Tenant/user identifier from session metadata, if present. */
+  readonly userId?: string | undefined;
+  /** Channel identifier from session metadata, if present. */
+  readonly channelId?: string | undefined;
+  /** Conversation identifier from session metadata, if present. */
+  readonly conversationId?: string | undefined;
+}
+
 /** Configuration for the collective memory middleware factory. */
 export interface CollectiveMemoryMiddlewareConfig {
   readonly forgeStore: ForgeStore;
-  readonly resolveBrickId: (agentName: string) => string | undefined;
+  /**
+   * Resolve the brick to read/write for a given agent.
+   *
+   * Called with either the agent name only (legacy signature) or a context
+   * carrying tenant/user/channel/conversation fields drawn from session
+   * metadata. To partition memory per tenant or user, derive the brick id from
+   * the context fields rather than the agent name alone — otherwise all users
+   * of the same agent share one collective-memory brick.
+   */
+  readonly resolveBrickId: (agentNameOrCtx: string | ResolveBrickContext) => string | undefined;
   readonly tokenEstimator?: TokenEstimator | undefined;
   readonly extractor?: LearningExtractor | undefined;
   readonly maxEntries?: number | undefined;

@@ -57,7 +57,10 @@ function createConfig(
 ): CollectiveMemoryMiddlewareConfig {
   return {
     forgeStore: createMockForgeStore(),
-    resolveBrickId: (name: string) => (name === "researcher" ? "sha256:abc123" : undefined),
+    resolveBrickId: (input) => {
+      const name = typeof input === "string" ? input : input.agentName;
+      return name === "researcher" ? "sha256:abc123" : undefined;
+    },
     // Most existing tests exercise the write path explicitly; default to enabled
     // here so tests stay focused on behavior rather than this opt-in flag.
     persistSpawnOutputs: true,
@@ -131,7 +134,10 @@ describe("createCollectiveMemoryMiddleware", () => {
       // Override createConfig's default — call factory with explicit persistSpawnOutputs=undefined
       const mw = createCollectiveMemoryMiddleware({
         forgeStore: store,
-        resolveBrickId: (name) => (name === "researcher" ? "sha256:abc123" : undefined),
+        resolveBrickId: (input) => {
+          const name = typeof input === "string" ? input : input.agentName;
+          return name === "researcher" ? "sha256:abc123" : undefined;
+        },
       });
       await mw.onSessionStart?.(createSessionCtx());
 
@@ -446,10 +452,28 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(injectedCount).toBe(1);
     });
 
-    test("transient brick load failure skips injection and marks session done (no retry)", async () => {
-      const store = createMockForgeStore();
+    test("transient brick load failure clears in-flight gate so next turn retries", async () => {
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e1",
+            content: "Some learning",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      let loadCount = 0;
       (store.load as ReturnType<typeof mock>).mockImplementation(async () => {
-        throw new Error("transient failure");
+        loadCount++;
+        if (loadCount === 1) throw new Error("transient failure");
+        return { ok: true, value: { collectiveMemory: memory, storeVersion: "v1" } };
       });
       const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
       await mw.onSessionStart?.(createSessionCtx());
@@ -472,12 +496,13 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.wrapModelCall?.(ctx, req, next);
       await mw.wrapModelCall?.(ctx, req, next);
 
-      // Both calls use the original request (no injection); second call short-circuits
-      // via the injected flag set before I/O to prevent concurrent injection.
+      // First call: load threw → in-flight gate cleared → next() called without injection
       expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
-      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
-      // Load called only once — second turn sees injected=true and skips
-      expect(store.load).toHaveBeenCalledTimes(1);
+      // Second call: injected flag still false because first attempt failed → retry succeeds
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+      // Load called at least twice — once per wrapModelCall turn (plus optional
+      // incrementAccessCounts background reload after the successful injection)
+      expect((store.load as ReturnType<typeof mock>).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     test("marks injected=true after resolveBrickId returns undefined to avoid repeated lookups", async () => {
@@ -904,12 +929,14 @@ describe("session isolation", () => {
     const mw = createCollectiveMemoryMiddleware(
       createConfig({
         forgeStore: store,
-        resolveBrickId: (name: string) =>
-          name === "researcher"
+        resolveBrickId: (input) => {
+          const name = typeof input === "string" ? input : input.agentName;
+          return name === "researcher"
             ? "sha256:abc123"
             : name === "other-agent"
               ? "sha256:other"
-              : undefined,
+              : undefined;
+        },
       }),
     );
 
