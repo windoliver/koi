@@ -901,6 +901,23 @@ export interface KoiRuntimeHandle {
    * surface — callers always receive at least one descriptor.
    */
   readonly governanceRules: readonly RuleDescriptor[];
+  /**
+   * Resolved alert threshold fractions (e.g. `[0.7, 0.9]`) — CLI flags >
+   * manifest > undefined. Hosts (TUI governance bridge) that emit their own
+   * alert toasts must honor these rather than hardcoding their own set, so
+   * `--alert-threshold` precedence is authoritative across every alerting
+   * path. Undefined means the host should use its observational default.
+   */
+  readonly governanceAlertThresholds: readonly number[] | undefined;
+  /**
+   * Mirrors `config.governanceDisabled !== true`. Hosts must consult this
+   * before wiring their own observer surfaces (bridge, alerts JSONL, UI
+   * panels): even when the engine's bundled GOVERNANCE component is still
+   * present under `--no-governance` (to keep guard-level safety on), the
+   * HOST-level alerting/persistence layer must stay off. Without this gate
+   * `--no-governance` fails open on the TUI toast + alerts-file paths.
+   */
+  readonly governanceEnabled: boolean;
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -1567,13 +1584,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       : undefined;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
+  //
+  // `maxTurns` is plumbed from resolved governance state so the transcript
+  // adapter's `runTurn` loop shares the same ceiling as the engine guard
+  // (`limits.maxTurns` below) and the governance controller's iteration
+  // sensor. Without this thread, a caller setting `--max-turns 50` could
+  // still be cut off at 25 by the adapter before either other path fires.
   const transcript: InboundMessage[] = [];
   const rawEngineAdapter = createTranscriptAdapter({
     engineId: config.engineId ?? "koi-tui",
     modelAdapter,
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
-    maxTurns: DEFAULT_MAX_TURNS,
+    maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
     ...(config.getGeneration !== undefined ? { getGeneration: config.getGeneration } : {}),
     // KOI_COMPACTION_WINDOW: override context window size for testing compaction
     // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
@@ -2455,8 +2478,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // duration is 5 min anyway (via `defaultMaxDurationMs`), so
       // this match is a no-op; for the interactive TUI it extends
       // inactivity to 30 min, which is the intended posture.
+      // `--max-turns N` is plumbed into BOTH the governance controller
+      // (setpoint) and the engine's iteration guard (limits) so the two
+      // enforcement paths share a single operator-supplied ceiling.
+      // Without this, a hardcoded DEFAULT_MAX_TURNS here would win
+      // over a higher `--max-turns` value (guard trips first, governance
+      // never fires), silently capping runs at 25 turns.
+      //
+      // `--no-governance` disables the HOST-level governance surface
+      // (alerts, bridge, pattern backend, observer MW) but the engine's
+      // bundled guard still applies — operators can tune it via
+      // `--max-turns`; there is no escape-to-unbounded path by design.
       limits: {
-        maxTurns: DEFAULT_MAX_TURNS,
+        maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
         maxDurationMs: resolvedDurationForGov,
         maxInactivityMs: resolvedDurationForGov,
         maxTokens: 1_000_000,
@@ -2586,6 +2620,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       sandboxActive,
       pluginSummary,
       governanceRules,
+      governanceAlertThresholds: config.governanceAlertThresholds,
+      governanceEnabled,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a

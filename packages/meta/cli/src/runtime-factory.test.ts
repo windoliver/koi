@@ -332,6 +332,57 @@ describe("createKoiRuntime — governance wiring (gov-10)", () => {
     // is synthesized when the backend is never built).
     expect(runtimeHandle.governanceRules).toEqual([]);
   });
+
+  test("handle.governanceEnabled mirrors governanceDisabled (fail-closed host-gate surface)", async () => {
+    // Default (governance on) → handle.governanceEnabled === true
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+    });
+    expect(runtimeHandle.governanceEnabled).toBe(true);
+    await runtimeHandle.runtime.dispose();
+
+    // governanceDisabled: true → handle.governanceEnabled === false.
+    // Hosts (TUI bridge, alerts persistence, /governance view) read this
+    // flag to decide whether to wire their observer surfaces. Without it,
+    // `--no-governance` would fail open on the host-level alerting path
+    // because the engine's bundled GOVERNANCE component is still present.
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      governanceDisabled: true,
+    });
+    expect(runtimeHandle.governanceEnabled).toBe(false);
+  }, 30_000);
+
+  test("handle.governanceAlertThresholds reflects config for host-bridge plumbing", async () => {
+    // Unset thresholds → undefined on handle, host falls back to default.
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+    });
+    expect(runtimeHandle.governanceAlertThresholds).toBeUndefined();
+    await runtimeHandle.runtime.dispose();
+
+    // Set thresholds → exposed verbatim for bridge wiring. CLI/manifest
+    // precedence is enforced upstream in mergeGovernanceFlags; this
+    // handle field is the transport that makes that precedence authoritative
+    // in the TUI toast/alert path.
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      governanceAlertThresholds: [0.6, 0.85],
+    });
+    expect(runtimeHandle.governanceAlertThresholds).toEqual([0.6, 0.85]);
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------

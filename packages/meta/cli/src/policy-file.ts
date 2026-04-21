@@ -71,6 +71,8 @@ const VALID_FIXED_KINDS = new Set<string>([
   "forge",
   "handoff",
 ]);
+const VALID_RULE_KEYS = new Set<string>(["match", "decision", "rule", "severity", "message"]);
+const VALID_MATCH_KEYS = new Set<string>(["kind", "toolId", "model"]);
 
 function validateRule(entry: unknown, idx: number, path: string): PatternRule {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
@@ -79,6 +81,17 @@ function validateRule(entry: unknown, idx: number, path: string): PatternRule {
     );
   }
   const record = entry as Record<string, unknown>;
+
+  // Reject unknown top-level keys. A typo like `desicion:` would otherwise
+  // be silently ignored, leaving `record.decision` undefined and failing
+  // the decision check with a confusing "got undefined" message. Strict
+  // key validation fails the load with a targeted error instead.
+  const unknownRuleKeys = Object.keys(record).filter((k) => !VALID_RULE_KEYS.has(k));
+  if (unknownRuleKeys.length > 0) {
+    throw new Error(
+      `--policy-file: rule[${idx}] in '${path}' has unknown key(s): ${unknownRuleKeys.join(", ")}. Allowed: ${[...VALID_RULE_KEYS].join(", ")}`,
+    );
+  }
 
   if (!("match" in record)) {
     throw new Error(`--policy-file: rule[${idx}] in '${path}' is missing required field 'match'`);
@@ -113,6 +126,19 @@ function validateMatch(raw: unknown, idx: number, path: string): PatternRule["ma
     );
   }
   const record = raw as Record<string, unknown>;
+
+  // Reject unknown selector keys. A typo like `toolID:` or `tool_id:` would
+  // otherwise be silently discarded, producing an empty match object that
+  // — combined with pattern-backend semantics — widens the rule to every
+  // request of the rule's decision kind. This is a dangerous fail-open
+  // mode for deny rules and a policy-inversion risk for allow rules.
+  const unknownMatchKeys = Object.keys(record).filter((k) => !VALID_MATCH_KEYS.has(k));
+  if (unknownMatchKeys.length > 0) {
+    throw new Error(
+      `--policy-file: rule[${idx}].match in '${path}' has unknown key(s): ${unknownMatchKeys.join(", ")}. Allowed: ${[...VALID_MATCH_KEYS].join(", ")}`,
+    );
+  }
+
   const out: { kind?: PolicyRequestKind; toolId?: string; model?: string } = {};
 
   if (record.kind !== undefined) {

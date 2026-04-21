@@ -19,11 +19,17 @@ import type { CapabilityFragmentLite, GovernanceAlert, TuiStore } from "@koi/tui
 
 const MAX_PERSISTED_ALERTS = 200;
 /**
- * Threshold crossings that fire an alert + toast. Lower than governance-core's
- * default [0.8, 0.95] because the TUI surface is observational — surfacing 50%
- * gives the user runway to react before approaching the cap.
+ * Default threshold crossings that fire an alert + toast. Lower than
+ * governance-core's default [0.8, 0.95] because the TUI surface is
+ * observational — surfacing 50% gives the user runway to react before
+ * approaching the cap.
+ *
+ * Operators can override via `--alert-threshold` / manifest
+ * `governance.alertThresholds` — the runtime resolves precedence and passes
+ * the winning set in through `GovernanceBridgeConfig.alertThresholds`. This
+ * constant is used only when the host does not supply one.
  */
-const ALERT_THRESHOLDS: readonly number[] = [0.5, 0.8, 0.95];
+const DEFAULT_ALERT_THRESHOLDS: readonly number[] = [0.5, 0.8, 0.95];
 
 export interface GovernanceBridgeConfig {
   readonly store: TuiStore;
@@ -35,6 +41,12 @@ export interface GovernanceBridgeConfig {
   readonly rules?: readonly RuleDescriptor[] | undefined;
   /** Optional initial capabilities to push at startup. */
   readonly capabilities?: readonly CapabilityFragmentLite[] | undefined;
+  /**
+   * Resolved alert threshold fractions (CLI flags > manifest > default).
+   * When provided, drives alert/toast firing for this bridge. Empty or
+   * undefined → `DEFAULT_ALERT_THRESHOLDS`.
+   */
+  readonly alertThresholds?: readonly number[] | undefined;
 }
 
 export interface GovernanceBridge {
@@ -57,7 +69,11 @@ export interface GovernanceBridge {
 export function createGovernanceBridge(config: GovernanceBridgeConfig): GovernanceBridge {
   // let: justified — mutated by setSession
   let sessionId = config.sessionId;
-  const alertTracker = createAlertTracker({ thresholds: ALERT_THRESHOLDS });
+  const resolvedThresholds =
+    config.alertThresholds !== undefined && config.alertThresholds.length > 0
+      ? config.alertThresholds
+      : DEFAULT_ALERT_THRESHOLDS;
+  const alertTracker = createAlertTracker({ thresholds: resolvedThresholds });
 
   ensureParentDir(config.alertsPath);
 

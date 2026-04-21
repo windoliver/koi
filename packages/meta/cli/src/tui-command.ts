@@ -1784,7 +1784,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // leaving all governanceBridge?.xxx() call sites as no-ops.
     try {
       const governanceController = handle.runtime.agent.component<GovernanceController>(GOVERNANCE);
-      if (governanceController !== undefined) {
+      // `--no-governance` / manifest disable wins here: even though the
+      // engine's bundled GOVERNANCE component is still attached for
+      // guard-level safety, the host-level observer surface (bridge, alerts
+      // JSONL, toast reducer) must stay inert so operator intent is
+      // honored end-to-end. Without this gate, disabling governance would
+      // still fire toasts, persist alerts, and poll snapshots — a
+      // fail-open.
+      if (governanceController !== undefined && handle.governanceEnabled) {
         governanceBridge = createGovernanceBridge({
           store,
           controller: governanceController,
@@ -1794,6 +1801,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // backend.describeRules() — falls back to a synthetic default-allow
           // entry until the manifest YAML loader (#1877) wires real rules.
           rules: handle.governanceRules,
+          // Resolved `--alert-threshold` / manifest thresholds. When both are
+          // unset the bridge falls back to its observational default
+          // ([0.5, 0.8, 0.95]); passing the resolved set here is what makes
+          // CLI/manifest precedence authoritative for TUI toast firing.
+          ...(handle.governanceAlertThresholds !== undefined
+            ? { alertThresholds: handle.governanceAlertThresholds }
+            : {}),
           // Static capability mirror — matches the createGovernanceMiddleware's
           // describeCapabilities() output. Hardcoded here to avoid plumbing the
           // middleware instance back from runtime-factory just for one string.

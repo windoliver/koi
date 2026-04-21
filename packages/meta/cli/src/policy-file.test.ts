@@ -127,4 +127,22 @@ describe("loadPolicyFile", () => {
     );
     await expect(loadPolicyFile(path)).rejects.toThrow(/severity/);
   });
+
+  test("rejects unknown keys in match (typo-as-wildcard guard)", async () => {
+    const path = await write(
+      "typo-match.yaml",
+      `${["- match:", "    toolID: web_fetch", "  decision: deny"].join("\n")}\n`,
+    );
+    await expect(loadPolicyFile(path)).rejects.toThrow(/match.*unknown key.*toolID/);
+  });
+
+  test("rejects unknown keys at rule level (typo guard)", async () => {
+    const path = await write(
+      "typo-rule.yaml",
+      `${["- match:", "    toolId: shell", "  decision: deny", "  severty: critical"].join(
+        "\n",
+      )}\n`,
+    );
+    await expect(loadPolicyFile(path)).rejects.toThrow(/unknown key.*severty/);
+  });
 });
