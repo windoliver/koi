@@ -3,6 +3,7 @@ import { createDetachedFrame, detachDebugger } from "./detach-helpers.js";
 import type { ExtensionStorage } from "./storage.js";
 
 export interface AdminClearGrantsRequest {
+  readonly requestId: string;
   readonly scope: "all" | "origin";
   readonly origin?: string | undefined;
 }
@@ -28,6 +29,7 @@ export async function respondToAdminClearGrants(deps: {
         }
       | {
           readonly kind: "admin_clear_grants_ack";
+          readonly requestId: string;
           readonly clearedOrigins: readonly string[];
           readonly detachedTabs: readonly number[];
         },
@@ -42,6 +44,7 @@ export async function respondToAdminClearGrants(deps: {
   if (scope === "origin" && targetOrigin === undefined) {
     deps.emitFrame({
       kind: "admin_clear_grants_ack",
+      requestId: deps.request?.requestId ?? "",
       clearedOrigins: [],
       detachedTabs: [],
     });
@@ -53,12 +56,19 @@ export async function respondToAdminClearGrants(deps: {
 
   if (scope === "origin" && targetOrigin !== undefined) {
     // Scoped revocation: remove the persistent always-grant AND the
-    // private-origin allowlist entry for this origin, AND revoke any
-    // per-tab allow_once entries whose live session is on this origin.
-    // The allow_once key is (tabId, documentId), not keyed by origin
-    // directly — so we resolve origin→tabId via the live FSM state.
+    // private-origin allowlist entry for this origin. For one-time grants:
+    // they are keyed by (tabId, documentId), not origin, so we cannot
+    // selectively enumerate "all tabs that had an allow_once for this
+    // origin" — detached tabs are not represented in the live FSM, so an
+    // origin-only sweep via attached-state would leave dormant entries
+    // behind. The conservative safe fallback is to wipe ALL allow_once
+    // grants during an origin-scoped revocation: allow_once is by
+    // construction session-scoped (chrome.storage.session is cleared on
+    // browser restart), and losing unrelated allow_once entries just
+    // costs an extra one-time consent prompt for those other origins.
     //
-    // Other origins' grants stay intact.
+    // Other origins' persistent `always` grants and private-origin
+    // allowlist entries stay intact.
     await deps.storage.removeAlwaysGrant(targetOrigin);
     const priv = await deps.storage.getPrivateOriginAllowlist();
     const filteredPriv = priv.filter((o) => o !== targetOrigin);
@@ -66,11 +76,7 @@ export async function respondToAdminClearGrants(deps: {
     if (removedFromPriv) {
       await deps.storage.setPrivateOriginAllowlist(filteredPriv);
     }
-    for (const session of deps.fsm.getAttachedStates()) {
-      if (session.origin === targetOrigin) {
-        await deps.storage.revokeAllowOnceForTab(session.tabId);
-      }
-    }
+    await deps.storage.clearAllowOnceGrants();
     clearedOrigins = [targetOrigin];
     clearedPrivateOrigins = removedFromPriv ? [targetOrigin] : [];
   } else {
@@ -92,11 +98,17 @@ export async function respondToAdminClearGrants(deps: {
     }
     const outcome = await detachDebugger(session.tabId);
     detachedTabs.push(session.tabId);
+    // Drop FSM ownership of the tab BEFORE the detached frame is emitted.
+    // Otherwise the stale `attached` entry would make the next attach
+    // request for this tab bounce as `already_attached` even though Chrome
+    // already tore the session down.
+    deps.fsm.clearAttachedTab(session.tabId);
     deps.emitFrame(createDetachedFrame(session, "unknown", outcome.ok));
   }
 
   deps.emitFrame({
     kind: "admin_clear_grants_ack",
+    requestId: deps.request?.requestId ?? "",
     clearedOrigins: [...clearedOrigins, ...clearedPrivateOrigins],
     detachedTabs,
   });

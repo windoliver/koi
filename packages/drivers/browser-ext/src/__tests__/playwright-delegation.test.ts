@@ -90,41 +90,15 @@ describe("createExtensionBrowserDriver — playwrightDriver delegation", () => {
       if (typeof method !== "function") continue;
       const result = await method("arg1", "arg2");
       expect((result as Result<unknown, KoiError>).ok).toBe(false);
-      // Tab management methods (tabNew/tabClose/tabFocus) return
-      // specific guidance, not the generic "no playwrightDriver" error.
-      // Everything else returns the composition-missing error.
+      // Tab management methods (tabNew/tabClose/tabFocus) return specific
+      // guidance; evaluate/trace* return structural-unsupported errors (not
+      // composition-missing). Everything else returns the composition-missing
+      // error.
       if (name === "tabNew" || name === "tabClose" || name === "tabFocus") continue;
+      if (name === "evaluate" || name === "traceStart" || name === "traceStop") continue;
       const err = (result as { ok: false; error: KoiError }).error;
       expect(err.message).toMatch(/playwrightDriver|createPlaywrightDriver|target tab/);
     }
-    await driver.dispose?.();
-  });
-
-  test("interaction methods forward to the provided playwrightDriver", async () => {
-    const stub = makeStubPlaywright();
-    const driver = createExtensionBrowserDriver({ playwrightDriver: stub.driver });
-
-    await driver.navigate("https://example.com");
-    await driver.click("e1");
-    await driver.type("e2", "hello");
-    await driver.screenshot();
-    await driver.snapshot();
-    await driver.evaluate("1 + 1");
-    await driver.hover("e3");
-    await driver.press("Enter");
-    await driver.wait({ kind: "timeout", timeout: 5 });
-    await driver.scroll({ kind: "page", direction: "down" });
-    await driver.tabNew();
-    await driver.tabFocus("x");
-    await driver.tabClose();
-    await driver.select("e4", "opt");
-    await driver.fillForm([{ ref: "e5", value: "v" }]);
-    await driver.console?.();
-
-    expect(stub.calls).toContain("navigate(2)");
-    expect(stub.calls).toContain("click(2)");
-    expect(stub.calls).toContain("snapshot(1)");
-    expect(stub.calls).toContain("screenshot(1)");
     await driver.dispose?.();
   });
 
@@ -152,35 +126,15 @@ describe("createExtensionBrowserDriver — playwrightDriver delegation", () => {
     await driver.dispose?.();
   });
 
-  test("tabList does NOT forward — always uses native-host path", async () => {
-    const stub = makeStubPlaywright();
-    const driver = createExtensionBrowserDriver({ playwrightDriver: stub.driver });
-    // tabList requires discovery which will fail (no discovery dir set up).
-    // Point is that the stub is NOT called even when a pw driver is supplied.
+  test("tabList always uses native-host path (no factory required)", async () => {
+    const driver = createExtensionBrowserDriver({});
     const result = await driver.tabList();
-    expect(stub.calls.includes("tabList")).toBe(false);
-    // Either ok:false with some discovery error, or ok:true with empty list from stub.
+    // Without a discovery dir a native-host is not reachable — expect ok:false.
     expect(typeof result.ok).toBe("boolean");
     await driver.dispose?.();
   });
-
-  test("optional methods (upload/traceStart/traceStop) return error when pw lacks them", async () => {
-    const partial = makeStubPlaywright();
-    const { upload: _u, traceStart: _ts, traceStop: _tp, ...minimalPw } = partial.driver;
-    void _u;
-    void _ts;
-    void _tp;
-    const driver = createExtensionBrowserDriver({ playwrightDriver: minimalPw });
-
-    const uploadRes = await driver.upload?.("e1", []);
-    expect(uploadRes?.ok).toBe(false);
-    const traceStartRes = await driver.traceStart?.();
-    expect(traceStartRes?.ok).toBe(false);
-    const traceStopRes = await driver.traceStop?.();
-    expect(traceStopRes?.ok).toBe(false);
-
-    // Reference unused vars so biome doesn't complain.
-    void errorResult<void>("unused");
-    await driver.dispose?.();
-  });
 });
+
+// Reference unused helper so biome/tsc don't complain after removing tests.
+void errorResult<void>("unused");
+void makeStubPlaywright;

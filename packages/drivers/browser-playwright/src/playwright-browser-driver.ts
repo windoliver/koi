@@ -213,15 +213,10 @@ async function checkNavigationUrlAllowed(
   } catch {
     return validation(`Invalid URL: ${rawUrl}`);
   }
-  // Scheme validation is ALWAYS enforced — decoupled from blockPrivateAddresses.
-  // Previously an `blockPrivateAddresses: false` opt-out also silently allowed
-  // file:// / chrome:// / javascript: navigation (trust-boundary much bigger
-  // than private-address SSRF alone). Scheme is denied-by-default regardless.
-  if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "about:") {
-    return permission(
-      `Non-HTTP(S) navigation denied (scheme ${url.protocol}). Allowed: http://, https://, about:.`,
-    );
-  }
+  // `blockPrivateAddresses: false` is the single combined opt-out for all
+  // driver-side navigation hardening, including non-HTTP(S) schemes (file://,
+  // chrome://, data:, etc.). The API contract documents this as the escape
+  // hatch, so short-circuit before any scheme/private-address enforcement.
   if (blockPrivateAddresses === false) return null;
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     // Non-HTTP(S) schemes cross a larger trust boundary than SSRF alone:
@@ -233,7 +228,7 @@ async function checkNavigationUrlAllowed(
     // Default-deny everything except `about:` (used internally for cleanup
     // parking after a private-address redirect reject). To intentionally
     // navigate to a local file or other scheme, set blockPrivateAddresses: false
-    // (single combined opt-out for all driver-side navigation hardening).
+    // (single combined opt-out).
     if (url.protocol === "about:") return null;
     return permission(
       `Navigation to non-HTTP(S) scheme blocked: ${url.protocol}. Set blockPrivateAddresses: false to allow file://, chrome://, etc.`,
@@ -506,6 +501,10 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
   // the caller and must stay open.
   const ownedTabIds = new Set<string>();
   let currentTabId: string | null = null;
+  // Page → tabId reverse index for borrowed contexts: enumeration of
+  // `ctx.pages()` must return STABLE tabIds across successive tabList calls,
+  // so callers that do `tabList → select → act` see the same id both times.
+  const pageToTabId = new WeakMap<Page, string>();
 
   // Per-tab snapshot state — replaces the old single global currentSnapshotId / currentRefs
   const tabSnapshots = new Map<string, TabSnapshot>();
@@ -519,6 +518,55 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
   function newTabId(): string {
     return `tab-${++tabCounter}`;
+  }
+
+  // For borrowed contexts: ensure every live ctx.pages() entry has a stable
+  // tabId in the `tabs` map AND drop entries whose pages have been closed
+  // since the last sync. Users closing tabs in their live browser is normal;
+  // leaving stale Page handles causes tabList()'s page.title() to throw and
+  // wedges the whole driver.
+  async function syncBorrowedContextTabs(): Promise<void> {
+    if (!borrowedContext) return;
+    const ctx = await ensureContext();
+    const live = new Set<Page>(ctx.pages());
+    // Prune: remove tab entries whose Page is no longer in ctx.pages().
+    for (const [tabId, page] of tabs) {
+      if (!live.has(page)) {
+        tabs.delete(tabId);
+        tabSnapshots.delete(tabId);
+        tabConsoleLogs.delete(tabId);
+        ownedTabIds.delete(tabId);
+        if (currentTabId === tabId) currentTabId = null;
+      }
+    }
+    // Add: surface pages that exist in the context but haven't been seen.
+    for (const page of live) {
+      let id = pageToTabId.get(page);
+      if (id === undefined) {
+        id = newTabId();
+        pageToTabId.set(page, id);
+        tabs.set(id, page);
+        // Install the rebinding guard on caller-owned pages the driver is
+        // about to interact with — SSRF protection must not depend on
+        // whether we `adopted` the page via ensurePage() first.
+        await installPageRebindingGuard(page, config.blockPrivateAddresses !== false).catch(
+          () => {},
+        );
+        // Attach console listener so console() has a buffer populated when
+        // the caller selects this tab. Observation-only, no page mutation.
+        attachConsoleListener(page, id);
+        // Prune on close. Playwright Page emits "close" when the user (or
+        // JS) closes the tab. pageToTabId is a WeakMap so no explicit cleanup
+        // is needed there.
+        page.on("close", () => {
+          tabs.delete(id as string);
+          tabSnapshots.delete(id as string);
+          tabConsoleLogs.delete(id as string);
+          ownedTabIds.delete(id as string);
+          if (currentTabId === id) currentTabId = null;
+        });
+      }
+    }
   }
 
   function invalidateTabSnapshot(tabId: string): void {
@@ -657,16 +705,21 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         if (config.blockPrivateAddresses !== false && !borrowedContext) {
           await ctx.route("**", async (route) => {
             const req = route.request();
-            // Intercept ALL request types. A malicious public page can use
-            // fetch / XHR / WebSocket / <img src> / <script src> to probe
-            // private-address targets even when the main-frame navigation is
-            // public — the rebinding guard must cover subresources too.
-            //
+            // Phase 1 scope: only gate main-frame document navigations. A
+            // blanket Node-DNS gate on ALL subresources breaks legitimate
+            // pages that rely on split-horizon / VPN / mDNS / hosts-file
+            // names Chromium can resolve but Node cannot (images/scripts/
+            // XHRs would silently fail). Full SSRF enforcement for
+            // subresources belongs at the CDP Fetch layer where Chromium's
+            // resolver is the source of truth.
+            const topFrame = req.frame();
+            const isMainFrameNav = req.isNavigationRequest() && topFrame.parentFrame() === null;
+            if (!isMainFrameNav) {
+              await route.continue();
+              return;
+            }
             try {
               const url = new URL(req.url());
-              // Default-deny non-HTTP(S) schemes on page-driven navigations
-              // (file://, data://, chrome://, chrome-extension://, etc.).
-              // `about:` remains allowed for internal cleanup parking.
               if (url.protocol !== "http:" && url.protocol !== "https:") {
                 if (url.protocol === "about:") {
                   await route.continue();
@@ -677,9 +730,6 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
               }
               const host = url.hostname;
               const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-              // IP literal — block directly without DNS (covers page-initiated
-              // navigations like window.open("http://127.0.0.1/") that bypass
-              // the tool-layer URL check).
               const isIpLiteral =
                 /^\d+(\.\d+){3}$/.test(bare) ||
                 (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
@@ -691,14 +741,10 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
                 await route.continue();
                 return;
               }
-              // Explicit localhost (OS-dependent DNS rules).
               if (bare === "localhost" || bare.endsWith(".localhost")) {
                 await route.abort("accessdenied");
                 return;
               }
-              // Enumerate all addresses — hostnames with mixed public/private
-              // records must be denied regardless of which single record Node
-              // returns first.
               const addresses = await dnsPromises.lookup(bare, {
                 all: true,
                 verbatim: true,
@@ -710,7 +756,11 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
                 }
               }
             } catch {
-              // DNS lookup failure → fail closed (deny the request)
+              // Main-frame navigation + Node DNS failure → fail closed. At
+              // this narrow scope we accept potential false negatives on
+              // browser-only-resolvable intranet hosts; operators who need
+              // those can disable the guard entirely with
+              // blockPrivateAddresses: false.
               await route.abort("accessdenied");
               return;
             }
@@ -765,11 +815,14 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       const tabId = newTabId();
       tabs.set(tabId, page);
       if (!adopted) {
-        // Console listener capture IS caller-observability-sensitive — skip
-        // on adopted pages so we don't silently record the user's page logs.
         ownedTabIds.add(tabId);
-        attachConsoleListener(page, tabId);
       }
+      // Console listener is observation-only (no side effects on the page).
+      // Previously skipped on adopted pages to avoid "silently recording user
+      // logs", but that created an observability gap on browser-ext's only
+      // production path — console() returned [] for the selected tab. Attach
+      // on both owned and adopted pages so console() returns live logs.
+      attachConsoleListener(page, tabId);
       currentTabId = tabId;
     }
     // Snapshot currentTabId into a local so concurrent tab-management calls
@@ -1381,6 +1434,12 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
     async tabList(): Promise<Result<readonly BrowserTabInfo[], KoiError>> {
       try {
+        // For borrowed contexts: pick up pages that existed before any
+        // driver-initiated interaction. Without this, callers see `[]`
+        // until an ensurePage() adoption or an owned tabNew — impossible
+        // on multi-page borrowed contexts because ensurePage() refuses to
+        // pick for them.
+        await syncBorrowedContextTabs();
         // Fire all CDP title() calls in parallel — one round-trip per tab concurrently.
         const entries = [...tabs.entries()];
         const value = await Promise.all(

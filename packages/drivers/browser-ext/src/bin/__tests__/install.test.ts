@@ -60,7 +60,7 @@ describe("runInstallCommand", () => {
       "bundle:/repo/packages/drivers/browser-ext/dist/extension",
       "installId:/tmp/home/.koi/browser-ext",
       "auth:/tmp/home/.koi/browser-ext",
-      "wrapper:/tmp/home/.koi/browser-ext/bin/native-host:/opt/homebrew/bin/node:/repo/packages/drivers/browser-ext/dist/native-host/index.js",
+      "wrapper:/tmp/home/.koi/browser-ext/bin/native-host:/opt/homebrew/bin/node:/repo/packages/drivers/browser-ext/dist/bin/native-host-main.js",
       `manifests:5:/tmp/home/.koi/browser-ext/bin/native-host:chrome-extension://${"a".repeat(32)}/`,
       "copy:/repo/packages/drivers/browser-ext/dist/extension:/tmp/home/.koi/browser-ext/extension",
     ]);

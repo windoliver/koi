@@ -117,6 +117,11 @@ async function main(): Promise<void> {
   await writeManifest(publicKeyBase64);
   await copyOptionalFile("options.html");
   await copyOptionalFile("popup.html");
+  // Ship the derived extension id alongside the bundle so `install` can
+  // write a valid native-messaging manifest without reaching back into the
+  // repo's gitignored `extension/keys/*` dev state. Packaged installs (where
+  // the source tree is absent) read from here.
+  await writeFile(join(OUT_DIR, "extension-id.txt"), `${extensionId}\n`, { mode: 0o644 });
   console.log(`[build:extension] wrote ${OUT_DIR} (extension id: ${extensionId})`);
 }
 

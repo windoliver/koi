@@ -33,6 +33,8 @@ export interface DriverClient {
   readonly connect: () => Promise<void>;
   readonly hello: (frame: HelloFrame) => Promise<HelloAckOkFrame | HelloAckFailFrame>;
   readonly listTabs: () => Promise<TabsFrame>;
+  readonly openTab: (url?: string) => Promise<Extract<DriverFrame, { kind: "tab_opened" }>>;
+  readonly closeTab: (tabId: number) => Promise<Extract<DriverFrame, { kind: "tab_closed" }>>;
   readonly adminClearGrants: (frame: AdminClearGrantsFrame) => Promise<AdminClearGrantsAckFrame>;
   readonly attach: (
     frame: Extract<DriverFrame, { kind: "attach" }>,
@@ -233,6 +235,28 @@ export function createDriverClient(options: string | DriverClientOptions): Drive
           candidate.kind === "tabs" && candidate.requestId === requestId,
       );
       await writeFrame({ kind: "list_tabs", requestId });
+      return waiter;
+    },
+    async openTab(url?: string): Promise<Extract<DriverFrame, { kind: "tab_opened" }>> {
+      type AckFrame = Extract<DriverFrame, { kind: "tab_opened" }>;
+      const requestId = randomUUID();
+      const waiter = waitFor(
+        (candidate): candidate is AckFrame =>
+          candidate.kind === "tab_opened" && candidate.requestId === requestId,
+      );
+      const frame: DriverFrame =
+        url !== undefined ? { kind: "open_tab", requestId, url } : { kind: "open_tab", requestId };
+      await writeFrame(frame);
+      return waiter;
+    },
+    async closeTab(tabId: number): Promise<Extract<DriverFrame, { kind: "tab_closed" }>> {
+      type AckFrame = Extract<DriverFrame, { kind: "tab_closed" }>;
+      const requestId = randomUUID();
+      const waiter = waitFor(
+        (candidate): candidate is AckFrame =>
+          candidate.kind === "tab_closed" && candidate.requestId === requestId,
+      );
+      await writeFrame({ kind: "close_tab", requestId, tabId });
       return waiter;
     },
     async adminClearGrants(frame: AdminClearGrantsFrame): Promise<AdminClearGrantsAckFrame> {
