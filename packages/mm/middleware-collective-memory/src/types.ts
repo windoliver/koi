@@ -80,4 +80,18 @@ export interface CollectiveMemoryMiddlewareConfig {
    * declarative observation forms, reject paths/credentials/tool-invocation text).
    */
   readonly validateLearning?: ((content: string) => boolean) | undefined;
+  /**
+   * Optional structured observability hook. Invoked when an internal operation
+   * fails irrecoverably (e.g. session-end extraction abandoned after retries,
+   * persistence dropped after CAS exhaustion). Defaults to a no-op. Callers
+   * should plug in metrics/log emission here.
+   */
+  readonly onError?:
+    | ((event: {
+        readonly kind: "extraction-abandoned" | "persistence-dropped";
+        readonly sessionId?: string;
+        readonly attempts?: number;
+        readonly cause?: unknown;
+      }) => void)
+    | undefined;
 }

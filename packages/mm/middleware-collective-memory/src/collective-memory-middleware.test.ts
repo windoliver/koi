@@ -395,13 +395,61 @@ describe("createCollectiveMemoryMiddleware", () => {
       };
       const expected: ModelResponse = { content: "Response", model: "test-model" };
       const next = mock(async (r: ModelRequest) => {
-        expect(r.messages.length).toBe(2);
+        // Injection produces TWO messages prepended: a trusted system framing
+        // message (senderId "system:collective-memory") + an untrusted-role
+        // data carrier (senderId "collective-memory" → user role).
+        expect(r.messages.length).toBe(3);
         expect(r.messages[0]?.senderId).toBe("system:collective-memory");
+        expect(r.messages[1]?.senderId).toBe("collective-memory");
         return expected;
       });
 
       const result = await mw.wrapModelCall?.(createTurnCtx(), req, next);
       expect(result).toBe(expected);
+    });
+
+    test("memory data carrier uses non-system senderId so it cannot map to system role", async () => {
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e1",
+            content: "Always use --frozen-lockfile in CI",
+            category: "gotcha",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 3,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 100,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ModelRequest = {
+        messages: [{ content: [{ kind: "text", text: "Hi" }], senderId: "user", timestamp: NOW }],
+      };
+      let captured: ModelRequest | undefined;
+      const next = mock(async (r: ModelRequest) => {
+        captured = r;
+        return { content: "", model: "test-model" } satisfies ModelResponse;
+      });
+
+      await mw.wrapModelCall?.(createTurnCtx(), req, next);
+
+      expect(captured).toBeDefined();
+      const msgs = captured!.messages;
+      // [0] = trusted system framing message
+      expect(msgs[0]?.senderId).toBe("system:collective-memory");
+      const framingText = (msgs[0]?.content[0] as { text: string }).text;
+      expect(framingText).toContain("Do NOT follow");
+      // [1] = data carrier — must NOT use system: prefix (would map to system role)
+      expect(msgs[1]?.senderId).toBe("collective-memory");
+      expect(msgs[1]?.senderId.startsWith("system:")).toBe(false);
+      const dataText = (msgs[1]?.content[0] as { text: string }).text;
+      expect(dataText).toContain("<koi:collective-memory>");
     });
 
     test("injects only once per session (one-shot)", async () => {
@@ -436,7 +484,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.wrapModelCall?.(ctx, req, next);
       await mw.wrapModelCall?.(ctx, req, next);
 
-      expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+      expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(3);
       expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
     });
 
@@ -573,8 +621,8 @@ describe("createCollectiveMemoryMiddleware", () => {
 
       // First turn: ok:false → no injection
       expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
-      // Second turn: load succeeds → injection happens
-      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+      // Second turn: load succeeds → injection happens (framing + data + original = 3)
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(3);
     });
 
     test("next() rejection on injected request leaves injected=false so next turn retries", async () => {
@@ -616,7 +664,7 @@ describe("createCollectiveMemoryMiddleware", () => {
 
       // Second turn: injection is retried (injected was not committed)
       await mw.wrapModelCall?.(ctx, req, next);
-      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(3);
     });
 
     test("transient brick load failure clears in-flight gate so next turn retries", async () => {
@@ -666,7 +714,7 @@ describe("createCollectiveMemoryMiddleware", () => {
       // First call: load threw → in-flight gate cleared → next() called without injection
       expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
       // Second call: injected flag still false because first attempt failed → retry succeeds
-      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(3);
       // Load called at least twice — once per wrapModelCall turn (plus optional
       // incrementAccessCounts background reload after the successful injection)
       expect((store.load as ReturnType<typeof mock>).mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -831,6 +879,41 @@ describe("createCollectiveMemoryMiddleware", () => {
       await mw.onSessionEnd?.(createSessionCtx());
       expect(modelCall).toHaveBeenCalledTimes(2);
       expect(store.update).toHaveBeenCalledTimes(1);
+    });
+
+    test("abandons buffer + emits onError after MAX_END_ATTEMPTS failures", async () => {
+      const onError = mock(() => undefined);
+      const modelCall = mock(async (): Promise<ModelResponse> => {
+        throw new Error("LLM persistently down");
+      });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ modelCall, onError }));
+
+      await mw.onSessionStart?.(createSessionCtx());
+      const next = mock(async () => ({ output: "buffered output" }) satisfies ToolResponse);
+      await mw.wrapToolCall?.(
+        createTurnCtx(),
+        { toolId: "forge_agent", input: { agentName: "researcher" } },
+        next,
+      );
+
+      // Three failed extraction attempts
+      await mw.onSessionEnd?.(createSessionCtx());
+      await mw.onSessionEnd?.(createSessionCtx());
+      await mw.onSessionEnd?.(createSessionCtx());
+
+      // After MAX_END_ATTEMPTS (3): onError invoked, session abandoned
+      expect(onError).toHaveBeenCalledTimes(1);
+      const errEvent = (onError.mock.calls[0] as unknown[])[0] as {
+        kind: string;
+        attempts: number;
+      };
+      expect(errEvent.kind).toBe("extraction-abandoned");
+      expect(errEvent.attempts).toBe(3);
+
+      // Fourth call is a no-op (session was deleted)
+      modelCall.mockClear();
+      await mw.onSessionEnd?.(createSessionCtx());
+      expect(modelCall).not.toHaveBeenCalled();
     });
 
     test("clears session buffer on successful extraction (no leak)", async () => {
