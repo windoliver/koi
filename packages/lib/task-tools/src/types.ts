@@ -8,6 +8,7 @@ import type {
   ManagedTaskBoard,
   Task,
   TaskItemId,
+  TaskOutputReader,
   TaskResult,
   TaskStatus,
 } from "@koi/core";
@@ -51,7 +52,13 @@ export interface TaskSummary {
 export type TaskOutputResponse =
   | { readonly kind: "not_found"; readonly taskId: TaskItemId }
   | { readonly kind: "pending"; readonly task: TaskSummary }
-  | { readonly kind: "in_progress"; readonly task: TaskSummary }
+  | {
+      readonly kind: "in_progress";
+      readonly task: TaskSummary;
+      readonly stdout?: string | undefined;
+      readonly stderr?: string | undefined;
+      readonly truncated?: boolean | undefined;
+    }
   | {
       readonly kind: "in_progress_output";
       readonly task: TaskSummary;
@@ -64,12 +71,57 @@ export type TaskOutputResponse =
       /** Present when resultSchemas is configured and validation fails. */
       readonly resultsValidationError?: string | undefined;
     }
-  | { readonly kind: "failed"; readonly task: Task; readonly error: KoiError }
-  | { readonly kind: "killed"; readonly task: Task }
+  | {
+      readonly kind: "failed";
+      readonly task: Task;
+      readonly error: KoiError;
+      readonly stdout?: string | undefined;
+      readonly stderr?: string | undefined;
+      readonly truncated?: boolean | undefined;
+    }
+  | {
+      readonly kind: "killed";
+      readonly task: Task;
+      readonly stdout?: string | undefined;
+      readonly stderr?: string | undefined;
+      readonly truncated?: boolean | undefined;
+    }
   | {
       readonly kind: "completed_no_result";
       readonly taskId: TaskItemId;
       readonly message: string;
+    }
+  | {
+      readonly kind: "permission_denied";
+      readonly reason: string;
+    }
+  | {
+      /**
+       * The task predates the createdBy ownership field (persisted before PR #1769).
+       * Distinct from permission_denied: this is a schema-compat failure, not an ACL
+       * decision. Operators observing this response should run the on-disk migration
+       * (see docs/L2/tools-bash.md) to backfill createdBy, or configure legacyReadOwner
+       * on the task-tools runtime for a transitional read allowance.
+       *
+       * Persisted assignedTo on legacy tasks does NOT grant read access — only an
+       * explicit legacyReadOwner match unlocks reads.
+       */
+      readonly kind: "legacy_unmigrated";
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "validation_failed";
+      readonly reason: string;
+    }
+  | {
+      /**
+       * The task reached a terminal state (completed/failed/killed) and its
+       * output buffer has been evicted from the LRU cache. Distinguishes
+       * "task never produced matches" (kind: "matches", entries: []) from
+       * "matches may have been produced but are no longer retrievable".
+       */
+      readonly kind: "buffer_evicted";
+      readonly reason: string;
     };
 
 /** Serializable output chunk data (no methods). */
@@ -84,10 +136,11 @@ export interface OutputChunkData {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal interface for reading incremental task output.
+ * Minimal interface for reading incremental chunk-based task output.
  * Matches TaskRunner.readOutput() without depending on the full TaskRunner type.
+ * Used by task_output's `offset`-based incremental streaming path.
  */
-export interface TaskOutputReader {
+export interface TaskChunkReader {
   readonly readOutput: (
     taskId: TaskItemId,
     fromOffset?: number,
@@ -110,6 +163,15 @@ export interface TaskToolsConfig {
    */
   readonly agentId: AgentId;
   /**
+   * Agent allowed to read tasks persisted before createdBy existed.
+   * Defaults to the session's main agentId. Set to a specific agent (or leave
+   * undefined to deny all legacy reads) in multi-agent sessions.
+   *
+   * Legacy tasks (createdBy === undefined) are readable ONLY by this agent.
+   * All other callers receive permission_denied even if legacyReadOwner is set.
+   */
+  readonly legacyReadOwner?: AgentId | undefined;
+  /**
    * Optional per-kind Zod schemas for validating TaskResult.results.
    * Key: task.metadata.kind (string). When a completed task's results
    * don't match its registered schema, task_output returns resultsValidationError.
@@ -117,9 +179,30 @@ export interface TaskToolsConfig {
    */
   readonly resultSchemas?: Readonly<Record<string, ResultSchema>> | undefined;
   /**
-   * Optional output reader for incremental streaming reads.
+   * Optional chunk-based output reader for incremental streaming reads.
    * When provided, task_output accepts an `offset` parameter to return
    * delta output chunks for in_progress tasks.
    */
-  readonly outputReader?: TaskOutputReader | undefined;
+  readonly outputReader?: TaskChunkReader | undefined;
+  /**
+   * Optional buffer reader factory for matches_only and buffered-snapshot reads.
+   *
+   * Tri-state return:
+   *   - `TaskOutputReader` instance: live buffer exists; serve snapshot or queryMatches.
+   *   - `"evicted"` literal: buffer existed but was LRU-evicted; matches may be lost.
+   *   - `undefined`: task never had a buffer (plain task_create, non-bash_background).
+   *
+   * The distinction between `"evicted"` and `undefined` drives the matches_only
+   * response: `"evicted"` → `buffer_evicted`, `undefined` → empty `matches` result.
+   *
+   * Structurally satisfied by BashOutputBuffer from @koi/tools-bash without
+   * creating an L2→L2 import dependency — wire via dependency injection at L3/L4.
+   */
+  readonly bufferReader?:
+    | ((taskId: TaskItemId) => TaskOutputReader | "evicted" | undefined)
+    | undefined;
 }
+
+// Re-export TaskOutputReader from @koi/core so callers can reference it without
+// importing directly from @koi/core when working with TaskToolsConfig.
+export type { TaskOutputReader };

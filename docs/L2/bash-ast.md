@@ -127,6 +127,152 @@ interface SimpleCommand {
 }
 ```
 
+## Per-command semantics
+
+> See [`docs/superpowers/specs/2026-04-18-bash-ast-command-specs-design.md`](../superpowers/specs/2026-04-18-bash-ast-command-specs-design.md) for the full design + soundness contract.
+
+The package exports per-command semantic specs that map a resolved
+`argv: readonly string[]` (produced by the existing walker) to a
+`SpecResult` discriminated union describing reads, writes, network
+access, and env mutations. Covers ten commands: `rm`, `cp`, `mv`,
+`chmod`, `chown`, `curl`, `wget`, `tar`, `scp`, `ssh`.
+
+### Public API
+
+**Permission consumers MUST use `evaluateBashCommand`** as the single
+entry point. It accounts for shell redirects and command-local env vars,
+which the raw `spec*(argv)` functions do NOT see. Calling raw specs
+from a permissions middleware is unsafe — `specCurl(argv)` will treat
+`curl https://x > /tmp/out` as if no file write happened.
+
+```typescript
+import {
+  // Primary public API for permission consumers:
+  type CommandSemantics,
+  type EvaluateInput,
+  type EvaluateOptions,
+  type NetworkAccess,
+  type Redirect,
+  type SpecResult,
+  BUILTIN_SPECS,
+  createSpecRegistry,
+  evaluateBashCommand,
+  registerSpec,
+  // Lower-level building blocks (advanced/test use; do NOT use directly
+  // for permission decisions — they drop redirect/env effects):
+  type CommandSpec,
+  lookupSpec,
+  specRm, specCp, specMv, specChmod, specChown,
+  specCurl, specWget, specTar, specScp, specSsh,
+} from "@koi/bash-ast";
+```
+
+### Dispatch contract — bare command names only
+
+Specs (and `lookupSpec`) accept **bare command names** only (`rm`, `curl`).
+Path-qualified `argv[0]` like `/bin/rm`, `/tmp/rm`, or `./rm` is REFUSED:
+the spec layer cannot distinguish the trusted system utility from a wrapper
+masquerading as it (`/tmp/rm` could be anything; even `/usr/local/bin/curl`
+might be a wrapper that performs extra I/O). Reporting builtin semantics
+for an arbitrary executable would silently bless its hidden side effects.
+
+**Consumer responsibility**: walker output (`SimpleCommand.argv[0]`) may
+be path-qualified. Before calling a spec, consumers MUST canonicalize the
+executable identity (resolve symlinks, allowlist trusted paths) and pass
+the **bare basename** to the spec or `lookupSpec`. The spec layer
+intentionally does not perform that trust check — it is the consumer's job.
+
+### Blessed public API for consumers — `evaluateBashCommand`
+
+Raw `spec*(argv)` functions only see argv. Walker output also carries
+`redirects` and `envVars`, both of which materially change what a command
+reads / writes / hits on the network. **Consumers SHOULD use
+`evaluateBashCommand(simpleCommand, registry)` as the public entry
+point** — it:
+
+1. Refuses path-qualified `argv[0]` (`/bin/rm`, `./rm`, `/tmp/rm`)
+   UNLESS the consumer passes `options.verifiedBaseName` to assert
+   they have already canonicalized the executable identity (resolved
+   symlinks, allowlisted trusted paths). When provided, the verified
+   bare name overrides `argv[0]` for both registry lookup and the
+   spec dispatch. The spec layer cannot tell `/bin/rm` from `/tmp/rm`
+   from a basename match alone — that trust check is the consumer's
+   responsibility, and `verifiedBaseName` is the explicit opt-in so
+   forgetting it fails loudly.
+2. Looks up the spec by the resolved name (verifiedBaseName or
+   bare argv[0]) against the registry.
+3. Calls the spec with `argv`.
+4. Merges **modeled** redirects (`>`, `>>`, `<`, `&>`, `&>>`, `>|`) into
+   `semantics.writes` / `semantics.reads`. **Here-strings (`<<<`) are
+   inline stdin data, NOT a path** — `<<<`'s target is not added to
+   `reads`; instead the result is downgraded to `partial` with reason
+   `shell-redirect-fd-or-unknown-op` (we don't model inline stdin).
+5. Downgrades `complete` → `partial` with a reason when:
+   - command-local env vars are set (`command-local-env-set`);
+   - FD-duplication or other unmodeled redirect ops are present
+     (`shell-redirect-fd-or-unknown-op`).
+
+A `complete` return from `evaluateBashCommand` is authoritative across
+argv + (modeled) redirects + env. A `partial` return still requires a
+`Run(...)` co-rule per the existing soundness contract.
+
+Raw `spec*(argv)` exports remain available for tests and custom
+pipelines that don't have `SimpleCommand` in hand, but consumers
+enforcing permissions MUST use `evaluateBashCommand` to avoid dropping
+redirect/env effects.
+
+
+### `SpecResult` contract
+
+| `kind` | Argv-aware rules (`Read`/`Write`/`Network`) | `Run(...)` rules |
+|---|---|---|
+| `complete` | use `semantics` freely | optional; prefix or exact, consumer's choice |
+| `partial` | use `semantics` only paired with an exact-argv `Run(...)` co-rule | **must be exact-argv-match only** for this argv |
+| `refused` | MUST NOT use; no semantics produced | **must be exact-argv-match only** for this argv |
+
+`partial` carries `reason` (e.g., `"recursive-subtree-root"`,
+`"cp-mv-dest-may-be-directory"`, `"wget-follows-redirects"`,
+`"curl-follows-redirects"`, `"curl-O-derived-basename"`,
+`"tar-extract-targets-in-archive"`).
+
+`refused` carries `cause` (`"parse-error"` or `"unsupported-form"`)
+and `detail` (free-form audit string).
+
+### Universal exact-argv `Run(...)` guard
+
+Bash rule matchers in this repo accept argv-prefix rules. A broad
+allow like `Run(curl)` or `Run(ssh prod)` would otherwise re-authorize
+forms the spec marked `partial` or `refused`, defeating their
+fail-closed intent. **Consumers MUST reject or promote prefix-shaped
+`Run(...)` rules whenever any argv they would match yields
+`kind: "partial" | "refused"`.** This guard is consumer-side; the
+spec cannot enforce it alone.
+
+### Per-command flag allowlists
+
+| Command | Recognized flags | Returns `kind: "refused"` on |
+|---|---|---|
+| `rm` | `-r`/`-R`, `-f`, `-i`, `-d`, `-v`, `--` | unknown flag, missing positional |
+| `cp` | `-r`/`-R`, `-f`, `-i`, `-p`, `-a`, `-v`, `-t DIR`, `-T`, `--` | unknown flag, missing source/dest |
+| `mv` | `-f`, `-i`, `-n`, `-v`, `-t DIR`, `-T`, `--` | unknown flag, missing source/dest |
+| `chmod` | `-R`, `-v`, `-f`, `--` + mode + path | unknown flag, missing mode or path |
+| `chown` | `-R`, `-v`, `-f`, `--` + owner + path | unknown flag, missing owner or path |
+| `curl` | `-o`/`--output FILE`, `-O`, `-L`, `-X METHOD`, `-d`/`--data`, `-H`, `-s`, `-i`, URL(s) | `--config`/`-K`, `--next`, `-T`, unknown flag, unsupported URL scheme |
+| `wget` | `-O FILE`, `-q`, `-c`, `-N`, URL(s) | `-i`/`--input-file`, unknown flag, non-http/ftp scheme |
+| `tar` | `-x`/`-c`/`-t` (exactly one); `-f FILE`, `-z`/`-j`, `-C DIR`, `-v`, `--`, file list | conflicting mode flags, no `-f`, unknown flag |
+| `scp` | n/a — always `refused` | every argv (default ssh_config exposure) |
+| `ssh` | n/a — always `refused` | every argv (default ssh_config exposure) |
+
+### This PR ships specs only
+
+No package consumes the specs as of this commit. The follow-up
+consumer issue MUST land all three of: (a) a consumer that calls
+into specs, (b) the rule-evaluator change that promotes/rejects
+prefix `Run(...)` rules whenever any matched argv yields
+`kind: "partial" | "refused"`, (c) the golden query proving the
+end-to-end deny path. Splitting (a) from (b) opens a fail-open
+window. See the design doc for the full bundling rationale.
+
 ## Too-Complex Category Taxonomy
 
 `AstAnalysis.too-complex.primaryCategory` is a stable closed enum that

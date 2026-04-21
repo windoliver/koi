@@ -298,6 +298,9 @@ function explainNonCompletedStop(stopReason: string, metadata: unknown): string 
           readonly source?: string;
           readonly message?: string;
           readonly providerDetail?: { readonly error?: { readonly message?: string } | string };
+          readonly terminatedBy?: string;
+          readonly terminationReason?: string;
+          readonly elapsedMs?: number;
         }
       | undefined) ?? undefined;
   // Prefer explicit message, fall back to provider error message so users
@@ -311,6 +314,17 @@ function explainNonCompletedStop(stopReason: string, metadata: unknown): string 
   const effectiveMsg = meta?.message ?? providerMsg;
   const detail = effectiveMsg !== undefined ? ` — ${effectiveMsg}` : "";
   const source = meta?.source !== undefined ? ` (${meta.source})` : "";
+  // #1638: distinguish activity-timeout interrupts from user cancels so
+  // operators can diagnose silent-failure sessions. Reason is
+  // "idle" | "wall_clock"; elapsedMs is authoritative.
+  if (meta?.terminatedBy === "activity-timeout") {
+    const reason = meta.terminationReason ?? "unknown";
+    const elapsed = typeof meta.elapsedMs === "number" ? meta.elapsedMs : 0;
+    const seconds = Math.round(elapsed / 1000);
+    const label =
+      reason === "idle" ? "inactivity" : reason === "wall_clock" ? "wall-clock" : reason;
+    return `\n[Turn interrupted by activity timeout (${label}) after ${seconds}s.]\n`;
+  }
   switch (stopReason) {
     case "max_turns":
       return `\n[Turn ended: model reached the per-turn tool-call budget without producing a final reply${detail}. Try a more specific prompt, or split the work across multiple turns.]\n`;

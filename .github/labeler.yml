@@ -21,6 +21,7 @@
       - "packages/**/bash-ast/**"
       - "packages/**/bash-classifier/**"
       - "packages/**/bash-security/**"
+      - "packages/**/blob-cas/**"
       - "packages/**/channel-base/**"
       - "packages/**/config/**"
       - "packages/**/context-manager/**"
@@ -49,6 +50,7 @@
       - "packages/**/tools-core/**"
       - "packages/**/url-safety/**"
       - "packages/**/validation/**"
+      - "packages/**/watch-patterns/**"
 
 "layer:L3":
   - changed-files:
@@ -67,6 +69,7 @@
       - "!packages/**/bash-ast/**"
       - "!packages/**/bash-classifier/**"
       - "!packages/**/bash-security/**"
+      - "!packages/**/blob-cas/**"
       - "!packages/**/channel-base/**"
       - "!packages/**/cli/**"
       - "!packages/**/config/**"
@@ -99,3 +102,4 @@
       - "!packages/**/tools-core/**"
       - "!packages/**/url-safety/**"
       - "!packages/**/validation/**"
+      - "!packages/**/watch-patterns/**"

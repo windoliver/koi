@@ -1,7 +1,16 @@
 name: Label PR by layer
 
+# Uses `pull_request_target` so the workflow has `pull-requests: write` on
+# fork PRs (the default `pull_request` token from forks is read-only and
+# the labeler then fails with "Resource not accessible by integration").
+#
+# SAFETY: this workflow never checks out or executes PR-controlled code.
+# It only invokes `actions/labeler`, which reads `.github/labeler.yml`
+# from the BASE branch (main) and applies labels via the API. PR content
+# cannot influence what runs here, so the usual `pull_request_target`
+# code-execution risk does not apply.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize]
 
 jobs:

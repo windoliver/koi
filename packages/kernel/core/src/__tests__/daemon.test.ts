@@ -1,6 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import type { BackgroundSessionRecord, SupervisorConfig, WorkerBackend } from "../daemon.js";
-import { validateBackgroundSessionRecord, validateSupervisorConfig, workerId } from "../daemon.js";
+import type {
+  BackgroundSessionRecord,
+  SupervisorConfig,
+  SupervisorHealth,
+  WorkerBackend,
+} from "../daemon.js";
+import {
+  DEFAULT_HEARTBEAT_CONFIG,
+  SUPERVISOR_HEALTH_STATUS,
+  validateBackgroundSessionRecord,
+  validateSupervisorConfig,
+  workerId,
+} from "../daemon.js";
 import { agentId } from "../ecs.js";
 
 const fakeBackend = {
@@ -50,6 +61,82 @@ describe("validateSupervisorConfig", () => {
     const result = validateSupervisorConfig({
       maxWorkers: 4,
       shutdownDeadlineMs: -1,
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects heartbeat.intervalMs <= 0", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 0, timeoutMs: 100 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects heartbeat.timeoutMs <= 0", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50, timeoutMs: -1 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects non-finite heartbeat values", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: Number.POSITIVE_INFINITY, timeoutMs: 100 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects heartbeat.timeoutMs <= intervalMs (healthy worker would time out between heartbeats)", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 100, timeoutMs: 100 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("accepts valid heartbeat config", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects non-integer heartbeat values", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50.5, timeoutMs: 200 },
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  it("rejects heartbeat values above 2^31-1 (setTimeout bound)", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 10_000,
+      heartbeat: { intervalMs: 50, timeoutMs: 2_147_483_648 },
       backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
     });
     expect(result.ok).toBe(false);
@@ -114,5 +201,42 @@ describe("validateBackgroundSessionRecord", () => {
       pid: Number.POSITIVE_INFINITY,
     });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("DEFAULT_HEARTBEAT_CONFIG", () => {
+  it("has positive interval and timeout, with timeout > interval", () => {
+    expect(DEFAULT_HEARTBEAT_CONFIG.intervalMs).toBeGreaterThan(0);
+    expect(DEFAULT_HEARTBEAT_CONFIG.timeoutMs).toBeGreaterThan(DEFAULT_HEARTBEAT_CONFIG.intervalMs);
+  });
+});
+
+describe("SUPERVISOR_HEALTH_STATUS", () => {
+  it("enumerates ok/degraded/unhealthy", () => {
+    expect(SUPERVISOR_HEALTH_STATUS).toEqual({
+      OK: "ok",
+      DEGRADED: "degraded",
+      UNHEALTHY: "unhealthy",
+    });
+  });
+});
+
+describe("SupervisorHealth type shape", () => {
+  it("composes from status, reasons, metrics, workers (compile-time check)", () => {
+    const sample: SupervisorHealth = {
+      status: "ok",
+      reasons: [],
+      metrics: {
+        poolSize: 0,
+        maxWorkers: 4,
+        quarantinedCount: 0,
+        restartingCount: 0,
+        pendingSpawnCount: 0,
+        eventDropCount: 0,
+        shuttingDown: false,
+      },
+      workers: [],
+    };
+    expect(sample.status).toBe("ok");
   });
 });

@@ -7,7 +7,13 @@ import type { JSX } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
 import type { AgentStatus, CumulativeMetrics, SessionInfo } from "../state/types.js";
-import { formatCost, formatTokens } from "./status-bar-helpers.js";
+import {
+  chipTier,
+  formatCost,
+  formatGovernanceChip,
+  formatTokens,
+  mostStressedSensor,
+} from "./status-bar-helpers.js";
 
 export { formatCost, formatTokens };
 
@@ -85,6 +91,7 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
   const retryState = useTuiStore((s) => s.retryState);
   const agentDepth = useTuiStore((s) => s.agentDepth);
   const siblingInfo = useTuiStore((s) => s.siblingInfo);
+  const governanceSnapshot = useTuiStore((s) => s.governance.snapshot);
 
   // Elapsed timer during streaming (like Claude Code's status line)
   const [elapsed, setElapsed] = createSignal(0);
@@ -123,6 +130,17 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
     return sib ? `Subagent (${sib.current} of ${sib.total})` : `Subagent (depth ${depth})`;
   });
 
+  // gov-9: governance status chip — most-stressed sensor
+  const govChip = createMemo(() => {
+    const top = mostStressedSensor(governanceSnapshot());
+    if (top === null) return null;
+    const tier = chipTier(top.utilization);
+    const color =
+      tier === "danger" ? COLORS.danger : tier === "warn" ? COLORS.amber : COLORS.textMuted;
+    const prefix = tier === "danger" ? "⚠ " : "";
+    return { color, text: `${prefix}gov: ${formatGovernanceChip(top)}` };
+  });
+
   return (
     <box
       flexDirection="row"
@@ -146,6 +164,12 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
         <text fg={COLORS.amber}>{subagentLabel()}</text>
       </Show>
       <box flexGrow={1} />
+      {/* gov-9: governance status chip — most-stressed sensor */}
+      <Show when={govChip()}>
+        {(chip: () => { readonly color: string; readonly text: string }) => (
+          <text fg={chip().color}>{chip().text}</text>
+        )}
+      </Show>
       {/* #20 retry countdown */}
       <Show when={retryState() !== null}>
         <text fg={COLORS.amber}>{`Retrying in ${retryState()?.countdownSec}s (attempt ${retryState()?.attempt})`}</text>

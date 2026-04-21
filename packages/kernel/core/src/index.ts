@@ -278,18 +278,25 @@ export type {
   BackgroundSessionRegistry,
   BackgroundSessionStatus,
   BackgroundSessionUpdate,
+  HeartbeatConfig,
   Supervisor,
   SupervisorConfig,
+  SupervisorHealth,
+  SupervisorHealthMetrics,
+  SupervisorHealthStatus,
   WorkerBackend,
   WorkerBackendKind,
   WorkerEvent,
   WorkerHandle,
+  WorkerHealth,
   WorkerId,
   WorkerRestartPolicy,
   WorkerSpawnRequest,
 } from "./daemon.js";
 export {
+  DEFAULT_HEARTBEAT_CONFIG,
   DEFAULT_WORKER_RESTART_POLICY,
+  SUPERVISOR_HEALTH_STATUS,
   validateBackgroundSessionRecord,
   validateSupervisorConfig,
   workerId,
@@ -370,6 +377,7 @@ export type {
   AgentGroupId,
   AgentId,
   AgentSignal,
+  ArtifactId,
   AttachResult,
   ChildHandle,
   ChildLifecycleEvent,
@@ -416,6 +424,7 @@ export {
   agentGroupId,
   agentId,
   agentToken,
+  artifactId,
   BROWSER,
   COMPONENT_PRIORITY,
   CREDENTIALS,
@@ -588,6 +597,7 @@ export type {
   PolicyEvaluator,
   PolicyRequest,
   PolicyRequestKind,
+  RuleDescriptor,
   Violation,
   ViolationFilter,
   ViolationPage,
@@ -1207,6 +1217,19 @@ export type {
   VersionedBrickRef,
 } from "./version-types.js";
 export { publisherId } from "./version-types.js";
+// watch-patterns — L0 types for pattern-based stdout/stderr matching
+export type {
+  CoalescedMatch,
+  MatchEntry,
+  PatternMatch,
+  PendingMatchStore,
+  TaskOutputReader,
+  TaskOutputReaderMatchesResult,
+  TaskOutputReaderMatchQuery,
+  TaskOutputReaderSnapshot,
+  TurnRequestKey,
+  WatchPattern,
+} from "./watch-patterns/index.js";
 // webhook — outbound webhook delivery contract
 export type {
   OutboundWebhookConfig,

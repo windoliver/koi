@@ -11,6 +11,7 @@
  * - When enabled, Shift+Enter is detectable via key.shift + key.name === "return"
  * - Legacy terminals ("raw" source) send 0x0D for both → indistinguishable
  * - Fallback: Ctrl+J (0x0A, line feed) always works for newline insertion
+ * - Reliable interrupt-send fallback: Ctrl+K submits in interrupt mode
  */
 
 import type { KeyEvent } from "@opentui/core";
@@ -21,7 +22,7 @@ import type { KeyEvent } from "@opentui/core";
 
 /** Result of processing a key input for the text area. */
 export type InputKeyResult =
-  | { readonly kind: "submit"; readonly text: string }
+  | { readonly kind: "submit"; readonly text: string; readonly mode?: "queue" | "interrupt" }
   | { readonly kind: "insert-newline" }
   | { readonly kind: "insert-char"; readonly char: string }
   | { readonly kind: "backspace" }
@@ -51,12 +52,15 @@ export function processInputKey(key: KeyEvent, currentText: string): InputKeyRes
 
   // Enter / Return
   if (key.name === "return") {
+    if (key.meta || key.ctrl) {
+      return { kind: "submit", text: currentText, mode: "interrupt" };
+    }
     if (kittyEnabled && key.shift) {
       // Kitty protocol: Shift+Enter = newline
       return { kind: "insert-newline" };
     }
     // Plain Enter = submit (both Kitty and legacy)
-    return { kind: "submit", text: currentText };
+    return { kind: "submit", text: currentText, mode: "queue" };
   }
 
   // Ctrl+J: universal newline fallback (0x0A, works in all terminals)
@@ -64,9 +68,15 @@ export function processInputKey(key: KeyEvent, currentText: string): InputKeyRes
     return { kind: "insert-newline" };
   }
 
+  // Ctrl+K: reliable interrupt-send fallback for terminals that do not
+  // report modified Enter distinctly.
+  if (key.ctrl && key.name === "k") {
+    return { kind: "submit", text: currentText, mode: "interrupt" };
+  }
+
   // Ctrl+C: submit empty (cancel / interrupt)
   if (key.ctrl && key.name === "c") {
-    return { kind: "submit", text: "" };
+    return { kind: "submit", text: "", mode: "interrupt" };
   }
 
   // Backspace

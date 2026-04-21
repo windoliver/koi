@@ -178,11 +178,13 @@ describe("createRuntime", () => {
 
   test("wraps adapter with stream timeout enforcement", async () => {
     let receivedSignal: AbortSignal | undefined;
+    let abortedAtInvocation: boolean | undefined;
 
     const spyAdapter: EngineAdapter = {
       ...createFakeAdapter("spy"),
       stream(input: EngineInput): AsyncIterable<EngineEvent> {
         receivedSignal = input.signal;
+        abortedAtInvocation = input.signal?.aborted;
         return createFakeAdapter("spy").stream(input);
       },
     };
@@ -195,8 +197,179 @@ describe("createRuntime", () => {
     }
 
     // The adapter should have received a composed signal (from timeout wrapper)
+    // that was not yet aborted at the point of invocation. After the consumer
+    // breaks, the wrapper cleans up by propagating abort — expected behaviour.
     expect(receivedSignal).toBeDefined();
-    expect(receivedSignal?.aborted).toBe(false);
+    expect(abortedAtInvocation).toBe(false);
+  });
+
+  test("session finalizer runs onAfterTurn at stream end (catch-all for direct consumers)", async () => {
+    // For streams that never emit turn_end (adapter error, early abort,
+    // stub path), the catch-all still fires so middleware lifecycle hooks
+    // always see at least one invocation per session.
+    let onAfterTurnCallCount = 0;
+    const countingMw: KoiMiddleware = {
+      name: "counter",
+      phase: "observe",
+      priority: 100,
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => next(req),
+      wrapToolCall: async (_ctx, req, next) => next(req),
+      onAfterTurn: async () => {
+        onAfterTurnCallCount += 1;
+      },
+    };
+
+    const noTurnEndAdapter: EngineAdapter = {
+      engineId: "no-turn-end",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async () => ({ content: "", model: "test", finishReason: "stop" }),
+        toolCall: async () => ({ output: "" }),
+      },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: noTurnEndAdapter,
+      middleware: [countingMw],
+    });
+    for await (const _ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
+      // drain
+    }
+    // Stream finalizer runs in async finally after consumer drains; settle
+    // deadline in applyActivityTimeout is 2s.
+    await new Promise<void>((resolve) => setTimeout(resolve, 2500));
+
+    expect(onAfterTurnCallCount).toBe(1);
+  });
+
+  test("activityTimeout-aborted stream propagates stopBlocked via synthetic turn_end", async () => {
+    // The runtime-level activity-timeout wrapper (#1638) emits a synthetic
+    // turn_end with `stopBlocked: true` before the terminal done. Consumers
+    // that process the event stream (notably createKoi's engine loop) use
+    // this marker to run onAfterTurn with ctx.stopBlocked=true, so
+    // middleware does NOT treat the aborted turn as a successful
+    // completion.
+    //
+    // (The runtime's own session finalizer running onAfterTurn without
+    // stopBlocked is a pre-existing behaviour that predates this change
+    // and applies to every interruption path — user cancel, errors, etc.
+    // Reliable stopBlocked propagation through the finalizer requires a
+    // bigger refactor tracked separately.)
+    const hangingAdapter: EngineAdapter = {
+      engineId: "hanging",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 0 };
+        yield { kind: "text_delta", delta: "start" };
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: hangingAdapter,
+      activityTimeout: { idleWarnMs: 20, idleTerminateMs: 50 },
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
+      events.push(ev);
+      if (events.length > 20) break;
+    }
+
+    const turnEnd = events.find(
+      (e): e is EngineEvent & { readonly kind: "turn_end" } => e.kind === "turn_end",
+    );
+    expect(turnEnd).toBeDefined();
+    expect(turnEnd?.stopBlocked).toBe(true);
+  });
+
+  test("activityTimeout replaces wall-clock with inactivity-based termination", async () => {
+    let terminated: { reason: string; elapsedMs: number } | undefined;
+    const hangingAdapter: EngineAdapter = {
+      engineId: "hanging",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "text_delta", delta: "start" };
+        // Block until aborted
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: hangingAdapter,
+      activityTimeout: {
+        idleWarnMs: 20,
+        idleTerminateMs: 60,
+        onTerminated: (reason, elapsedMs) => {
+          terminated = { reason, elapsedMs };
+        },
+      },
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
+      events.push(ev);
+      if (events.length > 10) break;
+    }
+
+    expect(events.some((e) => e.kind === "custom" && e.type === "activity.idle.warning")).toBe(
+      true,
+    );
+    expect(events.some((e) => e.kind === "custom" && e.type === "activity.terminated.idle")).toBe(
+      true,
+    );
+    expect(terminated?.reason).toBe("idle");
+  });
+
+  test("empty activityTimeout still wraps with the default wall-clock backstop", async () => {
+    // An `activityTimeout: {}` with no fields set would, without the 4h default
+    // backstop, leave the wrapper as a no-op and drop the legacy
+    // `streamTimeoutMs` safety net. Prove the resolver fills in a default
+    // `maxDurationMs` so every activityTimeout path keeps a wall-clock cap.
+    let receivedSignal: AbortSignal | undefined;
+    const spyAdapter: EngineAdapter = {
+      engineId: "backstop-spy",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        receivedSignal = input.signal;
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: spyAdapter,
+      activityTimeout: {}, // caller opts in but leaves every knob unset
+    });
+
+    for await (const _ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
+      break;
+    }
+
+    // If the backstop were dropped, the wrapper would be a no-op and
+    // receivedSignal would be undefined (the adapter input has no signal here).
+    expect(receivedSignal).toBeDefined();
   });
 
   test("stream timeout composes with caller signal", async () => {

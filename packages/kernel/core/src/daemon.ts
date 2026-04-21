@@ -40,7 +40,25 @@ export interface WorkerBackend {
   readonly terminate: (id: WorkerId, reason: string) => Promise<Result<void, KoiError>>;
   readonly kill: (id: WorkerId) => Promise<Result<void, KoiError>>;
   readonly isAlive: (id: WorkerId) => Promise<boolean>;
-  readonly watch: (id: WorkerId) => AsyncIterable<WorkerEvent>;
+  /**
+   * Observe worker lifecycle events. Implementations MUST exit cleanly (return
+   * from the async iterator) when `signal` fires, releasing any resources the
+   * backend holds for this watch call. Callers (supervisor's watch IIFE) use
+   * this to cancel outstanding watches on `stop()`/`shutdown()` so backends
+   * that cannot guarantee terminal event emission (tmux, remote RPC, managed
+   * cluster) do not leak one iterator per abandoned worker.
+   *
+   * `signal` is optional to preserve back-compat with adapters that iterate
+   * `watch()` directly in tests; production callers SHOULD always pass one.
+   */
+  readonly watch: (id: WorkerId, signal?: AbortSignal) => AsyncIterable<WorkerEvent>;
+  /**
+   * True if this backend emits `WorkerEvent.heartbeat` when a worker signals
+   * liveness. When undefined/false, the supervisor rejects `backendHints.heartbeat`
+   * opt-in at `start()` time — opting in on a backend that can't emit heartbeats
+   * would cause every worker to trip the missed-deadline timeout and be torn down.
+   */
+  readonly supportsHeartbeat?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +136,12 @@ export interface SupervisorConfig {
    * backend can otherwise consume worker slots indefinitely).
    */
   readonly spawnTimeoutMs?: number | undefined;
+  /**
+   * Default heartbeat cadence/timeout applied to workers that opt into
+   * heartbeat monitoring via `WorkerSpawnRequest.backendHints.heartbeat = true`.
+   * Omitted → `DEFAULT_HEARTBEAT_CONFIG` is used.
+   */
+  readonly heartbeat?: HeartbeatConfig | undefined;
 }
 
 export interface WorkerRestartPolicy {
@@ -136,6 +160,73 @@ export const DEFAULT_WORKER_RESTART_POLICY: WorkerRestartPolicy = {
   backoffCeilingMs: 30_000,
 };
 
+// ---------------------------------------------------------------------------
+// Heartbeat / health
+// ---------------------------------------------------------------------------
+
+/**
+ * Worker heartbeat configuration. `intervalMs` is advisory cadence for the
+ * sender; the supervisor does not enforce it. `timeoutMs` is the deadline:
+ * if no heartbeat event arrives within this window, the supervisor declares
+ * the worker hung and tears it down.
+ */
+export interface HeartbeatConfig {
+  readonly intervalMs: number;
+  readonly timeoutMs: number;
+}
+
+export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
+  intervalMs: 5_000,
+  timeoutMs: 15_000,
+};
+
+export const SUPERVISOR_HEALTH_STATUS: {
+  readonly OK: "ok";
+  readonly DEGRADED: "degraded";
+  readonly UNHEALTHY: "unhealthy";
+} = {
+  OK: "ok",
+  DEGRADED: "degraded",
+  UNHEALTHY: "unhealthy",
+} as const satisfies Record<string, string>;
+export type SupervisorHealthStatus =
+  (typeof SUPERVISOR_HEALTH_STATUS)[keyof typeof SUPERVISOR_HEALTH_STATUS];
+
+/**
+ * Per-worker health snapshot. `lastHeartbeatAt` / `heartbeatDeadlineAt` are
+ * `undefined` for workers that did not opt into heartbeat monitoring via
+ * `WorkerSpawnRequest.backendHints.heartbeat = true`.
+ */
+export interface WorkerHealth {
+  readonly workerId: WorkerId;
+  readonly agentId: AgentId;
+  readonly state: "running" | "restarting" | "quarantined" | "stopping";
+  readonly lastHeartbeatAt: number | undefined;
+  readonly heartbeatDeadlineAt: number | undefined;
+}
+
+export interface SupervisorHealthMetrics {
+  readonly poolSize: number;
+  readonly maxWorkers: number;
+  readonly quarantinedCount: number;
+  readonly restartingCount: number;
+  readonly pendingSpawnCount: number;
+  readonly eventDropCount: number;
+  readonly shuttingDown: boolean;
+}
+
+/**
+ * Aggregate supervisor health: a three-state verdict + machine-readable
+ * reasons + raw counters + per-worker detail. Consumers (TUI, CLI, future
+ * HTTP wrapper) render whichever slice they need.
+ */
+export interface SupervisorHealth {
+  readonly status: SupervisorHealthStatus;
+  readonly reasons: readonly string[];
+  readonly metrics: SupervisorHealthMetrics;
+  readonly workers: readonly WorkerHealth[];
+}
+
 export interface Supervisor {
   readonly start: (
     request: WorkerSpawnRequest,
@@ -148,6 +239,8 @@ export interface Supervisor {
   readonly shutdown: (reason: string) => Promise<Result<void, KoiError>>;
   readonly list: () => readonly ProcessDescriptor[];
   readonly watchAll: () => AsyncIterable<WorkerEvent>;
+  /** In-memory health snapshot — pure read, no mutation, no `await`. */
+  readonly health: () => SupervisorHealth;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +523,57 @@ export function validateSupervisorConfig(
         retryable: false,
       },
     };
+  }
+  if (config.heartbeat !== undefined) {
+    const h = config.heartbeat;
+    // 32-bit signed int max. setTimeout delays above this value silently
+    // fall back to 1ms in Node/Bun, causing immediate deadline fires — a
+    // common footgun when a config is in seconds or a user miscalculates.
+    const MAX_TIMER_MS = 2_147_483_647;
+    if (
+      !Number.isFinite(h.intervalMs) ||
+      !Number.isInteger(h.intervalMs) ||
+      h.intervalMs <= 0 ||
+      h.intervalMs > MAX_TIMER_MS
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "SupervisorConfig.heartbeat.intervalMs must be a positive integer <= 2^31-1 (setTimeout bound)",
+          retryable: false,
+        },
+      };
+    }
+    if (
+      !Number.isFinite(h.timeoutMs) ||
+      !Number.isInteger(h.timeoutMs) ||
+      h.timeoutMs <= 0 ||
+      h.timeoutMs > MAX_TIMER_MS
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "SupervisorConfig.heartbeat.timeoutMs must be a positive integer <= 2^31-1 (setTimeout bound)",
+          retryable: false,
+        },
+      };
+    }
+    if (h.timeoutMs <= h.intervalMs) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "SupervisorConfig.heartbeat.timeoutMs must be greater than intervalMs " +
+            "(otherwise every healthy worker times out before its next heartbeat lands)",
+          retryable: false,
+        },
+      };
+    }
   }
   return { ok: true, value: config };
 }

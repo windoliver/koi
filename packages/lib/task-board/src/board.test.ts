@@ -187,6 +187,89 @@ describe("createTaskBoard", () => {
       if (r.ok) return;
       expect(r.error.code).toBe("NOT_FOUND");
     });
+
+    test("assign stamps lastAssignedTo", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("worker-1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.get(taskItemId("a"))?.lastAssignedTo).toBe(agentId("worker-1"));
+    });
+
+    test("lastAssignedTo persists through fail (retryable)", () => {
+      const board = createTaskBoard({ maxRetries: 3 });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("worker-1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const err: KoiError = { code: "EXTERNAL", message: "timeout", retryable: true };
+      const r3 = r2.value.fail(taskItemId("a"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const task = r3.value.get(taskItemId("a"));
+      // assignedTo cleared, but lastAssignedTo preserved
+      expect(task?.assignedTo).toBeUndefined();
+      expect(task?.lastAssignedTo).toBe(agentId("worker-1"));
+    });
+
+    test("lastAssignedTo persists through fail (terminal)", () => {
+      const board = createTaskBoard({ maxRetries: 0 });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("worker-1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const err: KoiError = { code: "VALIDATION", message: "bad input", retryable: false };
+      const r3 = r2.value.fail(taskItemId("a"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const task = r3.value.get(taskItemId("a"));
+      // assignedTo cleared on terminal failure, lastAssignedTo preserved
+      expect(task?.assignedTo).toBeUndefined();
+      expect(task?.lastAssignedTo).toBe(agentId("worker-1"));
+    });
+
+    test("lastAssignedTo persists through kill", () => {
+      const board = createTaskBoard();
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      const r2 = r1.value.assign(taskItemId("a"), agentId("worker-1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      const r3 = r2.value.kill(taskItemId("a"));
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const task = r3.value.get(taskItemId("a"));
+      expect(task?.lastAssignedTo).toBe(agentId("worker-1"));
+    });
+
+    test("lastAssignedTo updates on re-assign", () => {
+      const board = createTaskBoard({ maxRetries: 3 });
+      const r1 = board.add(input("a"));
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      // First assignment — worker-1
+      const r2 = r1.value.assign(taskItemId("a"), agentId("worker-1"));
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      // Fail retryably — task goes back to pending
+      const err: KoiError = { code: "EXTERNAL", message: "timeout", retryable: true };
+      const r3 = r2.value.fail(taskItemId("a"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      // Re-assign to worker-2
+      const r4 = r3.value.assign(taskItemId("a"), agentId("worker-2"));
+      expect(r4.ok).toBe(true);
+      if (!r4.ok) return;
+      expect(r4.value.get(taskItemId("a"))?.lastAssignedTo).toBe(agentId("worker-2"));
+    });
   });
 
   describe("complete", () => {
@@ -1751,5 +1834,221 @@ describe("metadata.delegatedTo pending-only invariant", () => {
     });
     if (!r5.ok) return;
     expect(r5.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBe("fresh-worker");
+  });
+
+  // ---------------------------------------------------------------------------
+  // createdBy — stamped at add, persists through terminal transitions
+  // ---------------------------------------------------------------------------
+
+  describe("createdBy", () => {
+    test("createdBy is stamped at add and persists through kill", () => {
+      const board = createTaskBoard();
+      const creator = agentId("alice");
+      const worker = agentId("worker-1");
+
+      // Add with createdBy
+      const r1 = board.add({
+        id: taskItemId("task-x"),
+        description: "Test task",
+        createdBy: creator,
+      });
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      expect(r1.value.get(taskItemId("task-x"))?.createdBy).toBe(creator);
+
+      // Assign to worker — assignedTo changes but createdBy stays
+      const r2 = r1.value.assign(taskItemId("task-x"), worker);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.get(taskItemId("task-x"))?.createdBy).toBe(creator);
+      expect(r2.value.get(taskItemId("task-x"))?.assignedTo).toBe(worker);
+
+      // Kill — createdBy persists (kill preserves assignedTo as-is; only fail/unassign clear it)
+      const r3 = r2.value.kill(taskItemId("task-x"));
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const killed = r3.value.get(taskItemId("task-x"));
+      expect(killed?.status).toBe("killed");
+      expect(killed?.createdBy).toBe(creator);
+    });
+
+    test("createdBy persists through failed transition", () => {
+      const board = createTaskBoard({ maxRetries: 0 });
+      const creator = agentId("alice");
+      const worker = agentId("worker-1");
+
+      const r1 = board.add({
+        id: taskItemId("task-y"),
+        description: "Test task",
+        createdBy: creator,
+      });
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+
+      const r2 = r1.value.assign(taskItemId("task-y"), worker);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+
+      const err: KoiError = { code: "EXTERNAL", message: "boom", retryable: false };
+      const r3 = r2.value.fail(taskItemId("task-y"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const failed = r3.value.get(taskItemId("task-y"));
+      expect(failed?.status).toBe("failed");
+      expect(failed?.createdBy).toBe(creator);
+      expect(failed?.assignedTo).toBeUndefined();
+    });
+
+    test("createdBy persists through retryable fail (pending reset)", () => {
+      const board = createTaskBoard({ maxRetries: 3 });
+      const creator = agentId("alice");
+      const worker = agentId("worker-1");
+
+      const r1 = board.add({
+        id: taskItemId("task-z"),
+        description: "Test task",
+        createdBy: creator,
+      });
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+
+      const r2 = r1.value.assign(taskItemId("task-z"), worker);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+
+      const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+      const r3 = r2.value.fail(taskItemId("task-z"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      // Back to pending — createdBy still set, assignedTo cleared
+      const retried = r3.value.get(taskItemId("task-z"));
+      expect(retried?.status).toBe("pending");
+      expect(retried?.createdBy).toBe(creator);
+      expect(retried?.assignedTo).toBeUndefined();
+    });
+
+    test("createdBy is undefined when not provided (backward compat)", () => {
+      const board = createTaskBoard();
+      const r = board.add({
+        id: taskItemId("legacy"),
+        description: "Legacy task without createdBy",
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.get(taskItemId("legacy"))?.createdBy).toBeUndefined();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Version-skew backfill: lastAssignedTo (#1769)
+// ---------------------------------------------------------------------------
+//
+// Tasks persisted before `lastAssignedTo` was introduced have `assignedTo` set
+// but `lastAssignedTo` undefined. On the first post-upgrade transition that
+// clears `assignedTo`, the board must copy `assignedTo` into `lastAssignedTo`
+// (only if empty — never overwrite).  This preserves worker read-access for
+// tasks whose output directory is keyed on the last assigned worker identity.
+
+describe("version-skew lastAssignedTo backfill", () => {
+  // Helper: construct a pre-upgrade in_progress task via the snapshot loader.
+  // The snapshot loader does NOT backfill lastAssignedTo, so this faithfully
+  // simulates a task that was persisted before the field existed.
+  function preUpgradeBoard(workerId: string): import("@koi/core").TaskBoard {
+    const legacyTask: Task = {
+      id: taskItemId("t"),
+      subject: "Legacy task",
+      description: "Task from before lastAssignedTo was introduced",
+      dependencies: [],
+      retries: 0,
+      version: 2,
+      status: "in_progress",
+      assignedTo: agentId(workerId),
+      // lastAssignedTo intentionally absent — simulates pre-upgrade persisted state
+      createdAt: 1000,
+      updatedAt: 2000,
+    };
+    return createTaskBoard({ maxRetries: 3 }, { items: [legacyTask], results: [] });
+  }
+
+  test("retryable fail backfills lastAssignedTo before clearing assignedTo", () => {
+    const board = preUpgradeBoard("bob");
+    // Verify the pre-upgrade state: assignedTo set, lastAssignedTo missing
+    expect(board.get(taskItemId("t"))?.assignedTo).toBe(agentId("bob"));
+    expect(board.get(taskItemId("t"))?.lastAssignedTo).toBeUndefined();
+
+    const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+    const r = board.fail(taskItemId("t"), err);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("pending");
+    expect(after?.assignedTo).toBeUndefined();
+    // One-time backfill: worker identity preserved in lastAssignedTo
+    expect(after?.lastAssignedTo).toBe(agentId("bob"));
+  });
+
+  test("terminal fail backfills lastAssignedTo before clearing assignedTo", () => {
+    const board = preUpgradeBoard("charlie");
+    expect(board.get(taskItemId("t"))?.assignedTo).toBe(agentId("charlie"));
+    expect(board.get(taskItemId("t"))?.lastAssignedTo).toBeUndefined();
+
+    const err: KoiError = { code: "VALIDATION", message: "unrecoverable", retryable: false };
+    // maxRetries: 3 but error is not retryable → terminal
+    const r = board.fail(taskItemId("t"), err);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("failed");
+    expect(after?.assignedTo).toBeUndefined();
+    // One-time backfill: worker identity preserved in lastAssignedTo
+    expect(after?.lastAssignedTo).toBe(agentId("charlie"));
+  });
+
+  test("kill backfills lastAssignedTo when field is absent", () => {
+    const board = preUpgradeBoard("dana");
+    expect(board.get(taskItemId("t"))?.assignedTo).toBe(agentId("dana"));
+    expect(board.get(taskItemId("t"))?.lastAssignedTo).toBeUndefined();
+
+    const r = board.kill(taskItemId("t"));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("killed");
+    // One-time backfill: worker identity preserved in lastAssignedTo
+    expect(after?.lastAssignedTo).toBe(agentId("dana"));
+  });
+
+  test("lastAssignedTo is NOT overwritten when already set — even if assignedTo differs", () => {
+    // Task has lastAssignedTo: "alice" and assignedTo: "bob" (re-assigned after retry).
+    // Terminal fail must preserve "alice" in lastAssignedTo (never overwrite).
+    const taskWithBoth: Task = {
+      id: taskItemId("t"),
+      subject: "Modern task",
+      description: "Task with both fields set",
+      dependencies: [],
+      retries: 1,
+      version: 3,
+      status: "in_progress",
+      assignedTo: agentId("bob"),
+      lastAssignedTo: agentId("alice"),
+      createdAt: 1000,
+      updatedAt: 3000,
+    };
+    const board = createTaskBoard({ maxRetries: 1 }, { items: [taskWithBoth], results: [] });
+
+    const err: KoiError = { code: "VALIDATION", message: "terminal", retryable: false };
+    const r = board.fail(taskItemId("t"), err);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    const after = r.value.get(taskItemId("t"));
+    expect(after?.status).toBe("failed");
+    expect(after?.assignedTo).toBeUndefined();
+    // lastAssignedTo stays "alice" — NOT overwritten with "bob"
+    expect(after?.lastAssignedTo).toBe(agentId("alice"));
   });
 });

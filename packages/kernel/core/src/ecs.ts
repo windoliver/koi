@@ -93,6 +93,11 @@ declare const __sessionBrand: unique symbol;
 /** Branded string type for session identifiers. */
 export type SessionId = string & { readonly [__sessionBrand]: "SessionId" };
 
+declare const __artifactBrand: unique symbol;
+
+/** Branded string type for artifact identifiers. */
+export type ArtifactId = string & { readonly [__artifactBrand]: "ArtifactId" };
+
 declare const __runBrand: unique symbol;
 
 /** Branded string type for run identifiers (one per run() invocation). */
@@ -144,6 +149,11 @@ export function agentId(id: string): AgentId {
 /** Create a branded SessionId from a plain string. */
 export function sessionId(id: string): SessionId {
   return id as SessionId;
+}
+
+/** Create a branded ArtifactId from a plain string. */
+export function artifactId(id: string): ArtifactId {
+  return id as ArtifactId;
 }
 
 /** Create a branded RunId from a plain string. */

@@ -33,6 +33,37 @@ describe("extractIterationTokens", () => {
   test("returns the last done if multiple present (edge case)", () => {
     expect(extractIterationTokens([done(10), done(99)])).toBe(99);
   });
+
+  test("returns unmetered when the done was synthesized by activity-timeout (#1638)", () => {
+    // Synthetic zero-token done from a timed-out iteration must NOT be
+    // counted as free spend — that would let repeated timeouts silently
+    // bypass `maxBudgetTokens`. The budget module returns "unmetered" so
+    // the iteration counts as unknown consumption and budget enforcement
+    // fails closed.
+    const syntheticDone: EngineEvent = {
+      kind: "done",
+      output: {
+        content: [],
+        stopReason: "interrupted",
+        metrics: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          turns: 0,
+          durationMs: 1_000,
+        },
+        metadata: {
+          terminatedBy: "activity-timeout",
+          terminationReason: "idle",
+          elapsedMs: 1_000,
+          metricsSynthesized: true,
+        },
+      },
+    };
+    expect(extractIterationTokens([{ kind: "text_delta", delta: "hi" }, syntheticDone])).toBe(
+      "unmetered",
+    );
+  });
 });
 
 describe("addTokens", () => {

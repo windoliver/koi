@@ -269,7 +269,30 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // recreate the runtime instead of submitting another turn into a
   // wedged session. 5 seconds is generous for cooperative cleanup but
   // short enough to keep the TUI responsive on /clear.
-  const LIFECYCLE_SETTLE_TIMEOUT_MS = 5000;
+  //
+  // #review-P11 + round1-F3: exposed via CreateKoiOptions.lifecycleSettleTimeoutMs
+  // so hosts that run long-running cooperative tools can bump it without
+  // patching the engine. Validation:
+  //  - must be a finite positive integer number of milliseconds
+  //  - clamped to a safe 32-bit signed range so setTimeout doesn't overflow
+  //    (some JS runtimes treat delays > 2^31-1 as 0, which would flip the
+  //    option from "be patient" to "poison immediately")
+  //  - invalid / non-finite / ≤ 0 values fall back to the 5s default
+  const LIFECYCLE_SETTLE_DEFAULT_MS = 5000;
+  const LIFECYCLE_SETTLE_MAX_MS = 2_147_483_647; // 2^31 - 1, setTimeout safe range
+  const LIFECYCLE_SETTLE_TIMEOUT_MS = ((): number => {
+    const raw = options.lifecycleSettleTimeoutMs;
+    if (raw === undefined) return LIFECYCLE_SETTLE_DEFAULT_MS;
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+      return LIFECYCLE_SETTLE_DEFAULT_MS;
+    }
+    // Normalize to a strictly positive integer. #review-round2-F1: a raw
+    // value of `0.5` would `Math.floor` to 0 and collapse into
+    // `setTimeout(..., 0)` — immediate poison fire instead of "be patient".
+    // Clamp the minimum to 1ms and the maximum to the setTimeout-safe range.
+    const floored = Math.floor(raw);
+    return Math.min(Math.max(1, floored), LIFECYCLE_SETTLE_MAX_MS);
+  })();
   // let justified: mutable poison flag set on settle timeout
   let poisoned = false;
   // #1742 round 10: lifecycle mutex — single-flight gate for
@@ -553,6 +576,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: previous forge middleware ref for identity-based skip
     let previousForgedMw: readonly KoiMiddleware[] | undefined;
 
+    // #review-round1-F1: monotonic sequence number shared by BOTH refresh
+    // paths (watch-triggered `runRefresh` and turn-boundary
+    // `refreshForgeState`) so only the newest observed forge state commits
+    // to `forgedDescriptorsCache` / `toolsAccessor`. Without this, a
+    // turn-boundary refresh racing a watch refresh could last-write-wins
+    // with stale data. Each caller grabs a sequence at the start of its
+    // toolDescriptors() call and only commits when its sequence is still
+    // the newest completed.
+    // let justified: mutable sequence number incremented per refresh attempt
+    let forgeRefreshNextSeq = 0;
+    // let justified: mutable ref tracking the highest seq that has committed
+    let forgeRefreshLastCommittedSeq = 0;
+
     // let justified: tools accessor for cooperating adapters (set once at session start)
     let toolsAccessor: ReturnType<typeof createDedupedToolsAccessor> | undefined;
 
@@ -595,22 +631,52 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       activeStreamChain = chains.streamChain;
     }
 
+    /**
+     * Commit a refresh result only when its sequence is still the newest.
+     *
+     * Prevents a stale refresh (e.g. a long-running watch refresh whose
+     * `forge.toolDescriptors()` finished AFTER a later turn-boundary refresh
+     * already committed) from overwriting fresher state. Returns `true` when
+     * the caller won the race and committed, `false` when the result was
+     * superseded and must be discarded. #review-round1-F1.
+     */
+    function tryCommitForgeRefresh(mySeq: number, descriptors: readonly ToolDescriptor[]): boolean {
+      if (mySeq <= forgeRefreshLastCommittedSeq) return false;
+      forgeRefreshLastCommittedSeq = mySeq;
+      forgedDescriptorsCache = descriptors;
+      toolsAccessor?.updateForged(descriptors);
+      return true;
+    }
+
     /** Refresh forged descriptors and re-compose middleware if forge runtime is provided. */
     async function refreshForgeState(terminals: TerminalHandlers): Promise<void> {
       if (forge === undefined) return;
 
-      // Refresh forged tool descriptors
+      // Grab a sequence before the I/O so parallel refreshes are ordered by
+      // issue time. A newer call can still commit first; `tryCommitForgeRefresh`
+      // then blocks this older result when the await resolves.
+      const mySeq = ++forgeRefreshNextSeq;
       const prevDescCount = forgedDescriptorsCache.length;
-      forgedDescriptorsCache = await forge.toolDescriptors();
-      const newDescCount = forgedDescriptorsCache.length;
-      toolsAccessor?.updateForged(forgedDescriptorsCache);
+      const descriptors = await forge.toolDescriptors();
+      const committed = tryCommitForgeRefresh(mySeq, descriptors);
+      const newDescCount = committed ? descriptors.length : forgedDescriptorsCache.length;
 
-      // Re-compose middleware chains only when forged middleware actually changed
+      // Re-compose middleware chains only when forged middleware actually
+      // changed AND this refresh's descriptor commit was not superseded.
+      // Recomposing on a stale result would pair fresh descriptors (from a
+      // newer committed refresh) with older middleware, breaking the
+      // tools ↔ middleware invariant.
+      //
+      // #review-round2-F2: a newer refresh may commit while the
+      // `forge.middleware()` await below is pending. Re-check freshness
+      // AFTER the await and skip recomposition if we've been superseded,
+      // so we don't apply stale middleware on top of the newer committed
+      // descriptor state.
       // let justified: mutable flag tracking whether middleware was recomposed this refresh
       let middlewareRecomposed = false;
-      if (forge.middleware !== undefined) {
+      if (committed && forge.middleware !== undefined) {
         const forgedMw = await forge.middleware();
-        if (forgedMw !== previousForgedMw) {
+        if (mySeq === forgeRefreshLastCommittedSeq && forgedMw !== previousForgedMw) {
           middlewareRecomposed = true;
           previousForgedMw = forgedMw;
           applyRecomposition(forgedMw, previousDynamicMw ?? undefined, terminals);
@@ -912,21 +978,77 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // Initial forge state (descriptors + forged middleware)
         await refreshForgeState(cachedTerminals);
 
-        // Subscribe to forge push notifications for mid-session tool visibility
+        // Subscribe to forge push notifications for mid-session tool visibility.
+        //
+        // Under a bursty source (e.g. MCP server reconnect fan-out) the naive
+        // "fire `forge.toolDescriptors()` per event" pattern accumulated
+        // unbounded in-flight promises that raced to overwrite
+        // `forgedDescriptorsCache` in non-deterministic order. Coalesce to at
+        // most ONE in-flight refresh at a time; queued events just re-run the
+        // refresh once the current one settles, so the last observed state
+        // always wins. #review-H10.
         if (forge?.watch !== undefined) {
+          // let justified: mutable in-flight guard shared across watch events
+          let refreshInFlight = false;
+          // let justified: mutable "re-run needed" flag set when events land
+          // while a refresh is already running
+          let refreshPending = false;
+
+          // #review-round5-F1: hard cap on the eager refresh loop. A
+          // pathological watch source whose `toolDescriptors()` call
+          // re-fires the watch event during its own resolution could
+          // otherwise spin this loop forever — saturating CPU/IO and
+          // flooding the forge backend, with no turn boundary able to
+          // engage the turn-boundary DRAIN_CAP safeguard. After the cap
+          // we exit the loop and leave `forgeStateDirty = true` so the
+          // next turn-boundary drain (which has its own cap + fail-closed
+          // path) can either quiesce or surface the failure.
+          const RUN_REFRESH_CAP = 8;
+          const runRefresh = async (): Promise<void> => {
+            refreshInFlight = true;
+            try {
+              // let justified: mutable loop counter bounded by RUN_REFRESH_CAP
+              let iterations = 0;
+              do {
+                refreshPending = false;
+                try {
+                  // Grab a sequence so a racing turn-boundary refresh
+                  // that completes first cannot be clobbered by our older
+                  // result. #review-round1-F1.
+                  const mySeq = ++forgeRefreshNextSeq;
+                  const d = await forge.toolDescriptors();
+                  tryCommitForgeRefresh(mySeq, d);
+                } catch (err: unknown) {
+                  console.warn("[koi] forge descriptor refresh failed", err);
+                  break;
+                }
+                iterations++;
+                if (iterations >= RUN_REFRESH_CAP && refreshPending) {
+                  // Give up the eager loop; preserve `forgeStateDirty`
+                  // so the turn-boundary drain picks it up. The
+                  // turn-boundary path has its own DRAIN_CAP +
+                  // fail-closed throw for the truly pathological case.
+                  console.warn(
+                    `[koi] eager forge refresh cap (${RUN_REFRESH_CAP}) reached; deferring to turn-boundary drain`,
+                  );
+                  forgeStateDirty = true;
+                  break;
+                }
+              } while (refreshPending);
+            } finally {
+              refreshInFlight = false;
+            }
+          };
+
           unsubForgeChange = forge.watch((_event) => {
-            // Eagerly refresh descriptor cache (fire-and-forget)
-            void forge
-              .toolDescriptors()
-              .then((d) => {
-                forgedDescriptorsCache = d;
-                toolsAccessor?.updateForged(d);
-              })
-              .catch((err: unknown) => {
-                console.warn("[koi] forge descriptor refresh failed", err);
-              });
-            // Set dirty flag for turn-boundary middleware recomposition
+            // Dirty flag for turn-boundary middleware recomposition runs
+            // regardless of the eager-refresh gate.
             forgeStateDirty = true;
+            if (refreshInFlight) {
+              refreshPending = true;
+              return;
+            }
+            void runRefresh();
           });
         }
 
@@ -1013,6 +1135,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       const maxStopRetries = input.maxStopRetries ?? DEFAULT_MAX_STOP_RETRIES;
       // let justified: mutable deferred input for stop-gate retry (created after turn boundary)
       let pendingStopInput: EngineInput | undefined;
+      // let justified: mutable accumulator of prior stop-gate block feedback.
+      //
+      // Every stop-gate block synthesizes a `[Stop hook feedback]` message and
+      // includes it in the retry stream's `input.messages` alongside the
+      // user's original request. When two consecutive retries block (the
+      // model still ignores the first veto), the retry adapter must see BOTH
+      // block messages so the model can re-anchor on the full feedback
+      // history — not just the most recent one. Previously only the current
+      // block message was included, so the first veto's feedback was
+      // silently dropped on every subsequent retry (#review-H5). Reset at
+      // each completion / idle re-arm.
+      const priorBlockMessages: InboundMessage[] = [];
 
       while (true) {
         adapterIterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
@@ -1087,38 +1221,99 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // Steer items → adapter.inject() if available; degrade to followup otherwise.
           // Collect/followup items are pushed back so middleware (e.g., inbox-middleware
           // in L2) can route them into the next turn's context during onBeforeTurn hooks.
+          //
+          // #review-M12: if `adapter.inject` throws on item N of K, the remaining
+          // steer items (N+1..K) are NOT dropped. Each item is wrapped
+          // individually and on failure we degrade that item to `followup` so
+          // a downstream middleware can still route it into the next turn.
+          // Without the try/catch, a transient adapter failure silently
+          // discarded every queued steer message.
+          //
+          // #review-round1-F2: `inboxComponent.push` returns `false` when a
+          // per-mode cap is exceeded (followup items drop silently). Check
+          // the return value on every degraded/requeued item so overflow
+          // surfaces as a visible warning instead of a silent data loss.
           const inboxComponent: InboxComponent | undefined = agent.component(INBOX);
           if (inboxComponent !== undefined && inboxComponent.depth() > 0) {
             const inboxItems: readonly InboxItem[] = inboxComponent.drain();
+            /** Push with overflow warning so silent drops can't hide under load. */
+            const pushOrWarn = (item: InboxItem, reason: string): void => {
+              if (!inboxComponent.push(item)) {
+                console.warn(
+                  `[koi] inbox overflow on ${reason}: dropping item id="${item.id}" mode="${item.mode}" from="${item.from}" (cap exceeded)`,
+                );
+              }
+            };
             for (const item of inboxItems) {
               if (item.mode === "steer") {
                 if (adapter.inject !== undefined) {
-                  await adapter.inject({
-                    senderId: item.from,
-                    content: [{ kind: "text", text: item.content }],
-                    timestamp: item.createdAt,
-                  });
+                  try {
+                    await adapter.inject({
+                      senderId: item.from,
+                      content: [{ kind: "text", text: item.content }],
+                      timestamp: item.createdAt,
+                    });
+                  } catch (injectErr: unknown) {
+                    console.warn(
+                      `[koi] adapter.inject failed for steer item from "${item.from}"; degrading to followup`,
+                      injectErr,
+                    );
+                    pushOrWarn({ ...item, mode: "followup" }, "steer→followup degrade");
+                  }
                 } else {
                   // Degrade steer → followup when adapter lacks inject (L0 contract)
-                  inboxComponent.push({ ...item, mode: "followup" });
+                  pushOrWarn({ ...item, mode: "followup" }, "steer→followup degrade (no inject)");
                 }
               } else {
                 // collect/followup items: push back for middleware to access in
                 // onBeforeTurn hooks (e.g., inbox-middleware in L2)
-                inboxComponent.push(item);
+                pushOrWarn(item, `${item.mode} requeue`);
               }
             }
           }
 
           // Deferred forge refresh: runs AFTER consumer processed turn_end,
-          // so tools/middleware injected between turns take effect next turn
+          // so tools/middleware injected between turns take effect next turn.
+          //
+          // #review-round3-F1: drain to a stable state. If `forge.watch`
+          // fires DURING the `await refreshForgeState()` below, the
+          // callback sets `forgeStateDirty = true` again. Without looping,
+          // that mid-refresh change is visible to the FSM's sequence gate
+          // (good — no stale commit) but the follow-up recomposition does
+          // not re-run, so forged middleware activated between turns could
+          // miss a turn. Loop until the dirty flag stays clear across a
+          // full refresh cycle.
+          //
+          // #review-round4-F2: FAIL CLOSED on drain-cap exhaustion. If a
+          // pathological watch source continues to raise dirty across
+          // DRAIN_CAP iterations, do NOT start the next turn on
+          // possibly-stale forged middleware (which may carry
+          // policy/safety wrappers). Throw so the outer catch converts
+          // this into a terminal `done` with error. The host gets a
+          // clear diagnostic and can recreate the runtime.
           if (pendingForgeRefresh) {
             pendingForgeRefresh = false;
-            // Skip refresh if watch is active and nothing changed since last notification
-            const shouldRefresh = forge?.watch === undefined || forgeStateDirty;
-            if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
-              forgeStateDirty = false;
-              await refreshForgeState(cachedTerminals);
+            if (forge !== undefined && cachedTerminals !== undefined) {
+              if (forge.watch === undefined) {
+                await refreshForgeState(cachedTerminals);
+              } else {
+                // let justified: mutable loop guard with hard cap to
+                // prevent pathological drain loops
+                let drainIterations = 0;
+                const DRAIN_CAP = 8;
+                while (forgeStateDirty && drainIterations < DRAIN_CAP) {
+                  forgeStateDirty = false;
+                  drainIterations++;
+                  await refreshForgeState(cachedTerminals);
+                }
+                if (forgeStateDirty) {
+                  throw KoiRuntimeError.from(
+                    "INTERNAL",
+                    `Forge refresh did not quiesce after ${DRAIN_CAP} iterations — a watch source appears to be continuously publishing. Refusing to start the next turn on possibly-stale forged middleware.`,
+                    { retryable: false },
+                  );
+                }
+              }
             }
           }
 
@@ -1137,7 +1332,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
           // Deferred stop-gate retry: create adapter stream AFTER forge/middleware
           // refresh so the retry turn sees updated tools and middleware state.
+          //
+          // #review-round4-F1 (belt-and-braces): check abort again right
+          // before spinning up a fresh adapter.stream() — a cancel that
+          // arrives between the block-path short-circuit above and this
+          // point must not still burn a turn.
           if (pendingStopInput !== undefined) {
+            if (runSignal.aborted) {
+              agent.transition({ kind: "complete", stopReason: "interrupted" });
+              return;
+            }
             adapterIterator = adapter.stream(pendingStopInput)[Symbol.asyncIterator]();
           }
 
@@ -1191,6 +1395,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               currentTurnIndex = event.turnIndex + 1;
               outerCurrentTurnIndex = currentTurnIndex;
               pendingForgeRefresh = true;
+              // #review-round1-F4: advance the FSM's own turnIndex so
+              // `agent.lifecycle.turnIndex` observers see the real running
+              // turn. Before this, the FSM's turnIndex stayed at 0 forever.
+              agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
+              // #1638: propagate turn_end.stopBlocked into the TurnContext
+              // below so middleware (hook-dispatch, task-anchor, etc.) that
+              // checks `ctx.stopBlocked` sees the authoritative marker.
+              // Covers both the stop-gate veto path (emitted further down
+              // with stopBlocked: true) and the activity-timeout synthetic
+              // turn_end. Without this copy, a timed-out partial turn would
+              // still invoke onAfterTurn as if the turn had completed
+              // successfully and middleware could persist partial state.
               const turnEndCtx = createTurnContext({
                 session: sessionCtx,
                 turnIndex: event.turnIndex,
@@ -1198,6 +1414,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 signal: runSignal,
                 approvalHandler: options.approvalHandler,
                 sendStatus: options.sendStatus,
+                ...(event.stopBlocked === true ? { stopBlocked: true as const } : {}),
               });
               await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
               debugInstrumentation?.onTurnEnd(event.turnIndex);
@@ -1219,6 +1436,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 });
                 const gateResult = await runStopGate(allMiddleware, stopCtx);
                 if (gateResult.kind === "block") {
+                  // #review-round4-F1: short-circuit the retry path when
+                  // the run has been cancelled. A common interleaving is:
+                  // a user/host abort fires → adapter.inject throws an
+                  // abort-type error → stop-gate block lands → retry
+                  // sets up a FRESH adapter.stream() and burns tokens.
+                  // If the run signal is already aborted, the block's
+                  // retry is moot; let the outer loop's aborted-done
+                  // short-circuit handle termination.
+                  if (runSignal.aborted) {
+                    agent.transition({ kind: "complete", stopReason: "interrupted" });
+                    return;
+                  }
                   stopRetryCount++;
                   // Re-anchor the retry on the user's original request. Vague feedback
                   // like "address this" lets the model drift onto nearby context —
@@ -1239,8 +1468,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                   // Inject block reason via adapter.inject() if available
                   // as a best-effort hint to the running adapter state.
+                  //
+                  // #review-round3-F2: inject is documented as best-effort,
+                  // but an unguarded throw here hard-fails the retry and
+                  // escalates a recoverable stop-gate veto into a
+                  // user-visible error. Swallow inject failures so the
+                  // `pendingStopInput` path (the guaranteed delivery route)
+                  // still runs.
                   if (adapter.inject !== undefined) {
-                    await adapter.inject(blockMessage);
+                    try {
+                      await adapter.inject(blockMessage);
+                    } catch (injectErr: unknown) {
+                      console.warn(
+                        "[koi] adapter.inject failed during stop-gate block; continuing with pendingStopInput delivery",
+                        injectErr,
+                      );
+                    }
                   }
                   // Always include the block message in the retry stream input.
                   // inject() state may not survive across stream() restarts,
@@ -1253,14 +1496,27 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   // Uses originalUserMessages (snapshot at session start) because
                   // activeTurnMessages gets overwritten to [] at turn boundaries
                   // for text inputs.
+                  //
+                  // #review-H5: prepend every prior block message so multiple
+                  // consecutive retries see the full veto history, not just
+                  // the most recent feedback.
+                  // Pass the SAME `callHandlers` reference through so the
+                  // `tools` getter (defined via Object.defineProperties in
+                  // the outer scope) stays live on the retry path. Do NOT
+                  // spread `...effectiveInput.callHandlers` here — that
+                  // would invoke the getter and snapshot the tools array,
+                  // losing mid-session forge updates.
                   pendingStopInput = {
                     kind: "messages",
-                    messages: [...originalUserMessages, blockMessage],
+                    messages: [...originalUserMessages, ...priorBlockMessages, blockMessage],
                     ...(effectiveInput.callHandlers !== undefined
                       ? { callHandlers: effectiveInput.callHandlers }
                       : {}),
                     signal: runSignal,
                   };
+                  // Record this block so the NEXT retry (if another block
+                  // fires) carries the full history.
+                  priorBlockMessages.push(blockMessage);
                   // Clean up previous adapter iterator before retry
                   if (adapterIterator?.return !== undefined) {
                     try {
@@ -1273,6 +1529,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   // Emit turn_end for the blocked turn (mirrors L2 turn-runner pattern).
                   // stopBlocked flag lets middleware distinguish vetoes from real completions.
                   const blockedTurnIndex = currentTurnIndex;
+
+                  // #review-round3-F3: advance the FSM turnIndex BEFORE
+                  // running `onAfterTurn` hooks so middleware observing
+                  // `agent.lifecycle.turnIndex` sees the SAME post-advance
+                  // value whether the turn completed normally or was
+                  // blocked by the stop-gate. The non-blocked turn_end path
+                  // higher up already orders advance_turn before hooks;
+                  // this brings the blocked path into parity.
+                  currentTurnIndex = blockedTurnIndex + 1;
+                  outerCurrentTurnIndex = currentTurnIndex;
+                  pendingForgeRefresh = true;
+                  agent.transition({ kind: "advance_turn", turnIndex: currentTurnIndex });
+
                   const blockedTurnCtx = createTurnContext({
                     session: sessionCtx,
                     turnIndex: blockedTurnIndex,
@@ -1288,16 +1557,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   });
                   await runTurnHooks(allMiddleware, "onAfterTurn", blockedTurnCtx);
                   debugInstrumentation?.onTurnEnd(blockedTurnIndex);
+
                   yield {
                     kind: "turn_end",
                     turnIndex: blockedTurnIndex,
                     stopBlocked: true,
                   } as EngineEvent;
-
-                  // Advance turn index for the retry turn
-                  currentTurnIndex = blockedTurnIndex + 1;
-                  outerCurrentTurnIndex = currentTurnIndex;
-                  pendingForgeRefresh = true;
 
                   // Continue the turn loop — don't yield done, don't return
                   break; // breaks inner while(true), continues turnLoop
@@ -1321,8 +1586,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // Reset per-completion retry counter so subsequent idle-wake
                 // completions don't accumulate stale stop-gate retries. Likewise
                 // re-enable capability injection for the next completion's first
-                // call.
+                // call. Also drop accumulated block feedback — the next
+                // user-facing turn starts with a clean slate. #review-H5.
                 stopRetryCount = 0;
+                priorBlockMessages.length = 0;
                 bannerCached = false;
                 cachedCapabilityBanner = undefined;
                 yield normalizedDone;

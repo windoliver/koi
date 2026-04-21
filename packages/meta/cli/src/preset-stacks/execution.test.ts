@@ -2,8 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AgentId, type ApprovalHandler, agentId as agentIdBrand } from "@koi/core";
-import type { BashToolHandle } from "@koi/tools-bash";
+import {
+  type AgentId,
+  type ApprovalHandler,
+  agentId as agentIdBrand,
+  type TaskItemId,
+  taskItemId,
+} from "@koi/core";
+import { type BashToolHandle, createBashOutputBuffer } from "@koi/tools-bash";
 import {
   AGENT_ID_HOST_KEY,
   APPROVAL_HANDLER_HOST_KEY,
@@ -112,5 +118,130 @@ describe("executionStack — --yolo bash elicit bypass", () => {
 
     expect(calls).toBe(0);
     expect("error" in (result as object)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markOutputBufferTerminal — pre-reset finalizer guard (Fix 2)
+//
+// A background task spawned in session N may exit AFTER onResetSession fires
+// for session N+1. The finalizer calls markOutputBufferTerminal(oldTaskId).
+// The guard must detect the stale call and no-op, preventing the old task from
+// corrupting the new session's terminalBufferOrder or bashOutputBuffersRef.
+//
+// We test the guard logic in isolation (the callback is a closure, not exported)
+// by replicating the ref-swap contract: after reset, both refs are fresh empty
+// collections. A stale task ID (absent from both) must be silently dropped.
+// ---------------------------------------------------------------------------
+
+describe("markOutputBufferTerminal — pre-reset finalizer guard", () => {
+  test("late finalizer from pre-reset session does not corrupt new session buffer map", () => {
+    // Replicate the guard logic from execution.ts in isolation so we can assert
+    // on the contract without wiring the full preset stack.
+    const MAX_BYTES = 1_000_000;
+    const TERMINAL_BUFFER_RETAIN = 32;
+
+    // Session 1 state
+    let bashOutputBuffersRef: {
+      current: Map<TaskItemId, ReturnType<typeof createBashOutputBuffer>>;
+    } = {
+      current: new Map(),
+    };
+    let everHadBufferRef: { current: Set<TaskItemId> } = { current: new Set() };
+    let terminalBufferOrder: TaskItemId[] = [];
+
+    // Allocate a buffer for taskA in session 1
+    const taskA = taskItemId("task_a");
+    const bufA = createBashOutputBuffer({ maxBytes: MAX_BYTES });
+    bashOutputBuffersRef.current.set(taskA, bufA);
+    everHadBufferRef.current.add(taskA);
+
+    // Simulate onResetSession — swap both refs
+    bashOutputBuffersRef = { current: new Map() };
+    everHadBufferRef = { current: new Set() };
+    terminalBufferOrder = [];
+
+    // Allocate a buffer for taskB in session 2
+    const taskB = taskItemId("task_b");
+    const bufB = createBashOutputBuffer({ maxBytes: MAX_BYTES });
+    bashOutputBuffersRef.current.set(taskB, bufB);
+    everHadBufferRef.current.add(taskB);
+
+    // Guard logic (mirrors execution.ts markOutputBufferTerminal)
+    function markTerminal(id: TaskItemId): void {
+      const currentBuffers = bashOutputBuffersRef.current;
+      const currentEverHad = everHadBufferRef.current;
+      if (!currentBuffers.has(id) && !currentEverHad.has(id)) {
+        return; // stale finalizer — no-op
+      }
+      terminalBufferOrder.push(id);
+      if (terminalBufferOrder.length > TERMINAL_BUFFER_RETAIN) {
+        const evictId = terminalBufferOrder.shift();
+        if (evictId !== undefined) {
+          currentBuffers.delete(evictId);
+        }
+      }
+    }
+
+    // Late finalizer from session 1 fires with taskA (stale)
+    markTerminal(taskA);
+
+    // taskA must NOT appear in the new session's terminalBufferOrder
+    expect(terminalBufferOrder).not.toContain(taskA);
+    // taskB's buffer must still be present (not accidentally evicted)
+    expect(bashOutputBuffersRef.current.has(taskB)).toBe(true);
+    // terminalBufferOrder is empty — no corruption occurred
+    expect(terminalBufferOrder).toHaveLength(0);
+  });
+
+  test("current-session finalizer still correctly records and evicts", () => {
+    const MAX_BYTES = 1_000_000;
+    const TERMINAL_BUFFER_RETAIN = 2; // small limit to force eviction
+
+    // Refs are mutated via .current — not reassigned — so const is correct.
+    const bashOutputBuffersRef: {
+      current: Map<TaskItemId, ReturnType<typeof createBashOutputBuffer>>;
+    } = {
+      current: new Map(),
+    };
+    const everHadBufferRef: { current: Set<TaskItemId> } = { current: new Set() };
+    // Array is mutated in place (push/shift) — not reassigned — so const is correct.
+    const terminalBufferOrder: TaskItemId[] = [];
+
+    function markTerminal(id: TaskItemId): void {
+      const currentBuffers = bashOutputBuffersRef.current;
+      const currentEverHad = everHadBufferRef.current;
+      if (!currentBuffers.has(id) && !currentEverHad.has(id)) {
+        return;
+      }
+      terminalBufferOrder.push(id);
+      if (terminalBufferOrder.length > TERMINAL_BUFFER_RETAIN) {
+        const evictId = terminalBufferOrder.shift();
+        if (evictId !== undefined) {
+          currentBuffers.delete(evictId);
+        }
+      }
+    }
+
+    // Allocate three buffers in current session
+    const ids = [taskItemId("t1"), taskItemId("t2"), taskItemId("t3")] as const;
+    for (const id of ids) {
+      bashOutputBuffersRef.current.set(id, createBashOutputBuffer({ maxBytes: MAX_BYTES }));
+      everHadBufferRef.current.add(id);
+    }
+
+    // Mark all three terminal — TERMINAL_BUFFER_RETAIN=2, so t1 should be evicted
+    markTerminal(ids[0]);
+    markTerminal(ids[1]);
+    markTerminal(ids[2]); // triggers eviction of ids[0]
+
+    expect(terminalBufferOrder).toHaveLength(2);
+    expect(terminalBufferOrder).toContain(ids[1]);
+    expect(terminalBufferOrder).toContain(ids[2]);
+    // ids[0] was evicted from the buffer map
+    expect(bashOutputBuffersRef.current.has(ids[0])).toBe(false);
+    // ids[1] and ids[2] are still in the map (within TERMINAL_BUFFER_RETAIN)
+    expect(bashOutputBuffersRef.current.has(ids[1])).toBe(true);
+    expect(bashOutputBuffersRef.current.has(ids[2])).toBe(true);
   });
 });

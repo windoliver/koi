@@ -17,6 +17,7 @@ const INITIAL_METRICS: CumulativeMetrics = {
 export function createInitialState(modelName = ""): TuiState {
   return {
     messages: [],
+    queuedSubmits: [],
     activeView: "conversation",
     modal: null,
     connectionStatus: "disconnected",
@@ -51,5 +52,7 @@ export function createInitialState(modelName = ""): TuiState {
     costBreakdown: null,
     tokenRate: null,
     mcpServers: [],
+    governance: { snapshot: null, alerts: [], violations: [], rules: [], capabilities: [] },
+    toasts: [],
   };
 }

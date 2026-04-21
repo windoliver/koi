@@ -16,8 +16,8 @@
  * pollute the snapshot with bogus records.
  */
 
+import { writeBlobFromFile } from "@koi/blob-cas";
 import type { FileOpRecord, JsonObject, ToolCallId } from "@koi/core";
-import { writeBlobFromFile } from "./cas-store.js";
 
 interface PreImage {
   readonly existed: boolean;

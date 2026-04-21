@@ -26,6 +26,7 @@ import { McpView } from "./components/McpView.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
+import { GovernanceView } from "./components/GovernanceView.js";
 import { HelpView } from "./components/HelpView.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
@@ -35,6 +36,7 @@ import { CostDashboardView } from "./components/CostDashboardView.js";
 import { PluginsView } from "./components/PluginsView.js";
 import { TrajectoryView } from "./components/TrajectoryView.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { ToastOverlay } from "./components/Toast.js";
 import { handleGlobalKey } from "./keyboard.js";
 import type { TuiStore } from "./state/store.js";
 import type {
@@ -62,6 +64,7 @@ import {
  */
 const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:doctor": "doctor",
+  "nav:governance": "governance",
   "nav:help": "help",
   "nav:agents": "agents",
   "nav:trajectory": "trajectory",
@@ -76,6 +79,23 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
  */
 export function resolveNavCommand(commandId: string): TuiView | null {
   return NAV_VIEW_MAP[commandId] ?? null;
+}
+
+/**
+ * Side-effect plan for `system:governance-reset`:
+ * 1. Clear in-memory alerts in the TUI store.
+ * 2. Forward to the host via onCommand so the bridge can reset its
+ *    alert-tracker dedup state.
+ *
+ * Exported for testing — do not rely on this in external packages.
+ */
+export function executeGovernanceReset(
+  store: TuiStore,
+  onCommand: (commandId: string, args: string) => void,
+  args: string,
+): void {
+  store.dispatch({ kind: "clear_governance_alerts" });
+  onCommand("system:governance-reset", args);
 }
 
 function findCommandBySlashName(name: string): CommandDef | undefined {
@@ -99,7 +119,7 @@ export interface TuiRootProps {
   /** Called when the user selects a session to resume. */
   readonly onSessionSelect: (sessionId: string) => void;
   /** Called when the user submits a message in the conversation view. */
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, mode?: "queue" | "interrupt") => void;
   /** Called when the user triggers Ctrl+C interrupt. */
   readonly onInterrupt: () => void;
   /** Called when the user responds to a permission prompt (y/n/a). */
@@ -177,6 +197,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   const activeView = useTuiStore((s) => s.activeView);
   const modal = useTuiStore((s) => s.modal);
   const agentStatus = useTuiStore((s) => s.agentStatus);
+  const toasts = useTuiStore((s) => s.toasts);
+  const governance = useTuiStore((s) => s.governance);
 
   // #16: notify bridge when a turn completes (processing → idle transition)
   createEffect(
@@ -455,6 +477,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       store.dispatch({ kind: "toggle_thinking" });
       return;
     }
+    if (cmd.id === "system:governance-reset") {
+      executeGovernanceReset(store, props.onCommand, args);
+      return;
+    }
     props.onCommand(cmd.id, args);
   };
 
@@ -528,6 +554,9 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         <Match when={viewSignal() === "plugins"}>
           <PluginsView />
         </Match>
+        <Match when={viewSignal() === "governance"}>
+          <GovernanceView slice={governance()} />
+        </Match>
       </Switch>
 
       {/* Modal layer — overlays the active view (Decision 3A: single slot).
@@ -574,6 +603,15 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
           focused={true}
         />
       </Show>
+      {/* Toast overlay — top-right transient notifications (gov-9).
+          zIndex=100 intentionally exceeds MODAL_POSITION.zIndex (20)
+          so toasts remain visible over modals. Any new modal added
+          here MUST use MODAL_POSITION (or another zIndex < 100) to
+          preserve this ordering. */}
+      <ToastOverlay
+        toasts={toasts()}
+        onDismiss={(id) => store.dispatch({ kind: "dismiss_toast", id })}
+      />
     </box>
   );
 }

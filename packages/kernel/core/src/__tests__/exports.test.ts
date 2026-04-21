@@ -57,6 +57,7 @@ import type {
   HealthMonitorStats,
   HealthSnapshot,
   HealthStatus,
+  HeartbeatConfig,
   ImageBlock,
   ImplementationArtifact,
   InboundMessage,
@@ -114,6 +115,10 @@ import type {
   SourceLanguage,
   // ecs
   SubsystemToken,
+  // daemon / supervisor health
+  SupervisorHealth,
+  SupervisorHealthMetrics,
+  SupervisorHealthStatus,
   TaskHistoryFilter,
   TaskRunRecord,
   // message
@@ -133,6 +138,7 @@ import type {
   WebhookComponent,
   WebhookEndpointHealth,
   WebhookSummary,
+  WorkerHealth,
   // zone
   ZoneDescriptor,
   ZoneEvent,
@@ -262,6 +268,12 @@ type _TypeGuard =
   | AssertDefined<HealthMonitorStats>
   | AssertDefined<HealthMonitorConfig>
   | AssertDefined<HealthMonitor>
+  // daemon / supervisor health
+  | AssertDefined<HeartbeatConfig>
+  | AssertDefined<SupervisorHealth>
+  | AssertDefined<SupervisorHealthMetrics>
+  | AssertDefined<SupervisorHealthStatus>
+  | AssertDefined<WorkerHealth>
   // eviction
   | AssertDefined<EvictionCandidate>
   | AssertDefined<EvictionReason>

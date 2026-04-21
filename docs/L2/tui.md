@@ -8,6 +8,7 @@
 
 ## Recent additions
 
+- **Mid-turn submit queue + interrupt-send input flow (#1907)**: `InputArea`/`processInputKey` now distinguish submit intent: plain Enter submits in `"queue"` mode, modified Enter (`Ctrl+Enter` / `Meta+Enter` when the terminal reports it) submits in `"interrupt"` mode, `Ctrl+K` is the reliable interrupt-send fallback for terminals that cannot distinguish modified Enter, and `Ctrl+J` remains the universal newline fallback. While an assistant turn is still running, queued user messages are rendered inline in the conversation as normal `You:` rows instead of surfacing a `SUBMIT_IN_PROGRESS` error or a separate queue counter chip.
 - **`system:model-switch` command + `ModelPicker` modal (#1902)**: new entry in `COMMAND_DEFINITIONS` under the System category. Palette label "Switch model", slash-command `/model`. Opens a full-screen fuzzy-search picker sourced by a host-provided `onFetchModels` callback (CLI fetches OpenRouter/OpenAI `/models` at picker-open). Selection dispatches `model_switched` to the store (updates top-level `modelName` AND mirrors into `sessionInfo.modelName` so diagnostics stay in sync) and calls the host's `onModelSwitch`, which returns `boolean` — `false` when the host rejects the switch (active run, `KOI_FALLBACK_MODEL` set). The picker cache is invalidated on rejection so the next open re-fetches. Model ids are sanitized at host ingress (allowlist + length cap) before reaching the TUI. Command count is now 24.
 - **`model_switched` reducer action**: reducer in `state/reduce.ts` updates `state.modelName` and mirrors the new id into `state.sessionInfo.modelName` when set. StatusBar reads from `state.modelName`; doctor view and transcript exports read from `state.sessionInfo`, so the mirror keeps them consistent after a mid-session switch.
 - **`ModelEntry` / `FetchModelsResult` types**: new exports from the TUI package so host-side `onFetchModels` / `onModelSwitch` wiring stays type-safe without circular deps. `ModelEntry` carries `{ id, contextLength?, pricingIn?, pricingOut? }`.
@@ -349,7 +350,7 @@ Eighteen components built on OpenTUI + SolidJS primitives:
 | `ErrorBlock` | Error display | Red border, code + message |
 | `MessageRow` | Turn router | `<Switch><Match>` for kind routing; no React.memo |
 | `MessageList` | Conversation | `<scrollbox stickyScroll stickyStart="bottom">` — new messages always scroll into view; `stickyStart="bottom"` sets `_stickyScrollBottom=true` on init so the scrollbox follows the bottom rather than the top |
-| `InputArea` | Text input | `<textarea>` with slash detection; Enter submits, Ctrl+J for newline |
+| `InputArea` | Text input | `<textarea>` with slash detection; Enter queues/submits, modified Enter or `Ctrl+K` interrupt-sends, `Ctrl+J` inserts newline |
 | `SlashOverlay` | Slash completion | Fuzzy-filtered `<select>` dropdown; Escape dismisses |
 | `PermissionPrompt` | HITL approval | Single-key (y/n/a/Esc) with risk-level color coding |
 | `AskUserDialog` | Agent question | Multi-line `<textarea>`; Enter submits, Escape dismisses |
@@ -642,6 +643,8 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 
 > **Overlay Enter preventDefault (#1898):** `SelectOverlay` / `SlashOverlay` now route their consumed keys through a new `consumeSelectOverlayKey` helper that calls `key.preventDefault()` whenever the underlying `handleSelectOverlayKey` returns `true` (Enter / Esc / Tab / Up / Down / Ctrl+P / Ctrl+N). Without preventDefault, a focused modal's Enter also reached InputArea's OpenTUI `<textarea>` and inserted `"\n"` into its buffer; after the modal closed, typing `/sessions` produced `"\n/sessions"` which `detectSlashPrefix` rejects (position-0 match only), so the text was submitted to the LLM instead of reopening the picker. Covered by `consume-select-overlay-key.test.ts`.
 
+> **#1915 — Stdin resurrection after Bun `internalRead` EOF:** Bun 1.3.10's native stdin reader (`internalRead` in `ProcessObjectInternals.ts`) emits `'end'` and destroys `process.stdin` when `reader.read()` resolves `{done: true}` on the underlying `Bun.stdin.stream()`. Koi's turn flow triggers this under specific conditions — the deterministic repro is two tool-call turns that write to the same path (e.g. two `Edit` / `Create` operations on the same source file). After the second turn, `_readableState.destroyed === true` and `closeEmitted === true`; `stdinListenerCount` still reads 1 but the underlying stream is dead, so keypresses silently drop. Upstream Bun investigation is in `wireStdinResurrection`'s comment header; the minimal trigger is not yet isolated to plain-Bun. `create-app.ts` wires `wireStdinResurrection` after the renderer commits: on `process.stdin.on("close")` while the TUI is still alive, it opens a fresh `/dev/tty` read fd, wraps it in a `tty.ReadStream`, calls `setRawMode(true)`, and rebinds OpenTUI's private `stdinListener` (read via `Reflect.get(renderer, "stdinListener")`) to the new stream. `renderer.stdin` is re-pointed via `Reflect.set` so any later `suspend` / `resume` path touches the live stream, not the corpse. The returned handle exposes `close()` (not `dispose()`) because teardown is destructive: it removes the close-watcher AND pauses + destroys the resurrected `/dev/tty` stream so the fd doesn't leak past `stop()`. Invoked only from `createTuiApp`'s shutdown paths (mount-failure rollback + `stop()`). Bypasses the dead Bun ReadableStream entirely — new fd reads directly from the controlling terminal device. Inert when Bun's upstream bug is fixed (close never fires on a live TUI). Unit-testable with an injected fake renderer + `openDevTty` factory; see `stdin-resurrection.test.ts`.
+
 ### Phase-2 DX polish
 
 StatusBar locked to `height: 1` / `flexShrink: 0` so chips can't
@@ -663,3 +666,27 @@ with `~` to distinguish them from turn durations.
 ESC handling now has 3-priority dispatch in `keyboard.ts`: when
 agent status is `processing` ESC interrupts the stream; otherwise
 if a modal is open ESC dismisses it; otherwise ESC navigates back.
+
+## /governance — governance surface (gov-9)
+
+When a `GovernanceController` is wired through the host bridge, the TUI
+exposes:
+
+1. **Status-line chip** — single composite cell on the right showing the most
+   stressed sensor: `gov: turn 12/50` (green), `gov: cost $1.40/$2.00` (yellow),
+   `⚠ gov: spawn 4/5` (red ≥80%). Hidden when no controller is attached.
+2. **Toast overlay** — top-right transient notification when `onAlert` fires
+   ("⚠ 80% of cost budget — $1.60 / $2.00"). Auto-dismisses after 8s. Multiple
+   alerts queue (max 3 visible). Fold-merge by `(variable, threshold)` key —
+   re-firing the same key replaces rather than stacks.
+3. **`/governance` view** — full-screen, four sections:
+   - **Sensors** — table of `(variable, current, limit, utilization%)`. Health is derived per-row from `utilization` against the configured alert thresholds, not a field on `SensorReading`.
+   - **Recent alerts** — view shows the 10 most recent alerts; the JSONL file is tail-evicted to 200 lines on bridge startup.
+   - **Active rules** — from `backend.describeRules?()`; section omitted if backend doesn't expose them.
+   - **Middleware capabilities** — `mw.describeCapabilities(ctx)` output for governance MW.
+4. **`/governance reset`** — clears the per-session alert dedup state in the
+   `@koi/governance-core` alert tracker so re-crossings fire alerts again.
+   No state mutation beyond dedup tracking.
+
+The TUI is read-only — it never calls `controller.record()` or mutates a
+backend. All updates flow from the host bridge via store actions.

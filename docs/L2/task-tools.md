@@ -247,3 +247,5 @@ task board without requiring an explicit user ask. Matches the CC
 `TodoWrite` parity tier: "use PROACTIVELY when..." / "Do NOT use
 when...". See `packages/lib/task-tools/src/tools/task-create.ts`,
 `task-update.ts`, `task-list.ts` for the current copy.
+
+<!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->

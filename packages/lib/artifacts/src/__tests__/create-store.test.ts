@@ -1,0 +1,85 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createArtifactStore } from "../create-store.js";
+
+describe("createArtifactStore (skeleton)", () => {
+  let blobDir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    blobDir = join(tmpdir(), `koi-art-store-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    dbPath = join(blobDir, "store.db");
+  });
+
+  afterEach(() => {
+    rmSync(blobDir, { recursive: true, force: true });
+  });
+
+  test("opens a fresh store (both sides empty → bootstraps store_id)", async () => {
+    const store = await createArtifactStore({ dbPath, blobDir });
+    expect(typeof store.close).toBe("function");
+    await store.close();
+  });
+
+  test("second open while first is alive throws", async () => {
+    const store = await createArtifactStore({ dbPath, blobDir });
+    await expect(createArtifactStore({ dbPath, blobDir })).rejects.toThrow(
+      /already open by another process/,
+    );
+    await store.close();
+  });
+
+  test("re-open after close succeeds", async () => {
+    const s1 = await createArtifactStore({ dbPath, blobDir });
+    await s1.close();
+    const s2 = await createArtifactStore({ dbPath, blobDir });
+    await s2.close();
+  });
+
+  test("close is idempotent", async () => {
+    const store = await createArtifactStore({ dbPath, blobDir });
+    await store.close();
+    await store.close();
+  });
+
+  test.each([
+    { value: 0, label: "zero" },
+    { value: -1, label: "negative" },
+    { value: 0.5, label: "fractional" },
+    { value: Number.NaN, label: "NaN" },
+    { value: Number.POSITIVE_INFINITY, label: "Infinity" },
+  ])("rejects invalid maxRepairAttempts: $label", async ({ value }) => {
+    await expect(
+      createArtifactStore({ dbPath, blobDir, maxRepairAttempts: value }),
+    ).rejects.toThrow(/maxRepairAttempts/);
+  });
+
+  test.each([
+    { value: 0, label: "zero" },
+    { value: -1, label: "negative" },
+    { value: 0.5, label: "fractional" },
+    { value: Number.NaN, label: "NaN" },
+    { value: Number.POSITIVE_INFINITY, label: "Infinity" },
+  ])("rejects invalid maxArtifactBytes: $label", async ({ value }) => {
+    await expect(createArtifactStore({ dbPath, blobDir, maxArtifactBytes: value })).rejects.toThrow(
+      /maxArtifactBytes/,
+    );
+  });
+
+  test("rejects non-memory SQLite URI dbPath", async () => {
+    await expect(
+      createArtifactStore({ dbPath: "file:/tmp/x.db?cache=shared", blobDir }),
+    ).rejects.toThrow(/non-memory SQLite URI paths.*not supported in Plan 2/);
+  });
+
+  test("accepts SQLite in-memory URI dbPath", async () => {
+    const store = await createArtifactStore({
+      dbPath: "file:memtest?mode=memory&cache=shared",
+      blobDir,
+    });
+    await store.close();
+  });
+});

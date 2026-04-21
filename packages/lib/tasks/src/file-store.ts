@@ -198,7 +198,22 @@ async function releaseLock(baseDir: string): Promise<void> {
   }
 }
 
-/** Read and parse a task JSON file. Returns undefined on any error or invalid shape. */
+/**
+ * Read and parse a task JSON file. Returns undefined on any error or invalid shape.
+ *
+ * Legacy tasks (missing `createdBy`) load with `createdBy === undefined`.
+ * The `task_output` ACL fails closed on undefined creator — such tasks are
+ * NOT readable until a one-time on-disk migration rewrites each task JSON with
+ * an explicit `createdBy` value. No in-memory backfill is performed here
+ * because doing so per-process produces authorization split-brain when two
+ * processes read the same file-backed task and independently choose different
+ * synthetic creators.
+ *
+ * **Migration path**: run a one-time script that reads each legacy task JSON
+ * and rewrites it with an explicit `createdBy` BEFORE attaching this store.
+ * The Koi distribution does not ship this migration because ownership is
+ * deployment-specific.
+ */
 async function readTaskFile(filePath: string): Promise<Task | undefined> {
   try {
     const file = Bun.file(filePath);
@@ -225,6 +240,9 @@ async function readTaskFile(filePath: string): Promise<Task | undefined> {
     if (!("subject" in obj) && typeof obj.description === "string") {
       obj.subject = obj.description;
     }
+    // createdBy is intentionally NOT backfilled. Legacy tasks without this
+    // field load with createdBy === undefined and fail closed via task_output
+    // ACL. See JSDoc above for the migration path.
     if (!isTask(raw)) return undefined;
     return raw;
   } catch {
