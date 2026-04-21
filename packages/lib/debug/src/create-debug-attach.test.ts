@@ -212,7 +212,17 @@ describe("createDebugAttach", () => {
 
     expect(() => session.breakOn({ kind: "event_kind", eventKind: "text_delta" })).not.toThrow();
     expect(() => session.breakOn({ kind: "event_kind", eventKind: "custom" })).not.toThrow();
-    expect(() => session.breakOn({ kind: "event_kind", eventKind: "tool_result" })).not.toThrow();
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "tool_call_end" })).not.toThrow();
+  });
+
+  test("breakOn with tool_result event_kind throws (not observed by this middleware)", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+    expect(() => session.breakOn({ kind: "event_kind", eventKind: "tool_result" })).toThrow(
+      "tool_result",
+    );
   });
 
   test("throwing debug listener does not crash turn execution", async () => {
@@ -1139,22 +1149,19 @@ describe("registry isolation for same-ID agents", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("attaching a different Agent object with same ID treats old as replaced (not CONFLICT)", () => {
+  test("attaching a different Agent object with same ID returns CONFLICT (no silent eviction)", () => {
     const a1 = makeAgent("same-id-runtime");
     const firstAttach = createDebugAttach({ agent: a1 });
     expect(firstAttach.ok).toBe(true);
-    if (!firstAttach.ok) return;
-    const oldSession = firstAttach.value.session;
 
-    // Different Agent object, same pid.id — simulates cross-runtime namespace collision
+    // Different Agent object, same pid.id — must NOT evict the existing session
     const a2 = makeAgent("same-id-runtime");
     const secondAttach = createDebugAttach({ agent: a2 });
-    expect(secondAttach.ok).toBe(true);
-    if (!secondAttach.ok) return;
+    expect(secondAttach.ok).toBe(false);
+    if (secondAttach.ok) return;
+    expect(secondAttach.error.code).toBe("CONFLICT");
 
-    // Old session from a1 must be revoked
-    expect(() => oldSession.inspect()).toThrow("detached");
-    secondAttach.value.session.detach();
+    if (firstAttach.ok) firstAttach.value.session.detach();
   });
 
   test("same Agent object attached twice still returns CONFLICT", () => {
@@ -1166,6 +1173,39 @@ describe("registry isolation for same-ID agents", () => {
     expect(second.ok).toBe(false);
     if (second.ok) return;
     expect(second.error.code).toBe("CONFLICT");
+  });
+});
+
+describe("detach-during-pause event ordering", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("observers see 'detached' without a trailing 'resumed' when detaching while paused", async () => {
+    const agent = makeAgent("ordering-agent");
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    const observerEvents: string[] = [];
+    const observer = session.createObserver();
+    observer.onDebugEvent((e) => observerEvents.push(e.kind));
+
+    session.breakOn({ kind: "turn", turnIndex: 0 });
+    const pausePromise = fireTurnStart(middleware, 0);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.state().kind).toBe("paused");
+
+    // Detach while paused — must NOT emit "resumed" after "detached"
+    session.detach();
+    await pausePromise;
+
+    const detachedIdx = observerEvents.indexOf("detached");
+    const resumedIdx = observerEvents.indexOf("resumed");
+    expect(detachedIdx).toBeGreaterThanOrEqual(0);
+    // Either no resumed at all, or resumed came BEFORE detached (not after)
+    if (resumedIdx !== -1) {
+      expect(resumedIdx).toBeLessThan(detachedIdx);
+    }
   });
 });
 

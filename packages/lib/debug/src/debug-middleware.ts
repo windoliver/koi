@@ -165,12 +165,18 @@ export function createDebugMiddleware(
 
           await gate.promise;
 
+          const releasedForTeardown = !active;
           paused = false;
           pausedEvt = undefined;
           pausedBpId = undefined;
           gate = undefined;
 
-          emitDebugEvent({ kind: "resumed", debugSessionId: debugSessId });
+          // Only emit "resumed" for genuine resume calls, not teardown-driven
+          // gate releases. Observers that receive "detached" must not also
+          // receive "resumed" after, which would falsely signal an active session.
+          if (!releasedForTeardown) {
+            emitDebugEvent({ kind: "resumed", debugSessionId: debugSessId });
+          }
 
           // Only hit one breakpoint per event
           break;
