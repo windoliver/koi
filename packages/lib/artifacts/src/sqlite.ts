@@ -32,6 +32,20 @@ function runMigrations(db: Database): void {
   ) {
     db.exec("ALTER TABLE pending_blob_puts ADD COLUMN artifact_id TEXT");
   }
+
+  // `pending_blob_deletes.claimed_at` added in Plan 3 — it is the predicate
+  // for the Phase B tombstone-drain sweep (`claimed_at IS NULL` == unclaimed).
+  // Plan 2 DBs in the wild lack the column; add it in-place. NULL is the
+  // correct default for pre-existing rows — they were enqueued by Plan 2
+  // runtime that had no claim concept, so they are by definition unclaimed
+  // from the Phase B sweep's point of view. `ADD COLUMN` is a cheap metadata
+  // op in SQLite; existing rows get NULL for the new column.
+  if (
+    tableHasColumn(db, "pending_blob_deletes", "hash") &&
+    !tableHasColumn(db, "pending_blob_deletes", "claimed_at")
+  ) {
+    db.exec("ALTER TABLE pending_blob_deletes ADD COLUMN claimed_at INTEGER");
+  }
 }
 
 export function openDatabase(config: Pick<ArtifactStoreConfig, "dbPath" | "durability">): Database {

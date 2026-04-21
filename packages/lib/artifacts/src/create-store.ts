@@ -21,11 +21,14 @@ import { createDeleteArtifact } from "./delete.js";
 import { createGetArtifact } from "./get.js";
 import { createListArtifacts } from "./list.js";
 import { acquireLock, isInMemoryDbPath } from "./lock.js";
+import { validateLifecyclePolicy } from "./policy.js";
 import { runStartupRecovery } from "./recovery.js";
 import { createSaveArtifact } from "./save.js";
+import { createScavengerOrphanBlobs } from "./scavenger.js";
 import { createRevokeShare, createShareArtifact } from "./share.js";
 import { openDatabase } from "./sqlite.js";
 import { ensureStoreIdPair } from "./store-id.js";
+import { createSweepArtifacts, sweepTtlOnOpen } from "./sweep.js";
 import type {
   Artifact,
   ArtifactError,
@@ -34,27 +37,37 @@ import type {
   ArtifactStoreConfig,
   Result,
   SaveArtifactInput,
+  ScavengeOrphanBlobsResult,
+  SweepArtifactsResult,
 } from "./types.js";
+import { createRepairWorker } from "./worker.js";
 
 export async function createArtifactStore(config: ArtifactStoreConfig): Promise<ArtifactStore> {
-  // Defense in depth: the public type no longer declares blobStore/policy,
-  // but a JS caller can still smuggle them in. Reject loudly rather than
-  // silently ignore — Plan 3 adds policy (#1920), Plan 5 adds blobStore
-  // (#1922).
-  const smuggled = config as unknown as {
-    readonly blobStore?: unknown;
-    readonly policy?: unknown;
-  };
-  if (smuggled.blobStore !== undefined) {
+  // Plan 5: `blobStore` override is public. When provided, the store uses it
+  // verbatim and skips FS-specific bootstrap (`mkdirSync(blobDir, ...)`,
+  // default filesystem factory). `blobDir` is still required for the default
+  // FS backend (both as the blob root and as the lock-file directory).
+  // Resolve the backend choice once up front so downstream code can trust it
+  // without re-asserting the `blobStore === undefined → blobDir defined`
+  // invariant at every use site.
+  const resolvedBackend:
+    | { readonly kind: "override"; readonly store: BlobStore }
+    | {
+        readonly kind: "filesystem";
+        readonly blobDir: string;
+      } = (() => {
+    if (config.blobStore !== undefined) {
+      return { kind: "override", store: config.blobStore };
+    }
+    if (config.blobDir !== undefined) {
+      return { kind: "filesystem", blobDir: config.blobDir };
+    }
     throw new Error(
-      "ArtifactStoreConfig.blobStore is not supported in Plan 2 — use the default FS backend via blobDir. Plan 5 (#1922) adds pluggable backends with remote-backend sentinel pairing.",
+      "ArtifactStoreConfig requires either `blobDir` (for the default filesystem backend) or `blobStore` (for a pluggable backend).",
     );
-  }
-  if (smuggled.policy !== undefined) {
-    throw new Error(
-      "ArtifactStoreConfig.policy is not enforced in Plan 2 — TTL, quota, and per-name retention land in Plan 3 (#1920). Do not pass a policy until it ships.",
-    );
-  }
+  })();
+
+  validateLifecyclePolicy(config.policy);
 
   if (config.maxRepairAttempts !== undefined) {
     if (
@@ -67,6 +80,28 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       );
     }
   }
+  if (config.staleIntentGraceMs !== undefined) {
+    if (
+      !Number.isFinite(config.staleIntentGraceMs) ||
+      !Number.isInteger(config.staleIntentGraceMs) ||
+      config.staleIntentGraceMs < 0
+    ) {
+      throw new Error(
+        `ArtifactStoreConfig.staleIntentGraceMs must be a finite integer >= 0; got ${String(config.staleIntentGraceMs)}. Negative/NaN/fractional values are rejected at construction so misconfiguration surfaces before a recovery pass.`,
+      );
+    }
+    // Production floor: below 60_000ms (1 min), a concurrent startup recovery
+    // pass can misclassify an in-flight save as stale — converting its
+    // intent into a tombstone that then races the save's own blob write.
+    // Tests opt in with `__TEST_ONLY_unsafeStaleIntentGrace: true`. The
+    // escape hatch only matters below the floor; normal production configs
+    // (including the default 300_000ms) never see it.
+    if (config.staleIntentGraceMs < 60_000 && config.__TEST_ONLY_unsafeStaleIntentGrace !== true) {
+      throw new Error(
+        `ArtifactStoreConfig.staleIntentGraceMs must be >= 60_000 (1 min) in production; got ${String(config.staleIntentGraceMs)}. A shorter grace window can let startup recovery misclassify an in-flight save as stale, converting it to a tombstone and destroying committed data. Tests that need a shorter value must additionally pass __TEST_ONLY_unsafeStaleIntentGrace: true.`,
+      );
+    }
+  }
   if (config.maxArtifactBytes !== undefined) {
     if (
       !Number.isFinite(config.maxArtifactBytes) ||
@@ -75,6 +110,17 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     ) {
       throw new Error(
         `ArtifactStoreConfig.maxArtifactBytes must be a finite integer >= 1; got ${String(config.maxArtifactBytes)}. A zero value would cause every non-empty save to fail with invalid_input — surface the misconfiguration at startup instead.`,
+      );
+    }
+  }
+  if (config.workerIntervalMs !== undefined && config.workerIntervalMs !== "manual") {
+    if (
+      !Number.isFinite(config.workerIntervalMs) ||
+      !Number.isInteger(config.workerIntervalMs) ||
+      config.workerIntervalMs < 100
+    ) {
+      throw new Error(
+        `ArtifactStoreConfig.workerIntervalMs must be a finite integer >= 100 or the literal "manual"; got ${String(config.workerIntervalMs)}. Values below 100ms starve save/get transactions with BEGIN IMMEDIATE contention; fractional/NaN/negative values are rejected to surface misconfiguration at startup.`,
       );
     }
   }
@@ -95,34 +141,76 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     );
   }
 
-  // Ensure the blob directory and the DB's containing directory exist
-  // before lock acquisition writes its tmp files. A brand-new store open
-  // should succeed without requiring the caller to pre-create directories.
-  mkdirSync(config.blobDir, { recursive: true });
+  // Ensure the DB's containing directory exists before lock acquisition writes
+  // its tmp files. For the default FS backend, also pre-create `blobDir`. For
+  // a `blobStore` override, the backend owns its own root; we only need a
+  // filesystem directory for the advisory-lock tmp file (alongside the DB).
   if (!isInMemoryDbPath(config.dbPath)) {
     mkdirSync(dirname(config.dbPath), { recursive: true });
   }
+  if (resolvedBackend.kind === "filesystem") {
+    mkdirSync(resolvedBackend.blobDir, { recursive: true });
+  }
 
-  const releaseLock = acquireLock(config.dbPath, config.blobDir);
+  // The filesystem blobDir-lock (spec §3.0 Layer 1a) is a defense against two
+  // :memory: DBs sharing a single local blob directory. For a pluggable
+  // `blobStore`, the backend's own store-id sentinel (Layer 2) is the
+  // corresponding defense — no local-filesystem lock applies. `acquireLock`
+  // skips its Layer-1a lock when `blobDir` is undefined.
+  const releaseLock = acquireLock(
+    config.dbPath,
+    resolvedBackend.kind === "filesystem" ? resolvedBackend.blobDir : undefined,
+  );
 
   let db: Database | undefined;
   try {
     db = openDatabase(config);
-    const blobStore: BlobStore = createFilesystemBlobStore(config.blobDir);
-    await ensureStoreIdPair({ db, blobDir: config.blobDir, blobStore });
+    const blobStore: BlobStore =
+      resolvedBackend.kind === "override"
+        ? resolvedBackend.store
+        : createFilesystemBlobStore(resolvedBackend.blobDir);
+    await ensureStoreIdPair({ db, blobStore });
 
-    // Startup recovery: resolve blob_ready=0 rows and stale pending_blob_puts
-    // rows left by a previous crash. Runs synchronously so the store is in a
-    // consistent state before first use. Uses repair_attempts budget so a
-    // single negative probe during transient backend outage does not reap a
-    // committed save.
-    await runStartupRecovery({
+    // Startup recovery (spec §6.5 Plan 4): local SQLite DML only. Drains
+    // stale pending_blob_puts and resolves the subset of bound intents that
+    // need no backend probe. blob_ready=0 rows with a bound intent are
+    // left untouched for the background worker (Plan 4 tasks 3-5). The
+    // open path must never call blobStore.has/put/delete — a transient S3
+    // outage on restart would otherwise either stall bootstrap or erode a
+    // committed save's retry budget.
+    runStartupRecovery({
       db,
-      blobStore,
-      ...(config.maxRepairAttempts !== undefined
-        ? { maxRepairAttempts: config.maxRepairAttempts }
+      ...(config.staleIntentGraceMs !== undefined
+        ? { staleIntentGraceMs: config.staleIntentGraceMs }
         : {}),
     });
+
+    // Spec §6.5 step 3: TTL-only Phase A sweep. Local DML only. Reaps rows
+    // whose per-row frozen `expires_at` is already in the past; enqueues
+    // tombstones for hashes whose only references were inside the deletion
+    // set. Tombstones are drained later by the background worker. Quota
+    // and per-name retention are deliberately NOT applied here — a
+    // stricter policy or rollback must not silently delete previously
+    // valid artifacts just because the process restarted.
+    sweepTtlOnOpen({ db, now: Date.now() });
+
+    // Spec §6.5 step 4: background repair worker. `start()` arms the
+    // iteration loop (or is a no-op for `workerIntervalMs = "manual"`). The
+    // worker owns every `blob_ready = 0` row that survived startup recovery
+    // plus Phase B tombstone drain — see worker.ts header. The default
+    // terminal-delete budget (10) matches the docstring on
+    // `ArtifactStoreConfig.maxRepairAttempts`.
+    const worker = createRepairWorker({
+      db,
+      blobStore,
+      config,
+      maxRepairAttempts: config.maxRepairAttempts ?? 10,
+      // exactOptionalPropertyTypes: conditionally spread so we never pass
+      // `onEvent: undefined` through — the worker treats absent and
+      // `undefined` identically, but spreading matches the interface shape.
+      ...(config.onEvent !== undefined ? { onEvent: config.onEvent } : {}),
+    });
+    worker.start();
 
     const rawSave = createSaveArtifact({ db, blobStore, config });
     const rawGet = createGetArtifact({ db, blobStore });
@@ -130,6 +218,12 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     const rawDelete = createDeleteArtifact({ db });
     const rawShare = createShareArtifact({ db });
     const rawRevoke = createRevokeShare({ db });
+    const rawSweep = createSweepArtifacts({
+      db,
+      blobStore,
+      ...(config.policy !== undefined ? { policy: config.policy } : {}),
+    });
+    const rawScavenge = createScavengerOrphanBlobs({ db, blobStore });
 
     // Mutation barrier: track in-flight ops so close() can drain before
     // closing SQLite + releasing the lock. `closing` short-circuits new calls.
@@ -189,6 +283,8 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       fromSessionId: SessionId,
       ctx: { readonly ownerSessionId: SessionId },
     ) => Promise<Result<void, ArtifactError>> = track(rawRevoke);
+    const sweepArtifacts: () => Promise<SweepArtifactsResult> = track(rawSweep);
+    const scavengeOrphanBlobs: () => Promise<ScavengeOrphanBlobsResult> = track(rawScavenge);
 
     const close = async (): Promise<void> => {
       if (closed) return;
@@ -196,9 +292,15 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       if (closePromise) return closePromise;
       closing = true;
       closePromise = (async () => {
-        // Wait for in-flight ops to drain. No timeout — a stuck blob I/O must
-        // finish before ownership is released; otherwise a new owner could race
-        // the old owner's pending writes.
+        // Tear down the repair worker first: cancels future ticks and awaits
+        // any in-flight iteration so its blob probes + per-row DB txs finish
+        // before we close the SQLite handle. `stop()` is idempotent and
+        // memoizes its own drain promise — concurrent close() callers share
+        // one underlying drain. See worker.ts header for the stop() contract.
+        await worker.stop();
+        // Wait for in-flight public-API ops to drain. No timeout — a stuck
+        // blob I/O must finish before ownership is released; otherwise a new
+        // owner could race the old owner's pending writes.
         if (inFlight > 0) {
           await new Promise<void>((resolve) => {
             drainWaiters.push(resolve);
@@ -218,6 +320,8 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       deleteArtifact,
       shareArtifact,
       revokeShare,
+      sweepArtifacts,
+      scavengeOrphanBlobs,
       close,
     };
   } catch (err) {

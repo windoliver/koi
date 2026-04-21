@@ -242,6 +242,149 @@ describe("createKoiRuntime — cwd defaults", () => {
   });
 });
 
+// gov-10: end-to-end wiring check. Every governance flag from the CLI must
+// land as a limit on the shared governance controller — this is the only
+// path that enforces `--max-spend` / `--max-turns` / `--max-spawn-depth` at
+// runtime. Without this check, a future refactor could silently drop a
+// field between `KoiRuntimeConfig` and `createGovernanceController`.
+describe("createKoiRuntime — governance wiring (gov-10)", () => {
+  test("--max-spend surfaces as cost_usd limit on the shared controller", async () => {
+    const { GOVERNANCE } = await import("@koi/core");
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "claude-sonnet-4-6",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      maxSpendUsd: 2.5,
+    });
+    const controller = runtimeHandle.runtime.agent.component(GOVERNANCE);
+    expect(controller).toBeDefined();
+    const snap = controller !== undefined ? await controller.snapshot() : undefined;
+    const cost = snap?.readings.find((r) => r.name === "cost_usd");
+    expect(cost?.limit).toBe(2.5);
+  }, 30_000);
+
+  test("--max-turns surfaces as turn_count limit", async () => {
+    const { GOVERNANCE } = await import("@koi/core");
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      maxTurns: 7,
+    });
+    const controller = runtimeHandle.runtime.agent.component(GOVERNANCE);
+    const snap = controller !== undefined ? await controller.snapshot() : undefined;
+    const turns = snap?.readings.find((r) => r.name === "turn_count");
+    expect(turns?.limit).toBe(7);
+  });
+
+  test("--max-spawn-depth surfaces as spawn_depth limit", async () => {
+    const { GOVERNANCE } = await import("@koi/core");
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      maxSpawnDepth: 2,
+    });
+    const controller = runtimeHandle.runtime.agent.component(GOVERNANCE);
+    const snap = controller !== undefined ? await controller.snapshot() : undefined;
+    const depth = snap?.readings.find((r) => r.name === "spawn_depth");
+    expect(depth?.limit).toBe(2);
+  });
+
+  test("--policy-file rules flow into governanceRules descriptor list", async () => {
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      governanceRules: [{ match: { toolId: "web_fetch" }, decision: "deny", rule: "no-web-fetch" }],
+    });
+    const descriptors = runtimeHandle.governanceRules;
+    // Synthetic "default-allow" is replaced when real rules are supplied.
+    expect(descriptors.find((d) => d.id === "default-allow")).toBeUndefined();
+    expect(descriptors.find((d) => d.id === "no-web-fetch")?.effect).toBe("deny");
+  });
+
+  test("--no-governance omits the shared GOVERNANCE component override", async () => {
+    const { GOVERNANCE } = await import("@koi/core");
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      governanceDisabled: true,
+    });
+    // createKoi still installs the bundled governance provider (engine-
+    // reconcile's extension needs a controller to record turn events), so
+    // a controller is present — but it uses engine defaults, not the CLI
+    // overrides. Prove the disable by asserting the default turn limit
+    // (25) is in effect instead of a host override.
+    const controller = runtimeHandle.runtime.agent.component(GOVERNANCE);
+    const snap = controller !== undefined ? await controller.snapshot() : undefined;
+    const turns = snap?.readings.find((r) => r.name === "turn_count");
+    // The bundled provider's default is 25 (DEFAULT_MAX_TURNS). If the
+    // host override leaked through, it would be a different number.
+    expect(turns?.limit).toBe(25);
+    // And the governance rules list is empty (no default-allow descriptor
+    // is synthesized when the backend is never built).
+    expect(runtimeHandle.governanceRules).toEqual([]);
+  });
+
+  test("handle.governanceEnabled mirrors governanceDisabled (fail-closed host-gate surface)", async () => {
+    // Default (governance on) → handle.governanceEnabled === true
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+    });
+    expect(runtimeHandle.governanceEnabled).toBe(true);
+    await runtimeHandle.runtime.dispose();
+
+    // governanceDisabled: true → handle.governanceEnabled === false.
+    // Hosts (TUI bridge, alerts persistence, /governance view) read this
+    // flag to decide whether to wire their observer surfaces. Without it,
+    // `--no-governance` would fail open on the host-level alerting path
+    // because the engine's bundled GOVERNANCE component is still present.
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      governanceDisabled: true,
+    });
+    expect(runtimeHandle.governanceEnabled).toBe(false);
+  }, 30_000);
+
+  test("handle.governanceAlertThresholds reflects config for host-bridge plumbing", async () => {
+    // Unset thresholds → undefined on handle, host falls back to default.
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+    });
+    expect(runtimeHandle.governanceAlertThresholds).toBeUndefined();
+    await runtimeHandle.runtime.dispose();
+
+    // Set thresholds → exposed verbatim for bridge wiring. CLI/manifest
+    // precedence is enforced upstream in mergeGovernanceFlags; this
+    // handle field is the transport that makes that precedence authoritative
+    // in the TUI toast/alert path.
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter: makeModelAdapter(),
+      modelName: "stub",
+      approvalHandler: stubApprovalHandler,
+      cwd: process.cwd(),
+      governanceAlertThresholds: [0.6, 0.85],
+    });
+    expect(runtimeHandle.governanceAlertThresholds).toEqual([0.6, 0.85]);
+  }, 30_000);
+});
+
 // ---------------------------------------------------------------------------
 // T2-A: Tool inventory snapshot — verifies all expected tools are wired
 // ---------------------------------------------------------------------------

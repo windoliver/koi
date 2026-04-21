@@ -11,6 +11,8 @@
     { "path": "../../lib/agent-runtime" },
     { "path": "../../lib/agent-summary" },
     { "path": "../../lib/artifacts" },
+    { "path": "../../lib/artifacts-s3" },
+    { "path": "../../lib/blob-cas" },
     { "path": "../../lib/harness" },
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },

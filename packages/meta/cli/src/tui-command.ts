@@ -55,6 +55,7 @@ import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
+import type { PatternRule } from "@koi/governance-defaults";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore, createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -82,6 +83,7 @@ import {
   createTuiApp,
 } from "@koi/tui";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
+import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
 import { createAuthInterceptor } from "./auth-interceptor.js";
@@ -95,6 +97,7 @@ import { createGovernanceBridge, type GovernanceBridge } from "./governance-brid
 import { loadManifestConfig } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
+import { loadPolicyFile } from "./policy-file.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
@@ -1055,6 +1058,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // async resolve can run just before createKoiRuntime (after TUI setup).
   let manifestFilesystemConfig: import("@koi/core").FileSystemConfig | undefined;
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
+  let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   if (flags.manifest !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
@@ -1068,6 +1072,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
+    manifestGovernance = manifestResult.value.governance;
 
     if (manifestResult.value.filesystem !== undefined) {
       // Store the full config for async resolution before runtime assembly.
@@ -1569,6 +1574,35 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.stderr.write(`koi tui: artifact store disabled — ${msg}\n`);
   }
 
+  // Merge manifest governance defaults under the CLI flags — CLI always
+  // wins. `--no-governance` disables governance entirely regardless of
+  // what the manifest declares.
+  const governance = mergeGovernanceFlags(
+    flags.governance,
+    manifestGovernance !== undefined
+      ? {
+          maxSpendUsd: manifestGovernance.maxSpend,
+          maxTurns: manifestGovernance.maxTurns,
+          maxSpawnDepth: manifestGovernance.maxSpawnDepth,
+          policyFilePath: manifestGovernance.policyFile,
+          alertThresholds: manifestGovernance.alertThresholds,
+        }
+      : undefined,
+  );
+
+  // Load policy-file (if any) before runtime construction so a malformed
+  // YAML/JSON surfaces at boot, not on the first tool call (gov-10).
+  let governanceRules: readonly PatternRule[] | undefined;
+  if (governance.enabled && governance.policyFilePath !== undefined) {
+    try {
+      governanceRules = await loadPolicyFile(governance.policyFilePath);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`koi tui: ${msg}\n`);
+      process.exit(2);
+    }
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1607,7 +1641,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
-    ...(flags.maxSpendUsd > 0 ? { maxSpendUsd: flags.maxSpendUsd } : {}),
+    ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
+      ? { maxSpendUsd: governance.maxSpendUsd }
+      : {}),
+    ...(governance.enabled && governance.maxTurns !== undefined
+      ? { maxTurns: governance.maxTurns }
+      : {}),
+    ...(governance.enabled && governance.maxSpawnDepth !== undefined
+      ? { maxSpawnDepth: governance.maxSpawnDepth }
+      : {}),
+    ...(governance.enabled && governance.alertThresholds !== undefined
+      ? { governanceAlertThresholds: governance.alertThresholds }
+      : {}),
+    ...(governance.enabled && governanceRules !== undefined ? { governanceRules } : {}),
+    ...(governance.enabled ? {} : { governanceDisabled: true }),
     // Fallback model chain validation only runs when the router actually
     // wired up. If router config validation failed above (modelRouterMiddleware
     // === undefined), fallback models are unreachable — passing them to
@@ -1737,7 +1784,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // leaving all governanceBridge?.xxx() call sites as no-ops.
     try {
       const governanceController = handle.runtime.agent.component<GovernanceController>(GOVERNANCE);
-      if (governanceController !== undefined) {
+      // `--no-governance` / manifest disable wins here: even though the
+      // engine's bundled GOVERNANCE component is still attached for
+      // guard-level safety, the host-level observer surface (bridge, alerts
+      // JSONL, toast reducer) must stay inert so operator intent is
+      // honored end-to-end. Without this gate, disabling governance would
+      // still fire toasts, persist alerts, and poll snapshots — a
+      // fail-open.
+      if (governanceController !== undefined && handle.governanceEnabled) {
         governanceBridge = createGovernanceBridge({
           store,
           controller: governanceController,
@@ -1747,6 +1801,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // backend.describeRules() — falls back to a synthetic default-allow
           // entry until the manifest YAML loader (#1877) wires real rules.
           rules: handle.governanceRules,
+          // Resolved `--alert-threshold` / manifest thresholds. When both are
+          // unset the bridge falls back to its observational default
+          // ([0.5, 0.8, 0.95]); passing the resolved set here is what makes
+          // CLI/manifest precedence authoritative for TUI toast firing.
+          ...(handle.governanceAlertThresholds !== undefined
+            ? { alertThresholds: handle.governanceAlertThresholds }
+            : {}),
           // Static capability mirror — matches the createGovernanceMiddleware's
           // describeCapabilities() output. Hardcoded here to avoid plumbing the
           // middleware instance back from runtime-factory just for one string.

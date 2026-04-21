@@ -1,0 +1,35 @@
+# Sample governance policy file — referenced from ../koi.yaml's `governance.policyFile`.
+#
+# Top-level must be an array of PatternRule objects. Each rule:
+#
+#   - match:                    # selectors (all are optional; combine as needed)
+#       kind: tool_call         # | model_call | spawn | delegation | forge | handoff | custom:<string>
+#       toolId: <string>        # only matches kind: tool_call
+#       model: <string>         # only matches kind: model_call
+#     decision: allow | deny    # REQUIRED
+#     rule: <string>            # optional id shown in /governance and violations
+#     severity: info | warning | critical   # default: critical
+#     message: <string>         # default: "denied by pattern backend"
+#
+# Rules are evaluated in order; the last matching rule wins. Malformed YAML
+# or an unknown decision value refuses to start (exit code 2).
+
+- match:
+    toolId: web_fetch
+  decision: deny
+  rule: no-web-fetch
+  severity: warning
+  message: web_fetch is disabled in this profile — use a curated fetcher instead
+
+- match:
+    kind: model_call
+    model: anthropic/claude-opus-4-7
+  decision: allow
+  rule: opus-allowed
+
+- match:
+    kind: spawn
+  decision: deny
+  rule: no-subagents
+  severity: critical
+  message: sub-agent spawn disabled in this profile

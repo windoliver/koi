@@ -5,7 +5,9 @@ export type {
   ArtifactFilter,
   ArtifactStore,
   ArtifactStoreConfig,
+  ArtifactStoreEvent,
   LifecyclePolicy,
   Result,
   SaveArtifactInput,
+  WorkerStats,
 } from "./types.js";

@@ -216,6 +216,14 @@ function makeFlags(
     headless: false,
     allowTools: [],
     maxDurationMs: undefined,
+    governance: {
+      enabled: true,
+      maxSpendUsd: undefined,
+      maxTurns: undefined,
+      maxSpawnDepth: undefined,
+      policyFilePath: undefined,
+      alertThresholds: undefined,
+    },
   };
 }
 

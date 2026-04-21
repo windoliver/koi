@@ -14,6 +14,7 @@
     "@koi/agent-runtime": "workspace:*",
     "@koi/agent-summary": "workspace:*",
     "@koi/artifacts": "workspace:*",
+    "@koi/artifacts-s3": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/checkpoint": "workspace:*",
@@ -88,7 +89,11 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.12.1"
+    "@aws-sdk/client-s3": "3.1032.0",
+    "@koi/blob-cas": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.12.1",
+    "@smithy/util-stream": "4.5.23",
+    "aws-sdk-client-mock": "4.1.0"
   },
   "scripts": {
     "build": "tsup",

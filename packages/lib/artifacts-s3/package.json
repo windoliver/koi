@@ -1,0 +1,29 @@
+{
+  "name": "@koi/artifacts-s3",
+  "description": "S3-backed BlobStore implementation for @koi/artifacts (AWS S3 and S3-compatible stores)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check --vcs-enabled=false src/",
+    "test": "bun test"
+  },
+  "koi": {},
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1032.0",
+    "@koi/blob-cas": "workspace:*",
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@smithy/util-stream": "4.5.23",
+    "aws-sdk-client-mock": "4.1.0"
+  }
+}
