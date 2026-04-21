@@ -77,6 +77,25 @@ export function wireSupervision(opts: WireSupervisionOptions): SupervisionWiring
   reconcileRunner.register(reconciler);
   reconcileRunner.start();
 
+  // 5. Supervisor-aware watch bridge. The reconcile-runner's built-in watch
+  //    only enqueues the transitioned agent itself — so a child "terminated"
+  //    event reaches the reconciler against the child, not the supervisor.
+  //    The child has no manifest.supervision, so supervision never fires on
+  //    the fast path; supervisors would only react via the 30s drift sweep.
+  //    Bridge: on every transition, look up the agent's parent in
+  //    ProcessTree and sweep to re-enqueue running agents (including the
+  //    parent supervisor). This keeps supervision reactions event-driven
+  //    without requiring the reconciler itself to be supervisor-aware.
+  const unwatchSupervisorBridge = opts.registry.watch((event) => {
+    if (event.kind !== "transitioned") return;
+    const parent = processTree.parentOf(event.agentId);
+    if (parent === undefined) return;
+    // A supervisor only reacts when one of its supervised children
+    // transitions — skip unrelated parents cheaply.
+    if (!reconciler.isSupervised(event.agentId)) return;
+    reconcileRunner.sweep();
+  });
+
   let disposed = false;
 
   return {
@@ -89,6 +108,7 @@ export function wireSupervision(opts: WireSupervisionOptions): SupervisionWiring
       disposed = true;
       // Dispose in reverse construction order so later components (which
       // may hold handles to earlier ones) release first.
+      unwatchSupervisorBridge();
       await reconcileRunner[Symbol.asyncDispose]();
       await cascading[Symbol.asyncDispose]();
       await reconciler[Symbol.asyncDispose]();
