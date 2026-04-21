@@ -1242,6 +1242,17 @@ export type {
   WebhookPayload,
   WebhookSummary,
 } from "./webhook.js";
+// worker-ipc — Bun IPC envelope between parent supervisor and subprocess child
+export type {
+  WorkerIpcEngineEventMessage,
+  WorkerIpcHeartbeatMessage,
+  WorkerIpcMessage,
+  WorkerIpcMessageKind,
+  WorkerIpcMessageMessage,
+  WorkerIpcResultMessage,
+  WorkerIpcTerminateMessage,
+} from "./worker-ipc.js";
+export { validateWorkerIpcMessage } from "./worker-ipc.js";
 // workspace — workspace isolation contract types
 export type {
   CleanupPolicy,

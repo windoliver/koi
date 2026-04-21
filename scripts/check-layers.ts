@@ -103,6 +103,10 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   // (no side effects, operates only on L0 types) — same category as
   // validateSpawnRequest() in spawn.ts and validation-utils.ts.
   "validate-supervision.ts",
+  // worker-ipc.ts: validateWorkerIpcMessage() is a pure envelope validator
+  // (no side effects, operates only on L0 types) — same category as
+  // validateSupervisionConfig and validateSpawnRequest.
+  "worker-ipc.ts",
 ]);
 
 // --- Predicates (exported for testing) ---
