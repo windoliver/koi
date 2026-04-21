@@ -428,7 +428,15 @@ export function createSubprocessBackend(): WorkerBackend {
       // Prune the worker state once a watcher has drained it. The
       // fallback prune timer set in proc.exited.then is cleared here so
       // we don't double-delete or prune after a legitimate consumer.
-      if (state.pruneTimer !== undefined) {
+      //
+      // BUT: only clear the fallback timer when terminal was actually
+      // delivered. If abort fired between proc.exited and terminal drain
+      // (terminalDelivered stays false), clearing the timer would strand
+      // the dead state in `workers` forever — no later code path prunes
+      // it, since the watcher has already exited. Leaving the timer
+      // armed means the fallback prunes the entry after PRUNE_GRACE_MS,
+      // identity-checked against `workers.get(id) === state`.
+      if (state.terminalDelivered && state.pruneTimer !== undefined) {
         clearTimeout(state.pruneTimer);
         state.pruneTimer = undefined;
       }

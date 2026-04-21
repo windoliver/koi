@@ -866,7 +866,14 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
                 reason: "watch-closed-before-process-exit",
               });
               pool.delete(request.workerId);
-              // activeIds preserved — quarantine owns the id now.
+              // Re-acquire the activeIds reservation in case stop()'s
+              // success branch already released it (this can happen when
+              // the backend's isAlive briefly returned dead during
+              // teardownWorker's poll, then flips back to alive here).
+              // The generation guard above means no successor has taken
+              // the id yet, so re-claiming preserves identity exclusivity
+              // until the quarantine retry-path confirms death.
+              activeIds.add(request.workerId);
               return;
             }
             if (afterProbe !== undefined) {
