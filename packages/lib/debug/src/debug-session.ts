@@ -140,15 +140,40 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
         };
       }
 
+      // Remove any residual step-event breakpoints from a previous intra-turn step
+      for (const bp of controller.breakpoints()) {
+        if (bp.label === "step-event") {
+          controller.removeBreakpoint(bp.id);
+        }
+      }
+
       if (until !== undefined) {
         const bpResult = controller.addBreakpoint(until, { once: true, label: "step-until" });
         if (!bpResult.ok) return bpResult;
       } else {
-        const targetTurn = controller.turnIndex() + count;
-        controller.addBreakpoint(
-          { kind: "turn", turnIndex: targetTurn },
-          { once: true, label: "step-target" },
-        );
+        const pausedEvent = controller.pausedEvent();
+        const isIntraTurn =
+          pausedEvent !== undefined &&
+          pausedEvent.kind !== "turn_start" &&
+          pausedEvent.kind !== "turn_end";
+
+        if (isIntraTurn) {
+          // Paused on an intra-turn event — step to end of current turn so remaining
+          // tool/model events in this turn still execute but control returns before
+          // the next turn begins (prevents skipping into next-turn side-effects)
+          const bpResult = controller.addBreakpoint(
+            { kind: "event_kind", eventKind: "turn_end" },
+            { once: true, label: "step-event" },
+          );
+          if (!bpResult.ok) return bpResult;
+        } else {
+          const targetTurn = controller.turnIndex() + count;
+          const bpResult = controller.addBreakpoint(
+            { kind: "turn", turnIndex: targetTurn },
+            { once: true, label: "step-target" },
+          );
+          if (!bpResult.ok) return bpResult;
+        }
       }
 
       controller.releaseGate();

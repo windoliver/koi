@@ -660,6 +660,67 @@ describe("createDebugAttach — stale session auto-expiry", () => {
   });
 });
 
+describe("hasDebugSession — liveness check", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("returns false for terminated agent even with stale registry entry", () => {
+    const agent = makeAgent("term-check") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    createDebugAttach({ agent });
+    expect(hasDebugSession(agent.pid.id)).toBe(true);
+
+    // Simulate agent termination without calling session.detach()
+    agent.state = "terminated";
+    expect(hasDebugSession(agent.pid.id)).toBe(false);
+  });
+});
+
+describe("step() — intra-turn event-level stepping", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("pausing on tool_call_start and stepping stops at turn_end (not next turn)", async () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    // Set a breakpoint on tool_call_start
+    session.breakOn({ kind: "event_kind", eventKind: "tool_call_start" });
+
+    const fakeRequest: import("@koi/core").ToolRequest = { toolId: "my_tool", input: {} };
+    const fakeNext = async (r: import("@koi/core").ToolRequest) =>
+      ({ toolId: r.toolId, output: "done" }) as import("@koi/core").ToolResponse;
+
+    // Fire a tool call — pauses at tool_call_start
+    const callPromise = middleware.wrapToolCall?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      fakeRequest,
+      fakeNext,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.state().kind).toBe("paused");
+
+    // Step from intra-turn pause — installs turn_end BP, releases gate
+    session.step();
+    // wrapToolCall completes (tool_call_end + tool_result don't have BPs)
+    await callPromise;
+    expect(session.state().kind).toBe("attached"); // not paused mid-call
+
+    // Fire turn_end — should pause on the step-event turn_end BP
+    const turnEndPromise = middleware.onAfterTurn?.({
+      turnIndex: 0,
+    } as import("@koi/core").TurnContext);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.state().kind).toBe("paused"); // paused at turn boundary
+
+    session.resume();
+    await turnEndPromise;
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in intercept phase to wrap auth/permission layers", () => {
     const { createDebugMiddleware } =

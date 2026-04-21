@@ -126,7 +126,10 @@ export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiE
 
 /** Check if an agent has an active debug session. */
 export function hasDebugSession(agentId: AgentId): boolean {
-  return activeDebugSessions.has(agentId as string);
+  const bundle = activeDebugSessions.get(agentId as string);
+  if (bundle === undefined) return false;
+  if (bundle.agent.state === "terminated") return false;
+  return bundle.controller.isActive();
 }
 
 /** Clear all debug sessions. For testing cleanup only. */
