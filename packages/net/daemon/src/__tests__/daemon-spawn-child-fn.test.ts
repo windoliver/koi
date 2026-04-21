@@ -172,7 +172,8 @@ describe("createDaemonSpawnChildFn", () => {
     expect(running?.status.phase).toBe("running");
 
     // Cleanly tear down.
-    exit(session!.workerId, 0);
+    if (session === undefined) throw new Error("session missing");
+    exit(session.workerId, 0);
     await supervisor.shutdown("test-done");
     await bridge.close();
   });
@@ -270,7 +271,8 @@ describe("createDaemonSpawnChildFn", () => {
     const session = sessions.find((s) => s.agentId === child);
     expect(session?.logPath).toBe(`${logDir}/${session?.workerId}.log`);
 
-    exit(session!.workerId, 0);
+    if (session === undefined) throw new Error("session missing");
+    exit(session.workerId, 0);
     await supervisor.shutdown("test-done");
     await bridge.close();
   });

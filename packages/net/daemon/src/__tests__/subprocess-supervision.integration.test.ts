@@ -147,9 +147,11 @@ describe("subprocess supervision end-to-end (3b-5c)", () => {
 
     const children = liveChildrenOf(agentRegistry, parent);
     expect(children.length).toBe(1);
+    const firstChild = children[0];
+    if (firstChild === undefined) throw new Error("child missing after initial reconcile");
     // Daemon adapter mints "<parent>.<childSpec>-<suffix>" agentIds.
-    expect(children[0]!.agentId.startsWith(`${parent}.worker-`)).toBe(true);
-    expect(children[0]!.metadata.childSpecName).toBe("worker");
+    expect(firstChild.agentId.startsWith(`${parent}.worker-`)).toBe(true);
+    expect(firstChild.metadata.childSpecName).toBe("worker");
 
     // A BackgroundSessionRecord was written with backendKind="subprocess".
     const sessions = await sessionRegistry.list();
@@ -224,19 +226,21 @@ describe("subprocess supervision end-to-end (3b-5c)", () => {
 
     const first = liveChildrenOf(agentRegistry, parent);
     expect(first.length).toBe(1);
-    const firstAgentId = first[0]!.agentId;
+    const firstChild = first[0];
+    if (firstChild === undefined) throw new Error("child missing after initial reconcile");
+    const firstAgentId = firstChild.agentId;
 
     // Find the mapped workerId for the first child via session registry.
     const sessions = await sessionRegistry.list();
     const session = sessions.find((s) => s.agentId === firstAgentId);
-    expect(session).toBeDefined();
+    if (session === undefined) throw new Error("no session for first child");
 
     // Simulate a crash from the subprocess backend. attachAgentRegistry
     // should observe the `crashed` WorkerEvent and transition the agent
     // entry to `terminated`; the supervision reconciler's next sweep
     // observes the terminated child and respawns it under a fresh agentId
     // (the permanent restart policy).
-    crash(session!.workerId);
+    crash(session.workerId);
     // Let the bridge drain the crash event before we sweep.
     await Bun.sleep(BRIDGE_EVENT_WAIT_MS);
     // Nudge the reconciler to observe the terminated child.
@@ -245,8 +249,10 @@ describe("subprocess supervision end-to-end (3b-5c)", () => {
 
     const afterRestart = liveChildrenOf(agentRegistry, parent);
     expect(afterRestart.length).toBe(1);
-    expect(afterRestart[0]!.agentId).not.toBe(firstAgentId);
-    expect(afterRestart[0]!.metadata.childSpecName).toBe("worker");
+    const restarted = afterRestart[0];
+    if (restarted === undefined) throw new Error("no child after restart");
+    expect(restarted.agentId).not.toBe(firstAgentId);
+    expect(restarted.metadata.childSpecName).toBe("worker");
 
     await wire[Symbol.asyncDispose]();
     await registryBridge.close();
