@@ -81,10 +81,13 @@ export function fanOutComplianceRecorder(
   }
   return {
     async recordCompliance(record: ComplianceRecord): Promise<ComplianceRecord> {
+      // let: justified — thread the accumulator so an enriching recorder
+      // isn't silently dropped between links in the chain.
+      let current = record;
       for (const r of recorders) {
-        await r.recordCompliance(record);
+        current = await r.recordCompliance(current);
       }
-      return record;
+      return current;
     },
   };
 }
