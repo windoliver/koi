@@ -153,14 +153,14 @@ export function createCollectiveMemoryMiddleware(
   type SessionState = {
     injected: boolean;
     outputs: string[];
-    inFlightInjection?: Promise<void>;
+    inFlightInjection?: Promise<void> | undefined;
     /**
      * Messages built by the first concurrent caller. Stored so that other
      * callers awaiting inFlightInjection can prepend the SAME injection block
      * to their own request — preventing two parallel callers from observing
      * different prompts (one injected, one bare).
      */
-    pendingInjection?: readonly InboundMessage[];
+    pendingInjection?: readonly InboundMessage[] | undefined;
     /** Count of failed onSessionEnd extraction attempts; used to bound retries. */
     endAttempts: number;
     /**
