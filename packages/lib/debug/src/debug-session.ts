@@ -30,6 +30,13 @@ export interface CreateDebugSessionConfig {
 
 type DetachReason = "user" | "agent_terminated" | "replaced";
 
+/** Custom event types emitted on failure paths — used by step() to catch errors. */
+const STEP_ERROR_CUSTOM_TYPES: ReadonlySet<string> = new Set([
+  "tool_call_error",
+  "model_call_error",
+  "model_stream_error",
+]);
+
 export interface CreateDebugSessionResult {
   readonly session: DebugSession;
   /** Internal teardown with a specific detach reason (for lifecycle-driven revocation). */
@@ -179,10 +186,9 @@ export function createDebugSessionInternal(
 
         if (isIntraTurn) {
           // Paused on an intra-turn event — arm two one-shot BPs so step()
-          // pauses deterministically on BOTH normal turn-end AND the error
-          // custom events (tool_call_error, model_call_error). If the turn
-          // fails before turn_end fires, the custom event still catches the
-          // failure path instead of silently losing the debugger.
+          // pauses deterministically on BOTH normal turn-end AND error
+          // custom events. The custom BP uses an internal filter so only
+          // error types fire (not benign thinking_delta/usage/model_call_*).
           const bpEnd = controller.addBreakpoint(
             { kind: "event_kind", eventKind: "turn_end" },
             { once: true, label: "step-event" },
@@ -191,6 +197,7 @@ export function createDebugSessionInternal(
           const bpErr = controller.addBreakpoint(
             { kind: "event_kind", eventKind: "custom" },
             { once: true, label: "step-event" },
+            { customTypeFilter: STEP_ERROR_CUSTOM_TYPES },
           );
           if (!bpErr.ok) return bpErr;
         } else {

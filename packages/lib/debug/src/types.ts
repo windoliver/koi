@@ -25,4 +25,11 @@ export interface BreakpointEntry {
   readonly predicate: BreakpointPredicate;
   readonly once: boolean;
   readonly label?: string | undefined;
+  /**
+   * Internal filter for `custom` event breakpoints. When set and the event is
+   * `{ kind: "custom", type, data }`, only match if `event.type` is in the set.
+   * Used by `step()` to catch error custom events (tool_call_error,
+   * model_call_error) without firing on benign ones (thinking_delta, usage).
+   */
+  readonly customTypeFilter?: ReadonlySet<string> | undefined;
 }

@@ -50,6 +50,8 @@ export interface DebugController {
   readonly addBreakpoint: (
     predicate: BreakpointPredicate,
     options?: BreakpointOptions,
+    /** @internal Filter for `custom` event breakpoints (step-error catchpoints). */
+    internalOptions?: { readonly customTypeFilter?: ReadonlySet<string> | undefined },
   ) => Result<Breakpoint, KoiError>;
   readonly removeBreakpoint: (id: BreakpointId) => boolean;
   readonly breakpoints: () => readonly Breakpoint[];
@@ -136,7 +138,12 @@ export function createDebugMiddleware(
 
     for (const [id, bp] of breakpointMap) {
       try {
-        if (matchesBreakpoint(bp.predicate, { event, turnIndex: currentTurnIndex })) {
+        if (!matchesBreakpoint(bp.predicate, { event, turnIndex: currentTurnIndex })) continue;
+        // Additional custom-type filter for step()-injected error catchpoints
+        if (bp.customTypeFilter !== undefined && event.kind === "custom") {
+          if (!bp.customTypeFilter.has(event.type)) continue;
+        }
+        {
           const bpId = bp.id;
 
           if (bp.once) {
@@ -290,10 +297,13 @@ export function createDebugMiddleware(
               data: { delta: truncatePayload(chunk.delta) },
             });
           } else if (chunk.kind === "tool_call_start") {
+            // Disambiguate: model-ANNOUNCED tool call (before execution) is a
+            // custom event, so it does not double-fire tool_call breakpoints
+            // alongside the runtime-EXECUTED tool_call_start from wrapToolCall.
             await processEvent({
-              kind: "tool_call_start",
-              toolName: chunk.toolName,
-              callId: chunk.callId,
+              kind: "custom",
+              type: "model_tool_call_announced",
+              data: { toolName: chunk.toolName, callId: chunk.callId as string },
             });
           } else if (chunk.kind === "tool_call_delta") {
             await processEvent({
@@ -302,7 +312,13 @@ export function createDebugMiddleware(
               data: { callId: chunk.callId as string, delta: truncatePayload(chunk.delta) },
             });
           } else if (chunk.kind === "tool_call_end") {
-            await processEvent({ kind: "tool_call_end", callId: chunk.callId, result: undefined });
+            // Model-ANNOUNCED tool_call_end (model finished emitting the call) —
+            // custom event, not the same as wrapToolCall's execution tool_call_end.
+            await processEvent({
+              kind: "custom",
+              type: "model_tool_call_emitted",
+              data: { callId: chunk.callId as string },
+            });
           } else if (chunk.kind === "usage") {
             await processEvent({
               kind: "custom",
@@ -352,7 +368,7 @@ export function createDebugMiddleware(
       }
     },
 
-    addBreakpoint: (predicate, options): Result<Breakpoint, KoiError> => {
+    addBreakpoint: (predicate, options, internalOptions): Result<Breakpoint, KoiError> => {
       if (predicate.kind === "error") {
         return {
           ok: false,
@@ -386,6 +402,7 @@ export function createDebugMiddleware(
         predicate,
         once: options?.once ?? false,
         label: options?.label,
+        customTypeFilter: internalOptions?.customTypeFilter,
       };
       breakpointMap.set(id as string, entry);
       return { ok: true, value: { id, predicate, once: entry.once, label: entry.label } };

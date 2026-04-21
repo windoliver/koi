@@ -1247,6 +1247,81 @@ describe("step() pauses on failure paths (not just turn_end)", () => {
   });
 });
 
+describe("step() error catchpoint is filtered to error types only", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("step from tool_call_start does NOT re-pause on benign custom events", async () => {
+    const agent = makeAgent("step-benign");
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    session.breakOn({ kind: "event_kind", eventKind: "tool_call_start" });
+
+    const fakeRequest: import("@koi/core").ToolRequest = { toolId: "ok_tool", input: {} };
+    const fakeNext = async (r: import("@koi/core").ToolRequest) =>
+      ({ toolId: r.toolId, output: "done" }) as import("@koi/core").ToolResponse;
+
+    const callPromise = middleware.wrapToolCall?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      fakeRequest,
+      fakeNext,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.state().kind).toBe("paused");
+
+    // Step — arms turn_end + filtered custom BPs.
+    // Tool succeeds, emits benign tool_call_end + tool_result (not custom errors),
+    // so the custom step BP must NOT fire. Only turn_end would re-pause.
+    session.step();
+    await callPromise; // Should complete without re-pausing on benign events
+    expect(session.state().kind).toBe("attached");
+  });
+});
+
+describe("tool event disambiguation", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("model-announced tool_call in stream does not emit tool_call_start/end engine events", async () => {
+    const agent = makeAgent("dedup");
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    // Construct a minimal stream with model-announced tool call chunks
+    const chunks: import("@koi/core").ModelChunk[] = [
+      {
+        kind: "tool_call_start",
+        toolName: "my_tool",
+        callId: "call-1" as import("@koi/core").ToolCallId,
+      },
+      { kind: "tool_call_end", callId: "call-1" as import("@koi/core").ToolCallId },
+      { kind: "done", response: { content: [] } as import("@koi/core").ModelResponse },
+    ];
+    const fakeNext = async function* (): AsyncIterable<import("@koi/core").ModelChunk> {
+      for (const c of chunks) yield c;
+    };
+
+    const iter = middleware.wrapModelStream?.(
+      { turnIndex: 0 } as import("@koi/core").TurnContext,
+      {} as import("@koi/core").ModelRequest,
+      fakeNext,
+    );
+    if (iter === undefined) return;
+    for await (const _ of iter) {
+      // consume
+    }
+
+    const events = session.events();
+    const toolStarts = events.filter((e) => e.kind === "tool_call_start");
+    // Model-announced tool calls must NOT emit tool_call_start engine events
+    // (to prevent duplicate firing when wrapToolCall also emits it on execution)
+    expect(toolStarts).toHaveLength(0);
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", () => {
     const { createDebugMiddleware } =
