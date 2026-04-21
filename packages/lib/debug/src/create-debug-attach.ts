@@ -64,8 +64,9 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
         },
       };
     }
-    // Stale: agent terminated or controller deactivated without explicit detach — clean up
-    existingBundle.controller.deactivate();
+    // Stale: agent terminated or controller deactivated without explicit detach — clean up.
+    // Call session.detach() so the old handle is uniformly unusable (not just controller).
+    existingBundle.session.detach();
     activeDebugSessions.delete(agentKey);
   }
 

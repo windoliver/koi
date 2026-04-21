@@ -105,6 +105,16 @@ export function createDebugObserver(config: CreateDebugObserverConfig): DebugObs
 
       const limit = options?.limit ?? DEFAULT_INSPECT_LIMIT;
       const offset = options?.offset ?? 0;
+      if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `offset and limit must be non-negative integers, got offset=${String(offset)}, limit=${String(limit)}`,
+            retryable: false,
+          },
+        };
+      }
       const paginated = paginateData(value, offset, limit);
 
       let snapshot: unknown;

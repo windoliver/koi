@@ -140,9 +140,10 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
         };
       }
 
-      // Remove any residual step-event breakpoints from a previous intra-turn step
+      // Remove any residual step-owned breakpoints from a previous step() call
+      const STEP_LABELS = new Set(["step-event", "step-target", "step-until"]);
       for (const bp of controller.breakpoints()) {
-        if (bp.label === "step-event") {
+        if (bp.label !== undefined && STEP_LABELS.has(bp.label)) {
           controller.removeBreakpoint(bp.id);
         }
       }
@@ -187,7 +188,12 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       return { ok: true, value: undefined };
     },
 
-    inspect: (tokens?: readonly SubsystemToken<unknown>[]): DebugSnapshot => buildSnapshot(tokens),
+    inspect: (tokens?: readonly SubsystemToken<unknown>[]): DebugSnapshot => {
+      if (detached) {
+        throw new Error("Debug session is detached");
+      }
+      return buildSnapshot(tokens);
+    },
 
     inspectComponent: (
       token: SubsystemToken<unknown>,
@@ -210,6 +216,16 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
 
       const limit = options?.limit ?? DEFAULT_INSPECT_LIMIT;
       const offset = options?.offset ?? 0;
+      if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `offset and limit must be non-negative integers, got offset=${String(offset)}, limit=${String(limit)}`,
+            retryable: false,
+          },
+        };
+      }
       const paginated = paginateData(value, offset, limit);
 
       let snapshot: unknown;
@@ -240,6 +256,9 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
     },
 
     breakOn: (predicate: BreakpointPredicate, options?: BreakpointOptions): Breakpoint => {
+      if (detached) {
+        throw new Error("Debug session is detached");
+      }
       const result = controller.addBreakpoint(predicate, options);
       if (!result.ok) {
         throw new Error(result.error.message);
@@ -247,7 +266,10 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       return result.value;
     },
 
-    removeBreakpoint: (bpId: BreakpointId): boolean => controller.removeBreakpoint(bpId),
+    removeBreakpoint: (bpId: BreakpointId): boolean => {
+      if (detached) return false;
+      return controller.removeBreakpoint(bpId);
+    },
 
     onDebugEvent: (listener: (event: DebugEvent) => void): (() => void) => {
       listeners.add(listener);
@@ -270,15 +292,22 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       return { kind: "attached", since: attachedSince };
     },
 
-    events: (limit?: number): readonly EngineEvent[] => controller.eventBuffer().tail(limit),
+    events: (limit?: number): readonly EngineEvent[] => {
+      if (detached) return [];
+      return controller.eventBuffer().tail(limit);
+    },
 
-    createObserver: (): DebugObserver =>
-      createDebugObserver({
+    createObserver: (): DebugObserver => {
+      if (detached) {
+        throw new Error("Debug session is detached");
+      }
+      return createDebugObserver({
         agent,
         controller,
         debugSessionId: id,
         sessionId: snapshotSessionId,
-      }),
+      });
+    },
   };
 
   return session;

@@ -721,6 +721,138 @@ describe("step() — intra-turn event-level stepping", () => {
   });
 });
 
+describe("session.detach() uniformly revokes all methods", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("all public session methods are revoked after detach", () => {
+    const agent = makeAgent();
+    (agent.components() as Map<string, unknown>).set("test:data", [1, 2]);
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+
+    session.detach();
+
+    expect(() => session.inspect()).toThrow("detached");
+    expect(() => session.breakOn({ kind: "turn" })).toThrow("detached");
+    expect(session.removeBreakpoint("bp-1" as import("@koi/core").BreakpointId)).toBe(false);
+    expect(session.events()).toHaveLength(0);
+    expect(() => session.createObserver()).toThrow("detached");
+  });
+
+  test("stale-session replacement revokes the old session handle", () => {
+    const agent = makeAgent("replace-me") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    const first = createDebugAttach({ agent });
+    if (!first.ok) return;
+    const oldSession = first.value.session;
+
+    // Simulate agent termination
+    agent.state = "terminated";
+
+    // Re-attach — stale old session should be detached
+    const second = createDebugAttach({ agent });
+    expect(second.ok).toBe(true);
+
+    // Old session handle must be unusable now
+    expect(() => oldSession.inspect()).toThrow("detached");
+    if (second.ok) second.value.session.detach();
+  });
+});
+
+describe("step() — stale step breakpoint cleanup", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("repeated step() calls do not accumulate step-target breakpoints", async () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    session.breakOn({ kind: "turn", turnIndex: 0 });
+    const pause0 = fireTurnStart(middleware, 0);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // First step — installs step-target for turn 1
+    session.step();
+    // Paused cleared; no new pause until turn 1 — but we want to step again
+    await pause0;
+
+    // Re-pause at turn 1 via a fresh breakpoint so we can call step() again
+    session.breakOn({ kind: "turn", turnIndex: 1 });
+    const pause1 = fireTurnStart(middleware, 1);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Before second step: old step-target for turn 1 may still be armed;
+    // step() must clean it up, leaving exactly one step-target for turn 2
+    const snapshotBefore = await session.inspect();
+    session.step();
+    const snapshotAfter = await session.inspect();
+
+    const stepTargetsAfter = snapshotAfter.breakpoints.filter((b) => b.label === "step-target");
+    // After cleanup + new install, exactly one step-target must exist
+    expect(stepTargetsAfter).toHaveLength(1);
+    // Sanity: confirm we do not exceed the before count + 1
+    expect(snapshotAfter.breakpoints.length).toBeLessThanOrEqual(
+      snapshotBefore.breakpoints.length + 1,
+    );
+
+    session.resume();
+    await pause1;
+  });
+});
+
+describe("inspectComponent — pagination validation", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("rejects negative offset with VALIDATION error", () => {
+    const agent = makeAgent();
+    (agent.components() as Map<string, unknown>).set("test:arr", [1, 2, 3]);
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const snap = result.value.session.inspectComponent(
+      "test:arr" as import("@koi/core").SubsystemToken<unknown>,
+      { offset: -1, limit: 10 },
+    );
+    expect(snap.ok).toBe(false);
+    if (snap.ok) return;
+    expect(snap.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects negative limit with VALIDATION error", () => {
+    const agent = makeAgent();
+    (agent.components() as Map<string, unknown>).set("test:arr", [1, 2, 3]);
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const snap = result.value.session.inspectComponent(
+      "test:arr" as import("@koi/core").SubsystemToken<unknown>,
+      { offset: 0, limit: -5 },
+    );
+    expect(snap.ok).toBe(false);
+    if (snap.ok) return;
+    expect(snap.error.code).toBe("VALIDATION");
+  });
+
+  test("observer rejects non-integer offset with VALIDATION error", () => {
+    const agent = makeAgent();
+    (agent.components() as Map<string, unknown>).set("test:arr", [1, 2, 3]);
+    createDebugAttach({ agent });
+    const observeResult = createDebugObserve(agent.pid.id);
+    if (!observeResult.ok) return;
+    const snap = observeResult.value.inspectComponent(
+      "test:arr" as import("@koi/core").SubsystemToken<unknown>,
+      { offset: 1.5, limit: 10 },
+    );
+    expect(snap.ok).toBe(false);
+    if (snap.ok) return;
+    expect(snap.error.code).toBe("VALIDATION");
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in intercept phase to wrap auth/permission layers", () => {
     const { createDebugMiddleware } =
