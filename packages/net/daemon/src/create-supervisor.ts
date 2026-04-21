@@ -187,7 +187,16 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
             agentId: entry.handle.agentId,
             reason: "heartbeat-timeout-teardown-failed",
           });
-          entry.resolveExited();
+          // Do NOT call entry.resolveExited() here. A concurrent stop()
+          // could be awaiting this exitedPromise inside teardownWorker;
+          // resolving it would let stop()'s race win a false "exited"
+          // signal and return ok, after which the success branch would
+          // clear quarantine + activeIds — releasing identity guards
+          // for a worker that may still be alive. Leaving the promise
+          // unresolved forces the concurrent stop() to fall back to its
+          // isAlive poll (the source of truth for liveness when the
+          // backend is degraded), so a still-alive worker keeps stop()
+          // returning error and quarantine ownership intact.
           pool.delete(id);
         }
         publishEvent({

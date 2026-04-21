@@ -2276,6 +2276,92 @@ describe("supervisor watch AbortSignal plumbing", () => {
     await supervisor.value.shutdown("test");
   });
 
+  it("heartbeat-timeout failure does not let concurrent stop() clear activeIds", async () => {
+    // Regression guard: when heartbeat-timeout's teardown fails, the
+    // monitor must not resolve entry.exitedPromise — a concurrent stop()
+    // awaiting that promise would win a false "exited" signal, return
+    // ok, and clear quarantine + activeIds. With the worker still alive,
+    // a fresh start() could then race in (split-brain). Quarantine must
+    // hold activeIds until a teardown attempt confirms death.
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "hb-fail-no-resolve",
+      isAvailable: () => true,
+      supportsHeartbeat: true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill ignore the request; isAlive keeps returning true
+      // so teardownWorker exhausts both deadlines and returns INTERNAL.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 30,
+      heartbeat: { intervalMs: 20, timeoutMs: 50 },
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start({
+      workerId: workerId("hb-noresolve-1"),
+      agentId: agentId("agent-hb-noresolve-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+
+    // Start a concurrent external stop() that will park on exitedPromise
+    // inside teardownWorker, racing against the heartbeat-timeout's stop.
+    const concurrentStop = supervisor.value.stop(workerId("hb-noresolve-1"), "external");
+
+    // Wait long enough for heartbeat-timeout to fire and its stopRef to
+    // run teardown (which fails because terminate/kill don't actually kill).
+    await new Promise((r) => setTimeout(r, 250));
+
+    // The concurrent stop also fails (poll keeps reporting alive).
+    const stopped = await concurrentStop;
+    expect(stopped.ok).toBe(false);
+
+    // Worker is still alive in our fake backend — duplicate start() must
+    // reject because activeIds is preserved by the quarantine record.
+    const dup = await supervisor.value.start({
+      workerId: workerId("hb-noresolve-1"),
+      agentId: agentId("agent-hb-noresolve-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
+
+    // Cleanup — flip dead and let shutdown drain via the quarantine path.
+    const state = live.get(workerId("hb-noresolve-1"));
+    if (state !== undefined) state.alive = false;
+    await supervisor.value.shutdown("test");
+  });
+
   it("stale watch coroutine does not tear down a same-id successor generation", async () => {
     // Regression guard: after stop()+start() with the same id, the
     // pre-stop watch coroutine may still be exiting (signal observed but
