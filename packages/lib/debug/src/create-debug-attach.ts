@@ -19,6 +19,7 @@ import { createEventRingBuffer } from "./event-ring-buffer.js";
 // ---------------------------------------------------------------------------
 
 interface DebugBundle {
+  readonly agent: Agent;
   readonly session: DebugSession;
   readonly controller: DebugController;
   readonly middleware: KoiMiddleware;
@@ -75,7 +76,7 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
   const { middleware, controller } = createDebugMiddleware(eventBuffer);
   const session = createDebugSession({ agent: config.agent, controller });
 
-  const bundle: DebugBundle = { session, controller, middleware };
+  const bundle: DebugBundle = { agent: config.agent, session, controller, middleware };
   activeDebugSessions.set(agentKey, bundle);
 
   // Wrap detach to clean up module-level tracking
@@ -92,10 +93,7 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
 }
 
 /** Create a read-only observer for an agent's debug session. Returns NOT_FOUND if no session. */
-export function createDebugObserve(
-  agentId: AgentId,
-  agent: Agent,
-): Result<DebugObserver, KoiError> {
+export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiError> {
   const bundle = activeDebugSessions.get(agentId as string);
   if (bundle === undefined) {
     return {
@@ -111,7 +109,7 @@ export function createDebugObserve(
   return {
     ok: true,
     value: createDebugObserver({
-      agent,
+      agent: bundle.agent,
       controller: bundle.controller,
       debugSessionId: bundle.session.id,
     }),

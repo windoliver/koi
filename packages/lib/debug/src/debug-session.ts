@@ -176,11 +176,25 @@ export function createDebugSession(config: CreateDebugSessionConfig): DebugSessi
       const offset = options?.offset ?? 0;
       const paginated = paginateData(value, offset, limit);
 
+      let snapshot: unknown;
+      try {
+        snapshot = JSON.parse(JSON.stringify(paginated.data));
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `Component ${token as string} is not serializable; cannot expose a safe snapshot`,
+            retryable: false,
+          },
+        };
+      }
+
       return {
         ok: true,
         value: {
           token: token as string,
-          data: paginated.data,
+          data: snapshot,
           totalItems: paginated.totalItems,
           offset,
           limit,

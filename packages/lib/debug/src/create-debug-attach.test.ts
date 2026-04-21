@@ -258,6 +258,28 @@ describe("createDebugAttach", () => {
     expect(events.length).toBeGreaterThan(0);
     expect(events[0]?.kind).toBe("turn_start");
   });
+
+  test("session inspectComponent returns immutable snapshot (not live reference)", () => {
+    const agent = makeAgent();
+    const inner = { value: 42 };
+    const data = [inner];
+    (agent.components() as Map<string, unknown>).set("test:live", data);
+
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session } = result.value;
+
+    const snap = session.inspectComponent(
+      "test:live" as import("@koi/core").SubsystemToken<unknown>,
+    );
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) return;
+
+    // Mutate the live data — snapshot must remain unchanged
+    inner.value = 999;
+    const snapData = snap.value.data as Array<{ value: number }>;
+    expect(snapData[0]?.value).toBe(42);
+  });
 });
 
 describe("createDebugObserve", () => {
@@ -266,16 +288,42 @@ describe("createDebugObserve", () => {
 
   test("returns NOT_FOUND when no session attached", () => {
     const agent = makeAgent();
-    const result = createDebugObserve(agent.pid.id, agent);
+    const result = createDebugObserve(agent.pid.id);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("NOT_FOUND");
   });
 
+  test("observer observes the originally attached agent, not caller-supplied one", () => {
+    const agent = makeAgent("owner-agent");
+    const otherAgentId = agentId("other-agent");
+    (agent.components() as Map<string, unknown>).set("secret", { value: 42 });
+
+    createDebugAttach({ agent });
+
+    // createDebugObserve no longer accepts a separate agent — it uses the stored one
+    const result = createDebugObserve(agent.pid.id);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const obs = result.value;
+
+    // Observer must expose the attached agent's components (owner-agent)
+    const snap = obs.inspectComponent("secret" as import("@koi/core").SubsystemToken<unknown>);
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) return;
+    expect((snap.value.data as { value: number }).value).toBe(42);
+
+    // Unrelated agentId must return NOT_FOUND
+    const notFound = createDebugObserve(otherAgentId);
+    expect(notFound.ok).toBe(false);
+    if (notFound.ok) return;
+    expect(notFound.error.code).toBe("NOT_FOUND");
+  });
+
   test("returns observer when session exists", () => {
     const agent = makeAgent();
     createDebugAttach({ agent });
-    const result = createDebugObserve(agent.pid.id, agent);
+    const result = createDebugObserve(agent.pid.id);
     expect(result.ok).toBe(true);
   });
 
@@ -288,7 +336,7 @@ describe("createDebugObserve", () => {
     const attachResult = createDebugAttach({ agent });
     if (!attachResult.ok) return;
 
-    const observeResult = createDebugObserve(agent.pid.id, agent);
+    const observeResult = createDebugObserve(agent.pid.id);
     if (!observeResult.ok) return;
     const observer = observeResult.value;
 
@@ -314,7 +362,7 @@ describe("createDebugObserve", () => {
     const attachResult = createDebugAttach({ agent });
     if (!attachResult.ok) return;
 
-    const observeResult = createDebugObserve(agent.pid.id, agent);
+    const observeResult = createDebugObserve(agent.pid.id);
     if (!observeResult.ok) return;
 
     const { session, middleware } = attachResult.value;
@@ -339,7 +387,7 @@ describe("createDebugObserve", () => {
     (agent.components() as Map<string, unknown>).set("test:arr", data);
 
     createDebugAttach({ agent });
-    const observeResult = createDebugObserve(agent.pid.id, agent);
+    const observeResult = createDebugObserve(agent.pid.id);
     if (!observeResult.ok) return;
     const observer = observeResult.value;
 
@@ -363,7 +411,7 @@ describe("createDebugObserve", () => {
     (agent.components() as Map<string, unknown>).set("test:fn", circular);
 
     createDebugAttach({ agent });
-    const observeResult = createDebugObserve(agent.pid.id, agent);
+    const observeResult = createDebugObserve(agent.pid.id);
     if (!observeResult.ok) return;
     const observer = observeResult.value;
 
