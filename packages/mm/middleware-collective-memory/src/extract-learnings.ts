@@ -14,6 +14,15 @@ const VALID_CATEGORIES = new Set<string>([
 
 const MAX_ENTRY_LENGTH = 500;
 
+// Reject content that starts with imperative verbs commonly used in prompt-injection
+// attacks. Legitimate learnings are observations, not commands.
+const IMPERATIVE_INSTRUCTION_RE =
+  /^\s*(?:ignore|bypass|override|disable|skip|remove|delete|execute|grant|allow|escalate)\b/i;
+
+function isInstruction(content: string): boolean {
+  return IMPERATIVE_INSTRUCTION_RE.test(content);
+}
+
 function truncate(text: string): string {
   return text.length > MAX_ENTRY_LENGTH ? text.slice(0, MAX_ENTRY_LENGTH) : text;
 }
@@ -27,7 +36,12 @@ function extractMarkers(output: string): readonly LearningCandidate[] {
   while (match !== null) {
     const rawCategory = match[1]?.toLowerCase();
     const content = match[2]?.trim();
-    if (rawCategory !== undefined && content !== undefined && content.length > 0) {
+    if (
+      rawCategory !== undefined &&
+      content !== undefined &&
+      content.length > 0 &&
+      !isInstruction(content)
+    ) {
       const category: CollectiveMemoryCategory = VALID_CATEGORIES.has(rawCategory)
         ? (rawCategory as CollectiveMemoryCategory)
         : "context";
@@ -74,7 +88,7 @@ function extractHeuristics(output: string): readonly LearningCandidate[] {
       const match = pattern.regex.exec(trimmed);
       if (match !== null) {
         const content = match[1]?.trim();
-        if (content !== undefined && content.length > 0) {
+        if (content !== undefined && content.length > 0 && !isInstruction(content)) {
           results.push({ content: truncate(content), category: pattern.category, confidence: 0.7 });
         }
         break;

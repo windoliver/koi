@@ -368,6 +368,55 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(result).toBe(resp);
     });
 
+    test("retries injection when next() throws on first injected turn", async () => {
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e1",
+            content: "Some learning",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ModelRequest = {
+        messages: [
+          { content: [{ kind: "text", text: "Hello" }], senderId: "user", timestamp: NOW },
+        ],
+      };
+      const ctx = createTurnCtx();
+
+      // next() throws on the first call with injection; catch block calls next() again
+      // without injection. Second wrapModelCall should retry injection.
+      let injectedCallCount = 0;
+      const next = mock(async (r: ModelRequest): Promise<ModelResponse> => {
+        if (r.messages.length > 1) {
+          injectedCallCount++;
+          if (injectedCallCount === 1) throw new Error("adapter transient failure");
+        }
+        return { content: "", model: "test-model" };
+      });
+
+      // First wrapModelCall: injected next() throws → catch calls plain next() → resolves
+      await mw.wrapModelCall?.(ctx, req, next);
+
+      // Second wrapModelCall: injected flag not set, so retries injection → succeeds
+      await mw.wrapModelCall?.(ctx, req, next);
+
+      // The last injected call (third total call to next) should have the system message
+      const lastCall = next.mock.calls[next.mock.calls.length - 1];
+      expect(((lastCall as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+    });
+
     test("retries injection on next turn when brick load fails transiently", async () => {
       const memory: CollectiveMemory = {
         entries: [

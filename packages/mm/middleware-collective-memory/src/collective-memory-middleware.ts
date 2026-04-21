@@ -164,8 +164,15 @@ export function createCollectiveMemoryMiddleware(
       const candidates = extractor.extract(outputStr);
       if (candidates.length === 0) return response;
 
-      // Always write to the current (parent) agent's brick — never trust caller-supplied
-      // agentName to select a persistence target, as that string is model-controlled.
+      // Learnings are persisted to the orchestrating (parent) agent's brick. The
+      // middleware interface does not expose a trusted child-brick identifier, so we
+      // cannot write to the spawned worker's brick without risking model-controlled
+      // input poisoning. Future runtime versions that surface a verified child identity
+      // via TurnContext can extend this to worker-level attribution.
+      // Known limitation: worker-type learnings accumulate on the parent, not the
+      // spawned agent's own brick. The parent's read path will inject these learnings
+      // into all future orchestration sessions, which provides cross-run benefit even
+      // without per-worker attribution.
       const rawId = config.resolveBrickId(ctx.session.agentId);
       if (rawId === undefined) return response;
 
@@ -208,9 +215,6 @@ export function createCollectiveMemoryMiddleware(
         const formatted = formatCollectiveMemory(memory.entries, injectionBudget, CHARS_PER_TOKEN);
         if (formatted.length === 0) return next(request);
 
-        // Mark injected only after we have confirmed there is something to inject.
-        sessions.set(ctx.session.sessionId, { ...state, injected: true });
-
         const injectedIds: ReadonlySet<string> = new Set(selected.map((e) => e.id));
         incrementAccessCounts(brick, injectedIds).catch(() => {
           // Swallow — observability only
@@ -222,7 +226,11 @@ export function createCollectiveMemoryMiddleware(
           timestamp: Date.now(),
         };
 
-        return next({ ...request, messages: [systemMessage, ...request.messages] });
+        const result = await next({ ...request, messages: [systemMessage, ...request.messages] });
+        // Mark injected only after next() resolves so a throwing adapter on the
+        // first turn does not permanently suppress injection for this session.
+        sessions.set(ctx.session.sessionId, { ...state, injected: true });
+        return result;
       } catch {
         return next(request);
       }
