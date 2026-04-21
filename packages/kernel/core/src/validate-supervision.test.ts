@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SupervisionConfig } from "./supervision.js";
+import type { RestartType, SupervisionConfig } from "./supervision.js";
 import { validateSupervisionConfig } from "./validate-supervision.js";
 
 describe("validateSupervisionConfig", () => {
@@ -83,10 +83,50 @@ describe("validateSupervisionConfig", () => {
       maxRestarts: 5,
       maxRestartWindowMs: 60_000,
       children: [
-        { name: "a", restart: "permanent" as const, isolation: "remote" as unknown as "in-process" },
+        {
+          name: "a",
+          restart: "permanent" as const,
+          isolation: "remote" as unknown as "in-process",
+        },
       ],
     };
     const result = validateSupervisionConfig(config);
     expect(result.ok).toBe(false);
+  });
+
+  test("rejects unknown restart value", () => {
+    const config: SupervisionConfig = {
+      strategy: { kind: "one_for_one" },
+      maxRestarts: 5,
+      maxRestartWindowMs: 60_000,
+      children: [{ name: "a", restart: "invalid" as unknown as RestartType }],
+    };
+    const result = validateSupervisionConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("restart");
+  });
+
+  test("rejects negative shutdownTimeoutMs", () => {
+    const config: SupervisionConfig = {
+      strategy: { kind: "one_for_one" },
+      maxRestarts: 5,
+      maxRestartWindowMs: 60_000,
+      children: [{ name: "a", restart: "permanent", shutdownTimeoutMs: -1 }],
+    };
+    const result = validateSupervisionConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("shutdownTimeoutMs");
+  });
+
+  test("rejects non-integer maxRestarts", () => {
+    const config: SupervisionConfig = {
+      strategy: { kind: "one_for_one" },
+      maxRestarts: 5.5,
+      maxRestartWindowMs: 60_000,
+      children: [{ name: "a", restart: "permanent" }],
+    };
+    const result = validateSupervisionConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("maxRestarts");
   });
 });
