@@ -13,7 +13,6 @@ export type { DebugAttachConfig, DebugAttachResult } from "./create-debug-attach
 export {
   clearAllDebugSessions,
   createDebugAttach,
-  createDebugObserve,
   hasDebugSession,
 } from "./create-debug-attach.js";
 export type { EventRingBuffer } from "./event-ring-buffer.js";

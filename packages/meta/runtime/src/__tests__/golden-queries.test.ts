@@ -920,7 +920,6 @@ import { agentId } from "@koi/core";
 import {
   clearAllDebugSessions,
   createDebugAttach,
-  createDebugObserve,
   createEventRingBuffer,
   DEBUG_MIDDLEWARE_NAME,
   DEBUG_MIDDLEWARE_PRIORITY,
@@ -1182,12 +1181,9 @@ describe("Golden: @koi/debug", () => {
     clearAllDebugSessions();
   });
 
-  test("createDebugObserve returns NOT_FOUND when no session attached", () => {
+  test("hasDebugSession returns false when no session attached", () => {
     const agent = makeDebugAgent("no-session-agent");
-    const result = createDebugObserve(agent.pid.id, agent);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe("NOT_FOUND");
+    expect(hasDebugSession(agent.pid.id)).toBe(false);
   });
 
   test("createEventRingBuffer wraps and evicts correctly", () => {

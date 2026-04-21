@@ -92,7 +92,7 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
   return { ok: true, value: { session: wrappedSession, middleware } };
 }
 
-/** Create a read-only observer for an agent's debug session. Returns NOT_FOUND if no session. */
+/** @internal Use session.createObserver() instead. Kept for testing convenience only. */
 export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiError> {
   const bundle = activeDebugSessions.get(agentId as string);
   if (bundle === undefined) {

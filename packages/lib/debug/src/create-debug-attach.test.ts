@@ -237,7 +237,7 @@ describe("createDebugAttach", () => {
     const { session, middleware } = result.value;
 
     const eventKinds: string[] = [];
-    const callIds: string[] = [];
+    const _callIds: string[] = [];
     session.onDebugEvent((e) => eventKinds.push(e.kind));
 
     const fakeCallId = "caller-provided-id";
@@ -444,7 +444,7 @@ describe("createDebugObserve", () => {
     const agent = makeAgent();
     // Circular reference causes JSON.stringify to throw
     const circular: Record<string, unknown> = {};
-    circular["self"] = circular;
+    circular.self = circular;
     (agent.components() as Map<string, unknown>).set("test:fn", circular);
 
     createDebugAttach({ agent });
