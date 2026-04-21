@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     "native-host/index": "src/native-host/index.ts",
     "bin/koi-browser-ext": "src/bin/koi-browser-ext.ts",
+    "bin/native-host-main": "src/bin/native-host-main.ts",
   },
   format: ["esm"],
   dts: {

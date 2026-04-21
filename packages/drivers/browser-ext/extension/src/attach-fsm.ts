@@ -74,8 +74,21 @@ export interface AttachFsm {
    * Revoke all attached sessions: call `chrome.debugger.detach` for each,
    * clear FSM state, emit `detached` frames. Used on installId mismatch
    * (reinstall/reprovision) where every existing attachment must end.
+   *
+   * Must drain every phase (attached, pending_consent, attaching): an
+   * in-flight consent/attach that completes AFTER revocation would
+   * otherwise promote to `attached` despite the revocation, leaving a
+   * debugger session live under the OLD install-id's authority.
    */
   readonly revokeAllAttached: () => Promise<void>;
+  /**
+   * Tear down FSM state for a tab whose debugger was externally detached
+   * (typically by admin_clear_grants). Unlike handleDebuggerDetached,
+   * callers that already emitted a `detached` frame with their own
+   * priorDetachSuccess flag should use this variant so the FSM cleans
+   * state without emitting a duplicate frame.
+   */
+  readonly clearAttachedTab: (tabId: number) => void;
   readonly handleCommittedNavigation: (details: {
     readonly tabId: number;
     readonly frameId: number;
@@ -434,7 +447,18 @@ export function createAttachFsm(deps: {
           tabStates.delete(tabId);
           continue;
         }
+        // phase === "attaching", no participants remain: the chrome.debugger
+        // .attach() call is still in flight. Route through cleanupPending so
+        // a late success is compensated by chrome.debugger.detach(), instead
+        // of leaving a DevTools session owning the tab with no FSM entry.
         tabStates.delete(tabId);
+        cleanupPending.begin(
+          tabId,
+          state.attachPromise.then(async (ok) => {
+            if (ok) await detachDebugger(tabId);
+            return ok;
+          }),
+        );
       }
       return affectedTabs;
     },
@@ -487,11 +511,43 @@ export function createAttachFsm(deps: {
     async revokeAllAttached(): Promise<void> {
       const snapshot = Array.from(tabStates.entries());
       for (const [tabId, state] of snapshot) {
-        if (state.phase !== "attached") continue;
-        const outcome = await detachDebugger(tabId);
+        if (state.phase === "attached") {
+          const outcome = await detachDebugger(tabId);
+          tabStates.delete(tabId);
+          sessionToTab.delete(state.sessionId);
+          deps.sendFrame(createDetachedFrame(state, "extension_reload", outcome.ok));
+          continue;
+        }
+        // pending_consent / attaching: fence the in-flight flow so it
+        // cannot promote to `attached` under the revoked install-id's
+        // authority. Dismiss any consent prompt, fail the participants,
+        // and clear the tab state. An in-flight chrome.debugger.attach()
+        // resolving after this will find no state to promote into.
         tabStates.delete(tabId);
+        if (state.phase === "pending_consent") {
+          await deps.consent.dismissPrompt(tabId);
+        }
+        for (const participant of state.participants) {
+          deps.sendFrame(
+            createFailure(
+              {
+                kind: "attach",
+                tabId,
+                leaseToken: participant.leaseToken,
+                attachRequestId: participant.attachRequestId,
+              },
+              "user_denied",
+            ),
+          );
+        }
+      }
+    },
+    clearAttachedTab(tabId): void {
+      const state = tabStates.get(tabId);
+      if (!state) return;
+      tabStates.delete(tabId);
+      if (state.phase === "attached") {
         sessionToTab.delete(state.sessionId);
-        deps.sendFrame(createDetachedFrame(state, "extension_reload", outcome.ok));
       }
     },
     async handleCommittedNavigation(details): Promise<void> {

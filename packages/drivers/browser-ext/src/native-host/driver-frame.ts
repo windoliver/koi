@@ -167,6 +167,33 @@ export interface ChunkFrame {
   readonly data: string;
 }
 
+export interface OpenTabFrame {
+  readonly kind: "open_tab";
+  readonly requestId: string;
+  readonly url?: string | undefined;
+}
+
+export interface TabOpenedFrame {
+  readonly kind: "tab_opened";
+  readonly requestId: string;
+  readonly ok: boolean;
+  readonly tab?: { readonly id: number; readonly url: string; readonly title: string } | undefined;
+  readonly error?: string | undefined;
+}
+
+export interface CloseTabFrame {
+  readonly kind: "close_tab";
+  readonly requestId: string;
+  readonly tabId: number;
+}
+
+export interface TabClosedFrame {
+  readonly kind: "tab_closed";
+  readonly requestId: string;
+  readonly ok: boolean;
+  readonly error?: string | undefined;
+}
+
 export type DriverFrame =
   | HelloFrame
   | HelloAckOkFrame
@@ -187,7 +214,11 @@ export type DriverFrame =
   | AdminClearGrantsFrame
   | AdminClearGrantsAckOkFrame
   | AdminClearGrantsAckFailFrame
-  | ChunkFrame;
+  | ChunkFrame
+  | OpenTabFrame
+  | TabOpenedFrame
+  | CloseTabFrame
+  | TabClosedFrame;
 
 const UUID = z.string().uuid();
 const LeaseToken = z.string().regex(/^[0-9a-f]{32}$/);
@@ -346,6 +377,21 @@ export const DriverFrameSchema: z.ZodType<DriverFrame> = z.union([
     total: z.number().int().positive(),
     data: z.string(),
   }),
+  z.object({ kind: z.literal("open_tab"), requestId: UUID, url: z.string().optional() }),
+  z.object({
+    kind: z.literal("tab_opened"),
+    requestId: UUID,
+    ok: z.boolean(),
+    tab: z.object({ id: z.number().int(), url: z.string(), title: z.string() }).optional(),
+    error: z.string().optional(),
+  }),
+  z.object({ kind: z.literal("close_tab"), requestId: UUID, tabId: z.number().int() }),
+  z.object({
+    kind: z.literal("tab_closed"),
+    requestId: UUID,
+    ok: z.boolean(),
+    error: z.string().optional(),
+  }),
 ]);
 
 const DRIVER_ORIGINATED_KINDS: ReadonlySet<DriverFrame["kind"]> = new Set([
@@ -356,6 +402,8 @@ const DRIVER_ORIGINATED_KINDS: ReadonlySet<DriverFrame["kind"]> = new Set([
   "cdp",
   "admin_clear_grants",
   "bye",
+  "open_tab",
+  "close_tab",
 ]);
 
 const HOST_ORIGINATED_KINDS: ReadonlySet<DriverFrame["kind"]> = new Set([
@@ -369,6 +417,8 @@ const HOST_ORIGINATED_KINDS: ReadonlySet<DriverFrame["kind"]> = new Set([
   "session_ended",
   "admin_clear_grants_ack",
   "chunk",
+  "tab_opened",
+  "tab_closed",
 ]);
 
 export function isDriverOriginated(frame: DriverFrame): boolean {

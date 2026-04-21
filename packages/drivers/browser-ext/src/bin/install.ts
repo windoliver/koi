@@ -13,12 +13,34 @@ import { detectNodeBinary, type NodeDetectionResult } from "./node-detect.js";
 const PACKAGE_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 /**
- * The extension ID is derived per-install from the local dev key pair under
- * `extension/keys/` (gitignored — `build:extension` generates a fresh pair on
- * first build). This keeps extension ↔ native-host trust bound to the
- * installing machine instead of a globally-shared key in source control.
+ * The extension ID is derived at build time from the dev key pair and
+ * embedded into the shipped bundle at `dist/extension/extension-id.txt`.
+ * Packaged installs read it from the bundle so they do not depend on any
+ * gitignored repo-local state. Source-tree installs fall back to
+ * `extension/keys/dev.extension-id.txt` for developer convenience when the
+ * bundle has not been produced yet.
  */
+async function readBundledExtensionId(bundleDir: string): Promise<string> {
+  const idPath = join(bundleDir, "extension-id.txt");
+  const content = (await readFile(idPath, "utf8")).trim();
+  if (!/^[a-p]{32}$/.test(content)) {
+    throw new Error(`extension id at ${idPath} has unexpected format`);
+  }
+  return content;
+}
+
 async function readLocalExtensionId(packageRoot: string): Promise<string> {
+  // Preferred source: shipped bundle artifact. This is what a packaged
+  // `@koi/browser-ext` install sees.
+  try {
+    return await readBundledExtensionId(join(packageRoot, "dist", "extension"));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw err;
+  }
+  // Fallback: source-tree dev artifact (gitignored, written by
+  // `bun run build:extension`). Keeps local dev ergonomic without making
+  // the release path depend on it.
   const idPath = join(packageRoot, "extension", "keys", "dev.extension-id.txt");
   try {
     const content = (await readFile(idPath, "utf8")).trim();
@@ -30,8 +52,10 @@ async function readLocalExtensionId(packageRoot: string): Promise<string> {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
       throw new Error(
-        `Local extension id not found at ${idPath}. Run \`bun run build:extension\` in ` +
-          "@koi/browser-ext first — it generates a per-developer dev key and derives the id.",
+        "No extension id found. Expected either a shipped bundle at " +
+          `${join(packageRoot, "dist", "extension", "extension-id.txt")} ` +
+          `or a dev artifact at ${idPath}. Run \`bun run build:extension\` ` +
+          "in @koi/browser-ext to produce both.",
       );
     }
     throw err;
@@ -90,7 +114,10 @@ export async function runInstallCommand(
   const platform = options.platform ?? (process.platform as SupportedPlatform);
   const authDir = join(homeDir, ".koi", "browser-ext");
   const wrapperPath = join(authDir, "bin", "native-host");
-  const hostEntrypointPath = join(packageRoot, "dist", "native-host", "index.js");
+  // Wrapper exec's this production entrypoint — it builds a NativeHostConfig
+  // from env/install layout and calls runNativeHost(). The `dist/native-host/
+  // index.js` barrel is re-exports only and would never start the host.
+  const hostEntrypointPath = join(packageRoot, "dist", "bin", "native-host-main.js");
   const extensionSourceDir = join(packageRoot, "dist", "extension");
   const extensionDeployDir = join(authDir, "extension");
 

@@ -66,14 +66,6 @@ export interface ExtensionDriverConfig {
     | undefined;
   readonly connectSocketFactory?: ((socket: string) => Socket | Duplex) | undefined;
   /**
-   * Optional delegate `BrowserDriver` the extension driver forwards
-   * interaction methods (snapshot, navigate, click, type, …) to. Caller owns
-   * its lifecycle — this driver does NOT dispose it. Takes precedence over
-   * `createPlaywrightDriver`. Type-only reference (`BrowserDriver` is L0) —
-   * avoids L2-to-L2 coupling to `@koi/browser-playwright`.
-   */
-  readonly playwrightDriver?: BrowserDriver | undefined;
-  /**
    * Lazy factory callback the extension driver invokes on first interaction
    * to produce a Playwright-backed delegate.
    *
@@ -153,9 +145,8 @@ function missingPlaywrightError<T>(operation: string): Result<T, KoiError> {
     ok: false,
     error: createExtensionError(
       "HOST_SPAWN_FAILED",
-      `${operation}: no playwrightDriver was supplied to createExtensionBrowserDriver. ` +
-        "Spin up a loopback bridge via the extension driver and pass a Playwright-backed BrowserDriver " +
-        "via ExtensionDriverConfig.playwrightDriver to delegate interaction methods.",
+      `${operation}: no createPlaywrightDriver factory was supplied to createExtensionBrowserDriver. ` +
+        "Configure createPlaywrightDriver and call selectTargetTab(tabId, origin) before interacting.",
       { operation },
     ),
   };
@@ -317,6 +308,73 @@ class ExtensionBrowserDriverRuntime {
     }
   }
 
+  public async openTab(url?: string): Promise<Result<BrowserTabInfo, KoiError>> {
+    try {
+      const connection = await this.ensureConnection();
+      const ack = await connection.client.openTab(url);
+      if (!ack.ok || !ack.tab) {
+        return {
+          ok: false,
+          error: createExtensionError(
+            "HOST_SPAWN_FAILED",
+            `chrome.tabs.create failed: ${ack.error ?? "unknown"}`,
+            { url: url ?? null },
+          ),
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          tabId: String(ack.tab.id),
+          url: ack.tab.url,
+          title: ack.tab.title,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: isKoiError(error)
+          ? error
+          : createExtensionError(
+              "HOST_SPAWN_FAILED",
+              "Failed to open tab via the browser extension host.",
+              undefined,
+              error,
+            ),
+      };
+    }
+  }
+
+  public async closeTab(tabId: number): Promise<Result<void, KoiError>> {
+    try {
+      const connection = await this.ensureConnection();
+      const ack = await connection.client.closeTab(tabId);
+      if (!ack.ok) {
+        return {
+          ok: false,
+          error: createExtensionError(
+            "HOST_SPAWN_FAILED",
+            `chrome.tabs.remove failed: ${ack.error ?? "unknown"}`,
+            { tabId },
+          ),
+        };
+      }
+      return { ok: true, value: undefined };
+    } catch (error) {
+      return {
+        ok: false,
+        error: isKoiError(error)
+          ? error
+          : createExtensionError(
+              "HOST_SPAWN_FAILED",
+              "Failed to close tab via the browser extension host.",
+              undefined,
+              error,
+            ),
+      };
+    }
+  }
+
   public async attachLoopbackBridge(
     tabId: number,
     origin: string,
@@ -402,33 +460,41 @@ export interface ExtensionBrowserDriver extends BrowserDriver {
    * Explicitly select the tab the auto-composed Playwright delegate will
    * attach to. MUST be called before any interaction method when
    * `createPlaywrightDriver` is configured — no implicit "first tab" fallback.
-   * Ignored if `playwrightDriver` is supplied (caller owns selection there).
    */
   readonly selectTargetTab: (tabId: number, origin: string) => void;
 }
 
 /**
- * **IMPORTANT — this is a PARTIAL BrowserDriver.**
+ * **IMPORTANT — this is a PARTIAL BrowserDriver when `createPlaywrightDriver`
+ * is not supplied.**
  *
- * Without an injected `playwrightDriver` in `options`, every interaction
+ * Without a `createPlaywrightDriver` factory in `options`, every interaction
  * method (snapshot, navigate, click, type, evaluate, etc.) returns a clear
  * error — only `tabList()` and `attachLoopbackBridge()` work. This is by
  * design: `@koi/browser-ext` (L2) must not depend directly on
  * `@koi/browser-playwright` (also L2) — that would violate the layer
  * architecture. Composition is therefore a CALLER RESPONSIBILITY, ideally
- * done at L3 (runtime) via `composeExtensionBrowserDriver` below.
+ * done at L3 (runtime).
+ *
+ * When `createPlaywrightDriver` is supplied, the driver owns the delegate's
+ * lifecycle: it is created lazily on first interaction (after
+ * `selectTargetTab`), bound to the extension-owned loopback bridge for the
+ * selected tab, and disposed when the bridge is invalidated. There is NO
+ * caller-supplied pre-built delegate path — that would allow a delegate
+ * bound to an unrelated browser to receive clicks/navigations while the
+ * native host enumerates the user's live Chrome tabs, which is a real
+ * cross-session-mutation hazard.
  *
  * Returns an `ExtensionBrowserDriver` (augmented `BrowserDriver` +
- * `attachLoopbackBridge`). See the composition recipe documented above.
+ * `attachLoopbackBridge`).
  */
 export function createExtensionBrowserDriver(
   options: ExtensionDriverConfig = {},
 ): ExtensionBrowserDriver {
   const runtime = new ExtensionBrowserDriverRuntime(options);
 
-  let cachedDelegate: BrowserDriver | null = options.playwrightDriver ?? null;
+  let cachedDelegate: BrowserDriver | null = null;
   let cachedBridge: LoopbackWebSocketBridge | null = null;
-  let ownsDelegate = false;
   let ensurePromise: Promise<Result<BrowserDriver, KoiError>> | null = null;
   let selectedTarget: { tabId: number; origin: string } | null = null;
   // Monotonic generation: bump on every invalidation (target change /
@@ -437,16 +503,26 @@ export function createExtensionBrowserDriver(
   // completion is discarded instead of overwriting the cache for a different
   // target.
   let delegateGeneration = 0;
+  // Promise for the most recent bridge teardown. ensureDelegate() awaits
+  // this before attaching a new bridge so back-to-back tabFocus/selectTab
+  // calls can't race the old session's detach — otherwise the host (which
+  // enforces single attached ownership) bounces the new attach as
+  // `already_attached` while the old detach is still in flight.
+  let pendingBridgeClose: Promise<void> = Promise.resolve();
 
   function invalidateDelegateCache(): void {
     const bridge = cachedBridge;
-    const delegate = ownsDelegate ? cachedDelegate : null;
+    const delegate = cachedDelegate;
     cachedBridge = null;
-    cachedDelegate = options.playwrightDriver ?? null;
-    ownsDelegate = false;
+    cachedDelegate = null;
     ensurePromise = null;
     delegateGeneration += 1;
-    void bridge?.close().catch(() => {});
+    if (bridge !== null) {
+      pendingBridgeClose = pendingBridgeClose
+        .catch(() => {})
+        .then(() => bridge.close())
+        .catch(() => {});
+    }
     void delegate?.dispose?.();
   }
 
@@ -490,6 +566,12 @@ export function createExtensionBrowserDriver(
     }
 
     ensurePromise = (async (): Promise<Result<BrowserDriver, KoiError>> => {
+      // Wait for any in-flight bridge teardown to fully release host-side
+      // ownership before attaching a new bridge. Without this barrier the
+      // host (single-attachment invariant) can reject the new attach as
+      // `already_attached` while the previous session's detach_ack is still
+      // pending.
+      await pendingBridgeClose.catch(() => {});
       const sessionResult = await runtime.attachLoopbackBridge(target.tabId, target.origin);
       if (!sessionResult.ok) {
         if (!isStale()) ensurePromise = null;
@@ -577,7 +659,6 @@ export function createExtensionBrowserDriver(
       }
       cachedDelegate = delegate;
       cachedBridge = bridge;
-      ownsDelegate = true;
       return { ok: true, value: delegate };
     })();
     return ensurePromise;
@@ -640,28 +721,61 @@ export function createExtensionBrowserDriver(
     // contract. Callers should use selectTargetTab(tabId, origin) to pick a
     // tab (invalidating the cached delegate so the next interaction attaches
     // to the new target) instead.
-    async tabNew(_opts?: BrowserTabNewOptions): Promise<Result<BrowserTabInfo, KoiError>> {
-      return {
-        ok: false,
-        error: createExtensionError(
-          "HOST_SPAWN_FAILED",
-          "tabNew is not supported on the composed browser-ext driver. Open a new tab " +
-            "in Chrome yourself, then call selectTargetTab(newTabId, origin).",
-        ),
-      };
+    async tabNew(opts?: BrowserTabNewOptions): Promise<Result<BrowserTabInfo, KoiError>> {
+      // Routed through the extension's chrome.tabs.create — the native-host
+      // tab IDs returned from this match the IDs tabList surfaces. Match
+      // standard BrowserDriver semantics by also making the new tab the
+      // active selection: tabNew() → navigate()/snapshot()/click() should
+      // work without an extra selectTargetTab() call.
+      const result = await runtime.openTab(opts?.url);
+      if (result.ok) {
+        const numericTabId = Number(result.value.tabId);
+        if (Number.isFinite(numericTabId)) {
+          let origin = "about:blank";
+          try {
+            origin = new URL(result.value.url).origin;
+          } catch {
+            // keep default — about:blank lets the next navigate() set origin
+          }
+          selectedTarget = { tabId: numericTabId, origin };
+          invalidateDelegateCache();
+        }
+      }
+      return result;
     },
     async tabClose(
-      _tabId?: string,
+      tabId?: string,
       _opts?: BrowserTabCloseOptions,
     ): Promise<Result<void, KoiError>> {
-      return {
-        ok: false,
-        error: createExtensionError(
-          "HOST_SPAWN_FAILED",
-          "tabClose is not supported on the composed browser-ext driver. Close the tab in " +
-            "Chrome directly.",
-        ),
-      };
+      if (tabId === undefined) {
+        return {
+          ok: false,
+          error: createExtensionError(
+            "HOST_SPAWN_FAILED",
+            "tabClose requires a tabId (Chrome numeric tab id as string).",
+          ),
+        };
+      }
+      const numericTabId = Number(tabId);
+      if (!Number.isFinite(numericTabId)) {
+        return {
+          ok: false,
+          error: createExtensionError(
+            "HOST_SPAWN_FAILED",
+            `tabClose: tabId "${tabId}" is not a valid Chrome numeric id.`,
+          ),
+        };
+      }
+      const result = await runtime.closeTab(numericTabId);
+      // If we just closed the active target tab, the cached delegate + bridge
+      // are pointed at a tab that no longer exists. Invalidate them so the
+      // next interaction does not hit a stale session — callers must
+      // selectTargetTab() again before interacting.
+      if (result.ok && selectedTarget !== null && selectedTarget.tabId === numericTabId) {
+        selectedTarget = null;
+        invalidateDelegateCache();
+      }
+      return result;
     },
     async tabFocus(
       tabId: string,
@@ -696,11 +810,24 @@ export function createExtensionBrowserDriver(
       }
       return { ok: true, value: tab };
     },
-    evaluate(
-      script: string,
-      opts?: BrowserEvaluateOptions,
+    async evaluate(
+      _script: string,
+      _opts?: BrowserEvaluateOptions,
     ): Promise<Result<BrowserEvaluateResult, KoiError>> {
-      return delegateOrError("evaluate", (pw) => pw.evaluate(script, opts));
+      // Structurally unsupported on browser-ext: the delegate is always a
+      // borrowed (live user tab) context, where page.evaluate() cannot be
+      // cancelled safely — a timed-out script keeps mutating the user's
+      // session. Reject at the API boundary so callers don't discover the
+      // capability and hit a deterministic PERMISSION failure downstream.
+      return {
+        ok: false,
+        error: createExtensionError(
+          "EXT_USER_DENIED",
+          "evaluate() is not supported on browser-ext. The attached tab is a live user " +
+            "session and page.evaluate() cannot be cancelled safely — use snapshot + " +
+            "click/type/fillForm for scripted interaction instead.",
+        ),
+      };
     },
     hover(ref: string, opts?: BrowserActionOptions): Promise<Result<void, KoiError>> {
       return delegateOrError("hover", (pw) => pw.hover(ref, opts));
@@ -723,25 +850,37 @@ export function createExtensionBrowserDriver(
         pw.upload ? pw.upload(ref, files, opts) : missingPlaywrightError("upload"),
       );
     },
-    traceStart(opts?: BrowserTraceOptions): Promise<Result<void, KoiError>> {
-      return delegateOrError("traceStart", (pw) =>
-        pw.traceStart ? pw.traceStart(opts) : missingPlaywrightError("traceStart"),
-      );
+    async traceStart(_opts?: BrowserTraceOptions): Promise<Result<void, KoiError>> {
+      // Structurally unsupported on browser-ext: Playwright tracing captures
+      // every page in the context, including the user's other tabs. That
+      // would exfiltrate unrelated browsing data from a live user session.
+      return {
+        ok: false,
+        error: createExtensionError(
+          "EXT_USER_DENIED",
+          "traceStart() is not supported on browser-ext. Tracing would capture caller-owned " +
+            "tabs in the user's live browser session. Use a driver-owned browser (launch " +
+            "mode via @koi/browser-playwright) if tracing is needed.",
+        ),
+      };
     },
-    traceStop(): Promise<Result<BrowserTraceResult, KoiError>> {
-      return delegateOrError("traceStop", (pw) =>
-        pw.traceStop ? pw.traceStop() : missingPlaywrightError("traceStop"),
-      );
+    async traceStop(): Promise<Result<BrowserTraceResult, KoiError>> {
+      return {
+        ok: false,
+        error: createExtensionError(
+          "EXT_USER_DENIED",
+          "traceStop() is not supported on browser-ext (tracing cannot start on this transport).",
+        ),
+      };
     },
     async dispose(): Promise<void> {
       if (cachedBridge) {
         await cachedBridge.close().catch(() => {});
         cachedBridge = null;
       }
-      if (cachedDelegate && ownsDelegate) {
+      if (cachedDelegate) {
         await cachedDelegate.dispose?.();
         cachedDelegate = null;
-        ownsDelegate = false;
       }
       await runtime.dispose();
     },

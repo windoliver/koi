@@ -71,15 +71,30 @@ export function createDetachCoordinator(deps: {
       if (!owner) return;
       if (frame.ok || frame.reason === "not_attached") {
         ownership.delete(entry.tabId);
+        // Forward the actual detach_ack to the initiating driver so
+        // DriverClient.detach() — which waits on `kind === "detach_ack"` —
+        // resolves. Previously this path emitted session_ended instead,
+        // which left every clean detach looking like a timeout to callers
+        // (bridge teardown, explicit detach) even though Chrome ack'd.
         notifyDriver(owner.clientId, {
-          kind: "session_ended",
+          kind: "detach_ack",
           sessionId: frame.sessionId,
           tabId: entry.tabId,
-          reason: frame.reason ?? "unknown",
+          ok: true,
+          ...(frame.reason !== undefined ? { reason: frame.reason } : {}),
         });
         return;
       }
       markDetachingFailed(entry.tabId, frame.reason ?? "chrome_error");
+      // Also surface the failure to the initiating driver so the waiter
+      // resolves with ok:false instead of timing out silently.
+      notifyDriver(owner.clientId, {
+        kind: "detach_ack",
+        sessionId: frame.sessionId,
+        tabId: entry.tabId,
+        ok: false,
+        reason: frame.reason ?? "chrome_error",
+      });
     },
 
     handleDetachedFromExtension(frame): void {

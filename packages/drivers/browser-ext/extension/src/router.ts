@@ -42,6 +42,58 @@ export function createRouter(deps: {
         });
         return;
       }
+      case "open_tab": {
+        try {
+          const props: chrome.tabs.CreateProperties = {};
+          if (frame.url !== undefined) props.url = frame.url;
+          const tab = (await (
+            chrome.tabs.create as unknown as (
+              p: chrome.tabs.CreateProperties,
+            ) => Promise<chrome.tabs.Tab>
+          )(props)) as chrome.tabs.Tab;
+          if (tab.id === undefined) {
+            deps.emitFrame({
+              kind: "tab_opened",
+              requestId: frame.requestId,
+              ok: false,
+              error: "chrome.tabs.create returned tab without id",
+            });
+            return;
+          }
+          deps.emitFrame({
+            kind: "tab_opened",
+            requestId: frame.requestId,
+            ok: true,
+            tab: {
+              id: tab.id,
+              url: tab.url ?? frame.url ?? "",
+              title: tab.title ?? "",
+            },
+          });
+        } catch (error) {
+          deps.emitFrame({
+            kind: "tab_opened",
+            requestId: frame.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      case "close_tab": {
+        try {
+          await (chrome.tabs.remove as unknown as (tabId: number) => Promise<void>)(frame.tabId);
+          deps.emitFrame({ kind: "tab_closed", requestId: frame.requestId, ok: true });
+        } catch (error) {
+          deps.emitFrame({
+            kind: "tab_closed",
+            requestId: frame.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
       case "attach":
         await deps.fsm.handleAttach(frame);
         return;
@@ -57,7 +109,11 @@ export function createRouter(deps: {
         await respondToAdminClearGrants({
           storage: deps.storage,
           fsm: deps.fsm,
-          request: { scope: frame.scope, origin: frame.origin },
+          request: {
+            requestId: frame.requestId,
+            scope: frame.scope,
+            origin: frame.origin,
+          },
           emitFrame: deps.emitFrame,
         });
         return;
@@ -72,7 +128,22 @@ export function createRouter(deps: {
       }
       case "cdp": {
         const attachedState = deps.fsm.getAttachedStateBySessionId(frame.sessionId);
-        if (!attachedState) return;
+        if (!attachedState) {
+          // Unknown sessionId (session ended, extension restart, race with
+          // detach). Return a deterministic cdp_error so the host can fail
+          // the pending request immediately; silently dropping leaves the
+          // loopback WebSocket caller hanging until a higher-level timeout.
+          deps.emitFrame({
+            kind: "cdp_error",
+            sessionId: frame.sessionId,
+            id: frame.id,
+            error: {
+              code: -32001,
+              message: `Unknown or ended session ${frame.sessionId}`,
+            },
+          });
+          return;
+        }
         try {
           const result = await (
             chrome.debugger.sendCommand as unknown as <TResult = unknown>(

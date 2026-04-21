@@ -92,6 +92,16 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     string,
     { readonly clientId: string; readonly originalRequestId: string }
   >();
+  // Same host-generated-requestId routing for open_tab / close_tab, for the
+  // same cross-client-steal reason documented on pendingListTabs.
+  const pendingTabOps = new Map<
+    string,
+    {
+      readonly clientId: string;
+      readonly originalRequestId: string;
+      readonly kind: "open_tab" | "close_tab";
+    }
+  >();
   const pendingCdpRequests = new Map<string, string>(); // `${sessionId}:${id}` → clientId
   const cdpKey = (sessionId: string, id: number): string => `${sessionId}:${id}`;
 
@@ -147,14 +157,18 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     string,
     (v: { readonly attachedTabs: readonly number[] } | null) => void
   >();
-  let pendingAdminResolve:
-    | ((
-        v: {
-          readonly clearedOrigins: readonly string[];
-          readonly detachedTabs: readonly number[];
-        } | null,
-      ) => void)
-    | undefined;
+  // Per-requestId admin waiters so a late ack from a prior (timed-out) request
+  // can't satisfy a new retry's resolver with stale data. Keyed by the host-
+  // generated requestId round-tripped through the extension.
+  const pendingAdminResolvers = new Map<
+    string,
+    (
+      v: {
+        readonly clearedOrigins: readonly string[];
+        readonly detachedTabs: readonly number[];
+      } | null,
+    ) => void
+  >();
 
   let extensionVersion: string | null = null;
   let selectedProtocol = 1;
@@ -306,11 +320,18 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         return;
       }
       case "admin_clear_grants_ack": {
-        pendingAdminResolve?.({
+        const resolver = pendingAdminResolvers.get(frame.requestId);
+        if (resolver === undefined) {
+          // Unknown / stale requestId — drop silently. The waiter already
+          // timed out; satisfying a different retry's resolver here would
+          // misreport stale clearedOrigins/detachedTabs.
+          return;
+        }
+        pendingAdminResolvers.delete(frame.requestId);
+        resolver({
           clearedOrigins: frame.clearedOrigins,
           detachedTabs: frame.detachedTabs,
         });
-        pendingAdminResolve = undefined;
         return;
       }
       case "chunk":
@@ -353,6 +374,18 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         // NM-only: the extension acknowledges the host's abandon_attach. This
         // is an internal host/extension handshake — not forwarded to drivers.
         return;
+      case "tab_opened":
+      case "tab_closed": {
+        const pending = pendingTabOps.get(frame.requestId);
+        if (pending !== undefined) {
+          pendingTabOps.delete(frame.requestId);
+          drivers.get(pending.clientId)?.send({
+            ...frame,
+            requestId: pending.originalRequestId,
+          } as DriverFrame);
+        }
+        return;
+      }
       default:
         return;
     }
@@ -436,6 +469,9 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           for (const [hostReqId, pending] of pendingListTabs) {
             if (pending.clientId === clientId) pendingListTabs.delete(hostReqId);
           }
+          for (const [hostReqId, pending] of pendingTabOps) {
+            if (pending.clientId === clientId) pendingTabOps.delete(hostReqId);
+          }
           for (const [k, c] of pendingCdpRequests) {
             if (c === clientId) pendingCdpRequests.delete(k);
           }
@@ -509,6 +545,26 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         sendNm({ ...frame, requestId: hostRequestId });
         return;
       }
+      case "open_tab": {
+        const hostRequestId = randomUUID();
+        pendingTabOps.set(hostRequestId, {
+          clientId,
+          originalRequestId: frame.requestId,
+          kind: "open_tab",
+        });
+        sendNm({ ...frame, requestId: hostRequestId });
+        return;
+      }
+      case "close_tab": {
+        const hostRequestId = randomUUID();
+        pendingTabOps.set(hostRequestId, {
+          clientId,
+          originalRequestId: frame.requestId,
+          kind: "close_tab",
+        });
+        sendNm({ ...frame, requestId: hostRequestId });
+        return;
+      }
       case "attach": {
         const pinnedLease = driverLeases.get(clientId);
         if (pinnedLease === undefined || pinnedLease !== frame.leaseToken) {
@@ -558,17 +614,7 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         sendNm(frame);
         return;
       }
-      case "admin_clear_grants":
-        // admin_clear_grants is single-flight per spec §8.7: reject overlapping
-        // requests with PERMISSION so retries don't race on the shared ack slot.
-        if (pendingAdminResolve !== undefined) {
-          drivers.get(clientId)?.send({
-            kind: "admin_clear_grants_ack",
-            ok: false,
-            reason: "PERMISSION",
-          });
-          return;
-        }
+      case "admin_clear_grants": {
         // Reject malformed requests up-front so operator mistakes
         // ({ scope: "origin" } without `origin`) don't quietly succeed
         // with an empty cleared-origins ack.
@@ -580,17 +626,22 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           });
           return;
         }
+        const adminRequestId = randomUUID();
         void handleAdminClearGrants({
           role: driverRoles.get(clientId) ?? "driver",
           scope: frame.scope,
           origin: frame.origin,
+          requestId: adminRequestId,
           sendNm,
-          awaitAck: (timeoutMs) =>
+          awaitAck: (requestId, timeoutMs) =>
             new Promise((resolve) => {
-              pendingAdminResolve = resolve;
+              pendingAdminResolvers.set(requestId, resolve);
               setTimeout(() => {
-                if (pendingAdminResolve === resolve) {
-                  pendingAdminResolve = undefined;
+                // Only fire null if our waiter is still registered. A late
+                // ack that arrived just before the timer fires will have
+                // already resolved and removed the entry.
+                if (pendingAdminResolvers.get(requestId) === resolve) {
+                  pendingAdminResolvers.delete(requestId);
                   resolve(null);
                 }
               }, timeoutMs);
@@ -613,6 +664,7 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           });
         });
         return;
+      }
       case "bye":
         drivers.get(clientId)?.close();
         return;

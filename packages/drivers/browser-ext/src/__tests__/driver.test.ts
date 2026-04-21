@@ -94,7 +94,7 @@ describe("createExtensionBrowserDriver", () => {
     serverSide.destroy();
   });
 
-  test("non-tabList operations return a clear error when no playwrightDriver is supplied", async () => {
+  test("non-tabList operations return a clear error when no createPlaywrightDriver is supplied", async () => {
     const driver = createExtensionBrowserDriver({
       instancesDir: dir,
       authToken: "1234567890abcdef",
@@ -104,6 +104,6 @@ describe("createExtensionBrowserDriver", () => {
     if (result.ok) {
       return;
     }
-    expect(result.error.message).toMatch(/playwrightDriver/);
+    expect(result.error.message).toMatch(/createPlaywrightDriver/);
   });
 });

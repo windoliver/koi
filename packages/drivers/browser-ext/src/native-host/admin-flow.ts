@@ -11,8 +11,12 @@ export async function handleAdminClearGrants(deps: {
   readonly role: "driver" | "admin";
   readonly scope: "all" | "origin";
   readonly origin?: string | undefined;
+  readonly requestId: string;
   readonly sendNm: (frame: NmFrame) => void;
-  readonly awaitAck: (timeoutMs: number) => Promise<{
+  readonly awaitAck: (
+    requestId: string,
+    timeoutMs: number,
+  ) => Promise<{
     readonly clearedOrigins: readonly string[];
     readonly detachedTabs: readonly number[];
   } | null>;
@@ -22,10 +26,15 @@ export async function handleAdminClearGrants(deps: {
     return { ok: false, error: "PERMISSION" };
   }
   const frame: NmFrame = deps.origin
-    ? { kind: "admin_clear_grants", scope: deps.scope, origin: deps.origin }
-    : { kind: "admin_clear_grants", scope: deps.scope };
+    ? {
+        kind: "admin_clear_grants",
+        requestId: deps.requestId,
+        scope: deps.scope,
+        origin: deps.origin,
+      }
+    : { kind: "admin_clear_grants", requestId: deps.requestId, scope: deps.scope };
   deps.sendNm(frame);
-  const ack = await deps.awaitAck(deps.timeoutMs ?? 30_000);
+  const ack = await deps.awaitAck(deps.requestId, deps.timeoutMs ?? 30_000);
   if (!ack) return { ok: false, error: "timeout" };
   return {
     ok: true,

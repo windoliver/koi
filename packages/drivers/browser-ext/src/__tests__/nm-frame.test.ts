@@ -40,11 +40,19 @@ describe("NmFrameSchema — happy paths", () => {
       "abandon_attach_ack",
       { kind: "abandon_attach_ack", leaseToken: "f".repeat(32), affectedTabs: [42] },
     ],
-    ["admin_clear_grants", { kind: "admin_clear_grants", scope: "all" }],
+    [
+      "admin_clear_grants",
+      {
+        kind: "admin_clear_grants",
+        requestId: "12345678-1234-4234-8234-123456789abc",
+        scope: "all",
+      },
+    ],
     [
       "admin_clear_grants_ack",
       {
         kind: "admin_clear_grants_ack",
+        requestId: "12345678-1234-4234-8234-123456789abc",
         clearedOrigins: ["https://example.com"],
         detachedTabs: [42],
       },
