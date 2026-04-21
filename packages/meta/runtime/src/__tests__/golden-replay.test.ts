@@ -11693,3 +11693,115 @@ describe("Golden: @koi/artifacts-s3 — createArtifactStore override", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tool-exec (standalone, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tool-exec", () => {
+  test("createExecuteCodeTool produces a valid operator Tool named execute_code", async () => {
+    const { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, createExecuteCodeTool } = await import(
+      "@koi/tool-exec"
+    );
+
+    const result = createExecuteCodeTool({
+      acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+      tools: new Map(),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.descriptor.name).toBe("execute_code");
+      expect(result.value.origin).toBe("operator");
+      expect(result.value.policy.sandbox).toBe(false);
+      expect(result.value.descriptor.inputSchema).toBeDefined();
+    }
+  });
+
+  test("createExecuteCodeTool refuses construction without trust acknowledgement", async () => {
+    const { createExecuteCodeTool } = await import("@koi/tool-exec");
+
+    // @ts-expect-error — intentionally omitting required acknowledgement
+    const result = createExecuteCodeTool({ tools: new Map() });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("executeScript runs a multi-tool pipeline and returns only the final result", async () => {
+    const { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, executeScript } = await import("@koi/tool-exec");
+    const { buildTool } = await import("@koi/tools-core");
+
+    const doubleResult = buildTool({
+      name: "double",
+      description: "Doubles a number",
+      inputSchema: { type: "object", properties: { n: { type: "number" } } },
+      origin: "operator",
+      execute: async (args: JsonObject) => ({ result: (args.n as number) * 2 }),
+    });
+    const stringifyResult = buildTool({
+      name: "stringify",
+      description: "Stringifies a value",
+      inputSchema: { type: "object", properties: { value: { type: "unknown" } } },
+      origin: "operator",
+      execute: async (args: JsonObject) => String(args.value),
+    });
+
+    expect(doubleResult.ok).toBe(true);
+    expect(stringifyResult.ok).toBe(true);
+    if (!doubleResult.ok || !stringifyResult.ok) return;
+
+    const tools = new Map([
+      ["double", doubleResult.value],
+      ["stringify", stringifyResult.value],
+    ]);
+
+    const result = await executeScript({
+      acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+      code: `
+        const doubled = await tools.double({ n: 21 });
+        const str = await tools.stringify({ value: doubled.result });
+        return { summary: "Answer is " + str, toolCallCount: 2 };
+      `,
+      tools,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.toolCallCount).toBe(2);
+    expect(result.result).toEqual({ summary: "Answer is 42", toolCallCount: 2 });
+    expect(result.durationMs).toBeGreaterThan(0);
+  });
+
+  // Trajectory replay: validates the recorded ATIF for tool-exec-code-use.
+  // Live recording drove the model through: model → execute_code(script) →
+  // inner add_numbers x2 via tools.* → script return → model final answer.
+  // This test asserts the recorded trajectory looks right without calling
+  // the LLM (all assertions against the frozen fixture).
+  test("recorded trajectory: execute_code ran a 2-step inner pipeline and returned the final sum", async () => {
+    const trajectoryPath = `${FIXTURES}/tool-exec-code-use.trajectory.json`;
+    const trajectory = (await Bun.file(trajectoryPath).json()) as {
+      readonly schema_version: string;
+      readonly steps: ReadonlyArray<{
+        readonly source: string;
+        readonly message?: string;
+        readonly observation?: { readonly results?: ReadonlyArray<{ readonly content?: string }> };
+      }>;
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    const agentSteps = trajectory.steps.filter((s) => s.source === "agent");
+    // 2 agent turns: first invokes execute_code, second returns the answer.
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+
+    // Second agent turn's observation should be the execute_code result
+    // containing ok:true and the final sum from the inner pipeline.
+    const executeCodeResultText = agentSteps[1]?.message ?? "";
+    expect(executeCodeResultText).toContain('"ok":true');
+    expect(executeCodeResultText).toContain('"result":15');
+    expect(executeCodeResultText).toContain('"toolCallCount":2');
+
+    // Final model reply must surface the final sum (2+3=5, 5+10=15).
+    const finalReply = agentSteps[agentSteps.length - 1]?.observation?.results?.[0]?.content ?? "";
+    expect(finalReply).toContain("15");
+  });
+});

@@ -136,6 +136,7 @@ import {
   createBrowserSnapshotTool,
   createMockDriver,
 } from "@koi/tool-browser";
+import { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, createExecuteCodeTool } from "@koi/tool-exec";
 import type { NotebookToolConfig } from "@koi/tool-notebook";
 import { createNotebookAddCellTool, createNotebookReadTool } from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
@@ -239,6 +240,22 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// @koi/tool-exec — exercised by the tool-exec-code-use golden. The LLM calls
+// execute_code with a small TS script that calls add_numbers twice through
+// tools.*, returning only the final sum. Validates the full L2 surface:
+// createExecuteCodeTool → permissions → Bun Worker spawn → worker-entry
+// tools proxy → host-side callTool/tool.execute → sequential-only guard →
+// script return → single tool result to model context.
+const execCodeToolResult = createExecuteCodeTool({
+  acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+  tools: new Map([["add_numbers", addTool]]),
+});
+if (!execCodeToolResult.ok) {
+  console.error(`createExecuteCodeTool failed: ${execCodeToolResult.error.message}`);
+  process.exit(1);
+}
+const execCodeTool = execCodeToolResult.value;
 
 // @koi/artifacts — exercised by the artifacts-roundtrip golden. The LLM
 // calls artifact_save to persist a small blob via the real ArtifactStore
@@ -2095,6 +2112,45 @@ const queries: readonly QueryConfig[] = [
         name: "artifact-get",
         toolName: "artifact_get",
         createTool: () => artifactGetTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // tool-exec-code-use: exercises @koi/tool-exec via the execute_code tool.
+  // The model writes a short TS script that calls add_numbers twice through
+  // tools.* and returns the final sum. Only the script's return value is
+  // injected into the model's context — intermediate tool results stay in
+  // the worker. Proves the Bun Worker sandbox, sequential-only proxy,
+  // per-call AbortController, and trust-gate path all work end-to-end.
+  {
+    name: "tool-exec-code-use",
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+    prompt:
+      "Call the execute_code tool with its `script` argument set to the following TypeScript source. " +
+      "The script runs inside a worker where `tools.add_numbers` is available even though add_numbers is not a separate top-level tool — the execute_code tool handles that internally. " +
+      "Script source:\n" +
+      "const a = await tools.add_numbers({ a: 2, b: 3 });\n" +
+      "const b = await tools.add_numbers({ a: a.result, b: 10 });\n" +
+      "return b.result;\n" +
+      "After execute_code returns, reply with just the final number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "execute-code",
+        toolName: "execute_code",
+        createTool: () => execCodeTool,
       }),
     ],
     maxTurns: 3,
