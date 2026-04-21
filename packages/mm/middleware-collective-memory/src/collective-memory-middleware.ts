@@ -68,10 +68,18 @@ export function createCollectiveMemoryMiddleware(
   const dedupThreshold = config.dedupThreshold ?? COLLECTIVE_MEMORY_DEFAULTS.dedupThreshold;
   const autoCompact = config.autoCompact ?? true;
 
-  // let justified: one-shot injection flag — only inject on first model call per session
-  let injected = false;
-  // let justified: accumulates spawn tool outputs for post-session LLM extraction
-  let sessionOutputs: readonly string[] = [];
+  type SessionState = { injected: boolean; outputs: readonly string[] };
+  // Per-session state keyed by sessionId — prevents concurrent sessions from
+  // clobbering each other's injection flag or buffered outputs.
+  const sessions = new Map<string, SessionState>();
+
+  function getSession(sessionId: string): SessionState {
+    const existing = sessions.get(sessionId);
+    if (existing !== undefined) return existing;
+    const fresh: SessionState = { injected: false, outputs: [] };
+    sessions.set(sessionId, fresh);
+    return fresh;
+  }
 
   return {
     name: "koi:collective-memory",
@@ -87,21 +95,19 @@ export function createCollectiveMemoryMiddleware(
       };
     },
 
-    async onSessionStart(): Promise<void> {
-      injected = false;
-      sessionOutputs = [];
+    async onSessionStart(ctx): Promise<void> {
+      sessions.set(ctx.sessionId, { injected: false, outputs: [] });
     },
 
     async onSessionEnd(ctx): Promise<void> {
-      injected = false;
+      const state = sessions.get(ctx.sessionId);
+      sessions.delete(ctx.sessionId);
 
-      if (config.modelCall === undefined || sessionOutputs.length === 0) {
-        sessionOutputs = [];
+      if (config.modelCall === undefined || state === undefined || state.outputs.length === 0) {
         return;
       }
 
-      const outputs = sessionOutputs;
-      sessionOutputs = [];
+      const outputs = state.outputs;
 
       try {
         const prompt = createExtractionPrompt(outputs);
@@ -137,16 +143,20 @@ export function createCollectiveMemoryMiddleware(
       const outputStr = redactSecrets(outputToString(response.output));
       if (outputStr.length === 0) return response;
 
-      if (config.modelCall !== undefined && sessionOutputs.length < MAX_SESSION_OUTPUTS) {
-        sessionOutputs = [...sessionOutputs, outputStr];
+      const state = getSession(ctx.session.sessionId);
+      if (config.modelCall !== undefined && state.outputs.length < MAX_SESSION_OUTPUTS) {
+        sessions.set(ctx.session.sessionId, {
+          ...state,
+          outputs: [...state.outputs, outputStr],
+        });
       }
 
       const candidates = extractor.extract(outputStr);
       if (candidates.length === 0) return response;
 
-      const agentNameRaw = request.input.agentName;
-      const agentName = typeof agentNameRaw === "string" ? agentNameRaw : ctx.session.agentId;
-      const rawId = config.resolveBrickId(agentName);
+      // Always write to the current (parent) agent's brick — never trust caller-supplied
+      // agentName to select a persistence target, as that string is model-controlled.
+      const rawId = config.resolveBrickId(ctx.session.agentId);
       if (rawId === undefined) return response;
 
       try {
@@ -159,8 +169,9 @@ export function createCollectiveMemoryMiddleware(
     },
 
     async wrapModelCall(ctx, request, next) {
-      if (injected) return next(request);
-      injected = true;
+      const state = getSession(ctx.session.sessionId);
+      if (state.injected) return next(request);
+      sessions.set(ctx.session.sessionId, { ...state, injected: true });
 
       const rawId = config.resolveBrickId(ctx.session.agentId);
       if (rawId === undefined) return next(request);

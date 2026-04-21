@@ -630,3 +630,121 @@ describe("optimistic locking", () => {
     expect(callCount).toBe(2);
   });
 });
+
+describe("session isolation", () => {
+  test("concurrent sessions on one middleware instance do not share injection state", async () => {
+    const store = createMockForgeStore({
+      collectiveMemory: {
+        entries: [
+          {
+            id: "e1",
+            content: "Always validate",
+            category: "gotcha" as const,
+            source: { agentId: "a", runId: "r", timestamp: Date.now() },
+            createdAt: Date.now(),
+            accessCount: 1,
+            lastAccessedAt: Date.now(),
+          },
+        ],
+        totalTokens: 5,
+        generation: 0,
+        lastCompactedAt: 0,
+      },
+    });
+    const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+
+    const sessA = createSessionCtx("researcher", "run-A");
+    const sessB = {
+      ...createSessionCtx("researcher", "run-B"),
+      sessionId: "sess-2" as SessionContext["sessionId"],
+    };
+
+    await mw.onSessionStart?.(sessA);
+    await mw.onSessionStart?.(sessB);
+
+    const reqA: ModelRequest = { messages: [], model: "haiku" };
+    const reqB: ModelRequest = { messages: [], model: "haiku" };
+
+    const ctxA: TurnContext = {
+      session: sessA,
+      turnIndex: 0,
+      turnId: "turn-A" as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+    const ctxB: TurnContext = {
+      session: sessB,
+      turnIndex: 0,
+      turnId: "turn-B" as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    };
+
+    let injectedA = false;
+    let injectedB = false;
+
+    await mw.wrapModelCall?.(ctxA, reqA, async (r) => {
+      injectedA = r.messages.length > 0;
+      return { content: "ok", model: "haiku" };
+    });
+    await mw.wrapModelCall?.(ctxB, reqB, async (r) => {
+      injectedB = r.messages.length > 0;
+      return { content: "ok", model: "haiku" };
+    });
+
+    // Both sessions should each get their own first-call injection
+    expect(injectedA).toBe(true);
+    expect(injectedB).toBe(true);
+
+    // Second call for session A should NOT inject again
+    let reinjectedA = false;
+    await mw.wrapModelCall?.(ctxA, reqA, async (r) => {
+      reinjectedA = r.messages.length > 0;
+      return { content: "ok", model: "haiku" };
+    });
+    expect(reinjectedA).toBe(false);
+  });
+
+  test("write path uses parent agent brick, not spawn-tool agentName", async () => {
+    const updateArgs: unknown[] = [];
+    const store: ForgeStore = {
+      save: mock(async () => ({ ok: true as const, value: undefined })),
+      load: mock(async () => ({ ok: true as const, value: createMockBrick() })),
+      search: mock(async () => ({ ok: true as const, value: [] as readonly BrickArtifact[] })),
+      remove: mock(async () => ({ ok: true as const, value: undefined })),
+      update: mock(async (...args: unknown[]) => {
+        updateArgs.push(args[0]);
+        return { ok: true as const, value: undefined };
+      }),
+      exists: mock(async () => ({ ok: true as const, value: true })),
+    } as unknown as ForgeStore;
+
+    const mw = createCollectiveMemoryMiddleware(
+      createConfig({
+        forgeStore: store,
+        resolveBrickId: (name: string) =>
+          name === "researcher"
+            ? "sha256:abc123"
+            : name === "other-agent"
+              ? "sha256:other"
+              : undefined,
+      }),
+    );
+
+    await mw.onSessionStart?.(createSessionCtx("researcher"));
+    const next = mock(
+      async () => ({ output: "[LEARNING:pattern] cross-agent test" }) satisfies ToolResponse,
+    );
+
+    // Supply agentName pointing to a DIFFERENT agent's brick
+    await mw.wrapToolCall?.(
+      createTurnCtx("researcher"),
+      { toolId: "task", input: { agentName: "other-agent" } },
+      next,
+    );
+
+    // Update should go to the parent agent's brick (sha256:abc123), not other-agent's brick
+    expect(updateArgs[0]).toEqual(brickId("sha256:abc123"));
+    expect(updateArgs[0]).not.toEqual(brickId("sha256:other"));
+  });
+});
