@@ -997,6 +997,14 @@
         "oxc-parser": "0.114.0",
       },
     },
+    "packages/security/violation-store-sqlite": {
+      "name": "@koi/violation-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/ui/tui": {
       "name": "@koi/tui",
       "version": "0.0.0",
@@ -1535,6 +1543,8 @@
     "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
+
+    "@koi/violation-store-sqlite": ["@koi/violation-store-sqlite@workspace:packages/security/violation-store-sqlite"],
 
     "@koi/watch-patterns": ["@koi/watch-patterns@workspace:packages/lib/watch-patterns"],
 
