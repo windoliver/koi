@@ -129,6 +129,35 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(store.update).not.toHaveBeenCalled();
     });
 
+    test("ring buffer retains MOST RECENT MAX_SESSION_OUTPUTS (drops oldest, not newest)", async () => {
+      // Push 25 spawn outputs labeled OUT-0..OUT-24. After the cap (20), only
+      // OUT-5..OUT-24 should remain (the 20 most recent). The extraction prompt
+      // sent to modelCall must contain OUT-24 and must NOT contain OUT-0.
+      const capturedPrompts: string[] = [];
+      const modelCall = mock(async (req: ModelRequest): Promise<ModelResponse> => {
+        const text = (req.messages[0]?.content[0] as { text: string }).text;
+        capturedPrompts.push(text);
+        return { content: "[]", model: "haiku" };
+      });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ modelCall }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      for (let i = 0; i < 25; i++) {
+        const next = mock(async () => ({ output: `OUT-${i}` }) satisfies ToolResponse);
+        await mw.wrapToolCall?.(createTurnCtx(), req, next);
+      }
+
+      await mw.onSessionEnd?.(createSessionCtx());
+
+      expect(capturedPrompts).toHaveLength(1);
+      expect(capturedPrompts[0]).toContain("OUT-24");
+      expect(capturedPrompts[0]).toContain("OUT-5");
+      // Earliest entries should have been evicted by the ring buffer
+      expect(capturedPrompts[0]).not.toContain("OUT-0\n");
+      expect(capturedPrompts[0]).not.toContain("OUT-4\n");
+    });
+
     test("clears injected flag after successful persistence so next turn re-injects", async () => {
       const memory: CollectiveMemory = {
         entries: [
@@ -710,6 +739,73 @@ describe("createCollectiveMemoryMiddleware", () => {
 
       const result = await mw.wrapModelCall?.(createTurnCtx(), req, next);
       expect(result).toBe(resp);
+    });
+
+    test("pendingInjection is cleared after a write so post-write waiters cannot serve stale memory", async () => {
+      // Sequence:
+      //   T1 wrapModelCall → injects from initial memory (caches pendingInjection)
+      //   wrapToolCall persistLearnings → succeeds → clears injected + pendingInjection
+      //   T2 wrapModelCall (with load failing transiently) → builds NO new injection
+      //   Concurrent T2-waiter → must NOT see stale pendingInjection from T1.
+      const initialMemory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e0",
+            content: "INITIAL learning",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: initialMemory });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const ctx = createTurnCtx();
+      const modelReq: ModelRequest = {
+        messages: [{ content: [{ kind: "text", text: "Hi" }], senderId: "user", timestamp: NOW }],
+      };
+      const collectedTexts: string[] = [];
+      const modelNext = mock(async (r: ModelRequest): Promise<ModelResponse> => {
+        const dataMsg = r.messages.find((m) => m.senderId === "collective-memory");
+        if (dataMsg !== undefined) {
+          collectedTexts.push((dataMsg.content[0] as { text: string }).text);
+        }
+        return { content: "", model: "test-model" };
+      });
+
+      // T1: first injection succeeds — caches pendingInjection containing INITIAL
+      await mw.wrapModelCall?.(ctx, modelReq, modelNext);
+      expect(collectedTexts.length).toBe(1);
+      expect(collectedTexts[0]).toContain("INITIAL");
+
+      // wrapToolCall persists new learnings → clears injected + pendingInjection
+      const toolReq: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const toolResp: ToolResponse = { output: "[LEARNING:gotcha] new insight after T1" };
+      const toolNext = mock(async () => toolResp);
+      await mw.wrapToolCall?.(ctx, toolReq, toolNext);
+
+      // T2: make load throw so the new injection attempt fails. pendingInjection
+      // should NOT be reused from T1 — concurrent waiters must NOT see stale data.
+      (store.load as ReturnType<typeof mock>).mockImplementation(async () => {
+        throw new Error("transient load failure during T2");
+      });
+
+      // Launch two concurrent calls so the waiter path is exercised
+      collectedTexts.length = 0;
+      await Promise.all([
+        mw.wrapModelCall?.(ctx, modelReq, modelNext),
+        mw.wrapModelCall?.(ctx, modelReq, modelNext),
+      ]);
+
+      // Both T2 calls should see NO injection (load failed, no fresh data,
+      // and the stale T1 cache must have been invalidated).
+      expect(collectedTexts).toHaveLength(0);
     });
 
     test("concurrent model calls share the same injection block (no nondeterministic skip)", async () => {

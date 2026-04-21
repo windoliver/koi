@@ -343,10 +343,17 @@ export function createCollectiveMemoryMiddleware(
       if (outputStr.length === 0) return response;
 
       const state = getSession(ctx.session.sessionId);
-      if (config.modelCall !== undefined && state.outputs.length < MAX_SESSION_OUTPUTS) {
-        // Mutate the shared array ref — safe in single-threaded JS;
-        // avoids the read-spread-write race with concurrent spawn completions.
+      if (config.modelCall !== undefined) {
+        // Drop-oldest ring buffer: always retain the MOST RECENT MAX_SESSION_OUTPUTS
+        // entries instead of stopping at the first 20. Newer outputs typically
+        // contain the most actionable learnings (corrections, late-session
+        // discoveries) that the extraction model should see.
+        // Mutate the shared array ref — safe in single-threaded JS; avoids the
+        // read-spread-write race with concurrent spawn completions.
         state.outputs.push(outputStr);
+        while (state.outputs.length > MAX_SESSION_OUTPUTS) {
+          state.outputs.shift();
+        }
       }
 
       const candidates = extractor.extract(outputStr).filter((c) => acceptLearning(c.content));
@@ -369,12 +376,18 @@ export function createCollectiveMemoryMiddleware(
             cause: persistResult.cause,
           });
         } else {
-          // Memory changed in this session: clear the injected flag so the next
-          // wrapModelCall re-fetches and re-injects the updated brick. Without
-          // this, learnings persisted mid-session never reach later model turns.
+          // Memory changed in this session: clear the injected flag AND the
+          // pendingInjection cache so the next wrapModelCall re-fetches and
+          // re-injects the updated brick. Without clearing pendingInjection,
+          // a concurrent waiter could still prepend the stale memory block
+          // captured before this write happened.
           const current = sessions.get(ctx.session.sessionId);
           if (current !== undefined) {
-            sessions.set(ctx.session.sessionId, { ...current, injected: false });
+            sessions.set(ctx.session.sessionId, {
+              ...current,
+              injected: false,
+              pendingInjection: undefined,
+            });
           }
         }
       } catch (cause: unknown) {
@@ -434,7 +447,14 @@ export function createCollectiveMemoryMiddleware(
       // Attach a no-op catch immediately so a rejection without concurrent
       // awaiters does not surface as an unhandled promise rejection.
       inFlight.catch(() => undefined);
-      sessions.set(ctx.session.sessionId, { ...state, inFlightInjection: inFlight });
+      // Reset pendingInjection on every new attempt so stale data from a
+      // previous (possibly aborted) injection cannot leak into waiters of
+      // THIS attempt. Waiters only consume what THIS attempt produces.
+      sessions.set(ctx.session.sessionId, {
+        ...state,
+        inFlightInjection: inFlight,
+        pendingInjection: undefined,
+      });
 
       // Helper: clear the in-flight gate without committing the one-shot flag,
       // so a later turn can retry injection after a transient failure.
