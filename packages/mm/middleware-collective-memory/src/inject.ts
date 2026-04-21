@@ -1,6 +1,12 @@
 import type { CollectiveMemoryCategory, CollectiveMemoryEntry } from "@koi/core";
 import { selectEntriesWithinBudget } from "@koi/validation";
 
+function escapeCollectiveMemoryTags(text: string): string {
+  return text
+    .replaceAll("</koi:collective-memory>", "&lt;/koi:collective-memory&gt;")
+    .replaceAll("<koi:collective-memory>", "&lt;koi:collective-memory&gt;");
+}
+
 const CATEGORY_LABELS = {
   gotcha: "Gotchas",
   heuristic: "Heuristics",
@@ -40,7 +46,8 @@ export function formatCollectiveMemory(
     const groupEntries = groups.get(category);
     if (groupEntries === undefined || groupEntries.length === 0) continue;
     const label = CATEGORY_LABELS[category];
-    const items = groupEntries.map((e) => `- ${e.content}`).join("\n");
+    // Escape wrapper boundary tokens so entries cannot break out of the injected block.
+    const items = groupEntries.map((e) => `- ${escapeCollectiveMemoryTags(e.content)}`).join("\n");
     sections.push(`### ${label}\n${items}`);
   }
 

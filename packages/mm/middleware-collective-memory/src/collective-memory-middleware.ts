@@ -77,7 +77,9 @@ export function createCollectiveMemoryMiddleware(
   const autoCompact = config.autoCompact ?? true;
   const spawnToolIds = new Set<string>(config.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
 
-  type SessionState = { injected: boolean; outputs: readonly string[] };
+  // outputs is a mutable array ref so concurrent push() calls in the same session
+  // don't race: JS is single-threaded, so push on a shared ref is atomic.
+  type SessionState = { injected: boolean; outputs: string[] };
   // Per-session state keyed by sessionId — prevents concurrent sessions from
   // clobbering each other's injection flag or buffered outputs.
   const sessions = new Map<string, SessionState>();
@@ -105,7 +107,7 @@ export function createCollectiveMemoryMiddleware(
     },
 
     async onSessionStart(ctx): Promise<void> {
-      sessions.set(ctx.sessionId, { injected: false, outputs: [] });
+      sessions.set(ctx.sessionId, { injected: false, outputs: [] as string[] });
     },
 
     async onSessionEnd(ctx): Promise<void> {
@@ -154,10 +156,9 @@ export function createCollectiveMemoryMiddleware(
 
       const state = getSession(ctx.session.sessionId);
       if (config.modelCall !== undefined && state.outputs.length < MAX_SESSION_OUTPUTS) {
-        sessions.set(ctx.session.sessionId, {
-          ...state,
-          outputs: [...state.outputs, outputStr],
-        });
+        // Mutate the shared array ref — safe in single-threaded JS;
+        // avoids the read-spread-write race with concurrent spawn completions.
+        state.outputs.push(outputStr);
       }
 
       const candidates = extractor.extract(outputStr);
