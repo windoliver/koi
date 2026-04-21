@@ -1,6 +1,6 @@
 {
   "name": "@koi/browser-ext",
-  "description": "Extension-injected browser session driver + native messaging host — attaches to user's live Chrome without restart (closes issue #1609)",
+  "description": "MV3 extension + native-messaging host for attaching to user's live Chrome",
   "version": "0.0.0",
   "private": true,
   "type": "module",
