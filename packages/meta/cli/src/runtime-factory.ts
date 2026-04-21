@@ -37,6 +37,7 @@ import type { BudgetConfig } from "@koi/context-manager";
 import type {
   Agent,
   ApprovalHandler,
+  ComplianceRecorder,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
@@ -2067,7 +2068,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const auditPresetExtras: KoiMiddleware[] = [];
     // Compliance recorders accumulated from each active audit sink.
     // Used later to populate governanceBackend.compliance.
-    const complianceRecorders: import("@koi/core").ComplianceRecorder[] = [];
+    const complianceRecorders: ComplianceRecorder[] = [];
     if (config.auditNdjsonPath !== undefined) {
       // Collision guard: refuse to start if the legacy host-level
       // audit path (env-driven KOI_AUDIT_NDJSON / config.auditNdjsonPath)
@@ -2161,12 +2162,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
+      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(sqliteSink, {
           sessionId: config.session?.sessionId ?? "no-session",
         }),
       );
-      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
       auditPresetExtras.push(sqliteAuditMw);
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
