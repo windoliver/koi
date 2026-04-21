@@ -162,6 +162,7 @@ export function hasDebugSession(agentId: AgentId): boolean {
     return false;
   }
   if (!bundle.controller.isActive()) {
+    bundle.detachWithReason("replaced");
     activeDebugSessions.delete(key);
     return false;
   }

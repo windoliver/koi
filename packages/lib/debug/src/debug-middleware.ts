@@ -29,7 +29,11 @@ import type {
 } from "@koi/core";
 import { breakpointId, toolCallId } from "@koi/core";
 import { matchesBreakpoint } from "./breakpoint-matcher.js";
-import { DEBUG_MIDDLEWARE_NAME, DEBUG_MIDDLEWARE_PRIORITY } from "./constants.js";
+import {
+  DEBUG_MIDDLEWARE_NAME,
+  DEBUG_MIDDLEWARE_PRIORITY,
+  SUPPORTED_EVENT_KINDS,
+} from "./constants.js";
 import type { EventRingBuffer } from "./event-ring-buffer.js";
 import type { BreakpointEntry, GateControl } from "./types.js";
 import { createGate } from "./types.js";
@@ -154,7 +158,10 @@ export function createDebugMiddleware(
   const middleware: KoiMiddleware = {
     name: DEBUG_MIDDLEWARE_NAME,
     priority: DEBUG_MIDDLEWARE_PRIORITY,
-    phase: "intercept",
+    // resolve phase runs AFTER intercept-tier security guards (permissions,
+    // exfiltration). Debug sees only approved tool calls; denied calls are
+    // rejected upstream before reaching the debugger.
+    phase: "resolve",
 
     describeCapabilities: (): ReturnType<NonNullable<KoiMiddleware["describeCapabilities"]>> => {
       if (!active) return undefined;
@@ -281,23 +288,14 @@ export function createDebugMiddleware(
         };
       }
       if (predicate.kind === "event_kind") {
-        const OBSERVED_EVENT_KINDS = new Set([
-          "turn_start",
-          "turn_end",
-          "tool_call_start",
-          "tool_call_end",
-          "tool_result",
-          "text_delta",
-          "custom",
-        ]);
-        if (!OBSERVED_EVENT_KINDS.has(predicate.eventKind)) {
+        if (!(SUPPORTED_EVENT_KINDS as readonly string[]).includes(predicate.eventKind)) {
           return {
             ok: false,
             error: {
               code: "VALIDATION",
               message:
                 `event_kind breakpoints for "${predicate.eventKind}" are not supported: ` +
-                `the debug middleware only observes: ${[...OBSERVED_EVENT_KINDS].join(", ")}.`,
+                `the debug middleware only observes: ${SUPPORTED_EVENT_KINDS.join(", ")}.`,
               retryable: false,
             },
           };

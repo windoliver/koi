@@ -973,13 +973,13 @@ describe("observer rejects terminated agent", () => {
 });
 
 describe("debug middleware phase", () => {
-  test("debug middleware is in intercept phase to wrap auth/permission layers", () => {
+  test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", () => {
     const { createDebugMiddleware } =
       require("./debug-middleware.js") as typeof import("./debug-middleware.js");
     const { createEventRingBuffer } =
       require("./event-ring-buffer.js") as typeof import("./event-ring-buffer.js");
     const buf = createEventRingBuffer(10);
     const { middleware } = createDebugMiddleware(buf);
-    expect(middleware.phase).toBe("intercept");
+    expect(middleware.phase).toBe("resolve");
   });
 });
