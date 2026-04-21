@@ -76,9 +76,12 @@ function fingerprint(
 export function createMemoryCache(): SummaryCache {
   const store = new Map<string, SummaryOk>();
   return {
-    get: (key) => store.get(key),
+    get: (key) => {
+      const cached = store.get(key);
+      return cached === undefined ? undefined : structuredClone(cached);
+    },
     set: (key, value) => {
-      store.set(key, value);
+      store.set(key, structuredClone(value));
     },
   };
 }
