@@ -297,9 +297,18 @@ Rationale: file-level corruption can hide a `failClosed` hook that the operator 
 > (no Docker). The bridge spawns `python3 bridge.py <mount_uri>` as a subprocess, communicates via
 > stdin/stdout JSON-RPC, and handles inline OAuth via `auth_required`/`auth_complete` notifications.
 >
-> **Current status**: `koi tui` is hardcoded to `@koi/fs-local` (`tui-runtime.ts:787`).
-> `resolveFileSystemAsync()` exists in `@koi/runtime` but is NOT wired into `createTuiRuntime()`.
-> S13 scenarios run via **`koi start --manifest`** (which supports filesystem config) or via test suite.
+> **Current status**: `koi tui --manifest <path>` supports the Nexus filesystem backend.
+> `tui-command.ts` calls `resolveFileSystemAsync()` with the manifest's `filesystem` block and
+> wires `createAuthNotificationHandler(tuiChannel)` so `auth_required` / `auth_complete`
+> notifications render as messages in the TUI. Multi-mount configs are routed via
+> `createNexusMultiMountFileSystem`, which dispatches each op to the sub-backend whose mount
+> prefix matches the input path and exposes a synthetic `list("/")` for mount discovery.
+>
+> **Path convention**: the model uses the bridge-reported mount names as leading path segments.
+> For a manifest declaring `local:///tmp/ws` + `gdrive://my-drive`, the bridge typically reports
+> mounts like `/local/ws` + `/gdrive`. The model then calls `fs_list("/")` to discover them and
+> `fs_read("/local/ws/README.md")` or `fs_read("/gdrive/file.pdf")` to access them. Scheme URIs
+> such as `gdrive://my-drive/file` are NOT accepted — use the namespaced form.
 
 **Setup**:
 ```bash
@@ -327,11 +336,15 @@ filesystem:
 EOF
 ```
 
-Run via `koi start` (NOT `koi tui`):
+Run via `koi tui --manifest` (supports inline OAuth via the TUI channel):
 ```bash
-HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
-  start --manifest "$FIXTURE/koi.manifest.yaml" --prompt "<query>"
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' \
+     tui --manifest '$FIXTURE/koi.manifest.yaml'"
 ```
+
+For non-interactive scripting, `koi start --manifest --prompt "<query>"` works too but has no
+channel-aware auth handler — OAuth-gated queries hang until `authTimeoutMs` without it.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|

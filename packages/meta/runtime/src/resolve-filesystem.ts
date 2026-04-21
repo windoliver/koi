@@ -14,6 +14,7 @@ import type { BridgeNotification } from "@koi/fs-nexus";
 import {
   createLocalTransport,
   createNexusFileSystem,
+  createNexusMultiMountFileSystem,
   validateNexusFileSystemConfig,
 } from "@koi/fs-nexus";
 import { createScopedFileSystem } from "@koi/fs-scoped";
@@ -27,7 +28,7 @@ const fileSystemConfigSchema = z
   .object({
     backend: z.enum(["local", "nexus"]).optional(),
     options: z.record(z.string(), z.unknown()).optional(),
-    operations: z.array(z.enum(["read", "write", "edit"])).optional(),
+    operations: z.array(z.enum(["read", "write", "edit", "list"])).optional(),
   })
   .strict();
 
@@ -251,7 +252,7 @@ export async function resolveFileSystemAsync(
   onNotification?: ((n: BridgeNotification) => void) | undefined,
 ): Promise<{
   readonly backend: FileSystemBackend;
-  readonly operations: readonly ("read" | "write" | "edit")[] | undefined;
+  readonly operations: readonly ("read" | "write" | "edit" | "list")[] | undefined;
   /**
    * The underlying local bridge transport, only present when
    * `filesystem.options.transport === "local"`. Callers must use this to
@@ -295,19 +296,6 @@ export async function resolveFileSystemAsync(
   }
   if (localBridgeParsed.ok) {
     const options = localBridgeParsed.value; // validated — overrides outer `options`
-    // Multi-mount is not supported in this path: the bridge reports multiple mounts
-    // but createNexusFileSystem() accepts only one mountPoint prefix. Until per-mount
-    // transport routing exists, mixing OAuth-gated mounts (gdrive://) with local mounts
-    // in one resolveFileSystemAsync() call would silently route all paths under the
-    // first mount, breaking the others. Reject early with an actionable message.
-    const mountUris = Array.isArray(options.mountUri) ? options.mountUri : [options.mountUri];
-    if (mountUris.length > 1) {
-      throw new Error(
-        `resolveFileSystemAsync() does not support multi-mount local bridge configs yet. ` +
-          `Split mounts into separate transports or use a single mountUri. ` +
-          `Provided: ${mountUris.join(", ")}`,
-      );
-    }
 
     const transport = await createLocalTransport({
       mountUri: options.mountUri,
@@ -321,22 +309,30 @@ export async function resolveFileSystemAsync(
     // If backend construction fails, close the already-started subprocess to
     // avoid leaking it. Without this try/catch, any error below this point
     // (e.g. invalid mountPoint validation) would orphan the bridge process.
-    let nexusBackend: ReturnType<typeof createNexusFileSystem>;
+    let nexusBackend: FileSystemBackend;
     let unsubscribe: () => void;
     try {
       unsubscribe = onNotification !== undefined ? transport.subscribe(onNotification) : () => {};
 
-      // Derive mount point: explicit config wins, then fall back to the bridge's
-      // actual mount (transport.mounts[0] without leading slash). Without this,
-      // local and gdrive paths resolve against the HTTP default ("fs"), not the
-      // bridge's real namespace, and every I/O call will fail.
-      const derivedMountPoint = options.mountPoint ?? transport.mounts?.[0]?.slice(1);
-
-      nexusBackend = createNexusFileSystem({
-        url: "local://bridge",
-        transport,
-        ...(derivedMountPoint !== undefined ? { mountPoint: derivedMountPoint } : {}),
-      });
+      const bridgeMounts = transport.mounts ?? [];
+      if (bridgeMounts.length > 1 && options.mountPoint === undefined) {
+        // Multi-mount dispatcher: route each op to the sub-backend whose
+        // mount prefix matches the input path. Synthetic `list("/")` returns
+        // mount names so callers can discover them without out-of-band info.
+        nexusBackend = createNexusMultiMountFileSystem({
+          transport,
+          mountPoints: bridgeMounts,
+        });
+      } else {
+        // Single-mount path (either bridge reported one, or caller overrode
+        // with an explicit mountPoint).
+        const derivedMountPoint = options.mountPoint ?? bridgeMounts[0]?.slice(1);
+        nexusBackend = createNexusFileSystem({
+          url: "local://bridge",
+          transport,
+          ...(derivedMountPoint !== undefined ? { mountPoint: derivedMountPoint } : {}),
+        });
+      }
     } catch (e: unknown) {
       transport.close();
       throw e;

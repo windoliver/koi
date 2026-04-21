@@ -56,6 +56,7 @@ import type { SkillsRuntime } from "@koi/skills-runtime";
 import {
   createBuiltinSearchProvider,
   createFsEditTool,
+  createFsListTool,
   createFsReadTool,
   createFsWriteTool,
 } from "@koi/tools-builtin";
@@ -910,7 +911,7 @@ export interface CoreProvidersConfig {
    * authors point the agent at an alternate backend without silently
    * escalating mutation authority.
    */
-  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit" | "list")[] | undefined;
   /**
    * When true, wire the web_fetch tool. Defaults to `true` — hosts that
    * run in airgapped environments can pass `false` to strip network access.
@@ -1004,6 +1005,10 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     const wantRead = ops === undefined || ops.includes("read");
     const wantWrite = ops === undefined || ops.includes("write");
     const wantEdit = ops === undefined || ops.includes("edit");
+    // fs_list is a read-only discovery primitive. Enable it alongside read
+    // by default so multi-mount Nexus backends can expose their mount names
+    // via the synthetic `list("/")` entry.
+    const wantList = ops === undefined || ops.includes("list");
     if (wantRead) {
       providers.push(
         createSingleToolProvider({
@@ -1028,6 +1033,15 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
           name: "fs-edit",
           toolName: "fs_edit",
           createTool: () => createFsEditTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+        }),
+      );
+    }
+    if (wantList) {
+      providers.push(
+        createSingleToolProvider({
+          name: "fs-list",
+          toolName: "fs_list",
+          createTool: () => createFsListTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
         }),
       );
     }

@@ -26,6 +26,7 @@ export { createToolSearchTool } from "./tool-search-tool.js";
 export type { AskUserToolConfig } from "./tools/ask-user.js";
 export { createAskUserTool } from "./tools/ask-user.js";
 export { createFsEditTool } from "./tools/edit.js";
+export { createFsListTool } from "./tools/list.js";
 export type {
   EnterPlanModeConfig,
   ExitPlanModeConfig,

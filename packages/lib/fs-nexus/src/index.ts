@@ -11,6 +11,9 @@ export { createAuthNotificationHandler } from "./auth-notifications.js";
 // Local transport (subprocess bridge — no HTTP server needed)
 export type { LocalTransportConfig } from "./local-transport.js";
 export { createLocalTransport } from "./local-transport.js";
+// Multi-mount router — used when the local bridge reports 2+ mounts.
+export type { MultiMountConfig } from "./multi-mount.js";
+export { createNexusMultiMountFileSystem } from "./multi-mount.js";
 // Factory
 export type { NexusFileSystemFullConfig } from "./nexus-filesystem-backend.js";
 export { createNexusFileSystem } from "./nexus-filesystem-backend.js";
