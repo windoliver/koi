@@ -22,7 +22,6 @@ export interface TuiFlags extends BaseFlags {
    * "everything auto-discovered" behavior.
    */
   readonly manifest: string | undefined;
-  readonly goal: readonly string[];
   // --- Convergence loop mode (#1624) ---
   /**
    * Verifier argv for --until-pass mode. Repeatable flag: each
@@ -67,7 +66,6 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly session: string | undefined;
     readonly resume: string | undefined;
     readonly manifest: string | undefined;
-    readonly goal: string[] | undefined;
     readonly "until-pass": string[] | undefined;
     readonly "max-iter": string | undefined;
     readonly "verifier-timeout": string | undefined;
@@ -92,7 +90,6 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         session: { type: "string" },
         resume: { type: "string" },
         manifest: { type: "string" },
-        goal: { type: "string", multiple: true },
         "until-pass": { type: "string", multiple: true },
         "max-iter": { type: "string" },
         "verifier-timeout": { type: "string" },
@@ -172,7 +169,6 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     session: values.session,
     resume: values.resume,
     manifest: values.manifest,
-    goal: values.goal ?? [],
     untilPass,
     maxIter: resolveMaxIterSafe(values["max-iter"], skipValidators),
     verifierTimeoutMs: resolveVerifierTimeoutMsSafe(values["verifier-timeout"], skipValidators),

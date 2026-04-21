@@ -69,7 +69,6 @@
     "@koi/middleware-exfiltration-guard": "workspace:*",
     "@koi/middleware-dream": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",
-    "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
