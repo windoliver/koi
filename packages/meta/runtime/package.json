@@ -43,6 +43,7 @@
     "@koi/audit-sink-ndjson": "workspace:*",
     "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-dream": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/dream": "workspace:*",
