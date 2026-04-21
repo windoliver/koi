@@ -85,6 +85,23 @@ export function createAttachCoordinator(deps: {
         return;
       }
 
+      // Reject duplicate (clientId, attachRequestId) unless it is an
+      // idempotent replay of the same (tabId, leaseToken). Map#set would
+      // otherwise overwrite an earlier in-flight entry targeting a
+      // different tab — dropping its pending bookkeeping and stranding any
+      // ack that later comes back for the original attach.
+      const existing = inFlight.get(clientId, frame.attachRequestId);
+      if (existing !== undefined) {
+        if (existing.tabId !== frame.tabId || existing.leaseToken !== frame.leaseToken) {
+          replyAlreadyAttached(clientId, frame, undefined);
+          return;
+        }
+        // Idempotent replay of the same request — fall through and re-send
+        // the NM attach without overwriting the existing in-flight entry.
+        sendNm(frame);
+        return;
+      }
+
       inFlight.add({
         tabId: frame.tabId,
         clientId,

@@ -400,25 +400,33 @@ export function createAttachFsm(deps: {
         return;
       }
       const outcome = await detachDebugger(tabId);
-      sessionToTab.delete(frame.sessionId);
-      tabStates.delete(tabId);
-      if (outcome.ok) {
+      if (outcome.ok || outcome.reason === "not_attached") {
+        // Chrome confirmed the tab is no longer attached (or was never
+        // attached). Safe to drop FSM state now.
+        sessionToTab.delete(frame.sessionId);
+        tabStates.delete(tabId);
         deps.sendFrame({
           kind: "detach_ack",
           sessionId: frame.sessionId,
           tabId,
           ok: true,
         });
-      } else {
-        const reason = outcome.reason ?? "chrome_error";
-        deps.sendFrame({
-          kind: "detach_ack",
-          sessionId: frame.sessionId,
-          tabId,
-          ok: false,
-          reason,
-        });
+        return;
       }
+      // chrome_error / transient failure: PRESERVE the FSM state. Deleting
+      // here would make the next attach attempt see `not_attached` in the
+      // extension while Chrome still considers the tab attached — producing
+      // an unresolvable `already_attached` stuck state. Leave the state in
+      // place; a later chrome.debugger.onDetach event (or a successful
+      // retry) will be the authority that clears it.
+      const reason = outcome.reason ?? "chrome_error";
+      deps.sendFrame({
+        kind: "detach_ack",
+        sessionId: frame.sessionId,
+        tabId,
+        ok: false,
+        reason,
+      });
     },
     async handleAbandonAttach(leaseToken): Promise<readonly number[]> {
       const affectedTabs: number[] = [];

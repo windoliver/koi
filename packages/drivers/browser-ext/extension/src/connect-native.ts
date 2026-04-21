@@ -49,6 +49,10 @@ export function createNativeConnection(deps: {
   let portReady = false;
   let nextSeq = 0;
   const queuedFrames: NmFrame[] = [];
+  // Outbound-side queues: frames the extension produces before host_hello
+  // completes installId verification. Flushed by drainQueuedFrames().
+  const queuedOutbound: NmFrame[] = [];
+  const queuedOutboundControl: NmControlFrame[] = [];
 
   async function wipeForInstallId(hostInstallId: string): Promise<void> {
     const storedInstallId = await deps.storage.getInstallId();
@@ -100,15 +104,69 @@ export function createNativeConnection(deps: {
     if (!portReady) return;
     const frames = queuedFrames.splice(0, queuedFrames.length);
     for (const frame of frames) void deps.onFrame(frame);
+    // Also flush any outbound frames that arrived during the handshake.
+    if (state.kind === "connected") {
+      const port = state.port;
+      const outbound = queuedOutbound.splice(0, queuedOutbound.length);
+      for (const f of outbound) port.postMessage(f);
+      const outboundControl = queuedOutboundControl.splice(0, queuedOutboundControl.length);
+      for (const f of outboundControl) port.postMessage(f);
+    }
+  }
+
+  // On overflow, disconnect the port instead of dropping stateful frames
+  // (detach, admin acks, chunks). A silent shift() can leave the host
+  // believing a session is still attached or make a chunk reassembly hang.
+  // Disconnecting forces a clean reconnect + host_hello cycle; the upstream
+  // FSM replays attach state via attach_state_probe after reconnect.
+  function disconnectOnOverflow(reason: string): void {
+    if (state.kind === "connected") {
+      try {
+        state.port.disconnect();
+      } catch {
+        // ignore — port may already be torn down
+      }
+      state = { kind: "idle" };
+      portReady = false;
+      deps.onPortReadyChanged?.(false);
+    }
+    queuedFrames.splice(0, queuedFrames.length);
+    queuedOutbound.splice(0, queuedOutbound.length);
+    queuedOutboundControl.splice(0, queuedOutboundControl.length);
+    // Surface the condition for diagnostics.
+    if (globalThis.console?.warn) {
+      globalThis.console.warn(`[koi browser-ext] queue overflow (${reason}); forcing reconnect`);
+    }
   }
 
   function postFrame(frame: NmFrame): void {
     if (state.kind !== "connected") return;
+    if (!portReady) {
+      // Queue outbound frames until host_hello completes installId
+      // verification. Sending before that can leak FSM/detach/CDP frames
+      // to a host belonging to a DIFFERENT install, violating the
+      // reinstall-revocation boundary.
+      queuedOutbound.push(frame);
+      if (queuedOutbound.length > MAX_QUEUED_FRAMES) {
+        disconnectOnOverflow("outbound-queue");
+      }
+      return;
+    }
     state.port.postMessage(frame);
   }
 
   function postControlFrame(frame: NmControlFrame): void {
     if (state.kind !== "connected") return;
+    // Allow `extension_hello` through unconditionally — it is the frame
+    // that OPENS the handshake. Every other control frame (ping/pong) is
+    // gated on portReady for the same reason as postFrame.
+    if (frame.kind !== "extension_hello" && !portReady) {
+      queuedOutboundControl.push(frame);
+      if (queuedOutboundControl.length > MAX_QUEUED_FRAMES) {
+        disconnectOnOverflow("outbound-control-queue");
+      }
+      return;
+    }
     state.port.postMessage(frame);
   }
 
@@ -131,7 +189,12 @@ export function createNativeConnection(deps: {
     if (!frame.success) return;
     if (!portReady) {
       queuedFrames.push(frame.data);
-      if (queuedFrames.length > MAX_QUEUED_FRAMES) queuedFrames.shift();
+      if (queuedFrames.length > MAX_QUEUED_FRAMES) {
+        // Inbound queue (host→extension pre-host_hello) overflow. Same
+        // policy as outbound: force reconnect rather than silently drop
+        // stateful frames (admin acks, CDP results, chunk fragments).
+        disconnectOnOverflow("inbound-queue");
+      }
       return;
     }
     await deps.onFrame(frame.data);

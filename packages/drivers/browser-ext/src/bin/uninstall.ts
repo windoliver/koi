@@ -15,6 +15,15 @@ import { removeNativeMessagingManifests } from "./nm-manifest.js";
 export interface UninstallCommandOptions {
   readonly homeDir?: string;
   readonly platform?: SupportedPlatform;
+  /**
+   * Offline / forced uninstall. Removes local native-messaging manifests,
+   * wrapper binary, runtime dir, and auth credentials WITHOUT first
+   * revoking grants through the extension. Use when the browser is closed
+   * or the extension is disabled and the normal online uninstall path
+   * cannot complete. Leaves extension-side grants in place — operator
+   * must remove the extension via chrome://extensions to finish revocation.
+   */
+  readonly force?: boolean;
 }
 
 export interface UninstallCommandResult {
@@ -159,12 +168,15 @@ export async function runUninstallCommand(
     }
   }
 
-  if (!onlineGrantClearanceCompleted) {
+  if (!onlineGrantClearanceCompleted && !options.force) {
     // Fail closed: preserve the local credentials/manifests so the user can
     // retry revocation after bringing the extension online. Removing them now
-    // would irreversibly strand extension-side grants.
+    // would irreversibly strand extension-side grants. Operators can opt
+    // into local-only cleanup with `force: true` when the extension is
+    // known to be disabled/unreachable and they accept the residual grant
+    // state will need manual cleanup via chrome://extensions.
     throw new Error(
-      `${offlineUninstallGuidance()}\n\nUnderlying failure: ${failureReason ?? "unknown"}`,
+      `${offlineUninstallGuidance()}\n\nUnderlying failure: ${failureReason ?? "unknown"}\n\nTo clean up local artifacts only, re-run with the --force flag.`,
     );
   }
 

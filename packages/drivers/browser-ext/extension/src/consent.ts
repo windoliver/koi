@@ -1,4 +1,4 @@
-import { isOriginAllowedByPolicy } from "./private-origin.js";
+import { isNonGrantableOrigin, isOriginAllowedByPolicy } from "./private-origin.js";
 import type { ExtensionStorage } from "./storage.js";
 
 export type ConsentResolution = "allow_once" | "always" | "user_denied" | "timeout";
@@ -24,9 +24,17 @@ interface NotificationChoice {
 }
 
 function createNotificationOptions(origin: string): chrome.notifications.NotificationOptions<true> {
+  // Use a data: URL for the icon so the notification never fails because
+  // an `icon-128.png` asset is missing from the shipped bundle. Chrome's
+  // notification API requires a non-empty iconUrl for type:"basic" — a
+  // valid inline data URL satisfies the contract without a bundled file.
+  // (Transparent 1×1 PNG, base64.)
+  const iconUrl =
+    "data:image/png;base64," +
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/9g6GVcAAAAASUVORK5CYII=";
   return {
     type: "basic",
-    iconUrl: "icon-128.png",
+    iconUrl,
     title: "Koi wants to attach to this tab",
     message: `Allow access to ${origin}?`,
     buttons: [{ title: "Allow once" }, { title: "Always" }, { title: "Deny" }],
@@ -76,6 +84,14 @@ export function createConsentManager(storage: ExtensionStorage): ConsentManager 
     }
 
     if (buttonIndex === 0 || result === "allow_once") {
+      // Reject opaque / privileged origins (null, file:, data:, chrome:,
+      // chrome-extension:, javascript:) even at allow_once scope. Persisting
+      // "null" would bucket every unrelated opaque document under a single
+      // reusable permission key.
+      if (isNonGrantableOrigin(choice.origin)) {
+        choice.resolve("user_denied");
+        return;
+      }
       await storage.grantAllowOnce(choice.tabId, choice.documentId, choice.origin);
       choice.resolve("allow_once");
       return;
@@ -130,7 +146,18 @@ export function createConsentManager(storage: ExtensionStorage): ConsentManager 
       });
 
       notificationIdByTab.set(request.tabId, notificationId);
-      await createNotification(notificationId, createNotificationOptions(request.origin));
+      try {
+        await createNotification(notificationId, createNotificationOptions(request.origin));
+      } catch (err) {
+        // chrome.notifications.create rejected (invalid asset, permission
+        // denied, etc). Clean up the pending maps so the in-flight prompt
+        // doesn't linger as a phantom entry until timeout, and surface the
+        // failure to the caller as user_denied.
+        clearTimeout(timeoutHandle);
+        pendingByNotificationId.delete(notificationId);
+        notificationIdByTab.delete(request.tabId);
+        throw err instanceof Error ? err : new Error(String(err));
+      }
       return await resolution;
     },
     async dismissPrompt(tabId: number): Promise<void> {
