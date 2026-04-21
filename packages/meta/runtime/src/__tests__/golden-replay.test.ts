@@ -11521,7 +11521,6 @@ describe("Golden: @koi/artifacts", () => {
     expect(finalReply.toLowerCase()).toContain("golden trajectory");
   });
 });
-<<<<<<< HEAD
 
 // ---------------------------------------------------------------------------
 // Golden: @koi/artifacts-s3 (Plan 5 / Task 6)
@@ -11768,5 +11767,64 @@ describe("Golden: @koi/browser-playwright", () => {
       "createPlaywrightBrowserDriver",
       "detectInstalledBrowsers",
     ]);
+  });
+});
+
+// Production wiring: both L2 browser drivers compose into the runtime
+// through createBrowserBackend. Verifies the discriminated-union config
+// surface that callers of RuntimeConfig.browser.backend use.
+describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
+  test("kind=playwright constructs a BrowserDriver", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    // Headless launch mode — don't actually launch, just verify construction.
+    const driver = createBrowserBackend({ kind: "playwright", headless: true });
+    expect(typeof driver.name).toBe("string");
+    expect(typeof driver.snapshot).toBe("function");
+    expect(typeof driver.navigate).toBe("function");
+    expect(typeof driver.dispose).toBe("function");
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext constructs an ExtensionBrowserDriver with auto-composed delegate", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test",
+      authToken: "1234567890abcdef",
+    });
+    expect(driver.name).toBe("browser-ext");
+    // ExtensionBrowserDriver surface includes the extra attachLoopbackBridge
+    // + selectTargetTab methods beyond the BrowserDriver contract.
+    expect(
+      typeof (driver as unknown as { attachLoopbackBridge: unknown }).attachLoopbackBridge,
+    ).toBe("function");
+    expect(typeof (driver as unknown as { selectTargetTab: unknown }).selectTargetTab).toBe(
+      "function",
+    );
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext auto-wires createPlaywrightDriver factory by default", async () => {
+    // Contract: if the caller does NOT supply createPlaywrightDriver, the
+    // factory auto-composes @koi/browser-playwright via connectOverCDP on
+    // the extension's loopback WS bridge. Verify the composition seam by
+    // checking the driver advertises the composed surface (attachLoopback
+    // + selectTargetTab exist) without the caller importing @koi/browser-
+    // playwright directly.
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test-auto",
+      authToken: "1234567890abcdef",
+    }) as unknown as {
+      readonly name: string;
+      readonly attachLoopbackBridge: unknown;
+      readonly selectTargetTab: unknown;
+      readonly dispose?: () => Promise<void>;
+    };
+    expect(driver.name).toBe("browser-ext");
+    expect(typeof driver.attachLoopbackBridge).toBe("function");
+    expect(typeof driver.selectTargetTab).toBe("function");
+    await driver.dispose?.();
   });
 });

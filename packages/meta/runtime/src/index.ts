@@ -45,6 +45,9 @@ export {
 // Artifact tool provider (@koi/artifacts wiring)
 export type { ArtifactToolProviderConfig } from "./artifact-tool-provider.js";
 export { createArtifactToolProvider } from "./artifact-tool-provider.js";
+// Browser backend factory (@koi/browser-playwright + @koi/browser-ext wiring)
+export type { BrowserBackendConfig } from "./create-browser-backend.js";
+export { createBrowserBackend } from "./create-browser-backend.js";
 export type { FileSystemTools } from "./create-filesystem-provider.js";
 // Filesystem dispatch + provider
 export {
