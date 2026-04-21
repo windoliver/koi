@@ -101,6 +101,16 @@ Without `allowCompacted: true`, `summarizeSession` fails with
 (`VALIDATION`, `NOT_FOUND`, `EXTERNAL`) and carries summary-specific routing
 detail in `error.context.reason`.
 
+Timeout behavior is configurable with `inFlightTimeoutMs` on `AgentSummaryDeps`
+(default `30_000`). The timeout is applied to dependency calls (`cache.get`,
+`modelCall`, `cache.set`) so stalled I/O returns a bounded failure instead of
+hanging the request forever.
+
+Timeout failures from model execution are reported as `error.code === "EXTERNAL"`
+with `error.context.reason === "model-error"` and `error.context.timeout ===
+true`. Parse failures remain non-timeout `EXTERNAL` errors with
+`error.context.reason === "parse-error"` and are not automatically retryable.
+
 ## Cache
 
 Pluggable. Default is in-memory. Inject `SummaryCache` for persistent backends.

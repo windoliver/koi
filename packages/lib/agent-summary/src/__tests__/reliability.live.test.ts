@@ -46,6 +46,16 @@ interface OpenRouterCompletion {
   readonly completionTokens: number | null;
 }
 
+class OpenRouterRequestError extends Error {
+  readonly retryable: boolean;
+
+  constructor(message: string, retryable: boolean) {
+    super(message);
+    this.name = "OpenRouterRequestError";
+    this.retryable = retryable;
+  }
+}
+
 async function openrouter(model: string, req: ModelRequest): Promise<OpenRouterCompletion> {
   for (let attempt = 0; attempt <= NETWORK_RETRIES; attempt++) {
     try {
@@ -63,12 +73,11 @@ async function openrouter(model: string, req: ModelRequest): Promise<OpenRouterC
         }),
       });
       if (!resp.ok) {
-        if (attempt < NETWORK_RETRIES && isRetryableStatus(resp.status)) {
-          await Bun.sleep(NETWORK_RETRY_DELAY_MS * (attempt + 1));
-          continue;
-        }
         const responseText = await resp.text();
-        throw new Error(`openrouter ${resp.status}: ${responseText.slice(0, 300)}`);
+        throw new OpenRouterRequestError(
+          `openrouter ${resp.status}: ${responseText.slice(0, 300)}`,
+          isRetryableStatus(resp.status),
+        );
       }
       const json = (await resp.json()) as {
         readonly choices?: readonly { readonly message?: { readonly content?: string } }[];
@@ -84,7 +93,7 @@ async function openrouter(model: string, req: ModelRequest): Promise<OpenRouterC
         completionTokens,
       };
     } catch (err) {
-      if (attempt >= NETWORK_RETRIES) throw err;
+      if (attempt >= NETWORK_RETRIES || !isRetryableOpenRouterError(err)) throw err;
       await Bun.sleep(NETWORK_RETRY_DELAY_MS * (attempt + 1));
     }
   }
@@ -225,4 +234,9 @@ function formatFailureReason(error: unknown): string {
   const reason =
     typeof maybeError.context?.reason === "string" ? maybeError.context.reason : "unknown-reason";
   return `${code}:${reason}`;
+}
+
+function isRetryableOpenRouterError(error: unknown): boolean {
+  if (error instanceof OpenRouterRequestError) return error.retryable;
+  return error instanceof TypeError;
 }

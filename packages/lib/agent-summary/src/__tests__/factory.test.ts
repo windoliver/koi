@@ -152,6 +152,29 @@ describe("factory — happy paths", () => {
     expect(modelCalls).toBe(1);
   });
 
+  test("coalesced callers emit inflight.join telemetry with wait duration", async () => {
+    const entries = [e("u1", "user"), e("a1", "assistant")];
+    const events: SummaryEvent[] = [];
+    const summary = createAgentSummary({
+      transcript: mockTranscript({ entries, skipped: [] }),
+      modelCall: async () => {
+        await Bun.sleep(20);
+        return { text: goodJson };
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+    const [a, b] = await Promise.all([
+      summary.summarizeSession(SID),
+      summary.summarizeSession(SID),
+    ]);
+    expect(a.ok && b.ok).toBe(true);
+    const joined = events.find((ev) => ev.kind === "inflight.join");
+    expect(joined !== undefined).toBe(true);
+    if (joined && joined.kind === "inflight.join") {
+      expect(joined.waitedMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
   test("mutating returned summary does not poison cached result", async () => {
     const entries = [e("u1", "user")];
     const summary = createAgentSummary({
@@ -474,6 +497,33 @@ describe("factory — parse retry + cache fault paths", () => {
       expect(r.error.retryable).toBe(true);
       expect(r.error.context?.reason).toBe("model-error");
     }
+  });
+
+  test("hung modelCall times out and clears inflight slot for retry", async () => {
+    let calls = 0;
+    const summary = createAgentSummary({
+      transcript: mockTranscript({ entries, skipped: [] }),
+      inFlightTimeoutMs: 20,
+      modelCall: async () => {
+        calls++;
+        if (calls === 1) {
+          return await new Promise<ModelResponse>(() => {});
+        }
+        return { text: goodJson };
+      },
+    });
+
+    const first = await summary.summarizeSession(SID);
+    expect(first.ok).toBe(false);
+    if (!first.ok) {
+      expect(first.error.code).toBe("EXTERNAL");
+      expect(first.error.context?.reason).toBe("model-error");
+      expect(first.error.context?.timeout).toBe(true);
+    }
+
+    const second = await summary.summarizeSession(SID);
+    expect(second.ok).toBe(true);
+    expect(calls).toBe(2);
   });
 
   test("cache.get rejection emits cache.read_fail and recomputes", async () => {

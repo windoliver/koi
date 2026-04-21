@@ -60,6 +60,7 @@ interface PipelineArgs {
 export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
   const cache = deps.cache ?? createMemoryCache();
   const clock = deps.clock ?? Date.now;
+  const inFlightTimeoutMs = deps.inFlightTimeoutMs ?? 30_000;
   const inFlight = new Map<string, Promise<Result<SummaryOk, KoiError>>>();
   const emit = (e: SummaryEvent): void => {
     deps.onEvent?.(e);
@@ -105,7 +106,13 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
 
     const pending = inFlight.get(hash);
     if (pending !== undefined) {
+      const joinStarted = clock();
       const joined = await pending;
+      emit({
+        kind: "inflight.join",
+        hash,
+        waitedMs: Math.max(0, clock() - joinStarted),
+      });
       return cloneSuccessfulResult(joined);
     }
 
@@ -120,7 +127,11 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
 
       let cached: SummaryOk | undefined;
       try {
-        cached = await cache.get(hash);
+        cached = await withTimeout(
+          Promise.resolve(cache.get(hash)),
+          inFlightTimeoutMs,
+          "cache.get",
+        );
       } catch (err) {
         emit({
           kind: "cache.read_fail",
@@ -169,18 +180,22 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
           : system;
         emit({ kind: "model.start", hash, maxTokens: resolved.maxTokens });
         const start = clock();
-        const resp = await deps.modelCall({
-          messages: [
-            { role: "system", content: systemMsg },
-            { role: "user", content: user },
-          ],
-          maxTokens: resolved.maxTokens,
-          responseFormat: "json",
-          metadata: {
-            summaryMode: resolved.granularity,
-            modelHint: resolved.modelHint,
-          },
-        });
+        const resp = await withTimeout(
+          deps.modelCall({
+            messages: [
+              { role: "system", content: systemMsg },
+              { role: "user", content: user },
+            ],
+            maxTokens: resolved.maxTokens,
+            responseFormat: "json",
+            metadata: {
+              summaryMode: resolved.granularity,
+              modelHint: resolved.modelHint,
+            },
+          }),
+          inFlightTimeoutMs,
+          "modelCall",
+        );
         emit({ kind: "model.end", hash, elapsedMs: clock() - start });
         return resp.text;
       };
@@ -199,6 +214,7 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
               cause: String(err),
               reason: "model-error",
               stage: "initial",
+              timeout: isTimeoutError(err),
             },
           },
         };
@@ -220,6 +236,7 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
                 cause: String(err),
                 reason: "model-error",
                 stage: "retry",
+                timeout: isTimeoutError(err),
               },
             },
           };
@@ -280,7 +297,11 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
           : { kind: "clean", summary: body };
 
       try {
-        await cache.set(hash, envelope);
+        await withTimeout(
+          Promise.resolve(cache.set(hash, envelope)),
+          inFlightTimeoutMs,
+          "cache.set",
+        );
       } catch (err) {
         emit({
           kind: "cache.write_fail",
@@ -575,4 +596,27 @@ function asKoiError(prefix: string, cause: unknown): KoiError {
 
 function cloneSuccessfulResult(result: Result<SummaryOk, KoiError>): Result<SummaryOk, KoiError> {
   return result.ok ? { ok: true, value: structuredClone(result.value) } : result;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("timeout after");
 }

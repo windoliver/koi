@@ -122,6 +122,11 @@ export type SummaryEvent =
   | { readonly kind: "cache.hit"; readonly hash: string }
   | { readonly kind: "cache.miss"; readonly hash: string }
   | {
+      readonly kind: "inflight.join";
+      readonly hash: string;
+      readonly waitedMs: number;
+    }
+  | {
       readonly kind: "cache.read_fail";
       readonly hash: string;
       readonly error: KoiError;
@@ -159,6 +164,7 @@ export interface AgentSummaryDeps {
   readonly modelCall: (req: ModelRequest) => Promise<ModelResponse>;
   readonly cache?: SummaryCache;
   readonly clock?: () => number;
+  readonly inFlightTimeoutMs?: number;
   readonly onEvent?: (e: SummaryEvent) => void;
 }
 
