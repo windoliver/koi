@@ -91,7 +91,7 @@ describe("E2E lifecycle", () => {
     expect(hasDebugSession(agent.pid.id)).toBe(false);
   });
 
-  test("5. re-attach after detach succeeds with fresh session id", () => {
+  test("5. re-attach after detach succeeds with fresh session id", async () => {
     const agent = buildAgent("lc5");
     const first = unwrapAttach(createDebugAttach({ agent }));
     const firstId = first.session.id;
@@ -102,7 +102,7 @@ describe("E2E lifecycle", () => {
     second.session.detach();
   });
 
-  test("6. two Agents with same pid.id get independent slots", () => {
+  test("6. two Agents with same pid.id get independent slots", async () => {
     const a1 = buildAgent("lc6-dup");
     const a2 = buildAgent("lc6-dup");
     const r1 = unwrapAttach(createDebugAttach({ agent: a1 }));
@@ -348,7 +348,7 @@ describe("E2E inspection", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("16. inspectComponent with circular object succeeds (structuredClone preserves cycles)", () => {
+  test("16. inspectComponent with circular object succeeds (structuredClone preserves cycles)", async () => {
     const components = new Map<string, unknown>();
     const circular: Record<string, unknown> = {};
     circular.self = circular;
@@ -356,18 +356,18 @@ describe("E2E inspection", () => {
     const agent = buildAgent("i16", components);
     const { session } = unwrapAttach(createDebugAttach({ agent }));
 
-    const snap = session.inspectComponent("test:cyc" as SubsystemToken<unknown>);
+    const snap = await session.inspectComponent("test:cyc" as SubsystemToken<unknown>);
     expect(snap.ok).toBe(true); // structuredClone handles cycles
     session.detach();
   });
 
-  test("17. inspectComponent with function value → VALIDATION error", () => {
+  test("17. inspectComponent with function value → VALIDATION error", async () => {
     const components = new Map<string, unknown>();
     components.set("test:fn", { fn: () => "hello" });
     const agent = buildAgent("i17", components);
     const { session } = unwrapAttach(createDebugAttach({ agent }));
 
-    const snap = session.inspectComponent("test:fn" as SubsystemToken<unknown>);
+    const snap = await session.inspectComponent("test:fn" as SubsystemToken<unknown>);
     expect(snap.ok).toBe(false);
     if (snap.ok) return;
     expect(snap.error.code).toBe("VALIDATION");
@@ -419,7 +419,7 @@ describe("E2E concurrency + security", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("20. observer.events() returns [] immediately after session.detach()", () => {
+  test("20. observer.events() returns [] immediately after session.detach()", async () => {
     const agent = buildAgent("c20");
     const { session } = unwrapAttach(createDebugAttach({ agent }));
     const observer = session.createObserver();

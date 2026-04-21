@@ -48,7 +48,7 @@ describe("createDebugAttach", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("returns session and middleware on success", () => {
+  test("returns session and middleware on success", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
     expect(result.ok).toBe(true);
@@ -57,7 +57,7 @@ describe("createDebugAttach", () => {
     expect(result.value.middleware).toBeDefined();
   });
 
-  test("returns CONFLICT on second attach to same agent", () => {
+  test("returns CONFLICT on second attach to same agent", async () => {
     const agent = makeAgent();
     const first = createDebugAttach({ agent });
     expect(first.ok).toBe(true);
@@ -68,7 +68,7 @@ describe("createDebugAttach", () => {
     expect(second.error.code).toBe("CONFLICT");
   });
 
-  test("detach clears the session so re-attach succeeds", () => {
+  test("detach clears the session so re-attach succeeds", async () => {
     const agent = makeAgent();
     const first = createDebugAttach({ agent });
     expect(first.ok).toBe(true);
@@ -80,7 +80,7 @@ describe("createDebugAttach", () => {
     expect(second.ok).toBe(true);
   });
 
-  test("hasDebugSession returns true while attached, false after detach", () => {
+  test("hasDebugSession returns true while attached, false after detach", async () => {
     const agent = makeAgent();
     const aid = agent.pid.id;
     expect(hasDebugSession(aid)).toBe(false);
@@ -184,7 +184,7 @@ describe("createDebugAttach", () => {
     expect(session.state().kind).toBe("detached");
   });
 
-  test("breakOn accepts any BreakpointPredicate from the @koi/core contract", () => {
+  test("breakOn accepts any BreakpointPredicate from the @koi/core contract", async () => {
     // Lenient acceptance: addBreakpoint never rejects a valid predicate. Those
     // kinds this middleware does not observe (error, event_kind=done,
     // event_kind=tool_result) simply never fire, rather than failing at
@@ -250,11 +250,11 @@ describe("createDebugAttach", () => {
     const resultEvt = engineEvents.find((e) => e.kind === "tool_result");
 
     expect(startEvt).toBeDefined();
-    expect(startEvt?.callId).toBe(fakeCallId);
+    expect(startEvt?.callId as string).toBe(fakeCallId);
     expect(resultEvt).toBeDefined();
   });
 
-  test("resume on non-paused returns VALIDATION error", () => {
+  test("resume on non-paused returns VALIDATION error", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
     if (!result.ok) return;
@@ -283,7 +283,7 @@ describe("createDebugAttach", () => {
     expect(events[0]?.kind).toBe("turn_start");
   });
 
-  test("session inspectComponent returns immutable snapshot (not live reference)", () => {
+  test("session inspectComponent returns immutable snapshot (not live reference)", async () => {
     const agent = makeAgent();
     const inner = { value: 42 };
     const data = [inner];
@@ -293,7 +293,7 @@ describe("createDebugAttach", () => {
     if (!result.ok) return;
     const { session } = result.value;
 
-    const snap = session.inspectComponent(
+    const snap = await session.inspectComponent(
       "test:live" as import("@koi/core").SubsystemToken<unknown>,
     );
     expect(snap.ok).toBe(true);
@@ -310,7 +310,7 @@ describe("createDebugObserve", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("returns NOT_FOUND when no session attached", () => {
+  test("returns NOT_FOUND when no session attached", async () => {
     const agent = makeAgent();
     const result = createDebugObserve(agent.pid.id);
     expect(result.ok).toBe(false);
@@ -318,7 +318,7 @@ describe("createDebugObserve", () => {
     expect(result.error.code).toBe("NOT_FOUND");
   });
 
-  test("observer observes the originally attached agent, not caller-supplied one", () => {
+  test("observer observes the originally attached agent, not caller-supplied one", async () => {
     const agent = makeAgent("owner-agent");
     const otherAgentId = agentId("other-agent");
     (agent.components() as Map<string, unknown>).set("secret", { value: 42 });
@@ -332,7 +332,9 @@ describe("createDebugObserve", () => {
     const obs = result.value;
 
     // Observer must expose the attached agent's components (owner-agent)
-    const snap = obs.inspectComponent("secret" as import("@koi/core").SubsystemToken<unknown>);
+    const snap = await obs.inspectComponent(
+      "secret" as import("@koi/core").SubsystemToken<unknown>,
+    );
     expect(snap.ok).toBe(true);
     if (!snap.ok) return;
     expect((snap.value.data as { value: number }).value).toBe(42);
@@ -344,14 +346,14 @@ describe("createDebugObserve", () => {
     expect(notFound.error.code).toBe("NOT_FOUND");
   });
 
-  test("returns observer when session exists", () => {
+  test("returns observer when session exists", async () => {
     const agent = makeAgent();
     createDebugAttach({ agent });
     const result = createDebugObserve(agent.pid.id);
     expect(result.ok).toBe(true);
   });
 
-  test("observer inspectComponent paginates arrays correctly", () => {
+  test("observer inspectComponent paginates arrays correctly", async () => {
     const agent = makeAgent();
     // Attach and set a large array component on the agent
     const largeArray = Array.from({ length: 100 }, (_, i) => i);
@@ -364,7 +366,7 @@ describe("createDebugObserve", () => {
     if (!observeResult.ok) return;
     const observer = observeResult.value;
 
-    const snap = observer.inspectComponent(
+    const snap = await observer.inspectComponent(
       "test:list" as import("@koi/core").SubsystemToken<number[]>,
       {
         limit: 10,
@@ -404,7 +406,7 @@ describe("createDebugObserve", () => {
     expect(observed).toContain("breakpoint_hit");
   });
 
-  test("observer inspectComponent returns immutable snapshot (not live reference)", () => {
+  test("observer inspectComponent returns immutable snapshot (not live reference)", async () => {
     const agent = makeAgent();
     const inner = { value: 42 };
     const data = [inner];
@@ -415,7 +417,7 @@ describe("createDebugObserve", () => {
     if (!observeResult.ok) return;
     const observer = observeResult.value;
 
-    const snap = observer.inspectComponent(
+    const snap = await observer.inspectComponent(
       "test:arr" as import("@koi/core").SubsystemToken<unknown>,
     );
     expect(snap.ok).toBe(true);
@@ -427,7 +429,7 @@ describe("createDebugObserve", () => {
     expect(snapData[0]?.value).toBe(42);
   });
 
-  test("observer inspectComponent returns VALIDATION error for non-cloneable component", () => {
+  test("observer inspectComponent returns VALIDATION error for non-cloneable component", async () => {
     const agent = makeAgent();
     // Functions are not cloneable via structuredClone (DataCloneError)
     const nonCloneable: Record<string, unknown> = { fn: () => "hello" };
@@ -438,7 +440,7 @@ describe("createDebugObserve", () => {
     if (!observeResult.ok) return;
     const observer = observeResult.value;
 
-    const snap = observer.inspectComponent(
+    const snap = await observer.inspectComponent(
       "test:fn" as import("@koi/core").SubsystemToken<unknown>,
     );
     expect(snap.ok).toBe(false);
@@ -446,7 +448,7 @@ describe("createDebugObserve", () => {
     expect(snap.error.code).toBe("VALIDATION");
   });
 
-  test("observer methods are revoked after session detach", () => {
+  test("observer methods are revoked after session detach", async () => {
     const agent = makeAgent();
     (agent.components() as Map<string, unknown>).set("test:data", [1, 2, 3]);
 
@@ -468,7 +470,7 @@ describe("createDebugObserve", () => {
     expect(() => observer.inspect()).toThrow("revoked");
     expect(observer.events()).toHaveLength(0);
 
-    const snap = observer.inspectComponent(
+    const snap = await observer.inspectComponent(
       "test:data" as import("@koi/core").SubsystemToken<unknown>,
     );
     expect(snap.ok).toBe(false);
@@ -481,7 +483,7 @@ describe("createDebugAttach — bufferSize validation", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("returns VALIDATION error for bufferSize 0", () => {
+  test("returns VALIDATION error for bufferSize 0", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent, bufferSize: 0 });
     expect(result.ok).toBe(false);
@@ -489,7 +491,7 @@ describe("createDebugAttach — bufferSize validation", () => {
     expect(result.error.code).toBe("VALIDATION");
   });
 
-  test("returns VALIDATION error for negative bufferSize", () => {
+  test("returns VALIDATION error for negative bufferSize", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent, bufferSize: -5 });
     expect(result.ok).toBe(false);
@@ -497,7 +499,7 @@ describe("createDebugAttach — bufferSize validation", () => {
     expect(result.error.code).toBe("VALIDATION");
   });
 
-  test("returns VALIDATION error for non-integer bufferSize", () => {
+  test("returns VALIDATION error for non-integer bufferSize", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent, bufferSize: 1.5 });
     expect(result.ok).toBe(false);
@@ -541,7 +543,7 @@ describe("turn breakpoint fires once per turn", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("turn breakpoint does not double-fire on turn_end", () => {
+  test("turn breakpoint does not double-fire on turn_end", async () => {
     const { matchesBreakpoint } =
       require("./breakpoint-matcher.js") as typeof import("./breakpoint-matcher.js");
     const turnStartCtx = { event: { kind: "turn_start" as const, turnIndex: 0 }, turnIndex: 0 };
@@ -556,7 +558,7 @@ describe("step() count validation", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("step with count 0 returns VALIDATION error", () => {
+  test("step with count 0 returns VALIDATION error", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
     if (!result.ok) return;
@@ -567,7 +569,7 @@ describe("step() count validation", () => {
     expect(stepped.error.code).toBe("VALIDATION");
   });
 
-  test("step with negative count returns VALIDATION error", () => {
+  test("step with negative count returns VALIDATION error", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
     if (!result.ok) return;
@@ -583,7 +585,7 @@ describe("observer.detach() revokes read access", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("observer methods are revoked after observer.detach() even when session still active", () => {
+  test("observer methods are revoked after observer.detach() even when session still active", async () => {
     const agent = makeAgent();
     (agent.components() as Map<string, unknown>).set("test:data", [1, 2, 3]);
 
@@ -599,7 +601,7 @@ describe("observer.detach() revokes read access", () => {
     observer.detach();
     expect(() => observer.inspect()).toThrow("revoked");
     expect(observer.events()).toHaveLength(0);
-    const snap = observer.inspectComponent(
+    const snap = await observer.inspectComponent(
       "test:data" as import("@koi/core").SubsystemToken<unknown>,
     );
     expect(snap.ok).toBe(false);
@@ -616,7 +618,7 @@ describe("createDebugAttach — stale session auto-expiry", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("re-attach succeeds after controller is deactivated externally (stale entry)", () => {
+  test("re-attach succeeds after controller is deactivated externally (stale entry)", async () => {
     const agent = makeAgent();
     const first = createDebugAttach({ agent });
     expect(first.ok).toBe(true);
@@ -629,7 +631,7 @@ describe("createDebugAttach — stale session auto-expiry", () => {
     expect(second.ok).toBe(true);
   });
 
-  test("re-attach succeeds when agent state transitions to terminated without detach", () => {
+  test("re-attach succeeds when agent state transitions to terminated without detach", async () => {
     // Build a mutable agent mock so we can simulate termination
     const agentMut = makeAgent("term-agent") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
@@ -651,7 +653,7 @@ describe("hasDebugSession — liveness check", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("returns false for terminated agent even with stale registry entry", () => {
+  test("returns false for terminated agent even with stale registry entry", async () => {
     const agent = makeAgent("term-check") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -712,7 +714,7 @@ describe("session.detach() uniformly revokes all methods", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("all public session methods are revoked after detach", () => {
+  test("all public session methods are revoked after detach", async () => {
     const agent = makeAgent();
     (agent.components() as Map<string, unknown>).set("test:data", [1, 2]);
     const result = createDebugAttach({ agent });
@@ -728,7 +730,7 @@ describe("session.detach() uniformly revokes all methods", () => {
     expect(() => session.createObserver()).toThrow("detached");
   });
 
-  test("stale-session replacement revokes the old session handle", () => {
+  test("stale-session replacement revokes the old session handle", async () => {
     const agent = makeAgent("replace-me") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -796,12 +798,12 @@ describe("inspectComponent — pagination validation", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("rejects negative offset with VALIDATION error", () => {
+  test("rejects negative offset with VALIDATION error", async () => {
     const agent = makeAgent();
     (agent.components() as Map<string, unknown>).set("test:arr", [1, 2, 3]);
     const result = createDebugAttach({ agent });
     if (!result.ok) return;
-    const snap = result.value.session.inspectComponent(
+    const snap = await result.value.session.inspectComponent(
       "test:arr" as import("@koi/core").SubsystemToken<unknown>,
       { offset: -1, limit: 10 },
     );
@@ -810,12 +812,12 @@ describe("inspectComponent — pagination validation", () => {
     expect(snap.error.code).toBe("VALIDATION");
   });
 
-  test("rejects negative limit with VALIDATION error", () => {
+  test("rejects negative limit with VALIDATION error", async () => {
     const agent = makeAgent();
     (agent.components() as Map<string, unknown>).set("test:arr", [1, 2, 3]);
     const result = createDebugAttach({ agent });
     if (!result.ok) return;
-    const snap = result.value.session.inspectComponent(
+    const snap = await result.value.session.inspectComponent(
       "test:arr" as import("@koi/core").SubsystemToken<unknown>,
       { offset: 0, limit: -5 },
     );
@@ -824,13 +826,13 @@ describe("inspectComponent — pagination validation", () => {
     expect(snap.error.code).toBe("VALIDATION");
   });
 
-  test("observer rejects non-integer offset with VALIDATION error", () => {
+  test("observer rejects non-integer offset with VALIDATION error", async () => {
     const agent = makeAgent();
     (agent.components() as Map<string, unknown>).set("test:arr", [1, 2, 3]);
     createDebugAttach({ agent });
     const observeResult = createDebugObserve(agent.pid.id);
     if (!observeResult.ok) return;
-    const snap = observeResult.value.inspectComponent(
+    const snap = await observeResult.value.inspectComponent(
       "test:arr" as import("@koi/core").SubsystemToken<unknown>,
       { offset: 1.5, limit: 10 },
     );
@@ -844,7 +846,7 @@ describe("detach reason propagation", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("user detach emits detached event with reason: 'user' via controller stream", () => {
+  test("user detach emits detached event with reason: 'user' via controller stream", async () => {
     const agent = makeAgent();
     const result = createDebugAttach({ agent });
     if (!result.ok) return;
@@ -862,7 +864,7 @@ describe("detach reason propagation", () => {
     expect(detachedEvt.reason).toBe("user");
   });
 
-  test("stale-session replacement emits detached event with reason: 'replaced'", () => {
+  test("stale-session replacement emits detached event with reason: 'replaced'", async () => {
     const agent = makeAgent("replace-reason") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -883,7 +885,7 @@ describe("detach reason propagation", () => {
     if (second.ok) second.value.session.detach();
   });
 
-  test("agent termination during re-attach emits reason: 'agent_terminated'", () => {
+  test("agent termination during re-attach emits reason: 'agent_terminated'", async () => {
     const agent = makeAgent("term-reason") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -911,7 +913,7 @@ describe("hasDebugSession — eager cleanup", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("hasDebugSession cleans up terminated agent's bundle immediately", () => {
+  test("hasDebugSession cleans up terminated agent's bundle immediately", async () => {
     const agent = makeAgent("eager-cleanup") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -938,7 +940,7 @@ describe("observer rejects terminated agent", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("observer.inspect throws after agent.state becomes terminated", () => {
+  test("observer.inspect throws after agent.state becomes terminated", async () => {
     const agent = makeAgent("obs-term") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -952,7 +954,7 @@ describe("observer rejects terminated agent", () => {
 
     expect(() => observer.inspect()).toThrow("revoked");
     expect(observer.events()).toHaveLength(0);
-    const snap = observer.inspectComponent(
+    const snap = await observer.inspectComponent(
       "test:data" as import("@koi/core").SubsystemToken<unknown>,
     );
     expect(snap.ok).toBe(false);
@@ -993,7 +995,7 @@ describe("teardown cancels termination watcher on every path", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("stale-session teardown on same Agent cancels watcher and revokes handle", () => {
+  test("stale-session teardown on same Agent cancels watcher and revokes handle", async () => {
     const agent = makeAgent("watcher-replaced") as import("@koi/core").Agent & {
       state: import("@koi/core").ProcessState;
     };
@@ -1012,7 +1014,7 @@ describe("teardown cancels termination watcher on every path", () => {
     if (second.ok) second.value.session.detach();
   });
 
-  test("clearAllDebugSessions cancels watchers for all sessions", () => {
+  test("clearAllDebugSessions cancels watchers for all sessions", async () => {
     const agentA = makeAgent("watcher-clear-a");
     const agentB = makeAgent("watcher-clear-b");
     const aResult = createDebugAttach({ agent: agentA });
@@ -1125,7 +1127,7 @@ describe("registry isolation for same-ID agents", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("attaching a different Agent object with same ID gets its own slot (no eviction, no CONFLICT)", () => {
+  test("attaching a different Agent object with same ID gets its own slot (no eviction, no CONFLICT)", async () => {
     const a1 = makeAgent("same-id-runtime");
     const firstAttach = createDebugAttach({ agent: a1 });
     expect(firstAttach.ok).toBe(true);
@@ -1144,7 +1146,7 @@ describe("registry isolation for same-ID agents", () => {
     if (secondAttach.ok) secondAttach.value.session.detach();
   });
 
-  test("same Agent object attached twice still returns CONFLICT", () => {
+  test("same Agent object attached twice still returns CONFLICT", async () => {
     const a = makeAgent("same-obj");
     const first = createDebugAttach({ agent: a });
     expect(first.ok).toBe(true);
@@ -1278,7 +1280,10 @@ describe("tool event disambiguation", () => {
         callId: "call-1" as import("@koi/core").ToolCallId,
       },
       { kind: "tool_call_end", callId: "call-1" as import("@koi/core").ToolCallId },
-      { kind: "done", response: { content: [] } as import("@koi/core").ModelResponse },
+      {
+        kind: "done",
+        response: { content: [] } as unknown as import("@koi/core").ModelResponse,
+      },
     ];
     const fakeNext = async function* (): AsyncIterable<import("@koi/core").ModelChunk> {
       for (const c of chunks) yield c;
@@ -1306,7 +1311,7 @@ describe("registry isolation: per-Agent-object keying", () => {
   beforeEach(() => clearAllDebugSessions());
   afterEach(() => clearAllDebugSessions());
 
-  test("two Agent objects with same pid.id both have active debug sessions", () => {
+  test("two Agent objects with same pid.id both have active debug sessions", async () => {
     const a1 = makeAgent("iso-id");
     const a2 = makeAgent("iso-id");
     const r1 = createDebugAttach({ agent: a1 });
@@ -1318,7 +1323,7 @@ describe("registry isolation: per-Agent-object keying", () => {
     if (r2.ok) r2.value.session.detach();
   });
 
-  test("same Agent object still CONFLICTs on re-attach", () => {
+  test("same Agent object still CONFLICTs on re-attach", async () => {
     const a = makeAgent("iso-same");
     const r1 = createDebugAttach({ agent: a });
     const r2 = createDebugAttach({ agent: a });
@@ -1348,7 +1353,7 @@ describe("tool_call BP fires on model-announced calls (denied/blocked visibility
 });
 
 describe("debug middleware phase", () => {
-  test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", () => {
+  test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", async () => {
     const { createDebugMiddleware } =
       require("./debug-middleware.js") as typeof import("./debug-middleware.js");
     const { createEventRingBuffer } =
