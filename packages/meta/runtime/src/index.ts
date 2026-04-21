@@ -1,5 +1,22 @@
 // Core factory
 
+// Debug session API — re-exported from @koi/debug for runtime consumers
+export type {
+  DebugAttachConfig,
+  DebugAttachResult,
+  EventRingBuffer,
+  SupportedBreakpointEventKind,
+} from "@koi/debug";
+export {
+  createDebugAttach,
+  createEventRingBuffer,
+  DEBUG_MIDDLEWARE_NAME,
+  DEBUG_MIDDLEWARE_PRIORITY,
+  DEFAULT_EVENT_BUFFER_SIZE,
+  hasDebugSession,
+  matchesBreakpoint,
+  SUPPORTED_EVENT_KINDS,
+} from "@koi/debug";
 export type {
   IterationRecord as LoopIterationRecord,
   LoopEvent,

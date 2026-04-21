@@ -1100,7 +1100,7 @@ describe("payload truncation avoids full serialization", () => {
     // Build an object that would be expensive to fully serialize
     const huge: Record<string, unknown> = {};
     for (let i = 0; i < 5_000; i++) {
-      huge[`k${i}`] = "value-" + i;
+      huge[`k${i}`] = `value-${i}`;
     }
 
     const fakeRequest: import("@koi/core").ToolRequest = { toolId: "t", input: {} };

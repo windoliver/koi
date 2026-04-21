@@ -1137,6 +1137,16 @@ function makeDebugAgent(id = "debug-agent-1"): Agent {
 }
 
 describe("Golden: @koi/debug", () => {
+  test("debug API is re-exported from @koi/runtime for production consumers", async () => {
+    const runtime = (await import("../index.js")) as typeof import("../index.js");
+    // Public runtime entry point must expose the debug API so downstream callers
+    // can attach a debugger without pulling @koi/debug as a direct dependency.
+    expect(typeof runtime.createDebugAttach).toBe("function");
+    expect(typeof runtime.hasDebugSession).toBe("function");
+    expect(runtime.DEBUG_MIDDLEWARE_NAME).toBe("koi:debug");
+    expect(Array.isArray(runtime.SUPPORTED_EVENT_KINDS)).toBe(true);
+  });
+
   test("createDebugAttach returns middleware with correct identity", () => {
     const agent = makeDebugAgent();
     const result = createDebugAttach({ agent });
