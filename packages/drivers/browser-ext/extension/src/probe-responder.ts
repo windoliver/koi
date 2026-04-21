@@ -16,9 +16,12 @@ export async function respondToAttachStateProbe(fsm: AttachFsm): Promise<readonl
       .map((target) => target.tabId as number),
   );
 
-  // Reconcile stale local claims: if the FSM thinks a tab is attached but
-  // Chrome disagrees, tell Chrome to detach defensively (idempotent).
-  const claimedTabs = new Set(fsm.getAttachedStates().map((state) => state.tabId));
+  // Reconcile stale local claims: if the FSM thinks a tab is claimed but
+  // Chrome disagrees, tell Chrome to detach defensively (idempotent). Use
+  // getClaimedTabIds() not getAttachedStates() — claimed includes
+  // `cleanup_pending` fenced tabs queued after host loss, and missing
+  // those from the reconciliation leaves stale debugger state undiscovered.
+  const claimedTabs = new Set(fsm.getClaimedTabIds());
   for (const tabId of claimedTabs) {
     if (attachedTargetTabs.has(tabId)) continue;
     await detachDebugger(tabId);

@@ -213,27 +213,19 @@ async function checkNavigationUrlAllowed(
   } catch {
     return validation(`Invalid URL: ${rawUrl}`);
   }
-  // `blockPrivateAddresses: false` is the single combined opt-out for all
-  // driver-side navigation hardening, including non-HTTP(S) schemes (file://,
-  // chrome://, data:, etc.). The API contract documents this as the escape
-  // hatch, so short-circuit before any scheme/private-address enforcement.
-  if (blockPrivateAddresses === false) return null;
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    // Non-HTTP(S) schemes cross a larger trust boundary than SSRF alone:
-    //   - file://      — local filesystem read
-    //   - chrome://    — privileged browser internal pages
-    //   - chrome-extension:// — extension surfaces
-    //   - data:        — inline payloads (exfiltration via tainted redirects)
-    //   - javascript:  — script execution context
-    // Default-deny everything except `about:` (used internally for cleanup
-    // parking after a private-address redirect reject). To intentionally
-    // navigate to a local file or other scheme, set blockPrivateAddresses: false
-    // (single combined opt-out).
-    if (url.protocol === "about:") return null;
+  // Scheme validation is ALWAYS enforced — decoupled from
+  // blockPrivateAddresses. Non-HTTP(S) schemes cross a larger trust
+  // boundary than SSRF alone (file:// = local filesystem, chrome:// /
+  // chrome-extension:// = privileged browser surfaces, data: = inline
+  // payloads, javascript: = script execution). `blockPrivateAddresses`
+  // controls private-IP/hostname enforcement only; it is NOT a blanket
+  // opt-out that also unlocks privileged schemes.
+  if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "about:") {
     return permission(
-      `Navigation to non-HTTP(S) scheme blocked: ${url.protocol}. Set blockPrivateAddresses: false to allow file://, chrome://, etc.`,
+      `Navigation to non-HTTP(S) scheme blocked: ${url.protocol}. Allowed: http://, https://, about:.`,
     );
   }
+  if (blockPrivateAddresses === false) return null;
   const hostname = url.hostname;
   // URL.hostname strips IPv6 brackets already; handle raw-bracket case defensively.
   const bare =
@@ -688,6 +680,19 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           // but flag it as borrowed so we don't mutate or close caller state.
           if (config.cdpEndpoint || config.wsEndpoint) {
             const contexts = b.contexts();
+            if (contexts.length > 1) {
+              // Ambiguous: multiple browser contexts attached (e.g. user
+              // has an incognito window, or another automation client is
+              // already bound). Picking contexts[0] silently would operate
+              // on the wrong session. Fail closed — the caller must
+              // isolate the target (close other contexts) or supply an
+              // explicit selector in a future API revision.
+              throw new Error(
+                `Ambiguous CDP/ws attach target: ${contexts.length} browser contexts found. ` +
+                  "Refusing to auto-bind — close other contexts (incognito windows, other " +
+                  "automation clients) or restart the browser with only one context.",
+              );
+            }
             const existing = contexts[0];
             if (existing) {
               ctx = existing;

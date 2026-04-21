@@ -67,16 +67,14 @@ export function createDetachCoordinator(deps: {
       if (!entry) return;
       pending.delete(frame.sessionId);
       clearT(entry.timer);
-      const owner = ownership.get(entry.tabId);
-      if (!owner) return;
+      // Use the stored initiating clientId from the pending entry, NOT a
+      // live ownership lookup. An earlier `detached` from the extension
+      // may have already erased ownership.get(tabId); if we returned on
+      // !owner, the awaited detach_ack would be dropped and the caller
+      // would see a false timeout even though Chrome ack'd cleanly.
       if (frame.ok || frame.reason === "not_attached") {
         ownership.delete(entry.tabId);
-        // Forward the actual detach_ack to the initiating driver so
-        // DriverClient.detach() — which waits on `kind === "detach_ack"` —
-        // resolves. Previously this path emitted session_ended instead,
-        // which left every clean detach looking like a timeout to callers
-        // (bridge teardown, explicit detach) even though Chrome ack'd.
-        notifyDriver(owner.clientId, {
+        notifyDriver(entry.clientId, {
           kind: "detach_ack",
           sessionId: frame.sessionId,
           tabId: entry.tabId,
@@ -86,9 +84,7 @@ export function createDetachCoordinator(deps: {
         return;
       }
       markDetachingFailed(entry.tabId, frame.reason ?? "chrome_error");
-      // Also surface the failure to the initiating driver so the waiter
-      // resolves with ok:false instead of timing out silently.
-      notifyDriver(owner.clientId, {
+      notifyDriver(entry.clientId, {
         kind: "detach_ack",
         sessionId: frame.sessionId,
         tabId: entry.tabId,

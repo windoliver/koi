@@ -3,8 +3,21 @@ import type { NmCdpEvent, NmCdpResult, NmChunk, NmFrame } from "../../src/native
 const DEFAULT_CHUNK_BYTES = 700_000;
 const DEFAULT_FRAME_THRESHOLD_BYTES = 900_000;
 
+// Browser-safe base64 helpers. The extension bundle runs under Chrome's MV3
+// service worker (esbuild target: browser) where `Buffer` is not guaranteed
+// to exist. Use `TextEncoder`/`btoa`/`atob` instead.
 function base64Encode(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64");
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i] as number);
+  return btoa(binary);
+}
+
+function base64Decode(value: string): string {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
 }
 
 function utf8Length(value: string): number {
@@ -106,9 +119,7 @@ export function createChunkReceiver(
   function finalize(entry: ChunkEntry): void {
     const ordered = [...entry.parts.entries()].sort(([a], [b]) => a - b);
     if (ordered.length !== entry.total) return;
-    const payload = Buffer.from(ordered.map(([, value]) => value).join(""), "base64").toString(
-      "utf8",
-    );
+    const payload = base64Decode(ordered.map(([, value]) => value).join(""));
     const parsed = JSON.parse(payload) as unknown;
     if (entry.payloadKind === "result_value") {
       const id = Number.parseInt(entry.correlationId.slice(2), 10);

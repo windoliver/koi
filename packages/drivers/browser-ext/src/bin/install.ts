@@ -105,8 +105,47 @@ async function ensureExtensionBundle(dir: string): Promise<void> {
   // a repo-local dev id that does not correspond to the bundle actually
   // being copied — producing a silently broken install where Chrome
   // refuses the native host connection.
-  await readFile(join(dir, "manifest.json"), "utf8");
+  const manifestSource = await readFile(join(dir, "manifest.json"), "utf8");
   await readFile(join(dir, "extension-id.txt"), "utf8");
+  // Parse the manifest and verify every referenced asset actually exists
+  // in the bundle. A partial/stale build can otherwise pass validation and
+  // write auth files + NM manifests, only for Chrome to fail at load-time
+  // after the install state has already been committed under ~/.koi.
+  let manifest: {
+    readonly background?: { readonly service_worker?: string };
+    readonly action?: { readonly default_popup?: string };
+    readonly options_page?: string;
+    readonly options_ui?: { readonly page?: string };
+    readonly icons?: Record<string, string>;
+  };
+  try {
+    manifest = JSON.parse(manifestSource) as typeof manifest;
+  } catch (err) {
+    throw new Error(
+      `browser-ext install: manifest.json at ${dir} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const referenced: string[] = [];
+  if (manifest.background?.service_worker) referenced.push(manifest.background.service_worker);
+  if (manifest.action?.default_popup) referenced.push(manifest.action.default_popup);
+  if (manifest.options_page) referenced.push(manifest.options_page);
+  if (manifest.options_ui?.page) referenced.push(manifest.options_ui.page);
+  if (manifest.icons) {
+    for (const path of Object.values(manifest.icons)) {
+      if (typeof path === "string") referenced.push(path);
+    }
+  }
+  for (const relPath of referenced) {
+    try {
+      await readFile(join(dir, relPath));
+    } catch (err) {
+      throw new Error(
+        `browser-ext install: manifest.json references missing asset "${relPath}" in ${dir}. ` +
+          "Bundle is incomplete — rebuild with `bun run build` before install. " +
+          `(cause: ${err instanceof Error ? err.message : String(err)})`,
+      );
+    }
+  }
 }
 
 async function ensureHostEntrypoint(path: string): Promise<void> {

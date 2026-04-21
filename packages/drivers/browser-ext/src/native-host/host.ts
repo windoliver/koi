@@ -125,6 +125,32 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
     now: () => Date.now(),
   });
 
+  // Fail the waiting driver deterministically when a chunk group times out
+  // or is dropped (parse error, payload-kind mismatch). Without this, the
+  // pendingCdpRequests entry would live forever and the driver's awaited
+  // CDP promise would hang until a higher-level timeout fires — a silent
+  // partial-failure path that is especially hard to recover from.
+  const failChunkGroup = (
+    sessionId: string,
+    correlationId: string,
+    reason: "chunk_timeout" | "chunk_dropped",
+  ): void => {
+    // Only `r:${id}` correlation IDs map back to a pending driver request.
+    // Event correlation (`e:...`) has no waiter — nothing to fail.
+    if (!correlationId.startsWith("r:")) return;
+    const id = Number.parseInt(correlationId.slice(2), 10);
+    if (!Number.isFinite(id)) return;
+    const requester = pendingCdpRequests.get(cdpKey(sessionId, id));
+    if (!requester) return;
+    pendingCdpRequests.delete(cdpKey(sessionId, id));
+    drivers.get(requester)?.send({
+      kind: "cdp_error",
+      sessionId,
+      id,
+      error: { code: -32002, message: `chunk reassembly failed: ${reason}` },
+    } as DriverFrame);
+  };
+
   const chunkBuffer = createChunkBuffer({
     events: {
       onFrameReady: (frame) => {
@@ -148,8 +174,8 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
           }
         }
       },
-      onTimeout: () => {},
-      onGroupDrop: () => {},
+      onTimeout: (info) => failChunkGroup(info.sessionId, info.correlationId, "chunk_timeout"),
+      onGroupDrop: (info) => failChunkGroup(info.sessionId, info.correlationId, "chunk_dropped"),
     },
   });
 
@@ -564,13 +590,22 @@ export async function runNativeHost(config: NativeHostConfig): Promise<NativeHos
         // always allowed.
         const isAdmin = driverRoles.get(clientId) === "admin";
         const owner = ownership.get(frame.tabId);
-        const heldByOtherClient = owner?.phase === "committed" && owner.clientId !== clientId;
-        if (heldByOtherClient && !isAdmin) {
+        const committedByOtherClient = owner?.phase === "committed" && owner.clientId !== clientId;
+        // Also block if a FOREIGN client has an in-flight attach for this
+        // tab (pending_consent / attaching). attach-flow enforces exclusive
+        // ownership once the attach commits, so close_tab must honor that
+        // exclusivity before the commit too — otherwise a concurrent
+        // non-admin client can tear the tab down mid-attach.
+        const inFlightByOtherClient = inFlight
+          .entriesForTab(frame.tabId)
+          .some((entry) => entry.clientId !== clientId);
+        if ((committedByOtherClient || inFlightByOtherClient) && !isAdmin) {
           drivers.get(clientId)?.send({
             kind: "tab_closed",
             requestId: frame.requestId,
             ok: false,
-            error: "no_permission: tab is held by another client's active attach session",
+            error:
+              "no_permission: tab is held by another client's active or in-flight attach session",
           });
           return;
         }

@@ -67,10 +67,44 @@ export function isPrivateOrigin(origin: string): boolean {
   return isIpv4Private(hostname);
 }
 
+/**
+ * Opaque / privileged schemes that must never be grantable — they collapse
+ * to `origin === "null"` (file://, data://, sandboxed iframes) or reach
+ * trust boundaries beyond SSRF (chrome://, chrome-extension://, javascript:).
+ * Persisting an `always` grant for any of these would bucket unrelated
+ * documents under a single reusable permission.
+ */
+const NON_GRANTABLE_SCHEMES: ReadonlySet<string> = new Set([
+  "file:",
+  "data:",
+  "blob:",
+  "about:",
+  "chrome:",
+  "chrome-extension:",
+  "javascript:",
+  "view-source:",
+]);
+
+export function isNonGrantableOrigin(origin: string): boolean {
+  if (origin === "null") return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    // A string that doesn't parse as a URL is not a usable origin either.
+    return true;
+  }
+  return NON_GRANTABLE_SCHEMES.has(parsed.protocol);
+}
+
 export async function isOriginAllowedByPolicy(
   storage: ExtensionStorage,
   origin: string,
 ): Promise<boolean> {
+  // Opaque / privileged origins are NEVER grantable — a persisted grant on
+  // "null" would apply to every opaque document in this browser session,
+  // and file:/chrome:/etc. cross trust boundaries beyond this feature.
+  if (isNonGrantableOrigin(origin)) return false;
   if (!isPrivateOrigin(origin)) return true;
   const allowlist = await storage.getPrivateOriginAllowlist();
   return allowlist.includes(origin);

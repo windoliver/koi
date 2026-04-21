@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { promises as dnsPromises } from "node:dns";
 import { readFile } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { createConnection } from "node:net";
@@ -106,6 +107,38 @@ interface RuntimeConnection {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+// Minimal inline private-address check for tabNew() URL validation.
+// Keeps in sync with the broader check in @koi/browser-playwright — we
+// cannot import that package (L2→L2 violation), so duplicate the
+// literal-IP coverage here. Hostnames are NOT resolved (no DNS) because
+// tabNew is synchronous with respect to the host; DNS-based checks belong
+// at the route/Fetch layer that Chromium drives.
+function isRfc1918OrLoopback(ipOrHost: string): boolean {
+  const lower = ipOrHost.toLowerCase();
+  if (
+    /^127\./.test(lower) ||
+    /^10\./.test(lower) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(lower) ||
+    /^192\.168\./.test(lower) ||
+    /^169\.254\./.test(lower) ||
+    lower === "0.0.0.0"
+  ) {
+    return true;
+  }
+  // IPv6 loopback / link-local / unique local / v4-mapped forms.
+  if (
+    lower === "::1" ||
+    lower.startsWith("fe80:") ||
+    lower.startsWith("fc") ||
+    lower.startsWith("fd")
+  ) {
+    return true;
+  }
+  const mapped = /^::ffff:([\d.]+)$/.exec(lower);
+  if (mapped?.[1]) return isRfc1918OrLoopback(mapped[1]);
+  return false;
 }
 
 async function readAuthToken(config: ExtensionDriverConfig): Promise<string> {
@@ -722,11 +755,81 @@ export function createExtensionBrowserDriver(
     // tab (invalidating the cached delegate so the next interaction attaches
     // to the new target) instead.
     async tabNew(opts?: BrowserTabNewOptions): Promise<Result<BrowserTabInfo, KoiError>> {
-      // Routed through the extension's chrome.tabs.create — the native-host
-      // tab IDs returned from this match the IDs tabList surfaces. Match
-      // standard BrowserDriver semantics by also making the new tab the
-      // active selection: tabNew() → navigate()/snapshot()/click() should
-      // work without an extra selectTargetTab() call.
+      // Apply the same scheme + private-address validation as navigate()
+      // before forwarding to chrome.tabs.create. Without this, an agent
+      // could open http://127.0.0.1, file://, chrome://, javascript:, etc.
+      // via tabNew({url}) and bypass the guard that navigate() enforces.
+      if (opts?.url !== undefined) {
+        let parsed: URL;
+        try {
+          parsed = new URL(opts.url);
+        } catch {
+          return {
+            ok: false,
+            error: createExtensionError("HOST_SPAWN_FAILED", `tabNew: invalid URL: ${opts.url}`),
+          };
+        }
+        const scheme = parsed.protocol;
+        if (scheme !== "http:" && scheme !== "https:" && scheme !== "about:") {
+          return {
+            ok: false,
+            error: createExtensionError(
+              "EXT_USER_DENIED",
+              `tabNew blocked non-HTTP(S) scheme: ${scheme}. Allowed: http://, https://, about:.`,
+            ),
+          };
+        }
+        const hostname = parsed.hostname;
+        const bare =
+          hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+        const isIpLiteral =
+          /^\d+(\.\d+){3}$/.test(bare) || (bare.includes(":") && /^[\da-fA-F:.]+$/.test(bare));
+        const isLocalHostname = bare === "localhost" || bare.endsWith(".localhost");
+        if (isLocalHostname || (isIpLiteral && isRfc1918OrLoopback(bare))) {
+          return {
+            ok: false,
+            error: createExtensionError(
+              "EXT_USER_DENIED",
+              `tabNew blocked private-address target: ${opts.url}`,
+            ),
+          };
+        }
+        // Hostname — resolve and check. Without this, a public-looking name
+        // that resolves to RFC1918/loopback (split-horizon or DNS rebinding
+        // target) would bypass the guard because tabs.create fires the
+        // network request before any Playwright route is installed.
+        //
+        // Fail CLOSED on DNS lookup failure: unlike navigate(), tabNew
+        // opens the tab via chrome.tabs.create immediately, BEFORE any
+        // page-level rebinding guard exists for the new tab. A
+        // browser-only-resolvable hostname (enterprise / hosts file /
+        // mDNS / split-horizon) that Node can't resolve would otherwise
+        // reach an internal service with no recourse.
+        if (!isIpLiteral && !isLocalHostname) {
+          try {
+            const addresses = await dnsPromises.lookup(bare, { all: true, verbatim: true });
+            for (const { address } of addresses) {
+              if (isRfc1918OrLoopback(address)) {
+                return {
+                  ok: false,
+                  error: createExtensionError(
+                    "EXT_USER_DENIED",
+                    `tabNew blocked private-address-resolving hostname: ${bare} → ${address}`,
+                  ),
+                };
+              }
+            }
+          } catch (err) {
+            return {
+              ok: false,
+              error: createExtensionError(
+                "EXT_USER_DENIED",
+                `tabNew blocked unresolvable hostname: ${bare}. tabNew opens before any page-level guard exists; fail-closed policy denies unresolved names. (${err instanceof Error ? err.message : String(err)})`,
+              ),
+            };
+          }
+        }
+      }
       const result = await runtime.openTab(opts?.url);
       if (result.ok) {
         const numericTabId = Number(result.value.tabId);
@@ -882,6 +985,12 @@ export function createExtensionBrowserDriver(
         await cachedDelegate.dispose?.();
         cachedDelegate = null;
       }
+      // Await any queued bridge teardown from earlier tab-switch /
+      // transport-loss invalidations. Without this, an in-flight
+      // bridge.close() can run AFTER runtime.dispose() — which means its
+      // host-side detach goes to a closed transport and is silently
+      // swallowed, leaking a committed attach owner on the host side.
+      await pendingBridgeClose.catch(() => {});
       await runtime.dispose();
     },
     attachLoopbackBridge(tabId, origin) {
