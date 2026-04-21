@@ -67,7 +67,8 @@ function toHex(buffer: ArrayBuffer): string {
 }
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", data);
+  // crypto.subtle.digest requires Uint8Array<ArrayBuffer>; slice() always returns one.
+  const digest = await crypto.subtle.digest("SHA-256", data.slice());
   return toHex(digest);
 }
 
