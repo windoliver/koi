@@ -57,15 +57,23 @@ function validateRow(row: unknown): ViolationRow {
   return r as unknown as ViolationRow;
 }
 
-function mapRow(raw: unknown): Violation {
-  const row = validateRow(raw);
+function mapRow(row: ViolationRow): Violation {
+  let context: Record<string, unknown> | undefined;
+  if (row.context_json !== null) {
+    try {
+      context = JSON.parse(row.context_json) as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(
+        `violations: malformed context_json for row id=${row.id}: ${String(row.context_json).slice(0, 80)}`,
+        { cause: err },
+      );
+    }
+  }
   return {
     rule: row.rule,
     severity: row.severity as ViolationSeverity,
     message: row.message,
-    ...(row.context_json !== null
-      ? { context: JSON.parse(row.context_json) as Record<string, unknown> }
-      : {}),
+    ...(context !== undefined ? { context } : {}),
   };
 }
 
