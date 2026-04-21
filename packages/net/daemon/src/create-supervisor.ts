@@ -465,7 +465,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return {
         ok: false,
         error: {
-          code: "EXTERNAL",
+          code: "UNAVAILABLE",
           message: "Supervisor is shutting down; not accepting new workers",
           retryable: false,
         },
@@ -487,7 +487,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return {
         ok: false,
         error: {
-          code: "RATE_LIMIT",
+          code: "RESOURCE_EXHAUSTED",
           message: `Supervisor at maxWorkers=${config.maxWorkers}`,
           retryable: true,
         },
@@ -711,7 +711,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return {
         ok: false,
         error: {
-          code: "EXTERNAL",
+          code: "UNAVAILABLE",
           message: reason,
           retryable: false,
         },
