@@ -61,6 +61,16 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
   }
 
   const bufferSize = config.bufferSize ?? DEFAULT_EVENT_BUFFER_SIZE;
+  if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `bufferSize must be a positive integer, got ${String(bufferSize)}`,
+        retryable: false,
+      },
+    };
+  }
   const eventBuffer = createEventRingBuffer(bufferSize);
   const { middleware, controller } = createDebugMiddleware(eventBuffer);
   const session = createDebugSession({ agent: config.agent, controller });

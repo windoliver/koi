@@ -177,11 +177,19 @@ export function createDebugMiddleware(
       const callId: ToolCallId = toolCallId(request.callId ?? crypto.randomUUID());
 
       await processEvent({ kind: "tool_call_start", toolName: request.toolId, callId });
-      const response = await next(request);
-      await processEvent({ kind: "tool_call_end", callId, result: response.output });
-      await processEvent({ kind: "tool_result", callId, output: response.output });
-
-      return response;
+      try {
+        const response = await next(request);
+        await processEvent({ kind: "tool_call_end", callId, result: response.output });
+        await processEvent({ kind: "tool_result", callId, output: response.output });
+        return response;
+      } catch (e: unknown) {
+        await processEvent({
+          kind: "custom",
+          type: "tool_call_error",
+          data: { callId: callId as string, error: String(e) },
+        });
+        throw e;
+      }
     },
 
     wrapModelCall: async (
@@ -192,10 +200,18 @@ export function createDebugMiddleware(
       if (!active) return next(request);
 
       await processEvent({ kind: "custom", type: "model_call_start", data: undefined });
-      const response = await next(request);
-      await processEvent({ kind: "custom", type: "model_call_end", data: undefined });
-
-      return response;
+      try {
+        const response = await next(request);
+        await processEvent({ kind: "custom", type: "model_call_end", data: undefined });
+        return response;
+      } catch (e: unknown) {
+        await processEvent({
+          kind: "custom",
+          type: "model_call_error",
+          data: { error: String(e) },
+        });
+        throw e;
+      }
     },
 
     wrapModelStream: async function* (
@@ -209,15 +225,22 @@ export function createDebugMiddleware(
       }
 
       await processEvent({ kind: "custom", type: "model_call_start", data: undefined });
-
-      for await (const chunk of next(request)) {
-        if (chunk.kind === "text_delta") {
-          await processEvent({ kind: "text_delta", delta: chunk.delta });
+      try {
+        for await (const chunk of next(request)) {
+          if (chunk.kind === "text_delta") {
+            await processEvent({ kind: "text_delta", delta: chunk.delta });
+          }
+          yield chunk;
         }
-        yield chunk;
+        await processEvent({ kind: "custom", type: "model_call_end", data: undefined });
+      } catch (e: unknown) {
+        await processEvent({
+          kind: "custom",
+          type: "model_call_error",
+          data: { error: String(e) },
+        });
+        throw e;
       }
-
-      await processEvent({ kind: "custom", type: "model_call_end", data: undefined });
     },
   };
 

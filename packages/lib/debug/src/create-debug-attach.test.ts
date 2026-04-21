@@ -331,4 +331,107 @@ describe("createDebugObserve", () => {
 
     expect(observed).toContain("breakpoint_hit");
   });
+
+  test("observer inspectComponent returns immutable snapshot (not live reference)", () => {
+    const agent = makeAgent();
+    const inner = { value: 42 };
+    const data = [inner];
+    (agent.components() as Map<string, unknown>).set("test:arr", data);
+
+    createDebugAttach({ agent });
+    const observeResult = createDebugObserve(agent.pid.id, agent);
+    if (!observeResult.ok) return;
+    const observer = observeResult.value;
+
+    const snap = observer.inspectComponent(
+      "test:arr" as import("@koi/core").SubsystemToken<unknown>,
+    );
+    expect(snap.ok).toBe(true);
+    if (!snap.ok) return;
+
+    // Mutate the live array — snapshot must not change
+    inner.value = 999;
+    const snapData = snap.value.data as Array<{ value: number }>;
+    expect(snapData[0]?.value).toBe(42);
+  });
+
+  test("observer inspectComponent returns VALIDATION error for non-serializable component", () => {
+    const agent = makeAgent();
+    // Circular reference causes JSON.stringify to throw
+    const circular: Record<string, unknown> = {};
+    circular["self"] = circular;
+    (agent.components() as Map<string, unknown>).set("test:fn", circular);
+
+    createDebugAttach({ agent });
+    const observeResult = createDebugObserve(agent.pid.id, agent);
+    if (!observeResult.ok) return;
+    const observer = observeResult.value;
+
+    const snap = observer.inspectComponent(
+      "test:fn" as import("@koi/core").SubsystemToken<unknown>,
+    );
+    expect(snap.ok).toBe(false);
+    if (snap.ok) return;
+    expect(snap.error.code).toBe("VALIDATION");
+  });
+});
+
+describe("createDebugAttach — bufferSize validation", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("returns VALIDATION error for bufferSize 0", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent, bufferSize: 0 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("returns VALIDATION error for negative bufferSize", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent, bufferSize: -5 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("returns VALIDATION error for non-integer bufferSize", () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent, bufferSize: 1.5 });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("wrapToolCall emits tool_call_error custom event on thrown exception", async () => {
+    const agent = makeAgent();
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    const fakeRequest: import("@koi/core").ToolRequest = { toolId: "boom", input: {} };
+    const fakeNext = async (
+      _r: import("@koi/core").ToolRequest,
+    ): Promise<import("@koi/core").ToolResponse> => {
+      throw new Error("kaboom");
+    };
+
+    await expect(
+      middleware.wrapToolCall?.(
+        { turnIndex: 0 } as import("@koi/core").TurnContext,
+        fakeRequest,
+        fakeNext,
+      ),
+    ).rejects.toThrow("kaboom");
+
+    const events = session.events();
+    const errEvt = events.find(
+      (e) =>
+        e.kind === "custom" &&
+        (e as Extract<import("@koi/core").EngineEvent, { kind: "custom" }>).type ===
+          "tool_call_error",
+    );
+    expect(errEvt).toBeDefined();
+  });
 });
