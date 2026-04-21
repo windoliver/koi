@@ -972,6 +972,36 @@ describe("observer rejects terminated agent", () => {
   });
 });
 
+describe("agent-termination watcher", () => {
+  beforeEach(() => clearAllDebugSessions());
+  afterEach(() => clearAllDebugSessions());
+
+  test("paused session auto-releases when agent terminates externally", async () => {
+    const agent = makeAgent("pause-term") as import("@koi/core").Agent & {
+      state: import("@koi/core").ProcessState;
+    };
+    const result = createDebugAttach({ agent });
+    if (!result.ok) return;
+    const { session, middleware } = result.value;
+
+    session.breakOn({ kind: "turn", turnIndex: 0 });
+    const pausePromise = fireTurnStart(middleware, 0);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(session.state().kind).toBe("paused");
+
+    // Simulate external agent termination while paused
+    agent.state = "terminated";
+
+    // Wait for the watcher to notice (poll interval is 250ms)
+    await new Promise((r) => setTimeout(r, 350));
+
+    // The gate should have been released by detachWithReason("agent_terminated")
+    await pausePromise;
+    expect(session.state().kind).toBe("detached");
+    expect(hasDebugSession(agent.pid.id)).toBe(false);
+  });
+});
+
 describe("debug middleware phase", () => {
   test("debug middleware is in resolve phase — runs AFTER intercept-tier security guards", () => {
     const { createDebugMiddleware } =

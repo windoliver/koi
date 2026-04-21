@@ -101,11 +101,29 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
   };
   activeDebugSessions.set(agentKey, bundle);
 
-  // Wrap detach to clean up module-level tracking
+  // Agent-termination watcher: polls agent.state so a paused gate is always
+  // released even if no one explicitly calls session.detach(). Without this,
+  // an external agent kill while paused would hang the turn runner forever.
+  const terminationWatcher: ReturnType<typeof setInterval> = setInterval(() => {
+    if (config.agent.state === "terminated") {
+      clearInterval(terminationWatcher);
+      if (activeDebugSessions.get(agentKey) === bundle) {
+        detachWithReason("agent_terminated");
+        activeDebugSessions.delete(agentKey);
+      }
+    }
+  }, AGENT_TERMINATION_POLL_MS);
+  // Don't keep the process alive just for the watcher (Node.js / Bun convention)
+  if (typeof terminationWatcher === "object" && "unref" in terminationWatcher) {
+    (terminationWatcher as { unref: () => void }).unref();
+  }
+
+  // Wrap detach to clean up module-level tracking + stop the watcher
   const originalDetach = session.detach;
   const wrappedSession: DebugSession = {
     ...session,
     detach: () => {
+      clearInterval(terminationWatcher);
       activeDebugSessions.delete(agentKey);
       return originalDetach();
     },
@@ -113,6 +131,8 @@ export function createDebugAttach(config: DebugAttachConfig): Result<DebugAttach
 
   return { ok: true, value: { session: wrappedSession, middleware } };
 }
+
+const AGENT_TERMINATION_POLL_MS = 250;
 
 /** @internal Use session.createObserver() instead. Kept for testing convenience only. */
 export function createDebugObserve(agentId: AgentId): Result<DebugObserver, KoiError> {

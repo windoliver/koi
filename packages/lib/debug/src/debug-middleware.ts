@@ -241,8 +241,49 @@ export function createDebugMiddleware(
       await processEvent({ kind: "custom", type: "model_call_start", data: undefined });
       try {
         for await (const chunk of next(request)) {
+          // Surface every ModelChunk variant so operators can diagnose streaming
+          // failure paths (malformed tool args, thinking stalls, usage overruns,
+          // terminal done/error). Untyped chunks are preserved as custom events.
           if (chunk.kind === "text_delta") {
             await processEvent({ kind: "text_delta", delta: chunk.delta });
+          } else if (chunk.kind === "thinking_delta") {
+            await processEvent({
+              kind: "custom",
+              type: "thinking_delta",
+              data: { delta: chunk.delta },
+            });
+          } else if (chunk.kind === "tool_call_start") {
+            await processEvent({
+              kind: "tool_call_start",
+              toolName: chunk.toolName,
+              callId: chunk.callId,
+            });
+          } else if (chunk.kind === "tool_call_delta") {
+            await processEvent({
+              kind: "custom",
+              type: "tool_call_delta",
+              data: { callId: chunk.callId as string, delta: chunk.delta },
+            });
+          } else if (chunk.kind === "tool_call_end") {
+            await processEvent({ kind: "tool_call_end", callId: chunk.callId, result: undefined });
+          } else if (chunk.kind === "usage") {
+            await processEvent({
+              kind: "custom",
+              type: "model_usage",
+              data: { inputTokens: chunk.inputTokens, outputTokens: chunk.outputTokens },
+            });
+          } else if (chunk.kind === "error") {
+            await processEvent({
+              kind: "custom",
+              type: "model_stream_error",
+              data: {
+                message: chunk.message,
+                code: chunk.code,
+                retryable: chunk.retryable ?? null,
+              },
+            });
+          } else if (chunk.kind === "done") {
+            await processEvent({ kind: "custom", type: "model_stream_done", data: undefined });
           }
           yield chunk;
         }
