@@ -1,6 +1,7 @@
-# Supervision Activation (in-process) — 3b-5a
+# Supervision Activation — 3b-5
 
-> Status: in-process supervision is functional. Subprocess isolation lands in 3b-5c.
+> Status: in-process (3b-5a) + subprocess (3b-5c) isolation both functional.
+> IPC envelope (3b-5b) is available for worker bootstraps that need it.
 
 ## What this enables
 
@@ -112,10 +113,138 @@ registry.register({
 await wiring[Symbol.asyncDispose]();
 ```
 
-## What 3b-5b and 3b-5c add
+## 3b-5b — IPC envelope
 
-- **3b-5b** — IPC envelope over Bun IPC (`{ koi: "heartbeat" | "engine-event" | "message" | "terminate" | "result" }`) + new worker bootstrap entry in `@koi/daemon/bin/worker.ts`.
-- **3b-5c** — Daemon-backed `SpawnChildFn` adapter + `attachRegistry` wiring + `logPath` routing + 24h opportunistic sweep in `registry-supervisor-bridge.ts`. Enables `isolation: "subprocess"` per child.
+`WorkerIpcMessage` (`@koi/core/worker-ipc`) is a discriminated union over
+`{ koi: "heartbeat" | "engine-event" | "message" | "terminate" | "result" }`
+that worker bootstraps can use for parent↔child messaging. The envelope is
+validated via `validateWorkerIpcMessage(raw)`; the exact bootstrap script is
+left to each deployment (the daemon adapter accepts an arbitrary
+`commandBuilder`, so callers can point at whichever worker entrypoint their
+runtime ships).
+
+## 3b-5c — Subprocess isolation
+
+For `childSpec.isolation: "subprocess"`, compose the daemon-backed
+`SpawnChildFn` with the in-process adapter via `createDispatchingSpawnChildFn`:
+
+```typescript
+import { agentId, type AgentManifest } from "@koi/core";
+import { createInMemoryRegistry } from "@koi/engine-reconcile";
+import {
+  createDispatchingSpawnChildFn,
+  createInProcessSpawnChildFn,
+  wireSupervision,
+  spawnChildAgent,
+} from "@koi/engine";
+import {
+  attachAgentRegistry,
+  attachRegistry,
+  createDaemonSpawnChildFn,
+  createFileSessionRegistry,
+  createSubprocessBackend,
+  createSupervisor,
+} from "@koi/daemon";
+
+const agentRegistry = createInMemoryRegistry();
+const sessionRegistry = createFileSessionRegistry({ dir: "/var/koi/sessions" });
+
+const supResult = createSupervisor({
+  maxWorkers: 16,
+  shutdownDeadlineMs: 5_000,
+  backends: { subprocess: createSubprocessBackend() },
+});
+if (!supResult.ok) throw new Error("supervisor init failed");
+const supervisor = supResult.value;
+
+// Two bridges: one mirrors worker events into the file-backed session
+// registry (for `koi bg ps` visibility); the other mirrors the same events
+// into the AgentRegistry so the supervision reconciler can observe child
+// lifecycles through its usual level-triggered loop.
+const sessionBridge = attachRegistry({ supervisor, registry: sessionRegistry });
+const agentBridge = attachAgentRegistry({ supervisor, agentRegistry });
+
+const subprocessSpawn = createDaemonSpawnChildFn({
+  supervisor,
+  sessionRegistry,
+  agentRegistry,
+  bridge: agentBridge,
+  commandBuilder: (_parent, _child, manifest) => [
+    "bun",
+    "run",
+    "./workers/supervised-worker.ts",
+    "--manifest", JSON.stringify(manifest),
+  ],
+  logDir: "/var/koi/logs",
+});
+
+const inProcessSpawn = createInProcessSpawnChildFn({
+  registry: agentRegistry,
+  spawn: async (parentId, childSpec, childManifest) => {
+    const result = await spawnChildAgent({
+      parentAgent: /* ... */,
+      manifest: childManifest,
+      adapter: /* ... */,
+      registry: agentRegistry,
+      metadata: { childSpecName: childSpec.name },
+    });
+    return result.childId;
+  },
+});
+
+const supervisorId = agentId("root-supervisor");
+const manifest: AgentManifest = {
+  name: "hybrid-supervisor",
+  version: "1.0.0",
+  model: { name: "gpt-4" },
+  supervision: {
+    strategy: { kind: "one_for_one" },
+    maxRestarts: 5,
+    maxRestartWindowMs: 60_000,
+    children: [
+      { name: "fast-child", restart: "transient", isolation: "in-process" },
+      { name: "crashy-worker", restart: "permanent", isolation: "subprocess" },
+    ],
+  },
+};
+
+const wiring = wireSupervision({
+  registry: agentRegistry,
+  manifests: new Map([[supervisorId, manifest]]),
+  spawnChild: createDispatchingSpawnChildFn({
+    inProcess: inProcessSpawn,
+    subprocess: subprocessSpawn,
+  }),
+});
+
+// Register the supervisor → first reconcile spawns both children through
+// their respective isolation paths.
+agentRegistry.register({
+  agentId: supervisorId,
+  status: {
+    phase: "running",
+    generation: 0,
+    conditions: [],
+    reason: { kind: "assembly_complete" },
+    lastTransitionAt: Date.now(),
+  },
+  agentType: "worker",
+  metadata: {},
+  registeredAt: Date.now(),
+  priority: 10,
+});
+
+// On shutdown: dispose in reverse construction order.
+await wiring[Symbol.asyncDispose]();
+await agentBridge.close();
+await sessionBridge.close();
+await supervisor.shutdown("shutdown");
+```
+
+The subprocess path also enables:
+- `koi bg ps` listings of supervised subprocess workers.
+- 24h terminal-record retention with opportunistic sweep (`registry-supervisor-bridge.ts`).
+- `koi bg ps --all` to include stale post-mortems older than the window.
 
 ## Known follow-ups
 
@@ -133,6 +262,11 @@ await wiring[Symbol.asyncDispose]();
 - Spec: `docs/superpowers/specs/2026-04-21-v2-3b-5-supervision-wiring-design.md`
 - Plan: `docs/superpowers/plans/2026-04-21-v2-3b-5a-supervision-wiring.md`
 - Issue: [#1866](https://github.com/windoliver/koi/issues/1866)
-- Integration test: `packages/kernel/engine/src/__tests__/supervision-activation.integration.test.ts`
+- Integration test (in-process): `packages/kernel/engine/src/__tests__/supervision-activation.integration.test.ts`
+- Integration test (subprocess): `packages/net/daemon/src/__tests__/subprocess-supervision.integration.test.ts`
 - Reconciler: `packages/kernel/engine-reconcile/src/supervision-reconciler.ts`
 - L0 schema: `packages/kernel/core/src/supervision.ts`
+- IPC envelope: `packages/kernel/core/src/worker-ipc.ts`
+- Daemon adapter: `packages/net/daemon/src/daemon-spawn-child-fn.ts`
+- Agent-registry bridge: `packages/net/daemon/src/agent-registry-bridge.ts`
+- Dispatching adapter: `packages/kernel/engine/src/dispatching-spawn-child-fn.ts`

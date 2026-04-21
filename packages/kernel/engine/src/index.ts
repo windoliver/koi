@@ -165,6 +165,9 @@ export { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 // delivery policy
 export type { ApplyDeliveryPolicyConfig, DeliveryHandle } from "./delivery-policy.js";
 export { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
+// dispatching spawn child fn
+export type { CreateDispatchingSpawnChildFnOptions } from "./dispatching-spawn-child-fn.js";
+export { createDispatchingSpawnChildFn } from "./dispatching-spawn-child-fn.js";
 // dispose
 export { disposeAll } from "./dispose.js";
 // group operations

@@ -6,8 +6,10 @@
  * registry entry so the reconciler's metadata-based child match survives
  * restarts.
  *
- * Subprocess-isolated children land in 3b-5c — this adapter only serves
- * childSpec.isolation === "in-process" (the default).
+ * This adapter only serves `childSpec.isolation === "in-process"` (the
+ * default). Subprocess-isolated children route through
+ * `createDaemonSpawnChildFn` in `@koi/daemon`; compose the two via
+ * `createDispatchingSpawnChildFn` when a supervisor has mixed children.
  */
 
 import type { AgentId, AgentManifest, AgentRegistry, ChildSpec } from "@koi/core";
@@ -40,7 +42,7 @@ export function createInProcessSpawnChildFn(
     const isolation = childSpec.isolation ?? DEFAULT_CHILD_ISOLATION;
     if (isolation !== "in-process") {
       throw new Error(
-        `in-process adapter cannot spawn childSpec.isolation="${isolation}" (child="${childSpec.name}"); subprocess adapter ships in 3b-5c`,
+        `in-process adapter cannot spawn childSpec.isolation="${isolation}" (child="${childSpec.name}"); route subprocess children through createDaemonSpawnChildFn (@koi/daemon) or use createDispatchingSpawnChildFn`,
       );
     }
 
