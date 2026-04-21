@@ -1807,6 +1807,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           ...(handle.governanceAlertThresholds !== undefined
             ? { alertThresholds: handle.governanceAlertThresholds }
             : {}),
+          ...(handle.violationStore !== undefined ? { violationStore: handle.violationStore } : {}),
           // Static capability mirror — matches the createGovernanceMiddleware's
           // describeCapabilities() output. Hardcoded here to avoid plumbing the
           // middleware instance back from runtime-factory just for one string.

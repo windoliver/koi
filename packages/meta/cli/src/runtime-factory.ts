@@ -55,6 +55,7 @@ import type {
   RuleDescriptor,
   SessionId,
   SessionTranscript,
+  ViolationStore,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
 import { DEFAULT_PRICING, resolvePricing } from "@koi/cost-aggregator";
@@ -922,6 +923,13 @@ export interface KoiRuntimeHandle {
    * `--no-governance` fails open on the TUI toast + alerts-file paths.
    */
   readonly governanceEnabled: boolean;
+  /**
+   * Optional SQLite violation store — present when `config.violationSqlitePath`
+   * is set. Passed to `createGovernanceBridge` so the TUI governance view can
+   * query recent persisted violations via `bridge.loadRecentViolations()`.
+   * Undefined when violations persistence is not configured.
+   */
+  readonly violationStore: ViolationStore | undefined;
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -2661,6 +2669,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       governanceRules,
       governanceAlertThresholds: config.governanceAlertThresholds,
       governanceEnabled,
+      violationStore,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a
