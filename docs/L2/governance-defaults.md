@@ -211,3 +211,50 @@ in the TUI view. Required for: `@koi/tui` `/governance` view.
 - [`@koi/governance-core`](./governance-core.md) — middleware that consumes this config
 - [`@koi/core/governance`](../../packages/kernel/core/src/governance.ts) — `GovernanceController`, `GovernanceEvent`, `GOVERNANCE_VARIABLES`
 - [`@koi/core/governance-backend`](../../packages/kernel/core/src/governance-backend.ts) — `GovernanceBackend`, `PolicyRequest`, `GovernanceVerdict`
+
+## Audit-Sink-Backed ComplianceRecorder
+
+`createAuditSinkComplianceRecorder(sink, ctx)` wraps any `AuditSink`
+(NDJSON, SQLite, Nexus) so that governance compliance records flow into the
+same audit stream as model and tool calls. Each `ComplianceRecord` is mapped
+to an `AuditEntry` with `kind: "compliance_event"`.
+
+### Factory
+
+```ts
+import { createAuditSinkComplianceRecorder } from "@koi/governance-defaults";
+import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+
+const sink = createNdjsonAuditSink({ filePath: "/tmp/audit.ndjson" });
+const compliance = createAuditSinkComplianceRecorder(sink, {
+  sessionId: "sess-abc",
+});
+
+backend.compliance = compliance;
+```
+
+### Mapping
+
+| `ComplianceRecord` field | `AuditEntry` field |
+|--------------------------|--------------------|
+| `evaluatedAt`            | `timestamp`        |
+| (ctx) `sessionId`        | `sessionId`        |
+| `request.agentId`        | `agentId`          |
+| (constant `0`)           | `turnIndex`        |
+| (constant `"compliance_event"`) | `kind`      |
+| `request`                | `request`          |
+| `verdict`                | `response`         |
+| (constant `0`)           | `durationMs`       |
+| `{ requestId, policyFingerprint }` | `metadata` |
+
+### Error handling
+
+`recordCompliance()` returns the original record synchronously and fires
+`sink.log()` without awaiting. Rejections are routed to `ctx.onError` (default
+`console.warn`). The recorder never throws into the governance hot path.
+
+### Fan-out
+
+When multiple audit sinks are active, compose their recorders with
+`fanOutComplianceRecorder([a, b])`. Single-entry arrays pass through. Empty
+arrays return a no-op recorder.
