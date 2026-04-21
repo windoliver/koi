@@ -257,3 +257,5 @@ All MCP tools have `origin: "operator"` — they are operator-configured, not bu
 9. **Async-ready auth** — `token()` returns `string | Promise<string> | undefined` so the interface never needs a breaking change when OAuth 2.1 support is added.
 
 > **Maintenance note (PR #1506):** Fixed Biome lint warnings in test files (`noTemplateCurlyInString` in env-var expansion tests, `noNonNullAssertion` in e2e test). No functional changes.
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->
