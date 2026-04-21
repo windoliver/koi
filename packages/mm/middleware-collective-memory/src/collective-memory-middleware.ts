@@ -112,6 +112,9 @@ export function createCollectiveMemoryMiddleware(
   // NOT silently fall back to the agent-only brick. Callers explicitly opt in
   // when wiring an unmodifiable legacy string-only resolver.
   const enableLegacyResolverCompat = config.enableLegacyResolverCompat ?? false;
+  // Default true: refuse to write when the loaded brick lacks an optimistic
+  // concurrency token. Without storeVersion the update would be last-writer-wins.
+  const requireStoreVersion = config.requireStoreVersion ?? true;
 
   function acceptLearning(content: string): boolean {
     if (isInstruction(content)) return false;
@@ -476,9 +479,15 @@ export function createCollectiveMemoryMiddleware(
 
       // Helper: clear the in-flight gate without committing the one-shot flag,
       // so a later turn can retry injection after a transient failure.
+      // Always clears pendingInjection too — concurrent waiters must NOT replay
+      // an injection block that the leader did not successfully dispatch.
       const clearGate = (err?: unknown): void => {
         const current = getSession(ctx.session.sessionId);
-        sessions.set(ctx.session.sessionId, { ...current, inFlightInjection: undefined });
+        sessions.set(ctx.session.sessionId, {
+          ...current,
+          inFlightInjection: undefined,
+          pendingInjection: undefined,
+        });
         if (err !== undefined) rejectInFlight?.(err);
         else resolveInFlight?.();
       };
@@ -626,7 +635,11 @@ export function createCollectiveMemoryMiddleware(
     | { readonly ok: true }
     | {
         readonly ok: false;
-        readonly reason: "load-failed" | "update-failed" | "conflict-exhausted";
+        readonly reason:
+          | "load-failed"
+          | "update-failed"
+          | "conflict-exhausted"
+          | "no-store-version";
         readonly cause?: unknown;
       }
   > {
@@ -660,6 +673,12 @@ export function createCollectiveMemoryMiddleware(
       const existing: CollectiveMemory =
         loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
       const storeVersion = loadResult.value.storeVersion;
+      // Fail-closed when the brick lacks a CAS token. Without it the update
+      // is last-writer-wins and concurrent spawn completions can silently
+      // overwrite each other's learnings.
+      if (requireStoreVersion && storeVersion === undefined) {
+        return { ok: false, reason: "no-store-version" };
+      }
 
       const merged = [...existing.entries, ...newEntries];
       const deduped = deduplicateEntries(merged, dedupThreshold, nowMs);
@@ -713,6 +732,9 @@ export function createCollectiveMemoryMiddleware(
       const memory: CollectiveMemory =
         loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
       const storeVersion = loadResult.value.storeVersion;
+      // Same fail-closed gate as persistLearnings — versionless bricks would
+      // be last-writer-wins and clobber concurrent persistence calls.
+      if (requireStoreVersion && storeVersion === undefined) return;
       const nowMs = Date.now();
 
       const updatedEntries = memory.entries.map((e) =>

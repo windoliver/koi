@@ -42,9 +42,13 @@ function createMockBrick(partial?: Partial<BrickArtifact>): BrickArtifact {
 
 function createMockForgeStore(partial?: Partial<BrickArtifact>): ForgeStore {
   const stored = createMockBrick(partial);
+  // Most middleware tests now require a storeVersion (CAS token) due to the
+  // requireStoreVersion fail-closed default. The wrapping shape mirrors the
+  // L0 ForgeStore.load contract: { value: { ...brick, storeVersion } }.
+  const loaded = { ...stored, storeVersion: "v1" };
   return {
     save: mock(async () => ({ ok: true as const, value: undefined })),
-    load: mock(async () => ({ ok: true as const, value: stored })),
+    load: mock(async () => ({ ok: true as const, value: loaded })),
     search: mock(async () => ({ ok: true as const, value: [] as readonly BrickArtifact[] })),
     remove: mock(async () => ({ ok: true as const, value: undefined })),
     update: mock(async () => ({ ok: true as const, value: undefined })),
@@ -259,6 +263,34 @@ describe("createCollectiveMemoryMiddleware", () => {
       // Turn 3: model call without intervening write → injected flag persists, no re-injection
       await mw.wrapModelCall?.(ctx, modelReq, modelNext);
       expect(injectedCount).toBe(2);
+    });
+
+    test("fails closed (no write) when brick lacks storeVersion (requireStoreVersion default)", async () => {
+      // Build a store whose load returns no storeVersion. requireStoreVersion is
+      // true by default → persistLearnings should refuse to update.
+      const onError = mock(() => undefined);
+      const store: ForgeStore = {
+        save: mock(async () => ({ ok: true as const, value: undefined })),
+        // No storeVersion field → fail-closed
+        load: mock(async () => ({ ok: true as const, value: createMockBrick() })),
+        search: mock(async () => ({ ok: true as const, value: [] as readonly BrickArtifact[] })),
+        remove: mock(async () => ({ ok: true as const, value: undefined })),
+        update: mock(async () => ({ ok: true as const, value: undefined })),
+        exists: mock(async () => ({ ok: true as const, value: true })),
+      } as unknown as ForgeStore;
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store, onError }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ToolRequest = { toolId: "forge_agent", input: { agentName: "researcher" } };
+      const resp: ToolResponse = { output: "[LEARNING:gotcha] Always validate API keys" };
+      const next = mock(async () => resp);
+
+      await mw.wrapToolCall?.(createTurnCtx(), req, next);
+
+      // No write happened (fail-closed)
+      expect(store.update).not.toHaveBeenCalled();
+      // onError fired with persistence-dropped (no-store-version cause)
+      expect(onError).toHaveBeenCalled();
     });
 
     test("emits onError(persistence-dropped) when wrapToolCall persistence fails", async () => {
@@ -823,6 +855,60 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(result).toBe(resp);
     });
 
+    test("waiters do NOT replay cached injection if leader's next() rejects", async () => {
+      // Leading caller builds an injection block, dispatches next(), but next()
+      // throws. The pendingInjection cache must be cleared so the concurrent
+      // waiter does not replay a known-bad/incomplete attempt.
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e0",
+            content: "INITIAL",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const ctx = createTurnCtx();
+      const req: ModelRequest = {
+        messages: [{ content: [{ kind: "text", text: "Hi" }], senderId: "user", timestamp: NOW }],
+      };
+
+      // Leader's next() rejects on the injected request.
+      // Waiter's next() succeeds (records its message length).
+      // let justified: counter for distinguishing leader vs. waiter call paths
+      let nextCount = 0;
+      const seenLengths: number[] = [];
+      const next = mock(async (r: ModelRequest): Promise<ModelResponse> => {
+        nextCount++;
+        seenLengths.push(r.messages.length);
+        if (nextCount === 1) throw new Error("leader provider failure");
+        return { content: "", model: "test-model" };
+      });
+
+      // Launch leader + waiter concurrently
+      const results = await Promise.allSettled([
+        mw.wrapModelCall?.(ctx, req, next),
+        mw.wrapModelCall?.(ctx, req, next),
+      ]);
+
+      // Leader rejected; waiter must not have replayed the injection block —
+      // it should have called next() with the BARE request (length 1).
+      const waiterCallLength = seenLengths.find((_l, i) => i > 0);
+      expect(waiterCallLength).toBe(1);
+      // Leader's promise rejected (the throw propagated)
+      expect(results.some((r) => r.status === "rejected")).toBe(true);
+    });
+
     test("pendingInjection is cleared after a write so post-write waiters cannot serve stale memory", async () => {
       // Sequence:
       //   T1 wrapModelCall → injects from initial memory (caches pendingInjection)
@@ -1356,7 +1442,10 @@ describe("createCollectiveMemoryMiddleware", () => {
         if (loadCount === 1) {
           return { ok: false as const, error: { code: "STORE_BUSY", message: "transient" } };
         }
-        return { ok: true as const, value: { collectiveMemory: undefined } };
+        return {
+          ok: true as const,
+          value: { collectiveMemory: undefined, storeVersion: "v2" },
+        };
       });
       const modelCall = mock(
         async (): Promise<ModelResponse> => ({
@@ -1728,7 +1817,10 @@ describe("session isolation", () => {
     const updateArgs: unknown[] = [];
     const store: ForgeStore = {
       save: mock(async () => ({ ok: true as const, value: undefined })),
-      load: mock(async () => ({ ok: true as const, value: createMockBrick() })),
+      load: mock(async () => ({
+        ok: true as const,
+        value: { ...createMockBrick(), storeVersion: "v1" },
+      })),
       search: mock(async () => ({ ok: true as const, value: [] as readonly BrickArtifact[] })),
       remove: mock(async () => ({ ok: true as const, value: undefined })),
       update: mock(async (...args: unknown[]) => {

@@ -63,6 +63,19 @@ export interface CollectiveMemoryMiddlewareConfig {
   /** Max tokens for extraction response. Default: 1024. */
   readonly extractionMaxTokens?: number | undefined;
   /**
+   * Require an optimistic-concurrency token (storeVersion) on the loaded brick
+   * before attempting an update. Default: true (fail-closed).
+   *
+   * When true and the loaded brick has no storeVersion, persistLearnings
+   * returns ok:false reason='no-store-version' so the buffer is preserved
+   * and onError fires for observability. This protects against last-writer-wins
+   * data loss on bricks that have not yet acquired a CAS token.
+   *
+   * Set to false ONLY when the underlying ForgeStore implementation provides
+   * server-side merge semantics or when the caller accepts last-writer-wins.
+   */
+  readonly requireStoreVersion?: boolean | undefined;
+  /**
    * Opt-in compatibility for legacy string-only resolveBrickId implementations.
    *
    * Default: false (fail-closed). When the context-form call throws, the brick

@@ -28,6 +28,20 @@ const MAX_ENTRY_LENGTH = 500;
 const LEADING_INJECTION_VERB_RE =
   /^\s*(?:ignore|bypass|override|disable|disregard|suppress|escalate|leak|exfiltrate|pretend|forget|reveal|grant|allow\s+access|delete\s+(?:the|all|every)|execute\s+(?:the|this|a)|run\s+with\b|use\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared)\s+\w+|access\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared|secret|vault|credential)|print\s+(?:the\s+)?(?:prod|production|env|environment|secret|token|key|credential|config)|dump\s+(?:the\s+)?(?:prod|production|env|environment|secret|token|key|credential|config|file|all|every|~|\/)|copy\s+(?:the\s+)?(?:prod|production|env|environment|secret|token|key|credential|config|~|\/)|cat\s+(?:~|\/|\$)|sudo\s+|chmod\s+|chown\s+|source\s+(?:~|\/|\$)|always\s+(?:dump|print|copy|expose|share|send|email|post|cat|sudo|chmod|chown|leak|reveal))\b/i;
 
+// Modal/imperative openings commonly used in prompt-injection payloads. These
+// are checked separately to keep the main regex maintainable.
+// Apostrophe class accepts straight (U+0027) or right-single-quote (U+2019).
+const MODAL_INJECTION_OPENING_RE =
+  /^\s*(?:don['’]?t\s+(?:ask|request|prompt|wait|check|verify|validate|confirm|require|seek|warn|notify)|avoid\s+(?:the\s+)?(?:sandbox|approval|permission|policy|prompt|gate|confirmation|review|validation|warning))\b/i;
+
+// "should/must always|never <attack-verb>" command-shaped guidance.
+// Restricted to the verbs that consistently signal injection: ignore, bypass,
+// skip, disable, leak, reveal, dump, expose, sudo, chmod, chown.
+// Excludes 'use', 'check', 'validate', etc. which appear in legitimate
+// learnings ('always use --frozen-lockfile in CI').
+const POLICY_VERB_RE =
+  /^\s*(?:should|must)\s+(?:always|never)\s+(?:ignore|bypass|skip|disable|leak|reveal|dump|expose|sudo|chmod|chown)\b/i;
+
 // Reject content that mentions a sensitive filesystem location regardless of
 // sentence position — paths like ~/.ssh, /etc/passwd, /root/, .aws/credentials
 // are only ever quoted in commands or exfiltration instructions, never in a
@@ -43,6 +57,8 @@ const POLICY_FRAMING_RE =
 
 export function isInstruction(content: string): boolean {
   if (LEADING_INJECTION_VERB_RE.test(content)) return true;
+  if (MODAL_INJECTION_OPENING_RE.test(content)) return true;
+  if (POLICY_VERB_RE.test(content)) return true;
   if (SENSITIVE_PATH_RE.test(content)) return true;
   if (POLICY_FRAMING_RE.test(content)) return true;
   return false;
@@ -113,7 +129,17 @@ function extractHeuristics(output: string): readonly LearningCandidate[] {
       const match = pattern.regex.exec(trimmed);
       if (match !== null) {
         const content = match[1]?.trim();
-        if (content !== undefined && content.length > 0 && !isInstruction(content)) {
+        // The pattern verb (e.g. 'avoid', 'don't') has been stripped from
+        // `content`, so isInstruction(content) misses the original imperative.
+        // Test isInstruction on match[0] — the verb + captured tail — so an
+        // attack like 'Avoid the sandbox' (verb in match[0], 'the sandbox' in
+        // captured content) is correctly rejected.
+        if (
+          content !== undefined &&
+          content.length > 0 &&
+          !isInstruction(match[0]) &&
+          !isInstruction(content)
+        ) {
           results.push({ content: truncate(content), category: pattern.category, confidence: 0.7 });
         }
         break;
