@@ -19,11 +19,11 @@
 import type {
   BackgroundSessionRegistry,
   BackgroundSessionStatus,
-  KoiError,
   Supervisor,
   WorkerEvent,
   WorkerId,
-} from "@koi/core";
+} from "@koi/core/daemon";
+import type { KoiError } from "@koi/core/errors";
 
 /**
  * Freshness window for honoring an operator `terminating` claim. A

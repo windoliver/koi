@@ -2,6 +2,11 @@
 
 Supervise OS-level worker processes for long-running agent work. Provides a pluggable `WorkerBackend` contract (swappable execution substrates), a pool-managing `Supervisor` with restart/maxWorkers/graceful-shutdown, and an in-tree Bun subprocess backend.
 
+## Recent updates
+
+- `createSupervisor` keeps the heartbeat-aware backend selection path and returns explicit `UNAVAILABLE` diagnostics when availability probes fail or time out, so operators can distinguish transient backend outages from static misconfiguration.
+- `createSubprocessBackend` and supervisor wiring stay aligned on heartbeat opt-in behavior (`backendHints.heartbeat`) with a single `@koi/core` contract surface for daemon types.
+
 ---
 
 ## Why It Exists

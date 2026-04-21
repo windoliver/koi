@@ -45,6 +45,10 @@
       "types": "./dist/delegation.d.ts",
       "import": "./dist/delegation.js"
     },
+    "./daemon": {
+      "types": "./dist/daemon.d.ts",
+      "import": "./dist/daemon.js"
+    },
     "./ecs": {
       "types": "./dist/ecs.d.ts",
       "import": "./dist/ecs.js"
@@ -188,6 +192,10 @@
     "./procfs": {
       "types": "./dist/procfs.d.ts",
       "import": "./dist/procfs.js"
+    },
+    "./process-descriptor": {
+      "types": "./dist/process-descriptor.d.ts",
+      "import": "./dist/process-descriptor.js"
     },
     "./user-model": {
       "types": "./dist/user-model.d.ts",
