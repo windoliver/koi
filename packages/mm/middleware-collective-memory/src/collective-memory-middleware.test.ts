@@ -452,6 +452,93 @@ describe("createCollectiveMemoryMiddleware", () => {
       expect(injectedCount).toBe(1);
     });
 
+    test("load returning ok=false (Result-shaped failure) retries on next turn", async () => {
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e1",
+            content: "Some learning",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      let loadCount = 0;
+      (store.load as ReturnType<typeof mock>).mockImplementation(async () => {
+        loadCount++;
+        if (loadCount === 1) {
+          return { ok: false as const, error: { code: "TRANSIENT", message: "store busy" } };
+        }
+        return { ok: true as const, value: { collectiveMemory: memory, storeVersion: "v1" } };
+      });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ModelRequest = {
+        messages: [
+          { content: [{ kind: "text", text: "Hello" }], senderId: "user", timestamp: NOW },
+        ],
+      };
+      const ctx = createTurnCtx();
+      const next = mock(async () => ({ content: "", model: "test-model" }) satisfies ModelResponse);
+
+      await mw.wrapModelCall?.(ctx, req, next);
+      await mw.wrapModelCall?.(ctx, req, next);
+
+      // First turn: ok:false → no injection
+      expect(((next.mock.calls[0] as unknown[])[0] as ModelRequest).messages).toHaveLength(1);
+      // Second turn: load succeeds → injection happens
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+    });
+
+    test("next() rejection on injected request leaves injected=false so next turn retries", async () => {
+      const memory: CollectiveMemory = {
+        entries: [
+          {
+            id: "e1",
+            content: "Some learning",
+            category: "heuristic",
+            source: { agentId: "a", runId: "r", timestamp: NOW },
+            createdAt: NOW,
+            accessCount: 1,
+            lastAccessedAt: NOW,
+          },
+        ],
+        totalTokens: 10,
+        generation: 1,
+      };
+      const store = createMockForgeStore({ collectiveMemory: memory });
+      const mw = createCollectiveMemoryMiddleware(createConfig({ forgeStore: store }));
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const req: ModelRequest = {
+        messages: [
+          { content: [{ kind: "text", text: "Hello" }], senderId: "user", timestamp: NOW },
+        ],
+      };
+      const ctx = createTurnCtx();
+
+      let dispatchCount = 0;
+      const next = mock(async (): Promise<ModelResponse> => {
+        dispatchCount++;
+        if (dispatchCount === 1) throw new Error("provider timeout");
+        return { content: "", model: "test-model" };
+      });
+
+      // First turn: load succeeds, next() throws → error propagates, injected NOT set
+      await expect(mw.wrapModelCall?.(ctx, req, next)).rejects.toThrow("provider timeout");
+
+      // Second turn: injection is retried (injected was not committed)
+      await mw.wrapModelCall?.(ctx, req, next);
+      expect(((next.mock.calls[1] as unknown[])[0] as ModelRequest).messages).toHaveLength(2);
+    });
+
     test("transient brick load failure clears in-flight gate so next turn retries", async () => {
       const memory: CollectiveMemory = {
         entries: [

@@ -269,36 +269,17 @@ export function createCollectiveMemoryMiddleware(
       inFlight.catch(() => undefined);
       sessions.set(ctx.session.sessionId, { ...state, inFlightInjection: inFlight });
 
-      try {
-        const loadResult: Result<BrickArtifact, unknown> = await config.forgeStore.load(brick);
-        if (loadResult.ok) {
-          const memory: CollectiveMemory =
-            loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
-          const selected = selectEntriesWithinBudget(
-            memory.entries,
-            injectionBudget,
-            CHARS_PER_TOKEN,
-          );
-          if (selected.length > 0) {
-            const formatted = formatCollectiveMemory(
-              memory.entries,
-              injectionBudget,
-              CHARS_PER_TOKEN,
-            );
-            if (formatted.length > 0) {
-              injectedIds = new Set(selected.map((e) => e.id));
-              const systemMessage: InboundMessage = {
-                content: [{ kind: "text", text: formatted }],
-                senderId: "system:collective-memory",
-                timestamp: Date.now(),
-              };
-              injectedRequest = { ...request, messages: [systemMessage, ...request.messages] };
-            }
-          }
-        }
-        // Mark injected and clear in-flight gate ONLY on a clean (non-throwing) attempt.
-        // This commits the one-shot semantics for both successful injection and
-        // legitimate "no entries to inject" outcomes.
+      // Helper: clear the in-flight gate without committing the one-shot flag,
+      // so a later turn can retry injection after a transient failure.
+      const clearGate = (err?: unknown): void => {
+        const current = getSession(ctx.session.sessionId);
+        sessions.set(ctx.session.sessionId, { ...current, inFlightInjection: undefined });
+        if (err !== undefined) rejectInFlight?.(err);
+        else resolveInFlight?.();
+      };
+
+      // Helper: commit injected=true and clear the in-flight gate.
+      const commitInjected = (): void => {
         const current = getSession(ctx.session.sessionId);
         sessions.set(ctx.session.sessionId, {
           ...current,
@@ -306,18 +287,69 @@ export function createCollectiveMemoryMiddleware(
           inFlightInjection: undefined,
         });
         resolveInFlight?.();
+      };
+
+      // let justified: assigned in the load/format block
+      let loadOk = false;
+      try {
+        const loadResult: Result<BrickArtifact, unknown> = await config.forgeStore.load(brick);
+        if (!loadResult.ok) {
+          // Result-shaped load failure is retryable, just like a thrown load error.
+          clearGate();
+          return next(request);
+        }
+        loadOk = true;
+        const memory: CollectiveMemory =
+          loadResult.value.collectiveMemory ?? DEFAULT_COLLECTIVE_MEMORY;
+        const selected = selectEntriesWithinBudget(
+          memory.entries,
+          injectionBudget,
+          CHARS_PER_TOKEN,
+        );
+        if (selected.length > 0) {
+          const formatted = formatCollectiveMemory(
+            memory.entries,
+            injectionBudget,
+            CHARS_PER_TOKEN,
+          );
+          if (formatted.length > 0) {
+            injectedIds = new Set(selected.map((e) => e.id));
+            const systemMessage: InboundMessage = {
+              content: [{ kind: "text", text: formatted }],
+              senderId: "system:collective-memory",
+              timestamp: Date.now(),
+            };
+            injectedRequest = { ...request, messages: [systemMessage, ...request.messages] };
+          }
+        }
       } catch (err) {
-        // Pre-dispatch failure (transient load error): clear in-flight gate so a
-        // later turn in this session can retry injection. Do NOT mark injected.
-        const current = getSession(ctx.session.sessionId);
-        sessions.set(ctx.session.sessionId, { ...current, inFlightInjection: undefined });
-        rejectInFlight?.(err);
+        // Pre-dispatch thrown failure: retry on next turn.
+        clearGate(err);
         return next(request);
       }
 
-      if (injectedRequest === undefined) return next(request);
+      if (injectedRequest === undefined) {
+        // Load succeeded but there is nothing to inject. Commit the one-shot
+        // flag — we don't want to repeat the lookup every turn for an empty brick.
+        if (loadOk) commitInjected();
+        else clearGate();
+        return next(request);
+      }
 
-      const result = await next(injectedRequest);
+      // Dispatch the injected request. If next() rejects (provider timeout,
+      // cancellation, etc.) clear the gate WITHOUT committing the flag so the
+      // next turn can retry injection. Propagate the error to the caller.
+      // let justified: assigned in try/catch below; needed in outer scope
+      let result: Awaited<ReturnType<typeof next>>;
+      try {
+        result = await next(injectedRequest);
+      } catch (err) {
+        clearGate(err);
+        throw err;
+      }
+
+      // Successful injection AND successful dispatch — commit the one-shot flag.
+      commitInjected();
       if (injectedIds !== undefined) {
         incrementAccessCounts(brick, injectedIds).catch(() => {
           // Swallow — observability only

@@ -21,13 +21,31 @@ const MAX_ENTRY_LENGTH = 500;
 //
 // Legitimate learnings are observations ("The API returns X when Y", "Learned
 // that Z fails if…"). Injections pose as commands ("Ignore X", "Bypass Y").
-// The denylist targets the verbs most commonly used in prompt-injection payloads
-// that aim to plant persistent instructions in shared memory.
-const INJECTION_VERB_RE =
-  /^\s*(?:ignore|bypass|override|disable|disregard|suppress|escalate|leak|exfiltrate|pretend|forget|reveal|grant|allow\s+access|delete\s+(?:the|all|every)|execute\s+(?:the|this|a)|run\s+with\b|use\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared)\s+\w+|access\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared|secret|vault|credential))\b/i;
+// The denylist targets verbs most commonly used in prompt-injection payloads
+// that aim to plant persistent instructions in shared memory. For stricter
+// policies (allowlist of declarative observations only), use the
+// validateLearning config hook on createCollectiveMemoryMiddleware().
+const LEADING_INJECTION_VERB_RE =
+  /^\s*(?:ignore|bypass|override|disable|disregard|suppress|escalate|leak|exfiltrate|pretend|forget|reveal|grant|allow\s+access|delete\s+(?:the|all|every)|execute\s+(?:the|this|a)|run\s+with\b|use\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared)\s+\w+|access\s+(?:the\s+)?(?:prod|production|staging|live|dev|shared|secret|vault|credential)|print\s+(?:the\s+)?(?:prod|production|env|environment|secret|token|key|credential|config)|dump\s+(?:the\s+)?(?:prod|production|env|environment|secret|token|key|credential|config|file|all|every|~|\/)|copy\s+(?:the\s+)?(?:prod|production|env|environment|secret|token|key|credential|config|~|\/)|cat\s+(?:~|\/|\$)|sudo\s+|chmod\s+|chown\s+|source\s+(?:~|\/|\$)|always\s+(?:dump|print|copy|expose|share|send|email|post|cat|sudo|chmod|chown|leak|reveal))\b/i;
+
+// Reject content that mentions a sensitive filesystem location regardless of
+// sentence position — paths like ~/.ssh, /etc/passwd, /root/, .aws/credentials
+// are only ever quoted in commands or exfiltration instructions, never in a
+// legitimate operational learning that a future agent should "remember".
+const SENSITIVE_PATH_RE =
+  /(?:~|\$HOME|\/home\/[^/\s]+|\/root)\/\.(?:ssh|aws|gnupg|gpg|kube|docker|config\/gcloud|netrc)|\/etc\/(?:passwd|shadow|sudoers|gshadow|krb5\.keytab)|\.env(?:\.\w+)?\b|\b(?:id_rsa|id_ed25519|id_ecdsa|authorized_keys|known_hosts)\b|\b(?:credentials\.json|service-account\.json|kubeconfig)\b/i;
+
+// Reject "Next time" / "Always" / "From now on" framings that wrap an imperative
+// verb — these are the most common prompt-injection rhetorical patterns the
+// regex extractor would otherwise accept.
+const POLICY_FRAMING_RE =
+  /^\s*(?:next\s+time|from\s+now\s+on|going\s+forward|in\s+future|important[:\s]|policy[:\s]|rule[:\s]|note[:\s])\s*[,:;-]?\s*(?:always|never|please|kindly|just|simply|first|then)?\s*(?:ignore|bypass|override|disable|skip|delete|execute|run|print|dump|copy|cat|sudo|reveal|leak|expose|share|send|email|post|grant|allow|escalate|use\s+the\s+(?:prod|production|staging|live)|access\s+the)/i;
 
 export function isInstruction(content: string): boolean {
-  return INJECTION_VERB_RE.test(content);
+  if (LEADING_INJECTION_VERB_RE.test(content)) return true;
+  if (SENSITIVE_PATH_RE.test(content)) return true;
+  if (POLICY_FRAMING_RE.test(content)) return true;
+  return false;
 }
 
 function truncate(text: string): string {
