@@ -5,7 +5,7 @@ import type {
   SandboxInstance,
   SandboxProfile,
 } from "@koi/core";
-import { execSandboxed, spawnBash } from "./exec.js";
+import { execSandboxed, SIGKILL_ESCALATION_MS, spawnBash } from "./exec.js";
 
 describe("spawnBash — streaming callbacks", () => {
   test("without callbacks: behavior byte-identical to prior", async () => {
@@ -201,4 +201,98 @@ describe("execSandboxed — callback threading", () => {
     expect(captured.onStdout).toBeUndefined();
     expect(captured.onStderr).toBeUndefined();
   });
+});
+
+// ---------------------------------------------------------------------------
+// spawnBash — abort signal / process cleanup (regression for #1914)
+//
+// The pipe won't close until ALL processes holding the write end die.
+// If a child process survives the abort (orphan), drainStream blocks
+// indefinitely. Each test's timeout is the hard proof: if the process
+// is orphaned the test hangs; if it resolves within the window, cleanup worked.
+// ---------------------------------------------------------------------------
+
+describe("spawnBash — abort signal kills child processes (no orphan)", () => {
+  test("abort resolves spawnBash within 2 s for a long-running command", async () => {
+    const controller = new AbortController();
+    const start = Date.now();
+
+    const promise = spawnBash("sleep 100", process.cwd(), 120_000, 1_000_000, controller.signal);
+
+    await new Promise<void>((r) => setTimeout(r, 200));
+    controller.abort();
+
+    const result = await promise;
+
+    expect(Date.now() - start).toBeLessThan(2_000);
+    expect(result.exitCode).not.toBe(0);
+  }, 10_000);
+
+  test("abort kills child processes spawned by the bash script", async () => {
+    // bash forks a child (sleep). If the child escapes the process-group SIGTERM,
+    // it keeps the pipe write-end open and drainStream never returns.
+    const controller = new AbortController();
+    const start = Date.now();
+
+    const promise = spawnBash(
+      // Explicit fork: bash runs set first so it cannot exec-into sleep.
+      // sleep inherits bash's process group; the group kill must reach it.
+      "true; sleep 100",
+      process.cwd(),
+      120_000,
+      1_000_000,
+      controller.signal,
+    );
+
+    await new Promise<void>((r) => setTimeout(r, 300));
+    controller.abort();
+
+    await promise;
+
+    // Resolving within 2 s proves sleep was killed (not orphaned)
+    expect(Date.now() - start).toBeLessThan(2_000);
+  }, 10_000);
+
+  test("already-aborted signal throws AbortError without spawning", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    // throwIfAborted() is called on the already-aborted signal, so spawnBash
+    // throws a DOMException with name "AbortError" rather than returning.
+    // This is the intended contract: callers (turn-runner) catch AbortError
+    // and treat it as a clean interrupt.
+    let thrownError: unknown;
+    try {
+      await spawnBash("sleep 100", process.cwd(), 60_000, 1_000_000, controller.signal);
+    } catch (e: unknown) {
+      thrownError = e;
+    }
+    expect(thrownError).toBeDefined();
+    expect((thrownError as { name?: string }).name).toBe("AbortError");
+  });
+
+  test("SIGKILL escalation terminates SIGTERM-immune processes", async () => {
+    // bash ignores SIGTERM via trap; SIGKILL (after SIGKILL_ESCALATION_MS)
+    // is the only way to kill it. drainStream should unblock after escalation.
+    const controller = new AbortController();
+    const start = Date.now();
+
+    const promise = spawnBash(
+      "trap '' TERM; while true; do sleep 0.05; done",
+      process.cwd(),
+      120_000,
+      1_000_000,
+      controller.signal,
+    );
+
+    await new Promise<void>((r) => setTimeout(r, 200));
+    controller.abort();
+
+    await promise;
+
+    const elapsed = Date.now() - start;
+    // SIGTERM fails (bash ignores it); SIGKILL fires after SIGKILL_ESCALATION_MS
+    expect(elapsed).toBeGreaterThanOrEqual(SIGKILL_ESCALATION_MS - 200);
+    expect(elapsed).toBeLessThan(SIGKILL_ESCALATION_MS + 2_000);
+  }, 15_000);
 });
