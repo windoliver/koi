@@ -12,7 +12,7 @@ import type { ChainId, NodeId, TrustTier } from "@koi/core";
 import { chainId } from "@koi/core";
 import type { BrickId, BrickSnapshot } from "@koi/core/brick-snapshot";
 import { snapshotId } from "@koi/core/brick-snapshot";
-import type { BrickFitnessMetrics } from "@koi/core/brick-store";
+import type { BrickArtifact, BrickFitnessMetrics } from "@koi/core/brick-store";
 import { createLatencySampler, recordLatency } from "@koi/validation";
 import type { ForgeHealthConfig } from "./config.js";
 import { DEFAULT_DEMOTION_CRITERIA } from "./config.js";
@@ -197,7 +197,7 @@ function updateFlushState(state: ToolState, now: number): void {
 export interface ToolHealthTracker {
   readonly recordSuccess: (toolId: string, latencyMs: number) => void;
   readonly recordFailure: (toolId: string, latencyMs: number, reason: string) => void;
-  readonly isQuarantined: (toolId: string) => boolean;
+  readonly isQuarantined: (toolId: string) => Promise<boolean>;
   readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
   /** Check error rate against quarantine threshold; quarantine in-session + persist if triggered. */
   readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
@@ -247,8 +247,11 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
   // Per-tool state map: keyed by toolId
   const stateMap = new Map<string, ToolState>();
-  // Brick-level quarantine: blocks all toolIds that resolve to the same brick
+  // Session-local brick-level quarantine (covers aliases)
   const quarantinedBricks = new Set<BrickId>();
+  // Persisted quarantine cache: brickIds resolved from forgeStore (one load per brickId per session)
+  const forgeCheckedBricks = new Set<string>();
+  const forgeQuarantinedBricks = new Set<BrickId>();
 
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
@@ -446,13 +449,23 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     fromTier: TrustTier,
     toTier: TrustTier,
     metrics: ToolHealthMetrics,
+    currentBrick: BrickArtifact,
   ): Promise<void> {
     const now = clock();
     const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
 
-    // Note: BrickUpdate does not expose trustTier — demotion is recorded via snapshot
-    // chain and surfaced through the onDemotion callback. The store's trust tier field
-    // can only be updated via a full save() or a future promoteAndUpdate() call.
+    // Persist the new trust tier via full save (BrickUpdate has no trustTier field)
+    const saveResult = await forgeStore.save({ ...currentBrick, trustTier: toTier });
+    if (!saveResult.ok) {
+      const event: HealthTransitionErrorEvent = {
+        transition: "demotion",
+        phase: "forgeStore",
+        brickId: bId,
+        error: saveResult.error,
+      };
+      onHealthTransitionError?.(event);
+      return; // abort — don't snapshot or fire callback if authoritative write failed
+    }
 
     // SnapshotChainStore record (best-effort)
     const chainIdVal: ChainId = chainId(bId);
@@ -472,7 +485,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       onHealthTransitionError?.(event);
     }
 
-    // Fire demotion callback
+    // Fire demotion callback only after authoritative write succeeds
     const demotionEvent: TrustDemotionEvent = {
       brickId: bId,
       from: fromTier,
@@ -494,11 +507,21 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       recordEntry_(toolId, false, latencyMs);
     },
 
-    isQuarantined(toolId: string): boolean {
+    async isQuarantined(toolId: string): Promise<boolean> {
+      // Fast path: in-session quarantine (no I/O)
       if (stateMap.get(toolId)?.sessionQuarantined === true) return true;
-      // Also block any alias that resolves to an already-quarantined brick
       const bId = resolveBrickId(toolId);
-      return bId !== undefined && quarantinedBricks.has(bId);
+      if (bId === undefined) return false;
+      if (quarantinedBricks.has(bId)) return true;
+      // Persisted quarantine: check forgeStore once per brickId per session
+      if (!forgeCheckedBricks.has(bId)) {
+        forgeCheckedBricks.add(bId);
+        const loadResult = await forgeStore.load(bId);
+        if (loadResult.ok && loadResult.value.lifecycle === "quarantined") {
+          forgeQuarantinedBricks.add(bId);
+        }
+      }
+      return forgeQuarantinedBricks.has(bId);
     },
 
     getSnapshot(toolId: string): ToolHealthSnapshot | undefined {
@@ -567,12 +590,20 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const bId = resolveBrickId(toolId);
       if (bId === undefined) return false;
 
-      // Load current trust tier from store
+      // Load current brick — required to read tier and to persist the updated tier via save()
       const loadResult = await forgeStore.load(bId);
-      const currentTier: TrustTier =
-        loadResult.ok && loadResult.value.trustTier !== undefined
-          ? loadResult.value.trustTier
-          : "local";
+      if (!loadResult.ok) {
+        const event: HealthTransitionErrorEvent = {
+          transition: "demotion",
+          phase: "forgeStore",
+          brickId: bId,
+          error: loadResult.error,
+        };
+        onHealthTransitionError?.(event);
+        return false;
+      }
+      const currentBrick = loadResult.value;
+      const currentTier: TrustTier = currentBrick.trustTier ?? "local";
 
       const metrics = computeWindowMetrics(state, demotionCriteria.windowSize);
       const now = clock();
@@ -594,7 +625,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       if (toTier === undefined) return false;
 
       state.lastDemotedAt = now;
-      await persistDemotion(toolId, bId, currentTier, toTier, metrics);
+      await persistDemotion(toolId, bId, currentTier, toTier, metrics, currentBrick);
       return true;
     },
 

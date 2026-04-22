@@ -30,7 +30,7 @@ function makeForgeStore(): ForgeStore & { data: Map<string, BrickArtifact> } {
       data.delete(id);
       return { ok: true, value: undefined };
     },
-    update: async (id: BrickId) => {
+    update: async (id: BrickId, updates: Partial<BrickArtifact>) => {
       const b = data.get(id);
       if (!b) {
         return {
@@ -38,6 +38,7 @@ function makeForgeStore(): ForgeStore & { data: Map<string, BrickArtifact> } {
           error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
         };
       }
+      data.set(id, { ...b, ...updates });
       return { ok: true, value: undefined };
     },
     exists: async (id: BrickId) => ({ ok: true, value: data.has(id) }),
@@ -238,13 +239,13 @@ describe("createToolHealthTracker", () => {
     expect(snap?.totalCount).toBe(2);
   });
 
-  it("isQuarantined returns false for healthy tool", () => {
+  it("isQuarantined returns false for healthy tool", async () => {
     const tracker = createToolHealthTracker({
       resolveBrickId: () => BID,
       forgeStore: makeForgeStore(),
       snapshotChainStore: makeSnapshotStore(),
     });
-    expect(tracker.isQuarantined(TOOL_ID)).toBe(false);
+    await expect(tracker.isQuarantined(TOOL_ID)).resolves.toBe(false);
   });
 
   it("quarantines tool in session when error rate exceeds threshold", async () => {
@@ -268,7 +269,7 @@ describe("createToolHealthTracker", () => {
 
     const quarantined = await tracker.checkAndQuarantine(TOOL_ID);
     expect(quarantined).toBe(true);
-    expect(tracker.isQuarantined(TOOL_ID)).toBe(true);
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
   });
 
   it("quarantines in session even when ForgeStore update fails", async () => {
@@ -293,11 +294,11 @@ describe("createToolHealthTracker", () => {
 
     const quarantined = await tracker.checkAndQuarantine(TOOL_ID);
     expect(quarantined).toBe(true);
-    expect(tracker.isQuarantined(TOOL_ID)).toBe(true);
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
     expect(errors.length).toBeGreaterThan(0);
   });
 
-  it("demotes trust tier when criteria met", async () => {
+  it("demotes trust tier when criteria met and persists to forgeStore", async () => {
     const forgeStore = makeForgeStore();
     await forgeStore.save(makeBrickArtifact(BID));
 
@@ -323,6 +324,47 @@ describe("createToolHealthTracker", () => {
     const demoted = await tracker.checkAndDemote(TOOL_ID);
     expect(demoted).toBe(true);
     expect(demotions[0]).toBe("community");
+    // Trust tier must be persisted to forgeStore (not just callback)
+    expect(forgeStore.data.get(BID)?.trustTier).toBe("community");
+  });
+
+  it("isQuarantined detects persisted quarantine from a previous session", async () => {
+    const forgeStore = makeForgeStore();
+    // Simulate a brick quarantined in a previous session (lifecycle = quarantined in store)
+    const quarantinedBrick = { ...makeBrickArtifact(BID), lifecycle: "quarantined" as const };
+    await forgeStore.save(quarantinedBrick);
+
+    // Fresh tracker — no in-session state for this brick
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore,
+      snapshotChainStore: makeSnapshotStore(),
+    });
+
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
+  });
+
+  it("isQuarantined caches forgeStore result so load runs once per brick", async () => {
+    let loadCount = 0;
+    const base = makeForgeStore();
+    const forgeStore = {
+      ...base,
+      load: async (id: BrickId) => {
+        loadCount++;
+        return base.load(id);
+      },
+    } as typeof base;
+
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore,
+      snapshotChainStore: makeSnapshotStore(),
+    });
+
+    await tracker.isQuarantined(TOOL_ID);
+    await tracker.isQuarantined(TOOL_ID);
+    await tracker.isQuarantined(TOOL_ID);
+    expect(loadCount).toBe(1); // cached after first check
   });
 
   it("dispose flushes dirty tools without throwing", async () => {

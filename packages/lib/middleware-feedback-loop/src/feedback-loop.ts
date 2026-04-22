@@ -163,7 +163,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       const tracker = trackers.get(ctx.session.sessionId);
       if (tracker !== undefined) {
         const brickId = config.forgeHealth?.resolveBrickId(request.toolId);
-        if (brickId !== undefined && tracker.isQuarantined(request.toolId)) {
+        if (brickId !== undefined && (await tracker.isQuarantined(request.toolId))) {
           const feedback: ForgeToolErrorFeedback = {
             kind: "forge_tool_quarantined",
             brickId,
