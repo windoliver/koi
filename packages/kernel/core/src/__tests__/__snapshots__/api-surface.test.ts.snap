@@ -6083,6 +6083,8 @@ interface MemoryFrontmatter {
     readonly name: string;
     readonly description: string;
     readonly type: MemoryType;
+    /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+    readonly confidence?: number | undefined;
 }
 /** A complete memory record with frontmatter + content. */
 interface MemoryRecord {
@@ -6094,6 +6096,8 @@ interface MemoryRecord {
     readonly filePath: string;
     readonly createdAt: number;
     readonly updatedAt: number;
+    /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+    readonly confidence?: number | undefined;
 }
 /** Input shape for creating a new memory record. */
 interface MemoryRecordInput {
@@ -6101,6 +6105,8 @@ interface MemoryRecordInput {
     readonly description: string;
     readonly type: MemoryType;
     readonly content: string;
+    /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+    readonly confidence?: number | undefined;
 }
 /** Sparse update shape for modifying a memory record. */
 interface MemoryRecordPatch {
@@ -6108,6 +6114,7 @@ interface MemoryRecordPatch {
     readonly description?: string | undefined;
     readonly type?: MemoryType | undefined;
     readonly content?: string | undefined;
+    readonly confidence?: number | undefined;
 }
 /** Maximum number of lines in MEMORY.md before truncation. */
 declare const MEMORY_INDEX_MAX_LINES = 200;

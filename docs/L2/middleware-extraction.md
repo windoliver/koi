@@ -3,6 +3,18 @@
 Post-turn learning extraction middleware — extracts reusable knowledge from
 spawn-family tool outputs and persists them as MemoryRecord entries.
 
+## Recent updates
+
+**Confidence trust model + dedup hardening (#1966)**: each extraction path now assigns a confidence value that reflects the strength of its signal:
+
+| Extraction path | Confidence |
+|----------------|-----------|
+| Explicit `[LEARNING:category]` markers | 1.0 — explicit, author-declared |
+| Auto-heuristic keyword patterns | 0.7 — inferred, lower trust |
+| LLM post-session extraction | capped at 0.9 — model-generated |
+
+Within explicit markers, high-signal categories (`gotcha`, `correction`, `preference`) set confidence=1.0; lower-signal categories (`heuristic`, `pattern`, `context`) also default to 1.0 but can be overridden by a `CATEGORY_CONFIDENCE` map. Confidence is forwarded as `MemoryStoreOptions.confidence` and stored in the `.md` frontmatter. The dedup store's `exactReplay` guard was extended to include `confidence` so a re-extraction at a different confidence level is not silently dropped.
+
 ## How It Works
 
 The middleware intercepts `wrapToolCall` for spawn-family tools (`Spawn`,

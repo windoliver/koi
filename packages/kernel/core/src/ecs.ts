@@ -471,6 +471,8 @@ export interface MemoryStoreOptions {
   readonly category?: string | undefined;
   /** Storage type — controls privacy boundaries and recall scoring weights. */
   readonly type?: MemoryType | undefined;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
   /** Entity IDs this memory relates to — enables graph-aware retrieval. */
   readonly relatedEntities?: readonly string[] | undefined;
   /** When true and a near-duplicate exists, increment its accessCount instead of skipping. */

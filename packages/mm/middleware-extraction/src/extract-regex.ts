@@ -16,11 +16,12 @@ import type { ExtractionCandidate, LearningExtractor } from "./types.js";
 // ---------------------------------------------------------------------------
 
 // Core fixes for issue #1966: "preference" → "user", "context" → "project".
-// heuristic/pattern map to "reference": they are inferred from spawn output and
-// LLM/regex extraction, not validated by the user — assigning them "feedback"
-// would overload the high-trust feedback class (weight 1.2) with unvalidated
-// advice. Use "reference" (weight 0.8) to signal lower confidence until a
-// per-type salience path for auto-extracted memories is wired.
+// heuristic/pattern map to "feedback" (not "reference"): they encode behavioral
+// guidance — things the agent should or shouldn't do — which is the semantic
+// definition of the feedback trust class (weight 1.2). Mapping them to "reference"
+// (weight 0.8) would under-weight actionable guidance in recall scoring. The
+// distinction between human-validated (correction/gotcha) and auto-extracted
+// (heuristic/pattern) feedback is tracked separately via confidence scores.
 // NOTE: "user" type candidates are extracted but NOT persisted in the default
 // file-backed stack — persistCandidates skips them because the shared worktree
 // store has no per-user namespace isolation. This is intentional: mapping to
@@ -33,6 +34,20 @@ const CATEGORY_TO_MEMORY_TYPE: Readonly<Record<CollectiveMemoryCategory, MemoryT
   pattern: "feedback",
   preference: "user",
   context: "project",
+};
+
+// Used by heuristic regex and LLM extraction paths only — NOT by extractMarkers().
+// Explicit [LEARNING:...] markers are deliberate author opt-ins and always get 1.0.
+// For auto-inferred or LLM-labeled categories, heuristic/pattern/context get 0.7
+// so they score below fully-trusted feedback in salience:
+// feedback(1.2) × 0.7 = 0.84, between project(1.0) and reference(0.8).
+export const CATEGORY_CONFIDENCE: Readonly<Record<CollectiveMemoryCategory, number>> = {
+  gotcha: 1.0,
+  correction: 1.0,
+  preference: 1.0,
+  heuristic: 0.7,
+  pattern: 0.7,
+  context: 0.7,
 };
 
 export function mapCategoryToMemoryType(category: CollectiveMemoryCategory): MemoryType {
