@@ -9,6 +9,10 @@
  * SpawnRequest.signal is required. The acquire() path (no backpressure) is reached
  * when the ledger does not implement acquireOrWait — regardless of whether a signal
  * is present.
+ *
+ * Direct spawnChildAgent-level ledger tests (RATE_LIMIT, acquireOrWait, slot release
+ * on assembly failure) live in spawn-child.test.ts — this file covers the integration
+ * path through createAgentSpawnFn (streaming + non-streaming delivery).
  */
 
 import { describe, expect, test } from "bun:test";
@@ -180,8 +184,9 @@ describe("SpawnLedger cap enforcement — acquire() path (no acquireOrWait) (Iss
     }
   });
 
-  test("allows spawn when ledger has capacity", async () => {
+  test("allows spawn when ledger has capacity and releases slot after failure", async () => {
     const ledger = makeSimpleLedger(5);
+    expect(ledger.activeCount()).toBe(0);
     const spawnFn = makeSpawnFn(ledger);
 
     const result = await spawnFn({
@@ -194,6 +199,8 @@ describe("SpawnLedger cap enforcement — acquire() path (no acquireOrWait) (Iss
     if (!result.ok) {
       expect(result.error.code).not.toBe("RATE_LIMIT");
     }
+    // Slot must be released after any failure — no self-poisoning
+    expect(ledger.activeCount()).toBe(0);
   });
 });
 
@@ -223,6 +230,8 @@ describe("SpawnLedger cap enforcement — non-streaming (on_demand) delivery pat
       expect(result.error.code).toBe("RATE_LIMIT");
       expect(result.error.retryable).toBe(true);
     }
+    // Slot was not consumed (acquire() returned false before any state change)
+    expect(ledger.activeCount()).toBe(1);
   });
 });
 
@@ -231,7 +240,7 @@ describe("SpawnLedger cap enforcement — non-streaming (on_demand) delivery pat
 // ---------------------------------------------------------------------------
 
 describe("SpawnLedger cap enforcement — acquireOrWait() backpressure path", () => {
-  test("acquireOrWait is called and resolves true after a slot is released", async () => {
+  test("acquireOrWait is called, resolves true after slot release, and slot is released after failure", async () => {
     const realLedger = createInMemorySpawnLedger(1);
     realLedger.acquire(); // fill the only slot
 
@@ -265,13 +274,16 @@ describe("SpawnLedger cap enforcement — acquireOrWait() backpressure path", ()
 
     clearTimeout(releaseTimer);
 
-    // Key assertions: acquireOrWait was invoked AND resolved true (slot acquired)
+    // acquireOrWait was invoked AND resolved true (slot acquired via backpressure)
     expect(acquireOrWaitCalled).toBe(true);
     expect(acquireOrWaitResolution).toBe(true);
+    // Slot must be fully released after the spawn fails — no ledger self-poisoning
+    expect(realLedger.activeCount()).toBe(0);
   });
 
-  test("allows spawns when ledger has capacity (acquireOrWait fast-path)", async () => {
+  test("acquireOrWait fast-path: slot acquired and released after failure", async () => {
     const ledger = createInMemorySpawnLedger(5);
+    expect(ledger.activeCount()).toBe(0);
     const spawnFn = makeSpawnFn(ledger);
 
     const result = await spawnFn({
@@ -284,6 +296,8 @@ describe("SpawnLedger cap enforcement — acquireOrWait() backpressure path", ()
       expect(result.error.code).not.toBe("RATE_LIMIT");
       expect(result.error.message).not.toMatch(/concurrent|capacity/i);
     }
+    // Slot must be released after spawn fails at engine level — no accumulation
+    expect(ledger.activeCount()).toBe(0);
   });
 });
 
