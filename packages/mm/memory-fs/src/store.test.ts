@@ -555,6 +555,74 @@ describe("createMemoryStore", () => {
       expect(all.length).toBe(1);
     });
 
+    test("force=true overwrites persisted confidence on re-extraction", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      // Initial store without confidence (legacy record — no confidence on disk)
+      await store.upsert(
+        {
+          name: "extracted-abc123",
+          description: "old desc",
+          type: "feedback" as const,
+          content: "Use builder pattern.",
+        },
+        { force: false },
+      );
+
+      // Re-extraction sets confidence 0.7 via force=true
+      const updated = await store.upsert(
+        {
+          name: "extracted-abc123",
+          description: "new desc",
+          type: "feedback" as const,
+          content: "Use builder pattern.",
+          confidence: 0.7,
+        },
+        { force: true },
+      );
+
+      expect(updated.action).toBe("updated");
+      if (updated.action !== "updated") throw new Error("unreachable");
+      expect(updated.record.confidence).toBe(0.7);
+
+      // Verify confidence is also persisted to disk (roundtrip via list)
+      const all = await store.list();
+      expect(all[0]?.confidence).toBe(0.7);
+    });
+
+    test("force=true clears confidence when new input has no confidence (legacy fallback)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      // Store with explicit confidence first
+      await store.upsert(
+        {
+          name: "extracted-def456",
+          description: "d",
+          type: "feedback" as const,
+          content: "Always validate input.",
+          confidence: 0.9,
+        },
+        { force: false },
+      );
+
+      // Overwrite without confidence — should persist undefined (not retain old value)
+      const updated = await store.upsert(
+        {
+          name: "extracted-def456",
+          description: "d2",
+          type: "feedback" as const,
+          content: "Always validate input.",
+        },
+        { force: true },
+      );
+
+      expect(updated.action).toBe("updated");
+      if (updated.action !== "updated") throw new Error("unreachable");
+      expect(updated.record.confidence).toBeUndefined();
+    });
+
     test("skips when no name+type match but Jaccard content is similar", async () => {
       const dir = makeDir();
       const store = createMemoryStore({ dir, dedupThreshold: 0.7 });

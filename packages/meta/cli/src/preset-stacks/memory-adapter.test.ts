@@ -253,6 +253,36 @@ describe("memory-adapter E2E", () => {
     expect(recall.formatted).not.toContain("original value");
   });
 
+  test("force-update persists confidence from new input (legacy → low-confidence)", async () => {
+    // Simulate legacy extracted record: stored without confidence (undefined)
+    await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd11223344",
+        description: "feedback: heuristic — keep functions small",
+        type: "feedback",
+        content: "keep functions small",
+      },
+      { force: false },
+    );
+
+    // Re-extraction provides confidence 0.7 via force update
+    const result = await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd11223344",
+        description: "feedback: heuristic — keep functions small",
+        type: "feedback",
+        content: "keep functions small",
+        confidence: 0.7,
+      },
+      { force: true },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.action).toBe("updated");
+    expect(result.value.record.confidence).toBe(0.7);
+  });
+
   test("adapter search filters by keyword", async () => {
     await backend.storeWithDedup(
       { name: "alpha", description: "first", type: "user", content: "apples are red" },

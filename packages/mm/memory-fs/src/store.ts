@@ -285,7 +285,7 @@ async function updateRecord(
     description: patch.description ?? existing.description,
     type: patch.type ?? existing.type,
     content: patch.content ?? existing.content,
-    confidence: patch.confidence ?? existing.confidence,
+    confidence: "confidence" in patch ? patch.confidence : existing.confidence,
   };
 
   // Guard renames/type changes against collisions. If either name or
@@ -447,10 +447,11 @@ async function upsertRecord(
     if (!force) {
       return { action: "conflict", existing: nameTypeMatch };
     }
-    // Force update — overwrite the matched record's description + content.
+    // Force update — overwrite the matched record's description, content, and confidence.
     const updated = await updateRecord(ctx, nameTypeMatch.id, {
       description: canonicalDescription,
       content: canonicalInput.content,
+      confidence: canonicalInput.confidence,
     });
     return { action: "updated", record: updated.record };
   }

@@ -191,7 +191,11 @@ export const memoryStack: PresetStack = {
               existing.content === content &&
               existing.type !== type
             ) {
-              const migrated = await memoryBackend.update(existing.id, { description, type });
+              const migrated = await memoryBackend.update(existing.id, {
+                description,
+                type,
+                confidence,
+              });
               if (!migrated.ok) {
                 console.warn(
                   `[memory-stack] extraction type migration failed: ${migrated.error.message}`,
