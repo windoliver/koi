@@ -268,7 +268,7 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     const promise = spawnBash(
       "echo READY; sleep 100",
       process.cwd(),
-      120_000,
+      7_000, // below test timeout of 10s so spawnBash timer cleans up on regressions
       1_000_000,
       controller.signal,
       undefined,
@@ -299,7 +299,7 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       // Background sleep; print its PID so the test can verify it's alive.
       'sleep 100 & echo "CHILD:$!" >&2; wait',
       process.cwd(),
-      120_000,
+      7_000, // below test timeout of 10s
       1_000_000,
       controller.signal,
       undefined,
@@ -338,7 +338,7 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       // bash stays alive via `wait`, keeping the pipe open until abort kills it.
       'sleep 100 >/dev/null 2>&1 & echo "DETACHED:$!" >&2; wait',
       process.cwd(),
-      120_000,
+      12_000, // below test timeout of 15s
       1_000_000,
       controller.signal,
       undefined,
@@ -414,7 +414,7 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     const promise = spawnBash(
       "trap '' TERM; echo READY >&2; while true; do sleep 0.05; done",
       process.cwd(),
-      120_000,
+      12_000, // below test timeout of 15s; spawnBash timer escalates to SIGKILL on regression
       1_000_000,
       controller.signal,
       undefined,
