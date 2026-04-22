@@ -76,7 +76,7 @@ The TUI (`koi tui`) is configured via **environment variables and CLI flags**. I
 | Scenario | Required stacks | Notes |
 |----------|-----------------|-------|
 | S14 — memory persist/recall | default stack (no `--manifest`) | Runs without a manifest so memory tools are exercised within the same shipped default stack configuration users get. Extraction is wired into `memoryStack` but its TUI-level behavior is covered by the `@koi/runtime` golden tests (see "Test-suite only" in S14 below). |
-| S25 — memory dir isolation | default stack (no `--manifest`) | Dream consolidation requires ≥ 5 sessions + 24 h (gate in `@koi/dream`). S25 runs only 2 sessions on a fresh harness, so `dreamStack` is active but consolidation never fires — file-count assertions are safe. Plugin isolation is provided by `HOME='$KOI_HOME'` in the tmux launch: `homedir()` returns `$KOI_HOME`, so plugins at `~/.koi/plugins` are not visible to the launched process. |
+| S25 — memory dir isolation | default stack (no `--manifest`) | Dream consolidation requires ≥ 5 sessions + 24 h (gate in `@koi/dream`). S25 runs only 2 sessions on a fresh harness, so `dreamStack` is active but consolidation never fires — file-count assertions are safe. Plugin isolation uses a throw-away `S25_KOI_HOME=$(mktemp -d)` — see S25 setup block. **Do not** use `$KOI_HOME`: S9 creates plugins under `$KOI_HOME/.koi/plugins` which bleed into S25. |
 | S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
 
 ```bash
@@ -661,31 +661,17 @@ export KOI_AUDIT_ENABLED=true
 
 ### S21 — Goal Tracking & Run Report
 
-> `@koi/middleware-goal` is **already wired** via `--goal` CLI flag (`tui-command.ts`).
-> Injects `## Active Goals` message every N turns (adaptive interval: base=5, max=20).
-> Detects drift (objective keywords absent from last 3 messages) and completion (`[x]`, "done", "completed").
+> `@koi/middleware-goal` is **not currently testable via TUI**: `parseTuiFlags` does not accept a
+> `--goal` argument. Goal tracking requires direct API/programmatic wiring — skip Q134-Q138 unless
+> the CLI has been updated to expose goal configuration.
 >
-> `@koi/middleware-report` is **NOT currently wired**. Accumulates per-session activity data
-> and produces a `RunReport` at session end. Needs `createReportMiddleware` added to `allMiddleware`.
+> `@koi/middleware-report` is **already wired** via `KOI_REPORT_ENABLED=true` (`tui-command.ts` line 1714).
+> Accumulates per-session activity data and produces a `RunReport` at session end.
 
-**Prerequisites for report MW**: wire `@koi/middleware-report` into `tui-runtime.ts`.
-
-```typescript
-// tui-runtime.ts wiring sketch for report MW
-import { createReportMiddleware } from "@koi/middleware-report";
-const reportHandle = createReportMiddleware({
-  objective: config.goals?.join("; "),
-  onReport: (report, formatted) => console.log("[run-report]", formatted),
-});
-// Add reportHandle.middleware to allMiddleware (after otelHandle, before checkpointMw)
-```
-
-**Setup**: launch TUI with goals.
+**Setup**: launch TUI with report middleware enabled.
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
-   --goal 'Write unit tests for the math module' \
-   --goal 'Ensure 100% test coverage'"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_REPORT_ENABLED=true KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
 | Q | Prompt | Tools Expected | Pass Criteria |
