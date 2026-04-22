@@ -294,7 +294,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
     const bId = resolveBrickId(toolId);
     if (bId === undefined) {
-      state.flushState = { ...state.flushState, flushing: false, dirty: false };
+      // Keep dirty=true so deltas are preserved for the next flush attempt
+      state.flushState = { ...state.flushState, flushing: false };
       return;
     }
 
