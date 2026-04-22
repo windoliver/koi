@@ -95,8 +95,9 @@ describe("filterMemoryForSync", () => {
       expect(result.passed).toBe(true);
     });
 
-    test("allows feedback memory with email in operational content", () => {
-      // feedback memories may legitimately reference emails in guidance context
+    test("allows feedback memory with shared operational alias", () => {
+      // feedback memories may legitimately carry shared aliases (oncall DLs, team mailboxes).
+      // The email guard is scoped to `reference` only to avoid silently dropping valid guidance.
       const memory = createMemory(
         "1",
         "feedback",

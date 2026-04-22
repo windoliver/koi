@@ -24,16 +24,23 @@ function getRedactor(): ReturnType<typeof createRedactor> {
 }
 
 /**
- * Personal email pattern scoped to `reference` memories.
+ * Personal email pattern scoped to `reference` memories only.
  *
  * Matches `word@word.tld` tokens NOT followed by `:` (excludes SSH git
- * remotes like `git@github.com:org/repo`). Applied only to `reference` type
- * as a fail-closed backstop against contact misclassification.
+ * remotes like `git@github.com:org/repo`). Applied only to `reference` as
+ * a fail-closed backstop against contact misclassification: if the LLM
+ * stores a personal contact (alice@example.com) as a `reference` pointer
+ * instead of `user`, we catch it here at the sync boundary.
+ *
+ * `feedback`/`project` are intentionally excluded: they may legitimately
+ * carry shared operational aliases (oncall-eng@company.com, team DLs) that
+ * constitute valid team guidance. Blocking those wholesale would silently
+ * drop useful runbook content with no sanitization path.
  *
  * Known limitations (follow-up issue for comprehensive PII detection):
  * - Does not cover phone numbers, @slack handles, or pager aliases.
- * - Cannot distinguish personal contacts from shared service aliases;
- *   both are blocked on `reference` as a conservative choice.
+ * - Cannot distinguish personal from shared service aliases on `reference`;
+ *   both are blocked on that type as a conservative choice.
  */
 const PERSONAL_EMAIL_PATTERN = /\b[a-zA-Z][a-zA-Z0-9._%+\-]*@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b(?!:)/;
 
