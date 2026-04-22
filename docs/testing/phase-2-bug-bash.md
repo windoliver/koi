@@ -607,26 +607,19 @@ export KOI_AUDIT_ENABLED=true
 
 > User states objectives in first message; model decomposes via `task_create` (#1848 pattern).
 > `@koi/middleware-task-anchor` re-injects task board state after idle turns (CC parity).
-> `@koi/middleware-planning` exposes `write_plan` tool for structured plans.
->
-> `@koi/middleware-report` is **NOT currently wired**. Accumulates per-session activity data
-> and produces a `RunReport` at session end. Needs `createReportMiddleware` added to `allMiddleware`.
+> `@koi/middleware-planning` exposes the `koi_plan_write` tool for structured plans (opt-in via `KOI_PLANNING_ENABLED=true`).
+> `@koi/middleware-report` accumulates per-session activity and emits a `RunReport` on quit (opt-in via `KOI_REPORT_ENABLED=true`).
 
-**Prerequisites for report MW**: wire `@koi/middleware-report` into `tui-runtime.ts`.
-
-```typescript
-// tui-runtime.ts wiring sketch for report MW
-import { createReportMiddleware } from "@koi/middleware-report";
-const reportHandle = createReportMiddleware({
-  onReport: (report, formatted) => console.log("[run-report]", formatted),
-});
-// Add reportHandle.middleware to allMiddleware (after otelHandle, before checkpointMw)
-```
-
-**Setup**: launch TUI normally (no `--goal` flag — objectives go in first user message).
+**Setup** (Q134-Q138 — task anchor + planning):
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+```
+
+**Setup** (Q139-Q140 — also enable run-report):
+```bash
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true KOI_REPORT_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
 | Q | Prompt | Tools Expected | Pass Criteria |
@@ -634,10 +627,10 @@ tmux new-session -d -s "$KOI_SESSION" \
 | Q134 | `Help me write unit tests for the math module and ensure 100% coverage. Break this into tasks.` | task_create | Model calls `task_create` to decompose into subtasks; task board shows 2+ tasks |
 | Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write, task_update | Works toward task; model calls `task_update` when done; task status transitions to completed |
 | Q136 | `Tell me about the weather.` (repeat 4× — deliberate idle turns) | none | After ~3 idle turns, task-anchor fires: `<system-reminder>` with task list injected; model re-orients |
-| Q137 | `Use write_plan to create a structured plan for the remaining coverage work.` | write_plan | Model calls `write_plan` with pending/in_progress items; plan injected as system message next turn |
-| Q138 | Check `/trajectory` after Q134-Q137 | — | `middleware:task-anchor` steps visible on idle turns; `middleware:planning` spans on Q137; `task_create`/`task_update` tool steps |
-| Q139 | (report MW, if wired) Quit TUI after Q134-Q138 | — | `RunReport` printed: summary with turn count, action count, duration, token usage |
-| Q140 | (report MW, if wired) Verify `RunReport.actions` | — | Ring buffer contains model_call + tool_call entries matching session history |
+| Q137 | `Use koi_plan_write to create a structured plan for the remaining coverage work.` | koi_plan_write | Model calls `koi_plan_write` with pending/in_progress items; plan injected as system message next turn |
+| Q138 | Check `/trajectory` after Q134-Q137 | — | `middleware:task-anchor` steps visible on idle turns; `middleware:planning` spans on Q137; `task_create`/`task_update` and `koi_plan_write` tool steps |
+| Q139 | (KOI_REPORT_ENABLED=true) Quit TUI after Q134-Q138 | — | `RunReport` printed: summary with turn count, action count, duration, token usage |
+| Q140 | (KOI_REPORT_ENABLED=true) Verify `RunReport.actions` | — | Ring buffer contains model_call + tool_call entries matching session history |
 
 ### S22 — Model Router & Failover
 
@@ -810,7 +803,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S18** | Browser Automation | Q110-Q117 | 1 | Wire `@koi/tool-browser` into TUI first |
 | **S19** | LSP Integration | Q118-Q125 | 1 | Wire `@koi/lsp` into TUI; `typescript-language-server` on PATH |
 | **S20** | Audit Stack | Q126-Q133 | 1 | Wire audit MW + sinks; `KOI_AUDIT_ENABLED=true` |
-| **S21** | Task Planning & Report | Q134-Q140 | 1 | No flag needed; state objectives in first message; report MW needs wiring |
+| **S21** | Task Planning & Report | Q134-Q140 | 1 | `KOI_PLANNING_ENABLED=true`; add `KOI_REPORT_ENABLED=true` for Q139-Q140 |
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
