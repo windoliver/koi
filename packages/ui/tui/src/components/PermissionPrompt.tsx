@@ -24,13 +24,28 @@ import { COLORS, MODAL_POSITION } from "../theme.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Fixed outer width for the permission prompt modal.
+ * Preferred outer width for the permission prompt modal.
  * Must be a positive integer — OpenTUI absolute-positioned boxes without an
  * explicit width re-measure content every layout pass, triggering a
  * blendCells busy-loop that saturates one CPU core and blocks all input.
- * (#1913)
+ * The actual rendered width is clamped to available terminal columns so the
+ * modal remains fully visible on narrow terminals (< 64 cols). (#1913)
  */
 export const PERMISSION_PROMPT_WIDTH = 60;
+
+/** Minimum usable width — below this the approval context is illegible. */
+const PERMISSION_PROMPT_MIN_WIDTH = 30;
+
+/**
+ * Compute the clamped modal width for a given terminal column count.
+ * Exported for unit testing without needing a render context.
+ */
+export function computePermissionPromptWidth(terminalCols: number): number {
+  return Math.min(
+    PERMISSION_PROMPT_WIDTH,
+    Math.max(terminalCols - MODAL_POSITION.left, PERMISSION_PROMPT_MIN_WIDTH),
+  );
+}
 
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
@@ -55,6 +70,13 @@ export interface PermissionPromptProps {
   readonly onRespond: (requestId: string, decision: ApprovalDecision) => void;
   /** Whether this prompt has keyboard focus. */
   readonly focused: boolean;
+  /**
+   * Current terminal column count, forwarded from the parent that owns
+   * useTerminalDimensions(). Used to clamp modal width on narrow terminals
+   * so approval context is never clipped off-screen (#1913).
+   * Defaults to PERMISSION_PROMPT_WIDTH when not provided.
+   */
+  readonly terminalWidth?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +132,15 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
 
   const permanentAvailable = createMemo(() => props.prompt.permanentAvailable === true);
 
+  // Clamp to available columns so the approval context is never clipped on
+  // narrow terminals. Width is driven by the parent's terminal-resize signal —
+  // not per-frame — so this does not reintroduce the blendCells busy-loop.
+  // Falls back to PERMISSION_PROMPT_WIDTH when terminalWidth is not provided
+  // (e.g. unit tests that only exercise pure logic). (#1913)
+  const modalWidth = createMemo(() =>
+    computePermissionPromptWidth(props.terminalWidth ?? PERMISSION_PROMPT_WIDTH)
+  );
+
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
@@ -127,7 +158,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       borderColor={riskColor()}
       paddingLeft={1}
       paddingRight={1}
-      width={PERMISSION_PROMPT_WIDTH}
+      width={modalWidth()}
       {...MODAL_POSITION}
     >
       {/* Title */}

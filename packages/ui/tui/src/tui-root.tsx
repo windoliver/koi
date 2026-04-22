@@ -577,6 +577,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
             prompt={m().prompt}
             onRespond={props.onPermissionRespond}
             focused={true}
+            terminalWidth={terminalDimensions().width}
           />
         )}
       </Show>

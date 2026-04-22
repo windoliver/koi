@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  computePermissionPromptWidth,
   formatInputPreview,
   normalizeReason,
   PERMISSION_PROMPT_WIDTH,
@@ -7,19 +8,30 @@ import {
 } from "./PermissionPrompt.js";
 
 // ---------------------------------------------------------------------------
-// PERMISSION_PROMPT_WIDTH — layout contract (#1913)
+// computePermissionPromptWidth — layout contract (#1913)
 // ---------------------------------------------------------------------------
 
-describe("PERMISSION_PROMPT_WIDTH", () => {
-  test("is a finite positive integer — OpenTUI busy-loop guard", () => {
-    // Regression: #1913 — PermissionPrompt was the only modal without an
-    // explicit width. OpenTUI re-measures undimensioned absolute boxes every
-    // layout pass; the blendCells path saturated one CPU core and blocked all
-    // key input. This constant MUST be a finite positive integer and MUST be
-    // applied to the outer <box> for the fix to hold.
-    expect(typeof PERMISSION_PROMPT_WIDTH).toBe("number");
-    expect(Number.isFinite(PERMISSION_PROMPT_WIDTH)).toBe(true);
-    expect(PERMISSION_PROMPT_WIDTH).toBeGreaterThan(0);
+describe("computePermissionPromptWidth", () => {
+  test("returns PERMISSION_PROMPT_WIDTH on wide terminals", () => {
+    // On terminals wider than left_offset(2) + preferred_width(60) the modal
+    // uses its preferred width, never wider.
+    expect(computePermissionPromptWidth(100)).toBe(PERMISSION_PROMPT_WIDTH);
+    expect(computePermissionPromptWidth(80)).toBe(PERMISSION_PROMPT_WIDTH);
+    expect(computePermissionPromptWidth(62)).toBe(PERMISSION_PROMPT_WIDTH);
+  });
+
+  test("shrinks on narrow terminals so the modal fits within available columns", () => {
+    // On a 60-col terminal: 60 - left_offset(2) = 58 available columns.
+    expect(computePermissionPromptWidth(60)).toBeLessThan(PERMISSION_PROMPT_WIDTH);
+    expect(computePermissionPromptWidth(60)).toBe(58);
+    // On a 40-col terminal: 40 - 2 = 38.
+    expect(computePermissionPromptWidth(40)).toBe(38);
+  });
+
+  test("clamps to minimum so the modal remains legible even on very narrow terminals", () => {
+    // Below the minimum (30) the function returns 30, not a negative/zero value.
+    expect(computePermissionPromptWidth(10)).toBe(30);
+    expect(computePermissionPromptWidth(0)).toBe(30);
   });
 });
 
