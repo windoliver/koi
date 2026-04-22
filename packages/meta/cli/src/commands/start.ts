@@ -1179,12 +1179,10 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     let finalCode: number = headlessCode;
     try {
       await shutdownRuntime();
-      // Latch BEFORE clearing the timer so a callback already on the
-      // Node timer queue sees postRunPhaseComplete=true and no-ops
-      // instead of racing the normal-exit path with a spurious exit 4.
-      // Note: clearTimeout is deferred until after schema validation so
-      // --max-duration-ms continues to cover the validation phase.
-      postRunPhaseComplete = true;
+      // postRunPhaseComplete is set immediately BEFORE each emitResult() call (not before
+      // validation) so the deadline watchdog remains active through schema validation.
+      // validateResultSchema is synchronous — no yield point between validation and emission
+      // — so there is no race between the watchdog and the normal-exit path.
       // Any teardown failure is machine-visible as INTERNAL, regardless of
       // the run's own exit code. Preserving, e.g., PERMISSION_DENIED when
       // the session transcript was not flushed would hide exactly the
@@ -1192,6 +1190,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       // code is preserved in the NDJSON result's error string for
       // diagnostics.
       if (shutdownFailed) {
+        postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         finalCode = HEADLESS_EXIT.INTERNAL;
         emitResult({
@@ -1219,6 +1218,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             }
           }
         }
+        postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
@@ -1231,6 +1231,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           emitResult();
         }
       } else {
+        postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         emitResult();
       }
