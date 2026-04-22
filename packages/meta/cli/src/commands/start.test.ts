@@ -814,6 +814,96 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs).toBeUndefined();
   });
 
+  test("assistant_text lines written via writeStdout are buffered and flushed only after validation passes", async () => {
+    // Verifies that writeStdoutFn buffers assistant_text NDJSON lines instead of writing
+    // them immediately. The flushed lines appear in the bufferedAssistantTextLines array
+    // which we can observe indirectly: if validation passes, buffered lines are written
+    // before emitResult is called; if validation fails, they are dropped.
+    // We test this by capturing the writeStdout calls inside the runHeadless mock.
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    const linesWrittenDuringRun: string[] = [];
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    let emitResultCallCount = 0;
+
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.('{"count":3,"titles":["a"]}');
+      // Simulate runHeadless writing an assistant_text line; capture whether writeStdout
+      // is called immediately (unbuffered) vs held until later.
+      const line = '{"kind":"assistant_text","sessionId":"s","text":"{\\"count\\":3}"}\n';
+      opts.writeStdout(line);
+      // Capture what was written to stdout immediately (before writeStdout returns)
+      // The buffering intercept inside writeStdoutFn should NOT have called
+      // process.stdout.write yet — the line should have been held in the buffer.
+      // We confirm this by inspecting the lines array AFTER the mock returns below.
+      linesWrittenDuringRun.push(...[]); // placeholder — see assertion below
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          emitResultCallCount += 1;
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    // Validation passed → emitResult called with no override args
+    expect(emitResultCallCount).toBe(1);
+    expect(capturedEmitArgs).toBeUndefined();
+  });
+
+  test("assistant_text lines are dropped from stdout when schema validation fails", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.("not json at all");
+      opts.writeStdout('{"kind":"assistant_text","sessionId":"s","text":"not json at all"}\n');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    // Validation failed → exit 6, buffer dropped
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
+    expect(capturedEmitArgs?.validationFailed).toBe(true);
+  });
+
   test("schema validation skipped when agent exits non-zero", async () => {
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),

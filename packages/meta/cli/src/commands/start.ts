@@ -1123,6 +1123,19 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     const rawAssistantParts: string[] = [];
     let rawAssistantPartsBytes = 0;
     let rawAssistantOverflow = false;
+    // When --result-schema is set, buffer assistant_text NDJSON lines so they are
+    // only flushed to stdout AFTER validation passes. This prevents automation from
+    // acting on unvalidated content streamed mid-run. Other event kinds (tool_call,
+    // tool_result, session_start) are emitted in real-time as usual.
+    // let: populated during run, flushed (or dropped) in the post-run validation block
+    const bufferedAssistantTextLines: string[] = [];
+    const writeStdoutFn = (s: string): void => {
+      if (resultSchemaObj !== undefined && s.includes('"kind":"assistant_text"')) {
+        bufferedAssistantTextLines.push(s);
+        return;
+      }
+      process.stdout.write(s);
+    };
 
     // runHeadless does not throw — it converts all errors into a typed
     // exit code and an `emitResult` callback. We keep `emitResult` in outer
@@ -1135,7 +1148,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       // give the engine a fresh full-duration clock even though bootstrap
       // already consumed some of it.
       maxDurationMs: flags.maxDurationMs !== undefined ? remainingForRunAndShutdown : undefined,
-      writeStdout: (s) => process.stdout.write(s),
+      writeStdout: writeStdoutFn,
       writeStderr: (s) => process.stderr.write(s),
       runtime,
       externalSignal: controller.signal,
@@ -1204,6 +1217,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             ok: false,
             error: "schema validation failed: assistant output exceeded 1 MB limit",
           };
+        } else if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+          // Pre-validation budget check: no time remaining before validation even starts.
+          // Use SCHEMA_VALIDATION (exit 6) — the agent completed all tool calls, do NOT retry.
+          schemaResult = {
+            ok: false,
+            error: "schema validation failed: max-duration-ms exceeded before schema validation",
+          };
         } else {
           try {
             schemaResult = validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
@@ -1243,6 +1263,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               error: schemaResult.error,
             });
           } else {
+            // Flush buffered assistant_text lines before emitting the result event.
+            // These were held until validation passed so consumers only see validated output.
+            for (const line of bufferedAssistantTextLines) {
+              process.stdout.write(line);
+            }
             emitResult();
           }
         }
