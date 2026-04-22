@@ -37,6 +37,7 @@ import type { BudgetConfig } from "@koi/context-manager";
 import type {
   Agent,
   ApprovalHandler,
+  AuditSink,
   ComplianceRecorder,
   ComponentProvider,
   EngineAdapter,
@@ -2098,6 +2099,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // Compliance recorders accumulated from each active audit sink.
     // Used later to populate governanceBackend.compliance.
     const complianceRecorders: ComplianceRecorder[] = [];
+    // First queryable audit sink (SQLite only — NDJSON has no .query).
+    // Passed into createDecisionLedger so /trajectory shows audit:ok and
+    // surfaces compliance_event / permission_decision rows in the audit lane.
+    let ledgerAuditSink: AuditSink | undefined;
     if (config.auditNdjsonPath !== undefined) {
       // Collision guard: refuse to start if the legacy host-level
       // audit path (env-driven KOI_AUDIT_NDJSON / config.auditNdjsonPath)
@@ -2198,6 +2203,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }),
       );
       auditPresetExtras.push(sqliteAuditMw);
+      ledgerAuditSink = sqliteSink;
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
         close: async () => sqliteSink.close(),
@@ -2716,6 +2722,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 ? trajectoryStore.getDocument(trajectoryDocId)
                 : Promise.resolve([]),
           },
+          auditSink: ledgerAuditSink,
         }),
       getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
         // Merge user + plugin MCP resolvers — key by (source, name)
