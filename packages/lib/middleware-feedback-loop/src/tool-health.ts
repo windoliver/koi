@@ -210,6 +210,8 @@ const DEFAULT_WINDOW_SIZE = 10;
 const DEFAULT_FLUSH_THRESHOLD = 10;
 const DEFAULT_ERROR_RATE_DELTA = 0.05;
 const DEFAULT_FLUSH_TIMEOUT_MS = 2_000;
+const DEFAULT_MAX_CONSECUTIVE_FLUSH_FAILURES = 5;
+const DEFAULT_FLUSH_SUSPENSION_COOLDOWN_MS = 60_000;
 
 export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTracker {
   const {
@@ -224,8 +226,14 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     flushThreshold = DEFAULT_FLUSH_THRESHOLD,
     errorRateDeltaThreshold = DEFAULT_ERROR_RATE_DELTA,
     flushTimeoutMs = DEFAULT_FLUSH_TIMEOUT_MS,
+    maxConsecutiveFlushFailures = DEFAULT_MAX_CONSECUTIVE_FLUSH_FAILURES,
+    flushSuspensionCooldownMs = DEFAULT_FLUSH_SUSPENSION_COOLDOWN_MS,
     onFlushError,
   } = config;
+
+  // Flush suspension circuit breaker — shared across all tools in this tracker
+  let consecutiveFlushFailures = 0;
+  let flushSuspendedUntil = 0; // epoch ms; 0 = not suspended
 
   const demotionCriteria: DemotionCriteria = {
     ...DEFAULT_DEMOTION_CRITERIA,
@@ -262,13 +270,21 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     state.deltaSinceFlush.sampler = recordLatency(state.deltaSinceFlush.sampler, latencyMs);
     updateFlushState(state, now);
 
-    // Fire-and-forget background flush if threshold reached
-    if (shouldFlush(state.flushState, flushThreshold, errorRateDeltaThreshold)) {
-      void flushTool(toolId, state);
+    // Fire-and-forget background flush if threshold reached and not suspended
+    const now2 = clock();
+    if (
+      now2 >= flushSuspendedUntil &&
+      shouldFlush(state.flushState, flushThreshold, errorRateDeltaThreshold)
+    ) {
+      void flushTool(toolId, state, false);
     }
   }
 
-  async function flushTool(toolId: string, state: ToolState): Promise<void> {
+  async function flushTool(
+    toolId: string,
+    state: ToolState,
+    bypassSuspension: boolean,
+  ): Promise<void> {
     if (state.flushState.flushing) return;
     state.flushState = { ...state.flushState, flushing: true };
 
@@ -297,11 +313,12 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const updateResult = await forgeStore.update(bId, { fitness: merged });
       if (!updateResult.ok) {
         state.flushState = { ...state.flushState, flushing: false };
-        onFlushError?.(toolId, updateResult.error);
+        recordFlushFailure(toolId, updateResult.error, bypassSuspension);
         return;
       }
 
-      // Reset deltas after successful flush
+      // Successful flush — reset circuit breaker and dirty counters
+      consecutiveFlushFailures = 0;
       state.deltaSinceFlush = {
         successCount: 0,
         errorCount: 0,
@@ -317,7 +334,17 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       };
     } catch (e: unknown) {
       state.flushState = { ...state.flushState, flushing: false };
-      onFlushError?.(toolId, e);
+      recordFlushFailure(toolId, e, bypassSuspension);
+    }
+  }
+
+  function recordFlushFailure(toolId: string, error: unknown, bypassSuspension: boolean): void {
+    onFlushError?.(toolId, error);
+    if (bypassSuspension) return; // dispose() flushes always proceed regardless
+    consecutiveFlushFailures += 1;
+    if (consecutiveFlushFailures >= maxConsecutiveFlushFailures) {
+      flushSuspendedUntil = clock() + flushSuspensionCooldownMs;
+      consecutiveFlushFailures = 0;
     }
   }
 
@@ -469,7 +496,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         trustTier: undefined,
         errorRate,
         totalCount: metrics.totalCount,
-        flushSuspended: false,
+        flushSuspended: clock() < flushSuspendedUntil,
       };
     },
 
@@ -559,7 +586,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
           const timeoutPromise = new Promise<void>((resolve) => {
             setTimeout(resolve, flushTimeoutMs);
           });
-          const flush = Promise.race([flushTool(toolId, state), timeoutPromise]);
+          const flush = Promise.race([flushTool(toolId, state, true), timeoutPromise]);
           flushes.push(flush);
         }
       }

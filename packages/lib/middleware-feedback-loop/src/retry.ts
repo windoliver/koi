@@ -10,6 +10,7 @@ export interface RetryOptions {
   readonly repairStrategy: RepairStrategy;
   readonly validationMaxAttempts: number;
   /** Maximum total transport attempts including the first call (not a retry count). */
+  /** Maximum number of transport errors before giving up (not total call count). */
   readonly transportMaxAttempts: number;
   readonly onRetry?: ((attempt: number, errors: readonly ValidationError[]) => void) | undefined;
   readonly onGateFail?: ((gate: Gate, errors: readonly ValidationError[]) => void) | undefined;
@@ -24,16 +25,16 @@ export async function runWithRetry(
   let currentRequest = originalRequest;
   let feedbackMessageId: string | undefined;
   let validationAttempts = 0;
-  let transportAttempts = 0;
+  // transportErrors counts only network/API failures — independent of validation retries
+  let transportErrors = 0;
 
   while (true) {
-    transportAttempts++;
-
     let response: ModelResponse;
     try {
       response = await next(currentRequest);
     } catch (err) {
-      if (transportAttempts >= options.transportMaxAttempts) throw err;
+      transportErrors++;
+      if (transportErrors >= options.transportMaxAttempts) throw err;
       continue;
     }
 
