@@ -40,7 +40,10 @@ mkdir -p "$FIXTURE"
 git -C "$FIXTURE" init -q
 # Create an initial commit so `git reset --hard HEAD` works in §1.5.
 # An unborn repo (no commits) causes reset --hard to exit non-zero.
-git -C "$FIXTURE" commit --allow-empty -q -m "chore: fixture init"
+git -C "$FIXTURE" \
+  -c user.name='koi-bugbash' \
+  -c user.email='koi-bugbash@example.invalid' \
+  commit --allow-empty -q -m "chore: fixture init"
 
 # Expose operator-chosen tools (bun, node, etc.) to the Bash tool.
 # Faking HOME disables home-derived PATH detection for security reasons
