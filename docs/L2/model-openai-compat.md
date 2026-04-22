@@ -41,6 +41,42 @@ thinking (e.g., Claude via OpenRouter) return reasoning tokens as
 `supportsReasoning` defaults to `false` — callers must opt in explicitly.
 OpenRouter silently ignores the field for non-reasoning models.
 
+### Compat Resolution Order
+
+Provider compat is resolved in three layers, each narrowing the previous:
+
+```
+_DEFAULT_COMPAT
+  ← merge  detectCompat(baseUrl)                (URL heuristics, e.g. OpenRouter / Groq)
+  ← merge  MODEL_COMPAT_RULES first-match(model) (per-model quirks, regex-keyed)
+  ← merge  config.compat                        (caller override, highest priority)
+```
+
+Each layer uses `??` merge — a field absent in the override falls through to the layer below.
+
+### Per-Model Capability Flags
+
+Two flags extend `ResolvedCompat` with model-specific defaults:
+
+| Flag | Type | Default | Purpose |
+|------|------|---------|---------|
+| `supportsToolStreaming` | `boolean` | `true` | When `false`, tool-call deltas are buffered and emitted in one burst after the final stream chunk instead of progressively. Use for provider×model combos that emit malformed or partial `tool_calls` mid-stream. |
+| `thinkingDisplay` | `"full" \| "summarized" \| "hidden"` | `"full"` | Controls how reasoning output is requested. `"full"` = current behavior; `"summarized"` = request thinking summaries (Anthropic via OpenRouter); `"hidden"` = exclude reasoning entirely. Only applied when `supportsReasoning` is true. |
+
+### Per-Model Override Table
+
+`model-compat.ts` exports `MODEL_COMPAT_RULES: readonly ModelCompatRule[]`. Each rule has a `match: RegExp` and `overrides: Partial<ResolvedCompat>`. First match wins. Ships empty — add rules as real-world failures surface, with a regression cassette per entry.
+
+Example (not shipped — illustrative):
+
+```typescript
+{ match: /copilot.*haiku/i, overrides: { supportsToolStreaming: false } },
+```
+
+### Tool Call Buffering (`supportsToolStreaming: false`)
+
+When `supportsToolStreaming` is `false`, `createStreamParser` buffers tool-call deltas silently during the stream and emits the complete sequence — `tool_call_start` → `tool_call_delta` (full args in one chunk) → `tool_call_end` — only after `finish()` is called. The downstream `EngineEvent` contract is identical; only the timing changes.
+
 ## Streaming
 
 `AsyncIterable<ModelChunk>` via `async function*`. Natural backpressure from
