@@ -61,11 +61,11 @@ These are fail-closed by default because they represent bootstrap-time execution
 |------|------|---------|--------|
 | 0 | SUCCESS | Agent completed the task | — |
 | 1 | AGENT_FAILURE | Agent could not complete the task. | Retry only if all allowed tools are idempotent. |
-| 6 | SCHEMA_VALIDATION | Agent output did not match `--result-schema`. Agent completed all tool calls before this check. | Do NOT retry — the agent finished its work. Fix the prompt or schema and run again. The `result` event also sets `validationFailed: true`. |
 | 2 | PERMISSION_DENIED | A required tool was denied by the permission policy | No — add `--allow-tool` |
 | 3 | BUDGET_EXCEEDED | `--max-turns` or `--max-spend` was hit | Maybe — raise limits |
 | 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when all allowed tools are read-only and idempotent. A timeout does not guarantee no side effects occurred before the cut-off. Do NOT auto-retry if `Bash`, file-write, external API, or any MCP tool is allowed — retrying can duplicate deploys, mutations, or external actions. |
 | 5 | INTERNAL | Runtime assembly failed, schema file was invalid, or teardown failed | Check stderr |
+| 6 | SCHEMA_VALIDATION | Agent output did not match `--result-schema`. Agent completed all tool calls before this check. | Do NOT retry — the agent finished its work. Fix the prompt or schema and run again. The `result` event also sets `validationFailed: true`. |
 
 ## NDJSON Event Reference
 
