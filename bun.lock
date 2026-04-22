@@ -350,6 +350,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/middleware-feedback-loop": {
+      "name": "@koi/middleware-feedback-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/lib/middleware-otel": {
       "name": "@koi/middleware-otel",
       "version": "0.0.0",
@@ -1524,6 +1533,8 @@
     "@koi/middleware-exfiltration-guard": ["@koi/middleware-exfiltration-guard@workspace:packages/security/middleware-exfiltration-guard"],
 
     "@koi/middleware-extraction": ["@koi/middleware-extraction@workspace:packages/mm/middleware-extraction"],
+
+    "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/lib/middleware-feedback-loop"],
 
     "@koi/middleware-memory-recall": ["@koi/middleware-memory-recall@workspace:packages/mm/middleware-memory-recall"],
 
