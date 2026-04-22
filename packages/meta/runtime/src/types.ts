@@ -432,6 +432,15 @@ export interface RuntimeConfig {
   readonly governance?: GovernanceMiddlewareConfig | undefined;
 
   /**
+   * Feedback-loop middleware configuration. When provided, wires
+   * `@koi/middleware-feedback-loop` which validates model responses,
+   * retries on validation failure, and tracks tool health (quarantine +
+   * trust demotion). Skipped if a middleware named "feedback-loop" is
+   * already present in `config.middleware`.
+   */
+  readonly feedbackLoop?: import("@koi/middleware-feedback-loop").FeedbackLoopConfig | undefined;
+
+  /**
    * Browser tool provider configuration. When provided, wires `@koi/tool-browser`
    * and exposes the resulting `ComponentProvider` on `RuntimeHandle.browserProvider`
    * so callers can pass it to `createKoi({ providers })`.

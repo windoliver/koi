@@ -10,7 +10,7 @@ export interface RetryOptions {
   readonly repairStrategy: RepairStrategy;
   readonly validationMaxAttempts: number;
   /** Maximum total transport attempts including the first call (not a retry count). */
-  /** Maximum number of transport errors before giving up (not total call count). */
+  /** Maximum transport retries allowed (0 = no retries, first transport error is terminal). */
   readonly transportMaxAttempts: number;
   readonly onRetry?: ((attempt: number, errors: readonly ValidationError[]) => void) | undefined;
   readonly onGateFail?: ((gate: Gate, errors: readonly ValidationError[]) => void) | undefined;
@@ -34,7 +34,9 @@ export async function runWithRetry(
       response = await next(currentRequest);
     } catch (err) {
       transportErrors++;
-      if (transportErrors >= options.transportMaxAttempts) throw err;
+      if (transportErrors > options.transportMaxAttempts) throw err;
+      // Emit onRetry so transport-error retries are observable alongside validation retries
+      options.onRetry?.(validationAttempts + transportErrors, []);
       continue;
     }
 

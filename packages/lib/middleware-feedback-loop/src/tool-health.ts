@@ -402,8 +402,26 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   ): Promise<void> {
     const now = clock();
 
-    // Step 1: ForgeStore update (lifecycle → quarantined)
-    const updateResult = await forgeStore.update(bId, { lifecycle: "quarantined" });
+    // Step 1: ForgeStore update (lifecycle → quarantined) with OCC; retry once on CONFLICT
+    const initialLoad = await forgeStore.load(bId);
+    // If already quarantined, we're done — idempotent no-op
+    if (initialLoad.ok && initialLoad.value.lifecycle === "quarantined") return;
+    const initialVersion: number | undefined = initialLoad.ok
+      ? initialLoad.value.storeVersion
+      : undefined;
+    let updateResult = await forgeStore.update(bId, {
+      lifecycle: "quarantined",
+      expectedVersion: initialVersion,
+    });
+    if (!updateResult.ok && updateResult.error.code === "CONFLICT") {
+      // A concurrent writer updated the brick — reload and retry once
+      const retryLoad = await forgeStore.load(bId);
+      if (retryLoad.ok && retryLoad.value.lifecycle === "quarantined") return; // already done
+      updateResult = await forgeStore.update(bId, {
+        lifecycle: "quarantined",
+        expectedVersion: retryLoad.ok ? retryLoad.value.storeVersion : undefined,
+      });
+    }
     if (!updateResult.ok) {
       const event: HealthTransitionErrorEvent = {
         transition: "quarantine",

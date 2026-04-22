@@ -57,6 +57,7 @@ import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-tra
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createGovernanceMiddleware, GOVERNANCE_MIDDLEWARE_NAME } from "@koi/governance-core";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
 import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware-otel";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
@@ -236,10 +237,18 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...baseMiddleware, createGovernanceMiddleware(config.governance)]
         : baseMiddleware;
 
+    // Install feedback-loop middleware when config.feedbackLoop is provided and not already
+    // present. Priority 450 — above model-level validators (100-300), below audit (300) boundary.
+    const hasFeedbackLoop = new Set(baseWithGovernance.map((mw) => mw.name)).has("feedback-loop");
+    const baseWithFeedbackLoop: readonly KoiMiddleware[] =
+      config.feedbackLoop !== undefined && !hasFeedbackLoop
+        ? [...baseWithGovernance, createFeedbackLoopMiddleware(config.feedbackLoop)]
+        : baseWithGovernance;
+
     // Install exfiltration guard by default when: (1) not explicitly disabled,
     // (2) not already provided, and (3) the adapter has terminals so the intercept
     // phase won't be silently bypassed. Stub adapters have no terminals.
-    const providedNames = new Set(baseWithGovernance.map((mw) => mw.name));
+    const providedNames = new Set(baseWithFeedbackLoop.map((mw) => mw.name));
     const exfiltrationRequested =
       config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
     const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
@@ -260,10 +269,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     const afterExfiltration: readonly KoiMiddleware[] =
       exfiltrationRequested && canInstallExfiltrationGuard
         ? [
-            ...baseWithGovernance,
+            ...baseWithFeedbackLoop,
             createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
           ]
-        : baseWithGovernance;
+        : baseWithFeedbackLoop;
 
     // Append model-router as the innermost model-call interceptor (after exfiltration
     // guard and semantic-retry) so each retry attempt independently benefits from
