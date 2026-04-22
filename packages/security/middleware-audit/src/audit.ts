@@ -240,6 +240,7 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
           agentId: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           kind: "tool_call",
+          toolName: request.toolId,
           request: config.redactRequestBodies ? "[redacted]" : redactPayload(request),
           response: response !== undefined ? redactPayload(response) : undefined,
           error: error !== undefined ? redactPayload(serializeError(error)) : undefined,
