@@ -83,6 +83,12 @@ describe("validateLoadedSchema — shape checks", () => {
     if (!result.ok) expect(result.message).toContain("enum");
   });
 
+  test("rejects schema where enum contains non-scalar values (objects)", () => {
+    const result = validateLoadedSchema({ enum: [{ status: "open" }, "closed"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("scalar");
+  });
+
   test("rejects schema where required is not an array of strings", () => {
     const result = validateLoadedSchema({ required: "count" });
     expect(result.ok).toBe(false);
@@ -152,6 +158,18 @@ describe("validateSchema — required", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("invalid schema");
   });
+
+  test("fails when required is present but value is not an object (string)", () => {
+    const result = validateSchema("oops", { required: ["count"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("expected object");
+  });
+
+  test("fails when required is present but value is not an object (array)", () => {
+    const result = validateSchema([], { required: ["count"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("expected object");
+  });
 });
 
 describe("validateSchema — properties", () => {
@@ -179,6 +197,12 @@ describe("validateSchema — properties", () => {
     const result = validateSchema({}, { properties: ["count"] });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("invalid schema");
+  });
+
+  test("fails when properties is present but value is not an object (string)", () => {
+    const result = validateSchema("oops", { properties: { count: { type: "number" } } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("expected object");
   });
 });
 
@@ -320,6 +344,17 @@ function validateSchemaStructure(
     if (!Array.isArray(s.enum)) {
       return { ok: false, message: `schema.enum at ${path || "root"} must be an array` };
     }
+    // Restrict to scalar values — composite values (objects/arrays) can't be
+    // matched reliably because Array.includes uses referential equality, and
+    // JSON.parse always produces new object references.
+    for (const entry of s.enum as unknown[]) {
+      if (entry !== null && typeof entry === "object") {
+        return {
+          ok: false,
+          message: `schema.enum at ${path || "root"} must contain only scalar values (string, number, boolean, null); objects and arrays are not supported`,
+        };
+      }
+    }
   }
 
   if ("required" in s) {
@@ -437,13 +472,14 @@ export function validateSchema(
         message: "invalid schema: required must be an array of strings",
       };
     }
-    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-      const obj = value as Record<string, unknown>;
-      for (const key of s.required as string[]) {
-        if (!(key in obj)) {
-          const fieldPath = path ? `${path}.${key}` : key;
-          return { ok: false, path: fieldPath, message: "is required" };
-        }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return { ok: false, path: path || ".", message: "expected object (schema has 'required')" };
+    }
+    const obj = value as Record<string, unknown>;
+    for (const key of s.required as string[]) {
+      if (!(key in obj)) {
+        const fieldPath = path ? `${path}.${key}` : key;
+        return { ok: false, path: fieldPath, message: "is required" };
       }
     }
   }
@@ -460,15 +496,16 @@ export function validateSchema(
         message: "invalid schema: properties must be an object",
       };
     }
-    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-      const props = s.properties as Record<string, unknown>;
-      const obj = value as Record<string, unknown>;
-      for (const [key, subSchema] of Object.entries(props)) {
-        if (key in obj) {
-          const subPath = path ? `${path}.${key}` : key;
-          const result = validateSchema(obj[key], subSchema, subPath);
-          if (!result.ok) return result;
-        }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return { ok: false, path: path || ".", message: "expected object (schema has 'properties')" };
+    }
+    const props = s.properties as Record<string, unknown>;
+    const obj = value as Record<string, unknown>;
+    for (const [key, subSchema] of Object.entries(props)) {
+      if (key in obj) {
+        const subPath = path ? `${path}.${key}` : key;
+        const result = validateSchema(obj[key], subSchema, subPath);
+        if (!result.ok) return result;
       }
     }
   }
