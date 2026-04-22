@@ -180,13 +180,25 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   // horizontal hint rows would overflow. (#1913)
   const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
 
-  // Truncated tool ID for inline display in narrow mode. MCP-style IDs such as
-  // `crm__get_customer` (18 chars) can dominate the narrow layout; cap to
-  // modalWidth - 20 (room for "[a] Always allow … this session") with a floor
-  // of 8 so the ID always shows at least the start of the name.
-  const displayToolId = createMemo(() =>
+  // Width-aware tool ID display in narrow mode. Inner content width =
+  // modalWidth - paddingLeft(1) - paddingRight(1) = modalWidth - 2.
+  //
+  // displayToolIdInLabel: used in "Tool: <id>" — prefix "Tool: " = 6 chars.
+  //   budget = (modalWidth - 2) - 6 = modalWidth - 8
+  //
+  // displayToolIdInHint: used in "[a] Always allow <id> this session" —
+  //   prefix "[a] Always allow " = 17 chars, suffix " this session" = 13 chars.
+  //   budget = (modalWidth - 2) - 17 - 13 = modalWidth - 32
+  //
+  // Both floors are 4 so at least a few characters of the ID remain visible.
+  const displayToolIdInLabel = createMemo(() =>
     isNarrow()
-      ? formatToolId(props.prompt.toolId, Math.max(modalWidth() - 20, 8))
+      ? formatToolId(props.prompt.toolId, Math.max(modalWidth() - 8, 4))
+      : props.prompt.toolId
+  );
+  const displayToolIdInHint = createMemo(() =>
+    isNarrow()
+      ? formatToolId(props.prompt.toolId, Math.max(modalWidth() - 32, 4))
       : props.prompt.toolId
   );
 
@@ -246,7 +258,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
 
       {/* Tool info */}
       <box flexDirection="column" marginTop={1}>
-        <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
+        <text fg={COLORS.textSecondary}>{`Tool: `}<b>{displayToolIdInLabel()}</b></text>
       </box>
 
       {/* Args preview */}
@@ -277,7 +289,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
             <box flexDirection="column" marginTop={1}>
               <text fg={COLORS.success}>{"[y] Allow once"}</text>
               <text fg={COLORS.danger}>{"[n] Deny"}</text>
-              <text fg={COLORS.blueAccent}>{`[a] Always allow ${displayToolId()} this session`}</text>
+              <text fg={COLORS.blueAccent}>{`[a] Always allow ${displayToolIdInHint()} this session`}</text>
               <Show when={permanentAvailable()}>
                 <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
               </Show>
