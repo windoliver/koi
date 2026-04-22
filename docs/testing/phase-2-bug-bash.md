@@ -38,6 +38,9 @@ mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
 # and all cleanup scripts target $FIXTURE/.koi/memory exclusively.
 mkdir -p "$FIXTURE"
 git -C "$FIXTURE" init -q
+# Create an initial commit so `git reset --hard HEAD` works in §1.5.
+# An unborn repo (no commits) causes reset --hard to exit non-zero.
+git -C "$FIXTURE" commit --allow-empty -q -m "chore: fixture init"
 
 # Expose operator-chosen tools (bun, node, etc.) to the Bash tool.
 # Faking HOME disables home-derived PATH detection for security reasons
@@ -763,11 +766,16 @@ _S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo 
 if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
   # $FIXTURE is nested inside another repo, or not a git repo at all — initialize it.
   git -C "$FIXTURE" init -q
-  _S25_GIT_ROOT="$FIXTURE"
+  # Re-validate after init to confirm isolation before any destructive cleanup.
+  _S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
+  if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
+    echo "S25 HARNESS ERROR: could not make \$FIXTURE ($FIXTURE) an isolated git root. Aborting." >&2
+    exit 1
+  fi
 fi
 
 # One canonical memory dir — reused for TUI cleanup, assertions, and koi dream.
-GIT_ROOT="$_S25_GIT_ROOT"    # proven: $FIXTURE is (or is now) its own git root
+GIT_ROOT="$FIXTURE"    # verified: $FIXTURE is its own git root
 MEMORY_DIR="$GIT_ROOT/.koi/memory"
 
 # REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
