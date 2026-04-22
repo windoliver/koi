@@ -180,23 +180,11 @@ function walkStatement(node: Node): WalkResult {
 
 /** Walk a `redirected_statement`. Extracts the inner command and its redirects. */
 function walkRedirectedStatement(node: Node): WalkResult {
-  let command: Node | null = null;
+  let statement: Node | null = null;
   const redirects: Redirect[] = [];
 
   for (const child of node.children) {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
-    if (child.type === "command") {
-      if (command !== null) {
-        // Walker assertion: `redirected_statement` wraps exactly one
-        // `command` child. Multiple command children has no known
-        // reachability under the vendored grammar for valid bash input.
-        // Route to `malformed` so the fail-closed branch in `dispose()`
-        // hard-denies rather than letting it fall through to askable.
-        return tooComplex("multiple commands in redirected_statement", child.type, "malformed");
-      }
-      command = child;
-      continue;
-    }
     if (child.type === "file_redirect") {
       const r = walkFileRedirect(child);
       if (r.kind === "too-complex") return r;
@@ -206,21 +194,19 @@ function walkRedirectedStatement(node: Node): WalkResult {
     if (child.type === "heredoc_redirect") {
       return tooComplex("heredoc redirects are not supported", "heredoc_redirect", "heredoc");
     }
-    // Unexpected child type in redirected_statement — e.g. the
-    // multi-assignment form `FOO=bar BAZ=qux > out.txt` where
-    // `variable_assignments` is the inner child instead of a
-    // command. These are valid bash but the walker does not
-    // produce a static argv for them. Route to `unsupported-syntax`
-    // (askable) — the downstream regex/elicit path can still
-    // evaluate the raw source text.
-    return tooComplex(
-      `unexpected child in redirected_statement: ${child.type}`,
-      child.type,
-      "unsupported-syntax",
-    );
+    if (statement !== null) {
+      // There should be exactly one non-redirect child. Keep this strict so
+      // any unexpected AST shape fails closed instead of guessing intent.
+      return tooComplex(
+        "multiple inner statements in redirected_statement",
+        child.type,
+        "malformed",
+      );
+    }
+    statement = child;
   }
 
-  if (command === null) {
+  if (statement === null) {
     // Redirect-only shapes like `> out.txt`, `2>&1`, or `>>out.txt`
     // reach here. These are valid bash but produce no argv for
     // permission rules to match on. Route to `unsupported-syntax`
@@ -233,7 +219,29 @@ function walkRedirectedStatement(node: Node): WalkResult {
       "unsupported-syntax",
     );
   }
-  return walkCommand(command, redirects);
+
+  const inner = walkStatement(statement);
+  if (inner.kind === "too-complex") return inner;
+  const lastIdx = inner.commands.length - 1;
+  const last = inner.commands[lastIdx];
+  if (last === undefined) {
+    return tooComplex(
+      "redirected_statement resolved to no executable command",
+      statement.type,
+      "unsupported-syntax",
+    );
+  }
+  if (redirects.length === 0) return inner;
+
+  const commands = [...inner.commands];
+  commands[lastIdx] = {
+    argv: last.argv,
+    envVars: last.envVars,
+    redirects: [...last.redirects, ...redirects],
+    // Preserve the full redirected source span for logging/UI.
+    text: node.text,
+  };
+  return { kind: "ok", commands };
 }
 
 /** Walk a `command` node. Collects env vars, argv, and attaches pre-extracted
