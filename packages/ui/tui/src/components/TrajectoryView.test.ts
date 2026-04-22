@@ -33,6 +33,24 @@ describe("summarizeDecision", () => {
       expect(result).toBe("exhausted");
     });
 
+    test("truncates long model IDs to 24 chars with ellipsis", () => {
+      // "openrouter:google/gemini-2.0-flash-001" is 38 chars — slice(0,23) + "…" = 24 visible chars
+      const result = summarizeDecision({
+        "router.target.selected": "openrouter:google/gemini-2.0-flash-001",
+        "router.fallback_occurred": false,
+      });
+      expect(result).toBe("→openrouter:google/gemin…");
+      expect(result!.length).toBeLessThanOrEqual(26); // →(1) + 23 chars + ellipsis(1) = 25
+    });
+
+    test("truncates long model IDs with fallback suffix", () => {
+      const result = summarizeDecision({
+        "router.target.selected": "openrouter:google/gemini-2.0-flash-001",
+        "router.fallback_occurred": true,
+      });
+      expect(result).toBe("→openrouter:google/gemin… fallback");
+    });
+
     test("returns undefined for unrecognized decision shape", () => {
       const result = summarizeDecision({ unknownKey: "value" });
       expect(result).toBeUndefined();

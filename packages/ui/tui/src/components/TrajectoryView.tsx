@@ -202,9 +202,10 @@ export function summarizeDecision(d: Record<string, unknown>): string | undefine
   if (d.action === "capture") {
     return d.captured === true ? `capture:${String(d.path ?? "")}` : "skip";
   }
-  // Model router — routing decision
+  // Model router — routing decision (truncate to 24 chars to avoid row overflow)
   if (typeof d["router.target.selected"] === "string") {
-    const selected = d["router.target.selected"];
+    const raw = d["router.target.selected"];
+    const selected = raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
     const fallback = d["router.fallback_occurred"] === true ? " fallback" : "";
     return selected.length > 0 ? `→${selected}${fallback}` : `exhausted${fallback}`;
   }
