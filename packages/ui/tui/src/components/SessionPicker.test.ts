@@ -168,4 +168,29 @@ describe("getSessionPeekLines", () => {
     const lines = getSessionPeekLines(makeSession({ preview }));
     expect(lines[2]).toBe(preview);
   });
+
+  test("CJK double-width chars: 33 chars × 2 cols = 66 cols, no ellipsis", () => {
+    const preview = "中".repeat(33); // 33 × 2 = 66 cols — exactly at cap
+    const lines = getSessionPeekLines(makeSession({ preview }));
+    expect((lines[2] ?? "").endsWith("…")).toBe(false);
+    expect(lines[2]).toBe(preview);
+  });
+
+  test("CJK overflow: 34 chars × 2 cols = 68 cols, truncated with ellipsis", () => {
+    const preview = "中".repeat(34); // 34 × 2 = 68 cols > 66
+    const lines = getSessionPeekLines(makeSession({ preview }));
+    expect((lines[2] ?? "").endsWith("…")).toBe(true);
+    // 32 CJK chars (64 cols) + "…" (1 col) = 65 — within budget
+    expect((lines[2] ?? "").replace("…", "").length).toBe(32);
+  });
+
+  test("emoji in session name is clipped to ≤ 66 cols", () => {
+    const name = "🔥".repeat(40); // each emoji = 2 cols
+    const lines = getSessionPeekLines(makeSession({ name }));
+    // Display width of result ≤ 66
+    const resultName = lines[0] ?? "";
+    expect(resultName.endsWith("…")).toBe(true);
+    // 32 emoji (64 cols) + "…" = within 66 cols; emoji are surrogate pairs (2 JS code units each)
+    expect([...resultName.replace("…", "")].length).toBeLessThanOrEqual(32);
+  });
 });
