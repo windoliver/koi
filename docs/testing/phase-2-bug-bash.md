@@ -348,9 +348,11 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 
 ### S14 — Memory Deep
 
-> The TUI uses `createInMemoryMemoryBackend()` — all memory is session-scoped.
+> The TUI uses a **file-backed** memory store (`@koi/memory-fs` via `memoryStack`).
+> Each memory is written to `<gitRoot>/.koi/memory/` as a Markdown file with frontmatter.
+> Memories **persist across `/new` resets and process restarts** — this is by design.
 > This scenario exercises the full memory tool surface (store, recall, search, delete, dedup, extraction)
-> within a single TUI session. Cross-session persistence, dream consolidation, and team-sync are test-suite only.
+> within a single TUI session. Dream consolidation and team-sync are test-suite only.
 
 **All queries run in the SAME TUI session (no reset between queries).**
 
@@ -371,7 +373,7 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 | Q96 | `Remember my AWS key is AKIAIOSFODNN7EXAMPLE.` | memory_store | Redacted or refused — secret never stored verbatim |
 | Q97 | (have agent run a tool that outputs `[LEARNING:pattern] Always validate input at boundaries`) verify extraction | extraction MW | Transcript shows extracted learning stored as `reference` type (marker-based, confidence 1.0) |
 | Q98 | (have agent run a tool whose output contains `Learned that connection pooling improves throughput`) verify extraction | extraction MW | Heuristic extraction fires ("learned that" pattern, confidence 0.7); stored as `reference` |
-| Q99 | `/new` (reset session) then `What do you remember?` | memory_recall | Returns nothing — in-memory backend cleared on session reset |
+| Q99 | `/new` (reset session) then `What do you remember?` | memory_recall | Returns stored memories — file-backed store persists across `/new`; `.koi/memory/` files untouched |
 
 **Test-suite only (not via TUI):**
 
@@ -411,7 +413,7 @@ bun run test --filter=@koi/memory-team-sync
 | Q44 | `Create a task "Run tests" and leave it pending.` → `Mark it in_progress.` → `Mark it completed.` | task_create, task_update ×2 | Transitions: pending → in_progress → completed |
 | Q45 | `Show me all my current tasks.` | task_list | Task list renders with status |
 | Q46 | `Remember that this project uses Bun 1.3 and Biome for linting.` → `What do you remember about the toolchain?` | memory_store, memory_recall | Recall returns Bun + Biome facts |
-| Q47 | (after session reset /new) `What do you remember about the toolchain?` | memory_recall | Returns nothing (in-memory backend cleared) |
+| Q47 | (after session reset /new) `What do you remember about the toolchain?` | memory_recall | Returns Bun 1.3 + Biome facts — file-backed store persists across `/new` |
 | Q48 | `Remember my API key is sk-test-fake-key-12345.` → `What did you store?` | memory_store, memory_recall | Key is redacted or refused; never returned verbatim |
 
 ### S11 — TUI UI Features
@@ -722,38 +724,25 @@ tmux new-session -d -s "$KOI_SESSION" \
 
 ### S25 — File-Based Memory Persistence
 
-> `@koi/memory-fs` is **NOT currently wired** into `tui-runtime.ts` (TUI uses `createInMemoryMemoryBackend()`).
-> `createMemoryStore(config)` stores each memory as a Markdown file with frontmatter,
-> maintains `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
->
-> **To wire**: add `KOI_MEMORY_DIR` env var in `tui-command.ts`; swap in `createMemoryStore` when set.
+> `@koi/memory-fs` is wired into the TUI via `memoryStack` (`packages/meta/cli/src/preset-stacks/memory.ts`).
+> `createMemoryStore` stores each memory as a Markdown file with frontmatter under `<gitRoot>/.koi/memory/`,
+> maintains a `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
+> No env-var toggle needed — the file-backed store is always active.
 
-**Prerequisites**: wire `@koi/memory-fs` into `tui-runtime.ts` first.
-
-```typescript
-// tui-runtime.ts wiring sketch
-import { createMemoryStore } from "@koi/memory-fs";
-const memoryBackend = process.env.KOI_MEMORY_DIR
-  ? createMemoryFsBackend(createMemoryStore({ dir: process.env.KOI_MEMORY_DIR }))
-  : createInMemoryMemoryBackend();
-```
-
-**Setup**: set memory directory, launch TUI.
+**Setup**: launch TUI normally (no extra env vars needed).
 ```bash
-export KOI_MEMORY_DIR="$KOI_HOME/.koi/memory"
-mkdir -p "$KOI_MEMORY_DIR"
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$KOI_MEMORY_DIR/`; frontmatter has `type: project` |
+| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `<gitRoot>/.koi/memory/`; frontmatter has `type: project` |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file created; `MEMORY.md` index has 2 entries |
-| Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from filesystem, not in-memory map) |
+| Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from filesystem) |
 | Q159 | (cross-session persistence) Kill TUI, relaunch, `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
 | Q160 | `Remember: this project uses Bun 1.3 for all scripts.` (near-duplicate of Q156) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
-| Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$KOI_MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
+| Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `.koi/memory/`; `MEMORY.md` index updated to 1 entry |
 | Q162 | (concurrent safety) Rapidly send 3 `Remember: ...` prompts in sequence | memory_store ×3 | All 3 stored without corruption; `MEMORY.md` consistent; no lock contention errors |
 
 ### Packages Not Testable via TUI (justified)
@@ -817,7 +806,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q162 | 2 (restart for Q159) | Wire `@koi/memory-fs`; `KOI_MEMORY_DIR=...` |
+| **S25** | Memory FS Persistence | Q156-Q162 | 2 (restart for Q159) | always-on (no env var needed) |
 
 **All scenarios run with the full TUI middleware stack:**
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
@@ -916,7 +905,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
-| @koi/memory-fs | **S25** | Q156-Q162 (wire `KOI_MEMORY_DIR` first) |
+| @koi/memory-fs | **S25** | Q156-Q162 (always-on via `memoryStack`) |
 | @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
 | @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
 | @koi/dream | non-TUI | `bun run test --filter=@koi/dream` (offline batch job) |
@@ -1106,7 +1095,7 @@ bun run test --filter=@koi/model-openai-compat # adapter tested via provider sel
 
 ## 8. Exit Criteria
 
-1. All S1-S25 scenarios run at least once (S18-S20, S25 after wiring; skip if not wired)
+1. All S1-S25 scenarios run at least once (S18-S20 skip if not wired)
 2. All Q1-Q162 queries executed with pass/fail recorded
 3. All S16 golden queries pass (`bun run test --filter=@koi/runtime` green)
 3. All P0/blocker bugs filed, fixed, or triaged with owner
