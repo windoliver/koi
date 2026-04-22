@@ -2250,7 +2250,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           title: "Interrupting…",
           body: "Ctrl+C again to force",
           ts: Date.now(),
-          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS + 1000,
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS,
         },
       });
     },
@@ -2264,7 +2264,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           title: "Background tasks still running",
           body: "Press Ctrl+C again to exit (background tasks will be terminated).",
           ts: Date.now(),
-          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS + 1000,
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS,
         },
       });
     },
