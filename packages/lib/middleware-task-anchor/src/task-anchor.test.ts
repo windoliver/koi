@@ -954,3 +954,261 @@ describe("createTaskAnchorMiddleware — session lifecycle", () => {
     expect(extractInjected(capture)).toBeUndefined();
   });
 });
+
+type InjectDecision = {
+  action: "inject";
+  promptLength: number;
+  reminderKind: "task-list" | "empty-board-nudge";
+  forced: boolean;
+  idle: number;
+  taskCount: number;
+};
+type SuppressDecision = {
+  action: "suppress";
+  reason: string;
+  boardState: string;
+};
+
+function withReportDecision(ctx: TurnContext, decisions: unknown[]): TurnContext {
+  (ctx as { reportDecision?: (d: unknown) => void }).reportDecision = (d) => decisions.push(d);
+  return ctx;
+}
+
+describe("createTaskAnchorMiddleware — reportDecision observability", () => {
+  test("wrapModelCall reports inject with structured fields (task-list)", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Write tests", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 2 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+    await runTurn(mw, session, 1);
+
+    const decisions: unknown[] = [];
+    const ctx = withReportDecision(makeTurnCtx(session, 2), decisions);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as InjectDecision;
+    expect(d.action).toBe("inject");
+    expect(d.reminderKind).toBe("task-list");
+    expect(d.forced).toBe(false);
+    expect(d.idle).toBe(2);
+    expect(d.taskCount).toBe(1);
+    expect(d.promptLength).toBeGreaterThan(0);
+  });
+
+  test("wrapModelStream reports inject with structured fields (task-list)", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Write tests", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 2 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+    await runTurn(mw, session, 1);
+
+    const decisions: unknown[] = [];
+    const ctx = withReportDecision(makeTurnCtx(session, 2), decisions);
+    await mw.onBeforeTurn?.(ctx);
+    const stream = mw.wrapModelStream?.(ctx, makeRequest(), captureStream({}));
+    if (stream !== undefined) {
+      for await (const _ of stream) {
+        /* drain */
+      }
+    }
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as InjectDecision;
+    expect(d.action).toBe("inject");
+    expect(d.reminderKind).toBe("task-list");
+    expect(d.forced).toBe(false);
+    expect(d.idle).toBe(2);
+    expect(d.taskCount).toBe(1);
+    expect(d.promptLength).toBeGreaterThan(0);
+  });
+
+  test("wrapModelCall reports inject with forced:true on force-inject turn", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Write tests", status: "pending" }),
+    ]);
+    // threshold=1: turn 0 is idle, turn 1 fires → stop-block it → turn 2 is forced
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: idle, no injection (shouldInject=false, idle=0 < 1)
+    await runTurn(mw, session, 0);
+
+    // Turn 1: shouldInject=true, inject fires → stop-block to arm forceInjectNextTurn
+    const ctx1 = makeTurnCtx(session, 1);
+    await mw.onBeforeTurn?.(ctx1);
+    await mw.wrapModelCall?.(ctx1, makeRequest(), captureHandler({}));
+    await mw.onAfterTurn?.({ ...ctx1, stopBlocked: true } as TurnContext);
+
+    // Turn 2: shouldInject=true via forceInjectNextTurn → forced=true in payload
+    const decisions: unknown[] = [];
+    const ctx2 = withReportDecision(makeTurnCtx(session, 2), decisions);
+    await mw.onBeforeTurn?.(ctx2);
+    await mw.wrapModelCall?.(ctx2, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as InjectDecision;
+    expect(d.action).toBe("inject");
+    expect(d.forced).toBe(true);
+  });
+
+  test("wrapModelCall reports suppress with reason:forceRequiresTasks when latch is set", async () => {
+    // nudgeOnEmptyBoard:true + sawTaskTool:true so the nudge WOULD fire — but
+    // forceRequiresTasks suppresses it to protect against recreating just-done work.
+    const board = makeBoard([]); // empty board — completed work cleared it
+    const mw = createTaskAnchorMiddleware({
+      getBoard: () => board,
+      idleTurnThreshold: 1,
+      nudgeOnEmptyBoard: true,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: run a successful task tool to set sawTaskTool=true, no injection
+    await runTurn(mw, session, 0, { toolId: "task_create" });
+
+    // Turn 1: shouldInject=true; board empty → observedEmpty. Stop-block with
+    // mutating task tool (task_create ∈ MUTATING_TASK_TOOLS) to arm forceRequiresTasks.
+    const ctx1 = makeTurnCtx(session, 1);
+    await mw.onBeforeTurn?.(ctx1);
+    const tool: ToolHandler = async () => ({ output: "ok" });
+    await mw.wrapToolCall?.(ctx1, { toolId: "task_create", input: {} }, tool);
+    await mw.onAfterTurn?.({ ...ctx1, stopBlocked: true } as TurnContext);
+
+    // Turn 2: forceRequiresTasks=true → suppress emitted instead of nudge
+    const decisions: unknown[] = [];
+    const ctx2 = withReportDecision(makeTurnCtx(session, 2), decisions);
+    await mw.onBeforeTurn?.(ctx2);
+    await mw.wrapModelCall?.(ctx2, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as SuppressDecision;
+    expect(d.action).toBe("suppress");
+    expect(d.reason).toBe("forceRequiresTasks");
+    expect(d.boardState).toBe("empty");
+  });
+
+  test("wrapModelCall reports suppress with reason:nudgeDisabled when nudge is off", async () => {
+    const board = makeBoard([]); // empty board
+    const mw = createTaskAnchorMiddleware({
+      getBoard: () => board,
+      idleTurnThreshold: 1,
+      nudgeOnEmptyBoard: false,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+
+    const decisions: unknown[] = [];
+    const ctx = withReportDecision(makeTurnCtx(session, 1), decisions);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as SuppressDecision;
+    expect(d.action).toBe("suppress");
+    expect(d.reason).toBe("nudgeDisabled");
+    expect(d.boardState).toBe("empty");
+  });
+
+  test("wrapModelStream reports suppress on empty board (nudgeDisabled)", async () => {
+    const board = makeBoard([]);
+    const mw = createTaskAnchorMiddleware({
+      getBoard: () => board,
+      idleTurnThreshold: 1,
+      nudgeOnEmptyBoard: false,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+
+    const decisions: unknown[] = [];
+    const ctx = withReportDecision(makeTurnCtx(session, 1), decisions);
+    await mw.onBeforeTurn?.(ctx);
+    const stream = mw.wrapModelStream?.(ctx, makeRequest(), captureStream({}));
+    if (stream !== undefined) {
+      for await (const _ of stream) {
+        /* drain */
+      }
+    }
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as SuppressDecision;
+    expect(d.action).toBe("suppress");
+    expect(d.reason).toBe("nudgeDisabled");
+  });
+
+  test("wrapModelCall reports suppress with reason:noPriorTaskTool when nudge enabled but sawTaskTool=false", async () => {
+    const board = makeBoard([]); // empty board, no tasks ever created
+    const mw = createTaskAnchorMiddleware({
+      getBoard: () => board,
+      idleTurnThreshold: 1,
+      nudgeOnEmptyBoard: true, // nudge enabled, but sawTaskTool=false → gate not passed
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0); // no task tool → sawTaskTool stays false
+
+    const decisions: unknown[] = [];
+    const ctx = withReportDecision(makeTurnCtx(session, 1), decisions);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as SuppressDecision;
+    expect(d.action).toBe("suppress");
+    expect(d.reason).toBe("noPriorTaskTool");
+    expect(d.boardState).toBe("empty");
+  });
+
+  test("wrapModelStream reports suppress with reason:noPriorTaskTool when nudge enabled but sawTaskTool=false", async () => {
+    const board = makeBoard([]);
+    const mw = createTaskAnchorMiddleware({
+      getBoard: () => board,
+      idleTurnThreshold: 1,
+      nudgeOnEmptyBoard: true,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+
+    const decisions: unknown[] = [];
+    const ctx = withReportDecision(makeTurnCtx(session, 1), decisions);
+    await mw.onBeforeTurn?.(ctx);
+    const stream = mw.wrapModelStream?.(ctx, makeRequest(), captureStream({}));
+    if (stream !== undefined) {
+      for await (const _ of stream) {
+        /* drain */
+      }
+    }
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as SuppressDecision;
+    expect(d.action).toBe("suppress");
+    expect(d.reason).toBe("noPriorTaskTool");
+  });
+
+  test("wrapModelCall does NOT call reportDecision when below threshold (no board check)", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Write tests", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 3 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const decisions: unknown[] = [];
+    const ctx = withReportDecision(makeTurnCtx(session, 0), decisions);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(0);
+  });
+});
