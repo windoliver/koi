@@ -193,9 +193,14 @@ export function validateSchema(value: unknown, schema: unknown, path = ""): Sche
         message: "invalid schema: required must be an array of strings",
       };
     }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      const firstKey = (s.required as string[])[0] ?? "field";
+      const fieldPath = path ? `${path}.${firstKey}` : firstKey;
+      return { ok: false, path: fieldPath, message: `${firstKey} is required` };
+    }
     const obj = value as Record<string, unknown>;
     for (const key of s.required as string[]) {
-      if (typeof obj !== "object" || obj === null || !(key in obj)) {
+      if (!(key in obj)) {
         const fieldPath = path ? `${path}.${key}` : key;
         return { ok: false, path: fieldPath, message: `${key} is required` };
       }
@@ -242,7 +247,7 @@ export function validateResultSchema(
   let parsed: unknown;
   try {
     parsed = JSON.parse(assembled);
-  } catch {
+  } catch (_e: unknown) {
     return { ok: false, error: "schema validation failed: assistant output is not valid JSON" };
   }
   const result = validateSchema(parsed, schema);

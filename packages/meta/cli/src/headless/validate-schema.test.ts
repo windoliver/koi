@@ -49,6 +49,12 @@ describe("validateLoadedSchema — shape checks", () => {
     if (!result.ok) expect(result.message).toContain("scalar");
   });
 
+  test("rejects schema where enum contains array values", () => {
+    const result = validateLoadedSchema({ enum: [["nested"], "closed"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("scalar");
+  });
+
   test("rejects schema where required is not an array of strings", () => {
     const result = validateLoadedSchema({ required: "count" });
     expect(result.ok).toBe(false);
@@ -209,6 +215,11 @@ describe("validateSchema — runtime validation", () => {
     const result = validateSchema("hello", { type: "string", pattern: "^[a-z]" });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("pattern");
+  });
+
+  test("fails: required with non-object value (e.g. number)", () => {
+    const result = validateSchema(42, { type: "object", required: ["x"] });
+    expect(result.ok).toBe(false);
   });
 });
 
