@@ -8,6 +8,7 @@
  */
 
 import { platform } from "node:os";
+import { detectFromBytes } from "@koi/file-type";
 
 /**
  * Safe upper bound for OSC 52 payload size in bytes.
@@ -40,10 +41,10 @@ export function copyToClipboard(text: string): boolean {
 
 /** Image read from the system clipboard. */
 export interface ClipboardImage {
-  /** Data URI: `data:image/png;base64,<base64>` */
+  /** Data URI: `data:<mime>;base64,<base64>` */
   readonly url: string;
-  /** MIME type (always image/png). */
-  readonly mime: "image/png";
+  /** Detected MIME type (e.g. "image/png", "image/jpeg", "image/webp"). */
+  readonly mime: string;
 }
 
 /**
@@ -90,7 +91,8 @@ async function readImageMacOS(): Promise<ClipboardImage | null> {
   const base64 = Buffer.from(bytes).toString("base64");
   if (base64.length === 0) return null;
 
-  return { url: `data:image/png;base64,${base64}`, mime: "image/png" };
+  const mime = detectFromBytes(bytes)?.mimeType ?? "image/png";
+  return { url: `data:${mime};base64,${base64}`, mime };
 }
 
 async function readImageLinux(): Promise<ClipboardImage | null> {
@@ -117,7 +119,9 @@ async function readImageWindows(): Promise<ClipboardImage | null> {
   const exitCode = await proc.exited;
   if (exitCode !== 0 || output.trim().length === 0) return null;
 
-  return { url: `data:image/png;base64,${output.trim()}`, mime: "image/png" };
+  const winBytes = new Uint8Array(Buffer.from(output.trim(), "base64"));
+  const winMime = detectFromBytes(winBytes)?.mimeType ?? "image/png";
+  return { url: `data:${winMime};base64,${output.trim()}`, mime: winMime };
 }
 
 /** Run a command that outputs raw PNG bytes to stdout, return as data URI. */
@@ -128,8 +132,10 @@ async function tryReadPng(cmd: readonly string[]): Promise<ClipboardImage | null
     const exitCode = await proc.exited;
     if (exitCode !== 0 || bytes.byteLength === 0) return null;
 
+    const buf = new Uint8Array(bytes);
+    const mime = detectFromBytes(buf)?.mimeType ?? "image/png";
     const base64 = Buffer.from(bytes).toString("base64");
-    return { url: `data:image/png;base64,${base64}`, mime: "image/png" };
+    return { url: `data:${mime};base64,${base64}`, mime };
   } catch {
     return null;
   }

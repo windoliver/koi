@@ -29,6 +29,7 @@
     "@koi/engine": "workspace:*",
     "@koi/engine-compose": "workspace:*",
     "@koi/event-trace": "workspace:*",
+    "@koi/file-type": "workspace:*",
     "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
     "@koi/fs-scoped": "workspace:*",

@@ -2421,6 +2421,30 @@ describe("Golden: @koi/url-safety", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/file-type — magic-byte detection (2 standalone queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/file-type", () => {
+  test("file-type-png-sniff: detectFromBytes identifies PNG magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const result = detectFromBytes(pngHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("image/png");
+    expect(result?.confidence).toBe("strong");
+  });
+
+  test("file-type-pdf-sniff: detectFromBytes identifies PDF magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
+    const result = detectFromBytes(pdfHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("application/pdf");
+    expect(result?.confidence).toBe("strong");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/hooks — agent hook type (2 queries)
 // ---------------------------------------------------------------------------
 

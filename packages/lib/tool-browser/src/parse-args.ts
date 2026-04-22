@@ -6,6 +6,7 @@
  */
 
 import type { BrowserConsoleLevel, JsonObject } from "@koi/core";
+import { detectFromPath } from "@koi/file-type";
 
 interface ValidationError {
   readonly error: string;
@@ -251,11 +252,13 @@ export function parseUploadFiles(
         err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
       };
     }
-    files.push({
-      content,
-      name,
-      ...(mimeType !== undefined && { mimeType }),
-    });
+    // Sniff MIME from bytes when caller omits it. detectFromPath always returns
+    // at least "application/octet-stream", so mimeType is always present.
+    const resolvedMime =
+      typeof mimeType === "string"
+        ? mimeType
+        : detectFromPath(name, new Uint8Array(Buffer.from(content, "base64"))).mimeType;
+    files.push({ content, name, mimeType: resolvedMime });
   }
   return { ok: true, value: files };
 }

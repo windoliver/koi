@@ -46,6 +46,7 @@
     "@koi/checkpoint": "workspace:*",
     "@koi/context-manager": "workspace:*",
     "@koi/core": "workspace:*",
+    "@koi/file-type": "workspace:*",
     "@koi/cost-aggregator": "workspace:*",
     "@koi/daemon": "workspace:*",
     "@koi/decision-ledger": "workspace:*",

@@ -17,8 +17,9 @@
  *   @"path with spaces.ts"    — quoted path
  */
 
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { detectFromPath } from "@koi/file-type";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,12 +39,26 @@ export interface AtReference {
   readonly lineEnd: number | undefined;
 }
 
+/** A binary file that cannot be injected as text — sent as a content block instead. */
+export interface BinaryInjection {
+  /** File path (relative to cwd). */
+  readonly filePath: string;
+  /** Base64-encoded file content. */
+  readonly base64: string;
+  /** Detected MIME type (strong or weak confidence). */
+  readonly mimeType: string;
+  /** True when magic bytes matched (vs. extension fallback). */
+  readonly strongDetection: boolean;
+}
+
 /** Result of resolving @-references in a message. */
 export interface ResolvedAtReferences {
   /** User text with @-references stripped (the actual question). */
   readonly cleanText: string;
-  /** Successfully resolved file contents, formatted for injection. */
+  /** Successfully resolved text file contents, formatted for injection. */
   readonly injections: readonly FileInjection[];
+  /** Binary files (images, PDFs, etc.) to send as content blocks. */
+  readonly binaryInjections: readonly BinaryInjection[];
 }
 
 /** A resolved file ready for injection into model context. */
@@ -145,10 +160,11 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
   const refs = parseAtReferences(text);
 
   if (refs.length === 0) {
-    return { cleanText: text, injections: [] };
+    return { cleanText: text, injections: [], binaryInjections: [] };
   }
 
   const injections: FileInjection[] = [];
+  const binaryInjections: BinaryInjection[] = [];
 
   // Strip @-references from text by index (reverse order to preserve positions).
   // Using indices instead of String.replace avoids removing the wrong occurrence
@@ -192,6 +208,37 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
       const stat = statSync(validatedPath);
       if (stat.size > MAX_READ_BYTES && ref.lineStart === undefined) continue;
 
+      // Sniff the first 4 KB to decide text vs. binary before reading the whole file.
+      // Line-range references (@file#L1-5) are text-only — skip binary detection.
+      if (ref.lineStart === undefined) {
+        const HEAD_SIZE = 4096;
+        const head = new Uint8Array(Math.min(stat.size, HEAD_SIZE));
+        const fd = openSync(validatedPath, "r");
+        try {
+          readSync(fd, head, 0, head.length, 0);
+        } finally {
+          closeSync(fd);
+        }
+        const detected = detectFromPath(ref.filePath, head);
+        const isText =
+          detected.mimeType === "text/plain" ||
+          detected.mimeType.startsWith("text/") ||
+          detected.mimeType === "application/json" ||
+          detected.mimeType === "application/xml" ||
+          detected.mimeType === "application/yaml" ||
+          detected.mimeType === "application/toml";
+        if (!isText) {
+          const base64 = readFileSync(validatedPath).toString("base64");
+          binaryInjections.push({
+            filePath: ref.filePath,
+            base64,
+            mimeType: detected.mimeType,
+            strongDetection: detected.confidence === "strong",
+          });
+          continue;
+        }
+      }
+
       const raw = readFileSync(validatedPath, { encoding: "utf8" });
       let content: string;
       let truncated = false;
@@ -231,7 +278,7 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
     }
   }
 
-  return { cleanText, injections };
+  return { cleanText, injections, binaryInjections };
 }
 
 // ---------------------------------------------------------------------------

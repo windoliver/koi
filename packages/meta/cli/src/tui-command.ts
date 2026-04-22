@@ -3495,19 +3495,46 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // #10: resolve @-mention file references before sending to the engine.
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
+        // Binary files (images, PDFs) are sent as FileBlock/ImageBlock content blocks.
         const resolved = resolveAtReferences(text, process.cwd());
         const modelText =
           resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
 
+        // Build binary content blocks from @-referenced binary files.
+        const binaryBlocks: import("@koi/core").ContentBlock[] = resolved.binaryInjections.map(
+          (b) => {
+            const dataUri = `data:${b.mimeType};base64,${b.base64}`;
+            if (b.mimeType.startsWith("image/")) {
+              return { kind: "image" as const, url: dataUri, alt: b.filePath };
+            }
+            return { kind: "file" as const, url: dataUri, mimeType: b.mimeType, name: b.filePath };
+          },
+        );
+
         let stream: AsyncIterable<EngineEvent>;
         try {
+          // When binary files are attached, use kind:"messages" so content blocks
+          // are included alongside the text. Otherwise use the cheaper kind:"text".
+          const hasBinary = binaryBlocks.length > 0;
           stream = isLoopMode
             ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
-            : handle.runtime.run({
-                kind: "text",
-                text: modelText,
-                signal: controller.signal,
-              });
+            : hasBinary
+              ? handle.runtime.run({
+                  kind: "messages",
+                  messages: [
+                    {
+                      content: [{ kind: "text" as const, text: modelText }, ...binaryBlocks],
+                      senderId: "user",
+                      timestamp: Date.now(),
+                    },
+                  ],
+                  signal: controller.signal,
+                })
+              : handle.runtime.run({
+                  kind: "text",
+                  text: modelText,
+                  signal: controller.signal,
+                });
         } catch (err) {
           store.dispatch({
             kind: "add_error",
@@ -3521,7 +3548,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         store.dispatch({
           kind: "add_user_message",
           id: `user-${Date.now()}`,
-          blocks: [{ kind: "text", text }, ...imageBlocks],
+          blocks: [{ kind: "text", text }, ...imageBlocks, ...binaryBlocks],
         });
         // Snapshot cumulative metrics BEFORE the drain — must copy values since
         // store.getState() returns a SolidJS reactive proxy (reads reflect live state).

@@ -1,6 +1,6 @@
 {
-  "name": "@koi/tool-browser",
-  "description": "Browser automation tools via accessibility-tree-first BrowserDriver",
+  "name": "@koi/file-type",
+  "description": "Magic-byte MIME detection for user-originated file content — clipboard, @-reference, upload",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,13 +14,6 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
-  },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/file-type": "workspace:*"
-  },
-  "koi": {
-    "optional": true
+    "test": "bun run build && bun test"
   }
 }
