@@ -57,27 +57,27 @@ The parsed schema object is stored in a local variable and passed into the post-
 
 ### Post-run validation (commands/start.ts, headless branch)
 
-After `runHeadless()` returns, before calling `emitResult()`:
+After `runHeadless()` returns and `shutdownRuntime()` completes:
 
-1. Collect all `assistant_text` events emitted during the run (tracked via a string accumulator in the headless branch)
-2. Attempt `JSON.parse(accumulatedText)` — if it fails → `emitResult({ exitCode: 1, error: "schema validation failed: assistant output is not valid JSON" })`
-3. Run parsed value against the schema via `validateSchema()` — if it fails → `emitResult({ exitCode: 1, error: "schema validation failed: <path> <violation>" })`
-4. On success → normal `emitResult()` with the run's exit code unchanged
-
-**Important:** Schema validation runs AFTER `shutdownRuntime()` because `emitResult` must be called after teardown. If `shutdownFailed` is true, skip schema validation and emit the INTERNAL result as normal (teardown failure takes precedence).
+1. If `shutdownFailed` → emit INTERNAL, skip schema validation (teardown failure takes precedence)
+2. If `headlessCode !== SUCCESS` → emit original exit code, skip schema validation (agent already failed)
+3. If `resultSchemaObj !== undefined && headlessCode === SUCCESS` → call `validateResultSchema(assistantTextParts.join(""), resultSchemaObj)`
+   - On failure → `emitResult({ exitCode: 1, error: schemaResult.error })`
+   - On success → normal `emitResult()`
+4. Otherwise → normal `emitResult()`
 
 ### Minimal JSON Schema validator — `headless/validate-schema.ts`
 
-New file, ~40 lines, zero new dependencies. Covers the 90% CI use case:
+New file, zero new dependencies. Exports three functions:
 
-- `type` — `"object"`, `"array"`, `"string"`, `"number"`, `"boolean"`, `"null"`
-- `required` — array of required property names
-- `properties` — recursive validation of named properties
-- `enum` — value must be one of the listed literals
+- `validateSchemaStructure(schema, path)` — internal; walks the schema tree, rejects unsupported keywords and malformed keyword values. Called at boot by `validateLoadedSchema`.
+- `validateLoadedSchema(raw)` — parse-time check: rejects non-objects, unsupported keywords, and malformed keyword values. Fail-closed — any schema oddity surfaces as exit 5 before the agent runs.
+- `validateSchema(value, schema, path?)` — runtime check: validates a value against a schema. Fail-closed — malformed keyword values (e.g. `type: "integer"`, `enum: {}`) return an error rather than silently passing.
+- `validateResultSchema(assembled, schema)` — top-level helper used by `commands/start.ts`; parses `assembled` as JSON and calls `validateSchema`. Returns `{ ok: true }` or `{ ok: false; error: string }` with the final error string ready to pass to `emitResult`.
 
-Returns `{ ok: true }` or `{ ok: false; path: string; message: string }`.
+**Supported keywords:** `type` (`"object"`, `"array"`, `"string"`, `"number"`, `"boolean"`, `"null"`), `required` (array of strings), `properties` (recursive), `enum` (array of literals).
 
-**Explicit non-goals:** `$ref`, `anyOf`/`oneOf`/`allOf`, `pattern`, `format`, `if/then/else`. These can be added later if CI use cases demand them. For now, a clear error message ("unsupported keyword: $ref") is emitted rather than silently ignoring unsupported keywords.
+**Explicit non-goals:** `$ref`, `anyOf`/`oneOf`/`allOf`, `pattern`, `format`, `if/then/else`. A clear error message is emitted rather than silently ignoring unsupported keywords.
 
 ### Assistant text accumulation
 

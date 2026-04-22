@@ -38,10 +38,10 @@ Create `packages/meta/cli/src/headless/validate-schema.test.ts`:
 
 ```typescript
 import { describe, expect, test } from "bun:test";
-import { validateLoadedSchema, validateSchema } from "./validate-schema.js";
+import { validateLoadedSchema, validateResultSchema, validateSchema } from "./validate-schema.js";
 
-describe("validateLoadedSchema", () => {
-  test("accepts a plain object", () => {
+describe("validateLoadedSchema — shape checks", () => {
+  test("accepts a plain object with known keyword", () => {
     const result = validateLoadedSchema({ type: "object" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.schema).toEqual({ type: "object" });
@@ -57,6 +57,51 @@ describe("validateLoadedSchema", () => {
     const result = validateLoadedSchema([]);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("JSON object");
+  });
+
+  test("rejects schema with unsupported keyword $ref at boot", () => {
+    const result = validateLoadedSchema({ $ref: "#/definitions/Foo" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("$ref");
+  });
+
+  test("rejects schema where type is not a recognized string", () => {
+    const result = validateLoadedSchema({ type: "integer" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("integer");
+  });
+
+  test("rejects schema where type is an array instead of string", () => {
+    const result = validateLoadedSchema({ type: ["string", "null"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("type");
+  });
+
+  test("rejects schema where enum is not an array", () => {
+    const result = validateLoadedSchema({ enum: "open" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("enum");
+  });
+
+  test("rejects schema where required is not an array of strings", () => {
+    const result = validateLoadedSchema({ required: "count" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("required");
+  });
+
+  test("rejects schema where properties is not an object", () => {
+    const result = validateLoadedSchema({ properties: ["count"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("properties");
+  });
+
+  test("rejects nested schema with unsupported keyword", () => {
+    const result = validateLoadedSchema({
+      type: "object",
+      properties: { id: { $ref: "#/definitions/Id" } },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("$ref");
   });
 });
 
@@ -78,6 +123,12 @@ describe("validateSchema — type", () => {
       expect(result.message).toContain("string");
     }
   });
+
+  test("fails closed when type value is invalid (not a recognized string)", () => {
+    const result = validateSchema("hello", { type: "integer" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("invalid schema");
+  });
 });
 
 describe("validateSchema — required", () => {
@@ -94,6 +145,12 @@ describe("validateSchema — required", () => {
       expect(result.path).toBe("titles");
       expect(result.message).toContain("required");
     }
+  });
+
+  test("fails closed when required is not an array", () => {
+    const result = validateSchema({ count: 1 }, { required: "count" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("invalid schema");
   });
 });
 
@@ -117,6 +174,12 @@ describe("validateSchema — properties", () => {
     const schema = { type: "object", properties: { count: { type: "number" } } };
     expect(validateSchema({}, schema).ok).toBe(true);
   });
+
+  test("fails closed when properties is not an object", () => {
+    const result = validateSchema({}, { properties: ["count"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("invalid schema");
+  });
 });
 
 describe("validateSchema — enum", () => {
@@ -128,6 +191,12 @@ describe("validateSchema — enum", () => {
     const result = validateSchema("pending", { enum: ["open", "closed"] });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("open");
+  });
+
+  test("fails closed when enum is not an array", () => {
+    const result = validateSchema("open", { enum: "open" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("invalid schema");
   });
 });
 
@@ -143,6 +212,51 @@ describe("validateSchema — no schema constraints", () => {
   test("empty schema passes any value", () => {
     expect(validateSchema("anything", {}).ok).toBe(true);
     expect(validateSchema(42, {}).ok).toBe(true);
+  });
+});
+
+describe("validateResultSchema", () => {
+  const schema = {
+    type: "object",
+    required: ["count", "titles"],
+    properties: {
+      count: { type: "number" },
+      titles: { type: "array" },
+    },
+  } as const;
+
+  test("returns ok when output is valid JSON matching schema", () => {
+    const result = validateResultSchema('{"count":3,"titles":["a","b","c"]}', schema);
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns error when output is not valid JSON", () => {
+    const result = validateResultSchema("not json", schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("not valid JSON");
+  });
+
+  test("returns error when output is valid JSON but missing required field", () => {
+    const result = validateResultSchema('{"count":3}', schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("schema validation failed");
+      expect(result.error).toContain("titles");
+    }
+  });
+
+  test("returns error when output is valid JSON but wrong type for field", () => {
+    const result = validateResultSchema('{"count":"three","titles":[]}', schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("count");
+  });
+
+  test("teardown-failure precedence: returns ok so caller can emit its own INTERNAL result", () => {
+    // validateResultSchema is only called when shutdownFailed is false.
+    // This documents the contract: the caller (commands/start.ts) is responsible
+    // for skipping schema validation when shutdownFailed=true.
+    const result = validateResultSchema('{"count":3,"titles":[]}', schema);
+    expect(result.ok).toBe(true);
   });
 });
 ```
@@ -169,15 +283,102 @@ const SUPPORTED_KEYWORDS = new Set(["type", "required", "properties", "enum"]);
 
 const VALUE_TYPES = new Set(["object", "array", "string", "number", "boolean", "null"]);
 
+/**
+ * Validate the structure of a JSON Schema object itself (not a value against
+ * the schema). Walks the schema tree and rejects unsupported keywords and
+ * malformed keyword values so operators get a boot-time exit 5 rather than a
+ * silent fail-open gate at run time.
+ */
+function validateSchemaStructure(
+  schema: unknown,
+  path: string,
+): { readonly ok: true } | { readonly ok: false; readonly message: string } {
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+    return { ok: false, message: `schema at ${path || "root"} must be an object` };
+  }
+  const s = schema as Record<string, unknown>;
+
+  for (const key of Object.keys(s)) {
+    if (!SUPPORTED_KEYWORDS.has(key)) {
+      return {
+        ok: false,
+        message: `unsupported schema keyword at ${path || "root"}: ${key}`,
+      };
+    }
+  }
+
+  if ("type" in s) {
+    if (typeof s.type !== "string" || !VALUE_TYPES.has(s.type)) {
+      return {
+        ok: false,
+        message: `schema.type at ${path || "root"} must be one of: ${[...VALUE_TYPES].join(", ")}`,
+      };
+    }
+  }
+
+  if ("enum" in s) {
+    if (!Array.isArray(s.enum)) {
+      return { ok: false, message: `schema.enum at ${path || "root"} must be an array` };
+    }
+  }
+
+  if ("required" in s) {
+    if (
+      !Array.isArray(s.required) ||
+      !(s.required as unknown[]).every((k) => typeof k === "string")
+    ) {
+      return {
+        ok: false,
+        message: `schema.required at ${path || "root"} must be an array of strings`,
+      };
+    }
+  }
+
+  if ("properties" in s) {
+    if (
+      typeof s.properties !== "object" ||
+      s.properties === null ||
+      Array.isArray(s.properties)
+    ) {
+      return {
+        ok: false,
+        message: `schema.properties at ${path || "root"} must be an object`,
+      };
+    }
+    for (const [key, value] of Object.entries(s.properties as Record<string, unknown>)) {
+      const subPath = path ? `${path}.properties.${key}` : `properties.${key}`;
+      const result = validateSchemaStructure(value, subPath);
+      if (!result.ok) return result;
+    }
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Parse a raw JSON-parsed value as a schema. Rejects non-objects, unsupported
+ * keywords, and malformed keyword values. Call at boot time so operator
+ * misconfiguration surfaces as exit 5 before any agent work is done.
+ */
 export function validateLoadedSchema(
   raw: unknown,
 ): { readonly ok: true; readonly schema: Record<string, unknown> } | { readonly ok: false; readonly message: string } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { ok: false, message: "schema must be a JSON object at the root" };
   }
+  const structure = validateSchemaStructure(raw, "");
+  if (!structure.ok) return { ok: false, message: structure.message };
   return { ok: true, schema: raw as Record<string, unknown> };
 }
 
+/**
+ * Validate a value against a JSON Schema. Fail closed on malformed keyword
+ * values — if the schema itself is invalid (e.g. type: "integer"), returns an
+ * error rather than silently skipping the constraint.
+ *
+ * Supported keywords: type, required, properties, enum.
+ * Unsupported keywords cause an immediate error.
+ */
 export function validateSchema(
   value: unknown,
   schema: unknown,
@@ -195,20 +396,27 @@ export function validateSchema(
   }
 
   if ("type" in s) {
-    const expected = s.type;
-    if (typeof expected === "string" && VALUE_TYPES.has(expected)) {
-      const actual = valueType(value);
-      if (actual !== expected) {
-        return {
-          ok: false,
-          path: path || ".",
-          message: `expected type ${expected}, got ${actual}`,
-        };
-      }
+    if (typeof s.type !== "string" || !VALUE_TYPES.has(s.type)) {
+      return {
+        ok: false,
+        path: path || ".",
+        message: `invalid schema: type must be one of: ${[...VALUE_TYPES].join(", ")}`,
+      };
+    }
+    const actual = valueType(value);
+    if (actual !== s.type) {
+      return {
+        ok: false,
+        path: path || ".",
+        message: `expected type ${s.type}, got ${actual}`,
+      };
     }
   }
 
-  if ("enum" in s && Array.isArray(s.enum)) {
+  if ("enum" in s) {
+    if (!Array.isArray(s.enum)) {
+      return { ok: false, path: path || ".", message: "invalid schema: enum must be an array" };
+    }
     if (!s.enum.includes(value)) {
       return {
         ok: false,
@@ -218,41 +426,79 @@ export function validateSchema(
     }
   }
 
-  if (
-    "required" in s &&
-    Array.isArray(s.required) &&
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value)
-  ) {
-    const obj = value as Record<string, unknown>;
-    for (const key of s.required) {
-      if (typeof key === "string" && !(key in obj)) {
-        const fieldPath = path ? `${path}.${key}` : key;
-        return { ok: false, path: fieldPath, message: "is required" };
+  if ("required" in s) {
+    if (
+      !Array.isArray(s.required) ||
+      !(s.required as unknown[]).every((k) => typeof k === "string")
+    ) {
+      return {
+        ok: false,
+        path: path || ".",
+        message: "invalid schema: required must be an array of strings",
+      };
+    }
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      for (const key of s.required as string[]) {
+        if (!(key in obj)) {
+          const fieldPath = path ? `${path}.${key}` : key;
+          return { ok: false, path: fieldPath, message: "is required" };
+        }
       }
     }
   }
 
-  if (
-    "properties" in s &&
-    typeof s.properties === "object" &&
-    s.properties !== null &&
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value)
-  ) {
-    const props = s.properties as Record<string, unknown>;
-    const obj = value as Record<string, unknown>;
-    for (const [key, subSchema] of Object.entries(props)) {
-      if (key in obj) {
-        const subPath = path ? `${path}.${key}` : key;
-        const result = validateSchema(obj[key], subSchema, subPath);
-        if (!result.ok) return result;
+  if ("properties" in s) {
+    if (
+      typeof s.properties !== "object" ||
+      s.properties === null ||
+      Array.isArray(s.properties)
+    ) {
+      return {
+        ok: false,
+        path: path || ".",
+        message: "invalid schema: properties must be an object",
+      };
+    }
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const props = s.properties as Record<string, unknown>;
+      const obj = value as Record<string, unknown>;
+      for (const [key, subSchema] of Object.entries(props)) {
+        if (key in obj) {
+          const subPath = path ? `${path}.${key}` : key;
+          const result = validateSchema(obj[key], subSchema, subPath);
+          if (!result.ok) return result;
+        }
       }
     }
   }
 
+  return { ok: true };
+}
+
+/**
+ * Top-level helper used by commands/start.ts after runHeadless() returns.
+ * Parses the assembled assistant text as JSON and validates it against the
+ * schema. Returns a typed result so commands/start.ts can pick the right
+ * exit code and error string without implementing parse/validate logic inline.
+ */
+export function validateResultSchema(
+  assembled: string,
+  schema: Record<string, unknown>,
+): { readonly ok: true } | { readonly ok: false; readonly error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(assembled);
+  } catch {
+    return { ok: false, error: "schema validation failed: assistant output is not valid JSON" };
+  }
+  const result = validateSchema(parsed, schema);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: `schema validation failed: ${result.path} ${result.message}`,
+    };
+  }
   return { ok: true };
 }
 
@@ -534,25 +780,64 @@ git commit -m "feat(headless): boot-time schema load + assistant text accumulati
 
 - [ ] **Step 1: Write the failing tests**
 
-Open `packages/meta/cli/src/commands/start.test.ts`. Find the headless test section (search for `headless` in the describe blocks). Add new tests for schema validation scenarios. If the file uses a mock-runtime pattern to simulate headless runs, add these tests to that block. If no such block exists, append a new `describe` block:
+The full `commands/start.ts` headless branch calls `process.exit()` and requires real runtime assembly, so integration tests for the schema path are colocated with the validator unit tests in `headless/validate-schema.test.ts` via the exported `validateResultSchema` helper. This exercises the exact code path commands/start.ts calls, covers all exit-code branches, and needs no process.exit mocking.
+
+Add the following `describe` block to `packages/meta/cli/src/headless/validate-schema.test.ts` (the file created in Task 1):
 
 ```typescript
-describe("headless --result-schema validation", () => {
-  // These tests verify the schema validation paths in the headless branch
-  // by inspecting the NDJSON `result` event emitted to stdout.
-  // They use parseStartFlags to verify flag parsing behavior.
-  
-  test("--result-schema without --headless throws ParseError", () => {
-    const { parseStartFlags } = require("../args/start.js");
-    const { ParseError } = require("../args/shared.js");
-    expect(() =>
-      parseStartFlags(["--prompt", "hello", "--result-schema", "./schema.json"]),
-    ).toThrow(ParseError);
+describe("validateResultSchema — end-to-end schema validation path", () => {
+  const schema: Record<string, unknown> = {
+    type: "object",
+    required: ["count", "titles"],
+    properties: {
+      count: { type: "number" },
+      titles: { type: "array" },
+    },
+  };
+
+  test("success: valid JSON matching schema → ok true", () => {
+    const result = validateResultSchema('{"count":3,"titles":["a","b","c"]}', schema);
+    expect(result.ok).toBe(true);
+  });
+
+  test("non-JSON output → ok false, error contains 'not valid JSON'", () => {
+    const result = validateResultSchema("Here is your summary: ...", schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("not valid JSON");
+  });
+
+  test("valid JSON missing required field → ok false, error contains field name", () => {
+    const result = validateResultSchema('{"count":3}', schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("schema validation failed");
+      expect(result.error).toContain("titles");
+    }
+  });
+
+  test("valid JSON wrong field type → ok false, error contains field path", () => {
+    const result = validateResultSchema('{"count":"three","titles":[]}', schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("count");
+  });
+
+  test("empty assembled text → ok false (empty string is not valid JSON)", () => {
+    const result = validateResultSchema("", schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("not valid JSON");
+  });
+
+  test("multi-chunk assembly: concatenated deltas validate as one JSON blob", () => {
+    // Simulate three assistant_text deltas joining into one JSON object.
+    const chunk1 = '{"count":2,"tit';
+    const chunk2 = 'les":["foo",';
+    const chunk3 = '"bar"]}';
+    const assembled = chunk1 + chunk2 + chunk3;
+    const result = validateResultSchema(assembled, schema);
+    expect(result.ok).toBe(true);
   });
 });
 ```
-
-> **Note:** The deeper integration tests (actual schema validation against mock runtime output) live in `headless/run.test.ts` patterns. The `commands/start.test.ts` tests verify the flag guard. The schema validator unit tests (Task 1) cover the logic. This matches the existing test split in this codebase.
 
 - [ ] **Step 2: Add post-run schema validation to commands/start.ts**
 
@@ -576,33 +861,23 @@ Replace the `else { emitResult(); }` branch with:
       } else if (resultSchemaObj !== undefined && headlessCode === HEADLESS_EXIT.SUCCESS) {
         // --result-schema: validate the assembled assistant text against the schema.
         // Only runs when the agent succeeded (exit 0) and teardown was clean.
-        const assembled = assistantTextParts.join("");
-        let parsedOutput: unknown;
-        try {
-          parsedOutput = JSON.parse(assembled);
-        } catch {
+        // shutdownFailed=true takes precedence and is handled by the branch above.
+        const schemaResult = validateResultSchema(assistantTextParts.join(""), resultSchemaObj);
+        if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.AGENT_FAILURE;
-          emitResult({
-            exitCode: HEADLESS_EXIT.AGENT_FAILURE,
-            error: "schema validation failed: assistant output is not valid JSON",
-          });
-          parsedOutput = undefined;
-        }
-        if (parsedOutput !== undefined) {
-          const schemaResult = validateSchema(parsedOutput, resultSchemaObj);
-          if (!schemaResult.ok) {
-            finalCode = HEADLESS_EXIT.AGENT_FAILURE;
-            emitResult({
-              exitCode: HEADLESS_EXIT.AGENT_FAILURE,
-              error: `schema validation failed: ${schemaResult.path} ${schemaResult.message}`,
-            });
-          } else {
-            emitResult();
-          }
+          emitResult({ exitCode: HEADLESS_EXIT.AGENT_FAILURE, error: schemaResult.error });
+        } else {
+          emitResult();
         }
       } else {
         emitResult();
       }
+```
+
+Also update the import at the top of the file (in the `../headless/validate-schema.js` import added in Task 3 Step 1) to include `validateResultSchema`:
+
+```typescript
+import { validateLoadedSchema, validateResultSchema } from "../headless/validate-schema.js";
 ```
 
 - [ ] **Step 3: Run the CLI package tests**
