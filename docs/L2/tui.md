@@ -8,6 +8,8 @@
 
 ## Recent additions
 
+- **`summarizeDecision` model-router support (#2018)**: `summarizeDecision` in `TrajectoryView.tsx` now handles `router.*` decision keys (`router.target.selected`, `router.fallback_occurred`). Previously all model-router middleware spans in the `/trajectory` view showed `[pass]` regardless of which provider was selected. Now displays `→provider:model` (with ` fallback` suffix when the router fell back to a secondary target). `summarizeDecision` is exported to enable direct unit testing.
+
 - **`engine-channel-smoke.test.ts` settle budget increase**: bumped from 100ms to 500ms to fix intermittent CI failures on loaded runners where the Worker thread message dispatch took longer than 100ms to settle.
 
 

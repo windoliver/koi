@@ -160,7 +160,7 @@ function formatTokens(step: TrajectoryStepSummary): string | undefined {
 }
 
 /** Summarize the first decision into a compact suffix label. */
-function summarizeDecision(d: Record<string, unknown>): string | undefined {
+export function summarizeDecision(d: Record<string, unknown>): string | undefined {
   // Permissions MW — filter phase
   if (d.phase === "filter" && typeof d.allowedCount === "number" && typeof d.totalTools === "number") {
     return `filter:${d.allowedCount}/${d.totalTools}`;
@@ -202,10 +202,18 @@ function summarizeDecision(d: Record<string, unknown>): string | undefined {
   if (d.action === "capture") {
     return d.captured === true ? `capture:${String(d.path ?? "")}` : "skip";
   }
+  // Model router — routing decision (truncate to 24 chars to avoid row overflow)
+  if (typeof d["router.target.selected"] === "string") {
+    const raw = d["router.target.selected"];
+    const selected = raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
+    const fallback = d["router.fallback_occurred"] === true ? " fallback" : "";
+    // "exhausted" means all targets failed — omit fallback suffix to avoid conflating with success
+    return selected.length > 0 ? `→${selected}${fallback}` : "exhausted";
+  }
   return undefined;
 }
 
-function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefined {
+export function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefined {
   if (step.middlewareSpan === undefined) return undefined;
   const { decisions, nextCalled, hook } = step.middlewareSpan;
   // Prefer decision summary over hook name
@@ -215,12 +223,24 @@ function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefined {
       const summary = summarizeDecision(first as Record<string, unknown>);
       if (summary !== undefined) {
         const extra = decisions.length > 1 ? ` +${decisions.length - 1}` : "";
-        return nextCalled === false ? `${summary} BLOCKED${extra}` : `${summary}${extra}`;
+        // Model-router is terminal (never calls next) but not a blocker.
+        // Gate on both identifier and decision shape to avoid false-negatives for other
+        // middleware that happen to emit router.* keys.
+        const isTerminal =
+          step.identifier === "middleware:model-router" &&
+          typeof (first as Record<string, unknown>)["router.target.selected"] === "string";
+        const blocked = nextCalled === false && !isTerminal;
+        return blocked ? `${summary} BLOCKED${extra}` : `${summary}${extra}`;
       }
     }
   }
-  // Fallback: "pass" for no-op hooks, "BLOCKED" if chain stopped
-  if (nextCalled === false) return "BLOCKED";
+  // Fallback: "pass" for no-op hooks, "BLOCKED" if chain stopped.
+  // Model-router throws before emitting a decision on some failure paths (e.g. pre-decision
+  // exceptions). Use "failed" — a neutral label that distinguishes routing failure from an
+  // actual middleware block without over-specifying the cause.
+  if (nextCalled === false) {
+    return step.identifier === "middleware:model-router" ? "failed" : "BLOCKED";
+  }
   return "pass";
 }
 

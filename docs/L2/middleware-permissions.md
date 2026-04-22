@@ -446,6 +446,7 @@ AuditSink receives:
 - Logs from both `wrapModelCall` (batch) and `wrapToolCall` (individual)
 - `durationMs` measures actual backend latency (not hardcoded)
 - Sink errors are swallowed — a broken logger never crashes the agent
+- All `permission_decision` entries carry `schema_version: 2` (aligned with `@koi/middleware-audit` v2 schema that added `toolName` to `tool_call` entries)
 
 ### Two-Entry Audit Model for Approvals
 

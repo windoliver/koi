@@ -1467,12 +1467,12 @@ describe("audit-log entries sidecar (golden file)", () => {
     expect(kinds).toContain("session_end");
   });
 
-  test("all entries have schema_version=1 and required fields", async () => {
+  test("all entries have schema_version=2 and required fields", async () => {
     const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
       readonly entries: readonly Record<string, unknown>[];
     };
     for (const entry of sidecar.entries) {
-      expect(entry.schema_version).toBe(1);
+      expect(entry.schema_version).toBe(2);
       expect(typeof entry.agentId).toBe("string");
       expect(typeof entry.sessionId).toBe("string");
       expect(typeof entry.durationMs).toBe("number");
@@ -9389,7 +9389,7 @@ describe("Golden: @koi/middleware-extraction", () => {
     expect(mapCategoryToMemoryType("correction")).toBe("feedback");
     expect(mapCategoryToMemoryType("heuristic")).toBe("feedback"); // regression #1964: was "reference"
     expect(mapCategoryToMemoryType("pattern")).toBe("feedback"); // regression #1964: was "reference"
-    expect(mapCategoryToMemoryType("preference")).toBe("user");
+    expect(mapCategoryToMemoryType("preference")).toBe("user"); // correct type; not persisted until user-scoped store exists
     expect(mapCategoryToMemoryType("context")).toBe("project");
 
     // Extractor combines markers + heuristics
@@ -12006,5 +12006,173 @@ describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
     expect(typeof driver.attachLoopbackBridge).toBe("function");
     expect(typeof driver.selectTargetTab).toBe("function");
     await driver.dispose?.();
+  });
+});
+
+describe("Golden: @koi/middleware-feedback-loop", () => {
+  test("createFeedbackLoopMiddleware returns a KoiMiddleware with correct priority and name", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const mw = createFeedbackLoopMiddleware({});
+    expect(mw.name).toBe("feedback-loop");
+    expect(mw.priority).toBe(450);
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapToolCall).toBe("function");
+  });
+
+  test("shouldFlush returns false when not dirty", async () => {
+    const { shouldFlush } = await import("@koi/middleware-feedback-loop");
+    expect(
+      shouldFlush(
+        {
+          dirty: false,
+          flushing: false,
+          invocationsSinceFlush: 100,
+          errorRateSinceFlush: 0,
+          lastFlushedErrorRate: 0,
+        },
+        10,
+        0.05,
+      ),
+    ).toBe(false);
+  });
+
+  test("MW composes through createKoi with feedback-loop-pass cassette", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const cassette = await loadCassette(`${FIXTURES}/feedback-loop-pass.cassette.json`);
+    const trajDir = `/tmp/koi-feedback-loop-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-feedback-loop";
+
+    const store = createAtifDocumentStore(
+      { agentName: "feedback-loop-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "feedback-loop-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    const feedbackHandle = createFeedbackLoopMiddleware({
+      validators: [{ name: "pass-through", validate: (_response) => ({ valid: true }) }],
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks, { secondCallText: "7" });
+
+    const runtime = await createKoi({
+      manifest: { name: "feedback-loop-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, feedbackHandle, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+
+    // feedback-loop spans present
+    expect(mwNames.has("feedback-loop")).toBe(true);
+
+    // permissions still works alongside
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool call executed successfully through feedback-loop chain
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Model steps present
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // wrapModelStream span present (validator ran)
+    const feedbackSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "feedback-loop");
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span present (tool health check ran)
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (pass-through validator)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  }, 15000);
+
+  test("feedback-loop-pass trajectory: middleware spans appear for both wrapModelStream and wrapToolCall", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const raw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "feedback-loop-pass.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+        };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // At least one agent step (model response)
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    // At least one tool step (add_numbers executed)
+    expect(trajectory.steps.some((s) => s.source === "tool")).toBe(true);
+
+    // feedback-loop middleware spans are present
+    const feedbackSpans = trajectory.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra.middlewareName === "feedback-loop",
+    );
+    expect(feedbackSpans.length).toBeGreaterThanOrEqual(2);
+
+    // wrapModelStream span is present (validator ran on model response)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span is present (tool health tracking ran)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (validator passed)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
   });
 });

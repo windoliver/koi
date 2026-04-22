@@ -157,6 +157,15 @@ const routerConfigSchema = z.object({
   healthProbe: healthProbeSchema,
 });
 
+// Model-router CB defaults differ from the shared library default.
+// failureWindowMs must exceed failureThreshold × expected_request_latency:
+// with threshold=5 and ~13s/turn, 60s is too short (5×13s = 65s). 300s
+// accommodates slow LLM turns without affecting other circuit breaker callers.
+const MODEL_ROUTER_CB_DEFAULTS = {
+  ...DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  failureWindowMs: 300_000,
+} as const satisfies CircuitBreakerConfig;
+
 // ---------------------------------------------------------------------------
 // Validation + resolution
 // ---------------------------------------------------------------------------
@@ -198,13 +207,12 @@ export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig,
 
   const resolvedCB: CircuitBreakerConfig = {
     failureThreshold:
-      config.circuitBreaker?.failureThreshold ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.failureThreshold,
-    cooldownMs: config.circuitBreaker?.cooldownMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.cooldownMs,
+      config.circuitBreaker?.failureThreshold ?? MODEL_ROUTER_CB_DEFAULTS.failureThreshold,
+    cooldownMs: config.circuitBreaker?.cooldownMs ?? MODEL_ROUTER_CB_DEFAULTS.cooldownMs,
     failureWindowMs:
-      config.circuitBreaker?.failureWindowMs ?? DEFAULT_CIRCUIT_BREAKER_CONFIG.failureWindowMs,
+      config.circuitBreaker?.failureWindowMs ?? MODEL_ROUTER_CB_DEFAULTS.failureWindowMs,
     failureStatusCodes:
-      config.circuitBreaker?.failureStatusCodes ??
-      DEFAULT_CIRCUIT_BREAKER_CONFIG.failureStatusCodes,
+      config.circuitBreaker?.failureStatusCodes ?? MODEL_ROUTER_CB_DEFAULTS.failureStatusCodes,
   };
 
   return {
