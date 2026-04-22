@@ -31,6 +31,9 @@ export FIXTURE="/tmp/koi-bugbash-${NAMESPACE}"
 export CAPTURE_FILE="/tmp/koi-capture-${NAMESPACE}.txt"
 export HOOK_LOG="/tmp/koi-hook-log-${NAMESPACE}.txt"
 export KOI_HOME="/tmp/koi-home-${NAMESPACE}"
+# Always recreate KOI_HOME from scratch — prior sessions, OAuth cache, and dream
+# artifacts from a previous run would otherwise survive and corrupt assertions.
+rm -rf "$KOI_HOME"
 mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
 
 # Initialize $FIXTURE as an isolated git repo — required by §1.5 reset and S25 setup.
@@ -771,19 +774,16 @@ the resolver skip up to an ancestor repo. The safety check below ensures `$FIXTU
 # Use rev-parse to validate: handles both .git directories and linked worktrees (.git file).
 _S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
 if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
-  # $FIXTURE is nested inside another repo, or not a git repo at all — initialize it.
-  git -C "$FIXTURE" init -q
-  # Create an initial commit (same as §1.2) so git reset --hard works in §1.5.
-  git -C "$FIXTURE" \
-    -c user.name='koi-bugbash' \
-    -c user.email='koi-bugbash@example.invalid' \
-    commit --allow-empty -q -m "chore: fixture init"
-  # Re-validate after init to confirm isolation before any destructive cleanup.
-  _S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
-  if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
-    echo "S25 HARNESS ERROR: could not make \$FIXTURE ($FIXTURE) an isolated git root. Aborting." >&2
-    exit 1
-  fi
+  # $FIXTURE is not an isolated git root — either nested inside another repo or not
+  # a git repo at all.  We do NOT auto-init here: running git init on an arbitrary
+  # existing path is unsafe and masks a broken harness state.
+  # The correct fix is to re-run the §1.2 Per-Tester Isolation setup, which tears
+  # down and recreates $FIXTURE from scratch.
+  echo "S25 HARNESS ERROR: \$FIXTURE ($FIXTURE) is not an isolated git root." >&2
+  echo "  Expected git root : $FIXTURE" >&2
+  echo "  Actual git root   : ${_S25_GIT_ROOT:-<not a git repo>}" >&2
+  echo "  Fix: re-run the §1.2 Per-Tester Isolation setup block and retry." >&2
+  exit 1
 fi
 
 # One canonical memory dir — reused for TUI cleanup, assertions, and koi dream.
