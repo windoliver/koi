@@ -910,7 +910,180 @@ git commit -m "feat(headless): boot-time schema load + assistant text accumulati
 
 - [ ] **Step 1: Write the failing tests**
 
-The full `commands/start.ts` headless branch calls `process.exit()` and requires real runtime assembly, so integration tests for the schema path are colocated with the validator unit tests in `headless/validate-schema.test.ts` via the exported `validateResultSchema` helper. This exercises the exact code path commands/start.ts calls, covers all exit-code branches, and needs no process.exit mocking.
+Two test layers are needed:
+
+**Layer A — Unit tests for the validation helper** (colocated in `headless/validate-schema.test.ts`): verify `validateResultSchema` error strings for all input shapes.
+
+**Layer B — `commands/start.ts` integration tests** (appended to `packages/meta/cli/src/commands/start.test.ts`): verify exit-code precedence, raw-text wiring, and `result` event emission using mocks. The existing test file already mocks `runHeadless` and `Bun.file` — follow the same pattern.
+
+**Layer B tests** (append to `packages/meta/cli/src/commands/start.test.ts`):
+
+```typescript
+import { mock, spyOn } from "bun:test";
+import { HEADLESS_EXIT } from "../headless/exit-codes.js";
+import * as runModule from "../headless/run.js";
+import * as validateModule from "../headless/validate-schema.js";
+
+describe("commands/start — --result-schema wiring (#1648)", () => {
+  const VALID_SCHEMA = '{"type":"object","required":["count"]}';
+
+  beforeEach(() => {
+    // Reset mocks between tests
+    mock.restore();
+  });
+
+  test("exit 5 when schema file cannot be read", async () => {
+    const bunFileMock = spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.reject(new Error("ENOENT: no such file or directory")),
+    } as ReturnType<typeof Bun.file>);
+
+    const exitCodes: number[] = [];
+    const stdoutLines: string[] = [];
+    await runStartHeadless({
+      args: ["--headless", "--prompt", "hello", "--result-schema", "./missing.json"],
+      onStdout: (line) => stdoutLines.push(line),
+      onExit: (code) => exitCodes.push(code),
+    });
+
+    expect(exitCodes[0]).toBe(HEADLESS_EXIT.INTERNAL);
+    expect(stdoutLines.some((l) => l.includes("result-schema rejected"))).toBe(true);
+    bunFileMock.mockRestore();
+  });
+
+  test("exit 5 when schema file contains invalid JSON", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve("not json {{{"),
+    } as ReturnType<typeof Bun.file>);
+
+    const exitCodes: number[] = [];
+    await runStartHeadless({
+      args: ["--headless", "--prompt", "hello", "--result-schema", "./bad.json"],
+      onExit: (code) => exitCodes.push(code),
+    });
+
+    expect(exitCodes[0]).toBe(HEADLESS_EXIT.INTERNAL);
+  });
+
+  test("exit 1 when agent succeeds but output fails schema", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    // Simulate agent: exit 0, emits raw text that fails schema
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.("not json");
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: { exitCode?: number; error?: string }) => {
+          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? 0, error: args?.error }) + "\n");
+        },
+      };
+    });
+
+    const stdoutLines: string[] = [];
+    const exitCodes: number[] = [];
+    await runStartHeadless({
+      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
+      onStdout: (line) => stdoutLines.push(line),
+      onExit: (code) => exitCodes.push(code),
+    });
+
+    const resultLine = stdoutLines.find((l) => l.includes('"kind":"result"'));
+    expect(resultLine).toBeDefined();
+    const result = JSON.parse(resultLine!);
+    expect(result.exitCode).toBe(HEADLESS_EXIT.AGENT_FAILURE);
+    expect(result.error).toContain("not valid JSON");
+  });
+
+  test("exit 0 when agent succeeds and output matches schema", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.('{"count":5}');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: { exitCode?: number; error?: string }) => {
+          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? 0 }) + "\n");
+        },
+      };
+    });
+
+    const stdoutLines: string[] = [];
+    await runStartHeadless({
+      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
+      onStdout: (line) => stdoutLines.push(line),
+      onExit: () => {},
+    });
+
+    const resultLine = stdoutLines.find((l) => l.includes('"kind":"result"'));
+    const result = JSON.parse(resultLine!);
+    expect(result.exitCode).toBe(HEADLESS_EXIT.SUCCESS);
+  });
+
+  test("shutdown failure takes precedence: exit 5 even when schema would pass", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.('{"count":5}');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: { exitCode?: number; error?: string }) => {
+          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? 0, error: args?.error }) + "\n");
+        },
+      };
+    });
+
+    // Simulate shutdownFailed=true by making shutdownRuntime throw
+    spyOn(await import("../runtime/lifecycle.js"), "shutdownRuntime").mockImplementation(async () => {
+      throw new Error("disposer blew up");
+    });
+
+    const stdoutLines: string[] = [];
+    await runStartHeadless({
+      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
+      onStdout: (line) => stdoutLines.push(line),
+      onExit: () => {},
+    });
+
+    const resultLine = stdoutLines.find((l) => l.includes('"kind":"result"'));
+    const result = JSON.parse(resultLine!);
+    expect(result.exitCode).toBe(HEADLESS_EXIT.INTERNAL);
+  });
+
+  test("schema validation skipped when agent exits non-zero", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    const validateSpy = spyOn(validateModule, "validateResultSchema");
+
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.('{"count":5}');
+      return {
+        exitCode: HEADLESS_EXIT.TIMEOUT,
+        emitResult: (args?: { exitCode?: number }) => {
+          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? HEADLESS_EXIT.TIMEOUT }) + "\n");
+        },
+      };
+    });
+
+    await runStartHeadless({
+      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
+      onStdout: () => {},
+      onExit: () => {},
+    });
+
+    // validateResultSchema must NOT be called when agent already failed
+    expect(validateSpy).not.toHaveBeenCalled();
+  });
+});
+```
+
+> **Note on `runStartHeadless` helper:** This is the test helper already present in `commands/start.test.ts` for headless runs. Check the existing helper signature at the top of the file and thread the new `onStdout` and `onExit` callbacks if they are not already there. The helper should capture stdout writes and the process exit code without actually calling `process.exit`.
 
 Add the following `describe` block to `packages/meta/cli/src/headless/validate-schema.test.ts` (the file created in Task 1):
 

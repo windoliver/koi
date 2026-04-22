@@ -50,7 +50,7 @@ During setup phase (same phase as `--policy-file` loading):
 
 1. Read file at `flags.resultSchema` path
 2. `JSON.parse()` the contents
-3. Validate it is a JSON Schema object (has `type: "object"` or `properties` key at root)
+3. Validate it is a JSON object using only supported keywords (`validateLoadedSchema` — accepts any root object using `type`, `required`, `properties`, `enum`; rejects unsupported keywords and malformed values)
 4. On any failure → `bail("result-schema rejected: <reason>", 5)` — exit 5 (INTERNAL) because this is operator misconfiguration, not agent failure
 
 The parsed schema object is stored in a local variable and passed into the post-run validation step.
@@ -81,22 +81,20 @@ New file, zero new dependencies. Exports three functions:
 
 ### Assistant text accumulation
 
-The headless branch in `commands/start.ts` currently calls `runHeadless()` and gets back `{ exitCode, emitResult }`. The assistant text is emitted inside `runHeadless()` as NDJSON but not returned.
+`runHeadless()` applies `redactEngineBanners()` to assistant text before NDJSON emission. Schema validation must see the model's **raw** output before redaction, so re-parsing the emitted NDJSON stream is not viable — it would validate the sanitized text, not the agent's actual output.
 
-To accumulate without touching `runHeadless()` internals, `writeStdout` is wrapped:
+Instead, `RunHeadlessOptions` gains an optional callback:
 
 ```typescript
-const assistantTextParts: string[] = [];
-const wrappedWriteStdout = (chunk: string): void => {
-  process.stdout.write(chunk);
-  // Extract assistant_text deltas from NDJSON for schema validation
-  tryExtractAssistantText(chunk, assistantTextParts);
-};
+readonly onRawAssistantText?: ((text: string) => void) | undefined;
 ```
 
-`tryExtractAssistantText` parses each NDJSON line and pushes `event.text` when `event.kind === "assistant_text"`. Parsing failures are silently ignored (the write already happened; schema validation will fail on the accumulated empty/partial text).
+There are two emission paths in `run.ts`, both fire the callback before redaction:
 
-This keeps `runHeadless()` unchanged and avoids threading schema concerns into the event loop.
+- **Path A (`text_delta`)**: `opts.onRawAssistantText?.(event.delta)` then `emit({ kind: "assistant_text", text: redactEngineBanners(event.delta) })`
+- **Path B (`done.output.content` fallback)**: `opts.onRawAssistantText?.(fallback)` then `emit({ kind: "assistant_text", text: redactEngineBanners(fallback) })`
+
+`commands/start.ts` wires the callback only when `resultSchemaObj !== undefined`, accumulating into `rawAssistantParts: string[]`. After the run, `rawAssistantParts.join("")` is the assembled assistant text passed to `validateResultSchema`.
 
 ---
 
