@@ -947,10 +947,11 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs).toBeUndefined(); // no schema failure
   });
 
-  test("teardown budget exhaustion emits INTERNAL (exit 5), not SCHEMA_VALIDATION", async () => {
-    // When teardown consumes the remaining budget before schema validation starts,
-    // the error is a runtime problem (slow shutdown), not a schema/prompt problem.
-    // Emit INTERNAL (exit 5) so operators check stderr, not the schema file.
+  test("teardown budget exhaustion emits exit 6 + validationSkipped:true, not INTERNAL", async () => {
+    // When teardown consumes the remaining budget, the run is non-retriable (agent completed,
+    // side effects ran). Exit 6 with validationSkipped:true distinguishes this from:
+    //   - validationFailed:true (schema check ran and output did not match)
+    //   - INTERNAL exit 5 (infrastructure failure, potentially retriable)
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
@@ -960,7 +961,12 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       () => new Promise<void>((resolve) => setTimeout(resolve, 150)),
     );
 
-    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    type EmitArgs = {
+      exitCode?: number;
+      error?: string;
+      validationFailed?: boolean;
+      validationSkipped?: boolean;
+    };
     let capturedEmitArgs: EmitArgs | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":3,"titles":["a"]}');
@@ -986,11 +992,15 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    // On slow CI the budget may not be exhausted by teardown; skip assertion in that case.
-    if (capturedEmitArgs !== undefined && capturedEmitArgs.exitCode !== HEADLESS_EXIT.SUCCESS) {
-      // Must not be SCHEMA_VALIDATION (no schema ran) and must not be TIMEOUT (agent completed)
-      expect(capturedEmitArgs.exitCode).not.toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
-      expect(capturedEmitArgs.validationFailed).toBeUndefined();
+    // On fast CI the budget may not be exhausted; if capturedEmitArgs is set, verify semantics.
+    if (capturedEmitArgs !== undefined) {
+      expect(capturedEmitArgs.exitCode).not.toBe(HEADLESS_EXIT.INTERNAL);
+      expect(capturedEmitArgs.exitCode).not.toBe(HEADLESS_EXIT.TIMEOUT);
+      // If budget was exhausted → exit 6 + validationSkipped, NOT validationFailed
+      if (capturedEmitArgs.exitCode === HEADLESS_EXIT.SCHEMA_VALIDATION) {
+        expect(capturedEmitArgs.validationFailed).toBeUndefined();
+        expect(capturedEmitArgs.validationSkipped).toBe(true);
+      }
     }
   }, 2000);
 

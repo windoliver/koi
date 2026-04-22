@@ -65,7 +65,7 @@ These are fail-closed by default because they represent bootstrap-time execution
 | 3 | BUDGET_EXCEEDED | `--max-turns` or `--max-spend` was hit | Maybe — raise limits |
 | 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when all allowed tools are read-only and idempotent. A timeout does not guarantee no side effects occurred before the cut-off. Do NOT auto-retry if `Bash`, file-write, external API, or any MCP tool is allowed — retrying can duplicate deploys, mutations, or external actions. |
 | 5 | INTERNAL | Runtime assembly failed, schema file was invalid, or teardown failed | Check stderr |
-| 6 | SCHEMA_VALIDATION | Agent output did not match `--result-schema`, or schema validation exceeded `--max-duration-ms`. Agent completed all tool calls before this check. | Do NOT retry — the agent finished its work. Fix the prompt or schema and run again. The `result` event also sets `validationFailed: true`. |
+| 6 | SCHEMA_VALIDATION | Agent output did not match `--result-schema`, or schema validation was skipped because `--max-duration-ms` was exhausted during teardown or validation. Agent completed all tool calls before this check. | Do NOT retry — the agent finished its work and side effects already ran. If `validationFailed: true` — fix the prompt or schema. If `validationSkipped: true` — raise `--max-duration-ms` to allow teardown + validation. |
 
 ## NDJSON Event Reference
 
@@ -117,10 +117,16 @@ On failure:
 {"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":1,"error":"agent could not complete the task"}
 ```
 
-On schema validation failure (exit 6):
+On schema validation failure (exit 6 — output did not match schema):
 
 ```json
 {"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":6,"validationFailed":true,"error":"schema validation failed: count is required"}
+```
+
+On schema validation skipped (exit 6 — budget exhausted before validation ran):
+
+```json
+{"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":6,"validationSkipped":true,"error":"schema validation skipped: max-duration-ms exhausted before validation could start"}
 ```
 
 ## Result Schema Validation

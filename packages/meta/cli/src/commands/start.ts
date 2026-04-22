@@ -1192,9 +1192,9 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     try {
       await shutdownRuntime();
       // If teardown consumed the remaining budget before schema validation could run,
-      // emit INTERNAL (exit 5) rather than SCHEMA_VALIDATION (exit 6). The agent ran
-      // successfully and schema validation never started — this is a teardown/timing
-      // problem, not a prompt or schema problem. Operators should check stderr.
+      // emit SCHEMA_VALIDATION (exit 6) with validationSkipped:true so CI does NOT retry.
+      // The agent ran to completion — side effects already ran. This is distinct from
+      // INTERNAL (exit 5, retry-safe) and from true schema failures (validationFailed:true).
       if (
         deadlineAt !== undefined &&
         Date.now() >= deadlineAt &&
@@ -1202,14 +1202,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         resultSchemaObj !== undefined &&
         !shutdownFailed
       ) {
-        // Validation never ran — do NOT flush buffered assistant text.
-        // The --result-schema contract: model output only appears when validation passed.
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-        finalCode = HEADLESS_EXIT.INTERNAL;
+        finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
         emitResult({
-          exitCode: HEADLESS_EXIT.INTERNAL,
-          error: "teardown exhausted max-duration-ms; schema validation skipped — check stderr",
+          exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+          validationSkipped: true,
+          error:
+            "schema validation skipped: teardown exhausted max-duration-ms — check stderr for timing details",
         });
       } else if (shutdownFailed) {
         // Validation did not complete — do NOT flush buffered text.
@@ -1223,17 +1223,23 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         });
       } else if (resultSchemaObj !== undefined && headlessCode === HEADLESS_EXIT.SUCCESS) {
         let schemaResult: { readonly ok: true } | { readonly ok: false; readonly error: string };
+        // skippedByDeadline:true → budget ran out; validationSkipped on the result event.
+        // skippedByDeadline:false → validation ran (or failed for non-deadline reason);
+        //   validationFailed on the result event.
+        let skippedByDeadline = false;
         if (rawAssistantOverflow) {
           schemaResult = {
             ok: false,
             error: "schema validation failed: assistant output exceeded 1 MB limit",
           };
         } else if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
-          // Pre-validation budget check: no time remaining before validation even starts.
-          // Use SCHEMA_VALIDATION (exit 6) — the agent completed all tool calls, do NOT retry.
+          // Pre-validation budget check: validation never started.
+          // CI must NOT retry — agent completed all tool calls, side effects already ran.
+          skippedByDeadline = true;
           schemaResult = {
             ok: false,
-            error: "schema validation failed: max-duration-ms exceeded before schema validation",
+            error:
+              "schema validation skipped: max-duration-ms exhausted before validation could start",
           };
         } else {
           try {
@@ -1260,8 +1266,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
           emitResult({
             exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
-            validationFailed: true,
-            error: "schema validation failed: max-duration-ms exceeded during schema validation",
+            validationSkipped: true,
+            error: "schema validation skipped: max-duration-ms exceeded during schema validation",
           });
         } else {
           postRunPhaseComplete = true;
@@ -1270,7 +1276,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
             emitResult({
               exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
-              validationFailed: true,
+              ...(skippedByDeadline ? { validationSkipped: true } : { validationFailed: true }),
               error: schemaResult.error,
             });
           } else {

@@ -72,6 +72,7 @@ export interface HeadlessOutcome {
     readonly exitCode: HeadlessExitCode;
     readonly error?: string;
     readonly validationFailed?: boolean;
+    readonly validationSkipped?: boolean;
   }) => void;
 }
 
@@ -242,6 +243,7 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
     readonly exitCode: HeadlessExitCode;
     readonly error?: string;
     readonly validationFailed?: boolean;
+    readonly validationSkipped?: boolean;
   }): void => {
     if (resultEmitted) return;
     resultEmitted = true;
@@ -254,6 +256,9 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       ...(finalError !== undefined ? { error: finalError } : {}),
       ...(override?.validationFailed !== undefined
         ? { validationFailed: override.validationFailed }
+        : {}),
+      ...(override?.validationSkipped !== undefined
+        ? { validationSkipped: override.validationSkipped }
         : {}),
     });
     // Observability: CI operators need at least one actionable line on

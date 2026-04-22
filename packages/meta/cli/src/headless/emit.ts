@@ -16,6 +16,10 @@ type HeadlessEventBody =
       readonly exitCode: number;
       readonly error?: string;
       readonly validationFailed?: boolean;
+      /** True when validation was skipped (e.g. teardown exhausted the wall-clock budget).
+       * Distinguishes from validationFailed (schema check ran and the output did not match).
+       * Do NOT retry — the agent finished its tool work; side effects already ran. */
+      readonly validationSkipped?: boolean;
     };
 
 interface EmitterOptions {
