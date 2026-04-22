@@ -63,12 +63,16 @@ export function computePermissionPromptWidth(terminalCols: number): number {
 }
 
 /**
- * Modal widths below this threshold trigger the stacked (vertical) layout for
- * title metadata and key hints. The horizontal hints row needs ~76 columns;
- * stacking below 50 keeps all approval actions visible at 40-col terminal size.
+ * Modal widths below this threshold stack the title-row risk label onto its own
+ * line. At PERMISSION_PROMPT_WIDTH=60 the inner width is 58, comfortably fitting
+ * "Permission Required [MEDIUM] (1 of 9)" (38 chars). Only below 30 cols does
+ * the heading start to clip its metadata.
+ *
+ * Key hints are always rendered as a vertical stack regardless of this threshold:
+ * the full horizontal row is ~76 chars, which never fits in the max 60-col modal.
  * Exported for unit testing.
  */
-export const PERMISSION_PROMPT_NARROW_THRESHOLD = 50;
+export const PERMISSION_PROMPT_NARROW_THRESHOLD = 30;
 
 /**
  * Minimum modal width at which the prompt can display enough approval context
@@ -198,10 +202,15 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
     if (isTooNarrow()) {
-      // Suppress approval keys when context is unreadable; only allow dismiss.
-      if (key.name.toLowerCase() === "escape") {
+      // Context is unreadable: suppress approval (y/a/!) but keep explicit
+      // deny (n) and dismiss (Escape) so the user can fail closed immediately.
+      const name = key.name.toLowerCase();
+      if (name === "escape") {
         key.preventDefault();
         props.onRespond(props.prompt.requestId, { kind: "deny", reason: "User dismissed" });
+      } else if (name === "n") {
+        key.preventDefault();
+        props.onRespond(props.prompt.requestId, { kind: "deny", reason: "User denied" });
       }
       return;
     }
@@ -223,11 +232,12 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       {...MODAL_POSITION}
     >
       {/* Safety guard: when the terminal is too narrow to show meaningful
-          approval context, render a non-interactive "resize" message and
-          suppress approval keys (only Escape/dismiss remains active). */}
+          approval context, render a non-interactive message. Approval (y/a/!)
+          is suppressed; explicit deny (n) and dismiss (Esc) remain active so
+          the user can fail closed while resizing the terminal. */}
       <Show when={isTooNarrow()}>
         <text fg={COLORS.amber}>{"Resize\nto review"}</text>
-        <text fg={COLORS.textMuted}>{"[Esc]"}</text>
+        <text fg={COLORS.textMuted}>{"[n] Deny  [Esc]"}</text>
       </Show>
       <Show when={!isTooNarrow()}>
 
@@ -297,36 +307,21 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         </box>
       </Show>
 
-      {/* Key hints — stacked on narrow terminals so all actions remain visible.
-          Wide: single row "[y] Allow once  [n] Deny  [a]...  [Esc]"
-          Narrow: one hint per line; the [a] session-scope copy breaks the
-          toolId onto its own line so the full authorization target is always
-          readable at the approval boundary (no truncation). */}
+      {/* Key hints — always stacked vertically. The full horizontal row is ~76
+          chars, which exceeds the max modal width (60), so a single-row layout
+          would always clip hints. Stacked layout ensures all actions are visible
+          at every supported terminal width. The [a] hint breaks the toolId onto
+          its own line so the full authorization target is readable (no truncation). */}
       <Show when={props.focused}>
-        <Show
-          when={!isNarrow()}
-          fallback={
-            <box flexDirection="column" marginTop={1}>
-              <text fg={COLORS.success}>{"[y] Allow once"}</text>
-              <text fg={COLORS.danger}>{"[n] Deny"}</text>
-              <text fg={COLORS.blueAccent}>{`[a] Allow this session:\n  ${props.prompt.toolId}`}</text>
-              <Show when={permanentAvailable()}>
-                <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
-              </Show>
-              <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
-            </box>
-          }
-        >
-          <box flexDirection="row" marginTop={1} gap={2}>
-            <text fg={COLORS.success}>{"[y] Allow once"}</text>
-            <text fg={COLORS.danger}>{"[n] Deny"}</text>
-            <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
-            <Show when={permanentAvailable()}>
-              <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
-            </Show>
-            <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
-          </box>
-        </Show>
+        <box flexDirection="column" marginTop={1}>
+          <text fg={COLORS.success}>{"[y] Allow once"}</text>
+          <text fg={COLORS.danger}>{"[n] Deny"}</text>
+          <text fg={COLORS.blueAccent}>{`[a] Allow this session:\n  ${props.prompt.toolId}`}</text>
+          <Show when={permanentAvailable()}>
+            <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
+          </Show>
+          <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
+        </box>
       </Show>
 
       </Show> {/* isTooNarrow() guard */}

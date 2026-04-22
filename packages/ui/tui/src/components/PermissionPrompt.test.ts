@@ -61,24 +61,28 @@ describe("computePermissionPromptWidth", () => {
 // ---------------------------------------------------------------------------
 
 describe("PERMISSION_PROMPT_NARROW_THRESHOLD", () => {
-  test("40-col terminal produces a modal width below the threshold → stacked layout", () => {
-    // computePermissionPromptWidth(40) = 36, which is < PERMISSION_PROMPT_NARROW_THRESHOLD(50).
-    expect(computePermissionPromptWidth(40)).toBeLessThan(PERMISSION_PROMPT_NARROW_THRESHOLD);
+  // Key hints are always stacked vertically (the full horizontal row is ~76 chars,
+  // wider than the max 60-col modal). The threshold only controls the title row:
+  // whether the risk label is inlined or placed on its own line.
+
+  test("very narrow terminal (< 34-col) stacks the title risk label", () => {
+    // computePermissionPromptWidth(30) = 26 < PERMISSION_PROMPT_NARROW_THRESHOLD(30).
+    expect(computePermissionPromptWidth(30)).toBeLessThan(PERMISSION_PROMPT_NARROW_THRESHOLD);
   });
 
-  test("wide terminal produces a modal width at or above the threshold → horizontal layout", () => {
-    // computePermissionPromptWidth(100) = PERMISSION_PROMPT_WIDTH(60) >= 50.
+  test("most terminals produce modal widths at or above the title threshold", () => {
+    // At 40-col: width = 36 >= 30. At 100-col: width = 60 >= 30.
+    expect(computePermissionPromptWidth(40)).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_NARROW_THRESHOLD,
+    );
     expect(computePermissionPromptWidth(100)).toBeGreaterThanOrEqual(
       PERMISSION_PROMPT_NARROW_THRESHOLD,
     );
-    expect(computePermissionPromptWidth(64)).toBeGreaterThanOrEqual(
-      PERMISSION_PROMPT_NARROW_THRESHOLD,
-    );
   });
 
-  test("threshold is between the narrow and wide breakpoints", () => {
-    expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeGreaterThan(36); // 40-col modal width
-    expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeLessThanOrEqual(PERMISSION_PROMPT_WIDTH);
+  test("threshold is above the minimum safe width (all too-narrow terminals are also narrow)", () => {
+    expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeGreaterThan(0);
+    expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeGreaterThan(PERMISSION_PROMPT_MIN_SAFE_WIDTH);
   });
 });
 
