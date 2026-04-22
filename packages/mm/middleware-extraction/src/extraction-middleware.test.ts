@@ -869,7 +869,7 @@ describe("createExtractionMiddleware", () => {
       expect(stored?.type).toBe("feedback");
     });
 
-    test("S14 Q98: heuristic extraction from structured spawn output — clean content and correct type", async () => {
+    test("S14 Q98: heuristic marker extraction from structured spawn output — clean content and correct type", async () => {
       // Spawn tool returns JSON where a child agent echoed the LEARNING marker
       // inside the output field. Before the fix: type=feedback (hardcoded for all),
       // content="connection pooling improves throughput\"}" (JSON artifact).
@@ -881,6 +881,33 @@ describe("createExtractionMiddleware", () => {
         toolResponse(
           JSON.stringify({
             output: "[LEARNING:heuristic] connection pooling improves throughput",
+            status: "done",
+          }),
+        ),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(1);
+      const stored = memory.stored[0];
+      expect(stored?.content).toBe("connection pooling improves throughput");
+      expect(stored?.category).toBe("heuristic");
+      expect(stored?.type).toBe("feedback");
+    });
+
+    test("S14 Q98b: heuristic regex extraction from structured spawn output — keyword text without marker", async () => {
+      // Covers the extractHeuristics path (no [LEARNING:...] marker): a spawn tool
+      // returns JSON where the trusted `output` field contains heuristic keyword text.
+      // This ensures a regression in JSON pre-processing would also break heuristic
+      // extraction, not only marker extraction.
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse(
+          JSON.stringify({
+            output: "learned that connection pooling improves throughput",
             status: "done",
           }),
         ),
