@@ -19,7 +19,34 @@ const permissionRuleSchema = z.object({
   on_deny: z.enum(["hard", "soft"]).optional(),
 });
 
-const ruleArraySchema = z.array(permissionRuleSchema);
+const semanticEffectFields = {
+  effect: z.enum(["allow", "deny", "ask"]),
+  principal: z.string().min(1).optional(),
+  context: z.record(z.string(), z.string().min(1)).optional(),
+  reason: z.string().optional(),
+  on_deny: z.enum(["hard", "soft"]).optional(),
+};
+
+const semanticWriteSchema = z
+  .object({ Write: z.string().min(1), ...semanticEffectFields })
+  .transform(({ Write, ...rest }) => ({ pattern: Write, action: "write" as const, ...rest }));
+
+const semanticReadSchema = z
+  .object({ Read: z.string().min(1), ...semanticEffectFields })
+  .transform(({ Read, ...rest }) => ({ pattern: Read, action: "read" as const, ...rest }));
+
+const semanticNetworkSchema = z
+  .object({ Network: z.string().min(1), ...semanticEffectFields })
+  .transform(({ Network, ...rest }) => ({ pattern: Network, action: "network" as const, ...rest }));
+
+const anyRuleSchema = z.union([
+  semanticWriteSchema,
+  semanticReadSchema,
+  semanticNetworkSchema,
+  permissionRuleSchema,
+]);
+
+const ruleArraySchema = z.array(anyRuleSchema);
 
 /**
  * Validate a single source's rules against the schema.
