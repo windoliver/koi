@@ -56,7 +56,7 @@ export function buildSelectorPrompt(
     .map((m) => {
       const trust =
         m.confidence !== undefined && m.confidence < 1.0
-          ? ` [trust:${m.confidence.toFixed(1)}]`
+          ? ` [trust:${(Math.floor(m.confidence * 10) / 10).toFixed(1)}]`
           : "";
       return `- [${m.type}${trust}] "${m.name}" (id: ${m.id}): ${m.description}`;
     })

@@ -80,7 +80,9 @@ export function formatSingleMemory(scored: ScoredMemory, includeScore?: boolean)
   const safeContent = escapeMemoryContent(scored.memory.record.content);
   const confidence = scored.memory.record.confidence;
   const trustEntry =
-    confidence !== undefined && confidence < 1.0 ? `,"trust":${confidence.toFixed(1)}` : "";
+    confidence !== undefined && confidence < 1.0
+      ? `,"trust":${(Math.floor(confidence * 10) / 10).toFixed(1)}`
+      : "";
   const meta = `{"name":${JSON.stringify(safeName)},"type":${JSON.stringify(safeType)}${trustEntry}}`;
   return `${heading}\n<memory-data>\n${meta}\n---\n${safeContent}\n</memory-data>`;
 }

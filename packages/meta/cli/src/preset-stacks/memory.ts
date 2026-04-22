@@ -155,6 +155,10 @@ export const memoryStack: PresetStack = {
             },
             { force: true },
           );
+          // Matches both current (SHA-256-based) and legacy (timestamp-based)
+          // extraction-generated names. Used in conflict and skipped branches to
+          // guard against accidentally mutating user-named records.
+          const EXTRACTION_NAME_RE = /^extracted-(?:[0-9a-f]{16}|\d{13}-[0-9a-f]{8})$/;
           if (!result.ok) {
             // Throw so persistCandidates observes the failure and does not set
             // stored=true or invalidate hot-memory as if the write succeeded.
@@ -167,39 +171,49 @@ export const memoryStack: PresetStack = {
               `[memory-stack] extraction store corrupted: ${result.value.conflictingIds.length} records share name "${result.value.canonicalName}"`,
             );
           } else if (result.value.action === "conflict") {
-            // Jaccard content dedup found a record with similar content but a
-            // different type (e.g. stale "reference" from before the heuristic/
-            // pattern canonical-type fix). Only migrate when:
-            //   1. The record has an extraction-generated name (exact format check)
-            //   2. Content is an exact match (not just near-duplicate)
-            //   3. The type actually differs (otherwise no-op)
-            // The name must match a known auto-generated format, not just any name
-            // that starts with "extracted-". Without this, a user who stored a memory
-            // via memory_store with name "extracted-foo" could have it silently retyped.
-            // Known formats:
-            //   new: extracted-{16 lowercase hex chars}  (SHA-256-based, this branch)
-            //   old: extracted-{13 digits}-{8 hex chars} (timestamp-based, pre-branch)
-            const EXTRACTION_NAME_RE = /^extracted-(?:[0-9a-f]{16}|\d{13}-[0-9a-f]{8})$/;
+            // With force=true, conflict can only come from Jaccard content dedup
+            // (name+type matches are force-updated). Two sub-cases:
+            //
+            // A. Type migration — same extraction content stored under a stale type.
+            //    Only migrate when: auto-generated name, exact content match, type differs,
+            //    and no privacy-boundary crossing (user-type records are private).
+            //
+            // B. Confidence promotion — same content already stored at lower confidence
+            //    (e.g. heuristic-inferred 0.7, now re-extracted via explicit marker at 1.0).
+            //    Promote when: auto-generated name, same type, new confidence > existing.
             const { existing } = result.value;
-            // Never migrate across the private/non-private boundary — user-type
-            // records are private (not syncable) and must not be silently reclassified
-            // into a public type (project/reference/feedback) or vice versa.
-            const crossesPrivacyBoundary = existing.type === "user" || type === "user";
-            if (
-              !crossesPrivacyBoundary &&
-              EXTRACTION_NAME_RE.test(existing.name) &&
-              existing.content === content &&
-              existing.type !== type
-            ) {
-              const migrated = await memoryBackend.update(existing.id, {
-                description,
-                type,
-                ...(confidence !== undefined ? { confidence } : {}),
-              });
-              if (!migrated.ok) {
-                console.warn(
-                  `[memory-stack] extraction type migration failed: ${migrated.error.message}`,
-                );
+            if (!EXTRACTION_NAME_RE.test(existing.name)) {
+              // Not an extraction-generated record — skip all mutations
+            } else {
+              const crossesPrivacyBoundary = existing.type === "user" || type === "user";
+              if (
+                !crossesPrivacyBoundary &&
+                existing.content === content &&
+                existing.type !== type
+              ) {
+                // Case A: type migration
+                const migrated = await memoryBackend.update(existing.id, {
+                  description,
+                  type,
+                  ...(confidence !== undefined ? { confidence } : {}),
+                });
+                if (!migrated.ok) {
+                  console.warn(
+                    `[memory-stack] extraction type migration failed: ${migrated.error.message}`,
+                  );
+                }
+              } else if (existing.type === type) {
+                // Case B: confidence promotion
+                const existingConf = existing.confidence ?? 1.0;
+                const newConf = confidence ?? 1.0;
+                if (newConf > existingConf) {
+                  const promoted = await memoryBackend.update(existing.id, { confidence });
+                  if (!promoted.ok) {
+                    console.warn(
+                      `[memory-stack] extraction confidence promotion failed: ${promoted.error.message}`,
+                    );
+                  }
+                }
               }
             }
           }

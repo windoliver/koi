@@ -284,6 +284,49 @@ describe("memory-adapter E2E", () => {
     expect(result.value.record.confidence).toBe(0.7);
   });
 
+  test("Jaccard conflict exposes existing record with confidence so caller can promote", async () => {
+    // Store a heuristic-inferred record at confidence=0.7 with an extraction-generated name
+    const first = await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd11223344",
+        description: "feedback: heuristic — keep functions small",
+        type: "feedback",
+        content: "keep functions small to improve readability",
+        confidence: 0.7,
+      },
+      { force: false },
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.value.action).toBe("created");
+
+    // Store a different-named record with near-identical content → Jaccard dedup fires
+    const second = await backend.storeWithDedup(
+      {
+        name: "extracted-bbccddee22334455",
+        description: "feedback: gotcha — keep functions small",
+        type: "feedback",
+        content: "keep functions small to improve readability",
+        confidence: 1.0,
+      },
+      { force: true },
+    );
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    // Jaccard dedup maps skipped → conflict; existing exposes confidence for promotion
+    expect(second.value.action).toBe("conflict");
+    if (second.value.action !== "conflict") return;
+    expect(second.value.existing.confidence).toBe(0.7);
+
+    // Caller (memory.ts) would now call update() to promote confidence
+    const promoted = await backend.update(second.value.existing.id, { confidence: 1.0 });
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) return;
+    // update() returns MemoryRecord directly (not an action object)
+    expect(promoted.value.confidence).toBe(1.0);
+  });
+
   test("adapter search filters by keyword", async () => {
     await backend.storeWithDedup(
       { name: "alpha", description: "first", type: "user", content: "apples are red" },
