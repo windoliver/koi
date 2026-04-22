@@ -657,6 +657,8 @@ git commit -m "feat(headless): minimal JSON Schema validator for --result-schema
 **Files:**
 - Modify: `packages/meta/cli/src/args/start.ts`
 - Modify: `packages/meta/cli/src/args/start.test.ts`
+- Modify: `packages/meta/cli/src/help.ts` — add `--result-schema` to the `koi start` help block
+- Modify: `packages/meta/cli/src/commands/start.test.ts` — add `resultSchema: undefined` to `makeFlags()` return object
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -760,11 +762,41 @@ bun run typecheck --filter=@koi-agent/cli 2>&1 | tail -5
 
 Expected: `Tasks: 1 successful`
 
+- [ ] **Step 5b: Update `help.ts` — add `--result-schema` to start subcommand help**
+
+In `packages/meta/cli/src/help.ts`, find the `koi start` headless flags section and append:
+
+```
+  --result-schema <path>  Path to a Koi schema file. Validates the agent's entire text
+                          output as a single JSON document. Headless-only. Exit 1 on failure.
+```
+
+- [ ] **Step 5c: Update `makeFlags()` in `commands/start.test.ts`**
+
+In `packages/meta/cli/src/commands/start.test.ts`, expand `makeFlags` to support `headless` and `resultSchema` as overrides (needed by Task 4 integration tests) and add them to the return object.
+
+Change the `Partial<{...}>` overrides type to include:
+
+```typescript
+    headless: boolean;
+    resultSchema: string | undefined;
+```
+
+And update the return object:
+
+```typescript
+    headless: overrides.headless ?? false,
+    resultSchema: overrides.resultSchema,
+```
+
+(Both lines added after `maxDurationMs: undefined`.)
+
 - [ ] **Step 6: Commit**
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-git add packages/meta/cli/src/args/start.ts packages/meta/cli/src/args/start.test.ts
+git add packages/meta/cli/src/args/start.ts packages/meta/cli/src/args/start.test.ts \
+  packages/meta/cli/src/help.ts packages/meta/cli/src/commands/start.test.ts
 git commit -m "feat(headless): add --result-schema flag to parseStartFlags (#1648)"
 ```
 
@@ -888,17 +920,24 @@ Update the call site in `runHeadless`:
       if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText)) {
 ```
 
-**Also add a test to `run.test.ts`** verifying the callback fires for both paths and is not invoked with redacted text. Append to `run.test.ts`:
+**Also add a test to `run.test.ts`** verifying the callback fires for both paths and is not invoked with redacted text. Use the same `runtimeFromEvents` helper already in `run.test.ts`. Append to `run.test.ts`:
 
 ```typescript
 describe("runHeadless — onRawAssistantText callback", () => {
+  const SESSION = "sess-raw-test";
+
   test("fires with raw delta text before redaction", async () => {
     const raw: string[] = [];
     await runAndEmit({
-      events: [
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
         { kind: "text_delta", delta: "[Turn failed: secret-token-abc.]" },
-        { kind: "done", output: { stopReason: "completed", content: [], metadata: {} } },
-      ],
+        DONE,
+      ]),
       onRawAssistantText: (t) => { raw.push(t); },
     });
     // The raw callback receives the unredacted string
@@ -908,16 +947,21 @@ describe("runHeadless — onRawAssistantText callback", () => {
   test("fires via done.output.content fallback when no deltas were emitted", async () => {
     const raw: string[] = [];
     await runAndEmit({
-      events: [
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
         {
           kind: "done",
           output: {
-            stopReason: "completed",
             content: [{ kind: "text", text: '{"count":1}' }],
-            metadata: {},
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0 },
           },
         },
-      ],
+      ]),
       onRawAssistantText: (t) => { raw.push(t); },
     });
     expect(raw.join("")).toBe('{"count":1}');
@@ -1069,18 +1113,40 @@ Two test layers are needed:
 
 **Layer B tests** (append to `packages/meta/cli/src/commands/start.test.ts`):
 
+The existing test file mocks `@koi/engine` (including `createKoi`), which `createKoiRuntime` in `../runtime-factory.js` calls internally — so `runtimeHandle.runtime` resolves to `mockRuntime` and `mockDispose` is the runtime's `dispose` method without needing to add a new `mock.module`. All tests use `process.exit` mocked to throw a sentinel so the headless branch doesn't continue into non-headless code after the exit point.
+
+Add these imports at the top of the file (alongside the existing static imports):
+
+Define the sentinel class and append the describe block:
+
 ```typescript
-import { mock, spyOn } from "bun:test";
-import { HEADLESS_EXIT } from "../headless/exit-codes.js";
-import * as runModule from "../headless/run.js";
-import * as validateModule from "../headless/validate-schema.js";
+// Sentinel thrown by the mocked process.exit so tests can assert on the exit code
+// without the headless branch continuing into non-headless code after the exit point.
+class ExitError extends Error {
+  readonly code: number;
+  constructor(code: number) {
+    super(`process.exit(${code})`);
+    this.code = code;
+  }
+}
 
 describe("commands/start — --result-schema wiring (#1648)", () => {
   const VALID_SCHEMA = '{"type":"object","required":["count"]}';
 
+  let exitSpy: ReturnType<typeof spyOn>;
+
   beforeEach(() => {
-    // Reset mocks between tests
-    mock.restore();
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new ExitError(code ?? 0);
+      return undefined as never;
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.OPENROUTER_API_KEY;
+    exitSpy.mockRestore();
+    mockDispose.mockReset();
   });
 
   test("exit 5 when schema file cannot be read", async () => {
@@ -1088,31 +1154,33 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       text: () => Promise.reject(new Error("ENOENT: no such file or directory")),
     } as ReturnType<typeof Bun.file>);
 
-    const exitCodes: number[] = [];
-    const stdoutLines: string[] = [];
-    await runStartHeadless({
-      args: ["--headless", "--prompt", "hello", "--result-schema", "./missing.json"],
-      onStdout: (line) => stdoutLines.push(line),
-      onExit: (code) => exitCodes.push(code),
-    });
-
-    expect(exitCodes[0]).toBe(HEADLESS_EXIT.INTERNAL);
-    expect(stdoutLines.some((l) => l.includes("result-schema rejected"))).toBe(true);
-    bunFileMock.mockRestore();
+    const { run } = await import("./start.js");
+    try {
+      await run(makeFlags({ headless: true, mode: { kind: "prompt", text: "hello" }, resultSchema: "./missing.json" }));
+      throw new Error("expected process.exit to be called");
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+      expect(e.code).toBe(HEADLESS_EXIT.INTERNAL);
+    } finally {
+      bunFileMock.mockRestore();
+    }
   });
 
   test("exit 5 when schema file contains invalid JSON", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    const bunFileMock = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve("not json {{{"),
     } as ReturnType<typeof Bun.file>);
 
-    const exitCodes: number[] = [];
-    await runStartHeadless({
-      args: ["--headless", "--prompt", "hello", "--result-schema", "./bad.json"],
-      onExit: (code) => exitCodes.push(code),
-    });
-
-    expect(exitCodes[0]).toBe(HEADLESS_EXIT.INTERNAL);
+    const { run } = await import("./start.js");
+    try {
+      await run(makeFlags({ headless: true, mode: { kind: "prompt", text: "hello" }, resultSchema: "./bad.json" }));
+      throw new Error("expected process.exit to be called");
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+      expect(e.code).toBe(HEADLESS_EXIT.INTERNAL);
+    } finally {
+      bunFileMock.mockRestore();
+    }
   });
 
   test("exit 1 when agent succeeds but output fails schema", async () => {
@@ -1120,30 +1188,26 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
-    // Simulate agent: exit 0, emits raw text that fails schema
+    let capturedEmitArgs: { exitCode?: number; error?: string } | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.("not json");
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
         emitResult: (args?: { exitCode?: number; error?: string }) => {
-          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? 0, error: args?.error }) + "\n");
+          capturedEmitArgs = args;
         },
       };
     });
 
-    const stdoutLines: string[] = [];
-    const exitCodes: number[] = [];
-    await runStartHeadless({
-      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
-      onStdout: (line) => stdoutLines.push(line),
-      onExit: (code) => exitCodes.push(code),
-    });
+    const { run } = await import("./start.js");
+    try {
+      await run(makeFlags({ headless: true, mode: { kind: "prompt", text: "hello" }, resultSchema: "./schema.json" }));
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
 
-    const resultLine = stdoutLines.find((l) => l.includes('"kind":"result"'));
-    expect(resultLine).toBeDefined();
-    const result = JSON.parse(resultLine!);
-    expect(result.exitCode).toBe(HEADLESS_EXIT.AGENT_FAILURE);
-    expect(result.error).toContain("not valid JSON");
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.AGENT_FAILURE);
+    expect(capturedEmitArgs?.error).toContain("not valid JSON");
   });
 
   test("exit 0 when agent succeeds and output matches schema", async () => {
@@ -1151,26 +1215,27 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
+    let capturedEmitArgs: { exitCode?: number; error?: string } | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
         emitResult: (args?: { exitCode?: number; error?: string }) => {
-          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? 0 }) + "\n");
+          capturedEmitArgs = args;
         },
       };
     });
 
-    const stdoutLines: string[] = [];
-    await runStartHeadless({
-      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
-      onStdout: (line) => stdoutLines.push(line),
-      onExit: () => {},
-    });
+    const { run } = await import("./start.js");
+    try {
+      await run(makeFlags({ headless: true, mode: { kind: "prompt", text: "hello" }, resultSchema: "./schema.json" }));
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
 
-    const resultLine = stdoutLines.find((l) => l.includes('"kind":"result"'));
-    const result = JSON.parse(resultLine!);
-    expect(result.exitCode).toBe(HEADLESS_EXIT.SUCCESS);
+    // emitResult called with no override args on schema pass
+    expect(capturedEmitArgs?.exitCode ?? 0).toBe(HEADLESS_EXIT.SUCCESS);
+    expect(capturedEmitArgs?.error).toBeUndefined();
   });
 
   test("shutdown failure takes precedence: exit 5 even when schema would pass", async () => {
@@ -1178,31 +1243,32 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
+    let capturedEmitArgs: { exitCode?: number; error?: string } | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
         emitResult: (args?: { exitCode?: number; error?: string }) => {
-          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? 0, error: args?.error }) + "\n");
+          capturedEmitArgs = args;
         },
       };
     });
 
-    // Simulate shutdownFailed=true by making shutdownRuntime throw
-    spyOn(await import("../runtime/lifecycle.js"), "shutdownRuntime").mockImplementation(async () => {
+    // shutdownFailed=true is triggered by mockDispose throwing.
+    // shutdownRuntime() is a local closure in start.ts; it calls
+    // runtimeHandle.runtime.dispose(), which equals mockRuntime.dispose = mockDispose.
+    mockDispose.mockImplementationOnce(async () => {
       throw new Error("disposer blew up");
     });
 
-    const stdoutLines: string[] = [];
-    await runStartHeadless({
-      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
-      onStdout: (line) => stdoutLines.push(line),
-      onExit: () => {},
-    });
+    const { run } = await import("./start.js");
+    try {
+      await run(makeFlags({ headless: true, mode: { kind: "prompt", text: "hello" }, resultSchema: "./schema.json" }));
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
 
-    const resultLine = stdoutLines.find((l) => l.includes('"kind":"result"'));
-    const result = JSON.parse(resultLine!);
-    expect(result.exitCode).toBe(HEADLESS_EXIT.INTERNAL);
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.INTERNAL);
   });
 
   test("schema validation skipped when agent exits non-zero", async () => {
@@ -1216,25 +1282,21 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
         exitCode: HEADLESS_EXIT.TIMEOUT,
-        emitResult: (args?: { exitCode?: number }) => {
-          opts.writeStdout(JSON.stringify({ kind: "result", exitCode: args?.exitCode ?? HEADLESS_EXIT.TIMEOUT }) + "\n");
-        },
+        emitResult: (_args?: { exitCode?: number; error?: string }) => {},
       };
     });
 
-    await runStartHeadless({
-      args: ["--headless", "--prompt", "hello", "--result-schema", "./schema.json"],
-      onStdout: () => {},
-      onExit: () => {},
-    });
+    const { run } = await import("./start.js");
+    try {
+      await run(makeFlags({ headless: true, mode: { kind: "prompt", text: "hello" }, resultSchema: "./schema.json" }));
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
 
-    // validateResultSchema must NOT be called when agent already failed
     expect(validateSpy).not.toHaveBeenCalled();
   });
 });
 ```
-
-> **Note on `runStartHeadless` helper:** This is the test helper already present in `commands/start.test.ts` for headless runs. Check the existing helper signature at the top of the file and thread the new `onStdout` and `onExit` callbacks if they are not already there. The helper should capture stdout writes and the process exit code without actually calling `process.exit`.
 
 Add the following `describe` block to `packages/meta/cli/src/headless/validate-schema.test.ts` (the file created in Task 1):
 
