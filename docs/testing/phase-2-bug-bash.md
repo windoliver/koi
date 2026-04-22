@@ -54,7 +54,7 @@ export KOI_BASH_EXTRA_PATH="$HOME/.bun/bin:/opt/homebrew/bin"
 
 ### 1.3 TUI Configuration
 
-The TUI (`koi tui`) is configured via **environment variables and CLI flags** — it does NOT read `koi.yaml` or manifest files. (`koi start` supports `--manifest` for Nexus filesystem; see S13.)
+The TUI (`koi tui`) is configured via **environment variables and CLI flags**. It does NOT read `koi.yaml`, but it **does** accept `--manifest <path>` to select stack sets and plugins. (`koi start` also supports `--manifest`; see S13.) Memory scenarios (S14, S10, S25) require the default stack set — run without `--manifest`, or with a manifest whose `stacks` includes `memory`.
 
 ```bash
 # Model selection (pick one provider)
@@ -811,7 +811,7 @@ The following L2 packages cannot be exercised through TUI queries due to archite
 | Package | Reason | Test Approach |
 |---------|--------|---------------|
 | `@koi/memory-fs` (concurrent writes) | Concurrent multi-process write safety requires parallel writers; a single TUI session only exercises sequential turns. | `bun run test --filter=@koi/memory-fs` — unit suite exercises parallel writes via locking primitives |
-| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI: `koi dream --memory-dir "$MEMORY_DIR"` (requires API key; validate it reads `$MEMORY_DIR`, locks `.dream.lock`, and writes consolidated output). Full behavior tested by unit suite. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: `koi dream --memory-dir "$MEMORY_DIR"` |
+| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI: `koi dream --force --memory-dir "$MEMORY_DIR"` (`--force` bypasses the gate which requires 24h+sessions; without it the command exits early and consolidation never runs). Requires API key. Validate it reads `$MEMORY_DIR`, acquires `.dream.lock`, and writes consolidated output. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: `koi dream --force --memory-dir "$MEMORY_DIR"` |
 | `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun run test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
 
 ### Always-On Packages (implicitly tested by every TUI session)
