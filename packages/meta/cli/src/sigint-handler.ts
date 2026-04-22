@@ -24,6 +24,12 @@ export interface SigintHandlerDeps {
   readonly onForce: () => void;
   /** Used to print the "Interrupting…" hint. Typically `process.stderr.write`. */
   readonly write: (msg: string) => void;
+  /**
+   * Optional override for the "Interrupting…" hint. When provided, called
+   * instead of `write` so TUI hosts can route the message through the store
+   * rather than raw stderr (#1912). Falls back to `write` when absent.
+   */
+  readonly onInterruptHint?: (msg: string) => void;
   /** How long the user has to tap Ctrl+C a second time. */
   readonly doubleTapWindowMs: number;
   /**
@@ -231,7 +237,7 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
     const thisArmGen = ++armGen; // monotonic; unique even for same-millisecond re-arms
     const doubleTapTimer = armDoubleTapTimer(thisArmGen);
     state = { kind: "armed", failsafeTimer, doubleTapTimer, armGen: thisArmGen, armedAt: t };
-    deps.write("\nInterrupting… (Ctrl+C again to force)\n");
+    (deps.onInterruptHint ?? deps.write)("\nInterrupting… (Ctrl+C again to force)\n");
     deps.onGraceful();
   };
 
