@@ -1733,7 +1733,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                           .replace(/\.$/, "");
                         if (isBlockedIp(h)) return false;
                         if (BLOCKED_HOSTS.includes(h)) return false;
-                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s))) return false;
+                        // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
+                        // "local" matches ".local" — endsWith alone misses these.
+                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
+                          return false;
                         return true;
                       } catch {
                         return false;
