@@ -106,17 +106,24 @@ describe("getSessionPeekLines", () => {
     expect(lines[2]).toBe(preview);
   });
 
-  test("truncates long preview to 120 chars with ellipsis", () => {
+  test("truncates long preview to 66 chars with ellipsis", () => {
     const longPreview = "x".repeat(200);
     const lines = getSessionPeekLines(makeSession({ preview: longPreview }));
-    expect(lines[2]).toBe(`${"x".repeat(120)}…`);
+    expect(lines[2]).toBe(`${"x".repeat(66)}…`);
   });
 
   test("no ellipsis when preview is exactly at cap length", () => {
-    const preview = "a".repeat(120);
+    const preview = "a".repeat(66);
     const lines = getSessionPeekLines(makeSession({ preview }));
     expect(lines[2]).toBe(preview);
     expect(lines[2]?.endsWith("…")).toBe(false);
+  });
+
+  test("preview lines stay within modal inner width (66 chars)", () => {
+    const longPreview = "a".repeat(200);
+    const lines = getSessionPeekLines(makeSession({ preview: longPreview }));
+    // +1 for the ellipsis character
+    expect((lines[2] ?? "").length).toBeLessThanOrEqual(67);
   });
 
   test("normalizes newlines to spaces in preview", () => {

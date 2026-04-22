@@ -48,14 +48,25 @@ const getSessionLabel = (s: SessionSummary): string => s.name;
 
 export function SessionPicker(props: SessionPickerProps): JSX.Element {
   const sessions = useTuiStore((s) => s.sessions);
-  const [peeked, setPeeked] = createSignal<SessionSummary | null>(null);
+  // peekActive: whether peek mode is on.
+  // peekedSession: the session currently shown in the panel — always the highlighted row.
+  const [peekActive, setPeekActive] = createSignal(false);
+  const [peekedSession, setPeekedSession] = createSignal<SessionSummary | null>(null);
 
   const handlePeek = (session: SessionSummary): void => {
-    setPeeked((prev) => (prev?.id === session.id ? null : session));
+    setPeekActive((prev) => {
+      if (!prev) setPeekedSession(session);
+      return !prev;
+    });
+  };
+
+  const handleNavigate = (session: SessionSummary): void => {
+    setPeekedSession(session);
   };
 
   const handleClose = (): void => {
-    setPeeked(null);
+    setPeekActive(false);
+    setPeekedSession(null);
     props.onClose();
   };
 
@@ -87,10 +98,11 @@ export function SessionPicker(props: SessionPickerProps): JSX.Element {
         focused={props.focused}
         emptyText="No saved sessions yet"
         onPeek={handlePeek}
+        onNavigate={handleNavigate}
       />
 
-      {/* Peek panel — shown when the user presses Space on a session */}
-      <Show when={peeked()}>
+      {/* Peek panel — shown when peek mode is active; always reflects the highlighted row */}
+      <Show when={peekActive() ? peekedSession() : null}>
         {(session: () => SessionSummary) => (
           <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingBottom={1}>
             <text fg={COLORS.purple}>{"─".repeat(66)}</text>

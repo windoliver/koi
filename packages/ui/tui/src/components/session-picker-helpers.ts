@@ -13,8 +13,11 @@ export function formatSessionDate(ts: number): string {
 export const getSessionDescription = (s: SessionSummary): string =>
   `${formatSessionDate(s.lastActivityAt)} · ${s.messageCount} messages · ${s.preview.slice(0, 40)}`;
 
-/** Max preview characters shown in the peek panel (matches modal inner width). */
-const PEEK_PREVIEW_MAX = 120;
+/**
+ * Max preview characters in the peek panel.
+ * Modal is 70 cols; border + padding takes 4 cols, leaving 66 usable characters.
+ */
+export const PEEK_PREVIEW_MAX = 66;
 
 /**
  * Lines shown in the peek panel for a session.

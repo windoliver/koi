@@ -49,6 +49,8 @@ export interface SelectOverlayProps<T> {
   readonly emptyText?: string | undefined;
   /** Called when Space is pressed on the highlighted item — peek without selecting. */
   readonly onPeek?: ((item: T) => void) | undefined;
+  /** Called after every Up/Down navigation with the newly highlighted item. */
+  readonly onNavigate?: ((item: T) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,8 +68,20 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
         const item = props.items[list.selectedIdx()];
         if (item !== undefined) props.onSelect(item);
       },
-      onMoveUp: list.moveUp,
-      onMoveDown: list.moveDown,
+      onMoveUp: (): void => {
+        list.moveUp();
+        if (props.onNavigate !== undefined) {
+          const item = props.items[list.selectedIdx()];
+          if (item !== undefined) props.onNavigate(item);
+        }
+      },
+      onMoveDown: (): void => {
+        list.moveDown();
+        if (props.onNavigate !== undefined) {
+          const item = props.items[list.selectedIdx()];
+          if (item !== undefined) props.onNavigate(item);
+        }
+      },
       onPeek:
         props.onPeek !== undefined
           ? (): void => {
