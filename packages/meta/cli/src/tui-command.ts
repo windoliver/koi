@@ -2236,14 +2236,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     write: (msg: string) => {
       process.stderr.write(msg);
     },
-    // #1912: route both SIGINT hints through the TUI store so OpenTUI owns
-    // the layout. Raw process.stderr.write during an active OpenTUI frame
-    // causes row duplication and character-level overlay.
-    onInterruptHint: (msg: string) => {
-      dispatchNotice(store, "interrupt-hint", msg.trim());
+    // #1912: route SIGINT hints through the toast surface (transient, keyed,
+    // auto-dismiss) instead of raw stderr or add_info. Raw stderr writes during
+    // an active OpenTUI frame cause row duplication and character-level overlay;
+    // add_info would pollute conversation history with stale control-flow banners.
+    onInterruptHint: (_msg: string) => {
+      store.dispatch({
+        kind: "add_toast",
+        toast: {
+          id: `sigint-interrupt-${Date.now()}`,
+          kind: "info",
+          key: "sigint:interrupt",
+          title: "Interrupting…",
+          body: "Ctrl+C again to force",
+          ts: Date.now(),
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS + 1000,
+        },
+      });
     },
-    onBgExitHint: (msg: string) => {
-      dispatchNotice(store, "bg-exit-hint", msg.trim());
+    onBgExitHint: (_msg: string) => {
+      store.dispatch({
+        kind: "add_toast",
+        toast: {
+          id: `sigint-bg-exit-${Date.now()}`,
+          kind: "warn",
+          key: "sigint:bg-exit",
+          title: "Background tasks still running",
+          body: "Press Ctrl+C again to exit (background tasks will be terminated).",
+          ts: Date.now(),
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS + 1000,
+        },
+      });
     },
     doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
