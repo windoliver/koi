@@ -1060,6 +1060,7 @@
       "name": "@koi/middleware-permissions",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/bash-ast": "workspace:*",
         "@koi/bash-classifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
