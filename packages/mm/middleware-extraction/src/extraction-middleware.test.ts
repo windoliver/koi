@@ -983,10 +983,10 @@ describe("createExtractionMiddleware", () => {
       expect(memory.stored).toHaveLength(4);
       const byCategory = Object.fromEntries(memory.stored.map((s) => [s.category, s.type]));
       // All four are feedback type
-      expect(byCategory["gotcha"]).toBe("feedback");
-      expect(byCategory["correction"]).toBe("feedback");
-      expect(byCategory["heuristic"]).toBe("feedback");
-      expect(byCategory["pattern"]).toBe("feedback");
+      expect(byCategory.gotcha).toBe("feedback");
+      expect(byCategory.correction).toBe("feedback");
+      expect(byCategory.heuristic).toBe("feedback");
+      expect(byCategory.pattern).toBe("feedback");
       // But category field distinguishes validated from auto-extracted
       const validated = memory.stored.filter(
         (s) => s.category === "gotcha" || s.category === "correction",
