@@ -716,12 +716,14 @@ interface RunHeadlessOptions {
 }
 ```
 
-Then in the `translateEvent` function (bottom of `run.ts`), in the `"text_delta"` case, fire the callback **before** calling `redactEngineBanners`:
+There are **two** emission paths for `assistant_text` in `run.ts` — both must fire the raw callback before redaction:
+
+**Path A — `text_delta` events (streaming):** In `translateEvent`, in the `"text_delta"` case:
 
 ```typescript
     case "text_delta": {
       if (event.delta.length > 0) {
-        opts.onRawAssistantText?.(event.delta);          // raw, before redaction
+        onRawAssistantText?.(event.delta);                // raw, before redaction
         emit({ kind: "assistant_text", text: redactEngineBanners(event.delta) });
         return true;
       }
@@ -729,9 +731,22 @@ Then in the `translateEvent` function (bottom of `run.ts`), in the `"text_delta"
     }
 ```
 
-**Note:** `translateEvent` currently does not have access to `opts`. The fix is to change `translateEvent` from a standalone function to a closure over `opts`, or pass `onRawAssistantText` as an additional argument. The simplest approach (minimum diff): add a parameter:
+**Path B — `done.output.content` fallback (when no deltas were seen):** In the `done` event handler inside the `for await` loop in `runHeadless`, before the `emit` call:
 
-Change the `translateEvent` signature from:
+```typescript
+        if (!emittedAssistantText) {
+          const fallback = extractTextFromContent(event.output.content);
+          if (fallback.length > 0) {
+            opts.onRawAssistantText?.(fallback);          // raw, before redaction
+            emit({ kind: "assistant_text", text: redactEngineBanners(fallback) });
+            emittedAssistantText = true;
+          }
+        }
+```
+
+**`translateEvent` signature change:** Pass `onRawAssistantText` as an additional parameter (minimum diff, no closure change needed):
+
+Change from:
 
 ```typescript
 function translateEvent(
@@ -752,11 +767,50 @@ function translateEvent(
 ): boolean {
 ```
 
-And update the call site in `runHeadless`:
+Update the call site in `runHeadless`:
 
 ```typescript
       if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText)) {
 ```
+
+**Also add a test to `run.test.ts`** verifying the callback fires for both paths and is not invoked with redacted text. Append to `run.test.ts`:
+
+```typescript
+describe("runHeadless — onRawAssistantText callback", () => {
+  test("fires with raw delta text before redaction", async () => {
+    const raw: string[] = [];
+    await runAndEmit({
+      events: [
+        { kind: "text_delta", delta: "[Turn failed: secret-token-abc.]" },
+        { kind: "done", output: { stopReason: "completed", content: [], metadata: {} } },
+      ],
+      onRawAssistantText: (t) => { raw.push(t); },
+    });
+    // The raw callback receives the unredacted string
+    expect(raw.join("")).toContain("secret-token-abc");
+  });
+
+  test("fires via done.output.content fallback when no deltas were emitted", async () => {
+    const raw: string[] = [];
+    await runAndEmit({
+      events: [
+        {
+          kind: "done",
+          output: {
+            stopReason: "completed",
+            content: [{ kind: "text", text: '{"count":1}' }],
+            metadata: {},
+          },
+        },
+      ],
+      onRawAssistantText: (t) => { raw.push(t); },
+    });
+    expect(raw.join("")).toBe('{"count":1}');
+  });
+});
+```
+
+> **Note:** `runAndEmit` in the existing `run.test.ts` will need to accept and forward `onRawAssistantText` to `runHeadless`. Check the helper signature at the top of the test file and add the parameter if it is not already threaded through.
 
 - [ ] **Step 4: Wire `onRawAssistantText` in `commands/start.ts`**
 
@@ -901,7 +955,7 @@ Replace the `else { emitResult(); }` branch with:
         // --result-schema: validate the assembled assistant text against the schema.
         // Only runs when the agent succeeded (exit 0) and teardown was clean.
         // shutdownFailed=true takes precedence and is handled by the branch above.
-        const schemaResult = validateResultSchema(assistantTextParts.join(""), resultSchemaObj);
+        const schemaResult = validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
         if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.AGENT_FAILURE;
           emitResult({ exitCode: HEADLESS_EXIT.AGENT_FAILURE, error: schemaResult.error });
