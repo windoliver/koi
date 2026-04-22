@@ -570,7 +570,7 @@ describe("createToolHealthTracker", () => {
         gracePeriodMs: 0,
         demotionCooldownMs: 0,
       },
-      onDemotion: (e) => demotions.push(e.toTier),
+      onDemotion: (e) => demotions.push(e.to),
       onHealthTransitionError: (e) => errors.push(`${e.transition}:${e.phase}`),
       clock: () => 100_000,
     });
