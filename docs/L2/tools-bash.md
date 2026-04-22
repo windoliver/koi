@@ -117,6 +117,10 @@ Both tools share `exec.ts` for spawn/drain logic:
 - `spawnBash()`: hardened process spawn with `--noprofile --norc`, process-group
   kill, SIGTERM→SIGKILL escalation after 3s grace period, safe minimal env.
   Accepts optional `env` parameter (defaults to `SAFE_ENV`).
+  Regression tests (#1914) cover: abort resolves for long-running commands,
+  child process-group kill (PID-verified), fd-redirecting descendant kill,
+  pre-abort guard (no spawn when signal already aborted), and SIGKILL
+  escalation for SIGTERM-immune processes.
 - `execSandboxed()`: routes execution through a `SandboxAdapter` when provided.
   Accepts optional `env` parameter (defaults to `SAFE_ENV`).
 - `buildSafeEnv()`: constructs a safe env with optional PATH extensions and
