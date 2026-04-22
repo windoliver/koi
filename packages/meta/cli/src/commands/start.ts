@@ -1123,19 +1123,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     const rawAssistantParts: string[] = [];
     let rawAssistantPartsBytes = 0;
     let rawAssistantOverflow = false;
-    // When --result-schema is set, buffer assistant_text NDJSON lines so they are
-    // only flushed to stdout AFTER validation passes. This prevents automation from
-    // acting on unvalidated content streamed mid-run. Other event kinds (tool_call,
-    // tool_result, session_start) are emitted in real-time as usual.
-    // No separate byte cap here — rawAssistantParts (the validation input) is already
-    // capped at RAW_PARTS_CAP_BYTES. Applying a cap to the serialized NDJSON lines
-    // (which include escaping + framing overhead) would reject valid payloads near the limit.
-    // let: populated during run, flushed (or dropped) in the post-run validation block
-    const bufferedAssistantTextLines: string[] = [];
+    // When --result-schema is set, suppress assistant_text NDJSON lines during the run.
+    // On validation success, a single synthesized assistant_text event is emitted that
+    // contains the exact raw validated bytes (rawAssistantParts.join("")), bypassing
+    // banner redaction so consumers receive the exact payload the schema checked.
+    // On any failure, buffered lines are discarded — no unvalidated output reaches stdout.
+    // Other event kinds (tool_call, tool_result, session_start) are emitted in real-time.
     const writeStdoutFn = (s: string): void => {
       if (resultSchemaObj !== undefined && s.includes('"kind":"assistant_text"')) {
-        bufferedAssistantTextLines.push(s);
-        return;
+        return; // suppress — replaced by synthesized raw-text event on success
       }
       process.stdout.write(s);
     };
@@ -1176,9 +1172,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               rawAssistantParts.length = 0; // let — reset on each tool completion
               rawAssistantPartsBytes = 0;
               rawAssistantOverflow = false;
-              // Keep stdout buffer aligned with the validation segment: discard pre-tool
-              // narration so only the final post-tool segment is flushed on success.
-              bufferedAssistantTextLines.length = 0;
             }
           : undefined,
     });
@@ -1281,11 +1274,12 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               error: schemaResult.error,
             });
           } else {
-            // Flush buffered assistant_text lines before emitting the result event.
-            // These were held until validation passed so consumers only see validated output.
-            for (const line of bufferedAssistantTextLines) {
-              process.stdout.write(line);
-            }
+            // Emit the exact validated bytes — not the banner-redacted buffered lines.
+            // rawAssistantParts contains the raw text that passed validation, so the
+            // assistant_text event the consumer receives matches what was schema-checked.
+            process.stdout.write(
+              `${ndjsonSafeStringify({ kind: "assistant_text", sessionId: String(sid), text: rawAssistantParts.join("") })}\n`,
+            );
             emitResult();
           }
         }
