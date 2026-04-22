@@ -200,9 +200,13 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
   const canonicalDescription = sanitizeFrontmatterValue(input.description);
   const nameTypeCollision = existing.find((r) => r.name === canonicalName && r.type === input.type);
   if (nameTypeCollision !== undefined) {
+    // Include confidence in the replay check — a write with same name/type/description/
+    // content but different confidence is NOT an exact replay. Omitting it would silently
+    // drop a confidence-only trust update and return "skipped" as if nothing changed.
     const exactReplay =
       nameTypeCollision.description === canonicalDescription &&
-      nameTypeCollision.content === input.content;
+      nameTypeCollision.content === input.content &&
+      nameTypeCollision.confidence === input.confidence;
     if (exactReplay) {
       return {
         action: "skipped",

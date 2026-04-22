@@ -202,28 +202,28 @@ export const memoryStack: PresetStack = {
                     `[memory-stack] extraction type migration failed: ${migrated.error.message}`,
                   );
                 }
-              } else if (
-                existing.type === type &&
-                existing.content === content &&
-                confidence !== undefined
-              ) {
-                // Case B: confidence promotion — only when the content is an exact
-                // match (not just Jaccard-near-duplicate) and the incoming write
-                // explicitly carries a confidence value. Treating missing confidence
-                // as 1.0 would silently promote low-trust records via any unaware
-                // caller. Required: newConf > existing to avoid no-op writes.
-                // Also migrate description: it encodes the category ("heuristic",
-                // "gotcha", etc.) and must reflect the validated category, otherwise
-                // the relevance selector surfaces stale category metadata.
+              } else if (existing.type === type && existing.content === content) {
+                // Case B: category/confidence reconciliation — exact same content, same type.
+                //
+                // Always migrate description (it encodes category: "heuristic", "gotcha",
+                // etc.) so stale category metadata cannot persist after re-extraction.
+                //
+                // Only promote confidence when the incoming write explicitly carries a
+                // higher value — missing confidence means "no change", not "full trust".
+                // Do not demote: an explicitly validated 1.0 record must not be degraded
+                // by a later auto-extraction at 0.7.
                 const existingConf = existing.confidence ?? 1.0;
-                if (confidence > existingConf) {
-                  const promoted = await memoryBackend.update(existing.id, {
-                    confidence,
+                const shouldPromote = confidence !== undefined && confidence > existingConf;
+                const descriptionChanged = description !== existing.description;
+                if (shouldPromote || descriptionChanged) {
+                  const patch = {
                     description,
-                  });
-                  if (!promoted.ok) {
+                    ...(shouldPromote ? { confidence } : {}),
+                  };
+                  const updated = await memoryBackend.update(existing.id, patch);
+                  if (!updated.ok) {
                     console.warn(
-                      `[memory-stack] extraction confidence promotion failed: ${promoted.error.message}`,
+                      `[memory-stack] extraction metadata reconciliation failed: ${updated.error.message}`,
                     );
                   }
                 }

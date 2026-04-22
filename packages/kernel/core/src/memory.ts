@@ -215,10 +215,15 @@ function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined 
   if (!isMemoryType(type)) return undefined;
 
   const rawConfidence = fields.get("confidence");
-  // Reject blank values ("confidence:" with no value) — Number("") === 0 which
-  // would silently make the record zero-trust instead of signalling corruption.
+  // A present-but-blank "confidence:" field is malformed — drop the whole record.
+  // Treating it as undefined would score as implicit 1.0 trust, which is worse than
+  // a hard-coded low value: a partially-written or corrupted file could shed its
+  // low-confidence marker and surface as fully trusted.
+  if (rawConfidence !== undefined && rawConfidence.trim() === "") {
+    return undefined;
+  }
   const confidence: number | undefined =
-    rawConfidence !== undefined && rawConfidence.trim() !== "" ? Number(rawConfidence) : undefined;
+    rawConfidence !== undefined ? Number(rawConfidence) : undefined;
   if (confidence !== undefined && (Number.isNaN(confidence) || confidence < 0 || confidence > 1)) {
     return undefined;
   }

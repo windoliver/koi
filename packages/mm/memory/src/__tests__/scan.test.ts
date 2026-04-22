@@ -583,10 +583,10 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories.length).toBe(0);
   });
 
-  test("blank confidence field is treated as absent (not 0)", async () => {
+  test("blank confidence field drops the record (fail-closed, prevents stale full-trust)", async () => {
     // Hand-edited or partially mangled file with 'confidence:' but no value.
-    // Number("") === 0, which would silently make the record zero-trust.
-    // The parser must reject blank values and treat them as missing.
+    // Treating it as absent (undefined → ?? 1.0) would let a corrupted file surface
+    // as fully trusted after shedding its low-confidence marker. Drop the record instead.
     const body = [
       "---",
       "name: blank-confidence",
@@ -606,7 +606,6 @@ describe("scanMemoryDirectory", () => {
     const fs = createMockFs([file]);
     const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
 
-    expect(result.memories.length).toBe(1);
-    expect(result.memories[0]?.record.confidence).toBeUndefined();
+    expect(result.memories.length).toBe(0);
   });
 });
