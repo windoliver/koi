@@ -67,6 +67,10 @@ import { createPatternBackend } from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import {
+  createFeedbackLoopMiddleware,
+  type FeedbackLoopConfig,
+} from "@koi/middleware-feedback-loop";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -733,6 +737,15 @@ export interface KoiRuntimeConfig {
    * no-op default when it lands.
    */
   readonly planningEnabled?: boolean | undefined;
+  /**
+   * Opt-in: activate `@koi/middleware-feedback-loop` for model-response
+   * validation and tool-health tracking. When set, the middleware is wired
+   * into the outer middleware zone alongside the audit/report middlewares.
+   * Surface via `KOI_FEEDBACK_LOOP_ENABLED=true` in the TUI, which
+   * activates the middleware with an empty config (no validators, no
+   * quarantine thresholds — observe-only posture).
+   */
+  readonly feedbackLoop?: FeedbackLoopConfig | undefined;
   /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
@@ -2177,6 +2190,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // TODO(#1858): expose reportHandle.getReport / getProgress on
       // KoiRuntimeHandle so the TUI can surface progress in a status
       // bar or /report command.
+    }
+
+    // --- Feedback-loop middleware (opt-in via config.feedbackLoop) ---
+    // Model-response validation + tool-health tracking. No shutdown resources.
+    if (config.feedbackLoop !== undefined) {
+      auditPresetExtras.push(createFeedbackLoopMiddleware(config.feedbackLoop));
     }
 
     // --- Pre-build shared GovernanceController so it is shared between:

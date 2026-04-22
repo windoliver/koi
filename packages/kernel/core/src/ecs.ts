@@ -22,6 +22,7 @@ import type { GovernanceBackend } from "./governance-backend.js";
 import type { HandoffComponent } from "./handoff.js";
 import type { InboxComponent } from "./inbox.js";
 import type { MailboxComponent } from "./mailbox.js";
+import type { MemoryType } from "./memory.js";
 import type { NameServiceReader } from "./name-service.js";
 import type { ReputationBackend } from "./reputation-backend.js";
 import type { SchedulerComponent } from "./scheduler.js";
@@ -468,6 +469,8 @@ export interface MemoryStoreOptions {
   readonly tags?: readonly string[];
   /** Semantic category for fact classification (e.g., "milestone", "preference"). */
   readonly category?: string | undefined;
+  /** Storage type — controls privacy boundaries and recall scoring weights. */
+  readonly type?: MemoryType | undefined;
   /** Entity IDs this memory relates to — enables graph-aware retrieval. */
   readonly relatedEntities?: readonly string[] | undefined;
   /** When true and a near-duplicate exists, increment its accessCount instead of skipping. */

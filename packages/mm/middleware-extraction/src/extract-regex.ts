@@ -15,6 +15,17 @@ import type { ExtractionCandidate, LearningExtractor } from "./types.js";
 // Category → MemoryType mapping
 // ---------------------------------------------------------------------------
 
+// Core fixes for issue #1966: "preference" → "user", "context" → "project".
+// heuristic/pattern map to "reference": they are inferred from spawn output and
+// LLM/regex extraction, not validated by the user — assigning them "feedback"
+// would overload the high-trust feedback class (weight 1.2) with unvalidated
+// advice. Use "reference" (weight 0.8) to signal lower confidence until a
+// per-type salience path for auto-extracted memories is wired.
+// NOTE: "user" type candidates are extracted but NOT persisted in the default
+// file-backed stack — persistCandidates skips them because the shared worktree
+// store has no per-user namespace isolation. This is intentional: mapping to
+// "user" is correct typing; the skip with console.warn prevents silent loss and
+// signals the missing storage path without crossing the privacy boundary.
 const CATEGORY_TO_MEMORY_TYPE: Readonly<Record<CollectiveMemoryCategory, MemoryType>> = {
   gotcha: "feedback",
   correction: "feedback",

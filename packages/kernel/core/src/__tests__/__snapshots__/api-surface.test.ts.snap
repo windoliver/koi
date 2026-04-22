@@ -2823,6 +2823,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Agent definition types — declarative agent template for discovery and loading.
@@ -2885,6 +2886,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Agent resolver types — dynamic agent discovery for delegation tools.
@@ -3124,6 +3126,7 @@ import './model-HASH.js';
 import './permission-HASH.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -3249,6 +3252,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -3265,6 +3269,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Daemon contracts — WorkerBackend + Supervisor for the OS-process substrate
@@ -3636,6 +3641,7 @@ exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 import './channel.js';
 import './common.js';
 import './filesystem-HASH.js';
+import './memory.js';
 import './webhook.js';
 import './zone.js';
 import './errors.js';
@@ -3660,6 +3666,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -3676,6 +3683,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -3842,6 +3850,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -3858,6 +3867,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -3986,6 +3996,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Intent Capsule types — cryptographic mandate binding for ASI01 defense.
@@ -4192,6 +4203,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -4208,6 +4220,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Eviction policy contract — candidate selection for agent eviction.
@@ -4266,6 +4279,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Health monitoring contract — heartbeat recording, staleness detection.
@@ -4768,6 +4782,7 @@ import './hook.js';
 import './sandbox-HASH.js';
 import './webhook.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -4784,6 +4799,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5049,6 +5065,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5065,6 +5082,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5313,6 +5331,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5398,6 +5417,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5414,6 +5434,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5430,6 +5451,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Run report types — structured summary of an autonomous agent run.
@@ -5559,6 +5581,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5942,6 +5965,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -5958,6 +5982,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 "
 `;
 
@@ -6217,6 +6242,7 @@ import './sandbox-HASH.js';
 import './webhook.js';
 import './zone.js';
 import './filesystem-HASH.js';
+import './memory.js';
 
 /**
  * Worker ↔ main thread message protocol for engine worker isolation.

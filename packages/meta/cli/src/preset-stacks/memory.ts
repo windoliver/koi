@@ -29,8 +29,9 @@
  *     so other callers (debug inspection) can find persisted memories.
  */
 
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import type { MemoryRecord } from "@koi/core";
+import type { MemoryRecord, MemoryStoreOptions } from "@koi/core";
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createMemoryStore, resolveMemoryDir } from "@koi/memory-fs";
 import { createMemoryToolProvider } from "@koi/memory-tools";
@@ -104,22 +105,92 @@ export const memoryStack: PresetStack = {
             record: r,
           }));
         },
-        async store(content: string, options?: { readonly category?: string | undefined }) {
-          // Make the generated name collision-resistant. `Date.now()`
-          // alone is millisecond-granular, so two concurrent extractions
-          // landing in the same tick would collide on (name, type) and
-          // the atomic upsert path would reject the second one. Append
-          // a short random suffix so concurrent extractions always get
-          // unique names.
-          const suffix = crypto.randomUUID().slice(0, 8);
-          const result = await memoryBackend.store({
-            name: `extracted-${Date.now()}-${suffix}`,
-            description: options?.category ?? "extracted learning",
-            type: "feedback",
-            content,
-          });
+        async store(content: string, options?: MemoryStoreOptions) {
+          // Honored fields from MemoryStoreOptions:
+          //   - type: forwarded to MemoryRecordInput.type (default: "feedback")
+          // NOT honored by this file-backed adapter:
+          //   - namespace, tags, relatedEntities, reinforce, causalParents, supersedes
+          //
+          // Namespace: this adapter uses a single worktree-wide directory and
+          // cannot enforce per-namespace storage or recall isolation. Fail closed
+          // when namespace is set — persisting into a shared store without recall
+          // isolation would silently cross tenant/agent trust boundaries, which is
+          // worse than dropping the write. Wire a namespace-aware MemoryComponent
+          // for true tenant/agent isolation.
+          if (options?.namespace !== undefined) {
+            // Throw so the caller (persistCandidates) observes a failure and does
+            // not set stored=true or invalidate hot-memory as if a write succeeded.
+            throw new Error(
+              `[memory-stack] namespace-aware storage not supported by the file-backed adapter ` +
+                `(namespace="${options.namespace}"). ` +
+                `Wire a namespace-aware MemoryComponent for tenant/agent isolation.`,
+            );
+          }
+
+          // Derive a stable name via SHA-256(content + category) so duplicate
+          // extractions (regex pass + LLM pass on the same learning) upsert the
+          // same record rather than accumulate distinct entries in the store.
+          const category = options?.category ?? "general";
+          const type = options?.type ?? "feedback";
+          const hash = createHash("sha256")
+            .update(`${content}\x00${category}`)
+            .digest("hex")
+            .slice(0, 16);
+          const name = `extracted-${hash}`;
+          // Include a short content excerpt in the description so the relevance
+          // selector (which only sees name + description + type) has real semantic
+          // signal to distinguish entries. Cap at 80 chars to avoid ballooning
+          // selector prompts on long learnings.
+          const excerpt = content.slice(0, 80).replace(/\n/g, " ").trim();
+          const description = `${type}: ${category} — ${excerpt}`;
+          // force: true — overwrite a stale same-name+same-type record on re-extraction.
+          const result = await memoryBackend.storeWithDedup(
+            { name, description, type, content },
+            { force: true },
+          );
           if (!result.ok) {
-            console.warn(`[memory-stack] extraction store failed: ${result.error.message}`);
+            // Throw so persistCandidates observes the failure and does not set
+            // stored=true or invalidate hot-memory as if the write succeeded.
+            throw new Error(`[memory-stack] extraction store failed: ${result.error.message}`);
+          } else if (result.value.action === "corrupted") {
+            // Multiple records share the same (name, type) key — store is corrupt.
+            // Throw so extraction is not marked successful; operator must repair
+            // via delete + rebuildIndex.
+            throw new Error(
+              `[memory-stack] extraction store corrupted: ${result.value.conflictingIds.length} records share name "${result.value.canonicalName}"`,
+            );
+          } else if (result.value.action === "conflict") {
+            // Jaccard content dedup found a record with similar content but a
+            // different type (e.g. stale "reference" from before the heuristic/
+            // pattern canonical-type fix). Only migrate when:
+            //   1. The record has an extraction-generated name (exact format check)
+            //   2. Content is an exact match (not just near-duplicate)
+            //   3. The type actually differs (otherwise no-op)
+            // The name must match a known auto-generated format, not just any name
+            // that starts with "extracted-". Without this, a user who stored a memory
+            // via memory_store with name "extracted-foo" could have it silently retyped.
+            // Known formats:
+            //   new: extracted-{16 lowercase hex chars}  (SHA-256-based, this branch)
+            //   old: extracted-{13 digits}-{8 hex chars} (timestamp-based, pre-branch)
+            const EXTRACTION_NAME_RE = /^extracted-(?:[0-9a-f]{16}|\d{13}-[0-9a-f]{8})$/;
+            const { existing } = result.value;
+            // Never migrate across the private/non-private boundary — user-type
+            // records are private (not syncable) and must not be silently reclassified
+            // into a public type (project/reference/feedback) or vice versa.
+            const crossesPrivacyBoundary = existing.type === "user" || type === "user";
+            if (
+              !crossesPrivacyBoundary &&
+              EXTRACTION_NAME_RE.test(existing.name) &&
+              existing.content === content &&
+              existing.type !== type
+            ) {
+              const migrated = await memoryBackend.update(existing.id, { description, type });
+              if (!migrated.ok) {
+                console.warn(
+                  `[memory-stack] extraction type migration failed: ${migrated.error.message}`,
+                );
+              }
+            }
           }
         },
       },
