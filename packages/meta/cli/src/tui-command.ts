@@ -68,6 +68,7 @@ import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
+import { createBrowserProvider, createMockDriver } from "@koi/tool-browser";
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -82,6 +83,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
+import { isSafeUrl } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
@@ -1677,7 +1679,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // @koi/artifacts tools — wired when the advisory lock was acquired at
     // boot. When construction failed (concurrent TUI, FS issue) the array
     // is empty and the artifact_* tools are simply absent from the agent.
-    ...(artifactExtraProviders.length > 0 ? { extraProviders: artifactExtraProviders } : {}),
+    ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
+      ? {
+          extraProviders: [
+            ...artifactExtraProviders,
+            ...(process.env.KOI_BROWSER_MOCK === "1"
+              ? [
+                  createBrowserProvider({
+                    backend: createMockDriver(),
+                    isUrlAllowed: async (url) => {
+                      const r = await isSafeUrl(url);
+                      return r.ok;
+                    },
+                  }),
+                ]
+              : []),
+          ],
+        }
+      : {}),
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
