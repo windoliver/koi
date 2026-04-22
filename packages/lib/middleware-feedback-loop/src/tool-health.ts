@@ -247,6 +247,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
   // Per-tool state map: keyed by toolId
   const stateMap = new Map<string, ToolState>();
+  // Brick-level quarantine: blocks all toolIds that resolve to the same brick
+  const quarantinedBricks = new Set<BrickId>();
 
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
@@ -486,8 +488,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     },
 
     isQuarantined(toolId: string): boolean {
-      const state = stateMap.get(toolId);
-      return state?.sessionQuarantined ?? false;
+      if (stateMap.get(toolId)?.sessionQuarantined === true) return true;
+      // Also block any alias that resolves to an already-quarantined brick
+      const bId = resolveBrickId(toolId);
+      return bId !== undefined && quarantinedBricks.has(bId);
     },
 
     getSnapshot(toolId: string): ToolHealthSnapshot | undefined {
@@ -531,6 +535,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       state.healthState = "quarantined";
       const bId = resolveBrickId(toolId);
       if (bId !== undefined) {
+        // Record brick-level quarantine so all aliases of this brick are blocked
+        quarantinedBricks.add(bId);
         // Best-effort persist — errors are reported via onHealthTransitionError
         await persistQuarantine(toolId, bId, metrics);
       } else {
