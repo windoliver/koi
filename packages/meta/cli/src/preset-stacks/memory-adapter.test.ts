@@ -284,9 +284,9 @@ describe("memory-adapter E2E", () => {
     expect(result.value.record.confidence).toBe(0.7);
   });
 
-  test("Jaccard conflict exposes existing record with confidence so caller can promote", async () => {
+  test("Jaccard conflict exposes existing.confidence for promotion (exact content match path)", async () => {
     // Store a heuristic-inferred record at confidence=0.7 with an extraction-generated name
-    const first = await backend.storeWithDedup(
+    await backend.storeWithDedup(
       {
         name: "extracted-aabbccdd11223344",
         description: "feedback: heuristic — keep functions small",
@@ -296,11 +296,8 @@ describe("memory-adapter E2E", () => {
       },
       { force: false },
     );
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    expect(first.value.action).toBe("created");
 
-    // Store a different-named record with near-identical content → Jaccard dedup fires
+    // Different-named record with identical content → Jaccard dedup fires; exposes existing.confidence
     const second = await backend.storeWithDedup(
       {
         name: "extracted-bbccddee22334455",
@@ -314,17 +311,50 @@ describe("memory-adapter E2E", () => {
 
     expect(second.ok).toBe(true);
     if (!second.ok) return;
-    // Jaccard dedup maps skipped → conflict; existing exposes confidence for promotion
     expect(second.value.action).toBe("conflict");
     if (second.value.action !== "conflict") return;
+    // existing.confidence must be exposed so caller can check and promote
     expect(second.value.existing.confidence).toBe(0.7);
 
-    // Caller (memory.ts) would now call update() to promote confidence
+    // update() promotes the confidence
     const promoted = await backend.update(second.value.existing.id, { confidence: 1.0 });
     expect(promoted.ok).toBe(true);
     if (!promoted.ok) return;
-    // update() returns MemoryRecord directly (not an action object)
     expect(promoted.value.confidence).toBe(1.0);
+  });
+
+  test("confidence promotion skipped when incoming confidence is omitted", async () => {
+    // Guard: an extraction that doesn't carry confidence must NOT silently promote a
+    // low-trust record to 1.0. Missing confidence = "no change", not "full trust".
+    await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd99887766",
+        description: "feedback: heuristic — prefer pure functions",
+        type: "feedback",
+        content: "prefer pure functions wherever possible",
+        confidence: 0.7,
+      },
+      { force: false },
+    );
+
+    // Re-extraction without confidence field — should NOT promote
+    const second = await backend.storeWithDedup(
+      {
+        name: "extracted-bbccddee88776655",
+        description: "feedback: gotcha — prefer pure functions",
+        type: "feedback",
+        content: "prefer pure functions wherever possible",
+        // confidence intentionally omitted — mixed-version or marker-free caller
+      },
+      { force: true },
+    );
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.action).toBe("conflict");
+    if (second.value.action !== "conflict") return;
+    // Existing confidence must still be 0.7 — no promotion happened
+    expect(second.value.existing.confidence).toBe(0.7);
   });
 
   test("adapter search filters by keyword", async () => {

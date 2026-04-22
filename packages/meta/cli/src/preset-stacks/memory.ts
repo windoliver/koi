@@ -202,11 +202,18 @@ export const memoryStack: PresetStack = {
                     `[memory-stack] extraction type migration failed: ${migrated.error.message}`,
                   );
                 }
-              } else if (existing.type === type) {
-                // Case B: confidence promotion
+              } else if (
+                existing.type === type &&
+                existing.content === content &&
+                confidence !== undefined
+              ) {
+                // Case B: confidence promotion — only when the content is an exact
+                // match (not just Jaccard-near-duplicate) and the incoming write
+                // explicitly carries a confidence value. Treating missing confidence
+                // as 1.0 would silently promote low-trust records via any unaware
+                // caller. Required: newConf > existing to avoid no-op writes.
                 const existingConf = existing.confidence ?? 1.0;
-                const newConf = confidence ?? 1.0;
-                if (newConf > existingConf) {
+                if (confidence > existingConf) {
                   const promoted = await memoryBackend.update(existing.id, { confidence });
                   if (!promoted.ok) {
                     console.warn(

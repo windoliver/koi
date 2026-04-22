@@ -214,8 +214,10 @@ function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined 
   if (!isMemoryType(type)) return undefined;
 
   const rawConfidence = fields.get("confidence");
+  // Reject blank values ("confidence:" with no value) — Number("") === 0 which
+  // would silently make the record zero-trust instead of signalling corruption.
   const confidence: number | undefined =
-    rawConfidence !== undefined ? Number(rawConfidence) : undefined;
+    rawConfidence !== undefined && rawConfidence.trim() !== "" ? Number(rawConfidence) : undefined;
   if (confidence !== undefined && (Number.isNaN(confidence) || confidence < 0 || confidence > 1)) {
     return undefined;
   }

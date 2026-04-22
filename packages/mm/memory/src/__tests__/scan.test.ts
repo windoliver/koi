@@ -555,4 +555,31 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories.length).toBe(1);
     expect(result.memories[0]?.record.confidence).toBeUndefined();
   });
+
+  test("blank confidence field is treated as absent (not 0)", async () => {
+    // Hand-edited or partially mangled file with 'confidence:' but no value.
+    // Number("") === 0, which would silently make the record zero-trust.
+    // The parser must reject blank values and treat them as missing.
+    const body = [
+      "---",
+      "name: blank-confidence",
+      "description: test memory",
+      "type: feedback",
+      "confidence:",
+      "---",
+      "",
+      "some content",
+    ].join("\n");
+    const file: MockFile = {
+      path: "/memory/blank_confidence.md",
+      content: body,
+      size: body.length,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(1);
+    expect(result.memories[0]?.record.confidence).toBeUndefined();
+  });
 });
