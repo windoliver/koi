@@ -2123,6 +2123,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
+    // #1999: when a child spawn is still running after the first Ctrl+C, the
+    // drain promise won't resolve until the child finishes. If the child
+    // outlives the 2s double-tap window, stay-armed causes the second Ctrl+C
+    // to force-exit instead of starting a fresh cancellation. Switch to
+    // reset-to-idle while spawns are active so the window auto-clears; the
+    // user's second Ctrl+C is then treated as a fresh first tap.
+    onWindowElapse: (): "stay-armed" | "reset-to-idle" =>
+      store.getState().activeSpawns.size > 0 ? "reset-to-idle" : "stay-armed",
   });
   // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
   // prop) and the `agent:interrupt` command both route through here.

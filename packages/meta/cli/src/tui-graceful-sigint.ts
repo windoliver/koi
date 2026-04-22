@@ -92,6 +92,12 @@ export interface TuiSigintDeps {
   readonly doubleTapWindowMs: number;
   readonly coalesceWindowMs?: number;
   readonly now?: () => number;
+  /**
+   * Forwarded to `SigintHandlerDeps.onWindowElapse`. Accepts a function so
+   * the policy can vary at window-elapse time (e.g. `"reset-to-idle"` while
+   * a child spawn is still running, `"stay-armed"` otherwise — #1999).
+   */
+  readonly onWindowElapse?: "stay-armed" | "reset-to-idle" | (() => "stay-armed" | "reset-to-idle");
 }
 
 /**
@@ -180,6 +186,7 @@ export function createTuiSigintHandler(deps: TuiSigintDeps): SigintHandler {
     setTimer: deps.setTimer,
     ...(deps.coalesceWindowMs !== undefined ? { coalesceWindowMs: deps.coalesceWindowMs } : {}),
     ...(deps.now !== undefined ? { now: deps.now } : {}),
+    ...(deps.onWindowElapse !== undefined ? { onWindowElapse: deps.onWindowElapse } : {}),
   };
 
   // let: justified — forward reference so the bg-wait timer callback

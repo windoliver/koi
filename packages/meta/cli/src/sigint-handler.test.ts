@@ -319,6 +319,94 @@ describe("createSigintHandler", () => {
     expect(onForce).toHaveBeenCalledTimes(1);
   });
 
+  test("onWindowElapse as function: reset-to-idle when function returns reset-to-idle", () => {
+    // Regression: #1999 — spawn outlives double-tap window; second Ctrl+C
+    // must not force-exit when function policy returns reset-to-idle.
+    const resetHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => "reset-to-idle",
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    resetHandler.handleSignal();
+    clock.advance(2500); // past the window
+    resetHandler.handleSignal();
+    // Second tap treated as fresh first tap, not a force.
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
+  test("onWindowElapse as function: stay-armed when function returns stay-armed", () => {
+    const stayHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => "stay-armed",
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    stayHandler.handleSignal();
+    clock.advance(2500);
+    stayHandler.handleSignal(); // still armed → force
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
+  test("onWindowElapse as function: policy evaluated at elapse time, not creation time", () => {
+    // Simulate spawn finishing between first Ctrl+C and window elapse.
+    // While spawn is running → reset-to-idle; after spawn → stay-armed.
+    let spawnActive = true;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    // First scenario: spawn still active when window elapses → reset-to-idle.
+    dynamicHandler.handleSignal();
+    clock.advance(2500); // window elapses with spawn active
+    dynamicHandler.handleSignal(); // fresh first tap
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+
+    // Second scenario: spawn finishes before next window elapses → stay-armed.
+    spawnActive = false;
+    dynamicHandler.complete(); // settle the second tap's graceful
+    dynamicHandler.handleSignal(); // third tap, fresh
+    clock.advance(2500); // window elapses with no spawn → stay-armed
+    dynamicHandler.handleSignal(); // still armed → force
+    expect(onGraceful).toHaveBeenCalledTimes(3);
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
   test("signals within coalesce window are treated as one tap", () => {
     const coalescingHandler = createSigintHandler({
       onGraceful: () => {

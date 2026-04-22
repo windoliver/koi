@@ -346,3 +346,104 @@ describe("createTuiSigintHandler — idle foreground + live background (#1772)",
     expect(state.forceCount).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// createTuiSigintHandler — onWindowElapse function pass-through (#1999)
+// ---------------------------------------------------------------------------
+
+describe("createTuiSigintHandler — dynamic onWindowElapse (#1999 spawn regression)", () => {
+  test("second Ctrl+C after window becomes fresh first tap when spawn still running", () => {
+    // Regression: child spawn outlives the 2s double-tap window after Ctrl+C.
+    // Without the fix, stay-armed causes the second tap to force-exit.
+    // With the fix, onWindowElapse returns reset-to-idle while spawn active,
+    // so the second tap is treated as a fresh cancel, not a force.
+    const spawnActive = true;
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const abortCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {
+        abortCount.n += 1;
+      },
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+    });
+
+    // First Ctrl+C — abort active stream (model run + spawn in flight).
+    handler.handleSignal();
+    expect(abortCount.n).toBe(1);
+    expect(forceCount.n).toBe(0);
+
+    // Spawn still running past the 2s window.
+    timers.advance(2500);
+
+    // Second Ctrl+C — must NOT force-exit; spawn still active → reset-to-idle
+    // policy → handler went idle → this is a fresh first tap → abort again.
+    handler.handleSignal();
+    expect(abortCount.n).toBe(2);
+    expect(forceCount.n).toBe(0);
+  });
+
+  test("second Ctrl+C within window always forces regardless of spawn state", () => {
+    // The dynamic policy only changes what happens when the WINDOW ELAPSES.
+    // Within the window, a second tap must still force-exit.
+    const spawnActive = true;
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+    });
+
+    handler.handleSignal();
+    timers.advance(500); // inside the window
+    handler.handleSignal(); // second tap within window → force
+    expect(forceCount.n).toBe(1);
+  });
+
+  test("when spawn finishes before window, policy switches back to stay-armed", () => {
+    // Spawn completes quickly — no special behavior needed; stay-armed applies
+    // and a post-window second Ctrl+C forces as normal.
+    const spawnActive = false; // spawn never active (or already done)
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+    });
+
+    handler.handleSignal();
+    timers.advance(2500); // window elapses — no spawn → stay-armed
+    handler.handleSignal(); // still armed → force
+    expect(forceCount.n).toBe(1);
+  });
+});

@@ -58,8 +58,13 @@ export interface SigintHandlerDeps {
    *     interactive loop runs multiple turns without a per-turn callback,
    *     and staying armed across turns would turn routine cancellations
    *     into force-exits.
+   *   - A function `() => "stay-armed" | "reset-to-idle"`: evaluated at
+   *     window-elapse time so the policy can vary based on runtime state.
+   *     Use this when the correct policy depends on live state that isn't
+   *     known at handler-creation time (e.g. whether a child spawn is still
+   *     running — see issue #1999).
    */
-  readonly onWindowElapse?: "stay-armed" | "reset-to-idle";
+  readonly onWindowElapse?: "stay-armed" | "reset-to-idle" | (() => "stay-armed" | "reset-to-idle");
   /** Injectable timer factory. Production uses a `setTimeout` wrapper. */
   readonly setTimer: (fn: () => void, ms: number) => Timer;
   /** Injectable clock. Production uses `() => Date.now()`. */
@@ -102,6 +107,8 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
   const now = deps.now ?? ((): number => Date.now());
   const coalesceWindowMs = deps.coalesceWindowMs ?? 0;
   const onWindowElapse = deps.onWindowElapse ?? "stay-armed";
+  const resolveWindowElapsePolicy = (): "stay-armed" | "reset-to-idle" =>
+    typeof onWindowElapse === "function" ? onWindowElapse() : onWindowElapse;
   // let: justified — timestamp of most recent non-coalesced signal
   let lastSignalAt = Number.NEGATIVE_INFINITY;
 
@@ -129,7 +136,7 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
       //     tap. Failsafe (if any) is cancelled because there is no
       //     in-flight graceful request to guard anymore.
       if (state.kind !== "armed") return;
-      if (onWindowElapse === "reset-to-idle") {
+      if (resolveWindowElapsePolicy() === "reset-to-idle") {
         state.failsafeTimer?.cancel();
         state = { kind: "idle" };
       } else {
