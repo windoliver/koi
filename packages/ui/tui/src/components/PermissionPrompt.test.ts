@@ -11,10 +11,12 @@ import {
 // computePermissionPromptWidth — layout contract (#1913)
 // ---------------------------------------------------------------------------
 
-describe("computePermissionPromptWidth", () => {
-  // Outer box occupies: MODAL_POSITION.left(2) + width + BORDER_CHROME(2) columns.
-  // Width must satisfy: left(2) + width + borders(2) <= terminalCols.
+// MODAL_POSITION.left = 2, BORDER_CHROME = 2 (shared constants, not re-exported).
+// Invariant: left(2) + width + border(2) <= terminalCols for terminalCols >= 4.
+const LEFT = 2;
+const BORDER = 2;
 
+describe("computePermissionPromptWidth", () => {
   test("returns PERMISSION_PROMPT_WIDTH on wide terminals", () => {
     // min breakpoint: left(2) + 60 + borders(2) = 64 cols needed.
     expect(computePermissionPromptWidth(100)).toBe(PERMISSION_PROMPT_WIDTH);
@@ -23,17 +25,25 @@ describe("computePermissionPromptWidth", () => {
   });
 
   test("shrinks on narrow terminals so the full outer box fits", () => {
-    // 60-col: width = 60 - left(2) - borders(2) = 56 → outer box = 2 + 56 + 2 = 60 ✓
+    // 60-col: width = 56 → outer box = 2 + 56 + 2 = 60 ✓
     expect(computePermissionPromptWidth(60)).toBeLessThan(PERMISSION_PROMPT_WIDTH);
     expect(computePermissionPromptWidth(60)).toBe(56);
-    // 40-col: width = 40 - 2 - 2 = 36 → outer box = 2 + 36 + 2 = 40 ✓
+    // 40-col: width = 36 → outer box = 2 + 36 + 2 = 40 ✓
     expect(computePermissionPromptWidth(40)).toBe(36);
+    // 10-col: width = 6 → outer box = 2 + 6 + 2 = 10 ✓
+    expect(computePermissionPromptWidth(10)).toBe(6);
   });
 
-  test("clamps to minimum so the modal remains legible even on very narrow terminals", () => {
-    // Below the minimum (30) the function returns 30, not a negative/zero value.
-    expect(computePermissionPromptWidth(10)).toBe(30);
-    expect(computePermissionPromptWidth(0)).toBe(30);
+  test("never returns negative — clamps to 0 for pathologically narrow terminals", () => {
+    expect(computePermissionPromptWidth(3)).toBe(0);
+    expect(computePermissionPromptWidth(0)).toBe(0);
+  });
+
+  test("outer box fits invariant holds for all terminal widths 4..100", () => {
+    for (let cols = 4; cols <= 100; cols++) {
+      const w = computePermissionPromptWidth(cols);
+      expect(LEFT + w + BORDER).toBeLessThanOrEqual(cols);
+    }
   });
 });
 

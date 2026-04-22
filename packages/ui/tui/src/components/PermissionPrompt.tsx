@@ -33,9 +33,6 @@ import { COLORS, MODAL_POSITION } from "../theme.js";
  */
 export const PERMISSION_PROMPT_WIDTH = 60;
 
-/** Minimum usable width — below this the approval context is illegible. */
-const PERMISSION_PROMPT_MIN_WIDTH = 30;
-
 /**
  * Border chrome: 1 col left + 1 col right. Subtracted from the available
  * columns so the outer box (left_offset + width + borders) never exceeds
@@ -45,14 +42,15 @@ const BORDER_CHROME = 2;
 
 /**
  * Compute the clamped modal width for a given terminal column count.
- * The outer box occupies: MODAL_POSITION.left + width + BORDER_CHROME columns.
+ * Invariant: MODAL_POSITION.left + width + BORDER_CHROME <= terminalCols for
+ * all terminalCols >= MODAL_POSITION.left + BORDER_CHROME.
+ * For pathologically narrow terminals (< left + border = 4 cols) the left
+ * offset itself already overflows — width is clamped to 0 in that case.
  * Exported for unit testing without needing a render context.
  */
 export function computePermissionPromptWidth(terminalCols: number): number {
-  return Math.min(
-    PERMISSION_PROMPT_WIDTH,
-    Math.max(terminalCols - MODAL_POSITION.left - BORDER_CHROME, PERMISSION_PROMPT_MIN_WIDTH),
-  );
+  const available = terminalCols - MODAL_POSITION.left - BORDER_CHROME;
+  return Math.min(PERMISSION_PROMPT_WIDTH, Math.max(available, 0));
 }
 
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
