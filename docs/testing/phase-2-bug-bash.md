@@ -764,8 +764,13 @@ tmux new-session -d -s "$KOI_SESSION" \
 > `@koi/memory-fs` is wired into the **TUI/runtime** via `memoryStack` (`packages/meta/cli/src/preset-stacks/memory.ts`).
 > `createMemoryStore` stores each memory as a Markdown file with frontmatter under the resolved memory directory,
 > maintains a `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
-> `memoryStack` is active in the **default TUI stack set** — it can be disabled via `--manifest` if the manifest
-> omits `memory` from `stacks`. Run with the default stack (no `--manifest` flag) to exercise these scenarios.
+>
+> **S25 uses a memory-only manifest** (`stacks: [memory]`) — **not** the default stack. The default stack also
+> enables `dreamStack`, which runs `createDreamMiddleware` with an `onSessionEnd` hook that can mutate `$MEMORY_DIR`
+> between assertions. The setup block writes `s25-memory-only.koi.yaml` and passes `--manifest` to `koi tui`
+> to pin the scenario to the memory stack only. This ensures Q156-Q161 file-count checks are not affected
+> by background dream consolidation. If you need to test the full default-stack wiring (memory + dream together),
+> run a separate ad-hoc TUI session without `--manifest` — that is not a formalized S25 step.
 >
 > **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
 > When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$MEMORY_DIR"` explicitly
@@ -1004,7 +1009,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
-| @koi/memory-fs | **S25** | Q156-Q161 (`memoryStack` in default stack set; disabled when manifest omits `memory`; concurrent-write safety via unit test) |
+| @koi/memory-fs | **S25** | Q156-Q161 (`memoryStack` via memory-only manifest `stacks: [memory]`; `dreamStack` excluded to prevent background consolidation from mutating the fixture; concurrent-write safety via unit test) |
 | @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
 | @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
 | @koi/dream | non-TUI | `bun run test --filter=@koi/dream` (offline batch job) |
