@@ -46,6 +46,8 @@ interface TableInfoRow {
 /** Initialize the audit schema and WAL mode on the given database. */
 export function initAuditSchema(db: Database): void {
   db.run(PRAGMA_WAL);
+  // Contention tolerance for concurrent-startup migrations below.
+  db.run("PRAGMA busy_timeout = 5000");
   db.run(CREATE_TABLE);
   db.run(CREATE_INDEX_SESSION);
   db.run(CREATE_INDEX_TS_KIND);
@@ -54,9 +56,22 @@ export function initAuditSchema(db: Database): void {
   // no-op when the table already exists, so a legacy DB never gets
   // the new column without an explicit ALTER. Old rows get NULL here;
   // `AuditLogRow.canonical_json` is already typed `string | null`.
+  //
+  // Race-safe: two processes opening the same legacy DB can both see
+  // the column missing and both issue ALTER. The loser's statement
+  // throws "duplicate column name" — we catch it, re-verify the
+  // column exists, and treat that as success. Any other error (or a
+  // genuine failure to migrate) is rethrown.
   const cols = db.prepare("PRAGMA table_info(audit_log)").all() as readonly TableInfoRow[];
   if (!cols.some((c) => c.name === "canonical_json")) {
-    db.run("ALTER TABLE audit_log ADD COLUMN canonical_json TEXT");
+    try {
+      db.run("ALTER TABLE audit_log ADD COLUMN canonical_json TEXT");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate column/i.test(message)) throw err;
+      const recheck = db.prepare("PRAGMA table_info(audit_log)").all() as readonly TableInfoRow[];
+      if (!recheck.some((c) => c.name === "canonical_json")) throw err;
+    }
   }
 }
 

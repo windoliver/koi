@@ -12,6 +12,10 @@ import { type AuditLogRow, createInsertStmt, initAuditSchema, readAllRows } from
 
 const DEFAULT_FLUSH_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BUFFER_SIZE = 100;
+// Per-query cap for session-filtered reads. Keeps live ledger refresh
+// bounded on long sessions; forensic/offline consumers read the DB
+// directly with their own LIMIT/OFFSET.
+const DEFAULT_QUERY_LIMIT = 1000;
 
 function isString(v: unknown): v is string {
   return typeof v === "string";
@@ -156,10 +160,19 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
     async query(sessionId: string): Promise<readonly AuditEntry[]> {
       flushBuffer();
+      // Cap at the most recent `DEFAULT_QUERY_LIMIT` rows. The ledger
+      // is refreshed after every settled turn, so an uncapped SELECT
+      // would read the full session history each time — O(n) in
+      // session size, compounding across turns. The TUI audit lane
+      // shows a scrolling window anyway; the full history is available
+      // via direct DB inspection for forensics. Fetch DESC then
+      // reverse so the returned slice stays chronological (decision-
+      // ledger sorts by (timestamp, turnIndex, id), but consumers
+      // still benefit from seeing the tail).
       const rows = db
-        .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
-        .all(sessionId);
-      return rows.map(mapRow);
+        .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id DESC LIMIT ?")
+        .all(sessionId, DEFAULT_QUERY_LIMIT) as AuditLogRow[];
+      return rows.reverse().map(mapRow);
     },
 
     getEntries(): readonly AuditEntry[] {
