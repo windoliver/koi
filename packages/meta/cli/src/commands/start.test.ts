@@ -671,8 +671,46 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
+    let emitResultCallCount = 0;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          capturedEmitArgs = args;
+          emitResultCallCount++;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    // emitResult must be called exactly once with no override args (schema passed)
+    expect(emitResultCallCount).toBe(1);
+    expect(capturedEmitArgs).toBeUndefined();
+  });
+
+  test("exit 6 (SCHEMA_VALIDATION) when assistant output overflows 1 MB cap", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      // Send a text chunk larger than 1 MB to trigger rawAssistantOverflow
+      opts.onRawAssistantText?.("x".repeat(1024 * 1024 + 1));
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
         emitResult: (args?: EmitArgs) => {
@@ -694,8 +732,9 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    expect(capturedEmitArgs?.exitCode ?? HEADLESS_EXIT.SUCCESS).toBe(HEADLESS_EXIT.SUCCESS);
-    expect(capturedEmitArgs?.error).toBeUndefined();
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
+    expect(capturedEmitArgs?.validationFailed).toBe(true);
+    expect(capturedEmitArgs?.error).toContain("exceeded 1 MB limit");
   });
 
   test("shutdown failure takes precedence: exit 5 even when schema would pass", async () => {
