@@ -802,12 +802,24 @@ fi
 GIT_ROOT="$FIXTURE"    # verified: $FIXTURE is its own git root
 MEMORY_DIR="$GIT_ROOT/.koi/memory"
 
+# Kill any prior session with the same name BEFORE clearing the store.
+# If a session already exists and new-session silently fails, $MEMORY_DIR would
+# be wiped while the old TUI stays alive, making Q156-Q161 assertions unreliable.
+tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
+
 # REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
 
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+
+# Verify the session was actually created; fail fast rather than running assertions
+# against a non-existent TUI.
+if ! tmux has-session -t "$KOI_SESSION" 2>/dev/null; then
+  echo "S25 HARNESS ERROR: tmux session '$KOI_SESSION' failed to start. Aborting." >&2
+  exit 1
+fi
 ```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
