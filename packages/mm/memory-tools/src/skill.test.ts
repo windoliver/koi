@@ -61,3 +61,33 @@ describe("MEMORY_TOOL_SKILL_CONTENT", () => {
     expect(MEMORY_TOOL_SKILL_CONTENT).not.toContain("Storage location");
   });
 });
+
+// Regression tests for #1964 — type misclassification (Q85, Q86)
+describe("type classification guidance (regression #1964)", () => {
+  test("skill feedback examples include coding-style / work-guidance patterns", () => {
+    const content = generateMemoryToolSkillContent();
+    // feedback must signal it covers behavioral/style guidance ("always do X"), not just corrections
+    expect(content).toMatch(/always|style|guideline|return type/i);
+  });
+
+  test("skill routes person contacts to user (private), not reference (sync-eligible)", () => {
+    const content = generateMemoryToolSkillContent();
+    // Person email/contact must be routed to `user` to avoid team-sync disclosure (#1964 privacy fix)
+    expect(content).toMatch(/user[^\n]*contact|contact[^\n]*user/i);
+    // reference row must NOT include person email as an example
+    const refRow = content.match(/\|\s*`reference`[^\n]*/)?.[0] ?? "";
+    expect(refRow).not.toMatch(/email|alice|person.*contact/i);
+  });
+
+  test("skill type table disambiguates feedback from project with explicit markers", () => {
+    const content = generateMemoryToolSkillContent();
+    // feedback row must cover style/guidance patterns ("always do X")
+    expect(content).toMatch(/feedback[^|]*\|[^|]*(?:guidance|style|always|behavior|prefer)/i);
+  });
+
+  test("skill type table scopes reference to systems/tools, not person contacts", () => {
+    const content = generateMemoryToolSkillContent();
+    // reference row must be scoped to external systems/tools/URLs
+    expect(content).toMatch(/reference[^|]*\|[^|]*(?:system|tool|url|dashboard|tracked)/i);
+  });
+});

@@ -665,27 +665,39 @@ export KOI_AUDIT_ENABLED=true
 | Q132 | (verify SQLite sink) `sqlite3 ~/.koi/audit/<hash>.sqlite "SELECT kind, count(*) FROM audit_log GROUP BY kind"` | — | All 3+ kinds present; counts match NDJSON |
 | Q133 | (verify signing) Inspect `signature` field in audit entries | — | Non-null Ed25519 signatures on every entry (when `signing: true`) |
 
-### S21 — Run Report
+### S21 — Task Planning & Run Report
 
-> `@koi/middleware-goal` has been removed from the codebase (`KoiRuntimeConfig.goals` deleted).
-> Q134-Q138 (goal tracking) are retired — skip them.
->
-> `@koi/middleware-report` is **already wired** via `KOI_REPORT_ENABLED=true` (`tui-command.ts` line 1714).
-> Accumulates per-session activity data and produces a `RunReport` at session end.
+> User states objectives in first message; model decomposes via `task_create` (#1848 pattern).
+> `@koi/middleware-task-anchor` re-injects task board state after idle turns (CC parity).
+> `@koi/middleware-planning` exposes the `koi_plan_write` tool for structured plans (opt-in via `KOI_PLANNING_ENABLED=true`).
+> `@koi/middleware-report` accumulates per-session activity and emits a `RunReport` on quit (opt-in via `KOI_REPORT_ENABLED=true`).
+> `@koi/middleware-goal` has been removed from the codebase — Q134-Q138 in older docs referred to goal tracking; those are retired.
 
-**Setup**: launch TUI with report middleware enabled. Redirect output to a log file so the report
-survives after the TUI exits (the tmux session and its pane are destroyed when the process exits).
+**Setup** (Q134-Q138 — task anchor + planning):
+```bash
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+```
 
+**Setup** (Q139-Q140 — also enable run-report). Redirect stderr to a log file so the `RunReport`
+survives after the TUI exits (the tmux session and pane are destroyed when the process exits):
 ```bash
 KOI_REPORT_LOG="$FIXTURE/.koi/report.log"
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_REPORT_ENABLED=true KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui 2>'$KOI_REPORT_LOG'"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true KOI_REPORT_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui 2>'$KOI_REPORT_LOG'"
 ```
+
+**Precondition**: S21 requires the task board surface to be active — task-anchor only arms after a successful `task_create` call. Verify Q134 produced at least one `task_create` before running Q135-Q138; if not, retry Q134 with a more explicit instruction.
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q134 | Send 3+ turns (`Hello`, `What can you do?`, `List files in src/`), then quit TUI | — | `RunReport` present in `$KOI_REPORT_LOG`: run `grep -c 'RunReport' "$KOI_REPORT_LOG"` → output ≥ 1; report includes turn count, action count, duration, and token usage |
-| Q135 | `grep 'model_call\|tool_call' "$KOI_REPORT_LOG"` | — | Ring buffer entries for `model_call` + `tool_call` matching session history appear in log |
+| Q134 | `Help me write unit tests for the math module and ensure 100% coverage. Use task_create to decompose this into individual tasks.` | task_create | Model calls `task_create` at least once; task board shows 2+ tasks. **Stop and retry if task_create was not called.** |
+| Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write, task_update | Works toward task; model calls `task_update` when done; task status transitions to completed |
+| Q136 | `Tell me about the weather.` (repeat 4× — deliberate idle turns) | none | After ~3 idle turns, task-anchor fires: `<system-reminder>` with task list injected; model re-orients |
+| Q137 | `Use koi_plan_write to create a structured plan for the remaining coverage work.` | koi_plan_write | Model calls `koi_plan_write` with pending/in_progress items; plan injected as system message next turn |
+| Q138 | Check `/trajectory` after Q134-Q137 | — | `middleware:task-anchor` steps visible on idle turns; `middleware:planning` spans on Q137; `task_create`/`task_update` and `koi_plan_write` tool steps |
+| Q139 | (KOI_REPORT_ENABLED=true) Quit TUI after Q134-Q138 | — | `RunReport` present in `$KOI_REPORT_LOG`: run `grep -c 'RunReport' "$KOI_REPORT_LOG"` → output ≥ 1; report includes turn count, action count, duration, token usage |
+| Q140 | (KOI_REPORT_ENABLED=true) Verify `RunReport.actions` | — | `grep 'model_call\|tool_call' "$KOI_REPORT_LOG"` → ring buffer entries matching session history appear in log |
 
 ### S22 — Model Router & Failover
 
@@ -931,7 +943,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S18** | Browser Automation | Q110-Q117 | 1 | Wire `@koi/tool-browser` into TUI first |
 | **S19** | LSP Integration | Q118-Q125 | 1 | Wire `@koi/lsp` into TUI; `typescript-language-server` on PATH |
 | **S20** | Audit Stack | Q126-Q133 | 1 | Wire audit MW + sinks; `KOI_AUDIT_ENABLED=true` |
-| **S21** | Run Report | Q134-Q135 | 1 | `KOI_REPORT_ENABLED=true` (already wired); goal MW removed |
+| **S21** | Task Planning & Report | Q134-Q140 | 1 | `KOI_PLANNING_ENABLED=true`; add `KOI_REPORT_ENABLED=true` + stderr log for Q139-Q140 |
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
@@ -942,7 +954,7 @@ event-trace → hooks → hook-observer → rules-loader → permissions → exf
 
 **S13 and S15** use `koi start` (non-TUI) and activate stacks via `--manifest`. See those scenario headings for their specific stack configuration.
 
-Optional MW (model-router, goal, otel, audit, report) require explicit config — tested in S20-S23.
+Optional MW (model-router, planning, otel, audit, report) require explicit config — tested in S20-S23. (`@koi/middleware-goal` has been removed from the codebase.)
 
 ---
 
@@ -964,7 +976,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-semantic-retry | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q58 | |
 | @koi/checkpoint | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q43 | `*` | |
 | @koi/middleware-audit | — | — | — | — | — | — | — | — | — | — | — | — | **S20**: Q126-Q133 (wire first) |
-| @koi/middleware-report | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q134-Q135 (`KOI_REPORT_ENABLED=true`, already wired) |
+| @koi/middleware-report | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q139-Q140 (`KOI_REPORT_ENABLED=true`; stderr redirected to log file) |
 | @koi/middleware-goal | — | — | — | — | — | — | — | — | — | — | — | — | removed — Goal MW deleted from codebase; not testable |
 | @koi/middleware-otel | — | — | — | — | — | — | — | — | — | — | — | — | **S23**: Q147-Q152 (`KOI_OTEL_ENABLED`) |
 
@@ -1033,7 +1045,9 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/tool-browser | **S18** | Q110-Q117 (wire `createBrowserProvider` into TUI first) |
 | @koi/lsp | **S19** | Q118-Q125 (wire `createLspComponentProvider` into TUI first) |
 | @koi/middleware-goal | **removed** | Goal MW deleted from codebase; not testable |
-| @koi/middleware-report | **S21** | Q134-Q135 (`KOI_REPORT_ENABLED=true`, already wired) |
+| @koi/middleware-task-anchor | **S21** | Q134-Q138 (active when task-board surface is enabled; requires task_create call first) |
+| @koi/middleware-planning | **S21** | Q137 (`KOI_PLANNING_ENABLED=true`; `koi_plan_write` tool) |
+| @koi/middleware-report | **S21** | Q139-Q140 (`KOI_REPORT_ENABLED=true`; stderr redirected to log file) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
 | @koi/memory-fs | **S25** | Q156-Q160 (`memoryStack` in default stack set; dream consolidation gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; concurrent-write safety via unit test) |
@@ -1180,7 +1194,7 @@ bun run test --filter=@koi/runtime
 | spawn-agent, spawn-coordinator, spawn-fork | agent-runtime, spawn-tools | Spawn lifecycle: define → load → spawn → inherit permissions → complete |
 | spawn-inheritance, spawn-allowlist, spawn-manifest-ceiling | agent-runtime, spawn-tools | Tool narrowing, permission inheritance, manifest ceiling enforcement |
 | model-router | model-router | Failover chain; circuit-breaker trips; health probe recovery |
-| report-summary | middleware-report | Session summary emitted; report format valid; KOI_REPORT_ENABLED controls activation |
+| task-planning, task-anchor, write-plan | middleware-task-anchor, middleware-planning, middleware-report | task_create decomposition; idle-turn re-injection; write_plan structured plan; run-report on quit (stderr log) |
 | otel-spans | middleware-otel | OpenTelemetry spans emitted; semantic conventions correct |
 | memory-recall-pipeline | memory (core) | Salience scoring; exponential decay; token budget; format with trust boundary |
 | memory-fs | memory-fs | File persistence; Jaccard dedup; MEMORY.md index rebuild; concurrent writes |

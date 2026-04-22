@@ -297,7 +297,6 @@ consistent under concurrent saves across sessions sharing the same
 ## Related
 
 - `@koi/middleware-planning` (#1836) — required runtime peer; owns the canonical in-memory plan.
-- `@koi/middleware-goal` — separate concern (user-declared objective).
 - `@koi/task-tools` + `@koi/tasks` — richer task-board state.
 - Issue #1843 — Goal / Plan / Task ecosystem umbrella.
 - OpenCode `.opencode/plans/<ts>-<slug>.md` — UX reference.

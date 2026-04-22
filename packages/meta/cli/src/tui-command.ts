@@ -68,6 +68,7 @@ import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
+import { createBrowserProvider, createMockDriver } from "@koi/tool-browser";
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -82,6 +83,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
+import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
@@ -1603,6 +1605,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  if (process.env.KOI_BROWSER_MOCK === "1") {
+    // Require explicit confirmation to prevent accidental enablement via inherited env vars.
+    // Both variables must be present together; KOI_BROWSER_MOCK alone is not enough.
+    if (process.env.KOI_BROWSER_MOCK_CONFIRM !== "1") {
+      process.stderr.write(
+        "\nError: KOI_BROWSER_MOCK=1 requires KOI_BROWSER_MOCK_CONFIRM=1 to also be set.\n" +
+          "  This prevents browser mock mode from being enabled by an inherited environment.\n" +
+          "  To activate: set both KOI_BROWSER_MOCK=1 KOI_BROWSER_MOCK_CONFIRM=1\n\n",
+      );
+      process.exit(2);
+    }
+    process.stderr.write(
+      "\n⚠️  KOI_BROWSER_MOCK=1 — browser tools use a SIMULATED (mock) driver.\n" +
+        "   No real browser is launched. All browser_* results are canned test responses.\n" +
+        "   Do NOT use this mode to verify real browser automation outcomes.\n\n",
+    );
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1677,7 +1697,57 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // @koi/artifacts tools — wired when the advisory lock was acquired at
     // boot. When construction failed (concurrent TUI, FS issue) the array
     // is empty and the artifact_* tools are simply absent from the agent.
-    ...(artifactExtraProviders.length > 0 ? { extraProviders: artifactExtraProviders } : {}),
+    //
+    // The mock browser provider (KOI_BROWSER_MOCK) is single-agent by
+    // design: createBrowserProvider throws if a second distinct agent
+    // tries to attach. This is safe here because extraProviders are only
+    // assembled onto the root TUI agent — create-agent-spawn-fn.ts does
+    // NOT propagate extraProviders into childProviders for spawned agents.
+    // Limitation: browser_* tools are therefore NOT available in spawned
+    // sub-agents. Workflows that delegate browser work to a child agent
+    // will lose those tools after the spawn. This is a known scope
+    // restriction of the mock dev/test path, not a bug in production.
+    ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
+      ? {
+          extraProviders: [
+            ...artifactExtraProviders,
+            ...(process.env.KOI_BROWSER_MOCK === "1"
+              ? [
+                  createBrowserProvider({
+                    backend: createMockDriver(),
+                    // Mock driver never opens a real connection, so SSRF
+                    // protection only needs to block IP literals and known
+                    // metadata hostnames — no DNS resolution required.
+                    // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
+                    // so mDNS/RFC6762 names are still rejected by design.
+                    isUrlAllowed: (url) => {
+                      try {
+                        const { protocol, hostname } = new URL(url);
+                        if (protocol !== "http:" && protocol !== "https:") return false;
+                        // Strip IPv6 brackets then lower-case + strip trailing DNS root
+                        // dot so `localhost.` / `metadata.google.internal.` can't
+                        // bypass suffix/host checks (same canonicalization as isSafeUrl).
+                        const h = hostname
+                          .replace(/^\[|\]$/g, "")
+                          .toLowerCase()
+                          .replace(/\.$/, "");
+                        if (isBlockedIp(h)) return false;
+                        if (BLOCKED_HOSTS.includes(h)) return false;
+                        // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
+                        // "local" matches ".local" — endsWith alone misses these.
+                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
+                          return false;
+                        return true;
+                      } catch {
+                        return false;
+                      }
+                    },
+                  }),
+                ]
+              : []),
+          ],
+        }
+      : {}),
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -1723,6 +1793,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
+      // Delegate to the current drain's spawn tracker for SIGINT grace.
+      // Null between drains so cross-drain survivors from earlier turns cannot
+      // influence the grace policy of a later, unrelated turn (#1999 r14).
+      currentDrainSpawnHandler?.(event);
       // Defense-in-depth: store.dispatch can throw if the reducer or
       // SolidJS reactivity hits an edge case. A throwing callback must
       // not crash the spawn flow — the engine wraps this in safeSpawnEvent
@@ -1918,6 +1992,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+  // Session-level live-spawn tracker: agentIds whose spawn_requested has fired
+  // but whose terminal agent_status_changed has not yet arrived. Updated directly
+  // by onSpawnEvent (no per-drain delegate) so cross-drain children — a child
+  // spawned by drain A that outlives the drain — remain visible to the
+  // onWindowElapse grace probe. The engine's pre-start abort guard in
+  // createSpawnExecutor prevents stale spawn_requested events from cancelled
+  // turns from entering this set, so no per-drain scoping is needed (#1999 r12).
+  // Per-drain live-spawn tracking for the SIGINT grace probe. A fresh Set is
+  // created at each drain start and both references point to it. The delegate is
+  // cleared to null at drain end so events that arrive BETWEEN drains are no-ops
+  // — cross-drain survivors from earlier turns must NOT influence grace policy of
+  // a later, unrelated turn (#1999 r14). The engine's pre-start abort guard
+  // (createSpawnExecutor) prevents stale spawn_requested from polluting the set.
+  let currentDrainSpawnIds: Set<string> = new Set<string>();
+  let currentDrainSpawnHandler:
+    | ((event: { readonly kind: string; readonly agentId: string }) => void)
+    | null = null;
+  // let: one-shot flag — true after the first double-tap window elapses with an
+  // active spawn. Provides exactly one grace reset-to-idle to protect against the
+  // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
+  // revert to stay-armed and the force-exit path remains reachable. Reset each drain.
+  let spawnGraceUsed = false;
   // let: preflight latch — set synchronously at onSubmit entry before the
   // first await (runtimeReady / resetBarrier), cleared in finally. Closes
   // the submit-then-switch race where `activeController` is still null
@@ -2123,6 +2219,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
+    // #1999: one-shot grace period for spawns that outlive the double-tap window.
+    // When the CURRENT drain's child is still running 2s after Ctrl+C, a second
+    // tap is likely not intentional — reset to idle so it becomes a fresh cancel
+    // instead of a force-exit. Only children from THIS drain's set are consulted
+    // (currentDrainSpawnIds), so survivors from unrelated earlier turns cannot
+    // grant grace for the current interrupted turn. Grace is one-shot per drain
+    // (spawnGraceUsed): once used, subsequent windows revert to stay-armed so
+    // the force-exit path remains reachable for truly stuck spawns.
+    onWindowElapse: (): "stay-armed" | "reset-to-idle" => {
+      if (currentDrainSpawnIds.size > 0 && !spawnGraceUsed) {
+        spawnGraceUsed = true;
+        return "reset-to-idle";
+      }
+      return "stay-armed";
+    },
   });
   // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
   // prop) and the `agent:interrupt` command both route through here.
@@ -2378,6 +2489,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
     activeController = null;
+
+    // Drop the per-drain spawn delegate and reset the grace flag so the
+    // new session starts with a clean SIGINT state (#1999).
+    currentDrainSpawnHandler = null;
+    currentDrainSpawnIds = new Set<string>();
+    spawnGraceUsed = false;
 
     // Cancel any pending permission prompts and dismiss the modal so a
     // session reset (`agent:clear`, `session:new`, resume) doesn't leave
@@ -3291,6 +3408,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
+        // Install per-drain spawn tracking for the SIGINT grace probe.
+        // Fresh set each drain so only THIS turn's spawns are counted.
+        // Grace is one-shot: reset here since each drain is a new turn.
+        const drainSpawnIds = new Set<string>();
+        currentDrainSpawnIds = drainSpawnIds;
+        currentDrainSpawnHandler = (event): void => {
+          if (event.kind === "spawn_requested") {
+            drainSpawnIds.add(event.agentId);
+          } else {
+            drainSpawnIds.delete(event.agentId);
+          }
+        };
+        spawnGraceUsed = false;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;
@@ -3386,13 +3516,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           activeController = null;
           activeRunPromise = null;
         }
-        // The active run has settled. Reset the double-tap window so a
-        // later Ctrl+C is treated as a fresh first tap rather than a
-        // late-arriving second tap of a cancellation that already
-        // completed. Only safe when this run is still the active one —
-        // a stale finally from a reset-and-replaced run must not
-        // disarm SIGINT state that now belongs to a newer turn.
+        // The active run has settled. Clear the interrupt-time spawn snapshot
+        // so the next turn starts fresh (no stale snapshot from a completed
+        // interrupt sequence). Then reset the double-tap window so a later
+        // Ctrl+C is treated as a fresh first tap rather than a late-arriving
+        // second tap of a cancellation that already completed.
+        // Both guarded: stale finally from a reset-and-replaced run must not
+        // disarm SIGINT state belonging to a newer turn.
         if (isStillActive) {
+          // Drop the per-drain spawn delegate so events arriving between drains
+          // (after this finally and before the next drain's start) are no-ops.
+          currentDrainSpawnHandler = null;
+          currentDrainSpawnIds = new Set<string>(); // empty sentinel between drains
           sigintHandler.complete();
         }
       }

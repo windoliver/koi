@@ -244,6 +244,33 @@ export function createSpawnExecutor(
     const agentName = String(args.agentName ?? "");
     const description = String(args.description ?? "");
 
+    // Guard: if the caller's abort signal is already fired, the originating
+    // turn was cancelled before this tool executor ran. Skip the spawn entirely
+    // rather than emitting spawn_requested into a future turn's event stream.
+    // This closes the window where a queued-but-late executor runs after the
+    // drain reset and pollutes the new turn's SIGINT spawn-tracking state.
+    // Re-throw as an AbortError so the engine's existing interrupt-detection
+    // path recognises this as a clean user-cancel (stopReason: "interrupted")
+    // rather than an unexpected tool failure.
+    if (signal.aborted) {
+      const reason = signal.reason;
+      // Re-throw the original reason when it already carries meaningful abort
+      // semantics: AbortError (user cancel) or TimeoutError (deadline exceeded).
+      // Preserving TimeoutError is critical — mapping it to AbortError would
+      // make a deadline failure look like a user interrupt to the TUI.
+      if (
+        reason instanceof Error &&
+        (reason.name === "AbortError" ||
+          reason.name === "TimeoutError" ||
+          (reason as { code?: unknown }).code === "ABORT_ERR")
+      ) {
+        throw reason;
+      }
+      // Unknown reason: surface as AbortError so the engine's interrupted path
+      // handles it cleanly rather than treating it as an unexpected tool failure.
+      throw new DOMException("spawn aborted before start", "AbortError");
+    }
+
     // Emit spawn_requested event BEFORE the child runs — the host can use this
     // to render an inline spawn_call block and populate /agents view state.
     // Use a synthetic agentId since the real one is allocated inside spawnFn.

@@ -6,7 +6,7 @@ Building blocks for the "defaults → preset → user overrides" pattern used ac
 
 ## Why It Exists
 
-Seven L3 meta-packages (retry-stack, quality-gate, governance, ipc-stack, goal-stack, context-arena, and others) all implement the same 3-layer config resolution pattern:
+Six L3 meta-packages (retry-stack, quality-gate, governance, ipc-stack, context-arena, and others) all implement the same 3-layer config resolution pattern:
 
 1. **Defaults** — hardcoded base config
 2. **Preset** — named preset that overrides defaults (e.g., "light", "standard", "aggressive")
@@ -152,5 +152,4 @@ packages/lib/preset-resolver/
 | `@koi/quality-gate` | L3 | `lookupPreset()` for preset resolution |
 | `@koi/governance` | L3 | `lookupPreset()` + custom validation |
 | `@koi/ipc-stack` | L3 | `lookupPreset()` + custom validation |
-| `@koi/goal-stack` | L3 | `lookupPreset()` + custom validation |
 | `@koi/context-arena` | L3 | `lookupPreset()` via `computePresetBudget()` |

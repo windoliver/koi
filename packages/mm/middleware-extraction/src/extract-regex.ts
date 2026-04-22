@@ -18,8 +18,8 @@ import type { ExtractionCandidate, LearningExtractor } from "./types.js";
 const CATEGORY_TO_MEMORY_TYPE: Readonly<Record<CollectiveMemoryCategory, MemoryType>> = {
   gotcha: "feedback",
   correction: "feedback",
-  heuristic: "reference",
-  pattern: "reference",
+  heuristic: "feedback",
+  pattern: "feedback",
   preference: "user",
   context: "project",
 };
