@@ -825,21 +825,21 @@ MEMORY_DIR="$GIT_ROOT/.koi/memory"
 
 # Kill any prior session with the same name BEFORE clearing the store.
 # If a session already exists and new-session silently fails, $MEMORY_DIR would
-# be wiped while the old TUI stays alive, making Q156-Q161 assertions unreliable.
+# be wiped while the old TUI stays alive, making Q156-Q160 assertions unreliable.
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 
 # REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
 
-# Clear any plugins installed during prior scenarios (e.g. S9 installs a plugin under
-# $KOI_HOME/.koi/plugins). The §1.5 reset does not remove plugins, so they can bleed into S25
-# and cause memory_store tool calls from plugin hooks to write unexpected .md files,
-# breaking Q156-Q161 file-count assertions.
-rm -rf "$KOI_HOME/.koi/plugins"
+# Use a throw-away HOME for S25 so prior scenario plugins (e.g. S9) don't bleed in,
+# AND so that $KOI_HOME plugin state is not mutated (preventing harness ordering issues
+# when S9 is revisited after S25). Runtime discovers plugins at join(homedir(), '.koi', 'plugins');
+# an empty tmpdir has no plugins.
+S25_KOI_HOME=$(mktemp -d)
 
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$S25_KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 
 # Verify the session was actually created and the TUI process did not exit immediately.
 # Approach: has-session (tmux frame exists) + pane_dead check (process still alive).
@@ -858,26 +858,24 @@ if [ "$_S25_PANE_DEAD" = "1" ]; then
 fi
 ```
 
-> **S25 plugin isolation**: `KOI_DISABLE_HOOKS=1` disables user hooks. The setup block also runs `rm -rf "$KOI_HOME/.koi/plugins"` to clear any plugins installed during earlier scenarios (e.g. S9). Plugin discovery is rooted at `join(homedir(), '.koi', 'plugins')`, and `homedir()` returns `$KOI_HOME` (the fake home), so both operator-installed and bug-bash-installed plugins are excluded. File-count assertions in Q156-Q161 are therefore deterministic.
+> **S25 plugin isolation**: `KOI_DISABLE_HOOKS=1` disables user hooks. The setup block creates `$S25_KOI_HOME=$(mktemp -d)` — a fresh empty directory used as `HOME` for this scenario only. Plugin discovery is rooted at `join(homedir(), '.koi', 'plugins')`, and `homedir()` returns `$S25_KOI_HOME` (empty), so no operator or bug-bash plugins are visible. `$KOI_HOME` is not modified, so S9 plugin state remains intact if those scenarios are revisited.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | At least one `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index updated. (Do **not** assert on `type:` or exact frontmatter — the model chooses these fields based on prompt phrasing and may legitimately produce different values.) |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
-| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
-| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem dedup check**: run the Q160 verification command below; count must be **2** (not 3). `memory_store` uses a two-stage dedup: first a same-(name,type) collision check, then a broad Jaccard content-similarity scan across ALL existing records (threshold 0.7). The near-identical Q160 content should trigger stage 2 regardless of model-chosen name/type. A count of 3 means dedup failed; treat it as a regression. For deterministic coverage, run `bun run test --filter=@koi/memory-fs`. |
-| Q161 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q161 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$S25_KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"` (`$S25_KOI_HOME` was set in the S25 setup block above — must still be in scope). Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
+| Q160 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q160 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
 
-**Q160 / Q161 verification commands** (pipe character cannot be escaped inside GFM table cells — run these in a terminal):
+**Q160 verification command** (pipe character cannot be escaped inside GFM table cells — run in a terminal):
 
 ```bash
-# Q160: dedup check — must output 2 (not 3)
-find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' ! -name 'MEMORY.md' | wc -l
-
-# Q161: deletion check — must output 1
+# Q160: deletion check — must output 1
 find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' ! -name 'MEMORY.md' | wc -l
 ```
+
+> **Dedup coverage (Q156 near-duplicate)**: The two-stage `memory_store` dedup (same-key collision check + broad Jaccard content scan at 0.7 threshold) is not reliably testable via TUI because `input.content` is model-generated and may differ across runs even for identical prompts. Authoritative Jaccard dedup regression test: `bun run test --filter=@koi/memory-fs`.
 ### Packages Not Testable via TUI (justified)
 
 The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun run test --filter=@koi/runtime`) and package-level unit tests.
@@ -885,7 +883,7 @@ The following L2 packages cannot be exercised through TUI queries due to archite
 | Package | Reason | Test Approach |
 |---------|--------|---------------|
 | `@koi/memory-fs` (concurrent writes) | Concurrent multi-process write safety requires parallel writers; a single TUI session only exercises sequential turns. | `bun run test --filter=@koi/memory-fs` — unit suite exercises parallel writes via locking primitives |
-| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI using an **isolated copy** of the store (never the live S25 fixture — dream calls `writeMemory`/`deleteMemory` and can mutate records that Q156-Q161 depend on): `DREAM_DIR=$(mktemp -d) && cp -r "$MEMORY_DIR/." "$DREAM_DIR/" && rm -f "$DREAM_DIR/.dream.lock" "$DREAM_DIR/.dream-gate.json" && HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" dream --force --memory-dir "$DREAM_DIR"`. The `rm -f` step removes control files that `cp -r` would otherwise copy from the source store: a copied `.dream.lock` with a still-alive PID causes dream to exit early with "Dream already running" instead of running consolidation. Use the repo-local entrypoint (`bun run $REPO_ROOT/.../bin.ts`) — do **not** rely on a globally installed `koi` binary, which may not reflect the branch under test. `--force` bypasses the gate (requires 24h+sessions). Requires API key. **Pass**: exits 0; acquires/releases `.dream.lock`; output line is `Dream complete: N merged, M pruned, K unchanged` — all three values ≥ 0 and no error message. No-op runs (`merged=0, pruned=0, unchanged=N`) are valid when input memories are not merge/prune candidates. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: see description |
+| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI using an **isolated copy** of the store (never the live S25 fixture — dream calls `writeMemory`/`deleteMemory` and can mutate records that Q156-Q160 depend on): `DREAM_DIR=$(mktemp -d) && cp -r "$MEMORY_DIR/." "$DREAM_DIR/" && rm -f "$DREAM_DIR/.dream.lock" "$DREAM_DIR/.dream-gate.json" && HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" dream --force --memory-dir "$DREAM_DIR"`. The `rm -f` step removes control files that `cp -r` would otherwise copy from the source store: a copied `.dream.lock` with a still-alive PID causes dream to exit early with "Dream already running" instead of running consolidation. Use the repo-local entrypoint (`bun run $REPO_ROOT/.../bin.ts`) — do **not** rely on a globally installed `koi` binary, which may not reflect the branch under test. `--force` bypasses the gate (requires 24h+sessions). Requires API key. **Pass**: exits 0; acquires/releases `.dream.lock`; output line is `Dream complete: N merged, M pruned, K unchanged` — all three values ≥ 0 and no error message. No-op runs (`merged=0, pruned=0, unchanged=N`) are valid when input memories are not merge/prune candidates. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: see description |
 | `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun run test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
 
 ### Always-On Packages (implicitly tested by every TUI session)
@@ -940,7 +938,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | default stack; git-backed `$FIXTURE`; dream gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; plugin isolation via fake `$KOI_HOME` |
+| **S25** | Memory FS Persistence | Q156-Q160 | 2 (restart for Q159) | default stack; git-backed `$FIXTURE`; dream gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; plugin isolation via fake `$KOI_HOME` |
 
 **TUI scenarios (S1-S14, S16-S25) run with the full TUI middleware stack** (default stack set, no `--manifest`):
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
@@ -1041,7 +1039,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
-| @koi/memory-fs | **S25** | Q156-Q161 (`memoryStack` in default stack set; dream consolidation gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; concurrent-write safety via unit test) |
+| @koi/memory-fs | **S25** | Q156-Q160 (`memoryStack` in default stack set; dream consolidation gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; concurrent-write safety via unit test) |
 | @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
 | @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
 | @koi/dream | non-TUI | `bun run test --filter=@koi/dream` (offline batch job) |
@@ -1232,7 +1230,7 @@ bun run test --filter=@koi/model-openai-compat # adapter tested via provider sel
 ## 8. Exit Criteria
 
 1. All S1-S25 scenarios run at least once (S18-S20 skip if not wired)
-2. All Q1-Q161 TUI queries executed with pass/fail recorded (Q162 moved to unit test — run `bun run test --filter=@koi/memory-fs`)
+2. All Q1-Q160 TUI queries executed with pass/fail recorded (Jaccard dedup and extraction coverage moved to unit tests — run `bun run test --filter=@koi/memory-fs` and `bun run test --filter=@koi/middleware-extraction`)
 3. All S16 golden queries pass (`bun run test --filter=@koi/runtime` green)
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass
