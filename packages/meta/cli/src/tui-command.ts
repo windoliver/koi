@@ -1723,15 +1723,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
-      // Track live spawns at session scope so the onWindowElapse grace probe
-      // sees children that outlive their originating drain (#1999 r12).
-      // The engine's pre-start abort guard prevents stale spawn_requested
-      // events from polluting this set across drain boundaries.
-      if (event.kind === "spawn_requested") {
-        sessionLiveSpawnIds.add(event.agentId);
-      } else {
-        sessionLiveSpawnIds.delete(event.agentId);
-      }
+      // Delegate to the current drain's spawn tracker for SIGINT grace.
+      // Null between drains so cross-drain survivors from earlier turns cannot
+      // influence the grace policy of a later, unrelated turn (#1999 r14).
+      currentDrainSpawnHandler?.(event);
       // Defense-in-depth: store.dispatch can throw if the reducer or
       // SolidJS reactivity hits an edge case. A throwing callback must
       // not crash the spawn flow — the engine wraps this in safeSpawnEvent
@@ -1934,12 +1929,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // onWindowElapse grace probe. The engine's pre-start abort guard in
   // createSpawnExecutor prevents stale spawn_requested events from cancelled
   // turns from entering this set, so no per-drain scoping is needed (#1999 r12).
-  const sessionLiveSpawnIds = new Set<string>();
-  // let: snapshot of sessionLiveSpawnIds taken when abortActiveStream() fires
-  // (the first Ctrl+C graceful path). onWindowElapse checks ONLY these specific
-  // spawn IDs so children from unrelated earlier turns cannot influence grace
-  // policy for the current interrupted turn (#1999 r13).
-  let armedSpawnSnapshot: ReadonlySet<string> | null = null;
+  // Per-drain live-spawn tracking for the SIGINT grace probe. A fresh Set is
+  // created at each drain start and both references point to it. The delegate is
+  // cleared to null at drain end so events that arrive BETWEEN drains are no-ops
+  // — cross-drain survivors from earlier turns must NOT influence grace policy of
+  // a later, unrelated turn (#1999 r14). The engine's pre-start abort guard
+  // (createSpawnExecutor) prevents stale spawn_requested from polluting the set.
+  let currentDrainSpawnIds: Set<string> = new Set<string>();
+  let currentDrainSpawnHandler:
+    | ((event: { readonly kind: string; readonly agentId: string }) => void)
+    | null = null;
   // let: one-shot flag — true after the first double-tap window elapses with an
   // active spawn. Provides exactly one grace reset-to-idle to protect against the
   // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
@@ -2012,9 +2011,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // `stopReason: "interrupted"`. The cancelPending call still runs to
     // dismiss the modal and keep the bridge usable for the next turn.
     // (#1759 review round 5)
-    // Snapshot live spawns at interrupt time so onWindowElapse can distinguish
-    // children belonging to THIS interrupted turn from survivors of earlier turns.
-    armedSpawnSnapshot = new Set(sessionLiveSpawnIds);
     activeController?.abort();
     permissionBridge.cancelPending("Turn cancelled by user");
   };
@@ -2154,19 +2150,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
     // #1999: one-shot grace period for spawns that outlive the double-tap window.
-    // When a child that was alive at interrupt time is still running 2s after
-    // Ctrl+C, a second tap is likely not intentional — reset to idle so it
-    // starts a fresh cancel instead of forcing exit. Checked against the snapshot
-    // taken at abort time (armedSpawnSnapshot) so only children from THIS turn's
-    // interrupt sequence count; survivors from unrelated earlier turns are ignored.
-    // Grace is one-shot (spawnGraceUsed): once used, subsequent windows revert to
-    // stay-armed so the force-exit path remains reachable for truly stuck spawns.
+    // When the CURRENT drain's child is still running 2s after Ctrl+C, a second
+    // tap is likely not intentional — reset to idle so it becomes a fresh cancel
+    // instead of a force-exit. Only children from THIS drain's set are consulted
+    // (currentDrainSpawnIds), so survivors from unrelated earlier turns cannot
+    // grant grace for the current interrupted turn. Grace is one-shot per drain
+    // (spawnGraceUsed): once used, subsequent windows revert to stay-armed so
+    // the force-exit path remains reachable for truly stuck spawns.
     onWindowElapse: (): "stay-armed" | "reset-to-idle" => {
-      const hasArmedLiveSpawn =
-        armedSpawnSnapshot !== null &&
-        armedSpawnSnapshot.size > 0 &&
-        [...armedSpawnSnapshot].some((id) => sessionLiveSpawnIds.has(id));
-      if (hasArmedLiveSpawn && !spawnGraceUsed) {
+      if (currentDrainSpawnIds.size > 0 && !spawnGraceUsed) {
         spawnGraceUsed = true;
         return "reset-to-idle";
       }
@@ -2428,10 +2420,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     activeController?.abort();
     activeController = null;
 
-    // Clear session-scoped spawn tracking so stale children from the old
-    // session cannot influence SIGINT grace policy in the new session (#1999).
-    sessionLiveSpawnIds.clear();
-    armedSpawnSnapshot = null;
+    // Drop the per-drain spawn delegate and reset the grace flag so the
+    // new session starts with a clean SIGINT state (#1999).
+    currentDrainSpawnHandler = null;
+    currentDrainSpawnIds = new Set<string>();
     spawnGraceUsed = false;
 
     // Cancel any pending permission prompts and dismiss the modal so a
@@ -3346,13 +3338,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
-        // Reset the one-shot grace flag only when no spawns survived from
-        // prior drains. If a wedged child is still live, the grace was already
-        // consumed and must not be re-granted — otherwise the force-exit path
-        // is unreachable for truly stuck children (#1999 r12).
-        if (sessionLiveSpawnIds.size === 0) {
-          spawnGraceUsed = false;
-        }
+        // Install per-drain spawn tracking for the SIGINT grace probe.
+        // Fresh set each drain so only THIS turn's spawns are counted.
+        // Grace is one-shot: reset here since each drain is a new turn.
+        const drainSpawnIds = new Set<string>();
+        currentDrainSpawnIds = drainSpawnIds;
+        currentDrainSpawnHandler = (event): void => {
+          if (event.kind === "spawn_requested") {
+            drainSpawnIds.add(event.agentId);
+          } else {
+            drainSpawnIds.delete(event.agentId);
+          }
+        };
+        spawnGraceUsed = false;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;
@@ -3456,7 +3454,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // Both guarded: stale finally from a reset-and-replaced run must not
         // disarm SIGINT state belonging to a newer turn.
         if (isStillActive) {
-          armedSpawnSnapshot = null;
+          // Drop the per-drain spawn delegate so events arriving between drains
+          // (after this finally and before the next drain's start) are no-ops.
+          currentDrainSpawnHandler = null;
+          currentDrainSpawnIds = new Set<string>(); // empty sentinel between drains
           sigintHandler.complete();
         }
       }
