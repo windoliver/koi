@@ -36,10 +36,11 @@ const CATEGORY_TO_MEMORY_TYPE: Readonly<Record<CollectiveMemoryCategory, MemoryT
   context: "project",
 };
 
-// Human-validated categories (explicit corrections, warnings, preferences) are
-// fully trusted (1.0). Auto-inferred categories (heuristic, pattern, context)
-// get reduced confidence (0.7) so they score below human-validated feedback in
-// salience: feedback(1.2) × 0.7 = 0.84, between project(1.0) and reference(0.8).
+// Used by heuristic regex and LLM extraction paths only — NOT by extractMarkers().
+// Explicit [LEARNING:...] markers are deliberate author opt-ins and always get 1.0.
+// For auto-inferred or LLM-labeled categories, heuristic/pattern/context get 0.7
+// so they score below fully-trusted feedback in salience:
+// feedback(1.2) × 0.7 = 0.84, between project(1.0) and reference(0.8).
 export const CATEGORY_CONFIDENCE: Readonly<Record<CollectiveMemoryCategory, number>> = {
   gotcha: 1.0,
   correction: 1.0,
@@ -96,7 +97,7 @@ function extractMarkers(output: string): readonly ExtractionCandidate[] {
         content: truncate(content),
         memoryType: mapCategoryToMemoryType(category),
         category,
-        confidence: CATEGORY_CONFIDENCE[category],
+        confidence: 1.0,
       });
     }
     match = MARKER_REGEX.exec(output);

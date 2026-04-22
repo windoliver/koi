@@ -404,7 +404,7 @@ describe("createExtractionMiddleware", () => {
       expect(memory.stored[0]?.confidence).toBe(0.7);
     });
 
-    test("[LEARNING:heuristic] marker gets confidence=0.7 (not 1.0)", async () => {
+    test("[LEARNING:heuristic] marker gets confidence=1.0 (explicit opt-in, not auto-inferred)", async () => {
       const memory = createMockMemory();
       const mw = createExtractionMiddleware({ memory });
       await mw.onSessionStart?.(createSessionCtx());
@@ -415,10 +415,10 @@ describe("createExtractionMiddleware", () => {
       await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
       await new Promise((r) => setTimeout(r, 10));
 
-      expect(memory.stored[0]?.confidence).toBe(0.7);
+      expect(memory.stored[0]?.confidence).toBe(1.0);
     });
 
-    test("[LEARNING:pattern] marker gets confidence=0.7 (not 1.0)", async () => {
+    test("[LEARNING:pattern] marker gets confidence=1.0 (explicit opt-in, not auto-inferred)", async () => {
       const memory = createMockMemory();
       const mw = createExtractionMiddleware({ memory });
       await mw.onSessionStart?.(createSessionCtx());
@@ -429,7 +429,7 @@ describe("createExtractionMiddleware", () => {
       await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
       await new Promise((r) => setTimeout(r, 10));
 
-      expect(memory.stored[0]?.confidence).toBe(0.7);
+      expect(memory.stored[0]?.confidence).toBe(1.0);
     });
 
     test("[LEARNING:correction] marker gets confidence=1.0 (human-validated)", async () => {
@@ -1004,11 +1004,11 @@ describe("createExtractionMiddleware", () => {
     // Catches regressions where the adapter or persistCandidates re-introduces a
     // hardcoded default (e.g. type: "feedback" for all) after mapCategoryToMemoryType runs.
     //
-    // Salience scoring uses both type weight (feedback=1.2) and confidence multiplier:
-    // gotcha/correction markers get confidence=1.0 (score 1.2×1.0=1.2),
-    // heuristic/pattern markers get confidence=0.7 (score 1.2×0.7=0.84).
-    // The category field provides an additional downstream filter for consumers
-    // that want to distinguish fully-validated from auto-inferred feedback.
+    // Explicit [LEARNING:...] markers are deliberate opt-ins and always get confidence=1.0.
+    // Heuristic regex extraction (no marker) gets confidence=0.7 (auto-inferred).
+    // Both paths map heuristic/pattern to type=feedback (weight 1.2).
+    // The category field lets downstream consumers distinguish auto-inferred from
+    // marker-authored feedback without relying on confidence alone.
 
     const cases: ReadonlyArray<{
       readonly marker: string;

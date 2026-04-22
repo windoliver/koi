@@ -78,7 +78,10 @@ export function formatSingleMemory(scored: ScoredMemory, includeScore?: boolean)
   const safeName = escapeMemoryContent(sanitizeMetadataValue(scored.memory.record.name));
   const safeType = escapeMemoryContent(sanitizeMetadataValue(scored.memory.record.type));
   const safeContent = escapeMemoryContent(scored.memory.record.content);
-  const meta = `{"name":${JSON.stringify(safeName)},"type":${JSON.stringify(safeType)}}`;
+  const confidence = scored.memory.record.confidence;
+  const trustEntry =
+    confidence !== undefined && confidence < 1.0 ? `,"trust":${confidence.toFixed(1)}` : "";
+  const meta = `{"name":${JSON.stringify(safeName)},"type":${JSON.stringify(safeType)}${trustEntry}}`;
   return `${heading}\n<memory-data>\n${meta}\n---\n${safeContent}\n</memory-data>`;
 }
 
