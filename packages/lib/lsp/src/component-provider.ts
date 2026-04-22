@@ -98,8 +98,9 @@ function mergeAutoDetected(config: LspProviderConfig): LspProviderConfig {
   const detected = detectLspServers();
   if (detected.length === 0) return config;
 
-  const userNames = new Set(config.servers.map((s) => s.name));
-  const rootUri = config.servers[0]?.rootUri ?? `file://${process.cwd()}`;
+  const servers = config.servers ?? [];
+  const userNames = new Set(servers.map((s) => s.name));
+  const rootUri = servers[0]?.rootUri ?? `file://${process.cwd()}`;
 
   const autoServers: readonly LspServerConfig[] = detected
     .filter((d) => !userNames.has(d.name))
@@ -114,7 +115,7 @@ function mergeAutoDetected(config: LspProviderConfig): LspProviderConfig {
 
   return {
     ...config,
-    servers: [...config.servers, ...autoServers],
+    servers: [...servers, ...autoServers],
   };
 }
 

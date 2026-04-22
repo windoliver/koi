@@ -27,7 +27,7 @@ export interface LspServerConfig {
 }
 
 export interface LspProviderConfig {
-  readonly servers: readonly LspServerConfig[];
+  readonly servers?: readonly LspServerConfig[];
   readonly autoDetect?: boolean | undefined;
   readonly connectTimeoutMs?: number | undefined;
   readonly maxReconnectAttempts?: number | undefined;
@@ -126,7 +126,7 @@ export function resolveServerConfig(server: LspServerConfig): ResolvedLspServerC
 /** Validates and resolves provider config with defaults applied. */
 export function resolveProviderConfig(config: LspProviderConfig): ResolvedLspProviderConfig {
   return {
-    servers: config.servers.map(resolveServerConfig),
+    servers: (config.servers ?? []).map(resolveServerConfig),
     autoDetect: config.autoDetect ?? false,
     connectTimeoutMs: config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
     maxReconnectAttempts: config.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
