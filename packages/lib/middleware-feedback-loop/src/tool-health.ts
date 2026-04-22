@@ -234,8 +234,6 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
   // Per-tool state map: keyed by toolId
   const stateMap = new Map<string, ToolState>();
-  // Session quarantine set: contains BrickIds of quarantined tools
-  const sessionQuarantined = new Set<BrickId>();
 
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
@@ -428,14 +426,14 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     },
 
     recordFailure(toolId: string, latencyMs: number, _reason: string): void {
+      // _reason not stored per-entry; RingEntry tracks success/latency only.
+      // Failure reasons surface via onHealthTransitionError on quarantine/demotion.
       recordEntry_(toolId, false, latencyMs);
     },
 
     isQuarantined(toolId: string): boolean {
       const state = stateMap.get(toolId);
-      if (state === undefined) return false;
-      const bId = resolveBrickId(toolId);
-      return state.sessionQuarantined || (bId !== undefined && sessionQuarantined.has(bId));
+      return state?.sessionQuarantined ?? false;
     },
 
     getSnapshot(toolId: string): ToolHealthSnapshot | undefined {
@@ -474,12 +472,11 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
       if (action.action !== "quarantine") return false;
 
-      // Always quarantine in session first
+      // Always quarantine in session first — safety invariant holds even if store fails
       state.sessionQuarantined = true;
       state.healthState = "quarantined";
       const bId = resolveBrickId(toolId);
       if (bId !== undefined) {
-        sessionQuarantined.add(bId);
         // Best-effort persist — errors are reported via onHealthTransitionError
         await persistQuarantine(toolId, bId, metrics);
       } else {
@@ -550,7 +547,6 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         await Promise.allSettled(flushes);
       }
       stateMap.clear();
-      sessionQuarantined.clear();
     },
   };
 }
