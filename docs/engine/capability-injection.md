@@ -238,7 +238,6 @@ All middleware packages implement `describeCapabilities` (required since Issue #
 | `middleware-sandbox` | `sandbox` | "Tool sandboxing active for untrusted tools" | Static |
 | `context` (hydrator) | `context` | "Context hydration active with {n} sources" | Static |
 | `identity` | `identity` | "Identity: {n} persona(s) configured" | Static |
-| `middleware-goal-anchor` | `goals` | "{completed}/{total} objectives completed" | Dynamic |
 | `middleware-governance-backend` | `governance` | "Policy evaluation gate active..." | Static |
 
 ### Forge Integration

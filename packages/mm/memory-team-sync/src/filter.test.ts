@@ -64,6 +64,50 @@ describe("filterMemoryForSync", () => {
     });
   });
 
+  // Regression #1964: contact data privacy — primary boundary is user-type hardblock;
+  // secondary boundary is email backstop on reference memories.
+  describe("contact data privacy (regression #1964)", () => {
+    test("blocks personal contact correctly classified as user", () => {
+      const memory = createMemory("1", "user", "infra contact: alice@example.com");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(false);
+      expect(result.blocked?.reason).toBe("type_denied");
+    });
+
+    test("blocks reference memory containing email — misclassification backstop", () => {
+      const memory = createMemory("1", "reference", "infra contact: alice@example.com");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(false);
+      expect(result.blocked?.reason).toBe("secret_detected");
+      expect(result.blocked?.detail).toContain("personal contacts as user type");
+    });
+
+    test("allows reference memory with SSH git remote (git@github.com:org/repo)", () => {
+      // SSH git remotes have `:` after the domain — excluded by PERSONAL_EMAIL_PATTERN
+      const memory = createMemory("1", "reference", "repo: git@github.com:org/koi.git");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(true);
+    });
+
+    test("allows reference memory with clean system/tool pointer", () => {
+      const memory = createMemory("1", "reference", "bugs tracked in Linear INGEST project");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(true);
+    });
+
+    test("allows feedback memory with shared operational alias", () => {
+      // feedback memories may legitimately carry shared aliases (oncall DLs, team mailboxes).
+      // The email guard is scoped to `reference` only to avoid silently dropping valid guidance.
+      const memory = createMemory(
+        "1",
+        "feedback",
+        "escalate to oncall-eng@company.com for prod issues",
+      );
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(true);
+    });
+  });
+
   describe("secret scanning", () => {
     test("blocks memory with password in content", () => {
       const memory = createMemory(

@@ -10,12 +10,12 @@ describe("mapCategoryToMemoryType", () => {
     expect(mapCategoryToMemoryType("correction")).toBe("feedback");
   });
 
-  test("maps heuristic to reference", () => {
-    expect(mapCategoryToMemoryType("heuristic")).toBe("reference");
+  test("maps heuristic to feedback (regression #1964: guidance phrases must not become reference)", () => {
+    expect(mapCategoryToMemoryType("heuristic")).toBe("feedback");
   });
 
-  test("maps pattern to reference", () => {
-    expect(mapCategoryToMemoryType("pattern")).toBe("reference");
+  test("maps pattern to feedback (regression #1964: best-practice patterns must not become reference)", () => {
+    expect(mapCategoryToMemoryType("pattern")).toBe("feedback");
   });
 
   test("maps preference to user", () => {
@@ -96,6 +96,20 @@ describe("createDefaultExtractor", () => {
       const result = extractor.extract("rule of thumb: keep functions under 50 lines");
       expect(result).toHaveLength(1);
       expect(result[0]?.category).toBe("heuristic");
+    });
+
+    // Regression #1964: behavioral guidance must land as feedback, not reference
+    test("pattern and heuristic extractions resolve to feedback memoryType", () => {
+      const patternResult = extractor.extract("best practice: always validate input at boundaries");
+      expect(patternResult[0]?.memoryType).toBe("feedback");
+
+      const heuristicResult = extractor.extract("rule of thumb: keep functions under 50 lines");
+      expect(heuristicResult[0]?.memoryType).toBe("feedback");
+
+      const shouldAlwaysResult = extractor.extract(
+        "should always: use explicit return types on exports",
+      );
+      expect(shouldAlwaysResult[0]?.memoryType).toBe("feedback");
     });
 
     test("first pattern wins per line", () => {

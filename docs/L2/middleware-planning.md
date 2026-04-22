@@ -193,7 +193,6 @@ escalation into the system-role trust channel:
 
 ## Related
 
-- `@koi/middleware-goal` — user-declared objective tracking (separate concern)
 - `@koi/task-tools` + `@koi/tasks` — richer task-board state (vs. lightweight plan)
 - Issue #1843 — Goal / Plan / Task ecosystem umbrella
 - Issue #1837 — task-anchor middleware (injects task-board reminders on idle turns)

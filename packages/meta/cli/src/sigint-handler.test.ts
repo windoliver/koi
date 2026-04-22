@@ -22,10 +22,14 @@ interface FakeTimer extends Timer {
 function createFakeClock(): {
   readonly setTimer: (fn: () => void, ms: number) => Timer;
   readonly advance: (ms: number) => void;
+  /** Advance the wall clock returned by `now()` without firing any timers. */
+  readonly advanceWallOnly: (ms: number) => void;
   readonly now: () => number;
   readonly pending: () => readonly FakeTimer[];
 } {
   let current = 0;
+  // Separate wall time so advanceWallOnly can move now() without triggering timers.
+  let wallTime = 0;
   const timers: {
     readonly at: number;
     readonly fn: () => void;
@@ -58,12 +62,17 @@ function createFakeClock(): {
       }
     }
     current = target;
+    wallTime = current; // keep wall time in sync when timers fire normally
+  };
+
+  const advanceWallOnly = (ms: number): void => {
+    wallTime += ms; // move now() without firing any scheduled timers
   };
 
   const pending = (): readonly FakeTimer[] =>
     timers.filter((t) => !t.timer.fired && !t.timer.cancelled).map((t) => t.timer);
 
-  return { setTimer, advance, now: () => current, pending };
+  return { setTimer, advance, advanceWallOnly, now: () => wallTime, pending };
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +325,370 @@ describe("createSigintHandler", () => {
     resetHandler.handleSignal();
     clock.advance(500);
     resetHandler.handleSignal();
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
+  test("onWindowElapse as function: reset-to-idle when function returns reset-to-idle", () => {
+    // Regression: #1999 — spawn outlives double-tap window; second Ctrl+C
+    // must not force-exit when function policy returns reset-to-idle.
+    const resetHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => "reset-to-idle",
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    resetHandler.handleSignal();
+    clock.advance(2500); // past the window
+    resetHandler.handleSignal();
+    // Second tap treated as fresh first tap, not a force.
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
+  test("onWindowElapse as function: stay-armed when function returns stay-armed", () => {
+    const stayHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => "stay-armed",
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    stayHandler.handleSignal();
+    clock.advance(2500);
+    stayHandler.handleSignal(); // still armed → force
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
+  test("onWindowElapse as function: policy evaluated at elapse time, not creation time", () => {
+    // Simulate spawn finishing between first Ctrl+C and window elapse.
+    // While spawn is running → reset-to-idle; after spawn → stay-armed.
+    let spawnActive = true;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    // First scenario: spawn still active when window elapses → reset-to-idle.
+    dynamicHandler.handleSignal();
+    clock.advance(2500); // window elapses with spawn active
+    dynamicHandler.handleSignal(); // fresh first tap
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+
+    // Second scenario: spawn finishes before next window elapses → stay-armed.
+    spawnActive = false;
+    dynamicHandler.complete(); // settle the second tap's graceful
+    dynamicHandler.handleSignal(); // third tap, fresh
+    clock.advance(2500); // window elapses with no spawn → stay-armed
+    dynamicHandler.handleSignal(); // still armed → force
+    expect(onGraceful).toHaveBeenCalledTimes(3);
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
+  test("onWindowElapse as function: late-arriving reset-to-idle at tap time prevents force (#1999 late-spawn)", () => {
+    // Regression: if a spawn starts AFTER the 2s window already fired with
+    // stay-armed, the next Ctrl+C should NOT force-exit — the tap-time re-check
+    // sees the late spawn and gives a grace re-entry.
+    let spawnActive = false; // spawn not yet started
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn yet.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Window elapses with no spawn → stay-armed.
+    clock.advance(2500);
+    expect(onForce).not.toHaveBeenCalled();
+
+    // Spawn starts LATE — after the window has already fired.
+    spawnActive = true;
+
+    // Second Ctrl+C — tap-time re-check: spawn active, grace not consumed →
+    // reset to idle, re-enter as fresh first tap, NOT a force.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
+  test("onWindowElapse as function: tap-time re-check does not loop when policy returns stay-armed", () => {
+    // Guard: tap-time re-check must not recursively re-enter when policy stays stay-armed.
+    const stayHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => "stay-armed",
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    stayHandler.handleSignal();
+    clock.advance(2500); // window elapses → stay-armed
+    stayHandler.handleSignal(); // tap-time check: still stay-armed → force (no recursion)
+    expect(onForce).toHaveBeenCalledTimes(1);
+    expect(onGraceful).toHaveBeenCalledTimes(1); // no re-entry
+  });
+
+  test("late-spawn re-entry works with non-zero coalesceWindowMs (TUI default 150ms)", () => {
+    // Regression: recursive handleSignal() call hit the coalesce guard because
+    // lastSignalAt was already set. With coalesceWindowMs=150 (TUI default),
+    // the re-entry was silently dropped — no graceful action, no force.
+    // Fix: lastSignalAt is reset to NEGATIVE_INFINITY before re-entry.
+    let spawnActive = false;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 150, // TUI production value
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn yet.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Window elapses, no spawn → stay-armed.
+    clock.advance(2500);
+
+    // Spawn starts late.
+    spawnActive = true;
+
+    // Second Ctrl+C — tap-time re-check: spawn active, grace not consumed.
+    // After re-entry lastSignalAt must be reset so the coalesce guard passes.
+    dynamicHandler.handleSignal();
+    // Must reach onGraceful (fresh first tap), not onForce.
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
+  test("wall-clock-elapsed tap with delayed timer callback still gets re-entry (#1999 busy-loop)", () => {
+    // Regression: under a busy event loop the double-tap timer callback can be
+    // delayed. A second Ctrl+C arriving after 2000ms wall time but BEFORE the
+    // timer fires must still get the late-spawn grace re-entry — not force-exit.
+    let spawnActive = false;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn yet. doubleTapTimer scheduled for t+2000.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Advance wall clock past 2000ms WITHOUT firing the timer.
+    // Simulates a busy event loop that delays timer delivery.
+    clock.advanceWallOnly(2500); // now() = 2500, but timer hasn't fired
+
+    // Spawn starts late (after the nominal window).
+    spawnActive = true;
+
+    // Second Ctrl+C at t=2500ms wall — window elapsed by wall clock
+    // (2500 >= 2000), doubleTapTimer still non-null (delayed), spawn active →
+    // must get grace re-entry as fresh first tap, not force-exit.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
+  test("re-entry re-arms with new generation; force-exit still reachable after spawn ends (#1999 generation guard)", () => {
+    // After a late-spawn re-entry the handler cancels the old timer and re-arms
+    // with a fresh generation (new armedAt). The generation guard in
+    // armDoubleTapTimer ensures any stale callback cannot corrupt the new arm.
+    // This test verifies the observable invariant: after re-arm, a second tap
+    // past the new arm's window still forces exit (the new arm is intact).
+    let spawnActive = false;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn. Timer A (generation 0) scheduled.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Advance wall clock past 2000ms without firing any timers.
+    clock.advanceWallOnly(2500);
+    spawnActive = true;
+
+    // Second Ctrl+C triggers re-entry (wall-clock elapsed + reset-to-idle):
+    // Timer A is cancelled, handler re-arms with timer B (generation 2500).
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+
+    // Spawn ends — timer B's window-elapse policy switches to stay-armed.
+    spawnActive = false;
+
+    // Fire timer B (timer A was cancelled during re-entry). With stay-armed
+    // policy, the new arm stays in the armed state (doubleTapTimer cleared).
+    clock.advance(2000);
+
+    // Advance wall clock past timer B's window.
+    clock.advanceWallOnly(2500);
+
+    // Third Ctrl+C: new arm is intact (armed, window elapsed by wall clock,
+    // stay-armed policy) → force-exit. If re-arm was corrupted, this would
+    // arm a third time instead.
+    dynamicHandler.handleSignal();
+    expect(onForce).toHaveBeenCalledTimes(1);
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+  });
+
+  test("forward clock jump mid-window does not suppress intentional force-exit", () => {
+    // NTP / manual clock change: wall clock jumps forward while the doubleTapTimer
+    // is still pending. A second Ctrl+C that arrives before the timer fires should
+    // still be treated as within the window (force-exit), not as post-window
+    // (re-entry). With a monotonic clock this is immune to the jump; this test
+    // guards the behavior even when the injected clock is wall-clock-based.
+    let wallMs = 0;
+    const clockJumpHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      onWindowElapse: "stay-armed",
+      setTimer: clock.setTimer,
+      now: () => wallMs,
+    });
+
+    wallMs = 0;
+    clockJumpHandler.handleSignal(); // first tap, armed at wallMs=0
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Clock jumps forward 3000ms (past window) — timer hasn't fired yet.
+    wallMs = 3000;
+
+    // Second tap arrives: clock says "past window", but the doubleTapTimer
+    // has NOT fired (timer system not advanced). With stay-armed policy,
+    // even a post-window second tap should force-exit.
+    clockJumpHandler.handleSignal();
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
+  test("backward clock jump does not cause spurious force-exit before window", () => {
+    // NTP / manual clock change: wall clock jumps backward. The second Ctrl+C
+    // arrives after the real elapsed time exceeds the window, but the backward
+    // jump makes the clock think less time passed. With stay-armed policy this
+    // is fine — force-exit is still the outcome. With reset-to-idle, a backward
+    // jump could suppress re-entry; test that stay-armed prevents any loss of
+    // the force path.
+    let wallMs = 0;
+    const clockJumpHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      onWindowElapse: "stay-armed",
+      setTimer: clock.setTimer,
+      now: () => wallMs,
+    });
+
+    wallMs = 1000;
+    clockJumpHandler.handleSignal(); // armed at wallMs=1000
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Clock jumps backward: "now" is before armedAt.
+    wallMs = 500;
+
+    // Second tap: clock shows 500-1000 = -500ms elapsed (< 2000ms window).
+    // doubleTapTimer still pending → within window → force-exit.
+    clockJumpHandler.handleSignal();
     expect(onForce).toHaveBeenCalledTimes(1);
   });
 
