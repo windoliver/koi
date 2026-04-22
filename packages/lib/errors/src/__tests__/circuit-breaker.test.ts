@@ -310,6 +310,41 @@ describe("reset", () => {
   });
 });
 
+describe("slow-turn regression (issue #2017)", () => {
+  test("opens after 5 failures spaced 13s apart (65s total — within 300s window)", () => {
+    const config = makeConfig({ failureThreshold: 5, failureWindowMs: 300_000 });
+    let now = 0;
+    const cb = createCircuitBreaker(config, () => now);
+
+    for (let i = 0; i < 5; i++) {
+      now += 13_000;
+      cb.recordFailure(500);
+    }
+
+    expect(cb.getSnapshot().state).toBe("OPEN");
+    expect(cb.getSnapshot().failureCount).toBe(5);
+  });
+
+  test("does not open when early failures expire before threshold reached", () => {
+    const config = makeConfig({ failureThreshold: 5, failureWindowMs: 300_000 });
+    let now = 0;
+    const cb = createCircuitBreaker(config, () => now);
+
+    // 1 failure, then skip past window — it expires
+    cb.recordFailure(500);
+    now = 400_000;
+
+    // 4 more failures within window — only 4 in window, below threshold
+    for (let i = 0; i < 4; i++) {
+      now += 1_000;
+      cb.recordFailure(500);
+    }
+
+    expect(cb.getSnapshot().state).toBe("CLOSED");
+    expect(cb.getSnapshot().failureCount).toBe(4);
+  });
+});
+
 describe("injectable clock", () => {
   test("uses injected clock for timestamps", () => {
     let now = 5000;
