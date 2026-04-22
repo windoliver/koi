@@ -14,7 +14,8 @@
 
 | File | Action | Responsibility |
 |------|--------|----------------|
-| `packages/meta/cli/src/headless/validate-schema.ts` | **Create** | Minimal JSON Schema validator (type/required/properties/enum) |
+| `packages/meta/cli/src/headless/emit.ts` | **Modify** | Add `validationFailed?: boolean` to result event type |
+| `packages/meta/cli/src/headless/validate-schema.ts` | **Create** | Minimal Koi schema subset validator (type/required/properties/enum/items) |
 | `packages/meta/cli/src/headless/validate-schema.test.ts` | **Create** | Unit tests for validator |
 | `packages/meta/cli/src/args/start.ts` | **Modify** | Add `resultSchema` field + `--result-schema` flag + parse-time guard |
 | `packages/meta/cli/src/args/start.test.ts` | **Modify** | Tests for `--result-schema` parse rules |
@@ -1072,6 +1073,57 @@ describe("runHeadless — onRawAssistantText callback", () => {
 
 > **Note:** `runAndEmit` in the existing `run.test.ts` will need to accept and forward `onRawAssistantText` to `runHeadless`. Check the helper signature at the top of the test file and add the parameter if it is not already threaded through.
 
+- [ ] **Step 3a: Update `HeadlessEventBody` in `emit.ts`**
+
+The `emitResult` closure in `run.ts` calls `emit({ kind: "result", ... })`. The `emit` function is typed against `HeadlessEventBody` in `packages/meta/cli/src/headless/emit.ts`. Without updating that union, TypeScript will reject passing `validationFailed` through `emitResult` in Task 4 Step 2.
+
+In `packages/meta/cli/src/headless/emit.ts`, find the `result` member of `HeadlessEventBody` and add `readonly validationFailed?: boolean`:
+
+**Before:**
+```typescript
+  | {
+      readonly kind: "result";
+      readonly ok: boolean;
+      readonly exitCode: number;
+      readonly error?: string;
+    };
+```
+
+**After:**
+```typescript
+  | {
+      readonly kind: "result";
+      readonly ok: boolean;
+      readonly exitCode: number;
+      readonly error?: string;
+      readonly validationFailed?: boolean;
+    };
+```
+
+No other change is needed in `emit.ts` — the field will be serialised automatically when `emitResult` spreads the override object into the `emit()` call.
+
+Add a test in `run.test.ts` (alongside the other `emitResult` tests) asserting that the `validationFailed` field appears in the serialised NDJSON line when passed to `emitResult`:
+
+```typescript
+test("emitResult with validationFailed: true serialises the field in the result event", async () => {
+  const lines: string[] = [];
+  const { emitResult } = await runAndEmit({
+    sessionId: "sess-vf",
+    prompt: "test",
+    maxDurationMs: undefined,
+    writeStdout: (s) => { lines.push(s); },
+    writeStderr: () => {},
+    runtime: runtimeFromEvents([DONE]),
+  });
+  emitResult({ exitCode: 6, validationFailed: true, error: "schema validation failed: ." });
+  const resultLine = lines.find((l) => l.includes('"kind":"result"'));
+  expect(resultLine).toBeDefined();
+  const parsed = JSON.parse(resultLine ?? "{}") as Record<string, unknown>;
+  expect(parsed["validationFailed"]).toBe(true);
+  expect(parsed["exitCode"]).toBe(6);
+});
+```
+
 - [ ] **Step 4: Wire `onRawAssistantText` in `commands/start.ts`**
 
 In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before the `runHeadless()` call (~line 1100), insert:
@@ -1086,8 +1138,8 @@ In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before
     // this full transcript, not just the final JSON payload. For multi-turn or
     // tool-using runs, verbose models can hit the cap before emitting the final
     // answer. Use --result-schema only with prompts that produce JSON-only output
-    // with no prose. If the cap is hit, validation fails with exit 1 (not 5)
-    // because it is a prompt-design issue, not operator misconfiguration.
+    // with no prose. If the cap is hit, validation fails with exit 6 (SCHEMA_VALIDATION),
+    // not exit 5 (INTERNAL) — it is a prompt-design issue, not operator misconfiguration.
     const RAW_PARTS_CAP_BYTES = 1 * 1024 * 1024; // 1 MB
     const rawAssistantParts: string[] = [];
     let rawAssistantPartsBytes = 0;
@@ -1140,7 +1192,10 @@ Expected: `Tasks: 1 successful`
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-git add packages/meta/cli/src/commands/start.ts
+git add packages/meta/cli/src/headless/emit.ts \
+  packages/meta/cli/src/headless/run.ts \
+  packages/meta/cli/src/headless/run.test.ts \
+  packages/meta/cli/src/commands/start.ts
 git commit -m "feat(headless): boot-time schema load + assistant text accumulation (#1648)"
 ```
 
@@ -1232,7 +1287,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     }
   });
 
-  test("exit 1 when agent succeeds but output fails schema", async () => {
+  test("exit 6 (SCHEMA_VALIDATION) when agent succeeds but output fails schema", async () => {
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
@@ -1652,7 +1707,7 @@ Use `--result-schema` to check that the agent's text output is valid JSON satisf
 
 **Important:** `--result-schema` validates the **entire concatenated assistant text output** across all turns as a single JSON document. Your prompt must instruct the model to output **only** JSON with no surrounding prose. Any preamble ("Here is the result:"), explanation, or trailing text — even from a tool-narration turn — will cause validation to fail with exit 6 (SCHEMA_VALIDATION).
 
-**Multi-turn/tool-use caution:** The 1 MB accumulation cap applies to the full transcript, not just the final JSON payload. A verbose model doing multiple tool calls before emitting a small JSON result can hit the cap before reaching the final answer, causing a schema-failure exit 1 after all tool work has already completed. For best results, use `--result-schema` with single-turn prompts that produce structured JSON directly.
+**Multi-turn/tool-use caution:** The 1 MB accumulation cap applies to the full transcript, not just the final JSON payload. A verbose model doing multiple tool calls before emitting a small JSON result can hit the cap before reaching the final answer, causing a schema-failure exit 6 after all tool work has already completed. For best results, use `--result-schema` with single-turn prompts that produce structured JSON directly.
 
 ```
 # Good: prompt instructs JSON-only output
