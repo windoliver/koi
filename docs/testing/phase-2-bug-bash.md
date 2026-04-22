@@ -786,9 +786,11 @@ tmux new-session -d -s "$KOI_SESSION" \
 > is satisfied: ≥ 5 sessions elapsed AND ≥ 24 h since the last dream (`packages/mm/dream/src/gate.ts`).
 > S25 uses only 2 sessions on a fresh harness (initial + restart for Q159), so `dreamStack` is active
 > but consolidation never runs — `$MEMORY_DIR` file counts are safe.
-> Plugin isolation is guaranteed by the harness: every tmux launch sets `HOME='$KOI_HOME'`, and the
-> runtime resolves plugins via `join(homedir(), '.koi', 'plugins')`. Since `homedir()` returns `$KOI_HOME`,
-> no operator-installed plugins are visible to the launched process.
+> Plugin isolation for S25 specifically is provided by `S25_KOI_HOME=$(mktemp -d)` — a throw-away empty
+> directory used as `HOME` only for S25 tmux launches. **Do NOT use `$KOI_HOME` for S25**: S9 creates
+> `$KOI_HOME/.koi/plugins/hello-plugin/`, and the runtime loads plugins via
+> `join(homedir(), '.koi', 'plugins')`. Using `HOME='$KOI_HOME'` in S25 would load S9 plugins and
+> perturb file-count assertions. The `S25_KOI_HOME` tmpdir is empty, so no plugins are visible.
 >
 > **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
 > When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$MEMORY_DIR"` explicitly
@@ -864,7 +866,7 @@ fi
 |---|--------|---------------|---------------|
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | At least one `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index updated. (Do **not** assert on `type:` or exact frontmatter — the model chooses these fields based on prompt phrasing and may legitimately produce different values.) |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
-| Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
+| Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3; no hallucination. (In-session sanity check only — the model may answer from transcript context or in-process cache. Disk-backed recall is verified at Q159 after restart.) |
 | Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$S25_KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"` (`$S25_KOI_HOME` was set in the S25 setup block above — must still be in scope). Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
 | Q160 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q160 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
 
