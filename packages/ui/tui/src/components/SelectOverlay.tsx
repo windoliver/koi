@@ -12,7 +12,7 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { For, Show } from "solid-js";
+import { For, Show, createEffect } from "solid-js";
 import { COLORS } from "../theme.js";
 import {
   consumeSelectOverlayKey,
@@ -60,6 +60,13 @@ export interface SelectOverlayProps<T> {
 export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
   const list = createScrollableList(() => props.items, MAX_VISIBLE);
 
+  // Fire onNavigate whenever the highlighted item changes — covers both keyboard
+  // navigation and list refreshes that reorder/remove items and move selectedIdx.
+  createEffect(() => {
+    const item = props.items[list.selectedIdx()];
+    if (item !== undefined) props.onNavigate?.(item);
+  });
+
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
     consumeSelectOverlayKey(key, {
@@ -68,20 +75,8 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
         const item = props.items[list.selectedIdx()];
         if (item !== undefined) props.onSelect(item);
       },
-      onMoveUp: (): void => {
-        list.moveUp();
-        if (props.onNavigate !== undefined) {
-          const item = props.items[list.selectedIdx()];
-          if (item !== undefined) props.onNavigate(item);
-        }
-      },
-      onMoveDown: (): void => {
-        list.moveDown();
-        if (props.onNavigate !== undefined) {
-          const item = props.items[list.selectedIdx()];
-          if (item !== undefined) props.onNavigate(item);
-        }
-      },
+      onMoveUp: list.moveUp,
+      onMoveDown: list.moveDown,
       onPeek:
         props.onPeek !== undefined
           ? (): void => {
