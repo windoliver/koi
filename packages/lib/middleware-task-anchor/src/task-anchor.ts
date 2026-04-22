@@ -315,6 +315,7 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
       state.injectedThisTurn = true;
       state.forceInjectNextTurn = false;
       state.forceRequiresTasks = false;
+      ctx.reportDecision?.({ action: "inject", promptLength: text.length });
       return next(prepend(request, reminderMessage(text)));
     },
 
@@ -362,6 +363,7 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
       state.injectedThisTurn = true;
       state.forceInjectNextTurn = false;
       state.forceRequiresTasks = false;
+      ctx.reportDecision?.({ action: "inject", promptLength: text.length });
       yield* next(prepend(request, reminderMessage(text)));
     },
 

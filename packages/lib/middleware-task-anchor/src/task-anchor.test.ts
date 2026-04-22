@@ -954,3 +954,75 @@ describe("createTaskAnchorMiddleware — session lifecycle", () => {
     expect(extractInjected(capture)).toBeUndefined();
   });
 });
+
+describe("createTaskAnchorMiddleware — reportDecision observability", () => {
+  test("wrapModelCall calls reportDecision with action:inject and promptLength when injecting", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Write tests", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 2 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+    await runTurn(mw, session, 1);
+
+    const decisions: unknown[] = [];
+    const ctx = makeTurnCtx(session, 2);
+    (ctx as { reportDecision?: (d: unknown) => void }).reportDecision = (d) => decisions.push(d);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as { action: string; promptLength: number };
+    expect(d.action).toBe("inject");
+    expect(typeof d.promptLength).toBe("number");
+    expect(d.promptLength).toBeGreaterThan(0);
+  });
+
+  test("wrapModelStream calls reportDecision with action:inject and promptLength when injecting", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Write tests", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 2 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+    await runTurn(mw, session, 1);
+
+    const decisions: unknown[] = [];
+    const capture: Capture = {};
+    const ctx = makeTurnCtx(session, 2);
+    (ctx as { reportDecision?: (d: unknown) => void }).reportDecision = (d) => decisions.push(d);
+    await mw.onBeforeTurn?.(ctx);
+    const stream = mw.wrapModelStream?.(ctx, makeRequest(), captureStream(capture));
+    if (stream !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of stream) {
+        /* drain */
+      }
+    }
+
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0] as { action: string; promptLength: number };
+    expect(d.action).toBe("inject");
+    expect(typeof d.promptLength).toBe("number");
+    expect(d.promptLength).toBeGreaterThan(0);
+  });
+
+  test("wrapModelCall does NOT call reportDecision when not injecting (below threshold)", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Write tests", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 3 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const decisions: unknown[] = [];
+    const ctx = makeTurnCtx(session, 0);
+    (ctx as { reportDecision?: (d: unknown) => void }).reportDecision = (d) => decisions.push(d);
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler({}));
+
+    expect(decisions).toHaveLength(0);
+  });
+});
