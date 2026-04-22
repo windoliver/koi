@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { createSpecRegistry, initializeBashAst } from "@koi/bash-ast";
+import { createSpecRegistry, initializeBashAst, MAX_COMMAND_LENGTH } from "@koi/bash-ast";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
 import { evaluateSpecGuard } from "./bash-spec-guard.js";
 
@@ -196,5 +196,65 @@ describe("evaluateSpecGuard — non-simple commands are skipped", () => {
     });
     // Pipeline → too-complex for the AST walker → spec guard skips
     expect(result.kind).toBe("skipped");
+  });
+});
+
+describe("evaluateSpecGuard — parse-unavailable fails closed", () => {
+  test("over-length command → parse-unavailable → deny (fail-closed)", async () => {
+    // Commands exceeding MAX_COMMAND_LENGTH return parse-unavailable(over-length).
+    // The spec guard MUST deny — callers must fail closed per bash-ast contract.
+    const overLength = "echo " + "x".repeat(MAX_COMMAND_LENGTH);
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: overLength,
+      currentDecision: allowDecision,
+      resolveQuery: async (_q) => allowDecision,
+      baseQuery,
+      registry,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("deny");
+    expect(result.decision.reason).toContain("over-length");
+  });
+});
+
+describe("evaluateSpecGuard — exact-argv detection with broad wildcard", () => {
+  test("broad wildcard allow + exact allow → downgrade to ask (probe detects wildcard)", async () => {
+    // Scenario: user has `allow: bash:*` (wildcard) AND `allow: bash:ssh prod-host`
+    // (explicit exact). With the old base-query approach, the explicit exact rule
+    // was ignored because the base query returned allow from the wildcard.
+    // The probe approach correctly detects the wildcard and downgrades to ask.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "ssh prod-host",
+      currentDecision: allowDecision,
+      resolveQuery: async (_q) => allowDecision, // broad wildcard: everything allows
+      baseQuery,
+      registry,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    // Probe matches wildcard → no explicit exact rule → downgrade to ask
+    expect(result.decision.effect).toBe("ask");
+    expect(result.specKind).toBe("refused");
+  });
+
+  test("no wildcard + exact allow → honor explicit exact rule", async () => {
+    // Scenario: user has ONLY `allow: bash:ssh prod-host` (no wildcard).
+    // Probe does not match → exact rule is recognized as explicit.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "ssh prod-host",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) =>
+        q.resource === "bash:ssh prod-host" ? allowDecision : hardDeny("no rule"),
+      baseQuery,
+      registry,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("allow");
+    expect(result.specKind).toBe("refused");
   });
 });

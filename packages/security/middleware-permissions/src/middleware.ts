@@ -9,7 +9,7 @@
  * and denial tracking.
  */
 
-import { createSpecRegistry } from "@koi/bash-ast";
+import { createSpecRegistry, initializeBashAst } from "@koi/bash-ast";
 import { canonicalPrefix, classifyCommand, UNSAFE_PREFIX } from "@koi/bash-classifier";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
@@ -576,6 +576,13 @@ export function createPermissionsMiddleware(
   const specRegistry = createSpecRegistry();
   const specGuardEnabled =
     config.resolveBashCommand !== undefined && config.enableBashSpecGuard !== false;
+  // Warm the parser immediately so that by the time the first bash command
+  // arrives, the WASM grammar is already loaded. Without this, the guard
+  // returns parse-unavailable(not-initialized) — which now fails closed
+  // per the bash-ast contract — until some later caller triggers init.
+  if (specGuardEnabled) {
+    void initializeBashAst();
+  }
 
   // Wire up wrapToolCall via factory
   const { wrapToolCall } = createWrapToolCall({

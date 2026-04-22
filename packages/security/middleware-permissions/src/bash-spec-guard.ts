@@ -71,31 +71,36 @@ async function evaluateSemanticRules(
 
 /**
  * Determine whether the backend has an explicit exact-argv allow rule, as
- * opposed to a generic prefix allow.
+ * opposed to a generic prefix/wildcard allow.
  *
- * A prefix-based backend (e.g. `Run(bash)`) returns `allow` for any resource
- * including the exact-argv. An exact-argv backend returns `deny` (fall-through)
- * for the base invoke resource but `allow` for the specific exact-argv resource.
+ * Uses the same broad-wildcard probe technique as the dangerous-command
+ * ratchet in wrap-tool-call.ts: `${toolId}:__broad_wildcard_probe__` matches
+ * a wildcard rule like `bash:*` but does NOT match any real command prefix.
+ * If the probe returns `allow`, the backend has a broad wildcard — the exact
+ * query's allow came from that wildcard, not from an explicit exact-argv rule.
+ * If the probe returns non-allow, only specific rules are present — an `allow`
+ * on the exact resource is then explicit.
  *
- * We detect this by re-querying the base resource: if the backend still returns
- * `allow`, it's a prefix/wildcard backend and the exact-argv allow is not
- * specific enough to override the spec guard. If the backend returns non-allow
- * for the base resource but allow for the exact-argv resource, the user has an
- * explicit exact-argv rule.
+ * This avoids the base-query false-negative: when both a broad allow AND an
+ * explicit exact-argv allow exist, querying the base resource returns `allow`
+ * (from the broad rule) and would wrongly report no explicit rule.
  */
 async function hasExplicitExactArgvRule(
   exactResource: string,
+  toolId: string,
   resolveQuery: (q: PermissionQuery) => Promise<PermissionDecision>,
   baseQuery: PermissionQuery,
 ): Promise<boolean> {
-  const baseDecision = await resolveQuery(baseQuery);
-  if (baseDecision.effect === "allow") {
-    // Backend is prefix-based (allows everything including base resource)
-    // → no explicit exact-argv rule
+  // Probe: would a broad wildcard (bash:*) match this nonsense resource?
+  const probeDecision = await resolveQuery({
+    ...baseQuery,
+    resource: `${toolId}:__broad_wildcard_probe__`,
+  });
+  if (probeDecision.effect === "allow") {
+    // Broad wildcard exists → exact query's allow came from the wildcard
     return false;
   }
-  // Backend has specific rules (denies base resource by default)
-  // → check if exact-argv has an explicit allow
+  // No broad wildcard — check if the exact-argv resource has an explicit allow
   const exactDecision = await resolveQuery({ ...baseQuery, resource: exactResource });
   return exactDecision.effect === "allow";
 }
@@ -127,7 +132,21 @@ export async function evaluateSpecGuard(opts: {
   const { toolId, rawCommand, currentDecision, resolveQuery, baseQuery, registry } = opts;
 
   const analysis = await analyzeBashCommand(rawCommand);
+  if (analysis.kind === "parse-unavailable") {
+    // bash-ast contract: callers MUST fail closed on parse-unavailable.
+    // timeout/panic/over-length/not-initialized are all infrastructure failures
+    // that prevent semantic analysis — deny to prevent bypass via parser DoS.
+    return {
+      kind: "spec-evaluated",
+      decision: {
+        effect: "deny",
+        reason: `bash-ast unavailable (${analysis.cause}): fail-closed policy`,
+      },
+      specKind: "refused",
+    };
+  }
   if (analysis.kind !== "simple") {
+    // too-complex: fall through to existing regex-based classifier
     return { kind: "skipped", reason: analysis.kind };
   }
 
@@ -151,7 +170,12 @@ export async function evaluateSpecGuard(opts: {
   if (specResult.kind === "refused" || specResult.kind === "partial") {
     if (currentDecision.effect === "allow") {
       const exactResource = `${toolId}:${rawCommand.trim()}`;
-      const hasExplicit = await hasExplicitExactArgvRule(exactResource, resolveQuery, baseQuery);
+      const hasExplicit = await hasExplicitExactArgvRule(
+        exactResource,
+        toolId,
+        resolveQuery,
+        baseQuery,
+      );
 
       if (!hasExplicit) {
         const label =
