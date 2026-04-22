@@ -9387,8 +9387,8 @@ describe("Golden: @koi/middleware-extraction", () => {
     // Category mapping preserves fine-grained → coarse type
     expect(mapCategoryToMemoryType("gotcha")).toBe("feedback");
     expect(mapCategoryToMemoryType("correction")).toBe("feedback");
-    expect(mapCategoryToMemoryType("heuristic")).toBe("reference");
-    expect(mapCategoryToMemoryType("pattern")).toBe("reference");
+    expect(mapCategoryToMemoryType("heuristic")).toBe("feedback"); // regression #1964: was "reference"
+    expect(mapCategoryToMemoryType("pattern")).toBe("feedback"); // regression #1964: was "reference"
     expect(mapCategoryToMemoryType("preference")).toBe("user");
     expect(mapCategoryToMemoryType("context")).toBe("project");
 

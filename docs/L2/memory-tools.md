@@ -97,6 +97,21 @@ informational metadata for callers that need to distinguish.
 - Constructor-time validation of recallLimit/searchLimit (must be positive integers)
 - `validateMemoryDir()` for sandbox boundary (absolute path, no traversal, min depth)
 
+### Type classification guidance (regression #1964)
+
+The `memory_store` tool schema's `type` field description was rewritten from a generic
+label to per-type decision rules with examples, fixing LLM misclassification of
+`feedback` memories as `project` and personal contacts as `reference`:
+
+| Type | Canonical examples |
+|------|--------------------|
+| `user` | Person role/expertise/preferences AND all personal contacts (email, phone, Slack handle) |
+| `feedback` | "always use explicit return types", "don't mock the DB", validated coding rules |
+| `project` | Merge freeze, ongoing initiative, deadline |
+| `reference` | "bugs tracked in Linear INGEST", dashboard URL — NOT person contacts |
+
+A **Quick disambiguation** block in the skill prompt reinforces the boundary at runtime.
+
 ### Skill content
 
 `generateMemoryToolSkillContent()` produces LLM prompt instructions with configurable
