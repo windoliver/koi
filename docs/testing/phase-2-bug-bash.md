@@ -67,7 +67,7 @@ The TUI (`koi tui`) is configured via **environment variables and CLI flags**. I
 
 | Scenario | Required stacks | Notes |
 |----------|-----------------|-------|
-| S14 — memory persist/recall | `memory` | Can use `--manifest` with `stacks: [memory]` |
+| S14 — memory persist/recall | default stack (no `--manifest`) | **Do not** use a memory-only manifest: Q97-Q98 require extraction from spawn tool outputs, which are only available when the execution/spawn stacks are active. Run S14 without `--manifest` (default stack set). |
 | S25 — memory dir isolation | `memory` only | **Must** use `--manifest` with `stacks: [memory]`. The default stack also enables `dreamStack`, whose `createDreamMiddleware` runs `onSessionEnd` and can mutate `$MEMORY_DIR` between Q156-Q161 assertions, making file-count checks flaky. Isolate S25 from dream activity by pinning to the memory stack only. |
 | S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
 
@@ -912,8 +912,11 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
 | **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | `--manifest s25-memory-only.koi.yaml` (`stacks: [memory]`); `dreamStack` excluded for deterministic file-count assertions; git-backed `$FIXTURE`. ⚠ Memory+dream integration (default stack) is **not** covered by S25 — test separately with an ad-hoc TUI session without `--manifest`. |
 
-**All scenarios run with the full TUI middleware stack:**
-event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
+**Middleware stack by scenario:**
+
+- **S1-S24, S14** — full TUI middleware stack (default stack set, no `--manifest`):
+  event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
+- **S25** — memory-only manifest (`stacks: [memory]`): only memory + extraction middleware active; `dreamStack`, `executionStack`, `spawnStack`, `checkpointStack`, and `observabilityStack` are excluded. This is intentional — deterministic file-count assertions require excluding dream's `onSessionEnd` mutations. ⚠ Memory+dream default-stack integration is **not** covered by any formalized scenario; test ad-hoc without `--manifest`.
 
 Optional MW (model-router, goal, otel, audit, report) require explicit config — tested in S20-S23.
 
