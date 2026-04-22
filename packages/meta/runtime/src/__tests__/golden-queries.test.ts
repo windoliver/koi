@@ -1306,11 +1306,11 @@ describe("Golden: @koi/middleware-permissions — bash spec guard", () => {
 
     let nextCalled = false;
     await mw
-      .wrapToolCall(ctx, req, async () => {
+      .wrapToolCall?.(ctx, req, async () => {
         nextCalled = true;
         return { toolId: "bash", output: "" };
       })
-      .catch(() => {});
+      ?.catch(() => {});
 
     expect(nextCalled).toBe(false);
     expect(deniedActions).toContain("deny");
@@ -1364,11 +1364,11 @@ describe("Golden: @koi/middleware-permissions — bash spec guard", () => {
 
     let nextCalled = false;
     await mw
-      .wrapToolCall(ctx, req, async () => {
+      .wrapToolCall?.(ctx, req, async () => {
         nextCalled = true;
         return { toolId: "bash", output: "" };
       })
-      .catch(() => {});
+      ?.catch(() => {});
 
     expect(nextCalled).toBe(false);
     expect(deniedActions).toContain("deny");
