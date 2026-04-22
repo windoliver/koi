@@ -194,11 +194,12 @@ function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined 
     if (colonIndex === -1) return undefined;
 
     const key = trimmedLine.slice(0, colonIndex).trim();
-    // Skip unrecognized keys — tolerant reader pattern for forward compatibility.
-    // Future schema additions can be deployed without making older builds reject
-    // existing files. Known keys: name, description, type, confidence.
+    // Fail-closed on unknown keys — a typo like 'confdence: 0.2' must not
+    // silently parse as confidence=undefined (full trust). Unknown keys mean
+    // the file is malformed or written by a future schema version; drop it so
+    // the trust boundary holds. Known keys: name, description, type, confidence.
     if (key !== "name" && key !== "description" && key !== "type" && key !== "confidence") {
-      continue;
+      return undefined;
     }
     if (fields.has(key)) return undefined;
 

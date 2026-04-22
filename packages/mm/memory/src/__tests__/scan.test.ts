@@ -556,6 +556,33 @@ describe("scanMemoryDirectory", () => {
     expect(result.memories[0]?.record.confidence).toBeUndefined();
   });
 
+  test("unknown frontmatter key causes file to be dropped (fail-closed, trust protection)", async () => {
+    // A typo like 'confdence: 0.2' or an injected unknown field must NOT produce
+    // a valid full-trust (confidence=undefined) record. Fail-closed keeps the
+    // trust boundary intact — misspelled trust fields are not silently ignored.
+    const body = [
+      "---",
+      "name: misspelled-trust",
+      "description: test memory",
+      "type: feedback",
+      "confdence: 0.2",
+      "---",
+      "",
+      "some content",
+    ].join("\n");
+    const file: MockFile = {
+      path: "/memory/misspelled_trust.md",
+      content: body,
+      size: body.length,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    // File with unknown key must be dropped entirely, not recalled at full trust
+    expect(result.memories.length).toBe(0);
+  });
+
   test("blank confidence field is treated as absent (not 0)", async () => {
     // Hand-edited or partially mangled file with 'confidence:' but no value.
     // Number("") === 0, which would silently make the record zero-trust.

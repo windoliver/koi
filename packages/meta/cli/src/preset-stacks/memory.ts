@@ -212,9 +212,15 @@ export const memoryStack: PresetStack = {
                 // explicitly carries a confidence value. Treating missing confidence
                 // as 1.0 would silently promote low-trust records via any unaware
                 // caller. Required: newConf > existing to avoid no-op writes.
+                // Also migrate description: it encodes the category ("heuristic",
+                // "gotcha", etc.) and must reflect the validated category, otherwise
+                // the relevance selector surfaces stale category metadata.
                 const existingConf = existing.confidence ?? 1.0;
                 if (confidence > existingConf) {
-                  const promoted = await memoryBackend.update(existing.id, { confidence });
+                  const promoted = await memoryBackend.update(existing.id, {
+                    confidence,
+                    description,
+                  });
                   if (!promoted.ok) {
                     console.warn(
                       `[memory-stack] extraction confidence promotion failed: ${promoted.error.message}`,

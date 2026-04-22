@@ -316,11 +316,15 @@ describe("memory-adapter E2E", () => {
     // existing.confidence must be exposed so caller can check and promote
     expect(second.value.existing.confidence).toBe(0.7);
 
-    // update() promotes the confidence
-    const promoted = await backend.update(second.value.existing.id, { confidence: 1.0 });
+    // update() promotes confidence AND migrates description to reflect new category
+    const promoted = await backend.update(second.value.existing.id, {
+      confidence: 1.0,
+      description: "feedback: gotcha — keep functions small",
+    });
     expect(promoted.ok).toBe(true);
     if (!promoted.ok) return;
     expect(promoted.value.confidence).toBe(1.0);
+    expect(promoted.value.description).toBe("feedback: gotcha — keep functions small");
   });
 
   test("confidence promotion skipped when incoming confidence is omitted", async () => {
