@@ -19,6 +19,10 @@ import {
 import { createScopedFileSystem } from "@koi/fs-scoped";
 import { z } from "zod";
 
+function isDisposable(v: unknown): v is { dispose: () => void } {
+  return v != null && typeof (v as Record<string, unknown>)["dispose"] === "function";
+}
+
 // ---------------------------------------------------------------------------
 // Zod schema for manifest-level filesystem config (internal)
 // ---------------------------------------------------------------------------
@@ -347,6 +351,10 @@ export async function resolveFileSystemAsync(
       ...nexusBackend,
       name: `nexus-local:${Array.isArray(options.mountUri) ? options.mountUri.join(",") : options.mountUri}`,
       dispose: async (): Promise<void> => {
+        // Detach the notification handler first (synchronous, cannot throw
+        // since unsubscribe only does Set.delete). Handler disposal follows
+        // in the finally block so a throwing disposer cannot prevent the
+        // backend and subprocess from closing.
         unsubscribe();
         try {
           await nexusBackend.dispose?.();
@@ -354,6 +362,15 @@ export async function resolveFileSystemAsync(
           // Always close the subprocess even if backend disposal rejects,
           // to prevent orphaned bridge processes on error paths.
           transport.close();
+          // Dispose stateful handlers (e.g. AuthNotificationHandler) after
+          // the subprocess is closed so watchdog timers cannot fire against
+          // a channel that is already torn down. Swallowed: handler disposal
+          // failures must not mask the real backend/subprocess error.
+          try {
+            if (isDisposable(onNotification)) onNotification.dispose();
+          } catch {
+            // intentionally swallowed
+          }
         }
       },
     };

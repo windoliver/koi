@@ -8,9 +8,9 @@
  *   const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
  *   const handler = createAuthNotificationHandler(channel);
  *   const unsubscribe = transport.subscribe(handler);
- *   // on teardown: unsubscribe() auto-calls handler.dispose() so timers are
- *   // cancelled without a separate explicit call.
+ *   // on teardown:
  *   unsubscribe();
+ *   handler.dispose();            // cancel pending timers + drop late callbacks
  */
 
 import type { ChannelAdapter } from "@koi/core";
@@ -30,8 +30,7 @@ function redactUrl(raw: string): string {
  * Handler function returned by `createAuthNotificationHandler`. The function
  * itself is wired to `transport.subscribe()`; `.dispose()` tears down pending
  * timers and gates all queued async callbacks so they become no-ops after
- * close. Idempotent. Called automatically by the unsubscribe function returned
- * from `transport.subscribe()`.
+ * close. Idempotent.
  */
 export type AuthNotificationHandler = ((n: BridgeNotification) => void) & {
   readonly dispose: () => void;
@@ -41,10 +40,11 @@ export type AuthNotificationHandler = ((n: BridgeNotification) => void) & {
  * Creates a BridgeNotification handler that sends user-facing messages to a
  * channel when OAuth authorization is required, in progress, or complete.
  *
- * Wire the returned function to `transport.subscribe()`. The unsubscribe
- * function returned by `subscribe()` automatically calls `handler.dispose()`
- * so watchdog timers and late `.then/.catch` callbacks cannot outlive the
- * transport session without any separate caller action.
+ * Wire the returned function to `transport.subscribe()` and call
+ * `.dispose()` on the returned handler when the transport is closed so that
+ * pending watchdog timers and late `.then/.catch` callbacks don't outlive
+ * the session (notifications dispatched before `unsubscribe()` can still
+ * execute the handler via queued microtasks).
  *
  * The handler is non-blocking — channel.send() is fire-and-forget via void.
  * Errors from channel.send() are swallowed to avoid breaking the reader loop.
