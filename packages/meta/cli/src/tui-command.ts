@@ -68,6 +68,7 @@ import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
+import { createBrowserProvider, createMockDriver } from "@koi/tool-browser";
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -82,6 +83,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
+import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
@@ -1603,6 +1605,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  if (process.env.KOI_BROWSER_MOCK === "1") {
+    // Require explicit confirmation to prevent accidental enablement via inherited env vars.
+    // Both variables must be present together; KOI_BROWSER_MOCK alone is not enough.
+    if (process.env.KOI_BROWSER_MOCK_CONFIRM !== "1") {
+      process.stderr.write(
+        "\nError: KOI_BROWSER_MOCK=1 requires KOI_BROWSER_MOCK_CONFIRM=1 to also be set.\n" +
+          "  This prevents browser mock mode from being enabled by an inherited environment.\n" +
+          "  To activate: set both KOI_BROWSER_MOCK=1 KOI_BROWSER_MOCK_CONFIRM=1\n\n",
+      );
+      process.exit(2);
+    }
+    process.stderr.write(
+      "\n⚠️  KOI_BROWSER_MOCK=1 — browser tools use a SIMULATED (mock) driver.\n" +
+        "   No real browser is launched. All browser_* results are canned test responses.\n" +
+        "   Do NOT use this mode to verify real browser automation outcomes.\n\n",
+    );
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1677,7 +1697,57 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // @koi/artifacts tools — wired when the advisory lock was acquired at
     // boot. When construction failed (concurrent TUI, FS issue) the array
     // is empty and the artifact_* tools are simply absent from the agent.
-    ...(artifactExtraProviders.length > 0 ? { extraProviders: artifactExtraProviders } : {}),
+    //
+    // The mock browser provider (KOI_BROWSER_MOCK) is single-agent by
+    // design: createBrowserProvider throws if a second distinct agent
+    // tries to attach. This is safe here because extraProviders are only
+    // assembled onto the root TUI agent — create-agent-spawn-fn.ts does
+    // NOT propagate extraProviders into childProviders for spawned agents.
+    // Limitation: browser_* tools are therefore NOT available in spawned
+    // sub-agents. Workflows that delegate browser work to a child agent
+    // will lose those tools after the spawn. This is a known scope
+    // restriction of the mock dev/test path, not a bug in production.
+    ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
+      ? {
+          extraProviders: [
+            ...artifactExtraProviders,
+            ...(process.env.KOI_BROWSER_MOCK === "1"
+              ? [
+                  createBrowserProvider({
+                    backend: createMockDriver(),
+                    // Mock driver never opens a real connection, so SSRF
+                    // protection only needs to block IP literals and known
+                    // metadata hostnames — no DNS resolution required.
+                    // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
+                    // so mDNS/RFC6762 names are still rejected by design.
+                    isUrlAllowed: (url) => {
+                      try {
+                        const { protocol, hostname } = new URL(url);
+                        if (protocol !== "http:" && protocol !== "https:") return false;
+                        // Strip IPv6 brackets then lower-case + strip trailing DNS root
+                        // dot so `localhost.` / `metadata.google.internal.` can't
+                        // bypass suffix/host checks (same canonicalization as isSafeUrl).
+                        const h = hostname
+                          .replace(/^\[|\]$/g, "")
+                          .toLowerCase()
+                          .replace(/\.$/, "");
+                        if (isBlockedIp(h)) return false;
+                        if (BLOCKED_HOSTS.includes(h)) return false;
+                        // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
+                        // "local" matches ".local" — endsWith alone misses these.
+                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
+                          return false;
+                        return true;
+                      } catch {
+                        return false;
+                      }
+                    },
+                  }),
+                ]
+              : []),
+          ],
+        }
+      : {}),
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
