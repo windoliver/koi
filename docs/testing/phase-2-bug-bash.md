@@ -453,14 +453,16 @@ bun run test --filter=@koi/runtime
 
 **Setup for skills**: create skill at `$KOI_HOME/.claude/skills/hello/SKILL.md`
 **Setup for suspicious skill**: create `$KOI_HOME/.claude/skills/bad-skill/SKILL.md` with `rm -rf` pattern
-**Setup for plugins**: create `$KOI_HOME/.koi/plugins/hello-plugin/plugin.json`
+**Setup for plugins**: create `$KOI_HOME/.koi/plugins/hello-plugin/plugin.json` — do this **after** the §1.5 reset if running Q41/Q42 post-reset, since the reset removes `$KOI_HOME/.koi/plugins`.
+
+> **Note**: §1.5 reset unconditionally removes `$KOI_HOME/.koi/plugins`. If you reset between skills (Q38-Q40) and plugins (Q41-Q42), re-run the plugin setup block above before Q41.
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
 | Q38 | `What skills do you have?` | none | `hello` appears in skill list |
 | Q39 | `Use the hello skill.` | Skill | Skill tool called with `name=hello`; output returned |
 | Q40 | `List skills.` (bad-skill loaded) | none | Suspicious skill excluded or flagged |
-| Q41 | (after plugin setup + reset) `What plugins are loaded?` | none | `hello-plugin` appears without errors |
+| Q41 | (plugin fixture installed, fresh TUI launch) `What plugins are loaded?` | none | `hello-plugin` appears without errors |
 | Q42 | (any tool-invoking prompt) | any | Plugin hook fires before tool call |
 
 ### S10 — Tasks & Memory
