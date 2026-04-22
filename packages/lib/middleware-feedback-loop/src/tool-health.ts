@@ -768,21 +768,20 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
     const metrics = computeWindowMetrics(state, demotionCriteria.windowSize);
     const now = clock();
-    const action = computeHealthAction(
-      metrics,
-      state.healthState,
-      currentTier,
-      quarantineThreshold,
-      windowSize,
-      demotionCriteria,
-      state.lastPromotedAt,
-      state.lastDemotedAt,
-      now,
-    );
-
-    if (action.action !== "demote") return false;
-
     const toTier = nextTrustTier(currentTier);
+    // Evaluate demotion criteria directly — do NOT use computeHealthAction here.
+    // computeHealthAction short-circuits to action:"none" when quarantine is active, but
+    // quarantine and demotion are independent: a quarantined tool must still have its trust
+    // tier demoted so the lower tier persists across session rollover and unquarantine.
+    const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
+    const canDemote =
+      toTier !== undefined &&
+      errorRate >= demotionCriteria.errorRateThreshold &&
+      metrics.totalCount >= demotionCriteria.minSampleSize &&
+      now - state.lastPromotedAt >= demotionCriteria.gracePeriodMs &&
+      now - state.lastDemotedAt >= demotionCriteria.demotionCooldownMs;
+
+    if (!canDemote) return false;
     if (toTier === undefined) return false;
 
     // Optimistically advance cooldown BEFORE awaiting I/O so concurrent callers observe

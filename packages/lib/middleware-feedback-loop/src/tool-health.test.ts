@@ -328,6 +328,43 @@ describe("createToolHealthTracker", () => {
     expect(forgeStore.data.get(BID)?.trustTier).toBe("community");
   });
 
+  it("demotes trust tier even when tool is already session-quarantined", async () => {
+    const forgeStore = makeForgeStore();
+    await forgeStore.save(makeBrickArtifact(BID));
+
+    const demotions: string[] = [];
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore,
+      snapshotChainStore: makeSnapshotStore(),
+      quarantineThreshold: 0.5,
+      windowSize: 4,
+      demotionCriteria: {
+        errorRateThreshold: 0.3,
+        windowSize: 5,
+        minSampleSize: 3,
+        gracePeriodMs: 0,
+        demotionCooldownMs: 0,
+      },
+      onDemotion: (e) => demotions.push(e.to),
+      clock: () => 100_000,
+    });
+
+    // 4 failures triggers both quarantine (75% > 50%) and demotion (80% > 30%) criteria
+    for (let i = 0; i < 4; i++) tracker.recordFailure(TOOL_ID, 10, "err");
+    tracker.recordSuccess(TOOL_ID, 10);
+
+    // Quarantine fires first
+    await tracker.checkAndQuarantine(TOOL_ID);
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
+
+    // Demotion must still fire even though the tool is quarantined
+    const demoted = await tracker.checkAndDemote(TOOL_ID);
+    expect(demoted).toBe(true);
+    expect(demotions[0]).toBe("community");
+    expect(forgeStore.data.get(BID)?.trustTier).toBe("community");
+  });
+
   it("isQuarantined detects persisted quarantine from a previous session", async () => {
     const forgeStore = makeForgeStore();
     // Simulate a brick quarantined in a previous session (lifecycle = quarantined in store)
