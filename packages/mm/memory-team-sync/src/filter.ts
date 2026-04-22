@@ -30,10 +30,15 @@ export interface FilterResult {
 }
 
 /**
- * RFC-5322-aligned email pattern. Intentionally conservative: any
- * `word@word.tld`-shaped token is treated as a personal contact pointer
- * and blocked from leaving the local store, regardless of memory type.
- * Team sync is not a contact-sharing mechanism.
+ * RFC-5322-aligned email pattern used as a best-effort contact guard.
+ *
+ * Scope: covers `word@word.tld`-shaped tokens — the most common form of
+ * person-contact data accidentally stored as `reference`. This is defence-
+ * in-depth only; it does NOT cover phone numbers, Slack handles, pager
+ * aliases, or named escalation contacts written without an email address.
+ * Broader PII detection is a separate concern (#TODO: track in a follow-up
+ * issue). The primary privacy boundary is the prompt guidance that routes
+ * person-contact memories to `user` (which is always sync-denied).
  */
 const EMAIL_PATTERN = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 

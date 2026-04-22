@@ -41,7 +41,7 @@ describe("parseExtractionResponse", () => {
     expect(result[0]?.memoryType).toBe("feedback");
     expect(result[0]?.confidence).toBe(0.9);
     expect(result[1]?.category).toBe("pattern");
-    expect(result[1]?.memoryType).toBe("reference");
+    expect(result[1]?.memoryType).toBe("feedback"); // regression #1964: pattern -> feedback, not reference
   });
 
   test("handles JSON wrapped in markdown fences", () => {
