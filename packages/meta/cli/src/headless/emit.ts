@@ -15,6 +15,7 @@ type HeadlessEventBody =
       readonly ok: boolean;
       readonly exitCode: number;
       readonly error?: string;
+      readonly validationFailed?: boolean;
     };
 
 interface EmitterOptions {

@@ -42,6 +42,7 @@ import {
   HEADLESS_EXIT,
   runHeadless,
 } from "../headless/run.js";
+import { validateLoadedSchema } from "../headless/validate-schema.js";
 import { loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
@@ -671,6 +672,25 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }
   }
 
+  // Boot-time schema load: validate and parse --result-schema before
+  // assembling the runtime so a malformed schema file refuses to start
+  // with exit 5, rather than surfacing a parse error mid-run.
+  let resultSchemaObj: Record<string, unknown> | undefined;
+  if (flags.resultSchema !== undefined) {
+    try {
+      const raw = await Bun.file(flags.resultSchema).text();
+      const parsed: unknown = JSON.parse(raw);
+      const check = validateLoadedSchema(parsed);
+      if (!check.ok) {
+        return bail(`result-schema rejected: ${check.message}`, 5);
+      }
+      resultSchemaObj = check.schema;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return bail(`result-schema rejected: ${msg}`, 5);
+    }
+  }
+
   let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>>;
   try {
     runtimeHandle = await createKoiRuntime({
@@ -1093,6 +1113,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       flags.maxDurationMs !== undefined
         ? setTimeout(() => onDeadlineExceeded(), remainingForRunAndShutdown + shutdownGraceMs)
         : undefined;
+    // Raw assistant text accumulator for --result-schema validation.
+    // Only active when a schema was loaded; capped at 1 MB to prevent
+    // unbounded memory growth on large model outputs.
+    const RAW_PARTS_CAP_BYTES = 1 * 1024 * 1024; // 1 MB
+    // let: mutable accumulators updated by the callback below
+    const rawAssistantParts: string[] = [];
+    let rawAssistantPartsBytes = 0;
+    let rawAssistantOverflow = false;
+
     // runHeadless does not throw — it converts all errors into a typed
     // exit code and an `emitResult` callback. We keep `emitResult` in outer
     // scope so that a later teardown throw can still emit a terminal NDJSON
@@ -1108,6 +1137,19 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       writeStderr: (s) => process.stderr.write(s),
       runtime,
       externalSignal: controller.signal,
+      onRawAssistantText:
+        resultSchemaObj !== undefined
+          ? (text) => {
+              if (rawAssistantOverflow) return;
+              const chunkBytes = Buffer.byteLength(text, "utf8");
+              if (rawAssistantPartsBytes + chunkBytes > RAW_PARTS_CAP_BYTES) {
+                rawAssistantOverflow = true;
+                return;
+              }
+              rawAssistantParts.push(text);
+              rawAssistantPartsBytes += chunkBytes;
+            }
+          : undefined,
     });
     // Upgrade the deadline finalizer now that we can emit a terminal result.
     onDeadlineExceeded = (): void => {

@@ -55,6 +55,7 @@ interface RunHeadlessOptions {
   readonly writeStderr: (chunk: string) => void;
   readonly runtime: HeadlessRuntime;
   readonly externalSignal?: AbortSignal | undefined;
+  readonly onRawAssistantText?: ((text: string) => void) | undefined;
 }
 
 export interface HeadlessOutcome {
@@ -68,6 +69,7 @@ export interface HeadlessOutcome {
   readonly emitResult: (override?: {
     readonly exitCode: HeadlessExitCode;
     readonly error?: string;
+    readonly validationFailed?: boolean;
   }) => void;
 }
 
@@ -127,7 +129,7 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       text: opts.prompt,
       signal: controller.signal,
     })) {
-      if (translateEvent(event, emit, toolNamesByCallId)) {
+      if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText)) {
         emittedAssistantText = true;
       }
       if (event.kind === "done") {
@@ -135,6 +137,7 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
         if (!emittedAssistantText) {
           const fallback = extractTextFromContent(event.output.content);
           if (fallback.length > 0) {
+            opts.onRawAssistantText?.(fallback);
             // Redact engine error banners here too — done.output.content
             // is populated from the same reason string at engine-catch
             // time, so it can carry the same secret-bearing interpolated
@@ -227,6 +230,7 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
   const emitResult = (override?: {
     readonly exitCode: HeadlessExitCode;
     readonly error?: string;
+    readonly validationFailed?: boolean;
   }): void => {
     if (resultEmitted) return;
     resultEmitted = true;
@@ -237,6 +241,9 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       ok: finalCode === HEADLESS_EXIT.SUCCESS,
       exitCode: finalCode,
       ...(finalError !== undefined ? { error: finalError } : {}),
+      ...(override?.validationFailed !== undefined
+        ? { validationFailed: override.validationFailed }
+        : {}),
     });
     // Observability: CI operators need at least one actionable line on
     // stderr for every non-success run. The message is already
@@ -476,10 +483,12 @@ function translateEvent(
   event: EngineEvent,
   emit: ReturnType<typeof createEmitter>,
   toolNamesByCallId: Map<string, string>,
+  onRawAssistantText: ((text: string) => void) | undefined,
 ): boolean {
   switch (event.kind) {
     case "text_delta": {
       if (event.delta.length > 0) {
+        onRawAssistantText?.(event.delta);
         emit({ kind: "assistant_text", text: redactEngineBanners(event.delta) });
         return true;
       }
