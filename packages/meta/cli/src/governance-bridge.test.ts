@@ -195,6 +195,49 @@ describe("governance-bridge", () => {
     bridge.dispose();
   });
 
+  test("regression #2016: bridge initializes when runtimeReady resolves before a subsequent await", async () => {
+    // Reproduces the Temporal Dead Zone race in tui-command.ts: the
+    // runtimeReady.then() callback fires during `await createCostBridge` when
+    // runtimeReady is already settled. If `let governanceBridge` were declared
+    // AFTER that await, the assignment inside .then() would hit TDZ and throw.
+    // The fix: declare governanceBridge BEFORE registering .then().
+    const store = { dispatch: () => {} };
+    const controller = makeController({
+      timestamp: 1,
+      healthy: true,
+      violations: [],
+      readings: [],
+    });
+
+    // Declared BEFORE the .then() registration — the fix that prevents TDZ.
+    let bridge: ReturnType<typeof createGovernanceBridge> | undefined;
+    let initError: unknown;
+
+    // runtimeReady resolves immediately (already-settled promise).
+    const runtimeReady = Promise.resolve({ controller });
+    runtimeReady.then(({ controller: ctrl }) => {
+      try {
+        bridge = createGovernanceBridge({
+          store: store as never,
+          controller: ctrl,
+          sessionId: "s-tdz",
+          alertsPath,
+        });
+      } catch (e) {
+        initError = e;
+      }
+    });
+
+    // Simulate the `await createCostBridge(...)` that sits between the .then()
+    // registration and the original `let governanceBridge` declaration. When
+    // this await yields, the microtask queue drains and the .then() fires.
+    await Promise.resolve();
+
+    expect(initError).toBeUndefined();
+    expect(bridge).toBeDefined();
+    bridge?.dispose();
+  });
+
   test("tailEvict trims JSONL file when it exceeds max lines", () => {
     const store = { dispatch: () => {} };
     const bridge = createGovernanceBridge({

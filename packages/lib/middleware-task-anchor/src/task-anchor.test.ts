@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type {
   InboundMessage,
+  JsonObject,
   ModelChunk,
   ModelHandler,
   ModelRequest,
@@ -910,6 +911,123 @@ describe("createTaskAnchorMiddleware — retry/stop-gate preservation", () => {
     const second: Capture = {};
     await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler(second));
     expect(extractInjected(second)).toBeUndefined();
+  });
+});
+
+describe("createTaskAnchorMiddleware — reportDecision observability (#2015)", () => {
+  function makeTurnCtxWithSpy(
+    session: SessionContext,
+    turnIndex: number,
+  ): { ctx: TurnContext; spy: ReturnType<typeof mock> } {
+    const spy = mock((_decision: JsonObject) => {});
+    const ctx: TurnContext = {
+      session,
+      turnIndex,
+      turnId: turnId(runId("r1"), turnIndex),
+      messages: [],
+      metadata: {},
+      reportDecision: spy,
+    };
+    return { ctx, spy };
+  }
+
+  test("wrapModelCall calls reportDecision with action:inject on injection turn", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Audit auth", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0); // advance idle to 1
+
+    const { ctx, spy } = makeTurnCtxWithSpy(session, 1);
+    await mw.onBeforeTurn?.(ctx);
+    const capture: Capture = {};
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler(capture));
+
+    expect(extractInjected(capture)).toBeDefined();
+    expect(spy).toHaveBeenCalledTimes(1);
+    const decision = spy.mock.calls[0]?.[0] as JsonObject | undefined;
+    expect(decision?.action).toBe("inject");
+    expect(typeof decision?.promptLength).toBe("number");
+    expect((decision?.promptLength as number) > 0).toBe(true);
+  });
+
+  test("wrapModelCall does NOT call reportDecision when injection is skipped", async () => {
+    const board = makeBoard([makeTask({ id: tid("t1"), subject: "A", status: "pending" })]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 3 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Only 1 idle turn — below threshold, no injection expected
+    const { ctx, spy } = makeTurnCtxWithSpy(session, 0);
+    await mw.onBeforeTurn?.(ctx);
+    const capture: Capture = {};
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler(capture));
+
+    expect(extractInjected(capture)).toBeUndefined();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("wrapModelStream calls reportDecision with action:inject on injection turn", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Migrate DB", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    // Advance idle via call path (to avoid interfering with the stream turn)
+    await mw.onBeforeTurn?.(makeTurnCtx(session, 0));
+    await mw.onAfterTurn?.(makeTurnCtx(session, 0));
+
+    const { ctx, spy } = makeTurnCtxWithSpy(session, 1);
+    await mw.onBeforeTurn?.(ctx);
+    const capture: Capture = {};
+    const iter = mw.wrapModelStream?.(ctx, makeRequest(), captureStream(capture));
+    if (iter) for await (const _ of iter) void _;
+
+    expect(extractInjected(capture)).toBeDefined();
+    expect(spy).toHaveBeenCalledTimes(1);
+    const decision = spy.mock.calls[0]?.[0] as JsonObject | undefined;
+    expect(decision?.action).toBe("inject");
+    expect(typeof decision?.promptLength).toBe("number");
+    expect((decision?.promptLength as number) > 0).toBe(true);
+  });
+
+  test("wrapModelStream does NOT call reportDecision when injection is skipped", async () => {
+    const board = makeBoard([makeTask({ id: tid("t1"), subject: "A", status: "pending" })]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 5 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const { ctx, spy } = makeTurnCtxWithSpy(session, 0);
+    await mw.onBeforeTurn?.(ctx);
+    const capture: Capture = {};
+    const iter = mw.wrapModelStream?.(ctx, makeRequest(), captureStream(capture));
+    if (iter) for await (const _ of iter) void _;
+
+    expect(extractInjected(capture)).toBeUndefined();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("reportDecision promptLength matches the injected text length", async () => {
+    const board = makeBoard([
+      makeTask({ id: tid("t1"), subject: "Implement OAuth", status: "pending" }),
+    ]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+
+    const { ctx, spy } = makeTurnCtxWithSpy(session, 1);
+    await mw.onBeforeTurn?.(ctx);
+    const capture: Capture = {};
+    await mw.wrapModelCall?.(ctx, makeRequest(), captureHandler(capture));
+
+    const injectedText =
+      (extractInjected(capture)?.content[0] as { text: string } | undefined)?.text ?? "";
+    const decision = spy.mock.calls[0]?.[0] as JsonObject | undefined;
+    expect(decision?.promptLength).toBe(injectedText.length);
   });
 });
 
