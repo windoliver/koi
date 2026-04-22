@@ -32,8 +32,9 @@ Session end   → drop session state
 **Idle counter:** Increments on every `onBeforeTurn`. Any `wrapToolCall` whose
 `toolId` matches `isTaskTool(toolId)` resets it to 0 (default match:
 `toolId.startsWith("task_")`). When `idle >= idleTurnThreshold`, the next
-`wrapModelCall`/`wrapModelStream` prepends a `system:task-anchor` message and
-resets the counter to 0.
+`wrapModelCall`/`wrapModelStream` prepends a `system:task-anchor` message,
+resets the counter to 0, and calls `ctx.reportDecision?.({ action: "inject",
+promptLength: N })` so the TUI trajectory view shows `[inject:Nch]`.
 
 **Empty-board nudge:** When the board is empty but at least one tool call has
 happened in the session (signal: "complex work in progress"), the reminder
@@ -153,6 +154,7 @@ Emitted when the board was observed but no reminder was injected:
 |----------|----------|
 | `getBoard` throws or rejects | Reminder skipped this turn, idle counter untouched, error swallowed |
 | `isTaskTool` throws | Treated as non-match — idle counter unchanged |
+| `reportDecision` throws | Error swallowed via `swallowError`; injection and model call proceed normally |
 | No session state at model-call time | Pass through unchanged (session missed `onSessionStart`) |
 | Board present but no tasks, `nudgeOnEmptyBoard: false` | Pass through, counter unchanged |
 
