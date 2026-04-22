@@ -68,10 +68,8 @@ The TUI (`koi tui`) is configured via **environment variables and CLI flags**. I
 | Scenario | Required stacks | Notes |
 |----------|-----------------|-------|
 | S14 — memory persist/recall | `memory` | Can use `--manifest` with `stacks: [memory]` |
-| S25 — memory dir isolation | `memory` | Can use `--manifest` with `stacks: [memory]` |
+| S25 — memory dir isolation | `memory` only | **Must** use `--manifest` with `stacks: [memory]`. The default stack also enables `dreamStack`, whose `createDreamMiddleware` runs `onSessionEnd` and can mutate `$MEMORY_DIR` between Q156-Q161 assertions, making file-count checks flaky. Isolate S25 from dream activity by pinning to the memory stack only. |
 | S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
-
-When no `--manifest` is passed, the default stack set includes all required stacks for every memory scenario.
 
 ```bash
 # Model selection (pick one provider)
@@ -811,8 +809,16 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
 
+# Write a minimal manifest that enables only the memory stack.
+# The default stack also includes dreamStack, which runs onSessionEnd consolidation
+# and can mutate $MEMORY_DIR between assertions, making Q156-Q161 file-count checks flaky.
+cat > "$FIXTURE/s25-memory-only.koi.yaml" <<'MANIFEST_EOF'
+stacks:
+  - memory
+MANIFEST_EOF
+
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"
 
 # Verify the session was actually created AND the TUI stayed up (not just a tmux frame).
 # tmux has-session only proves the session shell was created; capture-pane after a brief
@@ -834,8 +840,8 @@ fi
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$MEMORY_DIR/`; frontmatter has `type: project` |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index has 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from `$MEMORY_DIR/`) |
-| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
-| Q160 | `Remember: this project uses Bun 1.3 for all scripts.` (near-duplicate of Q156) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
+| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156 — differs by only "its" → "the"; word-token Jaccard ≈ 0.78, above the 0.7 dedup threshold) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
 | Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
 ### Packages Not Testable via TUI (justified)
 
