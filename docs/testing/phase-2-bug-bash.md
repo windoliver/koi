@@ -75,8 +75,8 @@ The TUI (`koi tui`) is configured via **environment variables and CLI flags**. I
 
 | Scenario | Required stacks | Notes |
 |----------|-----------------|-------|
-| S14 — memory persist/recall | default stack (no `--manifest`) | **Do not** use a memory-only manifest: Q97-Q98 require extraction from spawn tool outputs, which are only available when the execution/spawn stacks are active. Run S14 without `--manifest` (default stack set). |
-| S25 — memory dir isolation | default stack (no `--manifest`) | Dream consolidation requires ≥ 5 sessions + 24 h (gate in `@koi/dream`). S25 runs only 2 sessions on a fresh harness, so `dreamStack` is active but consolidation never fires — file-count assertions are deterministic without manifest isolation. |
+| S14 — memory persist/recall | default stack (no `--manifest`) | Runs without a manifest so memory tools are exercised within the same shipped default stack configuration users get. Extraction is wired into `memoryStack` but its TUI-level behavior is covered by the `@koi/runtime` golden tests (see "Test-suite only" in S14 below). |
+| S25 — memory dir isolation | `memory`-only isolation manifest (`stacks: [memory], plugins: []`) | The S25 setup block creates `$FIXTURE/s25-memory-only.koi.yaml` and passes `--manifest` at launch. This makes Q156-Q161 file-count assertions deterministic regardless of installed plugins. **S25 does not cover default-stack behavior** (no dream, no spawn, no plugin hooks) — those paths are covered by other scenarios and golden replay tests. |
 | S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
 
 ```bash
@@ -436,9 +436,13 @@ bun run test --filter=@koi/memory
 # Team-sync filtering (type deny, secret scan, fail-closed)
 bun run test --filter=@koi/memory-team-sync
 
-# Extraction (marker-based [LEARNING:...] + heuristic "learned that" patterns,
-# spawn-family tool IDs, feedback-type persistence, fire-and-forget write path)
+# Extraction (marker-based [LEARNING:...] + heuristic patterns, spawn-family tool IDs,
+# feedback-type persistence, fire-and-forget write path)
+# Package unit tests cover regex extractor, category mapping, and middleware factory:
 bun run test --filter=@koi/middleware-extraction
+# Runtime golden tests prove extraction is wired correctly through memoryStack in
+# the koi tui assembly ("Golden: @koi/middleware-extraction" in golden-replay.test.ts):
+bun run test --filter=@koi/runtime
 ```
 
 ### S9 — Skills & Plugins
@@ -778,11 +782,13 @@ tmux new-session -d -s "$KOI_SESSION" \
 > `createMemoryStore` stores each memory as a Markdown file with frontmatter under the resolved memory directory,
 > maintains a `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
 >
-> **S25 runs on the default TUI stack** (no `--manifest`). Dream consolidation only fires when the gate
-> is satisfied: ≥ 5 sessions elapsed AND ≥ 24 h since the last dream (`packages/mm/dream/src/gate.ts`).
-> S25 uses only 2 sessions on a fresh harness (initial + restart for Q159), so `dreamStack` is active
-> but consolidation never runs — `$MEMORY_DIR` file counts are safe without manifest isolation.
-> This keeps S25 exercising the same `memory + dream` default stack combination that ships to users.
+> **S25 runs with an isolation manifest** (`stacks: [memory], plugins: []`). The setup block creates
+> `$FIXTURE/s25-memory-only.koi.yaml` and passes `--manifest` to `koi tui`. Only the `memory` preset
+> stack is active — `dreamStack`, spawn stacks, and all discovered plugins are excluded. This makes
+> Q156-Q161 file-count assertions deterministic on any machine, regardless of installed plugins.
+> **S25 scope**: validates `@koi/memory-fs` store/recall/dedup/delete/persistence in isolation.
+> Default-stack integration (dream + spawn + plugin hooks) is covered by other scenarios and the
+> `@koi/runtime` golden replay suite.
 >
 > **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
 > When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$MEMORY_DIR"` explicitly
