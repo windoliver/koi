@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   computePermissionPromptWidth,
   formatInputPreview,
+  formatToolId,
   normalizeReason,
   PERMISSION_PROMPT_NARROW_THRESHOLD,
   PERMISSION_PROMPT_WIDTH,
@@ -112,6 +113,36 @@ describe("processPermissionKey", () => {
     expect(processPermissionKey("Y")).toEqual({ kind: "allow" });
     expect(processPermissionKey("N")).toEqual({ kind: "deny", reason: "User denied" });
     expect(processPermissionKey("A")).toEqual({ kind: "always-allow", scope: "session" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatToolId — narrow-mode truncation (#1913)
+// ---------------------------------------------------------------------------
+
+describe("formatToolId", () => {
+  test("short ids are returned unchanged", () => {
+    expect(formatToolId("bash", 15)).toBe("bash");
+    expect(formatToolId("read_file", 15)).toBe("read_file");
+  });
+
+  test("long MCP-style ids are truncated with ellipsis", () => {
+    const result = formatToolId("crm__get_customer", 12);
+    expect(result.length).toBeLessThanOrEqual(12);
+    expect(result).toContain("…");
+    expect(result).toBe("crm__get_cu…");
+  });
+
+  test("exactly-at-limit ids are returned unchanged", () => {
+    expect(formatToolId("billing__get", 12)).toBe("billing__get");
+  });
+
+  test("truncated id starts with the original id prefix", () => {
+    const id = "billing__get_invoice";
+    const result = formatToolId(id, 10);
+    // slice(0, maxLen-1=9) + "…" = "billing__…" (9 chars of prefix + ellipsis = 10 total)
+    expect(result).toBe("billing__…");
+    expect(id.startsWith(result.slice(0, -1))).toBe(true);
   });
 });
 

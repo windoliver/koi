@@ -125,6 +125,18 @@ export function processPermissionKey(keyName: string, permanentAvailable = false
   }
 }
 
+/**
+ * Truncate a tool ID for display when the available width is narrow.
+ * The full `toolId` is preserved in the prompt's `Tool:` label and in
+ * the `[a]` always-allow hint; `maxLen` limits the inline display copy
+ * so MCP-style IDs such as `crm__get_customer` don't dominate the layout
+ * on 40-col terminals.
+ */
+export function formatToolId(toolId: string, maxLen: number): string {
+  if (toolId.length <= maxLen) return toolId;
+  return toolId.slice(0, maxLen - 1) + "…";
+}
+
 /** Format the input object for display (truncated for large inputs). */
 export function formatInputPreview(input: Record<string, unknown>, maxLength = 200): string {
   const json = JSON.stringify(input, null, 2);
@@ -167,6 +179,16 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   // Stacked layout when the computed modal width is below the threshold where
   // horizontal hint rows would overflow. (#1913)
   const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
+
+  // Truncated tool ID for inline display in narrow mode. MCP-style IDs such as
+  // `crm__get_customer` (18 chars) can dominate the narrow layout; cap to
+  // modalWidth - 20 (room for "[a] Always allow … this session") with a floor
+  // of 8 so the ID always shows at least the start of the name.
+  const displayToolId = createMemo(() =>
+    isNarrow()
+      ? formatToolId(props.prompt.toolId, Math.max(modalWidth() - 20, 8))
+      : props.prompt.toolId
+  );
 
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
@@ -255,7 +277,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
             <box flexDirection="column" marginTop={1}>
               <text fg={COLORS.success}>{"[y] Allow once"}</text>
               <text fg={COLORS.danger}>{"[n] Deny"}</text>
-              <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
+              <text fg={COLORS.blueAccent}>{`[a] Always allow ${displayToolId()} this session`}</text>
               <Show when={permanentAvailable()}>
                 <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
               </Show>
