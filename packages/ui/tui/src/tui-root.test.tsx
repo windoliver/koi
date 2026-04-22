@@ -14,6 +14,7 @@ import { createInitialState } from "./state/initial.js";
 import { createStore } from "./state/store.js";
 import { StoreContext } from "./store-context.js";
 import { TuiRoot, executeGovernanceReset, resolveNavCommand } from "./tui-root.js";
+import { PERMISSION_PROMPT_WIDTH } from "./components/PermissionPrompt.js";
 
 const OPTS = { width: 100, height: 30 };
 
@@ -111,6 +112,39 @@ describe("TuiRoot — modal overlay", () => {
     });
     const frame = captureCharFrame();
     expect(frame).toContain("bash");
+    renderer.destroy();
+  });
+
+  test("permission-prompt modal is bounded to PERMISSION_PROMPT_WIDTH columns (regression: #1913)", async () => {
+    // Without width={PERMISSION_PROMPT_WIDTH} on the outer <box>, OpenTUI
+    // re-measures the undimensioned absolute box every layout pass and loops
+    // forever in blendCells. Verify the title row's right edge (trimmed) does
+    // not bleed past left_offset(2) + width(60) + border(2) = 64 on a 100-col
+    // terminal that is wider than the modal.
+    const { captureCharFrame, renderer } = await renderRoot({
+      modal: {
+        kind: "permission-prompt",
+        prompt: {
+          requestId: "r1",
+          toolId: "bash",
+          input: { cmd: "ls" },
+          reason: "",
+          riskLevel: "low",
+        },
+      },
+    });
+    const frame = captureCharFrame();
+    const lines = frame.split("\n");
+    const titleLine = lines.find((l) => l.includes("Permission Required"));
+    expect(titleLine).toBeDefined();
+    if (titleLine !== undefined) {
+      // trimEnd() removes trailing spaces that the terminal buffer pads beyond
+      // the modal's right border. The remaining content must fit within the
+      // left_offset(2) + PERMISSION_PROMPT_WIDTH(60) + border(2) = 64 columns.
+      expect(titleLine.trimEnd().length).toBeLessThanOrEqual(
+        2 + PERMISSION_PROMPT_WIDTH + 2,
+      );
+    }
     renderer.destroy();
   });
 

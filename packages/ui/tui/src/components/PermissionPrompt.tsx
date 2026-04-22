@@ -23,6 +23,15 @@ import { COLORS, MODAL_POSITION } from "../theme.js";
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Fixed outer width for the permission prompt modal.
+ * Must be a positive integer — OpenTUI absolute-positioned boxes without an
+ * explicit width re-measure content every layout pass, triggering a
+ * blendCells busy-loop that saturates one CPU core and blocks all input.
+ * (#1913)
+ */
+export const PERMISSION_PROMPT_WIDTH = 60;
+
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
   medium: COLORS.amber,
@@ -118,6 +127,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       borderColor={riskColor()}
       paddingLeft={1}
       paddingRight={1}
+      width={PERMISSION_PROMPT_WIDTH}
       {...MODAL_POSITION}
     >
       {/* Title */}
