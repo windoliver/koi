@@ -738,12 +738,17 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs?.error).toContain("exceeded 1 MB limit");
   });
 
-  test("shutdown failure takes precedence: exit 5 even when schema would pass", async () => {
+  test("shutdown failure after agent success: exit 6 + validationSkipped (non-retryable)", async () => {
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
-    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    type EmitArgs = {
+      exitCode?: number;
+      error?: string;
+      validationFailed?: boolean;
+      validationSkipped?: boolean;
+    };
     let capturedEmitArgs: EmitArgs | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
@@ -772,7 +777,9 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.INTERNAL);
+    // Agent completed tool work — side effects already ran. CI must NOT retry.
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
+    expect(capturedEmitArgs?.validationSkipped).toBe(true);
   });
 
   test("onToolResult callback resets raw buffer so only post-tool text is validated", async () => {

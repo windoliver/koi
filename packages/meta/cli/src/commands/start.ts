@@ -1212,15 +1212,28 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             "schema validation skipped: teardown exhausted max-duration-ms — check stderr for timing details",
         });
       } else if (shutdownFailed) {
-        // Validation did not complete — do NOT flush buffered text.
-        // The --result-schema contract: model output only appears when validation passed.
+        // When the agent succeeded before teardown failed, use exit 6 + validationSkipped:true
+        // to signal non-retryable: side effects already ran, retrying could duplicate them.
+        // This applies regardless of whether --result-schema is active.
+        // When the agent already failed (non-SUCCESS), INTERNAL (exit 5) is appropriate —
+        // the tool work didn't complete, so retrying after fixing teardown is safe.
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-        finalCode = HEADLESS_EXIT.INTERNAL;
-        emitResult({
-          exitCode: HEADLESS_EXIT.INTERNAL,
-          error: `teardown failure (run exited ${headlessCode}); see stderr for disposer / transcript errors`,
-        });
+        if (headlessCode === HEADLESS_EXIT.SUCCESS) {
+          finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+          emitResult({
+            exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+            validationSkipped: true,
+            error:
+              "teardown failed after agent completed — do not retry; check stderr for disposer / transcript errors",
+          });
+        } else {
+          finalCode = HEADLESS_EXIT.INTERNAL;
+          emitResult({
+            exitCode: HEADLESS_EXIT.INTERNAL,
+            error: `teardown failure (run exited ${headlessCode}); see stderr for disposer / transcript errors`,
+          });
+        }
       } else if (resultSchemaObj !== undefined && headlessCode === HEADLESS_EXIT.SUCCESS) {
         let schemaResult: { readonly ok: true } | { readonly ok: false; readonly error: string };
         // skippedByDeadline:true → budget ran out; validationSkipped on the result event.
@@ -1302,17 +1315,30 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     } catch (e: unknown) {
       postRunPhaseComplete = true;
       if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-      finalCode = HEADLESS_EXIT.INTERNAL;
       const raw = e instanceof Error ? e.message : String(e);
       // Redaction: shutdown errors can carry disposer / transport URIs /
       // transcript flush paths / session-end hook exception text. CI
       // captures stderr alongside stdout, so emit classification-only on
       // both streams in headless mode.
       process.stderr.write(`koi headless: shutdown failed (${raw.length} chars redacted)\n`);
-      emitResult({
-        exitCode: HEADLESS_EXIT.INTERNAL,
-        error: `shutdown failed (${raw.length} chars redacted)`,
-      });
+      // When the agent completed successfully before shutdown threw, use exit 6 + validationSkipped
+      // to signal non-retryable: side effects already ran, retrying could duplicate them.
+      // When the agent already failed (non-SUCCESS), INTERNAL (exit 5) is appropriate —
+      // the tool work didn't complete, so retrying after fixing teardown is safe.
+      if (headlessCode === HEADLESS_EXIT.SUCCESS) {
+        finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+        emitResult({
+          exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+          validationSkipped: true,
+          error: `teardown threw after agent completed (${raw.length} chars redacted) — do not retry`,
+        });
+      } else {
+        finalCode = HEADLESS_EXIT.INTERNAL;
+        emitResult({
+          exitCode: HEADLESS_EXIT.INTERNAL,
+          error: `shutdown failed (${raw.length} chars redacted)`,
+        });
+      }
     }
     // Flush stdout/stderr before returning so the final NDJSON `result`
     // line (and any teardown diagnostics on stderr) isn't lost when the
