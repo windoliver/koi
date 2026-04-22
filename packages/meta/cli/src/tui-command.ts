@@ -1793,6 +1793,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
+      // Delegate to the current drain's spawn tracker for SIGINT grace.
+      // Null between drains so cross-drain survivors from earlier turns cannot
+      // influence the grace policy of a later, unrelated turn (#1999 r14).
+      currentDrainSpawnHandler?.(event);
       // Defense-in-depth: store.dispatch can throw if the reducer or
       // SolidJS reactivity hits an edge case. A throwing callback must
       // not crash the spawn flow — the engine wraps this in safeSpawnEvent
@@ -1988,6 +1992,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+  // Session-level live-spawn tracker: agentIds whose spawn_requested has fired
+  // but whose terminal agent_status_changed has not yet arrived. Updated directly
+  // by onSpawnEvent (no per-drain delegate) so cross-drain children — a child
+  // spawned by drain A that outlives the drain — remain visible to the
+  // onWindowElapse grace probe. The engine's pre-start abort guard in
+  // createSpawnExecutor prevents stale spawn_requested events from cancelled
+  // turns from entering this set, so no per-drain scoping is needed (#1999 r12).
+  // Per-drain live-spawn tracking for the SIGINT grace probe. A fresh Set is
+  // created at each drain start and both references point to it. The delegate is
+  // cleared to null at drain end so events that arrive BETWEEN drains are no-ops
+  // — cross-drain survivors from earlier turns must NOT influence grace policy of
+  // a later, unrelated turn (#1999 r14). The engine's pre-start abort guard
+  // (createSpawnExecutor) prevents stale spawn_requested from polluting the set.
+  let currentDrainSpawnIds: Set<string> = new Set<string>();
+  let currentDrainSpawnHandler:
+    | ((event: { readonly kind: string; readonly agentId: string }) => void)
+    | null = null;
+  // let: one-shot flag — true after the first double-tap window elapses with an
+  // active spawn. Provides exactly one grace reset-to-idle to protect against the
+  // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
+  // revert to stay-armed and the force-exit path remains reachable. Reset each drain.
+  let spawnGraceUsed = false;
   // let: preflight latch — set synchronously at onSubmit entry before the
   // first await (runtimeReady / resetBarrier), cleared in finally. Closes
   // the submit-then-switch race where `activeController` is still null
@@ -2193,6 +2219,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
+    // #1999: one-shot grace period for spawns that outlive the double-tap window.
+    // When the CURRENT drain's child is still running 2s after Ctrl+C, a second
+    // tap is likely not intentional — reset to idle so it becomes a fresh cancel
+    // instead of a force-exit. Only children from THIS drain's set are consulted
+    // (currentDrainSpawnIds), so survivors from unrelated earlier turns cannot
+    // grant grace for the current interrupted turn. Grace is one-shot per drain
+    // (spawnGraceUsed): once used, subsequent windows revert to stay-armed so
+    // the force-exit path remains reachable for truly stuck spawns.
+    onWindowElapse: (): "stay-armed" | "reset-to-idle" => {
+      if (currentDrainSpawnIds.size > 0 && !spawnGraceUsed) {
+        spawnGraceUsed = true;
+        return "reset-to-idle";
+      }
+      return "stay-armed";
+    },
   });
   // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
   // prop) and the `agent:interrupt` command both route through here.
@@ -2448,6 +2489,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
     activeController = null;
+
+    // Drop the per-drain spawn delegate and reset the grace flag so the
+    // new session starts with a clean SIGINT state (#1999).
+    currentDrainSpawnHandler = null;
+    currentDrainSpawnIds = new Set<string>();
+    spawnGraceUsed = false;
 
     // Cancel any pending permission prompts and dismiss the modal so a
     // session reset (`agent:clear`, `session:new`, resume) doesn't leave
@@ -3361,6 +3408,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
+        // Install per-drain spawn tracking for the SIGINT grace probe.
+        // Fresh set each drain so only THIS turn's spawns are counted.
+        // Grace is one-shot: reset here since each drain is a new turn.
+        const drainSpawnIds = new Set<string>();
+        currentDrainSpawnIds = drainSpawnIds;
+        currentDrainSpawnHandler = (event): void => {
+          if (event.kind === "spawn_requested") {
+            drainSpawnIds.add(event.agentId);
+          } else {
+            drainSpawnIds.delete(event.agentId);
+          }
+        };
+        spawnGraceUsed = false;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;
@@ -3456,13 +3516,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           activeController = null;
           activeRunPromise = null;
         }
-        // The active run has settled. Reset the double-tap window so a
-        // later Ctrl+C is treated as a fresh first tap rather than a
-        // late-arriving second tap of a cancellation that already
-        // completed. Only safe when this run is still the active one —
-        // a stale finally from a reset-and-replaced run must not
-        // disarm SIGINT state that now belongs to a newer turn.
+        // The active run has settled. Clear the interrupt-time spawn snapshot
+        // so the next turn starts fresh (no stale snapshot from a completed
+        // interrupt sequence). Then reset the double-tap window so a later
+        // Ctrl+C is treated as a fresh first tap rather than a late-arriving
+        // second tap of a cancellation that already completed.
+        // Both guarded: stale finally from a reset-and-replaced run must not
+        // disarm SIGINT state belonging to a newer turn.
         if (isStillActive) {
+          // Drop the per-drain spawn delegate so events arriving between drains
+          // (after this finally and before the next drain's start) are no-ops.
+          currentDrainSpawnHandler = null;
+          currentDrainSpawnIds = new Set<string>(); // empty sentinel between drains
           sigintHandler.complete();
         }
       }
