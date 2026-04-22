@@ -251,6 +251,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
           resolveQuery: (q) => resolveDecision(q, ctx.session.sessionId as string),
           baseQuery: enrichedQuery,
           registry: specRegistry,
+          backendSupportsDualKey,
         });
         if (specOutcome.kind === "spec-evaluated") {
           decision = specOutcome.decision;

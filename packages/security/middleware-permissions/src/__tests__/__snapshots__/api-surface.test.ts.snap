@@ -59,13 +59,14 @@ declare function createApprovalStore(config: ApprovalStoreConfig): ApprovalStore
  * 1. **Exact-argv guard**: For any argv where the spec returns
  *    \`kind: "partial" | "refused"\`, an existing \`allow\` decision from a
  *    prefix \`Run(...)\` rule is downgraded to \`ask\` unless an explicit
- *    exact-argv rule allows the full command (detected by querying the
- *    base resource to see if the backend falls through to deny, then
- *    confirming the exact-argv resource returns allow).
+ *    exact-argv rule allows the full command (canary-suffix technique).
  *
  * 2. **Semantic rule evaluation**: For \`complete\`/\`partial\` specs, evaluates
  *    \`Write(path)\`, \`Read(path)\`, and \`Network(host)\` rules against the
  *    spec's \`writes\`, \`reads\`, and \`network[].host\` fields.
+ *    Only runs when \`backendSupportsDualKey: true\` — requires a backend that
+ *    marks fall-through denies with \`IS_DEFAULT_DENY\` so unmatched resources
+ *    are not mistaken for explicit deny/ask rules.
  */
 
 type SpecGuardOutcome = {

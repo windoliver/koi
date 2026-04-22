@@ -5,13 +5,14 @@
  * 1. **Exact-argv guard**: For any argv where the spec returns
  *    `kind: "partial" | "refused"`, an existing `allow` decision from a
  *    prefix `Run(...)` rule is downgraded to `ask` unless an explicit
- *    exact-argv rule allows the full command (detected by querying the
- *    base resource to see if the backend falls through to deny, then
- *    confirming the exact-argv resource returns allow).
+ *    exact-argv rule allows the full command (canary-suffix technique).
  *
  * 2. **Semantic rule evaluation**: For `complete`/`partial` specs, evaluates
  *    `Write(path)`, `Read(path)`, and `Network(host)` rules against the
  *    spec's `writes`, `reads`, and `network[].host` fields.
+ *    Only runs when `backendSupportsDualKey: true` — requires a backend that
+ *    marks fall-through denies with `IS_DEFAULT_DENY` so unmatched resources
+ *    are not mistaken for explicit deny/ask rules.
  */
 
 import {
@@ -22,6 +23,7 @@ import {
   initializeBashAst,
 } from "@koi/bash-ast";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
+import { isDefaultDeny } from "./classifier.js";
 
 export type SpecGuardOutcome =
   | { readonly kind: "skipped"; readonly reason: string }
@@ -40,6 +42,14 @@ function stricter(a: PermissionDecision, b: PermissionDecision): PermissionDecis
   return a;
 }
 
+/**
+ * Evaluate semantic Write/Read/Network rules for a command's effects.
+ *
+ * Only called when `backendSupportsDualKey: true`. Decisions marked with
+ * `IS_DEFAULT_DENY` are fall-throughs (no matching rule) and are skipped
+ * so that the absence of a Write/Read/Network rule does not downgrade an
+ * existing `allow` decision.
+ */
 async function evaluateSemanticRules(
   semantics: CommandSemantics,
   resolveQuery: (q: PermissionQuery) => Promise<PermissionDecision>,
@@ -50,12 +60,14 @@ async function evaluateSemanticRules(
 
   for (const path of semantics.writes) {
     const d = await resolveQuery({ ...baseQuery, resource: path, action: "write" });
+    if (isDefaultDeny(d)) continue; // fall-through, no explicit Write rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
 
   for (const path of semantics.reads) {
     const d = await resolveQuery({ ...baseQuery, resource: path, action: "read" });
+    if (isDefaultDeny(d)) continue; // fall-through, no explicit Read rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
@@ -63,6 +75,7 @@ async function evaluateSemanticRules(
   for (const net of semantics.network) {
     // Use net.host (parsed URL.host) for Network rule matching, NOT net.target
     const d = await resolveQuery({ ...baseQuery, resource: net.host, action: "network" });
+    if (isDefaultDeny(d)) continue; // fall-through, no explicit Network rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
@@ -108,16 +121,18 @@ async function hasExplicitExactArgvRule(
  *
  * For `partial`/`refused` specs: enforces that any `allow` from a prefix
  * `Run(...)` rule is downgraded to `ask` unless an explicit exact-argv
- * `Run(...)` rule also allows the full command string. An exact-argv rule
- * is considered explicit when the backend falls through to deny on the
- * base invoke resource but returns allow for the exact-argv resource.
+ * `Run(...)` rule also allows the full command string (canary-suffix
+ * detection).
  *
  * For `complete`/`partial` specs with semantics: evaluates `Write(path)`,
- * `Read(path)`, and `Network(host)` rules against the spec's reported effects.
+ * `Read(path)`, and `Network(host)` rules. Only enforced when
+ * `backendSupportsDualKey: true` — requires a backend that marks
+ * fall-through denies so unmatched resources don't downgrade allowed commands.
  *
- * For `too-complex`/`parse-unavailable` AST results, and for pipeline-like
- * simple commands (multiple commands in one analysis), returns
- * `{kind: "skipped"}`.
+ * For `too-complex`/`parse-unavailable` AST results: if the current
+ * decision is `allow`, downgrades to `ask` (fail-closed: semantic analysis
+ * is unavailable so human review is required). Non-allow decisions pass
+ * through unchanged.
  */
 export async function evaluateSpecGuard(opts: {
   readonly toolId: string;
@@ -126,8 +141,18 @@ export async function evaluateSpecGuard(opts: {
   readonly resolveQuery: (q: PermissionQuery) => Promise<PermissionDecision>;
   readonly baseQuery: PermissionQuery;
   readonly registry: ReadonlyMap<string, CommandSpec>;
+  /** When true, semantic Write/Read/Network rules are evaluated in addition to the exact-argv guard. */
+  readonly backendSupportsDualKey?: boolean;
 }): Promise<SpecGuardOutcome> {
-  const { toolId, rawCommand, currentDecision, resolveQuery, baseQuery, registry } = opts;
+  const {
+    toolId,
+    rawCommand,
+    currentDecision,
+    resolveQuery,
+    baseQuery,
+    registry,
+    backendSupportsDualKey,
+  } = opts;
 
   // Ensure the parser is ready. initializeBashAst() is idempotent — subsequent
   // calls return the cached promise and complete in O(1) once warm. Awaiting
@@ -150,14 +175,36 @@ export async function evaluateSpecGuard(opts: {
     };
   }
   if (analysis.kind !== "simple") {
-    // too-complex: fall through to existing regex-based classifier
+    // too-complex: semantic analysis is unavailable.
+    // If the current decision is allow, ratchet to ask so the operator
+    // confirms the command — complex shell forms can hide side effects.
+    if (currentDecision.effect === "allow") {
+      return {
+        kind: "spec-evaluated",
+        decision: {
+          effect: "ask",
+          reason: "complex shell form: semantic analysis unavailable, requires review",
+        },
+        specKind: "refused",
+      };
+    }
     return { kind: "skipped", reason: analysis.kind };
   }
 
-  // Pipeline-like commands parsed as multiple simple commands cannot be
-  // safely analyzed per-spec because piped stdout/stdin semantics are
-  // not captured at the individual command level. Skip the guard.
+  // Multi-command inputs (list commands, here-strings resolved as multiple
+  // SimpleCommands) cannot be safely analyzed per-spec — piped/sequential
+  // semantics span commands. Treat same as too-complex above.
   if (analysis.commands.length > 1) {
+    if (currentDecision.effect === "allow") {
+      return {
+        kind: "spec-evaluated",
+        decision: {
+          effect: "ask",
+          reason: "multi-command: semantic analysis unavailable, requires review",
+        },
+        specKind: "refused",
+      };
+    }
     return { kind: "skipped", reason: "multi-command" };
   }
 
@@ -192,7 +239,7 @@ export async function evaluateSpecGuard(opts: {
       }
     }
 
-    if (specResult.kind === "partial") {
+    if (specResult.kind === "partial" && backendSupportsDualKey) {
       const semanticDecision = await evaluateSemanticRules(
         specResult.semantics,
         resolveQuery,
@@ -208,15 +255,20 @@ export async function evaluateSpecGuard(opts: {
     return { kind: "spec-evaluated", decision: currentDecision, specKind: specResult.kind };
   }
 
-  // complete — evaluate semantic rules only
-  const semanticDecision = await evaluateSemanticRules(
-    specResult.semantics,
-    resolveQuery,
-    baseQuery,
-  );
-  return {
-    kind: "spec-evaluated",
-    decision: stricter(currentDecision, semanticDecision),
-    specKind: "complete",
-  };
+  // complete — evaluate semantic rules only when backend can distinguish
+  // matched rules from fall-through denies
+  if (backendSupportsDualKey) {
+    const semanticDecision = await evaluateSemanticRules(
+      specResult.semantics,
+      resolveQuery,
+      baseQuery,
+    );
+    return {
+      kind: "spec-evaluated",
+      decision: stricter(currentDecision, semanticDecision),
+      specKind: "complete",
+    };
+  }
+
+  return { kind: "spec-evaluated", decision: currentDecision, specKind: "complete" };
 }

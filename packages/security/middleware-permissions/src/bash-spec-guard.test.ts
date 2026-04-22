@@ -89,7 +89,7 @@ describe("evaluateSpecGuard — partial spec enforces exact-argv guard", () => {
     expect(result.specKind).toBe("partial");
   });
 
-  test("rm -r + exact-argv rule + Write allow → allow", async () => {
+  test("rm -r + exact-argv rule + Write allow → allow (with backendSupportsDualKey)", async () => {
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "rm -r /tmp/work",
@@ -101,6 +101,7 @@ describe("evaluateSpecGuard — partial spec enforces exact-argv guard", () => {
       },
       baseQuery,
       registry,
+      backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
@@ -110,7 +111,7 @@ describe("evaluateSpecGuard — partial spec enforces exact-argv guard", () => {
 
 // --- complete spec ---
 
-describe("evaluateSpecGuard — complete spec evaluates semantic rules", () => {
+describe("evaluateSpecGuard — complete spec evaluates semantic rules (backendSupportsDualKey)", () => {
   test("rm /etc/passwd → Write deny on /etc/** triggers deny", async () => {
     const result = await evaluateSpecGuard({
       toolId: "bash",
@@ -123,6 +124,7 @@ describe("evaluateSpecGuard — complete spec evaluates semantic rules", () => {
       },
       baseQuery,
       registry,
+      backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
@@ -143,6 +145,7 @@ describe("evaluateSpecGuard — complete spec evaluates semantic rules", () => {
       },
       baseQuery,
       registry,
+      backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
@@ -160,6 +163,7 @@ describe("evaluateSpecGuard — complete spec evaluates semantic rules", () => {
       },
       baseQuery,
       registry,
+      backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
@@ -174,27 +178,66 @@ describe("evaluateSpecGuard — complete spec evaluates semantic rules", () => {
       resolveQuery: async (_q) => allowDecision,
       baseQuery,
       registry,
+      backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
     expect(result.decision.effect).toBe("allow");
     expect(result.specKind).toBe("complete");
   });
+
+  test("semantic rules skipped without backendSupportsDualKey (legacy backend compat)", async () => {
+    // Without backendSupportsDualKey, semantic Write/Network rules must NOT be
+    // enforced — the backend can't distinguish matched rules from fall-through
+    // denies, so we'd incorrectly downgrade commands that have no semantic rule.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "rm /etc/passwd",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        if (q.action === "write") return hardDeny("no Write rule matched");
+        return allowDecision;
+      },
+      baseQuery,
+      registry,
+      // backendSupportsDualKey intentionally omitted
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    // Without dual-key backend, semantic deny must NOT apply
+    expect(result.decision.effect).toBe("allow");
+  });
 });
 
 // --- too-complex / parse-unavailable ---
 
-describe("evaluateSpecGuard — non-simple commands are skipped", () => {
-  test("pipeline is too-complex → skipped", async () => {
+describe("evaluateSpecGuard — complex commands ratchet allow → ask", () => {
+  test("pipeline (too-complex) with current allow → downgrade to ask", async () => {
+    // Operators may explicitly allow `bash:!complex*` for automation — but we
+    // cannot verify semantics for complex forms, so ratchet to ask for review.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "cat /etc/passwd | grep root",
       currentDecision: allowDecision,
+      resolveQuery: async (_q) => allowDecision,
+      baseQuery,
+      registry,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("ask");
+  });
+
+  test("pipeline (too-complex) with current ask/deny → unchanged (skipped)", async () => {
+    // Already non-allow → no further downgrade needed
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "cat /etc/passwd | grep root",
+      currentDecision: { effect: "ask" },
       resolveQuery: async (_q) => hardDeny("should not be called"),
       baseQuery,
       registry,
     });
-    // Pipeline → too-complex for the AST walker → spec guard skips
     expect(result.kind).toBe("skipped");
   });
 });
