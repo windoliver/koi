@@ -219,30 +219,48 @@ describe("evaluateSpecGuard — parse-unavailable fails closed", () => {
   });
 });
 
-describe("evaluateSpecGuard — exact-argv detection with broad wildcard", () => {
-  test("broad wildcard allow + exact allow → downgrade to ask (probe detects wildcard)", async () => {
-    // Scenario: user has `allow: bash:*` (wildcard) AND `allow: bash:ssh prod-host`
-    // (explicit exact). With the old base-query approach, the explicit exact rule
-    // was ignored because the base query returned allow from the wildcard.
-    // The probe approach correctly detects the wildcard and downgrades to ask.
+describe("evaluateSpecGuard — exact-argv detection with canary suffix", () => {
+  test("broad wildcard (bash:*) + exact also allows → downgrade to ask (canary detects wildcard)", async () => {
+    // Scenario: user has `allow: bash:*`. Both exact AND canary allow → prefix/wildcard.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "ssh prod-host",
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision, // broad wildcard: everything allows
+      resolveQuery: async (_q) => allowDecision,
       baseQuery,
       registry,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
-    // Probe matches wildcard → no explicit exact rule → downgrade to ask
     expect(result.decision.effect).toBe("ask");
     expect(result.specKind).toBe("refused");
   });
 
-  test("no wildcard + exact allow → honor explicit exact rule", async () => {
-    // Scenario: user has ONLY `allow: bash:ssh prod-host` (no wildcard).
-    // Probe does not match → exact rule is recognized as explicit.
+  test("prefix rule (bash:ssh*) + exact allows → downgrade to ask (canary detects prefix)", async () => {
+    // Scenario: user has `allow: bash:ssh*`. Exact allows; canary `bash:ssh prod-host\x01...`
+    // also allows (glob `[^/]*` matches the canary suffix) → prefix rule → downgrade to ask.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "ssh prod-host",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        // Simulate `bash:ssh*` — matches anything starting with `bash:ssh`
+        if (q.resource.startsWith("bash:ssh")) return allowDecision;
+        return hardDeny("no rule");
+      },
+      baseQuery,
+      registry,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    // Canary starts with `bash:ssh` → prefix rule matches → downgrade to ask
+    expect(result.decision.effect).toBe("ask");
+    expect(result.specKind).toBe("refused");
+  });
+
+  test("exact rule only (bash:ssh prod-host) → honor explicit rule", async () => {
+    // Scenario: user has ONLY `allow: bash:ssh prod-host` (no wildcard or prefix).
+    // Canary suffix makes the resource not match the exact pattern → canary denies → explicit.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "ssh prod-host",

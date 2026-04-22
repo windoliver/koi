@@ -19,6 +19,7 @@ import {
   type CommandSemantics,
   type CommandSpec,
   evaluateBashCommand,
+  initializeBashAst,
 } from "@koi/bash-ast";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
 
@@ -71,38 +72,35 @@ async function evaluateSemanticRules(
 
 /**
  * Determine whether the backend has an explicit exact-argv allow rule, as
- * opposed to a generic prefix/wildcard allow.
+ * opposed to a prefix/glob allow (e.g. `bash:ssh*` or `bash:*`).
  *
- * Uses the same broad-wildcard probe technique as the dangerous-command
- * ratchet in wrap-tool-call.ts: `${toolId}:__broad_wildcard_probe__` matches
- * a wildcard rule like `bash:*` but does NOT match any real command prefix.
- * If the probe returns `allow`, the backend has a broad wildcard — the exact
- * query's allow came from that wildcard, not from an explicit exact-argv rule.
- * If the probe returns non-allow, only specific rules are present — an `allow`
- * on the exact resource is then explicit.
+ * Uses a canary-suffix technique: any prefix/glob rule that matched the
+ * exact resource will also match `${exactResource}\x01__spec_guard_canary__`
+ * because glob `*` compiles to `[^/]*` which matches any non-slash character
+ * — including the appended canary bytes. An exact rule compiled to `^…$`
+ * will NOT match the canary suffix. Therefore:
  *
- * This avoids the base-query false-negative: when both a broad allow AND an
- * explicit exact-argv allow exist, querying the base resource returns `allow`
- * (from the broad rule) and would wrongly report no explicit rule.
+ *   exact=allow  + canary=allow  → allow came from prefix/glob → not explicit
+ *   exact=allow  + canary=deny   → allow came from exact rule  → explicit
+ *   exact=deny                   → no matching allow at all    → not explicit
+ *
+ * The canary uses U+0001 (SOH) which cannot appear in a real bash command
+ * string, so no legitimate rule pattern would ever match it on its own.
  */
 async function hasExplicitExactArgvRule(
   exactResource: string,
-  toolId: string,
   resolveQuery: (q: PermissionQuery) => Promise<PermissionDecision>,
   baseQuery: PermissionQuery,
 ): Promise<boolean> {
-  // Probe: would a broad wildcard (bash:*) match this nonsense resource?
-  const probeDecision = await resolveQuery({
-    ...baseQuery,
-    resource: `${toolId}:__broad_wildcard_probe__`,
-  });
-  if (probeDecision.effect === "allow") {
-    // Broad wildcard exists → exact query's allow came from the wildcard
+  const exactDecision = await resolveQuery({ ...baseQuery, resource: exactResource });
+  if (exactDecision.effect !== "allow") {
     return false;
   }
-  // No broad wildcard — check if the exact-argv resource has an explicit allow
-  const exactDecision = await resolveQuery({ ...baseQuery, resource: exactResource });
-  return exactDecision.effect === "allow";
+  // Exact allows — distinguish exact rule from prefix/glob with a canary suffix.
+  const canaryResource = `${exactResource}\x01__spec_guard_canary__`;
+  const canaryDecision = await resolveQuery({ ...baseQuery, resource: canaryResource });
+  // Canary also allows → rule is prefix/glob, not exact
+  return canaryDecision.effect !== "allow";
 }
 
 /**
@@ -130,6 +128,12 @@ export async function evaluateSpecGuard(opts: {
   readonly registry: ReadonlyMap<string, CommandSpec>;
 }): Promise<SpecGuardOutcome> {
   const { toolId, rawCommand, currentDecision, resolveQuery, baseQuery, registry } = opts;
+
+  // Ensure the parser is ready. initializeBashAst() is idempotent — subsequent
+  // calls return the cached promise and complete in O(1) once warm. Awaiting
+  // here guarantees no parse-unavailable(not-initialized) denies from a
+  // startup race between middleware construction and the first bash request.
+  await initializeBashAst();
 
   const analysis = await analyzeBashCommand(rawCommand);
   if (analysis.kind === "parse-unavailable") {
@@ -170,12 +174,7 @@ export async function evaluateSpecGuard(opts: {
   if (specResult.kind === "refused" || specResult.kind === "partial") {
     if (currentDecision.effect === "allow") {
       const exactResource = `${toolId}:${rawCommand.trim()}`;
-      const hasExplicit = await hasExplicitExactArgvRule(
-        exactResource,
-        toolId,
-        resolveQuery,
-        baseQuery,
-      );
+      const hasExplicit = await hasExplicitExactArgvRule(exactResource, resolveQuery, baseQuery);
 
       if (!hasExplicit) {
         const label =
