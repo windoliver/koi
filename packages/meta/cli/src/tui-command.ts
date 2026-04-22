@@ -1724,7 +1724,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                       try {
                         const { protocol, hostname } = new URL(url);
                         if (protocol !== "http:" && protocol !== "https:") return false;
-                        const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+                        // Strip IPv6 brackets then lower-case + strip trailing DNS root
+                        // dot so `localhost.` / `metadata.google.internal.` can't
+                        // bypass suffix/host checks (same canonicalization as isSafeUrl).
+                        const h = hostname
+                          .replace(/^\[|\]$/g, "")
+                          .toLowerCase()
+                          .replace(/\.$/, "");
                         if (isBlockedIp(h)) return false;
                         if (BLOCKED_HOSTS.includes(h)) return false;
                         if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s))) return false;
