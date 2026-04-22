@@ -61,7 +61,7 @@ After `runHeadless()` returns and `shutdownRuntime()` completes:
 
 1. If `shutdownFailed` → emit INTERNAL, skip schema validation (teardown failure takes precedence)
 2. If `headlessCode !== SUCCESS` → emit original exit code, skip schema validation (agent already failed)
-3. If `resultSchemaObj !== undefined && headlessCode === SUCCESS` → call `validateResultSchema(assistantTextParts.join(""), resultSchemaObj)`
+3. If `resultSchemaObj !== undefined && headlessCode === SUCCESS` → call `validateResultSchema(rawAssistantParts.join(""), resultSchemaObj)` (where `rawAssistantParts` was populated via the `onRawAssistantText` callback before redaction)
    - On failure → `emitResult({ exitCode: 1, error: schemaResult.error })`
    - On success → normal `emitResult()`
 4. Otherwise → normal `emitResult()`

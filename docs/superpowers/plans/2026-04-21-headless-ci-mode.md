@@ -844,6 +844,28 @@ describe("runHeadless — onRawAssistantText callback", () => {
     });
     expect(raw.join("")).toBe('{"count":1}');
   });
+
+  test("cap uses UTF-8 bytes not UTF-16 code units: multibyte chunk counted correctly", () => {
+    // "🚀" is 1 code unit in JS .length but 4 UTF-8 bytes.
+    // A 256-byte cap (test-only) should reject a 65-emoji payload.
+    const CAP = 256;
+    const parts: string[] = [];
+    let totalBytes = 0;
+    const onRaw = (text: string): void => {
+      const chunkBytes = Buffer.byteLength(text, "utf8");
+      if (totalBytes + chunkBytes <= CAP) {
+        parts.push(text);
+        totalBytes += chunkBytes;
+      }
+    };
+    // Each emoji = 4 UTF-8 bytes. 65 × 4 = 260 bytes, exceeds 256-byte cap.
+    onRaw("🚀".repeat(65));
+    // The 260-byte chunk should be rejected entirely (pre-append guard).
+    expect(parts).toHaveLength(0);
+    // A 63-emoji chunk (252 bytes) fits.
+    onRaw("🚀".repeat(63));
+    expect(parts).toHaveLength(1);
+  });
 });
 ```
 
@@ -878,9 +900,12 @@ Then pass the callback in the `runHeadless()` call:
       externalSignal: controller.signal,
       onRawAssistantText: resultSchemaObj !== undefined
         ? (text) => {
-            if (rawAssistantPartsBytes < RAW_PARTS_CAP_BYTES) {
+            // Count actual UTF-8 bytes, not JS UTF-16 code units, to honour the cap
+            // correctly for multibyte content (emoji, CJK, etc.).
+            const chunkBytes = Buffer.byteLength(text, "utf8");
+            if (rawAssistantPartsBytes + chunkBytes <= RAW_PARTS_CAP_BYTES) {
               rawAssistantParts.push(text);
-              rawAssistantPartsBytes += text.length;
+              rawAssistantPartsBytes += chunkBytes;
             }
           }
         : undefined,
