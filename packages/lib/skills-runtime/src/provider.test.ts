@@ -153,3 +153,84 @@ describe("skillDefinitionToComponent", () => {
     expect(component.executionMode).toBeUndefined();
   });
 });
+
+describe("createSkillProvider — progressive mode", () => {
+  let userRoot: string;
+
+  beforeEach(async () => {
+    userRoot = await mkdtemp(join(tmpdir(), "koi-provider-prog-"));
+  });
+
+  afterEach(async () => {
+    await rm(userRoot, { recursive: true, force: true });
+  });
+
+  test("progressive: true attaches skills with empty content (no body loaded)", async () => {
+    await writeSkill(userRoot, "my-skill");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    const result = await provider.attach(STUB_AGENT);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const token = skillToken("my-skill");
+    const component = result.components.get(token) as
+      | { name: string; description: string; content: string }
+      | undefined;
+    expect(component).toBeDefined();
+    expect(component?.name).toBe("my-skill");
+    expect(component?.description).toBe("Test my-skill.");
+    expect(component?.content).toBe("");
+  });
+
+  test("progressive: true does not load bodies even for multiple skills", async () => {
+    await writeSkill(userRoot, "skill-a", "Long body A.");
+    await writeSkill(userRoot, "skill-b", "Long body B.");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    const result = await provider.attach(STUB_AGENT);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const a = result.components.get(skillToken("skill-a")) as { content: string } | undefined;
+    const b = result.components.get(skillToken("skill-b")) as { content: string } | undefined;
+    expect(a?.content).toBe("");
+    expect(b?.content).toBe("");
+  });
+
+  test("progressive: true preserves description for XML rendering", async () => {
+    await Bun.write(
+      join(userRoot, "my-skill", "SKILL.md"),
+      "---\nname: my-skill\ndescription: Does cool things.\n---\n\nBody.",
+      { createPath: true },
+    );
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    const result = await provider.attach(STUB_AGENT);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const component = result.components.get(skillToken("my-skill")) as
+      | { description: string }
+      | undefined;
+    expect(component?.description).toBe("Does cool things.");
+  });
+
+  test("progressive: false (explicit) uses eager path — content is non-empty", async () => {
+    await writeSkill(userRoot, "eager-skill", "Eager body.");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const provider = createSkillProvider(runtime, { progressive: false });
+
+    const result = await provider.attach(STUB_AGENT);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const component = result.components.get(skillToken("eager-skill")) as
+      | { content: string }
+      | undefined;
+    expect(component?.content).toContain("Eager body.");
+  });
+});
