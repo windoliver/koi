@@ -22,6 +22,8 @@ export interface AuditEntry {
     | "secret_access"
     | "permission_decision"
     | "config_change";
+  /** Populated for tool_call entries — the tool's identifier. */
+  readonly toolName?: string;
   readonly request?: unknown;
   readonly response?: unknown;
   readonly error?: unknown;

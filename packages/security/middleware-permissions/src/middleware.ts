@@ -823,7 +823,7 @@ export function createPermissionsMiddleware(
     sink: AuditSink,
   ): void {
     const entry: AuditEntry = {
-      schema_version: 1,
+      schema_version: 2,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
@@ -894,7 +894,7 @@ export function createPermissionsMiddleware(
       meta.scope = approval.scope;
     }
     const entry: AuditEntry = {
-      schema_version: 1,
+      schema_version: 2,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
@@ -959,7 +959,7 @@ export function createPermissionsMiddleware(
     sink: AuditSink,
   ): void {
     const entry: AuditEntry = {
-      schema_version: 1,
+      schema_version: 2,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
