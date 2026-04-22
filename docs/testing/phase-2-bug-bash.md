@@ -36,6 +36,13 @@ export KOI_HOME="/tmp/koi-home-${NAMESPACE}"
 rm -rf "$KOI_HOME"
 mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
 
+# Hermetic hook isolation: KOI_HOOKS_CONFIG_PATH takes precedence over HOME-derived
+# paths in runtime-factory.ts/shared-wiring.ts, so wiping KOI_HOME alone is not enough.
+# Unset it and disable user hooks to prevent external hooks from injecting prompts or
+# commands into the bug-bash session.
+unset KOI_HOOKS_CONFIG_PATH
+export KOI_DISABLE_HOOKS=1
+
 # Initialize $FIXTURE as an isolated git repo — required by §1.5 reset and S25 setup.
 # Must be a standalone root (not nested inside another repo) so resolveMemoryDir()
 # and all cleanup scripts target $FIXTURE/.koi/memory exclusively.
@@ -68,7 +75,7 @@ The TUI (`koi tui`) is configured via **environment variables and CLI flags**. I
 | Scenario | Required stacks | Notes |
 |----------|-----------------|-------|
 | S14 — memory persist/recall | default stack (no `--manifest`) | **Do not** use a memory-only manifest: Q97-Q98 require extraction from spawn tool outputs, which are only available when the execution/spawn stacks are active. Run S14 without `--manifest` (default stack set). |
-| S25 — memory dir isolation | `memory` only | **Must** use `--manifest` with `stacks: [memory]`. The default stack also enables `dreamStack`, whose `createDreamMiddleware` runs `onSessionEnd` and can mutate `$MEMORY_DIR` between Q156-Q161 assertions, making file-count checks flaky. Isolate S25 from dream activity by pinning to the memory stack only. |
+| S25 — memory dir isolation | default stack (no `--manifest`) | Dream consolidation requires ≥ 5 sessions + 24 h (gate in `@koi/dream`). S25 runs only 2 sessions on a fresh harness, so `dreamStack` is active but consolidation never fires — file-count assertions are deterministic without manifest isolation. |
 | S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
 
 ```bash
@@ -765,12 +772,11 @@ tmux new-session -d -s "$KOI_SESSION" \
 > `createMemoryStore` stores each memory as a Markdown file with frontmatter under the resolved memory directory,
 > maintains a `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
 >
-> **S25 uses a memory-only manifest** (`stacks: [memory]`) — **not** the default stack. The default stack also
-> enables `dreamStack`, which runs `createDreamMiddleware` with an `onSessionEnd` hook that can mutate `$MEMORY_DIR`
-> between assertions. The setup block writes `s25-memory-only.koi.yaml` and passes `--manifest` to `koi tui`
-> to pin the scenario to the memory stack only. This ensures Q156-Q161 file-count checks are not affected
-> by background dream consolidation. If you need to test the full default-stack wiring (memory + dream together),
-> run a separate ad-hoc TUI session without `--manifest` — that is not a formalized S25 step.
+> **S25 runs on the default TUI stack** (no `--manifest`). Dream consolidation only fires when the gate
+> is satisfied: ≥ 5 sessions elapsed AND ≥ 24 h since the last dream (`packages/mm/dream/src/gate.ts`).
+> S25 uses only 2 sessions on a fresh harness (initial + restart for Q159), so `dreamStack` is active
+> but consolidation never runs — `$MEMORY_DIR` file counts are safe without manifest isolation.
+> This keeps S25 exercising the same `memory + dream` default stack combination that ships to users.
 >
 > **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
 > When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$MEMORY_DIR"` explicitly
@@ -814,16 +820,8 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
 
-# Write a minimal manifest that enables only the memory stack.
-# The default stack also includes dreamStack, which runs onSessionEnd consolidation
-# and can mutate $MEMORY_DIR between assertions, making Q156-Q161 file-count checks flaky.
-cat > "$FIXTURE/s25-memory-only.koi.yaml" <<'MANIFEST_EOF'
-stacks:
-  - memory
-MANIFEST_EOF
-
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 
 # Verify the session was actually created AND the TUI stayed up (not just a tmux frame).
 # tmux has-session only proves the session shell was created; capture-pane after a brief
@@ -845,7 +843,7 @@ fi
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$MEMORY_DIR/`; frontmatter has `type: project` |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index has 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from `$MEMORY_DIR/`) |
-| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
 | Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156 — differs by only "its" → "the"; word-token Jaccard ≈ 0.78, above the 0.7 dedup threshold) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
 | Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
 ### Packages Not Testable via TUI (justified)
@@ -910,13 +908,12 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | `--manifest s25-memory-only.koi.yaml` (`stacks: [memory]`); `dreamStack` excluded for deterministic file-count assertions; git-backed `$FIXTURE`. ⚠ Memory+dream integration (default stack) is **not** covered by S25 — test separately with an ad-hoc TUI session without `--manifest`. |
+| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | default stack; git-backed `$FIXTURE`; dream gate requires ≥ 5 sessions + 24 h — never fires in 2-session run, so file-count assertions are deterministic |
 
-**Middleware stack by scenario:**
+**All scenarios (S1-S25) run with the full TUI middleware stack** (default stack set, no `--manifest`):
+event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
 
-- **S1-S24, S14** — full TUI middleware stack (default stack set, no `--manifest`):
-  event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
-- **S25** — memory-only manifest (`stacks: [memory]`): only memory + extraction middleware active; `dreamStack`, `executionStack`, `spawnStack`, `checkpointStack`, and `observabilityStack` are excluded. This is intentional — deterministic file-count assertions require excluding dream's `onSessionEnd` mutations. ⚠ Memory+dream default-stack integration is **not** covered by any formalized scenario; test ad-hoc without `--manifest`.
+Note: S25's file-count assertions are not affected by `dreamStack` because dream consolidation requires ≥ 5 sessions + 24 h elapsed — the 2-session S25 run never triggers it.
 
 Optional MW (model-router, goal, otel, audit, report) require explicit config — tested in S20-S23.
 
@@ -1012,7 +1009,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
-| @koi/memory-fs | **S25** | Q156-Q161 (`memoryStack` via memory-only manifest `stacks: [memory]`; `dreamStack` excluded to prevent background consolidation from mutating the fixture; concurrent-write safety via unit test) |
+| @koi/memory-fs | **S25** | Q156-Q161 (`memoryStack` in default stack set; dream consolidation gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; concurrent-write safety via unit test) |
 | @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
 | @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
 | @koi/dream | non-TUI | `bun run test --filter=@koi/dream` (offline batch job) |
