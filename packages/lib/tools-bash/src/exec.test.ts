@@ -219,13 +219,34 @@ describe("execSandboxed — callback threading", () => {
 
 describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   test("abort resolves spawnBash for a long-running command", async () => {
-    // If any process survives and keeps the pipe open, drainStream hangs
-    // and this test times out. Returning proves cleanup was complete.
+    // Readiness handshake: echo READY before the long sleep so we know
+    // the process is actually running before we abort. If any process
+    // survives and keeps the pipe open, drainStream hangs and this test
+    // times out. Returning proves cleanup was complete.
     const controller = new AbortController();
+    const stdoutChunks: string[] = [];
 
-    const promise = spawnBash("sleep 100", process.cwd(), 120_000, 1_000_000, controller.signal);
+    const promise = spawnBash(
+      "echo READY; sleep 100",
+      process.cwd(),
+      120_000,
+      1_000_000,
+      controller.signal,
+      undefined,
+      { onStdout: (c) => stdoutChunks.push(c) },
+    );
 
-    await new Promise<void>((r) => setTimeout(r, 200));
+    // Wait until the process signals it is running before aborting.
+    await new Promise<void>((r) => {
+      const check = (): void => {
+        if (stdoutChunks.join("").includes("READY")) {
+          r();
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
     controller.abort();
 
     const result = await promise;
@@ -236,17 +257,31 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     // `true; sleep 100` forces bash to fork a child rather than exec-into sleep.
     // sleep inherits bash's process group; the group SIGTERM must reach it.
     // If sleep escapes, it holds the pipe open and this test times out.
+    // Readiness handshake via stderr: echo to stderr after the no-op `true`
+    // so we know bash has forked sleep before we abort.
     const controller = new AbortController();
+    const stderrChunks: string[] = [];
 
     const promise = spawnBash(
-      "true; sleep 100",
+      "true; echo READY >&2; sleep 100",
       process.cwd(),
       120_000,
       1_000_000,
       controller.signal,
+      undefined,
+      { onStderr: (c) => stderrChunks.push(c) },
     );
 
-    await new Promise<void>((r) => setTimeout(r, 300));
+    await new Promise<void>((r) => {
+      const check = (): void => {
+        if (stderrChunks.join("").includes("READY")) {
+          r();
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
     controller.abort();
 
     const result = await promise;
@@ -255,7 +290,10 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
 
   test("already-aborted signal throws AbortError without spawning any process", async () => {
     // throwIfAborted() is called before spawnChild, so no child should be created.
-    // Use a unique sleep duration as a fingerprint: if spawnChild ran, pgrep finds it.
+    // The race-safety argument: spawnBash throws synchronously (via throwIfAborted)
+    // BEFORE any spawn syscall, so the fingerprint process is never started — there
+    // is no TOCTOU window between "process spawned" and "process reaped". pgrep
+    // confirms this invariant; missing pgrep binary is detected via pgrep.error.
     const uniqueSecs = 999_937; // astronomically unlikely to be running elsewhere
     const controller = new AbortController();
     controller.abort();
@@ -271,8 +309,10 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     expect(thrownError).toBeDefined();
     expect((thrownError as { name?: string }).name).toBe("AbortError");
 
-    // No child was spawned: pgrep for the fingerprint must return empty
+    // No child was spawned: pgrep for the fingerprint must return empty.
+    // Guard against missing pgrep binary (pgrep.error defined = exec failed).
     const pgrep = spawnSync("pgrep", ["-f", String(uniqueSecs)], { encoding: "utf8" });
+    expect(pgrep.error).toBeUndefined();
     expect(pgrep.stdout.trim()).toBe("");
   });
 
@@ -280,17 +320,31 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     // bash ignores SIGTERM via trap '' TERM; only SIGKILL (after
     // SIGKILL_ESCALATION_MS) can kill it. If escalation is broken,
     // drainStream hangs and this test times out at 8 s.
+    // Readiness handshake: echo READY to stderr after the trap is installed
+    // so we abort only once the immune loop is guaranteed running.
     const controller = new AbortController();
+    const stderrChunks: string[] = [];
 
     const promise = spawnBash(
-      "trap '' TERM; while true; do sleep 0.05; done",
+      "trap '' TERM; echo READY >&2; while true; do sleep 0.05; done",
       process.cwd(),
       120_000,
       1_000_000,
       controller.signal,
+      undefined,
+      { onStderr: (c) => stderrChunks.push(c) },
     );
 
-    await new Promise<void>((r) => setTimeout(r, 200));
+    await new Promise<void>((r) => {
+      const check = (): void => {
+        if (stderrChunks.join("").includes("READY")) {
+          r();
+          return;
+        }
+        setTimeout(check, 10);
+      };
+      check();
+    });
     controller.abort();
 
     // Returns only after SIGKILL escalation (~3 s). Timing out = escalation broken.
