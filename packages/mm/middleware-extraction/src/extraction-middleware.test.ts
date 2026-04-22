@@ -928,6 +928,12 @@ describe("createExtractionMiddleware", () => {
     // end-to-end through the full middleware pipeline (raw tool output → store call).
     // Catches regressions where the adapter or persistCandidates re-introduces a
     // hardcoded default (e.g. type: "feedback" for all) after mapCategoryToMemoryType runs.
+    //
+    // Known limitation: salience scoring weights by `type` only (feedback=1.2,
+    // reference=0.8). Auto-extracted heuristic/pattern entries share the same type
+    // as human-validated gotcha/correction — the `category` field is the only
+    // persisted boundary until confidence/source metadata is threaded through the
+    // schema and scoring pipeline.
 
     const cases: ReadonlyArray<{
       readonly marker: string;
@@ -952,6 +958,45 @@ describe("createExtractionMiddleware", () => {
       { marker: "preference", category: "preference", expectedType: "user", expectedStored: false },
       { marker: "context", category: "context", expectedType: "project", expectedStored: true },
     ];
+
+    test("auto-extracted heuristic/pattern remain distinguishable from validated gotcha/correction via category field", async () => {
+      // type=feedback is shared across all four categories. The category field is
+      // the persisted boundary: downstream consumers (sync filters, future salience
+      // paths) can filter auto-extracted entries (heuristic/pattern) from
+      // human-validated ones (gotcha/correction) using this field.
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const outputs = [
+        "[LEARNING:gotcha] null pointer crash",
+        "[LEARNING:correction] API returns 204 not 200",
+        "[LEARNING:heuristic] connection pooling improves throughput",
+        "[LEARNING:pattern] always validate at boundaries",
+      ];
+      for (const output of outputs) {
+        const next = mock(async () => toolResponse(output));
+        await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      }
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(4);
+      const byCategory = Object.fromEntries(memory.stored.map((s) => [s.category, s.type]));
+      // All four are feedback type
+      expect(byCategory["gotcha"]).toBe("feedback");
+      expect(byCategory["correction"]).toBe("feedback");
+      expect(byCategory["heuristic"]).toBe("feedback");
+      expect(byCategory["pattern"]).toBe("feedback");
+      // But category field distinguishes validated from auto-extracted
+      const validated = memory.stored.filter(
+        (s) => s.category === "gotcha" || s.category === "correction",
+      );
+      const autoExtracted = memory.stored.filter(
+        (s) => s.category === "heuristic" || s.category === "pattern",
+      );
+      expect(validated).toHaveLength(2);
+      expect(autoExtracted).toHaveLength(2);
+    });
 
     for (const { marker, category, expectedType, expectedStored } of cases) {
       test(`[LEARNING:${marker}] → type=${expectedType}, stored=${expectedStored}`, async () => {
