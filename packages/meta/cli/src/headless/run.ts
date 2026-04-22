@@ -55,6 +55,9 @@ interface RunHeadlessOptions {
   readonly writeStderr: (chunk: string) => void;
   readonly runtime: HeadlessRuntime;
   readonly externalSignal?: AbortSignal | undefined;
+  readonly onRawAssistantText?: ((text: string) => void) | undefined;
+  /** Called after each tool_result event. Used to reset schema accumulation buffers. */
+  readonly onToolResult?: (() => void) | undefined;
 }
 
 export interface HeadlessOutcome {
@@ -68,6 +71,8 @@ export interface HeadlessOutcome {
   readonly emitResult: (override?: {
     readonly exitCode: HeadlessExitCode;
     readonly error?: string;
+    readonly validationFailed?: boolean;
+    readonly validationSkipped?: boolean;
   }) => void;
 }
 
@@ -119,7 +124,14 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
   let exitCode: HeadlessExitCode = HEADLESS_EXIT.SUCCESS;
   let errMessage: string | undefined;
   let sawDone = false;
+  // Tracks whether the agent emitted any text in the current segment (since last tool result).
+  // Reset on each tool_result so the done.output.content fallback fires correctly for
+  // the final segment even if narration was emitted before an earlier tool call.
   let emittedAssistantText = false;
+  const handleToolResult = (): void => {
+    emittedAssistantText = false;
+    opts.onToolResult?.();
+  };
 
   try {
     for await (const event of opts.runtime.run({
@@ -127,7 +139,9 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       text: opts.prompt,
       signal: controller.signal,
     })) {
-      if (translateEvent(event, emit, toolNamesByCallId)) {
+      if (
+        translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText, handleToolResult)
+      ) {
         emittedAssistantText = true;
       }
       if (event.kind === "done") {
@@ -135,6 +149,7 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
         if (!emittedAssistantText) {
           const fallback = extractTextFromContent(event.output.content);
           if (fallback.length > 0) {
+            opts.onRawAssistantText?.(fallback);
             // Redact engine error banners here too — done.output.content
             // is populated from the same reason string at engine-catch
             // time, so it can carry the same secret-bearing interpolated
@@ -227,6 +242,8 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
   const emitResult = (override?: {
     readonly exitCode: HeadlessExitCode;
     readonly error?: string;
+    readonly validationFailed?: boolean;
+    readonly validationSkipped?: boolean;
   }): void => {
     if (resultEmitted) return;
     resultEmitted = true;
@@ -237,6 +254,12 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       ok: finalCode === HEADLESS_EXIT.SUCCESS,
       exitCode: finalCode,
       ...(finalError !== undefined ? { error: finalError } : {}),
+      ...(override?.validationFailed !== undefined
+        ? { validationFailed: override.validationFailed }
+        : {}),
+      ...(override?.validationSkipped !== undefined
+        ? { validationSkipped: override.validationSkipped }
+        : {}),
     });
     // Observability: CI operators need at least one actionable line on
     // stderr for every non-success run. The message is already
@@ -465,7 +488,7 @@ function summarizePayload(value: unknown): { readonly type: string; readonly siz
  */
 const ENGINE_ERROR_BANNER_RE = /\[Turn (stopped|failed):\s*([\s\S]+?)(\.\s*Raise[\s\S]*?)?\]/g;
 
-function redactEngineBanners(text: string): string {
+export function redactEngineBanners(text: string): string {
   return text.replace(ENGINE_ERROR_BANNER_RE, (_full, kind: string, msg: string) => {
     return `[Turn ${kind}: ${msg.length} chars redacted]`;
   });
@@ -476,10 +499,13 @@ function translateEvent(
   event: EngineEvent,
   emit: ReturnType<typeof createEmitter>,
   toolNamesByCallId: Map<string, string>,
+  onRawAssistantText: ((text: string) => void) | undefined,
+  onToolResult: (() => void) | undefined,
 ): boolean {
   switch (event.kind) {
     case "text_delta": {
       if (event.delta.length > 0) {
+        onRawAssistantText?.(event.delta);
         emit({ kind: "assistant_text", text: redactEngineBanners(event.delta) });
         return true;
       }
@@ -506,6 +532,7 @@ function translateEvent(
         ? summarizePayload(event.output)
         : summarizeToolExecutionError(event.output);
       emit({ kind: "tool_result", toolName, ok, result });
+      onToolResult?.();
       return false;
     }
     default:

@@ -394,3 +394,33 @@ describe("parseStartFlags — headless mode", () => {
     ).toThrow(/leaves|must be ≤/);
   });
 });
+
+describe("parseStartFlags — --result-schema (#1648)", () => {
+  test("defaults to undefined when flag is absent", () => {
+    const flags = parseStartFlags(["--headless", "--prompt", "hello"]);
+    expect(flags.resultSchema).toBeUndefined();
+  });
+
+  test("captures the file path when flag is present", () => {
+    const flags = parseStartFlags([
+      "--headless",
+      "--prompt",
+      "hello",
+      "--result-schema",
+      "./schema.json",
+    ]);
+    expect(flags.resultSchema).toBe("./schema.json");
+  });
+
+  test("rejects --result-schema without --headless", () => {
+    expect(() =>
+      parseStartFlags(["--prompt", "hello", "--result-schema", "./schema.json"]),
+    ).toThrow(ParseError);
+  });
+
+  test("--result-schema is allowed without --headless when --help is present", () => {
+    const flags = parseStartFlags(["--result-schema", "./schema.json", "--help"]);
+    expect(flags.help).toBe(true);
+    expect(flags.resultSchema).toBe("./schema.json");
+  });
+});
