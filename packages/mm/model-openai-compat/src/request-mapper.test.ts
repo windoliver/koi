@@ -778,11 +778,9 @@ describe("buildRequestBody — thinkingDisplay", () => {
       ...baseConfig,
       compat: { supportsReasoning: true, thinkingDisplay: "full" },
     });
-    const body = buildRequestBody(baseRequest, config);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).reasoning).toEqual({ effort: "medium" });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).thinking).toBeUndefined();
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toBeUndefined();
   });
 
   test('thinkingDisplay "hidden" emits reasoning: { exclude: true }', () => {
@@ -790,11 +788,9 @@ describe("buildRequestBody — thinkingDisplay", () => {
       ...baseConfig,
       compat: { supportsReasoning: true, thinkingDisplay: "hidden" },
     });
-    const body = buildRequestBody(baseRequest, config);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).reasoning).toEqual({ exclude: true });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).thinking).toBeUndefined();
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ exclude: true });
+    expect(body.thinking).toBeUndefined();
   });
 
   test('thinkingDisplay "summarized" on anthropic model emits thinking: { type: "summarized" } + reasoning: { effort }', () => {
@@ -803,11 +799,9 @@ describe("buildRequestBody — thinkingDisplay", () => {
       model: "anthropic/claude-sonnet-4",
       compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
     });
-    const body = buildRequestBody(baseRequest, config);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).reasoning).toEqual({ effort: "medium" });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).thinking).toEqual({ type: "summarized" });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toEqual({ type: "summarized" });
   });
 
   test('thinkingDisplay "summarized" on non-anthropic model omits thinking field', () => {
@@ -816,11 +810,9 @@ describe("buildRequestBody — thinkingDisplay", () => {
       model: "openai/gpt-4o",
       compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
     });
-    const body = buildRequestBody(baseRequest, config);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).reasoning).toEqual({ effort: "medium" });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).thinking).toBeUndefined();
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toBeUndefined();
   });
 
   test("thinkingDisplay is ignored when supportsReasoning is false", () => {
@@ -828,10 +820,8 @@ describe("buildRequestBody — thinkingDisplay", () => {
       ...baseConfig,
       compat: { supportsReasoning: false, thinkingDisplay: "hidden" },
     });
-    const body = buildRequestBody(baseRequest, config);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).reasoning).toBeUndefined();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((body as any).thinking).toBeUndefined();
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toBeUndefined();
+    expect(body.thinking).toBeUndefined();
   });
 });
