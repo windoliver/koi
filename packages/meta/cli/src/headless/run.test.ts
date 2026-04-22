@@ -1104,6 +1104,31 @@ describe("runHeadless — onRawAssistantText callback", () => {
     expect(raw.join("")).toBe('{"count":1}');
   });
 
+  test("onToolResult fires after each tool_result event", async () => {
+    const resets: number[] = [];
+    let resetCount = 0;
+    await runAndEmit({
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        { kind: "text_delta", delta: "thinking..." },
+        { kind: "tool_call_start", callId: "c1", toolName: "fs_read", args: {} },
+        { kind: "tool_result", callId: "c1", output: "file contents" },
+        { kind: "text_delta", delta: '{"done":true}' },
+        DONE,
+      ]),
+      onRawAssistantText: () => {},
+      onToolResult: () => {
+        resetCount += 1;
+        resets.push(resetCount);
+      },
+    });
+    expect(resets).toEqual([1]);
+  });
+
   test("emitResult with validationFailed: true serialises the field in the result event", async () => {
     const lines: string[] = [];
     // Use runHeadless directly so we control when emitResult is called.

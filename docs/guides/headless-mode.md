@@ -125,7 +125,7 @@ On schema validation failure (exit 6):
 
 ## Result Schema Validation
 
-`--result-schema` validates the agent's **entire text output** against a JSON Schema subset before reporting success. It is a strict gate: the agent must produce only JSON, with no prose, preamble, or tool-call narration anywhere in the output.
+`--result-schema` validates the agent's **final text segment** against a JSON Schema subset before reporting success. For tool-using agents, "final text segment" means the text produced after the last tool result — intermediate narration before tool calls is discarded. For agents that use no tools, the entire output is validated. Either way, the agent must produce only JSON in the final segment: no prose, preamble, or trailing narration.
 
 > **Scope limitation:** `additionalProperties` is not supported. Extra fields beyond those declared in `properties` are not rejected. If exact-shape enforcement is required, validate the output independently using external tooling.
 

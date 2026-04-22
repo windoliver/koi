@@ -1152,6 +1152,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               rawAssistantPartsBytes += chunkBytes;
             }
           : undefined,
+      // Reset the accumulation buffer after each tool result so schema validation
+      // targets only the final answer segment, not intermediate narration.
+      onToolResult:
+        resultSchemaObj !== undefined
+          ? () => {
+              rawAssistantParts.length = 0; // let — reset on each tool completion
+              rawAssistantPartsBytes = 0;
+              rawAssistantOverflow = false;
+            }
+          : undefined,
     });
     // Upgrade the deadline finalizer now that we can emit a terminal result.
     onDeadlineExceeded = (): void => {

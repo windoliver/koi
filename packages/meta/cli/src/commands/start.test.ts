@@ -774,6 +774,46 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.INTERNAL);
   });
 
+  test("onToolResult callback resets raw buffer so only post-tool text is validated", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    let emitResultCallCount = 0;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      // Simulate: narration before tool, then tool fires, then final JSON
+      opts.onRawAssistantText?.("I will look up the count now...");
+      opts.onToolResult?.(); // reset
+      opts.onRawAssistantText?.('{"count":3,"titles":["a"]}'); // final answer
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          emitResultCallCount += 1;
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    // Despite narration before the tool, only post-tool text is validated → passes
+    expect(emitResultCallCount).toBe(1);
+    expect(capturedEmitArgs).toBeUndefined();
+  });
+
   test("schema validation skipped when agent exits non-zero", async () => {
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),

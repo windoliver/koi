@@ -56,6 +56,8 @@ interface RunHeadlessOptions {
   readonly runtime: HeadlessRuntime;
   readonly externalSignal?: AbortSignal | undefined;
   readonly onRawAssistantText?: ((text: string) => void) | undefined;
+  /** Called after each tool_result event. Used to reset schema accumulation buffers. */
+  readonly onToolResult?: (() => void) | undefined;
 }
 
 export interface HeadlessOutcome {
@@ -129,7 +131,9 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       text: opts.prompt,
       signal: controller.signal,
     })) {
-      if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText)) {
+      if (
+        translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText, opts.onToolResult)
+      ) {
         emittedAssistantText = true;
       }
       if (event.kind === "done") {
@@ -484,6 +488,7 @@ function translateEvent(
   emit: ReturnType<typeof createEmitter>,
   toolNamesByCallId: Map<string, string>,
   onRawAssistantText: ((text: string) => void) | undefined,
+  onToolResult: (() => void) | undefined,
 ): boolean {
   switch (event.kind) {
     case "text_delta": {
@@ -515,6 +520,7 @@ function translateEvent(
         ? summarizePayload(event.output)
         : summarizeToolExecutionError(event.output);
       emit({ kind: "tool_result", toolName, ok, result });
+      onToolResult?.();
       return false;
     }
     default:
