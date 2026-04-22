@@ -34,13 +34,19 @@ describe("computePermissionPromptWidth", () => {
     expect(computePermissionPromptWidth(10)).toBe(6);
   });
 
-  test("never returns negative — clamps to 0 for pathologically narrow terminals", () => {
-    expect(computePermissionPromptWidth(3)).toBe(0);
-    expect(computePermissionPromptWidth(0)).toBe(0);
+  test("never returns 0 or negative — always a positive integer (avoids blendCells busy-loop)", () => {
+    // Even on a pathologically narrow terminal, width must be >= 1 so OpenTUI
+    // has an explicit positive value and does not re-measure every frame.
+    expect(computePermissionPromptWidth(3)).toBe(1);
+    expect(computePermissionPromptWidth(0)).toBe(1);
   });
 
-  test("outer box fits invariant holds for all terminal widths 4..100", () => {
-    for (let cols = 4; cols <= 100; cols++) {
+  test("outer box fits invariant holds for all terminal widths ≥ 5", () => {
+    // For cols in [5, 100]: available = cols-2-2 >= 1 = MIN_WIDTH, so width = available,
+    // and outer = LEFT(2) + available + BORDER(2) = cols exactly. ✓
+    // Below 5 cols: width is clamped to MIN_WIDTH=1 (busy-loop prevention takes priority
+    // over the fit invariant — the left offset alone already overflows sub-5 terminals).
+    for (let cols = 5; cols <= 100; cols++) {
       const w = computePermissionPromptWidth(cols);
       expect(LEFT + w + BORDER).toBeLessThanOrEqual(cols);
     }

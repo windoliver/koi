@@ -41,16 +41,25 @@ export const PERMISSION_PROMPT_WIDTH = 60;
 const BORDER_CHROME = 2;
 
 /**
+ * Minimum positive width passed to the OpenTUI <box>. A zero or absent width
+ * causes OpenTUI to re-measure the content every layout pass, triggering the
+ * blendCells busy-loop that saturates one CPU core and blocks all input.
+ * 1 is the smallest value that avoids the busy-loop.
+ */
+const PERMISSION_PROMPT_MIN_WIDTH = 1;
+
+/**
  * Compute the clamped modal width for a given terminal column count.
- * Invariant: MODAL_POSITION.left + width + BORDER_CHROME <= terminalCols for
- * all terminalCols >= MODAL_POSITION.left + BORDER_CHROME.
+ * Guarantees: result >= PERMISSION_PROMPT_MIN_WIDTH (positive integer, avoids
+ * blendCells busy-loop); result <= PERMISSION_PROMPT_WIDTH on wide terminals.
  * For pathologically narrow terminals (< left + border = 4 cols) the left
- * offset itself already overflows — width is clamped to 0 in that case.
+ * offset already overflows the terminal — width is clamped to the minimum so
+ * OpenTUI still has an explicit positive width and does not enter the loop.
  * Exported for unit testing without needing a render context.
  */
 export function computePermissionPromptWidth(terminalCols: number): number {
   const available = terminalCols - MODAL_POSITION.left - BORDER_CHROME;
-  return Math.min(PERMISSION_PROMPT_WIDTH, Math.max(available, 0));
+  return Math.min(PERMISSION_PROMPT_WIDTH, Math.max(available, PERMISSION_PROMPT_MIN_WIDTH));
 }
 
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
