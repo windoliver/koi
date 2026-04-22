@@ -1,6 +1,6 @@
 {
   "name": "@koi/middleware-feedback-loop",
-  "description": "Model validation + retry + forge tool health tracking middleware",
+  "description": "Model output validation, structured feedback injection, and tool health tracking middleware",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,2 +1,2 @@
-// Populated in Task 10
+// Public exports — populated by implementation tasks
 export {};
