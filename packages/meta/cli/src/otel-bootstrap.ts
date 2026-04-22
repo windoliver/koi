@@ -15,6 +15,7 @@
 
 import { trace } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { defaultResource, type Resource, resourceFromAttributes } from "@opentelemetry/resources";
 import {
   BasicTracerProvider,
   BatchSpanProcessor,
@@ -24,6 +25,51 @@ import {
 
 /** Standard OTLP HTTP traces endpoint — the OTel SDK default. */
 const DEFAULT_OTLP_TRACES_URL = "http://localhost:4318/v1/traces";
+
+/**
+ * Build an OTel Resource from env vars and Koi-specific defaults.
+ *
+ * Priority (highest wins): OTEL_SERVICE_NAME > OTEL_RESOURCE_ATTRIBUTES key
+ * override > Koi defaults > OTel SDK defaults (telemetry.sdk.*).
+ *
+ * Exported for unit testing — not part of the public CLI API.
+ */
+export function buildResource(mode: "tui" | "headless"): Resource {
+  // Start with Koi defaults — env vars overwrite these below.
+  const attrs: Record<string, string> = {
+    "service.name": "koi",
+    "service.version": process.env.KOI_VERSION ?? "dev",
+    "koi.mode": mode,
+    "process.runtime.name": "bun",
+    "process.runtime.version": Bun.version,
+  };
+
+  // OTEL_RESOURCE_ATTRIBUTES — comma-separated key=value pairs, values may be
+  // percent-encoded per OTel spec. Overwrites any matching default above.
+  const rawAttrs = process.env.OTEL_RESOURCE_ATTRIBUTES;
+  if (rawAttrs !== undefined && rawAttrs.length > 0) {
+    for (const pair of rawAttrs.split(",")) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0) continue;
+      const key = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1).trim();
+      if (key.length === 0) continue;
+      try {
+        attrs[key] = decodeURIComponent(value);
+      } catch {
+        attrs[key] = value;
+      }
+    }
+  }
+
+  // OTEL_SERVICE_NAME takes highest priority for service.name.
+  const serviceName = process.env.OTEL_SERVICE_NAME;
+  if (serviceName !== undefined && serviceName.length > 0) {
+    attrs["service.name"] = serviceName;
+  }
+
+  return defaultResource().merge(resourceFromAttributes(attrs));
+}
 
 /** Return value from initOtelSdk — call shutdown() for graceful flush. */
 export interface OtelSdkHandle {
@@ -80,6 +126,7 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
   }
 
   const provider = new BasicTracerProvider({
+    resource: buildResource(mode),
     spanProcessors: [new BatchSpanProcessor(exporter)],
   });
 
