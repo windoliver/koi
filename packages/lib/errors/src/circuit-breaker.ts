@@ -19,13 +19,10 @@ export interface CircuitBreakerConfig {
   readonly failureStatusCodes: readonly number[];
 }
 
-// failureWindowMs must exceed failureThreshold × expected_request_latency.
-// 60s was too short: 5 failures × ~13s/turn = 65s, causing old failures to expire
-// before the threshold was reached. 300s accommodates up to ~60s/turn × 5 failures.
 export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = {
   failureThreshold: 5,
   cooldownMs: 60_000,
-  failureWindowMs: 300_000,
+  failureWindowMs: 60_000,
   failureStatusCodes: [429, 500, 502, 503, 504],
 } as const;
 
