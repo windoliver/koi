@@ -541,6 +541,11 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         onHealthTransitionError?.(event);
         return false;
       }
+      // Idempotent: another writer already applied this exact demotion — treat as success
+      // without writing another snapshot or firing callbacks a second time.
+      if (retryLoad.value.trustTier === toTier) {
+        return true;
+      }
       updateResult = await forgeStore.update(bId, {
         trustTier: toTier,
         expectedVersion: retryLoad.value.storeVersion,
@@ -668,6 +673,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         quarantinedBricks.add(bId);
         // Best-effort persist — errors are reported via onHealthTransitionError
         await persistQuarantine(toolId, bId, metrics);
+        // Notify caller after session quarantine is confirmed (persist is best-effort)
+        config.onQuarantine?.(bId);
       } else {
         // No brickId — report as transition error
         const event: HealthTransitionErrorEvent = {
@@ -684,7 +691,9 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
     async checkAndDemote(toolId: string): Promise<boolean> {
       const state = getOrCreate(toolId);
-      if (state.sessionQuarantined) return false;
+      // Do NOT skip demotion when in-session quarantine is active: quarantine and demotion
+      // are independent transitions. Demotion must still be persisted so trust tier survives
+      // session rollover and operator unquarantine.
 
       const bId = resolveBrickId(toolId);
       if (bId === undefined) return false;
