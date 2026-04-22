@@ -692,65 +692,104 @@ In `packages/meta/cli/src/commands/start.ts`, insert after the policy-file loadi
   }
 ```
 
-- [ ] **Step 3: Add assistant text accumulator + wrap writeStdout**
+- [ ] **Step 3: Add `onRawAssistantText` callback to `RunHeadlessOptions` in `headless/run.ts`**
 
-In `packages/meta/cli/src/commands/start.ts`, in the headless branch (`if (flags.headless) {`), find the `const { exitCode: headlessCode, emitResult } = await runHeadless({` call (~line 1100). Just **before** that call, insert:
+The NDJSON stream runs `assistant_text` deltas through `redactEngineBanners()` before emission to protect CI logs. Schema validation must see the **raw** text the model produced — not the redacted version — otherwise banner-shaped JSON output would be rewritten before validation, causing false failures.
+
+In `packages/meta/cli/src/headless/run.ts`, add the optional callback to `RunHeadlessOptions` (around line 50):
 
 ```typescript
-    // Accumulate assistant_text deltas for --result-schema validation.
-    // Parsed from the NDJSON chunks written to stdout by runHeadless().
-    const assistantTextParts: string[] = [];
-    const wrappedWriteStdout = (chunk: string): void => {
-      process.stdout.write(chunk);
-      collectAssistantText(chunk, assistantTextParts);
-    };
+interface RunHeadlessOptions {
+  readonly sessionId: string;
+  readonly prompt: string;
+  readonly maxDurationMs: number | undefined;
+  readonly writeStdout: (chunk: string) => void;
+  readonly writeStderr: (chunk: string) => void;
+  readonly runtime: HeadlessRuntime;
+  readonly externalSignal?: AbortSignal | undefined;
+  /**
+   * Called with each raw (pre-redaction) assistant text delta for callers
+   * that need the unmodified model output (e.g. --result-schema validation).
+   * The emitted NDJSON stream still carries the redacted version.
+   */
+  readonly onRawAssistantText?: ((text: string) => void) | undefined;
+}
 ```
 
-Then change the `writeStdout` argument in the `runHeadless()` call (line 1107) from:
+Then in the `translateEvent` function (bottom of `run.ts`), in the `"text_delta"` case, fire the callback **before** calling `redactEngineBanners`:
 
 ```typescript
-      writeStdout: (s) => process.stdout.write(s),
+    case "text_delta": {
+      if (event.delta.length > 0) {
+        opts.onRawAssistantText?.(event.delta);          // raw, before redaction
+        emit({ kind: "assistant_text", text: redactEngineBanners(event.delta) });
+        return true;
+      }
+      return false;
+    }
+```
+
+**Note:** `translateEvent` currently does not have access to `opts`. The fix is to change `translateEvent` from a standalone function to a closure over `opts`, or pass `onRawAssistantText` as an additional argument. The simplest approach (minimum diff): add a parameter:
+
+Change the `translateEvent` signature from:
+
+```typescript
+function translateEvent(
+  event: EngineEvent,
+  emit: ReturnType<typeof createEmitter>,
+  toolNamesByCallId: Map<string, string>,
+): boolean {
 ```
 
 to:
 
 ```typescript
-      writeStdout: wrappedWriteStdout,
+function translateEvent(
+  event: EngineEvent,
+  emit: ReturnType<typeof createEmitter>,
+  toolNamesByCallId: Map<string, string>,
+  onRawAssistantText: ((text: string) => void) | undefined,
+): boolean {
 ```
 
-- [ ] **Step 4: Add `collectAssistantText` helper at the bottom of the file**
-
-At the very end of `packages/meta/cli/src/commands/start.ts`, after the `scrubSensitiveEnv` function, add:
+And update the call site in `runHeadless`:
 
 ```typescript
-/**
- * Parse NDJSON chunks emitted by runHeadless() and collect assistant_text
- * delta strings for post-run --result-schema validation. Each chunk may
- * contain zero or more newline-delimited JSON lines. Parsing failures are
- * silently ignored — the write has already happened; schema validation will
- * report a "not valid JSON" error against the incomplete assembled text.
- */
-function collectAssistantText(chunk: string, parts: string[]): void {
-  for (const line of chunk.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "kind" in parsed &&
-        (parsed as { kind: unknown }).kind === "assistant_text" &&
-        "text" in parsed &&
-        typeof (parsed as { text: unknown }).text === "string"
-      ) {
-        parts.push((parsed as { text: string }).text);
-      }
-    } catch {
-      // not a valid NDJSON line — skip
-    }
-  }
-}
+      if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText)) {
+```
+
+- [ ] **Step 4: Wire `onRawAssistantText` in `commands/start.ts`**
+
+In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before the `runHeadless()` call (~line 1100), insert:
+
+```typescript
+    // Raw assistant text accumulator for --result-schema validation.
+    // Populated via onRawAssistantText before redactEngineBanners() is applied,
+    // so schema validation sees the model's actual output, not the sanitized version.
+    const rawAssistantParts: string[] = [];
+```
+
+Then pass the callback in the `runHeadless()` call:
+
+```typescript
+    const { exitCode: headlessCode, emitResult } = await runHeadless({
+      sessionId: sid,
+      prompt: flags.mode.text,
+      maxDurationMs: flags.maxDurationMs !== undefined ? remainingForRunAndShutdown : undefined,
+      writeStdout: (s) => process.stdout.write(s),
+      writeStderr: (s) => process.stderr.write(s),
+      runtime,
+      externalSignal: controller.signal,
+      onRawAssistantText: resultSchemaObj !== undefined
+        ? (text) => { rawAssistantParts.push(text); }
+        : undefined,
+    });
+```
+
+In the post-run validation block (Task 4 Step 2), use `rawAssistantParts` instead of `assistantTextParts`:
+
+```typescript
+        const schemaResult = validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
 ```
 
 - [ ] **Step 5: Typecheck**
@@ -1097,9 +1136,13 @@ jobs:
         id: koi
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Pass prompt via env var — never interpolate untrusted input
+          # directly into shell source (${{ inputs.prompt }} could contain
+          # quotes or shell metacharacters that execute on the runner).
+          KOI_PROMPT: ${{ inputs.prompt }}
         run: |
           koi start --headless \
-            --prompt "${{ inputs.prompt }}" \
+            --prompt "$KOI_PROMPT" \
             --allow-tool fs_read \
             --allow-tool web_fetch \
             --max-turns 20 \
@@ -1108,9 +1151,12 @@ jobs:
             > koi-output.ndjson
         continue-on-error: true
 
-      - name: Extract result
+      - name: Check result
         run: |
-          RESULT=$(grep '"kind":"result"' koi-output.ndjson | tail -1)
+          # Use jq structural selection — grep for '"kind":"result"' is
+          # unsafe because assistant output is model-controlled and could
+          # contain that substring, producing false positives.
+          RESULT=$(jq -rc 'select(.kind=="result")' < koi-output.ndjson | tail -n1)
           EXIT=$(echo "$RESULT" | jq -r '.exitCode')
           echo "koi exit code: $EXIT"
           if [ "$EXIT" != "0" ]; then

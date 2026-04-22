@@ -122,9 +122,12 @@ YAML code block inside `docs/guides/headless-mode.md`. Shows:
 ```yaml
 - name: Run Koi agent
   id: koi
+  env:
+    # Pass prompt via env var to avoid shell injection from user-supplied input.
+    KOI_PROMPT: "Summarize open PRs as JSON with fields: count, titles"
   run: |
     koi start --headless \
-      --prompt "Summarize open PRs as JSON with fields: count, titles" \
+      --prompt "$KOI_PROMPT" \
       --allow-tool web_fetch \
       --max-turns 10 \
       --max-duration-ms 120000 \
@@ -134,7 +137,9 @@ YAML code block inside `docs/guides/headless-mode.md`. Shows:
 
 - name: Check exit code
   run: |
-    RESULT=$(grep '"kind":"result"' koi-output.ndjson | tail -1)
+    # Use jq structural selection — grep on '"kind":"result"' is unsafe because
+    # model output is user-controlled and could contain that substring.
+    RESULT=$(jq -rc 'select(.kind=="result")' < koi-output.ndjson | tail -n1)
     EXIT=$(echo "$RESULT" | jq -r '.exitCode')
     echo "koi exit: $EXIT"
     test "$EXIT" = "0"
@@ -161,11 +166,11 @@ Companion schema file `.koi/pr-summary-schema.json` shown in the guide:
 |------|--------|
 | `packages/meta/cli/src/args/start.ts` | Add `resultSchema: string \| undefined` to `StartFlags`, add `--result-schema` flag, parse-time guard |
 | `packages/meta/cli/src/args/start.test.ts` | Tests for `--result-schema` parse rules |
-| `packages/meta/cli/src/headless/validate-schema.ts` | New: minimal JSON Schema validator |
-| `packages/meta/cli/src/headless/validate-schema.test.ts` | New: validator unit tests |
-| `packages/meta/cli/src/commands/start.ts` | Boot-time schema load, `wrappedWriteStdout` accumulator, post-run validation |
-| `packages/meta/cli/src/commands/start.test.ts` | Tests for schema validation paths |
-| `docs/guides/headless-mode.md` | New: user guide + GitHub Actions recipe |
+| `packages/meta/cli/src/headless/validate-schema.ts` | New: fail-closed JSON Schema validator + `validateResultSchema` helper |
+| `packages/meta/cli/src/headless/validate-schema.test.ts` | New: validator unit tests + `validateResultSchema` integration tests |
+| `packages/meta/cli/src/headless/run.ts` | Add `onRawAssistantText` callback to `RunHeadlessOptions` + `translateEvent` |
+| `packages/meta/cli/src/commands/start.ts` | Boot-time schema load, `rawAssistantParts` accumulator via callback, post-run validation |
+| `docs/guides/headless-mode.md` | New: user guide + safe GitHub Actions recipe |
 
 ---
 
