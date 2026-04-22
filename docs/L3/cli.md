@@ -711,6 +711,10 @@ and `docs/L2/tui.md` for the underlying changes.
 
 The resolver matches tool ids case-insensitively (`"Bash"` or `"bash"`). Non-bash tools and malformed inputs fall through to plain-tool evaluation. See `docs/L3/runtime.md` for the runtime wiring contract and `docs/L2/bash-classifier.md` / `docs/L2/middleware-permissions.md` for the library design and threat model.
 
+## `auth_progress` dedup (fs-nexus)
+
+`tui-command.ts` holds the `createAuthNotificationHandler` result in a `tuiAuthNotificationHandler` local and wires it into `resolveFileSystemAsync`. Both teardown paths (interim reconfigure and final shutdown) call `tuiAuthNotificationHandler?.dispose()` **synchronously before** awaiting `resolvedFilesystemBackend?.dispose?.()`. The filesystem `dispose()` unsubscribes then awaits, and that yield can still run a pre-queued notification microtask; disposing the handler first gates late `channel.send()` callbacks and cancels watchdog timers so stale heartbeats can't hit the channel after shutdown. See `docs/L2/fs-nexus.md` for the per-provider state machine, epoch/attempt tokens, and 45 s watchdog.
+
 ## #1638 — Activity-based stream timeouts (dev-only env hook)
 
 Integrates `@koi/checkpoint` (stopBlocked fail-closed rollback + quarantine on rollback/persist double-failure) and `@koi/loop` (budget treats synthesized metrics as unmetered) with the runtime-level activity-timeout wrapper.

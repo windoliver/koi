@@ -12,23 +12,36 @@ import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfi
  *
  * Usage:
  *   const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
- *   const unsubscribe = transport.subscribe(createAuthNotificationHandler(channel));
- *   const backend = createNexusFileSystem({ transport, url: "local://unused" });
- *   // call unsubscribe() when the transport is closed
+ *   const handler = createAuthNotificationHandler(channel);
+ *   const unsubscribe = transport.subscribe(handler);
+ *   // on teardown:
+ *   unsubscribe();
+ *   handler.dispose();            // cancel pending timers + drop late callbacks
  */
 
+/**
+ * Handler function returned by \`createAuthNotificationHandler\`. The function
+ * itself is wired to \`transport.subscribe()\`; \`.dispose()\` tears down pending
+ * timers and gates all queued async callbacks so they become no-ops after
+ * close. Idempotent.
+ */
+type AuthNotificationHandler = ((n: BridgeNotification) => void) & {
+    readonly dispose: () => void;
+};
 /**
  * Creates a BridgeNotification handler that sends user-facing messages to a
  * channel when OAuth authorization is required, in progress, or complete.
  *
- * Wire the returned function to \`transport.subscribe()\`:
- *
- *   const unsubscribe = transport.subscribe(createAuthNotificationHandler(channel));
+ * Wire the returned function to \`transport.subscribe()\` and call
+ * \`.dispose()\` on the returned handler when the transport is closed so that
+ * pending watchdog timers and late \`.then/.catch\` callbacks don't outlive
+ * the session (notifications dispatched before \`unsubscribe()\` can still
+ * execute the handler via queued microtasks).
  *
  * The handler is non-blocking — channel.send() is fire-and-forget via void.
  * Errors from channel.send() are swallowed to avoid breaking the reader loop.
  */
-declare function createAuthNotificationHandler(channel: ChannelAdapter): (n: BridgeNotification) => void;
+declare function createAuthNotificationHandler(channel: ChannelAdapter): AuthNotificationHandler;
 
 /**
  * Local subprocess transport — spawns a Python bridge process that

@@ -1393,11 +1393,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
 
+  // Keep a reference so teardown can call .dispose() — cancels pending
+  // auth_progress watchdog timers and gates late channel.send() callbacks,
+  // preventing stale auth notifications from running after shutdown.
+  let tuiAuthNotificationHandler: ReturnType<typeof createAuthNotificationHandler> | undefined;
   if (manifestFilesystemConfig !== undefined) {
+    tuiAuthNotificationHandler = createAuthNotificationHandler(tuiChannelForAuth);
     const fsResolved = await resolveFileSystemAsync(
       manifestFilesystemConfig,
       process.cwd(),
-      createAuthNotificationHandler(tuiChannelForAuth),
+      tuiAuthNotificationHandler,
     );
     resolvedFilesystemBackend = fsResolved.backend;
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
@@ -1522,6 +1527,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           if (runtimeHandle !== null) {
             await runtimeHandle.runtime.dispose();
           }
+        } catch {}
+        // Dispose the auth notification handler synchronously first: the
+        // filesystem dispose below unsubscribes then awaits, and that yield
+        // can still run a pre-queued notification microtask. Handler dispose
+        // races ahead of the yield so late callbacks short-circuit on the
+        // `active` flag.
+        try {
+          tuiAuthNotificationHandler?.dispose();
         } catch {}
         try {
           await resolvedFilesystemBackend?.dispose?.();
@@ -2904,6 +2917,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       batcher.dispose();
       approvalStore?.close();
+      // Dispose auth notification handler synchronously first so late
+      // channel.send() callbacks queued before transport unsubscribe
+      // short-circuit on the active flag.
+      try {
+        tuiAuthNotificationHandler?.dispose();
+      } catch {
+        /* best effort */
+      }
       // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
       // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
       // complete before the transport is closed.
