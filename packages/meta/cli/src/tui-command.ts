@@ -1528,11 +1528,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             await runtimeHandle.runtime.dispose();
           }
         } catch {}
-        // Dispose the auth notification handler synchronously first: the
-        // filesystem dispose below unsubscribes then awaits, and that yield
-        // can still run a pre-queued notification microtask. Handler dispose
-        // races ahead of the yield so late callbacks short-circuit on the
-        // `active` flag.
+        // Dispose the auth notification handler early so the `active` flag
+        // is set before the filesystem dispose yields (unsubscribe auto-calls
+        // dispose too, but that happens inside an await — this explicit call
+        // ensures late microtask callbacks short-circuit before that yield).
         try {
           tuiAuthNotificationHandler?.dispose();
         } catch {}

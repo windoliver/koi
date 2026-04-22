@@ -414,10 +414,16 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   // ---------------------------------------------------------------------------
   // subscribe() — register a notification handler, return unsubscribe fn
   // ---------------------------------------------------------------------------
-  function subscribe(handler: (n: BridgeNotification) => void): () => void {
+  function subscribe(
+    handler: ((n: BridgeNotification) => void) & { readonly dispose?: () => void },
+  ): () => void {
     notificationHandlers.add(handler);
     return () => {
       notificationHandlers.delete(handler);
+      // Auto-dispose stateful handlers (e.g. AuthNotificationHandler) so
+      // callers cannot accidentally leak watchdog timers by forgetting to
+      // call dispose() separately.
+      handler.dispose?.();
     };
   }
 
