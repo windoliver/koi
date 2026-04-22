@@ -1243,3 +1243,134 @@ describe("Golden: @koi/debug", () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-permissions — bash spec guard (no LLM)
+// ---------------------------------------------------------------------------
+
+import { beforeAll } from "bun:test";
+import { initializeBashAst } from "@koi/bash-ast";
+
+describe("Golden: @koi/middleware-permissions — bash spec guard", () => {
+  beforeAll(async () => {
+    await initializeBashAst();
+  });
+
+  test("rm -rf /etc denied by Write(/etc/**) semantic rule", async () => {
+    const { createPermissionsMiddleware } = await import("@koi/middleware-permissions");
+    const { createPermissionBackend, loadRules } = await import("@koi/permissions");
+
+    const rulesResult = loadRules(
+      new Map([
+        [
+          "policy" as import("@koi/permissions").RuleSource,
+          [
+            {
+              Write: "/etc/**",
+              effect: "deny" as const,
+              reason: "writes to system paths denied",
+            } as unknown as import("@koi/permissions").PermissionRule,
+          ],
+        ],
+      ]),
+    );
+    expect(rulesResult.ok).toBe(true);
+    if (!rulesResult.ok) return;
+
+    const backend = createPermissionBackend({ mode: "default", rules: rulesResult.value });
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId: string, input: unknown) =>
+        (input as Record<string, string | undefined>).command,
+      enableBashSpecGuard: true,
+      // createPermissionBackend does not set supportsDefaultDenyMarker;
+      // opt into single-key fallback so spec guard still evaluates Write rules.
+      allowLegacyBackendBashFallback: true,
+    });
+
+    const deniedActions: string[] = [];
+    const ctx = {
+      session: { sessionId: "golden-test-session", agentId: "agent:test", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+      reportDecision: (d: { action: string }) => {
+        deniedActions.push(d.action);
+      },
+      dispatchPermissionDecision: async () => {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+
+    const req = {
+      toolId: "bash",
+      input: { command: "rm -rf /etc/passwd" },
+    } as unknown as import("@koi/core/middleware").ToolRequest;
+
+    let nextCalled = false;
+    await mw
+      .wrapToolCall(ctx, req, async () => {
+        nextCalled = true;
+        return { toolId: "bash", output: "" };
+      })
+      .catch(() => {});
+
+    expect(nextCalled).toBe(false);
+    expect(deniedActions).toContain("deny");
+  });
+
+  test("curl blocked.example.com denied by Network(blocked.example.com) rule", async () => {
+    const { createPermissionsMiddleware } = await import("@koi/middleware-permissions");
+    const { createPermissionBackend, loadRules } = await import("@koi/permissions");
+
+    const rulesResult = loadRules(
+      new Map([
+        [
+          "policy" as import("@koi/permissions").RuleSource,
+          [
+            {
+              Network: "blocked.example.com",
+              effect: "deny" as const,
+              reason: "blocked host",
+            } as unknown as import("@koi/permissions").PermissionRule,
+          ],
+        ],
+      ]),
+    );
+    expect(rulesResult.ok).toBe(true);
+    if (!rulesResult.ok) return;
+
+    const backend = createPermissionBackend({ mode: "default", rules: rulesResult.value });
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId: string, input: unknown) =>
+        (input as Record<string, string | undefined>).command,
+      enableBashSpecGuard: true,
+      allowLegacyBackendBashFallback: true,
+    });
+
+    const deniedActions: string[] = [];
+    const ctx = {
+      session: { sessionId: "golden-network-session", agentId: "agent:test", metadata: {} },
+      turnIndex: 0,
+      metadata: {},
+      reportDecision: (d: { action: string }) => {
+        deniedActions.push(d.action);
+      },
+      dispatchPermissionDecision: async () => {},
+    } as unknown as import("@koi/core/middleware").TurnContext;
+
+    const req = {
+      toolId: "bash",
+      input: { command: "curl https://blocked.example.com/data" },
+    } as unknown as import("@koi/core/middleware").ToolRequest;
+
+    let nextCalled = false;
+    await mw
+      .wrapToolCall(ctx, req, async () => {
+        nextCalled = true;
+        return { toolId: "bash", output: "" };
+      })
+      .catch(() => {});
+
+    expect(nextCalled).toBe(false);
+    expect(deniedActions).toContain("deny");
+  });
+});
