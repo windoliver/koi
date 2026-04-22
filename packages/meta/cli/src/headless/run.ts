@@ -488,7 +488,7 @@ function summarizePayload(value: unknown): { readonly type: string; readonly siz
  */
 const ENGINE_ERROR_BANNER_RE = /\[Turn (stopped|failed):\s*([\s\S]+?)(\.\s*Raise[\s\S]*?)?\]/g;
 
-function redactEngineBanners(text: string): string {
+export function redactEngineBanners(text: string): string {
   return text.replace(ENGINE_ERROR_BANNER_RE, (_full, kind: string, msg: string) => {
     return `[Turn ${kind}: ${msg.length} chars redacted]`;
   });

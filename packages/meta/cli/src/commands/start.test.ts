@@ -782,6 +782,47 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs?.validationSkipped).toBe(true);
   });
 
+  test("shutdown failure after agent success WITHOUT schema: INTERNAL (exit 5), no validationSkipped", async () => {
+    // Without --result-schema, teardown failures after a successful run use INTERNAL (exit 5)
+    // to preserve the published exit-code contract. validationSkipped must NOT appear since
+    // schema validation was never requested. Non-retry guidance is in the error message.
+    type EmitArgs = {
+      exitCode?: number;
+      error?: string;
+      validationFailed?: boolean;
+      validationSkipped?: boolean;
+    };
+    let capturedEmitArgs: EmitArgs | undefined;
+    spyOn(runModule, "runHeadless").mockImplementation(async () => {
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    mockDispose.mockImplementationOnce(async () => {
+      throw new Error("disposer blew up");
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          // No resultSchema — key difference from the test above
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.INTERNAL);
+    expect(capturedEmitArgs?.validationSkipped).toBeUndefined();
+  });
+
   test("onToolResult callback resets raw buffer so only post-tool text is validated", async () => {
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
@@ -912,20 +953,32 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs?.validationFailed).toBe(true);
   });
 
-  test("valid JSON containing banner-shaped string passes schema validation (raw text validated, not redacted)", async () => {
-    // Schema validation uses the raw model output, not the banner-redacted stdout text.
-    // A valid JSON payload that contains "[Turn failed: ...]" as a string value must still
-    // validate against the schema — the banner regex must not corrupt validation input.
+  test("banner-shaped JSON: validated against raw text, stdout assistant_text uses redacted bytes", async () => {
+    // Schema validation runs against the raw model output. The synthesized assistant_text event
+    // emitted to stdout on success applies banner redaction so engine-internal annotations never
+    // reach CI logs. A JSON payload where a string VALUE looks like a banner must still validate
+    // (schema sees raw), but the emitted text replaces the banner content with a length marker.
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
+
+    const stdoutLines: string[] = [];
+    spyOn(process.stdout, "write").mockImplementation(
+      (chunk: string | Uint8Array, encodingOrCb?: unknown, cb?: unknown): boolean => {
+        if (typeof chunk === "string") stdoutLines.push(chunk);
+        const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
+        if (typeof callback === "function") (callback as () => void)();
+        return true;
+      },
+    );
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
     let emitResultCallCount = 0;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       // Simulate raw text that contains a banner-shaped string as a JSON string value.
-      // Banner redaction would rewrite this, but schema validation must see the raw text.
+      // Banner redaction rewrites "[Turn failed: ...]" to "[Turn failed: N chars redacted]"
+      // but schema validation sees the original and still validates against the schema.
       opts.onRawAssistantText?.('{"count":1,"titles":["[Turn failed: details here.]"]}');
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
@@ -949,9 +1002,15 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    // Raw text is validated — banner-shaped string does not break schema validation
+    // Validation passed — no schema failure args
     expect(emitResultCallCount).toBe(1);
-    expect(capturedEmitArgs).toBeUndefined(); // no schema failure
+    expect(capturedEmitArgs).toBeUndefined();
+    // The synthesized assistant_text event on stdout uses redacted bytes
+    const assistantLine = stdoutLines.find((l) => l.includes('"kind":"assistant_text"'));
+    expect(assistantLine).toBeDefined();
+    // Banner content is redacted: "[Turn failed: details here.]" → "[Turn failed: N chars redacted]"
+    expect(assistantLine).not.toContain("details here");
+    expect(assistantLine).toContain("chars redacted");
   });
 
   test("teardown budget exhaustion emits exit 6 + validationSkipped:true, not INTERNAL", async () => {
