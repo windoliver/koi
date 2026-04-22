@@ -446,6 +446,54 @@ system prompt. The passthrough guard uses reference equality
 (`injected !== request`) on the `ModelRequest` object, which avoids a second
 `sortedSkills()` call per hook invocation.
 
+## Progressive Mode
+
+By default the provider eagerly loads every skill body into `systemPrompt` at session start.
+Enable progressive mode to defer body loading until the model explicitly invokes the `Skill` tool.
+
+### Phase 1 — Discovery (session start, ~100 tokens)
+
+```typescript
+import { createSkillProvider, createSkillInjectorMiddleware } from "@koi/skills-runtime";
+import { createSkillTool } from "@koi/skill-tool";
+
+const ref: { current?: Agent } = {};
+const mw = createSkillInjectorMiddleware({ agent: () => ref.current!, progressive: true });
+const provider = createSkillProvider(runtime, { progressive: true });
+const skillTool = await createSkillTool({ resolver: runtime, signal: new AbortController().signal });
+
+const koi = await createKoi({ providers: [provider], middleware: [mw], tools: [skillTool.value] });
+ref.current = koi.agent;
+```
+
+The middleware injects an `<available_skills>` XML block into `systemPrompt` instead of concatenated bodies:
+
+```xml
+<available_skills>
+  <skill name="commit" description="Generate a conventional commit message from staged changes." />
+  <skill name="review" description="Review a pull request for correctness and style." />
+</available_skills>
+```
+
+### Phase 2 — Invocation (on-demand, ~2–5K tokens per skill)
+
+The model calls `Skill({ skill: "commit" })`. The `@koi/skill-tool` handler calls `runtime.load("commit")`,
+returns the full body as a tool result, and the LRU cache (bounded by `cacheMaxBodies`) serves
+subsequent invocations without a disk read.
+
+### Token savings
+
+| Setup | 10 skills × 3K body | 10 skills (progressive) |
+|-------|--------------------|-----------------------|
+| systemPrompt tokens | ~30K | ~100 |
+| Cost per turn | 30K × N turns | 100 × N turns |
+| Body load cost | 0 (paid upfront) | 3K when Skill() called |
+
+### Backward compatibility
+
+Both `progressive` flags default to `false`. Existing callers that omit the flag continue to use
+the eager path unchanged.
+
 ## Dependencies
 
 - `@koi/core` (L0) — `KoiError`, `Result`, `Agent`, `SkillComponent`, `KoiMiddleware`
