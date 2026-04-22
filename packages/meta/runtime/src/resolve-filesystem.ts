@@ -20,7 +20,7 @@ import { createScopedFileSystem } from "@koi/fs-scoped";
 import { z } from "zod";
 
 function isDisposable(v: unknown): v is { dispose: () => void } {
-  return v != null && typeof (v as Record<string, unknown>)["dispose"] === "function";
+  return v != null && typeof (v as Record<string, unknown>).dispose === "function";
 }
 
 // ---------------------------------------------------------------------------
