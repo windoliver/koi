@@ -83,7 +83,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
-import { isSafeUrl } from "@koi/url-safety";
+import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
@@ -1697,6 +1697,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // @koi/artifacts tools — wired when the advisory lock was acquired at
     // boot. When construction failed (concurrent TUI, FS issue) the array
     // is empty and the artifact_* tools are simply absent from the agent.
+    //
+    // The mock browser provider (KOI_BROWSER_MOCK) is single-agent by
+    // design: createBrowserProvider throws if a second distinct agent
+    // tries to attach. This is safe here because extraProviders are only
+    // assembled onto the root TUI agent — create-agent-spawn-fn.ts does
+    // NOT propagate extraProviders into childProviders for spawned agents.
     ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
       ? {
           extraProviders: [
@@ -1705,9 +1711,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               ? [
                   createBrowserProvider({
                     backend: createMockDriver(),
-                    isUrlAllowed: async (url) => {
-                      const r = await isSafeUrl(url);
-                      return r.ok;
+                    // Mock driver never opens a real connection, so SSRF
+                    // protection only needs to block IP literals and known
+                    // metadata hostnames — no DNS resolution required.
+                    // This keeps mock mode usable in offline/hermetic CI
+                    // and with synthetic test domains (*.local, app.test).
+                    isUrlAllowed: (url) => {
+                      try {
+                        const { protocol, hostname } = new URL(url);
+                        if (protocol !== "http:" && protocol !== "https:") return false;
+                        const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+                        if (isBlockedIp(h)) return false;
+                        if (BLOCKED_HOSTS.includes(h)) return false;
+                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s))) return false;
+                        return true;
+                      } catch {
+                        return false;
+                      }
                     },
                   }),
                 ]
