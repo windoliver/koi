@@ -10,7 +10,7 @@
  */
 
 import type { JSX } from "solid-js";
-import { Show, createSignal } from "solid-js";
+import { Show, createMemo, createSignal } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import type { SessionSummary } from "../state/types.js";
 import { COLORS, MODAL_POSITION } from "../theme.js";
@@ -49,24 +49,32 @@ const getSessionLabel = (s: SessionSummary): string => s.name;
 export function SessionPicker(props: SessionPickerProps): JSX.Element {
   const sessions = useTuiStore((s) => s.sessions);
   // peekActive: whether peek mode is on.
-  // peekedSession: the session currently shown in the panel — always the highlighted row.
+  // peekedId: ID of the session the peek panel follows — store ID, not the snapshot,
+  // so the panel re-derives from sessions() when the list is refreshed.
   const [peekActive, setPeekActive] = createSignal(false);
-  const [peekedSession, setPeekedSession] = createSignal<SessionSummary | null>(null);
+  const [peekedId, setPeekedId] = createSignal<string | null>(null);
+
+  // Derive the live session data from the current list so stale snapshots are impossible.
+  const peekedSession = createMemo((): SessionSummary | null => {
+    const id = peekedId();
+    if (id === null) return null;
+    return sessions().find((s) => s.id === id) ?? null;
+  });
 
   const handlePeek = (session: SessionSummary): void => {
     setPeekActive((prev) => {
-      if (!prev) setPeekedSession(session);
+      if (!prev) setPeekedId(session.id);
       return !prev;
     });
   };
 
   const handleNavigate = (session: SessionSummary): void => {
-    setPeekedSession(session);
+    setPeekedId(session.id);
   };
 
   const handleClose = (): void => {
     setPeekActive(false);
-    setPeekedSession(null);
+    setPeekedId(null);
     props.onClose();
   };
 
