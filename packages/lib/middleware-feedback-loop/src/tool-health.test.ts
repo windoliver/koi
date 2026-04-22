@@ -343,7 +343,7 @@ describe("createToolHealthTracker", () => {
     expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
   });
 
-  it("isQuarantined caches forgeStore result so load runs once per brick", async () => {
+  it("isQuarantined re-checks forgeStore each call for negative results (no stale cache)", async () => {
     let loadCount = 0;
     const base = makeForgeStore();
     const forgeStore = {
@@ -360,10 +360,22 @@ describe("createToolHealthTracker", () => {
       snapshotChainStore: makeSnapshotStore(),
     });
 
+    // Brick not quarantined — negative result must NOT be cached
     await tracker.isQuarantined(TOOL_ID);
     await tracker.isQuarantined(TOOL_ID);
     await tracker.isQuarantined(TOOL_ID);
-    expect(loadCount).toBe(1); // cached after first check
+    expect(loadCount).toBe(3); // re-checked each call so external quarantine is visible
+
+    // Now quarantine the brick in the store
+    const quarantinedBrick = { ...makeBrickArtifact(BID), lifecycle: "quarantined" as const };
+    await base.save(quarantinedBrick);
+    loadCount = 0;
+
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
+    // Positive result IS memoized
+    await tracker.isQuarantined(TOOL_ID);
+    await tracker.isQuarantined(TOOL_ID);
+    expect(loadCount).toBe(1);
   });
 
   it("dispose flushes dirty tools without throwing", async () => {

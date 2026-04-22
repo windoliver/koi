@@ -249,8 +249,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   const stateMap = new Map<string, ToolState>();
   // Session-local brick-level quarantine (covers aliases)
   const quarantinedBricks = new Set<BrickId>();
-  // Persisted quarantine cache: brickIds resolved from forgeStore (one load per brickId per session)
-  const forgeCheckedBricks = new Set<string>();
+  // Memoizes only positive (quarantined) results from forgeStore — negative results re-checked each call
   const forgeQuarantinedBricks = new Set<BrickId>();
 
   function getOrCreate(toolId: string): ToolState {
@@ -310,7 +309,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     };
 
     try {
-      // Load existing fitness to merge
+      // Load existing fitness to merge; capture storeVersion for OCC
       const loadResult = await forgeStore.load(bId);
       const existingFitness: BrickFitnessMetrics | undefined = loadResult.ok
         ? loadResult.value.fitness
@@ -318,7 +317,23 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const merged = computeMergedFitness(deltas, existingFitness);
 
       const currentErrorRate = state.flushState.errorRateSinceFlush;
-      const updateResult = await forgeStore.update(bId, { fitness: merged });
+      const expectedVersion: number | undefined = loadResult.ok
+        ? loadResult.value.storeVersion
+        : undefined;
+      let updateResult = await forgeStore.update(bId, { fitness: merged, expectedVersion });
+
+      // On OCC conflict, reload and retry once — a concurrent flush beat us
+      if (!updateResult.ok && updateResult.error.code === "CONFLICT") {
+        const retryLoad = await forgeStore.load(bId);
+        const retryFitness = retryLoad.ok ? retryLoad.value.fitness : undefined;
+        const retryMerged = computeMergedFitness(deltas, retryFitness);
+        const retryVersion = retryLoad.ok ? retryLoad.value.storeVersion : undefined;
+        updateResult = await forgeStore.update(bId, {
+          fitness: retryMerged,
+          expectedVersion: retryVersion,
+        });
+      }
+
       if (!updateResult.ok) {
         state.flushState = { ...state.flushState, flushing: false };
         recordFlushFailure(toolId, state, updateResult.error, bypassSuspension);
@@ -454,8 +469,23 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     const now = clock();
     const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
 
-    // Persist the new trust tier via full save (BrickUpdate has no trustTier field)
-    const saveResult = await forgeStore.save({ ...currentBrick, trustTier: toTier });
+    // Persist the new trust tier via full save (BrickUpdate has no trustTier field).
+    // storeVersion is carried through the spread for OCC; retry once on CONFLICT.
+    let saveResult = await forgeStore.save({ ...currentBrick, trustTier: toTier });
+    if (!saveResult.ok && saveResult.error.code === "CONFLICT") {
+      const retryLoad = await forgeStore.load(bId);
+      if (!retryLoad.ok) {
+        const event: HealthTransitionErrorEvent = {
+          transition: "demotion",
+          phase: "forgeStore",
+          brickId: bId,
+          error: retryLoad.error,
+        };
+        onHealthTransitionError?.(event);
+        return;
+      }
+      saveResult = await forgeStore.save({ ...retryLoad.value, trustTier: toTier });
+    }
     if (!saveResult.ok) {
       const event: HealthTransitionErrorEvent = {
         transition: "demotion",
@@ -513,9 +543,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const bId = resolveBrickId(toolId);
       if (bId === undefined) return false;
       if (quarantinedBricks.has(bId)) return true;
-      // Persisted quarantine: check forgeStore once per brickId per session
-      if (!forgeCheckedBricks.has(bId)) {
-        forgeCheckedBricks.add(bId);
+      // Persisted quarantine: re-check store on every call unless we already confirmed quarantine.
+      // Only positive results are memoized — negative results are NOT cached so externally
+      // quarantined tools become visible on the next call without requiring session restart.
+      if (!forgeQuarantinedBricks.has(bId)) {
         const loadResult = await forgeStore.load(bId);
         if (loadResult.ok && loadResult.value.lifecycle === "quarantined") {
           forgeQuarantinedBricks.add(bId);
