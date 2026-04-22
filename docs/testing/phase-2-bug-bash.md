@@ -48,6 +48,8 @@ git -C "$FIXTURE" init -q
 git -C "$FIXTURE" \
   -c user.name='koi-bugbash' \
   -c user.email='koi-bugbash@example.invalid' \
+  -c commit.gpgsign=false \
+  -c core.hooksPath=/dev/null \
   commit --allow-empty -q -m "chore: fixture init"
 
 # Expose operator-chosen tools (bun, node, etc.) to the Bash tool.
@@ -59,7 +61,17 @@ export KOI_BASH_EXTRA_PATH="$HOME/.bun/bin:/opt/homebrew/bin"
 
 ### 1.3 TUI Configuration
 
-The TUI (`koi tui`) is configured via **environment variables and CLI flags**. It does NOT read `koi.yaml`, but it **does** accept `--manifest <path>` to select stack sets and plugins. (`koi start` also supports `--manifest`; see S13.) Memory scenarios (S14, S10, S25) require the default stack set — run without `--manifest`, or with a manifest whose `stacks` includes `memory`.
+The TUI (`koi tui`) is configured via **environment variables and CLI flags**. It does NOT read `koi.yaml`, but it **does** accept `--manifest <path>` to select stack sets and plugins. (`koi start` also supports `--manifest`; see S13.)
+
+**Stack requirements per memory scenario:**
+
+| Scenario | Required stacks | Notes |
+|----------|-----------------|-------|
+| S14 — memory persist/recall | `memory` | Can use `--manifest` with `stacks: [memory]` |
+| S25 — memory dir isolation | `memory` | Can use `--manifest` with `stacks: [memory]` |
+| S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
+
+When no `--manifest` is passed, the default stack set includes all required stacks for every memory scenario.
 
 ```bash
 # Model selection (pick one provider)
@@ -813,7 +825,7 @@ The following L2 packages cannot be exercised through TUI queries due to archite
 | Package | Reason | Test Approach |
 |---------|--------|---------------|
 | `@koi/memory-fs` (concurrent writes) | Concurrent multi-process write safety requires parallel writers; a single TUI session only exercises sequential turns. | `bun run test --filter=@koi/memory-fs` — unit suite exercises parallel writes via locking primitives |
-| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI using an **isolated copy** of the store (never the live S25 fixture — dream calls `writeMemory`/`deleteMemory` and can mutate records that Q156-Q161 depend on): `DREAM_DIR=$(mktemp -d) && cp -r "$MEMORY_DIR/." "$DREAM_DIR/" && koi dream --force --memory-dir "$DREAM_DIR"`. `--force` bypasses the gate (requires 24h+sessions). Requires API key. **Pass**: exits 0; acquires/releases `.dream.lock`; output line is `Dream complete: N merged, M pruned, K unchanged` — all three values ≥ 0 and no error message. No-op runs (`merged=0, pruned=0, unchanged=N`) are valid when input memories are not merge/prune candidates. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: see description |
+| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI using an **isolated copy** of the store (never the live S25 fixture — dream calls `writeMemory`/`deleteMemory` and can mutate records that Q156-Q161 depend on): `DREAM_DIR=$(mktemp -d) && cp -r "$MEMORY_DIR/." "$DREAM_DIR/" && HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" dream --force --memory-dir "$DREAM_DIR"`. Use the repo-local entrypoint (`bun run $REPO_ROOT/.../bin.ts`) — do **not** rely on a globally installed `koi` binary, which may not reflect the branch under test. `--force` bypasses the gate (requires 24h+sessions). Requires API key. **Pass**: exits 0; acquires/releases `.dream.lock`; output line is `Dream complete: N merged, M pruned, K unchanged` — all three values ≥ 0 and no error message. No-op runs (`merged=0, pruned=0, unchanged=N`) are valid when input memories are not merge/prune candidates. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: see description |
 | `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun run test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
 
 ### Always-On Packages (implicitly tested by every TUI session)
