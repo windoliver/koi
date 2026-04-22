@@ -142,4 +142,10 @@ describe("formatMwSpanSuffix", () => {
   test("no decisions and nextCalled true shows pass", () => {
     expect(formatMwSpanSuffix(makeStep(undefined, true))).toBe("pass");
   });
+
+  test("model-router with no decisions and nextCalled false shows exhausted (failed route, no decision emitted)", () => {
+    // wrapModelCall throws before reportRouteDecision on exhaustion — identifier-based detection
+    const step = { ...makeStep(undefined, false), identifier: "middleware:model-router" };
+    expect(formatMwSpanSuffix(step)).toBe("exhausted");
+  });
 });

@@ -231,8 +231,12 @@ export function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefi
       }
     }
   }
-  // Fallback: "pass" for no-op hooks, "BLOCKED" if chain stopped
-  if (nextCalled === false) return "BLOCKED";
+  // Fallback: "pass" for no-op hooks, "BLOCKED" if chain stopped.
+  // Model-router throws before emitting a decision on exhaustion — no decisions + nextCalled=false
+  // means routing failure, not a middleware block.
+  if (nextCalled === false) {
+    return step.identifier === "middleware:model-router" ? "exhausted" : "BLOCKED";
+  }
   return "pass";
 }
 
