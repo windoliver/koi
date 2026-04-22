@@ -411,9 +411,9 @@ describe("createSpawnToolProvider", () => {
     // spawn_requested must NOT be emitted to the new turn's onSpawnEvent. This
     // prevents cross-drain SIGINT policy poisoning.
     const spawnFnCalled = { value: false };
-    const mockSpawnFn = async (): Promise<{ ok: true; value: string }> => {
+    const mockSpawnFn = async (): Promise<{ ok: true; output: string }> => {
       spawnFnCalled.value = true;
-      return { ok: true, value: "result" };
+      return { ok: true, output: "result" };
     };
     const eventsReceived: string[] = [];
     const onSpawnEvent = (event: { kind: string }): void => {
