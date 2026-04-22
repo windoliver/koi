@@ -618,6 +618,80 @@ describe("createSigintHandler", () => {
     expect(onGraceful).toHaveBeenCalledTimes(2);
   });
 
+  test("forward clock jump mid-window does not suppress intentional force-exit", () => {
+    // NTP / manual clock change: wall clock jumps forward while the doubleTapTimer
+    // is still pending. A second Ctrl+C that arrives before the timer fires should
+    // still be treated as within the window (force-exit), not as post-window
+    // (re-entry). With a monotonic clock this is immune to the jump; this test
+    // guards the behavior even when the injected clock is wall-clock-based.
+    let wallMs = 0;
+    const clockJumpHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      onWindowElapse: "stay-armed",
+      setTimer: clock.setTimer,
+      now: () => wallMs,
+    });
+
+    wallMs = 0;
+    clockJumpHandler.handleSignal(); // first tap, armed at wallMs=0
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Clock jumps forward 3000ms (past window) — timer hasn't fired yet.
+    wallMs = 3000;
+
+    // Second tap arrives: clock says "past window", but the doubleTapTimer
+    // has NOT fired (timer system not advanced). With stay-armed policy,
+    // even a post-window second tap should force-exit.
+    clockJumpHandler.handleSignal();
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
+  test("backward clock jump does not cause spurious force-exit before window", () => {
+    // NTP / manual clock change: wall clock jumps backward. The second Ctrl+C
+    // arrives after the real elapsed time exceeds the window, but the backward
+    // jump makes the clock think less time passed. With stay-armed policy this
+    // is fine — force-exit is still the outcome. With reset-to-idle, a backward
+    // jump could suppress re-entry; test that stay-armed prevents any loss of
+    // the force path.
+    let wallMs = 0;
+    const clockJumpHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      onWindowElapse: "stay-armed",
+      setTimer: clock.setTimer,
+      now: () => wallMs,
+    });
+
+    wallMs = 1000;
+    clockJumpHandler.handleSignal(); // armed at wallMs=1000
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Clock jumps backward: "now" is before armedAt.
+    wallMs = 500;
+
+    // Second tap: clock shows 500-1000 = -500ms elapsed (< 2000ms window).
+    // doubleTapTimer still pending → within window → force-exit.
+    clockJumpHandler.handleSignal();
+    expect(onForce).toHaveBeenCalledTimes(1);
+  });
+
   test("signals within coalesce window are treated as one tap", () => {
     const coalescingHandler = createSigintHandler({
       onGraceful: () => {

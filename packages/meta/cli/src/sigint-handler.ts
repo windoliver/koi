@@ -67,7 +67,9 @@ export interface SigintHandlerDeps {
   readonly onWindowElapse?: "stay-armed" | "reset-to-idle" | (() => "stay-armed" | "reset-to-idle");
   /** Injectable timer factory. Production uses a `setTimeout` wrapper. */
   readonly setTimer: (fn: () => void, ms: number) => Timer;
-  /** Injectable clock. Production uses `() => Date.now()`. */
+  /** Injectable clock. Production defaults to `() => performance.now()` (monotonic)
+   *  so elapsed comparisons are immune to NTP adjustments and manual clock changes.
+   *  Test overrides should use a fake monotonic clock (not wall-clock time). */
   readonly now?: () => number;
 }
 
@@ -116,7 +118,10 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
   let state: State = { kind: "idle" };
   // let: justified — incremented on every idle→armed transition; generation key for timer guard
   let armGen = 0;
-  const now = deps.now ?? ((): number => Date.now());
+  // Default to performance.now() (monotonic) so elapsed comparisons are immune
+  // to NTP adjustments and manual clock changes. Callers may inject a custom
+  // clock (e.g. a fake clock in tests) via deps.now.
+  const now = deps.now ?? ((): number => performance.now());
   const coalesceWindowMs = deps.coalesceWindowMs ?? 0;
   const onWindowElapse = deps.onWindowElapse ?? "stay-armed";
   const resolveWindowElapsePolicy = (): "stay-armed" | "reset-to-idle" =>
