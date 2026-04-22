@@ -673,16 +673,19 @@ export KOI_AUDIT_ENABLED=true
 > `@koi/middleware-report` is **already wired** via `KOI_REPORT_ENABLED=true` (`tui-command.ts` line 1714).
 > Accumulates per-session activity data and produces a `RunReport` at session end.
 
-**Setup**: launch TUI with report middleware enabled.
+**Setup**: launch TUI with report middleware enabled. Redirect output to a log file so the report
+survives after the TUI exits (the tmux session and its pane are destroyed when the process exits).
+
 ```bash
+KOI_REPORT_LOG="$FIXTURE/.koi/report.log"
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_REPORT_ENABLED=true KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_REPORT_ENABLED=true KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui 2>'$KOI_REPORT_LOG'"
 ```
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q134 | Send 3+ turns (`Hello`, `What can you do?`, `List files in src/`), then quit TUI | — | `RunReport` printed at session end: summary with turn count, action count, duration, token usage |
-| Q135 | Inspect `RunReport.actions` from Q134 | — | Ring buffer contains `model_call` + `tool_call` entries matching session history |
+| Q134 | Send 3+ turns (`Hello`, `What can you do?`, `List files in src/`), then quit TUI | — | `RunReport` present in `$KOI_REPORT_LOG`: run `grep -c 'RunReport' "$KOI_REPORT_LOG"` → output ≥ 1; report includes turn count, action count, duration, and token usage |
+| Q135 | `grep 'model_call\|tool_call' "$KOI_REPORT_LOG"` | — | Ring buffer entries for `model_call` + `tool_call` matching session history appear in log |
 
 ### S22 — Model Router & Failover
 
@@ -819,6 +822,12 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 # REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
+
+# Pin the dream gate: a fresh store has lastDreamAt=0, which means the 24h time gate
+# is already satisfied (Date.now() >> 86_400_000 ms). With the time gate met, only
+# the session counter (threshold: 5) stands between S25 and spurious dream consolidation.
+# Writing lastDreamAt=now ensures the time gate cannot be met during this run.
+echo "{\"lastDreamAt\":$(date +%s)000,\"sessionsSinceDream\":0}" > "$MEMORY_DIR/.dream-gate.json"
 
 # Use a throw-away HOME for S25 so prior scenario plugins (e.g. S9) don't bleed in,
 # AND so that $KOI_HOME plugin state is not mutated (preventing harness ordering issues
