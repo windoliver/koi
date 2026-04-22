@@ -13,12 +13,17 @@ export function formatSessionDate(ts: number): string {
 export const getSessionDescription = (s: SessionSummary): string =>
   `${formatSessionDate(s.lastActivityAt)} · ${s.messageCount} messages · ${s.preview.slice(0, 40)}`;
 
+/** Max preview characters shown in the peek panel (matches modal inner width). */
+const PEEK_PREVIEW_MAX = 120;
+
 /**
  * Lines shown in the peek panel for a session.
- * Returns the full preview without truncation so the user can read enough
- * context to distinguish similar-looking sessions.
+ * Preview is normalized (newlines → spaces) and capped so it never
+ * overflows the fixed-width modal.
  */
 export function getSessionPeekLines(s: SessionSummary): readonly string[] {
   const date = formatSessionDate(s.lastActivityAt);
-  return [s.name, `${date} · ${s.messageCount} messages`, s.preview];
+  const preview = s.preview.replace(/\r?\n|\r/g, " ").slice(0, PEEK_PREVIEW_MAX);
+  const suffix = s.preview.length > PEEK_PREVIEW_MAX ? "…" : "";
+  return [s.name, `${date} · ${s.messageCount} messages`, `${preview}${suffix}`];
 }

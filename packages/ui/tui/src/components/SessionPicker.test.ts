@@ -100,14 +100,31 @@ describe("getSessionPeekLines", () => {
     expect(/\d/.test(lines[1] ?? "")).toBe(true);
   });
 
-  test("third line is the full preview without truncation", () => {
-    const longPreview = "x".repeat(120);
-    const lines = getSessionPeekLines(makeSession({ preview: longPreview }));
-    expect(lines[2]).toBe(longPreview);
-    expect((lines[2] ?? "").length).toBe(120);
+  test("third line is the preview (fits within cap)", () => {
+    const preview = "Use the glob tool to list files in the current directory";
+    const lines = getSessionPeekLines(makeSession({ preview }));
+    expect(lines[2]).toBe(preview);
   });
 
-  test("does not truncate 40-char boundary", () => {
+  test("truncates long preview to 120 chars with ellipsis", () => {
+    const longPreview = "x".repeat(200);
+    const lines = getSessionPeekLines(makeSession({ preview: longPreview }));
+    expect(lines[2]).toBe(`${"x".repeat(120)}…`);
+  });
+
+  test("no ellipsis when preview is exactly at cap length", () => {
+    const preview = "a".repeat(120);
+    const lines = getSessionPeekLines(makeSession({ preview }));
+    expect(lines[2]).toBe(preview);
+    expect(lines[2]?.endsWith("…")).toBe(false);
+  });
+
+  test("normalizes newlines to spaces in preview", () => {
+    const lines = getSessionPeekLines(makeSession({ preview: "line1\nline2\r\nline3" }));
+    expect(lines[2]).toBe("line1 line2 line3");
+  });
+
+  test("does not truncate 40-char boundary (well under cap)", () => {
     const preview = "a".repeat(41);
     const lines = getSessionPeekLines(makeSession({ preview }));
     expect(lines[2]).toBe(preview);

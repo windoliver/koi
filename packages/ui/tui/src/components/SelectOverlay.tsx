@@ -68,10 +68,13 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
       },
       onMoveUp: list.moveUp,
       onMoveDown: list.moveDown,
-      onPeek: (): void => {
-        const item = props.items[list.selectedIdx()];
-        if (item !== undefined) props.onPeek?.(item);
-      },
+      onPeek:
+        props.onPeek !== undefined
+          ? (): void => {
+              const item = props.items[list.selectedIdx()];
+              if (item !== undefined) props.onPeek!(item);
+            }
+          : undefined,
     });
   });
 

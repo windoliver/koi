@@ -167,10 +167,10 @@ describe("handleSelectOverlayKey", () => {
     expect(cb.closeCount()).toBe(0);
   });
 
-  test("space without onPeek does not throw and returns true", () => {
+  test("space without onPeek is not consumed (returns false)", () => {
     const cb = { onClose: () => {} };
     expect(() => handleSelectOverlayKey(mockKey("space"), cb)).not.toThrow();
-    expect(handleSelectOverlayKey(mockKey("space"), cb)).toBe(true);
+    expect(handleSelectOverlayKey(mockKey("space"), cb)).toBe(false);
   });
 
   test("space does not trigger select", () => {

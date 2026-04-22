@@ -45,8 +45,8 @@ export function handleSelectOverlayKey(
     callbacks.onMoveDown?.();
     return true;
   }
-  if (key.name === "space") {
-    callbacks.onPeek?.();
+  if (key.name === "space" && callbacks.onPeek !== undefined) {
+    callbacks.onPeek();
     return true;
   }
   return false;
