@@ -397,6 +397,106 @@ describe("trace-wrapper: decisions preserved on throw", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #2018: wrapModelStream reportDecision — mid-stream decisions
+// ---------------------------------------------------------------------------
+
+describe("trace-wrapper: wrapModelStream reportDecision", () => {
+  test("decisions called mid-stream (before first chunk) appear in span metadata", async () => {
+    const { steps, config } = createMockStore();
+
+    // Mirrors model-router's wrapModelStream: reportDecision fires before first chunk
+    const streamingDecider: KoiMiddleware = {
+      name: "streaming-decider",
+      describeCapabilities: () => undefined,
+      wrapModelStream: (ctx, _request, _next): AsyncIterable<ModelChunk> =>
+        (async function* () {
+          ctx.reportDecision?.({
+            "router.target.selected": "backup:gemini",
+            "router.fallback_occurred": true,
+          });
+          yield { kind: "text_delta", delta: "hello" } as unknown as ModelChunk;
+        })(),
+    };
+
+    const wrapped = wrapMiddlewareWithTrace(streamingDecider, config);
+    const ctx = makeTurnCtx();
+    const stream = wrapped.wrapModelStream?.(
+      ctx,
+      makeModelRequest(),
+      (_req): AsyncIterable<ModelChunk> => (async function* () {})(),
+    );
+    if (stream !== undefined) {
+      for await (const _ of stream) {
+        /* consume */
+      }
+    }
+    await wrapped.onAfterTurn?.(ctx);
+
+    expect(steps.length).toBeGreaterThanOrEqual(1);
+    const meta = steps[0]?.metadata as JsonObject;
+    const decisions = meta.decisions as JsonObject[] | undefined;
+    expect(decisions).toBeDefined();
+    expect(decisions).toHaveLength(1);
+    expect(decisions?.[0]?.["router.target.selected"]).toBe("backup:gemini");
+    expect(decisions?.[0]?.["router.fallback_occurred"]).toBe(true);
+  });
+
+  test("decisions called mid-stream are captured even on two consecutive model calls (Setup turn)", async () => {
+    const { steps, config } = createMockStore();
+
+    // Mirrors two model calls in Setup turn: both call reportDecision mid-stream
+    const streamingDecider: KoiMiddleware = {
+      name: "streaming-decider",
+      describeCapabilities: () => undefined,
+      wrapModelStream: (ctx, _request, _next): AsyncIterable<ModelChunk> =>
+        (async function* () {
+          ctx.reportDecision?.({ "router.target.selected": "gemini", callCount: 1 });
+          yield { kind: "text_delta", delta: "call" } as unknown as ModelChunk;
+        })(),
+    };
+
+    const wrapped = wrapMiddlewareWithTrace(streamingDecider, config);
+    const ctx = makeTurnCtx();
+
+    // First model call (Setup turn, call 1)
+    const stream1 = wrapped.wrapModelStream?.(
+      ctx,
+      makeModelRequest(),
+      (_req): AsyncIterable<ModelChunk> => (async function* () {})(),
+    );
+    if (stream1 !== undefined) {
+      for await (const _ of stream1) {
+        /* consume */
+      }
+    }
+
+    // Second model call (Setup turn, call 2 — after tool execution)
+    const stream2 = wrapped.wrapModelStream?.(
+      ctx,
+      makeModelRequest(),
+      (_req): AsyncIterable<ModelChunk> => (async function* () {})(),
+    );
+    if (stream2 !== undefined) {
+      for await (const _ of stream2) {
+        /* consume */
+      }
+    }
+
+    await wrapped.onAfterTurn?.(ctx);
+
+    // Both spans should have decisions
+    expect(steps.length).toBeGreaterThanOrEqual(2);
+    for (const step of steps.slice(0, 2)) {
+      const meta = step.metadata as JsonObject;
+      const decisions = meta.decisions as JsonObject[] | undefined;
+      expect(decisions).toBeDefined();
+      expect(decisions).toHaveLength(1);
+      expect(decisions?.[0]?.["router.target.selected"]).toBe("gemini");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // wrapModelStream recording
 // ---------------------------------------------------------------------------
 

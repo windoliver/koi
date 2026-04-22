@@ -1393,11 +1393,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
 
+  // Keep a reference so teardown can call .dispose() — cancels pending
+  // auth_progress watchdog timers and gates late channel.send() callbacks,
+  // preventing stale auth notifications from running after shutdown.
+  let tuiAuthNotificationHandler: ReturnType<typeof createAuthNotificationHandler> | undefined;
   if (manifestFilesystemConfig !== undefined) {
+    tuiAuthNotificationHandler = createAuthNotificationHandler(tuiChannelForAuth);
     const fsResolved = await resolveFileSystemAsync(
       manifestFilesystemConfig,
       process.cwd(),
-      createAuthNotificationHandler(tuiChannelForAuth),
+      tuiAuthNotificationHandler,
     );
     resolvedFilesystemBackend = fsResolved.backend;
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
@@ -1523,6 +1528,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             await runtimeHandle.runtime.dispose();
           }
         } catch {}
+        // Dispose the auth notification handler synchronously first: the
+        // filesystem dispose below unsubscribes then awaits, and that yield
+        // can still run a pre-queued notification microtask. Handler dispose
+        // races ahead of the yield so late callbacks short-circuit on the
+        // `active` flag.
+        try {
+          tuiAuthNotificationHandler?.dispose();
+        } catch {}
         try {
           await resolvedFilesystemBackend?.dispose?.();
         } catch {}
@@ -1622,6 +1635,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         "   Do NOT use this mode to verify real browser automation outcomes.\n\n",
     );
   }
+
+  // Declared before runtimeReady to avoid Temporal Dead Zone: the .then()
+  // callback registered on runtimeReady can fire during the `await
+  // createCostBridge` below, before the original `let` at line 2055 is reached.
+  let governanceBridge: GovernanceBridge | undefined;
 
   const runtimeReady = createKoiRuntime({
     modelAdapter,
@@ -2054,9 +2072,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // bridge is undefined and all governanceBridge?.xxx() call sites no-op.
   // Future work (e.g. --max-spend CLI flag) will instantiate a controller
   // and the bridge will start surfacing alerts in /governance.
-  // let: justified — set inside the optional block (runtimeReady.then), read by
-  // call sites below that execute after the runtime resolves.
-  let governanceBridge: GovernanceBridge | undefined;
+  // (Declaration moved before runtimeReady — see comment there for why.)
 
   // ---------------------------------------------------------------------------
   // 4. Helpers
@@ -2219,6 +2235,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
     write: (msg: string) => {
       process.stderr.write(msg);
+    },
+    // #1912: route SIGINT hints through the toast surface (transient, keyed,
+    // auto-dismiss) instead of raw stderr or add_info. Raw stderr writes during
+    // an active OpenTUI frame cause row duplication and character-level overlay;
+    // add_info would pollute conversation history with stale control-flow banners.
+    onInterruptHint: (_msg: string) => {
+      store.dispatch({
+        kind: "add_toast",
+        toast: {
+          id: `sigint-interrupt-${Date.now()}`,
+          kind: "info",
+          key: "sigint:interrupt",
+          title: "Interrupting…",
+          body: "Ctrl+C again to force",
+          ts: Date.now(),
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS,
+        },
+      });
+    },
+    onBgExitHint: (_msg: string) => {
+      store.dispatch({
+        kind: "add_toast",
+        toast: {
+          id: `sigint-bg-exit-${Date.now()}`,
+          kind: "warn",
+          key: "sigint:bg-exit",
+          title: "Background tasks still running",
+          body: "Press Ctrl+C again to exit (background tasks will be terminated).",
+          ts: Date.now(),
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS,
+        },
+      });
     },
     doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
@@ -2901,6 +2949,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       batcher.dispose();
       approvalStore?.close();
+      // Dispose auth notification handler synchronously first so late
+      // channel.send() callbacks queued before transport unsubscribe
+      // short-circuit on the active flag.
+      try {
+        tuiAuthNotificationHandler?.dispose();
+      } catch {
+        /* best effort */
+      }
       // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
       // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
       // complete before the transport is closed.
