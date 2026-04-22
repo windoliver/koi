@@ -70,6 +70,15 @@ export function computePermissionPromptWidth(terminalCols: number): number {
  */
 export const PERMISSION_PROMPT_NARROW_THRESHOLD = 50;
 
+/**
+ * Minimum modal width at which the prompt can display enough approval context
+ * to be safely interactive. Below this (terminal < ~24 cols), the keyboard
+ * handler suppresses y/a/! and shows a "resize terminal" fallback so users
+ * cannot accidentally grant access to an unreadable prompt. Only Escape/deny
+ * remains active. Exported for unit testing.
+ */
+export const PERMISSION_PROMPT_MIN_SAFE_WIDTH = 20;
+
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
   medium: COLORS.amber,
@@ -180,10 +189,22 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   // horizontal hint rows would overflow. (#1913)
   const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
 
+  // Below the minimum safe width the prompt cannot display enough context to
+  // make an informed decision. Approval keys are suppressed; only Escape/deny
+  // remains active so the user can dismiss and resize the terminal. (#1913)
+  const isTooNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_MIN_SAFE_WIDTH);
 
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
+    if (isTooNarrow()) {
+      // Suppress approval keys when context is unreadable; only allow dismiss.
+      if (key.name.toLowerCase() === "escape") {
+        key.preventDefault();
+        props.onRespond(props.prompt.requestId, { kind: "deny", reason: "User dismissed" });
+      }
+      return;
+    }
     const decision = processPermissionKey(key.name, permanentAvailable());
     if (decision !== null) {
       key.preventDefault();
@@ -201,6 +222,15 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       width={modalWidth()}
       {...MODAL_POSITION}
     >
+      {/* Safety guard: when the terminal is too narrow to show meaningful
+          approval context, render a non-interactive "resize" message and
+          suppress approval keys (only Escape/dismiss remains active). */}
+      <Show when={isTooNarrow()}>
+        <text fg={COLORS.amber}>{"Resize\nto review"}</text>
+        <text fg={COLORS.textMuted}>{"[Esc]"}</text>
+      </Show>
+      <Show when={!isTooNarrow()}>
+
       {/* Title — stacks risk label below the heading on narrow terminals so
           "Permission Required [MEDIUM] (1 of 9)" (38+ chars) never clips. */}
       <box flexDirection={isNarrow() ? "column" : "row"} gap={isNarrow() ? 0 : 1}>
@@ -298,6 +328,8 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
           </box>
         </Show>
       </Show>
+
+      </Show> {/* isTooNarrow() guard */}
     </box>
   );
 }

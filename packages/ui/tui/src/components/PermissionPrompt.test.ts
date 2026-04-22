@@ -4,6 +4,7 @@ import {
   formatInputPreview,
   formatToolId,
   normalizeReason,
+  PERMISSION_PROMPT_MIN_SAFE_WIDTH,
   PERMISSION_PROMPT_NARROW_THRESHOLD,
   PERMISSION_PROMPT_WIDTH,
   processPermissionKey,
@@ -78,6 +79,33 @@ describe("PERMISSION_PROMPT_NARROW_THRESHOLD", () => {
   test("threshold is between the narrow and wide breakpoints", () => {
     expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeGreaterThan(36); // 40-col modal width
     expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeLessThanOrEqual(PERMISSION_PROMPT_WIDTH);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PERMISSION_PROMPT_MIN_SAFE_WIDTH — approval suppression on unreadable prompts
+// ---------------------------------------------------------------------------
+
+describe("PERMISSION_PROMPT_MIN_SAFE_WIDTH", () => {
+  test("pathologically narrow terminals produce widths below the safe threshold", () => {
+    // computePermissionPromptWidth(10) = 6; computePermissionPromptWidth(5) = 1.
+    expect(computePermissionPromptWidth(10)).toBeLessThan(PERMISSION_PROMPT_MIN_SAFE_WIDTH);
+    expect(computePermissionPromptWidth(5)).toBeLessThan(PERMISSION_PROMPT_MIN_SAFE_WIDTH);
+  });
+
+  test("safe terminals produce widths at or above the safe threshold", () => {
+    // computePermissionPromptWidth(24) = 20 = MIN_SAFE_WIDTH.
+    expect(computePermissionPromptWidth(24)).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_MIN_SAFE_WIDTH,
+    );
+    expect(computePermissionPromptWidth(40)).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_MIN_SAFE_WIDTH,
+    );
+  });
+
+  test("safe threshold is between 1 and the narrow threshold", () => {
+    expect(PERMISSION_PROMPT_MIN_SAFE_WIDTH).toBeGreaterThan(1);
+    expect(PERMISSION_PROMPT_MIN_SAFE_WIDTH).toBeLessThan(PERMISSION_PROMPT_NARROW_THRESHOLD);
   });
 });
 
