@@ -2339,17 +2339,31 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         : governanceEnabled
           ? join(homedir(), ".koi", "violations.db")
           : undefined;
+    // Degrade gracefully if the default DB path is unreachable. Auto-
+    // wiring runs whenever governance is enabled, but `~/.koi` may be
+    // unwritable (containers, read-only runners, restricted service
+    // users, missing $HOME). A hard failure here would abort runtime
+    // startup for a FEATURE — governance history backfill — that is
+    // strictly additive. Catch FS/SQLite open failures, continue with
+    // `violationStore: undefined`, and log a warning so operators can
+    // investigate without losing the rest of the runtime.
+    let violationStore: ReturnType<typeof createSqliteViolationStore> | undefined;
     if (resolvedViolationPath !== undefined) {
-      // Parent dir must exist before bun:sqlite opens the file.
-      const parent = dirname(resolvedViolationPath);
-      if (!existsSync(parent)) {
-        mkdirSync(parent, { recursive: true });
+      try {
+        const parent = dirname(resolvedViolationPath);
+        if (!existsSync(parent)) {
+          mkdirSync(parent, { recursive: true });
+        }
+        violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[koi-runtime] violation store disabled — could not open "${resolvedViolationPath}": ${message}. ` +
+            'Set --violation-sqlite=<path> to a writable location, or pass "" to disable explicitly.',
+        );
+        violationStore = undefined;
       }
     }
-    const violationStore =
-      resolvedViolationPath !== undefined
-        ? createSqliteViolationStore({ dbPath: resolvedViolationPath })
-        : undefined;
 
     const rawGovernanceBackend = governanceEnabled
       ? config.governanceRules !== undefined && config.governanceRules.length > 0

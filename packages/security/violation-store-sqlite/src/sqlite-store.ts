@@ -21,6 +21,18 @@ import { createInsertStmt, initViolationSchema, type ViolationRow } from "./sche
 
 const DEFAULT_FLUSH_INTERVAL_MS = 2000;
 const DEFAULT_MAX_BUFFER_SIZE = 100;
+// Hard cap on the in-memory backlog that survives across failed flushes.
+// Without a cap, sustained write failures (locked DB, disk full) would
+// grow the buffer unboundedly. When exceeded we drop the OLDEST entries
+// and log a loud count — keeping the most-recent audit signal, since
+// governance monitors usually react to the tail. Operators who need
+// zero-loss guarantees must choose a durable transport upstream.
+const MAX_BUFFER_BACKLOG = 10_000;
+// Retries close() attempts to drain the buffer before giving up. Short
+// because the governance hot path already recorded the violations via
+// `onViolation` subscribers — the SQLite trail is the history backfill,
+// not the primary signal.
+const CLOSE_FLUSH_ATTEMPTS = 3;
 
 interface BufferedEntry {
   readonly violation: Violation;
@@ -118,12 +130,16 @@ export function createSqliteViolationStore(
   // callback, record() when buffer is full, and close() — would all push
   // the exception into paths that cannot handle it: an `onViolation`
   // governance callback, a setInterval unhandled rejection (process
-  // crash), or a shutdown sequence. On transient SQLite failures we keep
-  // the buffer intact so the next tick retries; on persistent failures
-  // the buffer grows bounded-ish by the maxBufferSize threshold and log
-  // volume stays proportional to flush cadence.
-  function flushBuffer(): void {
-    if (buffer.length === 0) return;
+  // crash), or a shutdown sequence. Returns a bool so close() can
+  // retry-until-drained without adding a separate result channel.
+  //
+  // On transient SQLite failures we keep the buffer intact so the next
+  // tick retries. `MAX_BUFFER_BACKLOG` bounds the retained backlog —
+  // when sustained failures push us past that cap we drop the OLDEST
+  // entries and log a loud count so the loss is visible rather than
+  // surfacing as an OOM later.
+  function flushBuffer(): boolean {
+    if (buffer.length === 0) return true;
     const snapshot = buffer.slice();
     try {
       const tx = db.transaction(() => {
@@ -144,11 +160,20 @@ export function createSqliteViolationStore(
       // Only drop on transaction success. Splice from the front in case
       // record() appended more entries while the tx was mid-flight.
       buffer.splice(0, snapshot.length);
+      return true;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(
         `[violation-store-sqlite] flush of ${snapshot.length} entries failed; retained in buffer: ${message}`,
       );
+      if (buffer.length > MAX_BUFFER_BACKLOG) {
+        const overflow = buffer.length - MAX_BUFFER_BACKLOG;
+        buffer.splice(0, overflow);
+        console.warn(
+          `[violation-store-sqlite] buffer backlog exceeded ${MAX_BUFFER_BACKLOG}; dropped ${overflow} oldest entries to bound memory.`,
+        );
+      }
+      return false;
     }
   }
 
@@ -255,7 +280,22 @@ export function createSqliteViolationStore(
     },
     close(): void {
       clearInterval(timer);
-      flushBuffer();
+      // Retry the final drain a few times before closing the DB. The
+      // old behavior flushed once and silently dropped anything the
+      // attempt didn't land. If all attempts fail, log the exact count
+      // of dropped entries so the audit loss is visible in logs.
+      let drained = false;
+      for (let i = 0; i < CLOSE_FLUSH_ATTEMPTS; i++) {
+        if (flushBuffer()) {
+          drained = true;
+          break;
+        }
+      }
+      if (!drained && buffer.length > 0) {
+        console.warn(
+          `[violation-store-sqlite] close() giving up after ${CLOSE_FLUSH_ATTEMPTS} attempts — ${buffer.length} buffered entries were not persisted.`,
+        );
+      }
       db.close();
     },
   };

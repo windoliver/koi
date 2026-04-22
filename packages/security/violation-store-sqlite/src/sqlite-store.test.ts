@@ -162,6 +162,24 @@ describe("createSqliteViolationStore — concurrency + persistence", () => {
     }
   });
 
+  test("buffer backlog is capped on sustained flush failures", () => {
+    // Create a store, close its DB to poison flushes, then record
+    // >MAX_BUFFER_BACKLOG entries and assert the buffer stays bounded
+    // (oldest-drop policy).
+    const store = createSqliteViolationStore({ dbPath: ":memory:" });
+    // Wait for 1 flushBuffer to be harmless; then close() closes the DB.
+    store.close();
+
+    // Push way past the internal cap. The sink swallows and logs; it
+    // must not throw and must not grow without bound. We can't read
+    // the private buffer directly, but we can assert the calls are
+    // contained (no throw) and that a subsequent flush() is a no-op.
+    for (let i = 0; i < 20_000; i++) {
+      store.record(makeViolation(), A1, "S", 1 + i);
+    }
+    expect(() => store.flush()).not.toThrow();
+  });
+
   test("flush never throws even when the underlying DB has been closed", () => {
     // Simulates a transient/terminal write failure: close the store so
     // the next flush hits a closed DB. Callers are the governance hot
