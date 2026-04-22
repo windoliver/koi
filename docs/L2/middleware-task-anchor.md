@@ -103,6 +103,50 @@ Don't mention this reminder to the user.
 </system-reminder>
 ```
 
+## Trajectory Observability
+
+Both `wrapModelCall` and `wrapModelStream` call `ctx.reportDecision?.(…)` so the TUI trajectory view shows the outcome of each injection decision instead of always falling through to `[pass]`.
+
+### Inject decision
+
+Emitted when a reminder is prepended to the model request:
+
+```json
+{
+  "action": "inject",
+  "promptLength": 312,
+  "reminderKind": "task-list",
+  "forced": false,
+  "idle": 4,
+  "taskCount": 2
+}
+```
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `reminderKind` | `"task-list"` \| `"empty-board-nudge"` | Whether the reminder contained live tasks or the task_create prompt |
+| `forced` | `true` \| `false` | `true` when injected due to a stop-gate rollback (`forceInjectNextTurn`) rather than normal idle threshold |
+| `idle` | number | Idle turn count at the time of injection (before reset to 0) |
+| `taskCount` | number | Total tasks on the board at injection time |
+
+### Suppress decision
+
+Emitted when the board was observed but no reminder was injected:
+
+```json
+{
+  "action": "suppress",
+  "reason": "noPriorTaskTool",
+  "boardState": "empty"
+}
+```
+
+| `reason` | Cause |
+|----------|-------|
+| `"forceRequiresTasks"` | Stop-gate rollback latch suppressed nudge to avoid recreating just-completed work |
+| `"nudgeDisabled"` | `nudgeOnEmptyBoard: false` in config |
+| `"noPriorTaskTool"` | Nudge enabled but no successful task-tool call seen yet this session (`sawTaskTool=false`) |
+
 ## Error Handling
 
 | Scenario | Behavior |
