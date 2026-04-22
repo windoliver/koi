@@ -14,14 +14,16 @@ const INITIAL_METRICS: CumulativeMetrics = {
 };
 
 /** Create a fresh TUI state with sensible defaults. */
-export function createInitialState(): TuiState {
+export function createInitialState(modelName = ""): TuiState {
   return {
     messages: [],
+    queuedSubmits: [],
     activeView: "conversation",
     modal: null,
     connectionStatus: "disconnected",
     layoutTier: "normal",
     zoomLevel: 1,
+    modelName,
     sessionInfo: null,
     cumulativeMetrics: INITIAL_METRICS,
     agentStatus: "idle",
@@ -50,5 +52,7 @@ export function createInitialState(): TuiState {
     costBreakdown: null,
     tokenRate: null,
     mcpServers: [],
+    governance: { snapshot: null, alerts: [], violations: [], rules: [], capabilities: [] },
+    toasts: [],
   };
 }

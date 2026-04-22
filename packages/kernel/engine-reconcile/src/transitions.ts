@@ -14,7 +14,14 @@ import { VALID_TRANSITIONS } from "@koi/core";
 
 /** Input for a CAS state transition. */
 export interface TransitionInput {
-  readonly from: ProcessState;
+  /**
+   * Optional explicit phase expectation.
+   *
+   * When provided, applyTransition performs an additional phase-CAS check
+   * (`current.phase === from`) before validating the edge and generation.
+   * Registry transitions usually omit this and rely on generation CAS only.
+   */
+  readonly from?: ProcessState | undefined;
   readonly to: ProcessState;
   readonly expectedGeneration: number;
   readonly reason: TransitionReason;
@@ -51,7 +58,7 @@ export function validateTransition(from: ProcessState, to: ProcessState): Result
  * Apply a state transition with CAS (compare-and-swap) semantics.
  *
  * Checks:
- * 1. Current phase matches `input.from` (phase CAS)
+ * 1. Optional: when `input.from` is provided, current phase matches it (phase CAS)
  * 2. Current generation matches `input.expectedGeneration` (version CAS)
  * 3. Transition is valid per VALID_TRANSITIONS
  *
@@ -61,8 +68,8 @@ export function applyTransition(
   current: AgentStatus,
   input: TransitionInput,
 ): Result<AgentStatus, KoiError> {
-  // CAS check: phase must match expected
-  if (current.phase !== input.from) {
+  // Optional phase CAS check
+  if (input.from !== undefined && current.phase !== input.from) {
     return {
       ok: false,
       error: {
@@ -86,7 +93,7 @@ export function applyTransition(
   }
 
   // Validate the transition edge
-  const valid = validateTransition(input.from, input.to);
+  const valid = validateTransition(current.phase, input.to);
   if (!valid.ok) {
     return valid;
   }

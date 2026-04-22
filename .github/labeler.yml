@@ -19,10 +19,14 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**/bash-ast/**"
+      - "packages/**/bash-classifier/**"
       - "packages/**/bash-security/**"
+      - "packages/**/blob-cas/**"
+      - "packages/**/browser-a11y/**"
       - "packages/**/channel-base/**"
       - "packages/**/config/**"
       - "packages/**/context-manager/**"
+      - "packages/**/dream/**"
       - "packages/**/edit-match/**"
       - "packages/**/errors/**"
       - "packages/**/event-delivery/**"
@@ -46,7 +50,9 @@
       - "packages/**/test/**"
       - "packages/**/token-estimator/**"
       - "packages/**/tools-core/**"
+      - "packages/**/url-safety/**"
       - "packages/**/validation/**"
+      - "packages/**/watch-patterns/**"
 
 "layer:L3":
   - changed-files:
@@ -63,12 +69,16 @@
       - "packages/**"
       - "!packages/**/agent/cli/**"
       - "!packages/**/bash-ast/**"
+      - "!packages/**/bash-classifier/**"
       - "!packages/**/bash-security/**"
+      - "!packages/**/blob-cas/**"
+      - "!packages/**/browser-a11y/**"
       - "!packages/**/channel-base/**"
       - "!packages/**/cli/**"
       - "!packages/**/config/**"
       - "!packages/**/context-manager/**"
       - "!packages/**/core/**"
+      - "!packages/**/dream/**"
       - "!packages/**/edit-match/**"
       - "!packages/**/engine/**"
       - "!packages/**/errors/**"
@@ -94,4 +104,6 @@
       - "!packages/**/test/**"
       - "!packages/**/token-estimator/**"
       - "!packages/**/tools-core/**"
+      - "!packages/**/url-safety/**"
       - "!packages/**/validation/**"
+      - "!packages/**/watch-patterns/**"

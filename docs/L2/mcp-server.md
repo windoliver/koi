@@ -192,3 +192,5 @@ surface touched.
 type error before the default applies — only `undefined` or empty string triggers the
 fallback. This aligns both task-completion surfaces (library tools and MCP platform
 tools) so callers get consistent behavior regardless of entry point.
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

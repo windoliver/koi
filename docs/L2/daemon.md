@@ -2,6 +2,11 @@
 
 Supervise OS-level worker processes for long-running agent work. Provides a pluggable `WorkerBackend` contract (swappable execution substrates), a pool-managing `Supervisor` with restart/maxWorkers/graceful-shutdown, and an in-tree Bun subprocess backend.
 
+## Recent updates
+
+- `createSupervisor` keeps the heartbeat-aware backend selection path and returns explicit `UNAVAILABLE` diagnostics when availability probes fail or time out, so operators can distinguish transient backend outages from static misconfiguration.
+- `createSubprocessBackend` and supervisor wiring stay aligned on heartbeat opt-in behavior (`backendHints.heartbeat`) with a single `@koi/core` contract surface for daemon types.
+
 ---
 
 ## Why It Exists
@@ -70,11 +75,16 @@ User hits Ctrl-C on the TUI
 
 ```
 src/
-├── create-supervisor.ts    createSupervisor() factory — pool, lifecycle, restart, event fan-in
-├── subprocess-backend.ts   createSubprocessBackend() — Bun.spawn-based WorkerBackend
-├── signal-handlers.ts      registerSignalHandlers() — SIGTERM/SIGINT bridge to shutdown
-├── backoff.ts              computeBackoff() — exponential backoff helper
-└── index.ts                public re-exports
+├── create-supervisor.ts            createSupervisor() factory — pool, lifecycle, restart, event fan-in
+├── subprocess-backend.ts           createSubprocessBackend() — Bun.spawn-based WorkerBackend
+├── file-session-registry.ts        createFileSessionRegistry() — cross-process session registry
+├── registry-supervisor-bridge.ts   attachRegistry() — supervisor events → registry writes
+├── signal-handlers.ts              registerSignalHandlers() — SIGTERM/SIGINT bridge to shutdown
+├── backoff.ts                      computeBackoff() — exponential backoff helper
+├── heartbeat-monitor.ts            createHeartbeatMonitor() — per-worker deadline timers with synthetic-crash-on-timeout
+├── heartbeat-opt-in.ts             isHeartbeatOptIn() — shared predicate for backendHints.heartbeat opt-in
+├── supervisor-health.ts            buildHealth() + deriveStatus() — health snapshot composition helpers
+└── index.ts                        public re-exports
 ```
 
 ### L0 Contracts Consumed
@@ -83,7 +93,7 @@ All of the following live in `@koi/core` and are consumed by this package:
 
 | Type | Purpose |
 |------|---------|
-| `WorkerBackend` | Swappable execution substrate (kind/spawn/terminate/kill/isAlive/watch) |
+| `WorkerBackend` | Swappable execution substrate (kind/spawn/terminate/kill/isAlive/watch). `watch(id, signal?)` accepts an optional `AbortSignal`; the supervisor aborts it on `stop()`/`shutdown()` so backends that can't guarantee terminal event emission still release their watch-stream resources. |
 | `WorkerBackendKind` | `"in-process" \| "subprocess" \| "tmux" \| "remote"` |
 | `WorkerSpawnRequest` | Spawn payload (workerId, agentId, command, cwd?, env?, backendHints?) |
 | `WorkerHandle` | Per-worker runtime handle (signal, startedAt, backendKind) |
@@ -93,6 +103,12 @@ All of the following live in `@koi/core` and are consumed by this package:
 | `WorkerRestartPolicy` | restart (`RestartType` reused from `@koi/core/supervision`), maxRestarts, window, backoff |
 | `DEFAULT_WORKER_RESTART_POLICY` | `{ transient, 5, 60_000, 1000, 30_000 }` |
 | `validateSupervisorConfig` | Pure validator → `Result<SupervisorConfig, KoiError>` |
+| `BackgroundSessionRecord` | Persisted per-session metadata (pid, status, startedAt, logPath, command, …) |
+| `BackgroundSessionStatus` | `"starting" \| "running" \| "exited" \| "crashed" \| "detached"` |
+| `BackgroundSessionRegistry` | register / update / unregister / get / list / watch |
+| `BackgroundSessionEvent` | Discriminated union: registered / updated / unregistered |
+| `BackgroundSessionUpdate` | Partial update patch for mutable lifecycle fields |
+| `validateBackgroundSessionRecord` | Pure validator → `Result<BackgroundSessionRecord, KoiError>` |
 
 ---
 
@@ -165,6 +181,57 @@ Uses `Bun.spawn(command, { cwd, env, stdin: "inherit", stdout: "pipe", stderr: "
 - `crashed` (with `INTERNAL` KoiError, retryable=true) when code≠0
 - `crashed` (with `INTERNAL`, retryable=false) if the backend watch stream itself fails
 
+### createFileSessionRegistry
+
+File-backed cross-process session registry. One JSON file per worker under the
+configured directory; atomic writes via tmp+rename so concurrent readers never
+observe a half-written record. Consumers (CLI `koi bg ps`, admin dashboards,
+external tooling) read the registry directly from disk without contacting the
+supervisor.
+
+```typescript
+import { createFileSessionRegistry } from "@koi/daemon";
+
+const registry = createFileSessionRegistry({
+  dir: `${process.env.KOI_STATE_DIR}/daemon/sessions`,
+});
+
+await registry.register({
+  workerId: workerId("w-researcher-1"),
+  agentId: agentId("researcher"),
+  pid: 12345,
+  status: "starting",
+  startedAt: Date.now(),
+  logPath: "/var/log/koi/w-researcher-1.log",
+  command: ["bun", "worker.ts"],
+  backendKind: "subprocess",
+});
+
+await registry.update(workerId("w-researcher-1"), { status: "running" });
+const active = await registry.list();
+for await (const ev of registry.watch()) console.log(ev.kind, ev);
+```
+
+### attachRegistry
+
+Bridges supervisor lifecycle events into registry writes. Callers register a
+session BEFORE calling `supervisor.start()`; the bridge flips `status` from
+`starting` → `running` → `exited`/`crashed` and records `endedAt`/`exitCode`
+as the events fire.
+
+```typescript
+import { attachRegistry } from "@koi/daemon";
+
+const bridge = attachRegistry({
+  supervisor,
+  registry,
+  onError: (err, event) => log.warn("registry bridge", err, event),
+});
+
+// Later, during teardown:
+await bridge.close();
+```
+
 ### registerSignalHandlers
 
 ```typescript
@@ -205,9 +272,114 @@ Restart budget enforced by `maxRestarts` within `maxRestartWindowMs` (sliding wi
 
 Workers not in the pool return `{ ok: false, error.code: "NOT_FOUND" }`.
 
+### Watch Cancellation
+
+Each pool worker owns an `AbortController`; its signal is passed into
+`backend.watch(id, signal)`. After the deadline-bounded terminate/kill
+completes, `stop()` aborts the signal so any backend still holding a watch
+stream releases it. Backends that emit the terminal event naturally ignore
+the abort (the for-await already exited); backends that stall or drop the
+stream without emitting a terminal event honor the abort and exit their
+generator, so the supervisor's watch IIFE never leaks past stop()/shutdown().
+
 ### Backend Selection
 
 When `SupervisorConfig.backends` registers multiple kinds, `start()` picks in this order: subprocess → in-process → tmux → remote. Override via `start(req, { backend: "in-process" })`.
+
+---
+
+## Heartbeat Protocol
+
+Workers can opt into supervisor-side liveness monitoring by sending heartbeat messages over Bun's native IPC channel. Unlike OS-level `isAlive` polling (which only catches crashes), heartbeats also detect hangs — a looping worker that never finishes a task will miss its heartbeat deadline and be torn down.
+
+### Opting in
+
+Set `backendHints.heartbeat: true` in the spawn request:
+
+```typescript
+await supervisor.start({
+  workerId: workerId("research-1"),
+  agentId: agentId("agent-research"),
+  command: ["bun", "run", "./my-worker.ts"],
+  backendHints: { heartbeat: true },
+});
+```
+
+### Child-side pattern
+
+The child process sends a single-shape message over IPC:
+
+```typescript
+// Inside the worker's main loop:
+setInterval(() => {
+  if (typeof process.send === "function") {
+    process.send({ koi: "heartbeat" });
+  }
+}, 5_000); // Advisory cadence — must be shorter than config.heartbeat.timeoutMs
+```
+
+The supervisor ignores any IPC message that is not a heartbeat, leaving room for future control messages.
+
+### Configuration
+
+`SupervisorConfig.heartbeat` sets global defaults (`DEFAULT_HEARTBEAT_CONFIG = { intervalMs: 5_000, timeoutMs: 15_000 }`):
+
+```typescript
+const supervisor = createSupervisor({
+  maxWorkers: 4,
+  shutdownDeadlineMs: 10_000,
+  heartbeat: { intervalMs: 5_000, timeoutMs: 15_000 },
+  backends: { subprocess: createSubprocessBackend() },
+});
+```
+
+### Timeout behavior
+
+If no heartbeat arrives within `timeoutMs`, the supervisor:
+
+1. Publishes a synthetic `WorkerEvent` of kind `"crashed"` with `error.code = "HEARTBEAT_TIMEOUT"` — visible via `watchAll()` to any observer.
+2. Invokes `stop(workerId, "heartbeat-timeout")` — graceful terminate, then kill after `shutdownDeadlineMs`.
+3. Does not auto-restart. Callers that want automatic restart after a heartbeat timeout should wrap `stop()`; this may become a first-class policy in a follow-up issue.
+
+The first heartbeat must arrive within `timeoutMs` of spawn — there is no separate startup grace window. Workers with non-trivial boot cost should emit an early heartbeat as soon as initialization completes.
+
+## Health Reporting
+
+`supervisor.health()` is a synchronous, in-memory snapshot of both per-worker health and supervisor self-health:
+
+```typescript
+const h: SupervisorHealth = supervisor.health();
+// h.status:  "ok" | "degraded" | "unhealthy"
+// h.reasons: readonly string[]   (machine-readable tags)
+// h.metrics: SupervisorHealthMetrics  (raw counters)
+// h.workers: readonly WorkerHealth[]  (per-worker detail)
+```
+
+### Status derivation
+
+- `"unhealthy"` ⇢ supervisor is shutting down
+- `"degraded"` ⇢ any of: quarantined workers exist, event-buffer drops occurred, pool is at capacity
+- `"ok"` ⇢ no degrading condition
+
+Reasons vocabulary:
+- `"shutting_down"` — supervisor-level
+- `"quarantined_workers"` — one or more workers have unconfirmed liveness
+- `"event_buffer_drops"` — the event ring buffer has evicted events (subscribers may have missed some)
+- `"at_capacity"` — `poolSize + pendingSpawnCount >= maxWorkers`
+
+### WorkerHealth fields
+
+```typescript
+interface WorkerHealth {
+  readonly workerId: WorkerId;
+  readonly agentId: AgentId;
+  readonly state: "running" | "restarting" | "quarantined" | "stopping";
+  readonly lastHeartbeatAt: number | undefined;       // undefined for non-heartbeat-tracked workers
+  readonly heartbeatDeadlineAt: number | undefined;   // undefined for non-heartbeat-tracked workers
+}
+```
+
+Non-heartbeat-tracked workers (those spawned without `backendHints.heartbeat: true`) appear in `workers[]` with `lastHeartbeatAt` and `heartbeatDeadlineAt` set to `undefined`.
 
 ---
 
@@ -235,9 +407,26 @@ When `SupervisorConfig.backends` registers multiple kinds, `start()` picks in th
 
 ---
 
+## CLI Integration — `koi bg`
+
+The CLI bundles a thin operator surface over the registry. Commands run in a
+separate process from the supervisor and talk to the registry directly on
+disk:
+
+| Command | Purpose |
+|---------|---------|
+| `koi bg ps` | List registered sessions (table by default, `--json` for structured output) |
+| `koi bg logs <id>` | Tail a session's log file; `--follow` keeps streaming while the session is live |
+| `koi bg kill <id>` | SIGTERM the session's PID; escalate to SIGKILL after 5 s if still alive; update the registry |
+| `koi bg attach <id>` | Interactive attach — subprocess backend falls back to read-only log tail; full bi-directional attach ships with the tmux backend (3b-6) |
+| `koi bg detach` | Operator notice — subprocess backend has no detachable session; tmux backend handles the flow |
+
+Default registry directory: `$KOI_STATE_DIR/daemon/sessions`; falls back to
+`~/.koi/daemon/sessions`. Override with `--registry-dir`.
+
 ## Limitations / Follow-Ups
 
-- **`eventBuffer` is unbounded.** `watchAll()` buffers every emitted event for the supervisor's lifetime. Long-running daemons with restart-heavy workers will leak memory. Follow-up: bounded ring-buffer with configurable retention + subscriber-abandonment cleanup.
+- Event buffer is bounded at 1000 events with FIFO eviction; `supervisor.health().metrics.eventDropCount` surfaces eviction count.
 - **Only subprocess backend ships in this package.** `in-process`, `tmux`, and `remote` backends are reserved kinds but not implemented — future peer L2 packages (e.g. `@koi/daemon-backend-tmux`).
 - **No direct integration with `SupervisionReconciler` yet.** That integration (wiring the supervisor's `start` into the reconciler's `SpawnFn`) is deferred to a follow-up issue.
 - **No subscriber-abandonment cleanup.** If a `watchAll` consumer abandons its iterator, the closed-over waker leaks until the next publish.

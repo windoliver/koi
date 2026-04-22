@@ -31,6 +31,8 @@
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
+import { createAgentSummary } from "@koi/agent-summary";
+import { createArtifactStore } from "@koi/artifacts";
 import type {
   Agent,
   AuditEntry,
@@ -52,6 +54,7 @@ import type {
   SpawnFn,
 } from "@koi/core";
 import {
+  artifactId,
   createSingleToolProvider,
   memoryRecordId,
   sessionId,
@@ -78,15 +81,21 @@ import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
-import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import {
+  createPlanPersistMiddleware,
+  PLAN_LOAD_TOOL_NAME,
+  PLAN_SAVE_TOOL_NAME,
+} from "@koi/middleware-plan-persist";
+import { createPlanMiddleware, WRITE_PLAN_DESCRIPTOR } from "@koi/middleware-planning";
 import {
   createRetrySignalBroker,
   createSemanticRetryMiddleware,
 } from "@koi/middleware-semantic-retry";
 import { createStrictAgenticMiddleware } from "@koi/middleware-strict-agentic";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
+import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
 import {
@@ -127,6 +136,7 @@ import {
   createBrowserSnapshotTool,
   createMockDriver,
 } from "@koi/tool-browser";
+import { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, createExecuteCodeTool } from "@koi/tool-exec";
 import type { NotebookToolConfig } from "@koi/tool-notebook";
 import { createNotebookAddCellTool, createNotebookReadTool } from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
@@ -141,6 +151,7 @@ import {
 } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { createPendingMatchStore } from "@koi/watch-patterns";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
@@ -229,6 +240,104 @@ if (!addToolResult.ok) {
   process.exit(1);
 }
 const addTool = addToolResult.value;
+
+// @koi/tool-exec — exercised by the tool-exec-code-use golden. The LLM calls
+// execute_code with a small TS script that calls add_numbers twice through
+// tools.*, returning only the final sum. Validates the full L2 surface:
+// createExecuteCodeTool → permissions → Bun Worker spawn → worker-entry
+// tools proxy → host-side callTool/tool.execute → sequential-only guard →
+// script return → single tool result to model context.
+const execCodeToolResult = createExecuteCodeTool({
+  acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+  tools: new Map([["add_numbers", addTool]]),
+});
+if (!execCodeToolResult.ok) {
+  console.error(`createExecuteCodeTool failed: ${execCodeToolResult.error.message}`);
+  process.exit(1);
+}
+const execCodeTool = execCodeToolResult.value;
+
+// @koi/artifacts — exercised by the artifacts-roundtrip golden. The LLM
+// calls artifact_save to persist a small blob via the real ArtifactStore
+// (SQLite meta + filesystem blob-cas), then calls artifact_get with the
+// returned id to retrieve the bytes. Uses a throwaway tmp dir so the
+// recording doesn't leak state between runs.
+const ARTIFACT_TMPDIR = `/tmp/koi-record-artifacts-${Date.now()}-${crypto.randomUUID()}`;
+const { mkdirSync: mkdirSyncArt } = await import("node:fs");
+mkdirSyncArt(`${ARTIFACT_TMPDIR}/blobs`, { recursive: true });
+const artifactStore = await createArtifactStore({
+  dbPath: `${ARTIFACT_TMPDIR}/store.db`,
+  blobDir: `${ARTIFACT_TMPDIR}/blobs`,
+});
+const ARTIFACT_SESSION = sessionId("golden-artifact-session");
+
+const artifactSaveToolResult = buildTool({
+  name: "artifact_save",
+  description:
+    "Save a text artifact to the content-addressed artifact store. Returns the new artifact id and version.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Artifact logical name (e.g. 'notes.txt')" },
+      content: { type: "string", description: "UTF-8 text content" },
+      mimeType: {
+        type: "string",
+        description: "MIME type (defaults to text/plain)",
+      },
+    },
+    required: ["name", "content"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const saved = await artifactStore.saveArtifact({
+      sessionId: ARTIFACT_SESSION,
+      name: args.name as string,
+      data: new TextEncoder().encode(args.content as string),
+      mimeType: (args.mimeType as string | undefined) ?? "text/plain",
+    });
+    if (!saved.ok) return { ok: false, error: saved.error.kind };
+    return {
+      ok: true,
+      id: saved.value.id,
+      version: saved.value.version,
+      size: saved.value.size,
+      contentHash: saved.value.contentHash,
+    };
+  },
+});
+if (!artifactSaveToolResult.ok) {
+  console.error(`buildTool(artifact_save) failed: ${artifactSaveToolResult.error.message}`);
+  process.exit(1);
+}
+const artifactSaveTool = artifactSaveToolResult.value;
+
+const artifactGetToolResult = buildTool({
+  name: "artifact_get",
+  description: "Retrieve an artifact's UTF-8 text content by id.",
+  inputSchema: {
+    type: "object",
+    properties: { id: { type: "string", description: "Artifact id returned by artifact_save" } },
+    required: ["id"],
+  },
+  origin: "primordial",
+  execute: async (args: JsonObject): Promise<unknown> => {
+    const got = await artifactStore.getArtifact(artifactId(args.id as string), {
+      sessionId: ARTIFACT_SESSION,
+    });
+    if (!got.ok) return { ok: false, error: got.error.kind };
+    return {
+      ok: true,
+      id: got.value.meta.id,
+      size: got.value.meta.size,
+      content: new TextDecoder().decode(got.value.data),
+    };
+  },
+});
+if (!artifactGetToolResult.ok) {
+  console.error(`buildTool(artifact_get) failed: ${artifactGetToolResult.error.message}`);
+  process.exit(1);
+}
+const artifactGetTool = artifactGetToolResult.value;
 
 // send_message — tool with a string field for exfiltration guard testing
 const sendMessageToolResult = buildTool({
@@ -372,6 +481,28 @@ const taskAnchorBoard = await createManagedTaskBoard({
     process.exit(1);
   }
 }
+
+// ---------------------------------------------------------------------------
+// @koi/middleware-plan-persist + @koi/middleware-planning — full restart-
+// safe write_plan flow. Planning provides koi_plan_write; plan-persist
+// hooks onPlanUpdate to mirror every commit to a per-session journal AND
+// exposes koi_plan_save / koi_plan_load tools. Wired here at module scope
+// so the plan-persist-flow query below can attach both bundles.
+// ---------------------------------------------------------------------------
+
+const { mkdtempSync: mkdtempSyncForPlanPersist } = await import("node:fs");
+const { tmpdir: tmpDirForPlanPersist } = await import("node:os");
+const { join: joinForPlanPersist } = await import("node:path");
+const planPersistTmpDir = mkdtempSyncForPlanPersist(
+  joinForPlanPersist(tmpDirForPlanPersist(), "koi-golden-plan-persist-"),
+);
+const planPersistBundle = createPlanPersistMiddleware({
+  cwd: planPersistTmpDir,
+  baseDir: ".koi/plans",
+});
+const planningBundle = createPlanMiddleware({
+  onPlanUpdate: planPersistBundle.onPlanUpdate,
+});
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -1100,11 +1231,6 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     signalWriter: retryBroker,
   });
 
-  // @koi/middleware-goal — objective tracking (fires decisions on injection turns)
-  const goalMw = createGoalMiddleware({
-    objectives: [config.prompt.slice(0, 120)],
-  });
-
   // @koi/skills-runtime — skill-injector (fires decisions when skills are attached)
   // Lazy agent ref: middleware created before createKoi, agent wired after assembly.
   const agentRef: { current?: Agent } = {};
@@ -1121,7 +1247,6 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     hookObserverMw,
     exfiltrationGuard,
     permHandle,
-    goalMw,
     skillInjectorMw,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),
@@ -1310,6 +1435,35 @@ const bashBackgroundProvider = createSingleToolProvider({
 });
 const bgTaskToolsAll = createTaskTools({ board: bgTaskBoard, agentId: bgAgentId });
 const [, bgTtGet, , bgTtList, , bgTtOutput] = bgTaskToolsAll as import("@koi/core").Tool[];
+
+// ---------------------------------------------------------------------------
+// @koi/tools-bash bash_background + watch_patterns — separate board + store
+// Exercises the watch_patterns feature: agent fires a background command with
+// a pattern, the turn-prelude middleware injects the match notification on the
+// next model call, and the agent confirms it saw the ready event.
+// ---------------------------------------------------------------------------
+const bgWatchTaskBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+const bgWatchAgentId = "golden-bg-watch-agent" as import("@koi/core").AgentId;
+const bgWatchMatchStore = createPendingMatchStore();
+const bashBackgroundWatchProvider = createSingleToolProvider({
+  name: "bash-background-watch",
+  toolName: "bash_background",
+  createTool: () =>
+    createBashBackgroundTool({
+      taskBoard: bgWatchTaskBoard,
+      agentId: bgWatchAgentId,
+      workspaceRoot: process.cwd(),
+      getWatchStore: () => bgWatchMatchStore,
+    }),
+});
+const bgWatchTaskToolsAll = createTaskTools({ board: bgWatchTaskBoard, agentId: bgWatchAgentId });
+const [, bgWatchTtGet, , , , bgWatchTtOutput] = bgWatchTaskToolsAll as import("@koi/core").Tool[];
+const turnPreludeMw = createTurnPreludeMiddleware({
+  getStore: () => bgWatchMatchStore,
+  getTaskStatus: (id) => bgWatchTaskBoard.snapshot().get(id)?.status,
+});
 
 // ---------------------------------------------------------------------------
 // Nexus filesystem (@koi/fs-nexus via real nexus-fs local transport)
@@ -1771,6 +1925,147 @@ const modelRouter = createModelRouter(
 );
 const modelRouterMiddleware = createModelRouterMiddleware(modelRouter);
 
+// ---------------------------------------------------------------------------
+// @koi/agent-summary afterRecord helper
+//
+// Loads the freshly-recorded ATIF trajectory, extracts the single user turn +
+// model response into a 2-entry TranscriptLoadResult, calls summarizeSession
+// with a real OpenRouter modelCall, and writes the envelope as a sidecar at
+// <fixtures>/<name>.summary.json.
+//
+// Uses OpenAI's strict-JSON-schema response format for deterministic recording.
+// ---------------------------------------------------------------------------
+
+const AGENT_SUMMARY_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["goal", "status", "actions", "outcomes", "errors", "learnings"],
+  properties: {
+    goal: { type: "string" },
+    status: { type: "string", enum: ["succeeded", "partial", "failed"] },
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "name", "paths", "detail"],
+        properties: {
+          kind: { type: "string", enum: ["tool_call", "edit", "decision"] },
+          name: { type: "string" },
+          paths: { type: ["array", "null"], items: { type: "string" } },
+          detail: { type: ["string", "null"] },
+        },
+      },
+    },
+    outcomes: { type: "array", items: { type: "string" } },
+    errors: { type: "array", items: { type: "string" } },
+    learnings: { type: "array", items: { type: "string" } },
+  },
+} as const;
+
+async function recordAgentSummarySidecar(fixtures: string, name: string): Promise<void> {
+  const trajPath = `${fixtures}/${name}.trajectory.json`;
+  const trajectory = (await Bun.file(trajPath).json()) as {
+    readonly session_id: string;
+    readonly steps: readonly {
+      readonly source: string;
+      readonly message?: string;
+      readonly observation?: {
+        readonly results?: readonly { readonly content: string }[];
+      };
+    }[];
+  };
+
+  const agentStep = trajectory.steps.find((s) => s.source === "agent");
+  if (!agentStep) {
+    throw new Error(`agent-summary afterRecord: no agent step in ${name}.trajectory.json`);
+  }
+  const userMsg = agentStep.message ?? "";
+  const assistantMsg = agentStep.observation?.results?.[0]?.content ?? "";
+
+  const entries = [
+    {
+      id: "u1",
+      role: "user" as const,
+      content: userMsg,
+      timestamp: 1,
+    },
+    {
+      id: "a1",
+      role: "assistant" as const,
+      content: assistantMsg,
+      timestamp: 2,
+    },
+  ];
+  const transcript = {
+    load: () => ({ ok: true, value: { entries, skipped: [] } }),
+    loadPage: () => ({
+      ok: true,
+      value: { entries: [], total: 0, hasMore: false },
+    }),
+    compact: () => ({ ok: true, value: { preserved: 0 } }),
+  };
+
+  const summarizer = createAgentSummary({
+    // biome-ignore lint/suspicious/noExplicitAny: unsafe cast — recording-only script
+    transcript: transcript as any,
+    modelCall: async (req) => {
+      const apiKey = Bun.env.OPENROUTER_API_KEY;
+      if (!apiKey) {
+        throw new Error("OPENROUTER_API_KEY required for agent-summary sidecar");
+      }
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: req.messages,
+          max_tokens: req.maxTokens,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "session_summary",
+              strict: true,
+              schema: AGENT_SUMMARY_JSON_SCHEMA,
+            },
+          },
+        }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`openrouter ${resp.status}: ${body}`);
+      }
+      const json = (await resp.json()) as {
+        choices: { message: { content: string } }[];
+      };
+      return { text: json.choices[0]?.message?.content ?? "" };
+    },
+  });
+
+  // biome-ignore lint/suspicious/noExplicitAny: unsafe cast — recording-only script
+  const r = await summarizer.summarizeSession(trajectory.session_id as any, {
+    granularity: "medium",
+  });
+  if (!r.ok) {
+    throw new Error(`agent-summary afterRecord failed: ${r.error.code} ${r.error.message}`);
+  }
+  await Bun.write(
+    `${fixtures}/${name}.summary.json`,
+    JSON.stringify(
+      {
+        trajectorySessionId: trajectory.session_id,
+        recordedFrom: `${name}.trajectory.json`,
+        envelope: r.value,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 const queries: readonly QueryConfig[] = [
   // strict-agentic: exercises @koi/middleware-strict-agentic onBeforeStop gate.
   // Tool call → classifier → action → continue. Proves the middleware is installed
@@ -1792,6 +2087,73 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
+  },
+
+  // artifacts-roundtrip: exercises @koi/artifacts via two tools backed by a
+  // real ArtifactStore. The LLM saves content, then fetches it back by id.
+  // Validates the full L2 surface: buildTool → permissions → artifact_save →
+  // ArtifactStore.saveArtifact → blob-cas put → SQLite commit → tool result
+  // → next turn → artifact_get → ArtifactStore.getArtifact → blob-cas read.
+  {
+    name: "artifacts-roundtrip",
+    prompt:
+      "Use artifact_save to save an artifact named 'notes.txt' with content 'golden trajectory'. Then use artifact_get with the id you got back to fetch the content. Finally respond with just the retrieved content, nothing else.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "artifact-save",
+        toolName: "artifact_save",
+        createTool: () => artifactSaveTool,
+      }),
+      createSingleToolProvider({
+        name: "artifact-get",
+        toolName: "artifact_get",
+        createTool: () => artifactGetTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // tool-exec-code-use: exercises @koi/tool-exec via the execute_code tool.
+  // The model writes a short TS script that calls add_numbers twice through
+  // tools.* and returns the final sum. Only the script's return value is
+  // injected into the model's context — intermediate tool results stay in
+  // the worker. Proves the Bun Worker sandbox, sequential-only proxy,
+  // per-call AbortController, and trust-gate path all work end-to-end.
+  {
+    name: "tool-exec-code-use",
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+    prompt:
+      "Call the execute_code tool with its `script` argument set to the following TypeScript source. " +
+      "The script runs inside a worker where `tools.add_numbers` is available even though add_numbers is not a separate top-level tool — the execute_code tool handles that internally. " +
+      "Script source:\n" +
+      "const a = await tools.add_numbers({ a: 2, b: 3 });\n" +
+      "const b = await tools.add_numbers({ a: a.result, b: 10 });\n" +
+      "return b.result;\n" +
+      "After execute_code returns, reply with just the final number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "execute-code",
+        toolName: "execute_code",
+        createTool: () => execCodeTool,
+      }),
+    ],
+    maxTurns: 3,
   },
 
   // 1. simple-text: text response, no tools
@@ -2083,6 +2445,44 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
+  // 8b. url-safety-block: @koi/tools-web routed through @koi/url-safety.
+  // Permissions bypass at the policy layer, so the request reaches the tool;
+  // the tool's DNS-free preflightBlockReason (BLOCKED_HOSTS lookup in
+  // @koi/url-safety) rejects `localhost` with a PERMISSION result. Locks in
+  // that the block reason flows through tool-preflight → tool → model.
+  {
+    name: "url-safety-block",
+    prompt:
+      'Use the web_fetch tool on "http://localhost:3000/admin" and copy the exact error message you receive back to me verbatim.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [webProvider],
+    maxTurns: 2,
+  },
+
+  // 8c. url-safety-dns-block: exercises the DEEPER defence line —
+  // createSafeFetcher's DNS-resolved IP check. `localtest.me` is a public
+  // DNS name that resolves to 127.0.0.1, so it passes the tool's DNS-free
+  // preflight (not in BLOCKED_HOSTS, not in BLOCKED_HOST_SUFFIXES, not an
+  // IP literal) but fails @koi/url-safety's isSafeUrl once DNS returns
+  // 127.0.0.1. Executor maps the rejection to PERMISSION with the
+  // "url-safety: Host <name> resolves to blocked IP <ip>" wording. Locks in
+  // that the DNS-rebind defence reaches the model verbatim — a regression
+  // that bypasses the resolved-IP check would let localtest.me succeed.
+  {
+    name: "url-safety-dns-block",
+    prompt:
+      'Use the web_fetch tool on "http://localtest.me/" and copy the exact error message you receive back to me verbatim.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [webProvider],
+    maxTurns: 2,
+  },
+
   // 9. task-board: @koi/tasks + @koi/task-tools exercised — create + list via real createTaskTools
   {
     name: "task-board",
@@ -2129,6 +2529,37 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 2,
+  },
+
+  // 9c. plan-persist-flow: @koi/middleware-plan-persist + @koi/middleware-planning
+  // Model writes a plan with two items, then checkpoints it via koi_plan_save.
+  // Exercises: planning's wrapToolCall (write_plan) → onPlanUpdate hook fires →
+  // plan-persist mirrors + writes _active journal → plan-persist's wrapToolCall
+  // (koi_plan_save) reads mirror, writes <ts>-<slug>.md via exclusive link commit.
+  {
+    name: "plan-persist-flow",
+    prompt:
+      "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) " +
+      "and `koi_plan_save` (persists the latest plan to disk under a slug).\n" +
+      "Step 1: Call `koi_plan_write` with plan = " +
+      "[{content:'Audit auth code', status:'pending'}, " +
+      "{content:'Design new session model', status:'pending'}].\n" +
+      "Step 2: Call `koi_plan_save` with slug='auth-refactor'.\n" +
+      "Step 3: Report the saved file path returned by koi_plan_save.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-plan-tool",
+        cmd: ["echo", "plan-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [...planningBundle.providers, ...planPersistBundle.providers],
+    extraMiddleware: [planningBundle.middleware, planPersistBundle.middleware],
+    maxTurns: 3,
   },
 
   // 10. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
@@ -2837,6 +3268,39 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 4,
+  },
+
+  // bash-background-watch: @koi/tools-bash watch_patterns + @koi/middleware-turn-prelude.
+  //   Agent fires bash_background with watch_patterns [{pattern:"listening",event:"ready"}].
+  //   The turn-prelude middleware injects the match notification as a user-role message
+  //   on the next model call, and the agent confirms it saw the ready event.
+  {
+    name: "bash-background-watch",
+    prompt:
+      "Use the bash_background tool to run `echo 'listening on port 3000'` in the background " +
+      'with watch_patterns [{"pattern":"listening","event":"ready"}]. ' +
+      "After it returns a taskId, use task_get with that taskId to check status. " +
+      "Then use task_output with the same taskId to read the output. " +
+      "Confirm in your reply that you saw a ready event notification.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      bashBackgroundWatchProvider,
+      createSingleToolProvider({
+        name: "task-get-watch",
+        toolName: "task_get",
+        createTool: () => bgWatchTtGet as import("@koi/core").Tool,
+      }),
+      createSingleToolProvider({
+        name: "task-output-watch",
+        toolName: "task_output",
+        createTool: () => bgWatchTtOutput as import("@koi/core").Tool,
+      }),
+    ],
+    extraMiddleware: [turnPreludeMw],
+    maxTurns: 5,
   },
 
   // bash-ast-too-complex: @koi/bash-ast — proves the SYNC too-complex
@@ -3708,6 +4172,23 @@ const queries: readonly QueryConfig[] = [
       }).middleware,
     ],
   },
+
+  // @koi/agent-summary: records a real agent turn, then afterRecord runs
+  // summarizeSession() with a real OpenRouter call against the recorded
+  // user+assistant pair. Produces:
+  //   - agent-summary.trajectory.json — ATIF v1.6 agent-loop trajectory
+  //   - agent-summary.cassette.json — ModelChunk cassette (raw LLM response)
+  //   - agent-summary.summary.json — SummaryOk envelope from agent-summary
+  {
+    name: "agent-summary",
+    prompt: "List three advantages of using TypeScript over plain JavaScript, one sentence each.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    afterRecord: recordAgentSummarySidecar,
+  },
 ];
 
 // =========================================================================
@@ -4055,6 +4536,52 @@ await recordCassette("plan-mode", () =>
       todoToolForCassette.descriptor,
       exitPlanModeToolForCassette.descriptor,
       createGlobTool({ cwd: process.cwd() }).descriptor,
+    ],
+  }),
+);
+
+await recordCassette("plan-persist-flow", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) " +
+              "and `koi_plan_save` (persists the latest plan to disk under a slug).\n" +
+              "Step 1: Call `koi_plan_write` with plan = " +
+              "[{content:'Audit auth code', status:'pending'}, " +
+              "{content:'Design new session model', status:'pending'}].\n" +
+              "Step 2: Call `koi_plan_save` with slug='auth-refactor'.\n" +
+              "Step 3: Report the saved file path returned by koi_plan_save.",
+          },
+        ],
+      },
+    ],
+    tools: [
+      WRITE_PLAN_DESCRIPTOR,
+      {
+        name: PLAN_SAVE_TOOL_NAME,
+        description:
+          "Persist the latest write_plan output to disk under .koi/plans/<timestamp>-<slug>.md. " +
+          "Optional `slug` controls the filename suffix.",
+        inputSchema: {
+          type: "object",
+          properties: { slug: { type: "string" } },
+        },
+      },
+      {
+        name: PLAN_LOAD_TOOL_NAME,
+        description: "Read a previously persisted plan from disk and return its items.",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
     ],
   }),
 );
@@ -4411,6 +4938,7 @@ await mcpSetup.cleanup();
 await mcpServerClient.close();
 await mcpPlatformServer.stop();
 nexusTransport?.close();
+await artifactStore.close();
 
 console.log(`\nDone. ${12 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");

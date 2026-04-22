@@ -16,6 +16,17 @@ The middleware intercepts `wrapToolCall` for spawn-family tools (`Spawn`,
 Extracted learnings are stored via `MemoryComponent.store()` with
 `CollectiveMemoryCategory` preserved as `MemoryStoreOptions.category`.
 
+## Category → MemoryType mapping
+
+The regex extractor maps `CollectiveMemoryCategory` to `MemoryType` before persistence:
+
+| Category | MemoryType | Notes |
+|----------|-----------|-------|
+| `gotcha`, `correction`, `heuristic`, `pattern` | `feedback` | Fix for #1964 — `heuristic`/`pattern` were incorrectly mapped to `reference` (v1 porting error) |
+| `preference` | `user` | Excluded from persistence (see Safety) |
+| `context` | `project` | |
+| unknown | `project` | Default fallback |
+
 ## Safety
 
 - Candidates are scanned for secrets via `@koi/redaction` before persistence

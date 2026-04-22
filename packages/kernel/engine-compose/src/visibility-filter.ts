@@ -103,6 +103,6 @@ export function createVisibilityFilter(
     patch: (agentId, fields) => inner.patch(agentId, fields),
     watch: (listener) => inner.watch(listener),
     ...(descriptor !== undefined ? { descriptor } : {}),
-    [Symbol.asyncDispose]: () => inner[Symbol.asyncDispose](),
+    [Symbol.asyncDispose]: inner[Symbol.asyncDispose].bind(inner),
   };
 }

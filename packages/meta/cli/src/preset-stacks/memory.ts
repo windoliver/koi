@@ -14,6 +14,16 @@
  *   - The extraction middleware that harvests structured takeaways from
  *     spawn tool outputs and stores them as MemoryRecord entries.
  *
+ * Note on `@koi/middleware-collective-memory`: this newer cross-spawn learning
+ * middleware operates on `BrickArtifact.collectiveMemory` via a `ForgeStore`,
+ * which is a separate persistence layer from `MemoryStore` used here. Wiring it
+ * into the CLI preset requires a concrete `ForgeStore` implementation that does
+ * not yet exist in this monorepo. When that lands (tracked as a separate piece
+ * of infrastructure), pass the resulting forgeStore + a tenant-aware
+ * resolveBrickId derived from `ctx.session.{userId,channelId,conversationId}`
+ * to `createCollectiveMemoryMiddleware` and append the middleware to the
+ * returned `middleware` array below.
+ *
  * Exports:
  *   - `memoryDir` — the resolved absolute path to the memory directory,
  *     so other callers (debug inspection) can find persisted memories.

@@ -16,7 +16,6 @@
  *   @koi/tool-notebook        — notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell
  *   @koi/session              — JSONL transcript recording (optional, via config.session)
  *   @koi/engine               — system prompt middleware (optional, via config.systemPrompt)
- *   @koi/middleware-goal       — adaptive goal reminders (optional, via config.goals)
  *   @koi/skills-runtime        — three-tier skill discovery (bundled → user → project)
  *   @koi/skill-tool            — on-demand skill loading meta-tool (Skill)
  *
@@ -34,30 +33,44 @@ import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
+import type { BudgetConfig } from "@koi/context-manager";
 import type {
+  Agent,
   ApprovalHandler,
+  ComponentProvider,
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
   FileSystemBackend,
+  GovernanceBackend,
+  GovernanceController,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
   PermissionBackend,
   RichTrajectoryStep,
+  RuleDescriptor,
   SessionId,
   SessionTranscript,
 } from "@koi/core";
-import { agentId as makeAgentId } from "@koi/core";
+import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
+import { DEFAULT_PRICING, resolvePricing } from "@koi/cost-aggregator";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
-import type { KoiRuntime } from "@koi/engine";
-import { createKoi } from "@koi/engine";
+import type { GovernanceConfig, KoiRuntime } from "@koi/engine";
+import { createGovernanceController, createKoi } from "@koi/engine";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
+import type { CostCalculator } from "@koi/governance-core";
+import { createGovernanceMiddleware } from "@koi/governance-core";
+import type { PatternRule } from "@koi/governance-defaults";
+import { createPatternBackend } from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
-import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
@@ -112,6 +125,14 @@ export { MAX_TRAJECTORY_STEPS };
  * and keeps runaway agent loops bounded on the same order as before.
  */
 const DEFAULT_MAX_TURNS = 25;
+
+/**
+ * Default spawn fan-out used when --max-spawn-depth is set without a
+ * companion fan-out override. Matches DEFAULT_GOVERNANCE_CONFIG.spawn.maxFanOut
+ * in @koi/engine-reconcile so the runtime-factory does not silently widen
+ * the engine's default when the operator only tightens depth.
+ */
+const DEFAULT_MAX_FAN_OUT = 5;
 
 /** Maximum messages retained in the transcript context window.
  * Matches the default for `koi start --context-window` (100).
@@ -191,11 +212,180 @@ export const TUI_WRITE_PLAN_ALLOW_RULE: SourcedRule = {
   source: "policy",
 };
 
+/**
+ * Auto-allow rules for `koi_plan_save` / `koi_plan_load` — installed
+ * alongside `TUI_WRITE_PLAN_ALLOW_RULE` only when planning is opted
+ * in. Both are no-side-effect-outside-baseDir by construction (the
+ * plan-persist adapter validates baseDir against cwd at construction
+ * and rejects path traversal at the tool boundary), so they are safe
+ * to auto-allow.
+ */
+export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
+  { pattern: "koi_plan_save", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "koi_plan_load", action: "invoke", effect: "allow", source: "policy" },
+];
+
+// ---------------------------------------------------------------------------
+// Cost config helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve governance cost config from the user's --max-spend flag and every
+ * model the runtime might call. The controller stores ONE per-token rate
+ * pair, and the engine-reconcile extension's `controller.record({ kind:
+ * "token_usage" })` calls do not attach a per-call `costUsd`. That means a
+ * router fallback to a differently-priced model would accumulate spend
+ * against the primary's rate — silently breaking `--max-spend` for the
+ * fallback path.
+ *
+ * Validation rules (all enforced at startup, fail-fast):
+ *   1. Every model in the chain must have a `DEFAULT_PRICING` entry.
+ *   2. Every fallback's per-token rates must equal the primary's. Until
+ *      engine-reconcile records per-call `costUsd`, mixed-rate routing
+ *      cannot honor a single setpoint.
+ */
+function resolveCostConfig(
+  maxCostUsd: number,
+  modelChain: readonly string[],
+): {
+  readonly maxCostUsd: number;
+  readonly costPerInputToken: number;
+  readonly costPerOutputToken: number;
+} {
+  if (modelChain.length === 0) {
+    throw new Error("koi: resolveCostConfig requires at least the primary model name");
+  }
+  const unpriced = modelChain.filter((m) => resolvePricing(m, DEFAULT_PRICING) === undefined);
+  if (unpriced.length > 0) {
+    throw new Error(
+      `koi: --max-spend $${maxCostUsd} set but the following model(s) have no pricing in ` +
+        `DEFAULT_PRICING: ${unpriced.join(", ")}. The cost cap would not accumulate when the ` +
+        `router targets them. Add the missing models to @koi/cost-aggregator's DEFAULT_PRICING ` +
+        `table or omit --max-spend.`,
+    );
+  }
+  // unpriced.length === 0 guarantees every entry has pricing.
+  const [primary, ...fallbacks] = modelChain as readonly [string, ...string[]];
+  const primaryPricing = resolvePricing(primary, DEFAULT_PRICING) as NonNullable<
+    ReturnType<typeof resolvePricing>
+  >;
+  const mismatched = fallbacks.filter((m) => {
+    const p = resolvePricing(m, DEFAULT_PRICING);
+    return p?.input !== primaryPricing.input || p?.output !== primaryPricing.output;
+  });
+  if (mismatched.length > 0) {
+    throw new Error(
+      `koi: --max-spend $${maxCostUsd} set but fallback model(s) [${mismatched.join(", ")}] ` +
+        `have different per-token rates than primary "${primary}" ` +
+        `($${primaryPricing.input}/in, $${primaryPricing.output}/out). ` +
+        `The controller stores one rate pair, so mixed-pricing routing would mis-charge spend. ` +
+        `Use a fallback chain with matching pricing, drop --max-spend, or omit KOI_FALLBACK_MODEL.`,
+    );
+  }
+  return {
+    maxCostUsd,
+    costPerInputToken: primaryPricing.input,
+    costPerOutputToken: primaryPricing.output,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared governance controller helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Default-allow pattern backend with no rules. Used when the caller did not
+ * pass `--policy-file` / `manifest.governance.policyFile` (gov-10). With no
+ * rules to evaluate, the backend accepts every call and `describeRules()`
+ * returns []. The runtime synthesizes a `default-allow` descriptor below so
+ * the /governance "Active rules" section renders something the operator can
+ * read.
+ */
+function createDefaultPatternBackend(): GovernanceBackend {
+  return createPatternBackend({ rules: [], defaultDeny: false });
+}
+
+/** Synthetic descriptor used when the backend reports no rules. */
+const SYNTHETIC_DEFAULT_ALLOW: RuleDescriptor = {
+  id: "default-allow",
+  description:
+    "no rules configured; all calls allowed (pass --policy-file or set manifest.governance.policyFile)",
+  effect: "allow",
+  pattern: "*",
+};
+
+/**
+ * Resolve the rule list for `/governance` — call `backend.describeRules()` if
+ * the backend exposes it, fall back to the synthetic default-allow entry when
+ * empty. Errors degrade to the synthetic entry rather than crashing the
+ * runtime — the rule list is observational, not on the gating path.
+ */
+async function resolveGovernanceRules(
+  backend: GovernanceBackend,
+): Promise<readonly RuleDescriptor[]> {
+  if (backend.describeRules === undefined) return [SYNTHETIC_DEFAULT_ALLOW];
+  try {
+    const rules = await backend.describeRules();
+    return rules.length > 0 ? rules : [SYNTHETIC_DEFAULT_ALLOW];
+  } catch (err: unknown) {
+    console.warn("[koi runtime] governance describeRules() failed:", err);
+    return [SYNTHETIC_DEFAULT_ALLOW];
+  }
+}
+
+/**
+ * Lightweight CostCalculator that resolves per-model rates from
+ * @koi/cost-aggregator's DEFAULT_PRICING. Returns 0 for unknown models so the
+ * middleware doesn't throw on first call.
+ */
+function createPricingCostCalculator(): CostCalculator {
+  return {
+    calculate(model: string, inputTokens: number, outputTokens: number): number {
+      const pricing = resolvePricing(model, DEFAULT_PRICING);
+      if (pricing === undefined) return 0;
+      return inputTokens * pricing.input + outputTokens * pricing.output;
+    },
+  };
+}
+
+/**
+ * Build a ComponentProvider that contributes a pre-existing GovernanceController
+ * with GLOBAL_FORGED priority so it wins over the bundled BUNDLED-priority
+ * provider createKoi adds automatically. This lets us use the SAME controller in
+ * the runtime, the bridge, and the L2 governance middleware.
+ */
+function createSharedGovernanceProvider(controller: GovernanceController): ComponentProvider {
+  return {
+    name: "koi:cli:shared-governance",
+    priority: COMPONENT_PRIORITY.GLOBAL_FORGED,
+    async attach(_agent: Agent): Promise<ReadonlyMap<string, unknown>> {
+      return new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Config & return types
 // ---------------------------------------------------------------------------
 
 export interface KoiRuntimeConfig {
+  /**
+   * When true, skip loading `~/.koi/hooks.json`. Per-invocation config
+   * instead of the global KOI_DISABLE_HOOKS env var so concurrent
+   * runtimes in the same process don't interfere with each other's hook
+   * policy. `koi start --headless` sets this true by default (issue
+   * #1648); interactive hosts leave it undefined.
+   */
+  readonly disableUserHooks?: boolean | undefined;
+  /**
+   * When true, build the default local filesystem backend with
+   * `allowExternalPaths: false` so whitelisted `fs_*` tools cannot
+   * escape the workspace via absolute paths or `..` segments. Only
+   * applies when `config.filesystem` is not explicitly provided.
+   * `koi start --headless` sets this true by default to prevent a
+   * `--allow-tool fs_read` from reading `/etc/passwd` on a CI runner.
+   */
+  readonly workspaceOnlyFs?: boolean | undefined;
   /** Model HTTP adapter — its complete/stream terminals are exposed to middleware. */
   readonly modelAdapter: ModelAdapter;
   /** Model name for ATIF metadata. */
@@ -236,6 +426,52 @@ export interface KoiRuntimeConfig {
    * int32 max, ~24.8 days).
    */
   readonly defaultMaxDurationMs?: number | undefined;
+  /**
+   * Maximum cumulative spend in USD before the governance controller
+   * fires a violation. When >0, the runtime resolves per-token pricing
+   * for `modelName` via @koi/cost-aggregator's DEFAULT_PRICING and
+   * configures `governance.cost.{maxCostUsd,costPerInputToken,costPerOutputToken}`.
+   * Unknown models cause `createKoiRuntime` to throw at startup so the
+   * budget can never be silently ignored.
+   * 0 (default) keeps cost tracking disabled.
+   */
+  readonly maxSpendUsd?: number | undefined;
+  /**
+   * Fallback model names from the model-router (KOI_FALLBACK_MODEL chain).
+   * Validated alongside the primary `modelName` when `--max-spend` is set —
+   * any unpriced entry refuses startup so a router fallback can never bypass
+   * the budget. Empty / undefined means no router is wired.
+   */
+  readonly fallbackModelNames?: readonly string[] | undefined;
+  /**
+   * Maximum number of completed turns before the governance controller fires
+   * a violation. Wired from `--max-turns`. Overrides `DEFAULT_MAX_TURNS`.
+   */
+  readonly maxTurns?: number | undefined;
+  /**
+   * Maximum depth of spawned sub-agents before the governance controller
+   * fires a violation. Wired from `--max-spawn-depth`.
+   */
+  readonly maxSpawnDepth?: number | undefined;
+  /**
+   * Per-variable alert thresholds for the L2 governance middleware. Each
+   * entry must be in (0, 1]. Overrides the default `[0.8, 0.95]` when set.
+   * Wired from the repeatable `--alert-threshold` flag.
+   */
+  readonly governanceAlertThresholds?: readonly number[] | undefined;
+  /**
+   * Pattern rules for the L2 governance backend's `backend.evaluator`. Wired
+   * from `--policy-file`. Undefined means "no rules configured" and the
+   * synthetic `default-allow` descriptor shows in `/governance`.
+   */
+  readonly governanceRules?: readonly PatternRule[] | undefined;
+  /**
+   * When true, skip the governance wiring entirely — no controller, backend,
+   * middleware, or bridge is installed. Wired from `--no-governance`. Hosts
+   * using a custom governance stack (or running without one) pass this to
+   * avoid the default observer-mode middleware.
+   */
+  readonly governanceDisabled?: boolean | undefined;
   /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
@@ -395,13 +631,6 @@ export interface KoiRuntimeConfig {
    */
   readonly systemPrompt?: string | undefined;
   /**
-   * Goal objectives for the middleware-goal adaptive reminder system.
-   * When provided, createGoalMiddleware is installed in the middleware stack
-   * to inject goal reminders and detect drift/completion.
-   * When omitted, no goal middleware is installed.
-   */
-  readonly goals?: readonly string[] | undefined;
-  /**
    * Session transcript config for JSONL recording + session resume.
    * When omitted, no session transcript middleware is installed.
    */
@@ -422,6 +651,28 @@ export interface KoiRuntimeConfig {
    * When provided, durable approvals survive process restart.
    */
   readonly persistentApprovals?: ApprovalStore | undefined;
+  /**
+   * Pre-constructed current-model override middleware. When provided, runs
+   * OUTER of `modelRouterMiddleware` and rewrites `request.model` to the
+   * host-owned mutable box's current value. Used by the TUI to implement
+   * mid-session model switching without rebuilding the runtime.
+   */
+  readonly currentModelMiddleware?: KoiMiddleware | undefined;
+  /**
+   * Optional getter invoked per turn to resolve the active model id. When set,
+   * the transcript adapter resolves its `budgetConfig` via
+   * `budgetConfigForModel(getCurrentModel())` on every turn so a mid-session
+   * model switch picks up the new context-window limit immediately. When
+   * absent, budget is sized once from `config.modelName`.
+   *
+   * Return `{ model, contextLength? }`. `contextLength` overrides the
+   * model registry's default window — needed for switched-to models that
+   * aren't in the local registry; the picker knows the window from the
+   * provider's `/models` response.
+   */
+  readonly getCurrentModel?: () =>
+    | string
+    | { readonly model: string; readonly contextLength?: number | undefined };
   /**
    * Pre-constructed model-router middleware. When provided, routes all model
    * calls through the failover chain before reaching the model adapter.
@@ -504,6 +755,13 @@ export interface KoiRuntimeConfig {
    * backend during rewind.
    */
   readonly filesystem?: FileSystemBackend | undefined;
+  /**
+   * Host-provided ComponentProviders appended after the core + stack
+   * providers and before plan-related providers. Used to wire host-owned
+   * subsystems that don't fit a preset stack (e.g. `@koi/artifacts`
+   * tools backed by a host-owned ArtifactStore). Order preserved.
+   */
+  readonly extraProviders?: readonly ComponentProvider[] | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -626,6 +884,31 @@ export interface KoiRuntimeHandle {
    * the /plugins view and inject plugin awareness into the system prompt.
    */
   readonly pluginSummary: PluginDiscoverySummary;
+  /**
+   * Static snapshot of governance backend rules for the `/governance` "Active
+   * rules" section. Resolved once at runtime construction via
+   * `backend.describeRules()`; falls back to a synthetic `default-allow`
+   * descriptor when the backend reports no rules. Empty rule lists never
+   * surface — callers always receive at least one descriptor.
+   */
+  readonly governanceRules: readonly RuleDescriptor[];
+  /**
+   * Resolved alert threshold fractions (e.g. `[0.7, 0.9]`) — CLI flags >
+   * manifest > undefined. Hosts (TUI governance bridge) that emit their own
+   * alert toasts must honor these rather than hardcoding their own set, so
+   * `--alert-threshold` precedence is authoritative across every alerting
+   * path. Undefined means the host should use its observational default.
+   */
+  readonly governanceAlertThresholds: readonly number[] | undefined;
+  /**
+   * Mirrors `config.governanceDisabled !== true`. Hosts must consult this
+   * before wiring their own observer surfaces (bridge, alerts JSONL, UI
+   * panels): even when the engine's bundled GOVERNANCE component is still
+   * present under `--no-governance` (to keep guard-level safety on), the
+   * HOST-level alerting/persistence layer must stay off. Without this gate
+   * `--no-governance` fails open on the TUI toast + alerts-file paths.
+   */
+  readonly governanceEnabled: boolean;
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -837,7 +1120,6 @@ export function resolveMaxDurationMs(hostDefault?: number): number {
     // distinct raw value so mistakes are visible without log spam.
     if (lastWarnedInvalidEnv !== raw) {
       lastWarnedInvalidEnv = raw;
-      // biome-ignore lint/suspicious/noConsole: operator-visible startup diagnostic.
       console.warn(
         `[koi] ignoring KOI_MAX_DURATION_MS=${JSON.stringify(raw)}: ` +
           "expected an unsigned decimal integer (ms) or '0' to disable. " +
@@ -1015,8 +1297,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // For the default local backend (`name === "local"`), the checkpoint
   // stack skips both — the restore protocol treats absent/local ops as
   // direct local I/O, which is the existing behavior.
+  // Headless runs lock the default local backend to workspace-only
+  // semantics: with allowExternalPaths=true, a whitelisted `fs_read`
+  // could resolve `/etc/passwd` or `../../secrets.env` and exfiltrate
+  // CI-runner secrets. Headless's --allow-tool whitelist is meant to
+  // contain tool ACCESS, not broaden filesystem scope. Interactive hosts
+  // keep the relaxed default so operators can still reference files
+  // outside the project during a REPL session.
   const filesystemBackend: FileSystemBackend =
-    config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+    config.filesystem ??
+    createLocalFileSystem(cwd, {
+      allowExternalPaths: config.workspaceOnlyFs !== true,
+    });
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
@@ -1070,19 +1362,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // present without one. Prompt hooks (kind: "prompt") are supported via a
   // lightweight PromptModelCaller that delegates to the TUI's model adapter
   // for single-shot verification.
-  const loadedHooks = await loadUserRegisteredHooks({
-    filterAgentHooks: true,
-    onAgentHooksFiltered: (names) => {
-      console.warn(
-        `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
-      );
-    },
-    onLoadError: (message) => {
-      // Per-entry loader errors: surface each so operators see which entry
-      // broke the file instead of silently losing every hook (issue #1781).
-      console.warn(`[koi tui] hooks.json: ${message}`);
-    },
-  });
+  // Hooks gate: per-invocation config.disableUserHooks takes precedence,
+  // falling back to the legacy KOI_DISABLE_HOOKS env var for callers that
+  // haven't migrated yet. Per-invocation scoping means two runtimes in the
+  // same process don't interfere — the env-mutation path was racy under
+  // concurrent invocations (issue #1648 round 8).
+  const hooksDisabled = config.disableUserHooks === true || process.env.KOI_DISABLE_HOOKS === "1";
+  const loadedHooks = hooksDisabled
+    ? []
+    : await loadUserRegisteredHooks({
+        filterAgentHooks: true,
+        onAgentHooksFiltered: (names) => {
+          console.warn(
+            `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
+          );
+        },
+        onLoadError: (message) => {
+          // Per-entry loader errors: surface each so operators see which entry
+          // broke the file instead of silently losing every hook (issue #1781).
+          console.warn(`[koi tui] hooks.json: ${message}`);
+        },
+      });
   // Merge plugin hooks (session tier) with user hooks (user tier).
   // Plugin hooks run first within their tier; user hooks in the next tier phase.
   const allHooks = mergeUserAndPluginHooks(loadedHooks, pluginComponents.hooks, {
@@ -1131,7 +1431,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // a third-party same-named tool silently approved.
   const tuiAllowRules: readonly SourcedRule[] = [
     ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true ? [TUI_WRITE_PLAN_ALLOW_RULE] : []),
+    ...(config.planningEnabled === true
+      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+      : []),
     {
       pattern: "fs_read",
       action: "invoke",
@@ -1158,12 +1460,36 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     });
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
+  // Bash prefix enrichment (#1881). Feeds the raw command to
+  // @koi/middleware-permissions so it can derive a stable
+  // `<toolId>:<prefix>` resource for policy evaluation. Enables the
+  // `!complex` structural ratchet and dangerous-command ratchet on
+  // the decision path regardless of the backend's prefix-rule
+  // support — those fire on any allow decision that resolves a
+  // compound or known-unsafe command.
+  //
+  // Tool id matches case-insensitively: the builtin bash tool
+  // registers as "Bash" (capital) while some adapters still use
+  // "bash". Resolver only kicks in when `input.command` is a string,
+  // so non-bash tools and malformed inputs fall through to the
+  // plain tool id.
+  //
+  // `allowLegacyBackendBashFallback: true` opts into single-key
+  // evaluation for the TUI's default `createPermissionBackend`,
+  // which is not marker-aware (see docs/L2/permissions.md). The
+  // pattern backend used by `koi start` advertises the marker and
+  // gets full dual-key enrichment automatically.
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
     ...(config.approvalTimeoutMs !== undefined
       ? { approvalTimeoutMs: config.approvalTimeoutMs }
       : {}),
+    resolveBashCommand: (toolId, input) =>
+      toolId.toLowerCase() === "bash" && typeof input.command === "string"
+        ? input.command
+        : undefined,
+    allowLegacyBackendBashFallback: true,
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
@@ -1212,41 +1538,124 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // time. After session reset, resolver.load() sees fresh files but the model still
   // sees the old descriptor listing. Full fix requires hot-swappable tool descriptors
   // in createKoi — tracked as a known limitation. The system prompt skill snapshot
-  // --- @koi/middleware-goal: adaptive goal reminders (optional) ---
-  // Only installed when the caller provides objectives. Injects goal blocks
-  // into model messages and tracks drift/completion across turns.
-  const goalMw =
-    config.goals !== undefined && config.goals.length > 0
-      ? createGoalMiddleware({ objectives: config.goals })
+  // --- @koi/middleware-planning + @koi/middleware-plan-persist ---
+  // Opt-in via `config.planningEnabled`. When on, both bundles are
+  // wired together: plan-persist's `onPlanUpdate` is plugged into
+  // planning's commit hook so every successful `koi_plan_write` is
+  // mirrored to `<cwd>/.koi/plans/_active/<sha256(sessionId)>.md` and
+  // `koi_plan_save` / `koi_plan_load` tools become available to the
+  // model. The journal makes plan checkpoints survive process
+  // restart; the model can also explicitly checkpoint with a slug for
+  // git-diffable / cross-session named plans (#1842).
+  //
+  // Note: plan-persist hydrates its own mirror but cannot reach
+  // planning's in-process `currentPlan` (no public setter), so a
+  // restart's prior plan is recoverable via the save/load tools but
+  // is NOT auto-injected into the model's prompt. Hosts that want
+  // that behavior can call `planPersist.restoreFromJournal(sessionId)`
+  // and inject the items into a system reminder.
+  const planPersistBundle =
+    config.planningEnabled === true ? createPlanPersistMiddleware({ cwd }) : undefined;
+  const planBundle =
+    config.planningEnabled === true
+      ? createPlanMiddleware({
+          ...(planPersistBundle !== undefined
+            ? { onPlanUpdate: planPersistBundle.onPlanUpdate }
+            : {}),
+        })
       : undefined;
 
-  // --- @koi/middleware-planning: write_plan tool for structured multi-step tracking ---
-  // Opt-in via `config.planningEnabled` — default off until durable
-  // plan persistence lands (#1842). Without persistence, plan state
-  // is ephemeral: `koi tui --resume` silently drops the committed
-  // plan while the rest of the conversation survives, which would
-  // make a multi-step task continue against stale state. Hosts that
-  // explicitly accept the limitation can opt in.
-  const planBundle = config.planningEnabled === true ? createPlanMiddleware() : undefined;
-
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
+  //
+  // `maxTurns` is plumbed from resolved governance state so the transcript
+  // adapter's `runTurn` loop shares the same ceiling as the engine guard
+  // (`limits.maxTurns` below) and the governance controller's iteration
+  // sensor. Without this thread, a caller setting `--max-turns 50` could
+  // still be cut off at 25 by the adapter before either other path fires.
   const transcript: InboundMessage[] = [];
-  const engineAdapter = createTranscriptAdapter({
+  const rawEngineAdapter = createTranscriptAdapter({
     engineId: config.engineId ?? "koi-tui",
     modelAdapter,
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
-    maxTurns: DEFAULT_MAX_TURNS,
+    maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
     ...(config.getGeneration !== undefined ? { getGeneration: config.getGeneration } : {}),
-    budgetConfig: budgetConfigForModel(
-      modelName,
-      // KOI_COMPACTION_WINDOW: override context window size for testing compaction
-      // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
-      process.env.KOI_COMPACTION_WINDOW !== undefined
-        ? Number(process.env.KOI_COMPACTION_WINDOW)
-        : undefined,
-    ),
+    // KOI_COMPACTION_WINDOW: override context window size for testing compaction
+    // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
+    budgetConfig:
+      config.getCurrentModel !== undefined
+        ? (): BudgetConfig => {
+            // biome-ignore lint/style/noNonNullAssertion: narrowed above, satisfies exactOptionalPropertyTypes
+            const resolved = config.getCurrentModel!();
+            const activeModel = typeof resolved === "string" ? resolved : resolved.model;
+            const activeWindow = typeof resolved === "string" ? undefined : resolved.contextLength;
+            const envOverride =
+              process.env.KOI_COMPACTION_WINDOW !== undefined
+                ? Number(process.env.KOI_COMPACTION_WINDOW)
+                : undefined;
+            // Env override (test) wins; picker-provided window covers unknown
+            // models; registry default falls through.
+            return budgetConfigForModel(activeModel, envOverride ?? activeWindow);
+          }
+        : budgetConfigForModel(
+            modelName,
+            process.env.KOI_COMPACTION_WINDOW !== undefined
+              ? Number(process.env.KOI_COMPACTION_WINDOW)
+              : undefined,
+          ),
   });
+  // TEMP #1638: dev-only env-var hook to engage applyActivityTimeout in the
+  // current `createTranscriptAdapter → createKoi` path so the wrapper can be
+  // exercised manually via TUI / headless before the #1459 createRuntime
+  // migration lands. Remove this block once the runtime path is the primary
+  // adapter factory for the CLI.
+  const idleWarn = Number(process.env.KOI_IDLE_WARN_MS);
+  const idleTerm = Number(process.env.KOI_IDLE_TERMINATE_MS);
+  const wall = Number(process.env.KOI_WALL_CLOCK_MS);
+  const timeoutEnabled = Number.isFinite(idleWarn) || Number.isFinite(wall);
+  const timeoutWrapped = timeoutEnabled
+    ? (await import("@koi/runtime")).applyActivityTimeout(rawEngineAdapter, {
+        ...(Number.isFinite(idleWarn) ? { idleWarnMs: idleWarn } : {}),
+        ...(Number.isFinite(idleTerm) ? { idleTerminateMs: idleTerm } : {}),
+        ...(Number.isFinite(wall) ? { maxDurationMs: wall } : {}),
+      })
+    : rawEngineAdapter;
+  // applyActivityTimeout's synthetic `done.metadata.terminatedBy` is
+  // outside createTranscriptAdapter's `explainNonCompletedStop` fallback
+  // scope (the fallback lives INSIDE the transcript adapter and never
+  // runs once the wrapper aborts the inner stream). Mirror the fallback
+  // here: when a timeout-authored `done` is about to be yielded, inject
+  // a visible `text_delta` so the TUI transcript surfaces the reason.
+  const engineAdapter: EngineAdapter = timeoutEnabled
+    ? {
+        ...timeoutWrapped,
+        stream(input: EngineInput): AsyncIterable<EngineEvent> {
+          return (async function* (): AsyncIterable<EngineEvent> {
+            for await (const ev of timeoutWrapped.stream(input)) {
+              if (ev.kind === "done" && ev.output.metadata?.terminatedBy === "activity-timeout") {
+                const reason = ev.output.metadata.terminationReason;
+                const elapsed =
+                  typeof ev.output.metadata.elapsedMs === "number"
+                    ? ev.output.metadata.elapsedMs
+                    : 0;
+                const label =
+                  reason === "idle"
+                    ? "inactivity"
+                    : reason === "wall_clock"
+                      ? "wall-clock"
+                      : String(reason ?? "unknown");
+                const secs = Math.round(elapsed / 1000);
+                yield {
+                  kind: "text_delta",
+                  delta: `\n[Turn interrupted by activity timeout (${label}) after ${secs}s.]\n`,
+                };
+              }
+              yield ev;
+            }
+          })();
+        },
+      }
+    : rawEngineAdapter;
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---
   // Intercepts tool inputs and network requests, redacting/blocking patterns
@@ -1424,8 +1833,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // needs the middleware to intercept the tool call. Otherwise
       // the call falls through to the provider's throwing fallback.
       // The middleware is session-keyed, so sharing with children is
-      // safe — parent and child have distinct sessionIds.
+      // safe — parent and child have distinct sessionIds. The same
+      // logic applies to plan-persist: when planning is on, children
+      // inherit koi_plan_save/koi_plan_load and need the middleware
+      // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -1751,7 +2164,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     let pendingReportText: string | undefined;
     if (config.reportEnabled === true) {
       const reportHandle = createReportMiddleware({
-        objective: config.goals?.join("; "),
         onReport: (_report, formatted) => {
           // #1862: buffer the formatted text instead of printing
           // immediately. onReport fires during runtime.dispose() →
@@ -1767,6 +2179,100 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // bar or /report command.
     }
 
+    // --- Pre-build shared GovernanceController so it is shared between:
+    //   1. The engine extension (via ECS component lookup inside createKoi)
+    //   2. The L2 createGovernanceMiddleware (observer/recorder)
+    //   3. The bridge (via runtime.agent.component(GOVERNANCE) post-createKoi)
+    // We contribute it via a GLOBAL_FORGED-priority ComponentProvider so it
+    // wins over the BUNDLED-priority provider createKoi installs automatically.
+    //
+    // `--no-governance` short-circuits the whole block: no shared controller,
+    // no backend, no middleware, no extra provider. createKoi's bundled
+    // governance provider still fires with engine defaults (so iteration
+    // caps continue to bound runaway loops), but the host gets none of the
+    // observer/bridge surface. Use this for CI runners that have their own
+    // audit stack and do not want the default alerting path.
+    const governanceEnabled = config.governanceDisabled !== true;
+    const resolvedDurationForGov = resolveMaxDurationMs(config.defaultMaxDurationMs);
+    const sharedGovernanceConfig: Partial<GovernanceConfig> = {
+      iteration: {
+        // --max-turns narrows the per-run turn budget. Default stays at
+        // DEFAULT_MAX_TURNS so unset behavior is unchanged.
+        maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
+        maxDurationMs: resolvedDurationForGov,
+        maxTokens: 1_000_000,
+      },
+      // --max-spawn-depth overrides the engine's default spawn.maxDepth.
+      // Left unset when undefined so `createDefaultGovernanceConfig` can
+      // fill in the engine's built-in default (3).
+      ...(config.maxSpawnDepth !== undefined
+        ? { spawn: { maxDepth: config.maxSpawnDepth, maxFanOut: DEFAULT_MAX_FAN_OUT } }
+        : {}),
+      ...(config.maxSpendUsd !== undefined && config.maxSpendUsd > 0
+        ? {
+            cost: resolveCostConfig(config.maxSpendUsd, [
+              modelName,
+              ...(config.fallbackModelNames ?? []),
+            ]),
+          }
+        : {}),
+    };
+    const sharedGovernanceController = governanceEnabled
+      ? createGovernanceController(sharedGovernanceConfig)
+      : undefined;
+    const sharedGovernanceProvider =
+      sharedGovernanceController !== undefined
+        ? createSharedGovernanceProvider(sharedGovernanceController)
+        : undefined;
+
+    // L2 governance middleware — observer mode only. Setpoint accounting
+    // (turn / token_usage / tool outcomes) is owned by the engine extension
+    // `createGovernanceExtension()` from `@koi/engine-reconcile`, which
+    // `createKoi` always installs against this same controller. Letting both
+    // layers record would double-count every variable and trip caps at half
+    // the configured limit. `observerOnly: true` silences the middleware's
+    // four `controller.record(...)` sites while keeping:
+    //   - policy gate (`backend.evaluator.evaluate()`),
+    //   - snapshot-based onAlert dispatch,
+    //   - trajectory span (middleware:koi:governance-core in /trajectory),
+    //   - describeCapabilities() entry surfaced in /governance.
+    //
+    // Known limitation (off-by-one on turn_count): the engine extension
+    // records `kind: "turn"` in `onBeforeTurn` (record then check), so
+    // `maxTurns=N` denies on the Nth pre-gate and yields `N-1` completed
+    // turns. The middleware previously recorded post-turn (the correct
+    // semantics) but observer mode disables it to avoid the double-count.
+    // Tracked separately — fixing requires moving the engine extension's
+    // turn record to `onAfterTurn`, outside this PR's surface.
+    // --policy-file rules feed the backend's policy gate, which still runs
+    // in observer mode (observerOnly silences record() only, not
+    // evaluator.evaluate()). Absent --policy-file, fall back to the default-
+    // allow backend so /governance renders the synthetic descriptor.
+    const governanceBackend = governanceEnabled
+      ? config.governanceRules !== undefined && config.governanceRules.length > 0
+        ? createPatternBackend({ rules: config.governanceRules, defaultDeny: false })
+        : createDefaultPatternBackend()
+      : undefined;
+    const governanceRules: readonly RuleDescriptor[] =
+      governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
+    const governanceMw =
+      governanceEnabled &&
+      governanceBackend !== undefined &&
+      sharedGovernanceController !== undefined
+        ? createGovernanceMiddleware({
+            backend: governanceBackend,
+            controller: sharedGovernanceController,
+            cost: createPricingCostCalculator(),
+            observerOnly: true,
+            // --alert-threshold overrides the default [0.8, 0.95]. Passed
+            // unconditionally when set — governance-middleware validates the
+            // list and falls back to its default when undefined.
+            ...(config.governanceAlertThresholds !== undefined
+              ? { alertThresholds: config.governanceAlertThresholds }
+              : {}),
+          })
+        : undefined;
+
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
     // compose-middleware.ts. Preset stacks (observability, checkpoint,
@@ -1777,22 +2283,29 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       hook: hookMw,
       permissions: permMw,
       exfiltrationGuard: exfiltrationGuardMw,
+      ...(config.currentModelMiddleware !== undefined
+        ? { currentModel: config.currentModelMiddleware }
+        : {}),
       ...(config.modelRouterMiddleware !== undefined
         ? { modelRouter: config.modelRouterMiddleware }
         : {}),
-      ...(goalMw !== undefined ? { goal: goalMw } : {}),
       // Plan is a dedicated zone-C-bottom slot so it runs INSIDE the
       // permissions filter. That's required for its prompt-visibility
       // gate — if permissions removes write_plan from request.tools,
       // planning must see the filtered list, not the pre-filter one.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
       // presetExtras includes the code-owned stack middleware and
       // main's env-var-gated audit preset extras (from
       // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`). Zone B manifest
       // middleware flows through the separate `manifestMiddleware`
       // slot and is composed strictly INSIDE the security core
       // layers, regardless of array position here.
-      presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
+      presetExtras: [
+        ...stackContribution.middleware,
+        ...auditPresetExtras,
+        ...(governanceMw !== undefined ? [governanceMw] : []),
+      ],
       manifestMiddleware: zoneBMiddleware,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
@@ -1884,9 +2397,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         };
       })(),
       providers: [
+        // sharedGovernanceProvider must come first (GLOBAL_FORGED priority = 50)
+        // so it wins over createKoi's bundled governance provider (priority = 100).
+        // Lower number wins per ECS priority resolution. Omitted when
+        // governance is disabled — createKoi's bundled default provider then
+        // supplies the controller used by engine-reconcile's extension.
+        ...(sharedGovernanceProvider !== undefined ? [sharedGovernanceProvider] : []),
         ...coreProviders,
         ...stackContribution.providers,
+        ...(config.extraProviders ?? []),
         ...(planBundle !== undefined ? planBundle.providers : []),
+        ...(planPersistBundle !== undefined ? planPersistBundle.providers : []),
       ],
       approvalHandler,
       userId: userInfo().username,
@@ -1924,38 +2445,36 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // must see the same resolved duration or the tighter of the two
       // wins — e.g. the guard's 5-min default would fire before the
       // 30-min governance cap. Thread the resolved values into `limits`
-      // (guard) as well as `governance.iteration` (controller).
-      ...(() => {
-        const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
-        // Pin `maxInactivityMs` to the resolved duration in all hosts
-        // so the two enforcement paths (wall-clock, inactivity) share
-        // one contract. Leaving inactivity at the engine's 5-min
-        // default made quiet model-think phases trip TIMEOUT well
-        // before the advertised cap. For `koi start` the resolved
-        // duration is 5 min anyway (via `defaultMaxDurationMs`), so
-        // this match is a no-op; for the interactive TUI it extends
-        // inactivity to 30 min, which is the intended posture.
-        return {
-          limits: {
-            maxTurns: 25,
-            maxDurationMs: resolvedDuration,
-            maxInactivityMs: resolvedDuration,
-            maxTokens: 1_000_000,
-          },
-          governance: {
-            iteration: {
-              maxTurns: 25,
-              // Per-submit wall-clock cap. TUI default 30 min; `koi start`
-              // default 5 min (via `defaultMaxDurationMs`). Override with
-              // KOI_MAX_DURATION_MS env var (e.g. `KOI_MAX_DURATION_MS=3600000`
-              // for 1h, or `0` to disable the cap entirely).
-              maxDurationMs: resolvedDuration,
-              maxInactivityMs: resolvedDuration,
-              maxTokens: 1_000_000,
-            },
-          },
-        };
-      })(),
+      // (guard). The governance config is now baked into the
+      // sharedGovernanceController above (pre-built before createKoi)
+      // so it is NOT passed here — the bundled governance provider is
+      // overridden by our GLOBAL_FORGED-priority sharedGovernanceProvider.
+      //
+      // Pin `maxInactivityMs` to the resolved duration in all hosts
+      // so the two enforcement paths (wall-clock, inactivity) share
+      // one contract. Leaving inactivity at the engine's 5-min
+      // default made quiet model-think phases trip TIMEOUT well
+      // before the advertised cap. For `koi start` the resolved
+      // duration is 5 min anyway (via `defaultMaxDurationMs`), so
+      // this match is a no-op; for the interactive TUI it extends
+      // inactivity to 30 min, which is the intended posture.
+      // `--max-turns N` is plumbed into BOTH the governance controller
+      // (setpoint) and the engine's iteration guard (limits) so the two
+      // enforcement paths share a single operator-supplied ceiling.
+      // Without this, a hardcoded DEFAULT_MAX_TURNS here would win
+      // over a higher `--max-turns` value (guard trips first, governance
+      // never fires), silently capping runs at 25 turns.
+      //
+      // `--no-governance` disables the HOST-level governance surface
+      // (alerts, bridge, pattern backend, observer MW) but the engine's
+      // bundled guard still applies — operators can tune it via
+      // `--max-turns`; there is no escape-to-unbounded path by design.
+      limits: {
+        maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
+        maxDurationMs: resolvedDurationForGov,
+        maxInactivityMs: resolvedDurationForGov,
+        maxTokens: 1_000_000,
+      },
     });
     // Hand the live runtime to the rotation closure above. The
     // engine never invokes `rotateSessionId` during construction
@@ -2080,6 +2599,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       transcript,
       sandboxActive,
       pluginSummary,
+      governanceRules,
+      governanceAlertThresholds: config.governanceAlertThresholds,
+      governanceEnabled,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a

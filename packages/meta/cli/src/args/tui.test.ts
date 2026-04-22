@@ -107,6 +107,31 @@ describe("parseTuiFlags — --until-pass / --max-iter (#1624)", () => {
   });
 });
 
+describe("parseTuiFlags — --max-spend", () => {
+  test("defaults to undefined when omitted", () => {
+    const flags = parseTuiFlags([]);
+    expect(flags.governance.maxSpendUsd).toBeUndefined();
+  });
+
+  test("parses a positive float", () => {
+    const flags = parseTuiFlags(["--max-spend", "1.50"]);
+    expect(flags.governance.maxSpendUsd).toBe(1.5);
+  });
+
+  test("accepts 0 (explicit disable)", () => {
+    const flags = parseTuiFlags(["--max-spend", "0"]);
+    expect(flags.governance.maxSpendUsd).toBe(0);
+  });
+
+  test("rejects negative", () => {
+    expect(() => parseTuiFlags(["--max-spend", "-1"])).toThrow(/non-negative/);
+  });
+
+  test("rejects non-numeric", () => {
+    expect(() => parseTuiFlags(["--max-spend", "abc"])).toThrow(/non-negative/);
+  });
+});
+
 describe("parseTuiFlags — --yolo / --dangerously-skip-permissions", () => {
   test("no flag → yolo is false", () => {
     expect(parseTuiFlags([]).yolo).toBe(false);
@@ -122,5 +147,11 @@ describe("parseTuiFlags — --yolo / --dangerously-skip-permissions", () => {
 
   test("both flags together → yolo is still true", () => {
     expect(parseTuiFlags(["--yolo", "--dangerously-skip-permissions"]).yolo).toBe(true);
+  });
+});
+
+describe("parseTuiFlags — --goal removed (#1848)", () => {
+  test("--goal is rejected as unknown option", () => {
+    expect(() => parseTuiFlags(["--goal", "anything"])).toThrow(ParseError);
   });
 });

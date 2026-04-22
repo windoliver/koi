@@ -141,7 +141,7 @@ export function createSnapshotStoreSqlite<T>(
      ORDER BY m.created_at DESC, m.seq DESC`,
   );
 
-  const selectNewestSurvivorStmt = db.query<{ readonly node_id: string }, [string]>(
+  const _selectNewestSurvivorStmt = db.query<{ readonly node_id: string }, [string]>(
     `SELECT node_id FROM chain_members
      WHERE chain_id = ?
      ORDER BY created_at DESC, seq DESC

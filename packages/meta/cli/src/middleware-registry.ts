@@ -63,7 +63,6 @@ export class CoreMiddlewareBlockedError extends Error {
  *   exfiltration-guard  intercept  priority  50   (outermost)
  *   permissions         intercept  priority 100
  *   system-prompt       resolve    priority 100
- *   goal                resolve    priority 340
  *   hooks               resolve    priority 400
  *   model-router        resolve    priority 900
  *   session-transcript  observe    priority 200
@@ -88,7 +87,7 @@ export class CoreMiddlewareBlockedError extends Error {
  *      tier runs AFTER every intercept and resolve layer, so by
  *      the time a zone-B observer is invoked the request has
  *      already passed through exfiltration-guard, permissions,
- *      system-prompt, goal, hooks, and model-router. Audit
+ *      system-prompt, hooks, and model-router. Audit
  *      middleware now records the actual payload the provider
  *      received, not a pre-injection snapshot.
  *
@@ -546,10 +545,10 @@ interface AuditManifestOptions {
   readonly flushIntervalMs?: number;
   // `redactRequestBodies` is intentionally NOT part of the
   // resolved options — the factory forces it to `true`
-  // unconditionally. Zone B runs AFTER system-prompt / goal /
+  // unconditionally. Zone B runs AFTER system-prompt /
   // hooks / model-router in the engine sort, so an un-redacted
   // request dump would contain host-injected trusted instructions
-  // (system prompt content, goal reminders, hook transformations,
+  // (system prompt content, hook transformations,
   // final routed model parameters). Letting a repo-authored
   // manifest persist those bodies to an in-workspace NDJSON file
   // would widen the repo->host trust boundary by making hidden
@@ -902,7 +901,7 @@ function createAuditManifestEntry(
   //
   // `redactRequestBodies` is forced `true` regardless of caller
   // input (see AuditManifestOptions block comment). Zone B runs
-  // after system-prompt / goal / hooks / model-router injection,
+  // after system-prompt / hooks / model-router injection,
   // so an un-redacted dump would let a repo-authored manifest
   // extract host-injected trusted content from the NDJSON file.
   // Hosts that need un-redacted bodies register audit

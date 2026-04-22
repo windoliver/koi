@@ -1,9 +1,23 @@
-import type { AgentId, JsonObject, ManagedTaskBoard, Tool } from "@koi/core";
+import type {
+  AgentId,
+  JsonObject,
+  ManagedTaskBoard,
+  TaskOutputReaderMatchesResult,
+  Tool,
+} from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
 import { toTaskSummary } from "../project.js";
 import type { ResultSchema, TaskOutputResponse, TaskToolsConfig } from "../types.js";
+
+const EMPTY_MATCHES_RESULT: TaskOutputReaderMatchesResult = {
+  kind: "matches",
+  entries: [],
+  cursor: "s=0",
+  dropped_before_cursor: 0,
+  truncated: false,
+};
 
 const schema = z.object({
   task_id: z.string().min(1).describe("ID of the task to retrieve output for"),
@@ -15,12 +29,39 @@ const schema = z.object({
     .describe(
       "Byte offset for incremental output reads. When provided for in_progress tasks, returns only output since that offset.",
     ),
+  matches_only: z
+    .boolean()
+    .optional()
+    .describe(
+      "If true, return matched-line side-buffer entries instead of the main output stream. " +
+        "Requires bufferReader to be configured. Returns empty result if no buffer exists.",
+    ),
+  event: z
+    .string()
+    .optional()
+    .describe(
+      "Optional filter (matches_only=true only): restrict to matches with this event label.",
+    ),
+  stream: z
+    .enum(["stdout", "stderr"])
+    .optional()
+    .describe("Optional filter (matches_only=true only): restrict to stdout or stderr matches."),
+  match_offset: z
+    .string()
+    .optional()
+    .describe(
+      "Opaque pagination cursor returned by a prior matches_only call. " +
+        "Pass the cursor field from a prior response to page forward.",
+    ),
 });
 
 export function createTaskOutputTool(
   board: ManagedTaskBoard,
   agentId: AgentId,
-  config: Pick<TaskToolsConfig, "resultSchemas" | "outputReader">,
+  config: Pick<
+    TaskToolsConfig,
+    "resultSchemas" | "outputReader" | "bufferReader" | "legacyReadOwner"
+  >,
 ): Tool {
   return {
     descriptor: {
@@ -28,7 +69,8 @@ export function createTaskOutputTool(
       description:
         "Retrieve the output or current status of a task. " +
         "Returns full TaskResult for completed tasks, status info for pending/in_progress tasks, " +
-        "and error details for failed/killed tasks.",
+        "and error details for failed/killed tasks. " +
+        "Use matches_only=true to retrieve matched-line side-buffer entries for tasks with watch_patterns.",
       inputSchema: toJSONSchema(schema) as JsonObject,
       origin: "primordial",
     },
@@ -49,14 +91,75 @@ export function createTaskOutputTool(
         return response;
       }
 
-      // Read authorization: reject cross-agent reads when assignedTo is explicitly
-      // set to a different agent. If assignedTo is undefined (pending, or cleared
-      // on failure/retry), allow the read — we cannot determine the prior owner.
-      if (task.assignedTo !== undefined && task.assignedTo !== agentId) {
-        return {
-          ok: false,
-          error: `Cannot read task '${parsed.data.task_id}': it is assigned to '${String(task.assignedTo)}', not '${String(agentId)}'`,
-        };
+      // Read ACL — two distinct branches by migration state:
+      //
+      // When createdBy is undefined (legacy task), do NOT consult assignedTo —
+      // pre-migration assignments are not trustworthy for authorization decisions.
+      // Only legacyReadOwner can unlock reads of legacy tasks.
+      //
+      // When createdBy is present (migrated task), apply the normal creator/assignee ACL.
+      const effectiveLegacyOwner = config.legacyReadOwner;
+
+      if (task.createdBy === undefined) {
+        const isLegacyReadable =
+          effectiveLegacyOwner !== undefined && effectiveLegacyOwner === agentId;
+        if (!isLegacyReadable) {
+          const legacyResponse: TaskOutputResponse = {
+            kind: "legacy_unmigrated",
+            reason:
+              "Task predates the createdBy ownership field and has not been migrated. " +
+              "Run the on-disk migration (see docs/L2/tools-bash.md) to backfill createdBy, " +
+              "or configure legacyReadOwner on the task-tools runtime.",
+          };
+          return legacyResponse;
+        }
+      } else {
+        const isCreator = task.createdBy === agentId;
+        const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
+        const isLastAssignee = task.lastAssignedTo !== undefined && task.lastAssignedTo === agentId;
+        if (!isCreator && !isAssignee && !isLastAssignee) {
+          const deniedResponse: TaskOutputResponse = {
+            kind: "permission_denied",
+            reason: "Not authorized to read this task's output.",
+          };
+          return deniedResponse;
+        }
+      }
+
+      // matches_only path: return matched-line side-buffer entries
+      if (parsed.data.matches_only === true) {
+        const readerOrMarker = config.bufferReader?.(id);
+        if (readerOrMarker === undefined) {
+          // Task never had a buffer — plain task_create, non-bash_background, or live task
+          // with no watch-pattern matches yet. Return empty result (not an error).
+          return EMPTY_MATCHES_RESULT;
+        }
+        if (readerOrMarker === "evicted") {
+          // Buffer existed but was LRU-evicted — matches may have been produced but are
+          // no longer retrievable. Distinguish from "never had a buffer" above.
+          const evictedResponse: TaskOutputResponse = {
+            kind: "buffer_evicted",
+            reason: `Output buffer for task ${String(id)} has been evicted. Matches may have been produced but are no longer retrievable.`,
+          };
+          return evictedResponse;
+        }
+        // readerOrMarker is a TaskOutputReader instance — buffer is live.
+        try {
+          return readerOrMarker.queryMatches({
+            ...(typeof parsed.data.event === "string" ? { event: parsed.data.event } : {}),
+            ...(parsed.data.stream !== undefined ? { stream: parsed.data.stream } : {}),
+            ...(typeof parsed.data.match_offset === "string"
+              ? { offset: parsed.data.match_offset }
+              : {}),
+          });
+        } catch (err: unknown) {
+          const reason = err instanceof Error ? err.message : String(err);
+          const validationFailedResponse: TaskOutputResponse = {
+            kind: "validation_failed",
+            reason: `Invalid matches_only cursor: ${reason}`,
+          };
+          return validationFailedResponse;
+        }
       }
 
       // Exhaustive switch — TS enforces all TaskStatus cases are handled
@@ -81,13 +184,25 @@ export function createTaskOutputTool(
               };
               return response;
             }
-            // Fall through to status-only response if read fails (task might not be tracked by runner)
+            // Fall through to buffered-snapshot or status-only response
           }
-          const response: TaskOutputResponse = {
+          // If a bufferReader is wired, return buffered snapshot for in_progress
+          const inProgressBuffer = config.bufferReader?.(id);
+          if (inProgressBuffer !== undefined && inProgressBuffer !== "evicted") {
+            const snap = inProgressBuffer.snapshot();
+            return {
+              kind: "in_progress",
+              task: toTaskSummary(task, snapshot),
+              stdout: snap.stdout,
+              stderr: snap.stderr,
+              truncated: snap.truncated,
+            };
+          }
+          const inProgressResponse: TaskOutputResponse = {
             kind: "in_progress",
             task: toTaskSummary(task, snapshot),
           };
-          return response;
+          return inProgressResponse;
         }
         case "completed": {
           const result = snapshot.result(id);
@@ -124,7 +239,24 @@ export function createTaskOutputTool(
           return response;
         }
         case "failed": {
-          const response: TaskOutputResponse = {
+          // Return buffered snapshot when available (terminal state — process has exited)
+          const failedBuffer = config.bufferReader?.(id);
+          if (failedBuffer !== undefined && failedBuffer !== "evicted") {
+            const snap = failedBuffer.snapshot();
+            return {
+              kind: "failed",
+              task,
+              error: task.error ?? {
+                code: "EXTERNAL",
+                message: "Task failed with no error details",
+                retryable: false,
+              },
+              stdout: snap.stdout,
+              stderr: snap.stderr,
+              truncated: snap.truncated,
+            };
+          }
+          const failedResponse: TaskOutputResponse = {
             kind: "failed",
             task,
             error: task.error ?? {
@@ -133,11 +265,23 @@ export function createTaskOutputTool(
               retryable: false,
             },
           };
-          return response;
+          return failedResponse;
         }
         case "killed": {
-          const response: TaskOutputResponse = { kind: "killed", task };
-          return response;
+          // Return buffered snapshot when available (terminal state — process has exited)
+          const killedBuffer = config.bufferReader?.(id);
+          if (killedBuffer !== undefined && killedBuffer !== "evicted") {
+            const snap = killedBuffer.snapshot();
+            return {
+              kind: "killed",
+              task,
+              stdout: snap.stdout,
+              stderr: snap.stderr,
+              truncated: snap.truncated,
+            };
+          }
+          const killedResponse: TaskOutputResponse = { kind: "killed", task };
+          return killedResponse;
         }
       }
     },

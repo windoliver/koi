@@ -60,8 +60,8 @@ index.ts                  ← public re-exports
 Engine turn loop
   │
   ▼
-┌─────────────────────────────────┐
-│  debug-middleware (priority 50)  │
+┌─────────────────────────────────────────────────────┐
+│  debug-middleware (priority -1000, phase: resolve)   │
 │                                 │
 │  inactive? → next(request)      │ ← zero overhead when not debugging
 │  active?   → record event       │
@@ -110,27 +110,6 @@ const { session, middleware } = result.value;
 **Returns:** `{ session: DebugSession, middleware: KoiMiddleware }` on success,
 `CONFLICT` error if the agent already has a debug session attached.
 
-### `createDebugObserve(agentId, agent)`
-
-Create a read-only observer for an existing debug session.
-
-```typescript
-import { createDebugObserve } from "@koi/debug";
-
-const result = createDebugObserve(agentId("agent-1"), agent);
-if (!result.ok) {
-  // result.error.code === "NOT_FOUND" if no session exists
-  return;
-}
-
-const observer = result.value;
-const snapshot = observer.inspect();
-const events = observer.events(50); // last 50 events
-```
-
-**Returns:** `DebugObserver` on success, `NOT_FOUND` error if no active session.
-Multiple observers can attach to the same session simultaneously.
-
 ### `hasDebugSession(agentId)`
 
 Check whether an agent has an active debug session.
@@ -144,18 +123,6 @@ if (hasDebugSession(agentId("agent-1"))) {
 ```
 
 **Returns:** `boolean`. Synchronous.
-
-### `clearAllDebugSessions()`
-
-Deactivate all active debug sessions. Intended for test cleanup only.
-
-```typescript
-import { clearAllDebugSessions } from "@koi/debug";
-
-beforeEach(() => {
-  clearAllDebugSessions();
-});
-```
 
 ### `matchesBreakpoint(predicate, context)`
 
@@ -276,8 +243,11 @@ if (detail.ok) {
 | Active, 100 breakpoints | ~1ms | Linear scan; budget allows up to ~100 |
 | Breakpoint hit (paused) | blocks | Engine loop awaits Promise gate |
 
-The middleware runs at **priority 50** (outer onion layer) and checks `controller.isActive()`
-as its first operation. When no debug session exists, the middleware is a no-op pass-through.
+The middleware runs at **priority -1000** (resolve phase, after intercept-tier security guards)
+and checks `controller.isActive()` as its first operation. When no debug session exists, the
+middleware is a no-op pass-through. Running in the resolve phase means the debugger sees only
+approved tool calls — denied calls are rejected upstream by permissions/exfiltration middleware
+before reaching the debugger.
 
 ---
 
@@ -315,17 +285,17 @@ session.detach();
 ### Read-only observer
 
 ```typescript
-import { createDebugAttach, createDebugObserve } from "@koi/debug";
+import { createDebugAttach } from "@koi/debug";
 
-// Attach (e.g., from a CLI debug command)
-createDebugAttach({ agent });
-
-// Observe (e.g., from a dashboard WebSocket)
-const result = createDebugObserve(agent.pid.id, agent);
+// Attach returns the session; use session.createObserver() for read-only views
+const result = createDebugAttach({ agent });
 if (!result.ok) return;
 
-const observer = result.value;
-const snapshot = observer.inspect();
+const { session } = result.value;
+
+// Create a read-only observer (e.g., for a dashboard WebSocket)
+const observer = session.createObserver();
+const snapshot = await observer.inspect();
 const events = observer.events(100);
 
 // Clean up observer without affecting the session
@@ -344,7 +314,7 @@ observer.detach();
 | Ring buffer (not unbounded array) | Bounded memory; 1000 events default covers ~100 turns |
 | Token-filtered inspection | Avoids serialising entire agent state; metadata-first, data-on-demand |
 | Auto-resume on detach | Prevents permanently stuck agents if debugger disconnects |
-| Priority 50 (outermost) | Debug middleware wraps everything — sees all events before other middleware |
+| Priority -1000 (resolve phase) | Debug runs after security guards — sees only approved calls; denied calls never reach the debugger |
 
 ---
 

@@ -7,7 +7,13 @@ import type { JSX } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
 import type { AgentStatus, CumulativeMetrics, SessionInfo } from "../state/types.js";
-import { formatCost, formatTokens } from "./status-bar-helpers.js";
+import {
+  chipTier,
+  formatCost,
+  formatGovernanceChip,
+  formatTokens,
+  mostStressedSensor,
+} from "./status-bar-helpers.js";
 
 export { formatCost, formatTokens };
 
@@ -17,7 +23,10 @@ const STATUS_COLORS: Record<AgentStatus, string> = {
   error: COLORS.danger,
 };
 
-function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
+function ModelChip(props: {
+  readonly info: SessionInfo | null;
+  readonly modelName: string;
+}): JSX.Element {
   // Short prefix keeps the footer compact while staying unique enough
   // for a human to correlate with the post-quit resume hint.
   const shortId = (): string => {
@@ -32,7 +41,7 @@ function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
       <box flexDirection="row">
         <text fg={COLORS.textMuted}>{shortId()}</text>
         <text fg={COLORS.textMuted}>{" · "}</text>
-        <text fg={COLORS.textSecondary}>{props.info?.modelName ?? ""}</text>
+        <text fg={COLORS.textSecondary}>{props.modelName}</text>
         <text fg={COLORS.textMuted}>{" · "}</text>
         <text fg={COLORS.textSecondary}>{props.info?.provider ?? ""}</text>
       </box>
@@ -75,12 +84,14 @@ export interface StatusBarProps {
 
 export function StatusBar(props: StatusBarProps): JSX.Element {
   const sessionInfo = useTuiStore((s) => s.sessionInfo);
+  const modelName = useTuiStore((s) => s.modelName);
   const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
   const agentStatus = useTuiStore((s) => s.agentStatus);
   const maxContextTokens = useTuiStore((s) => s.maxContextTokens);
   const retryState = useTuiStore((s) => s.retryState);
   const agentDepth = useTuiStore((s) => s.agentDepth);
   const siblingInfo = useTuiStore((s) => s.siblingInfo);
+  const governanceSnapshot = useTuiStore((s) => s.governance.snapshot);
 
   // Elapsed timer during streaming (like Claude Code's status line)
   const [elapsed, setElapsed] = createSignal(0);
@@ -119,6 +130,17 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
     return sib ? `Subagent (${sib.current} of ${sib.total})` : `Subagent (depth ${depth})`;
   });
 
+  // gov-9: governance status chip — most-stressed sensor
+  const govChip = createMemo(() => {
+    const top = mostStressedSensor(governanceSnapshot());
+    if (top === null) return null;
+    const tier = chipTier(top.utilization);
+    const color =
+      tier === "danger" ? COLORS.danger : tier === "warn" ? COLORS.amber : COLORS.textMuted;
+    const prefix = tier === "danger" ? "⚠ " : "";
+    return { color, text: `${prefix}gov: ${formatGovernanceChip(top)}` };
+  });
+
   return (
     <box
       flexDirection="row"
@@ -129,7 +151,7 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
       paddingRight={1}
       gap={2}
     >
-      <ModelChip info={sessionInfo()} />
+      <ModelChip info={sessionInfo()} modelName={modelName()} />
       <Show when={showMetrics()}>
         <MetricsChip metrics={cumulativeMetrics()} />
       </Show>
@@ -142,6 +164,12 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
         <text fg={COLORS.amber}>{subagentLabel()}</text>
       </Show>
       <box flexGrow={1} />
+      {/* gov-9: governance status chip — most-stressed sensor */}
+      <Show when={govChip()}>
+        {(chip: () => { readonly color: string; readonly text: string }) => (
+          <text fg={chip().color}>{chip().text}</text>
+        )}
+      </Show>
       {/* #20 retry countdown */}
       <Show when={retryState() !== null}>
         <text fg={COLORS.amber}>{`Retrying in ${retryState()?.countdownSec}s (attempt ${retryState()?.attempt})`}</text>

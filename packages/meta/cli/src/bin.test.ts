@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 const BIN = join(import.meta.dir, "bin.ts");
@@ -506,5 +507,126 @@ describe("bin.ts", () => {
       expect(r.exitCode).toBe(2);
       expect(r.stderr).toContain("no API key");
     });
+  });
+
+  describe("start command — governance flags (gov-10)", () => {
+    const NO_KEY = { OPENROUTER_API_KEY: "" } as const;
+
+    test("--max-spend parses as known flag", async () => {
+      const r = await runBin(["start", "--max-spend", "1.50"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--max-turns parses as known flag", async () => {
+      const r = await runBin(["start", "--max-turns", "10"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--max-spawn-depth parses as known flag", async () => {
+      const r = await runBin(["start", "--max-spawn-depth", "3"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--policy-file parses as known flag", async () => {
+      const r = await runBin(["start", "--policy-file", "/tmp/does-not-exist.yaml"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--alert-threshold parses as known flag (repeatable)", async () => {
+      const r = await runBin(
+        ["start", "--alert-threshold", "0.7", "--alert-threshold", "0.9"],
+        NO_KEY,
+      );
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--no-governance parses as known flag", async () => {
+      const r = await runBin(["start", "--no-governance"], NO_KEY);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("--no-governance + --max-spend exits 1 with conflict message", async () => {
+      const r = await runBin(["start", "--no-governance", "--max-spend", "1"], NO_KEY);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--no-governance cannot be combined with --max-spend");
+    });
+
+    test("--max-turns with non-integer exits 1", async () => {
+      const r = await runBin(["start", "--max-turns", "abc"], NO_KEY);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--max-turns");
+    });
+
+    test("--alert-threshold out of (0, 1] exits 1", async () => {
+      const r = await runBin(["start", "--alert-threshold", "1.5"], NO_KEY);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--alert-threshold");
+    });
+
+    test("start --help lists every governance flag", async () => {
+      const r = await runBin(["start", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("--max-spend");
+      expect(r.stdout).toContain("--max-turns");
+      expect(r.stdout).toContain("--max-spawn-depth");
+      expect(r.stdout).toContain("--policy-file");
+      expect(r.stdout).toContain("--alert-threshold");
+      expect(r.stdout).toContain("--no-governance");
+    });
+
+    test("tui --help lists every governance flag", async () => {
+      const r = await runBin(["tui", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("--max-spend");
+      expect(r.stdout).toContain("--max-turns");
+      expect(r.stdout).toContain("--max-spawn-depth");
+      expect(r.stdout).toContain("--policy-file");
+      expect(r.stdout).toContain("--alert-threshold");
+      expect(r.stdout).toContain("--no-governance");
+    });
+  });
+
+  describe("SIGUSR1 early handler (#1906)", () => {
+    // Windows does not deliver SIGUSR1. Skip the integration there —
+    // the platform gate is covered by the unit test in tui-sigusr1.test.ts.
+    const SKIP_WIN = process.platform === "win32";
+    const EXPECTED_EXIT = process.platform === "darwin" ? 158 : 138;
+
+    test.skipIf(SKIP_WIN)(
+      "minimal inline handler mirrors bin.ts and exits with canonical SIGUSR1 code",
+      async () => {
+        // This test proves the inline handler pattern used at bin.ts:104
+        // (sync `process.on("SIGUSR1", ...)` + `process.exit(158 or 138)`)
+        // correctly produces the canonical exit code when the signal is
+        // delivered to a child that is past runtime init.
+        //
+        // We run a minimal script through `bun -e` instead of the real
+        // bin.ts because the end-to-end `bun bin.ts tui` path trips an
+        // upstream Bun panic during TUI bootstrap when SIGUSR1 lands
+        // mid-import (exit 133 / SIGTRAP). That panic is a Bun bug and
+        // is out of scope here — the #1906 fix closes the JS-level race,
+        // not the runtime-init race.
+        //
+        // Uses node:child_process.spawn rather than Bun.spawn because
+        // Bun's `proc.kill("SIGUSR1")` on a Bun child panics the child
+        // with SIGTRAP (exit 133) instead of delivering SIGUSR1 as a
+        // real signal — separate upstream Bun bug.
+        const script = `
+          process.on("SIGUSR1", () => {
+            process.exit(process.platform === "darwin" ? 158 : 138);
+          });
+          setInterval(() => {}, 1000);
+        `;
+        const child = spawn("bun", ["-e", script], {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        await new Promise((r) => setTimeout(r, 200));
+        child.kill("SIGUSR1");
+        const exitCode = await new Promise<number>((resolve) => {
+          child.on("exit", (code) => resolve(code ?? -1));
+        });
+        expect(exitCode).toBe(EXPECTED_EXIT);
+      },
+    );
   });
 });

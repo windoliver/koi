@@ -35,6 +35,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { chainId, SNAPSHOT_STATUS_KEY, type SnapshotStatus } from "@koi/core";
+import { applyCompensatingOps, toCompensating } from "./compensating-ops.js";
 import { createGitStatusDriftDetector } from "./drift-detector.js";
 import {
   buildFileOpRecord,
@@ -79,6 +80,14 @@ interface SessionState {
    * and should share the prior's userTurnIndex.
    */
   lastCaptureHadOps: boolean;
+  /**
+   * Set when compensating rollback AND incomplete-snapshot persistence
+   * BOTH fail on a stopBlocked turn (#1638). The workspace is known to
+   * diverge from the last good snapshot and we have no audit record,
+   * so subsequent capture writes (wrapToolCall, normal onAfterTurn)
+   * fail closed until the session is repaired. Null = not quarantined.
+   */
+  quarantine: { readonly reason: string; readonly at: number } | null;
 }
 
 export interface CreateCheckpointInput {
@@ -108,9 +117,112 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
   const tracker = createInFlightTracker();
   const serializer = createRewindSerializer(tracker);
 
+  /**
+   * Persist the fact that a stopBlocked turn's compensating rollback did
+   * NOT fully complete. The existing `incomplete` snapshot contract
+   * (soft-fail capture, restore/resume skip) requires empty `fileOps`,
+   * so we encode the mutation log in metadata instead — operators retain
+   * an audit trail; the restore/head/resume paths keep their existing
+   * "incomplete means non-restorable marker" semantics unchanged.
+   *
+   * parentNodeId is intentionally not advanced, so the live chain head
+   * stays at the last fully-complete snapshot and subsequent turns fork
+   * from there. Soft-fail on persistence error — we've already logged.
+   */
+  async function persistIncompleteStopBlocked(
+    state: SessionState,
+    ctx: TurnContext,
+    fileOps: readonly FileOpRecord[],
+    unsuccessful: readonly unknown[],
+  ): Promise<{ readonly ok: boolean }> {
+    try {
+      // Do NOT advance state.userTurnCounter: the incomplete marker is a
+      // sibling of the live ancestor chain (parentNodeId isn't updated),
+      // so restore planning's by-count walk on the live chain never
+      // traverses it. Bumping the counter would create a gap in the
+      // live chain's userTurnIndex sequence, which makes the by-count
+      // resolver fall past the aborted turn and over-rewind by one
+      // prompt. Reuse the current counter so the marker is tagged with
+      // the previous prompt's index; subsequent successful turns
+      // continue the contiguous sequence.
+      const parents = state.parentNodeId !== undefined ? [state.parentNodeId] : [];
+      const payload: CheckpointPayload = {
+        turnIndex: ctx.turnIndex,
+        userTurnIndex: state.userTurnCounter,
+        sessionId: ctx.session.sessionId as unknown as string,
+        fileOps: [], // empty — matches existing incomplete-snapshot contract
+        driftWarnings: [],
+        capturedAt: Date.now(),
+      };
+      // Serialize the dropped ops into metadata for operators. `store.put`
+      // metadata is JSON; keep entries shape-stable so external tooling
+      // can parse without knowing the full FileOpRecord shape.
+      const droppedOps = fileOps.map((op) => {
+        return { kind: op.kind, path: op.path, eventIndex: op.eventIndex };
+      });
+      const incompleteStatus: SnapshotStatus = "incomplete";
+      const putResult = await store.put(state.chainId, payload, parents, {
+        [SNAPSHOT_STATUS_KEY]: incompleteStatus,
+        koi_stop_blocked: true,
+        koi_rollback_failed: true,
+        koi_rollback_unsuccessful_count: unsuccessful.length,
+        koi_rollback_dropped_ops: droppedOps,
+        ...(ctx.stopGateReason !== undefined ? { koi_stop_reason: ctx.stopGateReason } : {}),
+      });
+      if (!putResult.ok) {
+        console.error(
+          "[koi:checkpoint] incomplete-snapshot persist returned error on stopBlocked turn:",
+          putResult.error,
+        );
+        return { ok: false };
+      }
+      return { ok: true };
+    } catch (e: unknown) {
+      console.error(
+        "[koi:checkpoint] failed to persist incomplete snapshot for stopBlocked turn:",
+        e,
+      );
+      return { ok: false };
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Per-session state helpers (shared by capture and rewind)
   // -----------------------------------------------------------------------
+
+  /**
+   * Resolve the live parent for a resumed session. When `store.head()`
+   * points at an `incomplete` marker (soft-fail or rollback-failed
+   * stopBlocked), walk up the `parentIds` chain to the nearest `complete`
+   * ancestor. Returns `undefined` when no complete ancestor exists (the
+   * bootstrap hasn't been written yet).
+   *
+   * Cycle guard: walk at most 64 hops — the chain is linear in practice,
+   * so a non-terminating traversal indicates corrupted metadata and
+   * should abort resolution rather than loop forever.
+   */
+  async function resolveLiveParent(
+    cid: ReturnType<typeof chainId>,
+    headResult: Awaited<ReturnType<typeof store.head>>,
+  ): Promise<NodeId | undefined> {
+    if (!headResult.ok || headResult.value === undefined) return undefined;
+    const maxHops = 64;
+    let node = headResult.value;
+    for (let hop = 0; hop < maxHops; hop += 1) {
+      const status = node.metadata[SNAPSHOT_STATUS_KEY];
+      if (status !== "incomplete") return node.nodeId;
+      const parentId = node.parentIds[0];
+      if (parentId === undefined) return undefined;
+      const parentResult = await store.get(parentId);
+      if (!parentResult.ok) return undefined;
+      node = parentResult.value;
+    }
+    // Metadata corruption — surface but don't crash.
+    console.error(
+      `[koi:checkpoint] resolveLiveParent exceeded ${maxHops} hops in chain ${cid}; treating as no parent`,
+    );
+    return undefined;
+  }
 
   async function getOrCreateSession(sessionId: SessionId): Promise<SessionState> {
     let state = sessions.get(sessionId);
@@ -119,8 +231,15 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       // Reads back the existing head if the session is being resumed from disk.
       // `await` is a no-op when the store impl is sync (e.g., SQLite).
       const headResult = await store.head(cid);
-      let parent =
-        headResult.ok && headResult.value !== undefined ? headResult.value.nodeId : undefined;
+      // On restart, the store's head may be an `incomplete` marker
+      // (persistence soft-fail or rollback-failed stopBlocked turn).
+      // Resuming from an incomplete marker would fork the chain off a
+      // non-restorable node and leave any still-dirty workspace state
+      // invisible to rewind. Walk back through parents to the most
+      // recent `complete` ancestor instead, keeping the incomplete
+      // markers as persisted audit records without making them part of
+      // the live capture chain.
+      let parent = await resolveLiveParent(cid, headResult);
 
       // Bootstrap: a brand-new session gets an initial empty snapshot so the
       // first real turn has a predecessor to rewind TO. Without this, the
@@ -153,15 +272,17 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         }
       }
 
-      // Restore userTurnCounter from the existing head if resuming a chain.
-      // Otherwise start at 0 (bootstrap). On continuation-detection, we
-      // need to know whether the last capture had ops — we conservatively
-      // assume it did NOT when resuming (the resumed head's ops may or may
-      // not be known without fetching; treat as false so the next capture
-      // always starts a new user turn).
+      // Restore userTurnCounter from the LIVE parent (the complete
+      // ancestor we just resolved), not from the raw store head — the
+      // raw head might be an incomplete marker whose userTurnIndex we
+      // consumed for audit purposes. Using that value would cause the
+      // next successful turn to share an index with the aborted marker.
       let userTurnCounter = 0;
-      if (headResult.ok && headResult.value !== undefined) {
-        userTurnCounter = headResult.value.data.userTurnIndex ?? 0;
+      if (parent !== undefined) {
+        const parentResult = await store.get(parent);
+        if (parentResult.ok) {
+          userTurnCounter = parentResult.value.data.userTurnIndex ?? 0;
+        }
       }
 
       state = {
@@ -171,6 +292,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         eventIndex: 0,
         userTurnCounter,
         lastCaptureHadOps: false,
+        quarantine: null,
       };
       sessions.set(sessionId, state);
     }
@@ -237,6 +359,17 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       }
 
       const state = await getOrCreateSession(sid);
+      // #1638 fail-closed: after a double-failure (rollback + persist)
+      // the session is quarantined — refuse further tracked mutations
+      // so the checkpoint chain cannot diverge further from disk. The
+      // untracked fast-path above has already returned, so only
+      // tracked tools (fs_edit, fs_write) are blocked here.
+      if (state.quarantine !== null) {
+        throw new Error(
+          `[koi:checkpoint] session ${sid} is quarantined: ${state.quarantine.reason}. ` +
+            "Repair the workspace and clear the quarantine before continuing.",
+        );
+      }
       const turnKey = String(ctx.turnId);
 
       // Pre-image (best-effort)
@@ -305,6 +438,101 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     const state = await getOrCreateSession(ctx.session.sessionId);
     const turnKey = String(ctx.turnId);
     const fileOps = state.turnBuffers.get(turnKey) ?? [];
+
+    // #1638 / stop-gate: a non-normal turn completion (activity-timeout
+    // abort, stop-gate veto) must NOT advance the rewind chain head to a
+    // "complete" snapshot — a later /rewind could land on partial state.
+    //
+    // If the interrupted turn already mutated the workspace, we actively
+    // apply compensating ops to roll the disk back. When every op lands
+    // cleanly, the buffer is discarded and the chain head stays at the
+    // previous good snapshot. When any op fails (explicit error OR
+    // `skipped-missing-blob` — the target blob is gone so the restore
+    // couldn't run), we fail closed: preserve the fileOps by writing an
+    // `incomplete` marker snapshot so operators still have an audit
+    // trail + potential recovery path. If persistence ALSO fails (e.g.
+    // storage corruption), we retain the buffer in memory and flag the
+    // session as quarantined — subsequent capture writes are blocked
+    // until the buffer is either consumed or manually cleared.
+    if (ctx.stopBlocked === true) {
+      // Reset the continuation marker so the NEXT successful turn cannot
+      // mistakenly fold into the turn BEFORE the aborted one. Without
+      // this, `lastCaptureHadOps` stays `true` from the prior normal
+      // turn's tool-call and the heuristic would treat a subsequent
+      // text-only turn as a continuation of the pre-abort turn,
+      // producing an incorrect shared `userTurnIndex` and breaking
+      // `/rewind` granularity. Aborted turns do not participate in the
+      // "same-user-prompt" grouping.
+      state.lastCaptureHadOps = false;
+      if (fileOps.length === 0) {
+        state.turnBuffers.delete(turnKey);
+        return;
+      }
+      let rollbackCleanlyDone = false;
+      let unsuccessful: readonly unknown[] = [];
+      try {
+        const compensating = fileOps
+          .slice()
+          .sort((a, b) => b.eventIndex - a.eventIndex)
+          .map(toCompensating);
+        const results = await applyCompensatingOps(compensating, config.blobDir, config.backends);
+        unsuccessful = results.filter(
+          (r) => r.kind === "error" || r.kind === "skipped-missing-blob",
+        );
+        if (unsuccessful.length === 0) {
+          rollbackCleanlyDone = true;
+        } else {
+          console.error(
+            `[koi:checkpoint] rollback incomplete on stopBlocked turn — ${unsuccessful.length} op(s) not restored:`,
+            unsuccessful,
+          );
+        }
+      } catch (e: unknown) {
+        console.error("[koi:checkpoint] compensating rollback threw on stopBlocked turn:", e);
+        unsuccessful = [{ kind: "error", path: "<thrown>", cause: e }];
+      }
+      if (rollbackCleanlyDone) {
+        state.turnBuffers.delete(turnKey);
+        return;
+      }
+      // Rollback did NOT fully apply. Try to persist an incomplete marker
+      // as the audit record; keep the buffer alive if persistence also
+      // fails so disk-vs-chain divergence can still be recovered.
+      const persistResult = await persistIncompleteStopBlocked(state, ctx, fileOps, unsuccessful);
+      if (persistResult.ok) {
+        state.turnBuffers.delete(turnKey);
+      } else {
+        // Double failure: workspace diverges from last good snapshot AND
+        // we have no durable audit record. Quarantine the session so
+        // subsequent tracked mutations / normal captures fail closed
+        // instead of compounding the divergence.
+        state.quarantine = {
+          reason: "rollback failed AND incomplete-snapshot persist failed on stopBlocked turn",
+          at: Date.now(),
+        };
+        console.error(
+          "[koi:checkpoint] rollback AND incomplete-snapshot persistence both failed on stopBlocked turn — " +
+            "session quarantined; subsequent captures will fail closed until repaired",
+        );
+      }
+      return;
+    }
+
+    // Normal-completion path: refuse to advance the chain for a
+    // quarantined session — any new capture would build on top of known-
+    // divergent disk state.
+    if (state.quarantine !== null) {
+      console.error(
+        `[koi:checkpoint] session ${state.chainId} is quarantined; skipping onAfterTurn capture:`,
+        state.quarantine.reason,
+      );
+      state.turnBuffers.delete(turnKey);
+      return;
+    }
+
+    // Normal completed turn — safe to clear the per-turn buffer now that
+    // we've read `fileOps`. The stopBlocked branch above manages its own
+    // buffer lifecycle based on rollback/persistence outcome.
     state.turnBuffers.delete(turnKey);
 
     // User-turn boundary detection. A single user prompt that invokes tools

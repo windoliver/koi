@@ -62,3 +62,5 @@ When it releases, calls `ctx.reportDecision({ event: "strict-agentic:circuit-bro
 ## Open questions
 
 - The L0 `KoiMiddleware` surface exposes `onSessionEnd` and `onAfterTurn` for state cleanup — used to drop turn-scoped and session-scoped state respectively.
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

@@ -151,22 +151,67 @@ describe("createVisibilityFilter", () => {
       expect(descriptor).toHaveBeenCalledWith(agentId("agent-a"));
     });
 
-    test("preserves inner this-binding for delegated methods", async () => {
+    test("delegated methods preserve receiver context", async () => {
+      const entries: RegistryEntry[] = [entry("agent-a")];
       const inner = {
-        ...createStubRegistry(),
-        marker: "inner-registry",
-        register(entry: RegistryEntry) {
-          if (this.marker !== "inner-registry") {
-            throw new Error("lost this binding");
-          }
-          return entry;
+        entries,
+        async register(
+          this: { entries: RegistryEntry[] },
+          e: RegistryEntry,
+        ): Promise<RegistryEntry> {
+          this.entries.push(e);
+          return e;
         },
-      } as AgentRegistry & { readonly marker: string };
+        async deregister(
+          this: { entries: RegistryEntry[] },
+          id: RegistryEntry["agentId"],
+        ): Promise<boolean> {
+          const index = this.entries.findIndex((e) => e.agentId === id);
+          if (index < 0) return false;
+          this.entries.splice(index, 1);
+          return true;
+        },
+        async lookup(
+          this: { entries: RegistryEntry[] },
+          id: RegistryEntry["agentId"],
+        ): Promise<RegistryEntry | undefined> {
+          return this.entries.find((e) => e.agentId === id);
+        },
+        async list(
+          this: { entries: RegistryEntry[] },
+          _filter?: RegistryFilter,
+          _visibility?: VisibilityContext,
+        ): Promise<readonly RegistryEntry[]> {
+          return this.entries;
+        },
+        async transition() {
+          return {
+            ok: false as const,
+            error: { code: "NOT_FOUND" as const, message: "stub", retryable: false },
+          };
+        },
+        async patch() {
+          return {
+            ok: false as const,
+            error: { code: "NOT_FOUND" as const, message: "stub", retryable: false },
+          };
+        },
+        watch() {
+          return () => {};
+        },
+        async [Symbol.asyncDispose]() {},
+      } as unknown as AgentRegistry;
       const perms = createStubPermissions(() => ({ effect: "allow" }));
       const filtered = createVisibilityFilter(inner, perms);
 
-      const result = await Promise.resolve(filtered.register(e1));
-      expect(result).toEqual(e1);
+      const found = await filtered.lookup(agentId("agent-a"));
+      expect(found?.agentId).toBe(agentId("agent-a"));
+
+      await filtered.register(entry("agent-b"));
+      expect((await filtered.list()).map((e) => e.agentId)).toEqual([
+        agentId("agent-a"),
+        agentId("agent-b"),
+      ]);
     });
   });
 

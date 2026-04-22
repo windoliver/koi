@@ -335,6 +335,17 @@ describe("createInMemoryController", () => {
       await controller.record({ kind: "turn" });
       expect(controller.reading("turn_count")?.current).toBe(2);
     });
+
+    test("turn_refund decrements turn_count without underflow", async () => {
+      const controller = createInMemoryController({ turnCountLimit: 3 });
+      await controller.record({ kind: "turn" });
+      await controller.record({ kind: "turn" });
+      await controller.record({ kind: "turn_refund", count: 1 });
+      expect(controller.reading("turn_count")?.current).toBe(1);
+
+      await controller.record({ kind: "turn_refund", count: 99 });
+      expect(controller.reading("turn_count")?.current).toBe(0);
+    });
   });
 
   describe("record(spawn) / record(spawn_release) — concurrent children semantics", () => {
@@ -375,12 +386,29 @@ describe("createInMemoryController", () => {
   });
 
   describe("record(forge)", () => {
-    test("forge_depth and forge_budget both increment per event (shared counter)", async () => {
+    test("forge_budget increments cumulatively; forge_depth tracks concurrent depth via pairing with forge_release", async () => {
       const controller = createInMemoryController({});
       await controller.record({ kind: "forge" });
       await controller.record({ kind: "forge", toolName: "build_tool" });
       expect(controller.reading("forge_depth")?.current).toBe(2);
       expect(controller.reading("forge_budget")?.current).toBe(2);
+
+      await controller.record({ kind: "forge_release" });
+      // depth drops; cumulative budget stays
+      expect(controller.reading("forge_depth")?.current).toBe(1);
+      expect(controller.reading("forge_budget")?.current).toBe(2);
+
+      await controller.record({ kind: "forge_release" });
+      expect(controller.reading("forge_depth")?.current).toBe(0);
+      expect(controller.reading("forge_budget")?.current).toBe(2);
+    });
+
+    test("forge_release clamps forge_depth to 0 (unpaired release is a no-op)", async () => {
+      const controller = createInMemoryController({});
+      await controller.record({ kind: "forge_release" });
+      await controller.record({ kind: "forge_release" });
+      expect(controller.reading("forge_depth")?.current).toBe(0);
+      expect(controller.reading("forge_budget")?.current).toBe(0);
     });
   });
 

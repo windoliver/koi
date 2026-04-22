@@ -16,15 +16,22 @@ import type { TokenBudget } from "./types.js";
 
 /**
  * Extract totalTokens from the last `done` event observed in an iteration.
- * Returns "unmetered" if no done event carried metrics.
+ * Returns "unmetered" if no done event carried metrics, or if the metrics
+ * were synthesized by the activity-timeout wrapper (#1638). Synthesized
+ * metrics zero the token counts so a timed-out iteration must NOT be
+ * classified as a free (zero-token) run — otherwise repeated timeouts
+ * would silently bypass `maxBudgetTokens` enforcement.
  */
 export function extractIterationTokens(events: readonly EngineEvent[]): TokenBudget {
   // Walk backwards — done is at the end when it exists.
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
     if (ev !== undefined && ev.kind === "done") {
-      const metrics: EngineOutput["metrics"] = ev.output.metrics;
-      return metrics.totalTokens;
+      const output: EngineOutput = ev.output;
+      if (output.metadata?.metricsSynthesized === true) {
+        return "unmetered";
+      }
+      return output.metrics.totalTokens;
     }
   }
   return "unmetered";

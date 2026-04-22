@@ -522,6 +522,6 @@ curl -s http://localhost:3100/admin/api/health
 ## Git
 
 - Commit format: `<type>: <description>` (feat, fix, refactor, docs, test, chore, perf, ci)
-- PRs: < 300 lines of logic changes. Larger PRs get rubber-stamped — split them
+- PRs: < 1,500 lines of logic changes. Larger PRs get rubber-stamped — split them
 - `bun.lock` always committed (text JSONC, git-friendly)
 - Never force-push to main

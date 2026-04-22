@@ -40,7 +40,25 @@ export interface WorkerBackend {
   readonly terminate: (id: WorkerId, reason: string) => Promise<Result<void, KoiError>>;
   readonly kill: (id: WorkerId) => Promise<Result<void, KoiError>>;
   readonly isAlive: (id: WorkerId) => Promise<boolean>;
-  readonly watch: (id: WorkerId) => AsyncIterable<WorkerEvent>;
+  /**
+   * Observe worker lifecycle events. Implementations MUST exit cleanly (return
+   * from the async iterator) when `signal` fires, releasing any resources the
+   * backend holds for this watch call. Callers (supervisor's watch IIFE) use
+   * this to cancel outstanding watches on `stop()`/`shutdown()` so backends
+   * that cannot guarantee terminal event emission (tmux, remote RPC, managed
+   * cluster) do not leak one iterator per abandoned worker.
+   *
+   * `signal` is optional to preserve back-compat with adapters that iterate
+   * `watch()` directly in tests; production callers SHOULD always pass one.
+   */
+  readonly watch: (id: WorkerId, signal?: AbortSignal) => AsyncIterable<WorkerEvent>;
+  /**
+   * True if this backend emits `WorkerEvent.heartbeat` when a worker signals
+   * liveness. When undefined/false, the supervisor rejects `backendHints.heartbeat`
+   * opt-in at `start()` time — opting in on a backend that can't emit heartbeats
+   * would cause every worker to trip the missed-deadline timeout and be torn down.
+   */
+  readonly supportsHeartbeat?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +87,20 @@ export interface WorkerHandle {
 // ---------------------------------------------------------------------------
 
 export type WorkerEvent =
-  | { readonly kind: "started"; readonly workerId: WorkerId; readonly at: number }
+  | {
+      readonly kind: "started";
+      readonly workerId: WorkerId;
+      readonly at: number;
+      /**
+       * OS process identity for backends that have one (subprocess, tmux).
+       * Omitted by backends that lack a PID (in-process, some remote).
+       * Registry bridges that care about PID-based kill MUST propagate
+       * this into the session record on every respawn — without it, a
+       * restarted worker's registry entry keeps the pre-restart PID and
+       * `bg kill` can signal a reused PID.
+       */
+      readonly pid?: number;
+    }
   | { readonly kind: "heartbeat"; readonly workerId: WorkerId; readonly at: number }
   | {
       readonly kind: "exited";
@@ -105,6 +136,12 @@ export interface SupervisorConfig {
    * backend can otherwise consume worker slots indefinitely).
    */
   readonly spawnTimeoutMs?: number | undefined;
+  /**
+   * Default heartbeat cadence/timeout applied to workers that opt into
+   * heartbeat monitoring via `WorkerSpawnRequest.backendHints.heartbeat = true`.
+   * Omitted → `DEFAULT_HEARTBEAT_CONFIG` is used.
+   */
+  readonly heartbeat?: HeartbeatConfig | undefined;
 }
 
 export interface WorkerRestartPolicy {
@@ -123,6 +160,73 @@ export const DEFAULT_WORKER_RESTART_POLICY: WorkerRestartPolicy = {
   backoffCeilingMs: 30_000,
 };
 
+// ---------------------------------------------------------------------------
+// Heartbeat / health
+// ---------------------------------------------------------------------------
+
+/**
+ * Worker heartbeat configuration. `intervalMs` is advisory cadence for the
+ * sender; the supervisor does not enforce it. `timeoutMs` is the deadline:
+ * if no heartbeat event arrives within this window, the supervisor declares
+ * the worker hung and tears it down.
+ */
+export interface HeartbeatConfig {
+  readonly intervalMs: number;
+  readonly timeoutMs: number;
+}
+
+export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
+  intervalMs: 5_000,
+  timeoutMs: 15_000,
+};
+
+export const SUPERVISOR_HEALTH_STATUS: {
+  readonly OK: "ok";
+  readonly DEGRADED: "degraded";
+  readonly UNHEALTHY: "unhealthy";
+} = {
+  OK: "ok",
+  DEGRADED: "degraded",
+  UNHEALTHY: "unhealthy",
+} as const satisfies Record<string, string>;
+export type SupervisorHealthStatus =
+  (typeof SUPERVISOR_HEALTH_STATUS)[keyof typeof SUPERVISOR_HEALTH_STATUS];
+
+/**
+ * Per-worker health snapshot. `lastHeartbeatAt` / `heartbeatDeadlineAt` are
+ * `undefined` for workers that did not opt into heartbeat monitoring via
+ * `WorkerSpawnRequest.backendHints.heartbeat = true`.
+ */
+export interface WorkerHealth {
+  readonly workerId: WorkerId;
+  readonly agentId: AgentId;
+  readonly state: "running" | "restarting" | "quarantined" | "stopping";
+  readonly lastHeartbeatAt: number | undefined;
+  readonly heartbeatDeadlineAt: number | undefined;
+}
+
+export interface SupervisorHealthMetrics {
+  readonly poolSize: number;
+  readonly maxWorkers: number;
+  readonly quarantinedCount: number;
+  readonly restartingCount: number;
+  readonly pendingSpawnCount: number;
+  readonly eventDropCount: number;
+  readonly shuttingDown: boolean;
+}
+
+/**
+ * Aggregate supervisor health: a three-state verdict + machine-readable
+ * reasons + raw counters + per-worker detail. Consumers (TUI, CLI, future
+ * HTTP wrapper) render whichever slice they need.
+ */
+export interface SupervisorHealth {
+  readonly status: SupervisorHealthStatus;
+  readonly reasons: readonly string[];
+  readonly metrics: SupervisorHealthMetrics;
+  readonly workers: readonly WorkerHealth[];
+}
+
 export interface Supervisor {
   readonly start: (
     request: WorkerSpawnRequest,
@@ -135,6 +239,250 @@ export interface Supervisor {
   readonly shutdown: (reason: string) => Promise<Result<void, KoiError>>;
   readonly list: () => readonly ProcessDescriptor[];
   readonly watchAll: () => AsyncIterable<WorkerEvent>;
+  /** In-memory health snapshot — pure read, no mutation, no `await`. */
+  readonly health: () => SupervisorHealth;
+}
+
+// ---------------------------------------------------------------------------
+// Session registry — cross-process session metadata
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle status of a background session. The registry is the single
+ * cross-process source of truth for these states; consumers (CLI `ps`,
+ * observability dashboards, external orchestrators) read registry entries
+ * rather than querying a live supervisor.
+ *
+ * - `starting`: `register()` has been called but no `started` event has been
+ *   observed yet. Transient — visible only in race windows.
+ * - `running`: `started` event observed; worker is live.
+ * - `exited`: `exited` event observed (code=0 OR intentional termination).
+ * - `crashed`: `crashed` event observed (code≠0 unsolicited, or backend fault).
+ * - `detached`: operator-initiated detach; worker remains live but registry
+ *   entry is retained for later `koi bg attach` reconnection. Used by tmux
+ *   backend (3b-6); subprocess backend never emits this state.
+ * - `terminating`: transient claim written by off-path killers (`koi bg
+ *   kill`) BEFORE they signal the PID. Serves as a compare-and-swap
+ *   receipt: if the claim update fails, the caller knows identity
+ *   drifted since their last read and MUST NOT send a signal. A healthy
+ *   kill transitions the record through `terminating → exited`. An
+ *   orphaned `terminating` means the killer crashed between claim and
+ *   signal — operators can resume by re-running `bg kill`.
+ */
+export type BackgroundSessionStatus =
+  | "starting"
+  | "running"
+  | "exited"
+  | "crashed"
+  | "detached"
+  | "terminating";
+
+/**
+ * Persisted per-session record. The registry stores one of these per worker.
+ * Nullable lifecycle fields (`endedAt`, `exitCode`) are populated when the
+ * worker terminates. All fields are serializable so the record round-trips
+ * through JSON persistence unchanged.
+ *
+ * Named `BackgroundSession*` (not `Session*`) to disambiguate from
+ * `@koi/core/session` — that module models chat sessions for crash recovery;
+ * this module models OS-process lifecycle for the daemon.
+ */
+export interface BackgroundSessionRecord {
+  readonly workerId: WorkerId;
+  readonly agentId: AgentId;
+  /** Optional logical session id (chat-session, job-id, etc.). */
+  readonly sessionId?: string | undefined;
+  /** OS process id. 0 for backends that lack a PID (in-process, some remote). */
+  readonly pid: number;
+  readonly status: BackgroundSessionStatus;
+  readonly startedAt: number;
+  readonly endedAt?: number | undefined;
+  readonly exitCode?: number | undefined;
+  /** Absolute path to the log file. Empty string if no log capture. */
+  readonly logPath: string;
+  readonly command: readonly string[];
+  readonly backendKind: WorkerBackendKind;
+  /**
+   * Monotonic version bumped on every successful write. Enables optimistic
+   * concurrency control: `update()` reads the record, applies the patch
+   * against that specific version, and retries if a concurrent writer
+   * advanced the version between read and rename. Treated as 0 when
+   * absent (pre-CAS records or fresh registrations).
+   */
+  readonly version?: number | undefined;
+  /**
+   * Epoch-ms timestamp recorded when an off-path killer (`koi bg kill`)
+   * CAS-writes `status: "terminating"`. Used by `attachRegistry` to
+   * time-bound the `crashed → exited` downgrade: a bridge that sees a
+   * worker die shortly after this timestamp trusts the operator intent
+   * and writes `exited`; a `crashed` event arriving long after (because
+   * a prior kill stranded the record in `terminating`) is treated as a
+   * genuine crash so the fault classification survives.
+   */
+  readonly signaledAt?: number | undefined;
+}
+
+/**
+ * Partial update applied via `update(id, patch)`. `workerId`, `agentId`,
+ * `command`, and `backendKind` are immutable post-register. `pid` and
+ * `startedAt` MAY be updated — on worker restart the supervisor spawns a
+ * fresh OS process under the same `workerId`, and the registry entry must
+ * reflect the new process identity or `bg kill` will signal a dead/reused
+ * PID. Callers that wire `attachRegistry` to a restartable supervisor are
+ * responsible for patching `pid` + `startedAt` on every respawn (the
+ * bridge only observes lifecycle events, not the spawn path, and so
+ * cannot learn the new PID on its own).
+ */
+export interface BackgroundSessionUpdate {
+  readonly status?: BackgroundSessionStatus;
+  readonly endedAt?: number;
+  readonly exitCode?: number;
+  readonly sessionId?: string;
+  readonly logPath?: string;
+  readonly pid?: number;
+  readonly startedAt?: number;
+  /**
+   * Optional compare-and-swap guard. When set, the registry rejects the
+   * update with `CONFLICT` if the persisted record's `version` differs,
+   * which protects callers that captured a specific record identity
+   * (e.g. `bg kill` holding onto a pre-signal PID) from clobbering a
+   * fresh session that the supervisor respawned under the same
+   * `workerId` between the caller's read and its final write.
+   *
+   * Absent means "last-writer-wins" — the registry just bumps the
+   * version to `(current ?? 0) + 1` as usual. Integrators wiring
+   * `attachRegistry` do NOT need to set this; it's an escape hatch for
+   * off-path writers.
+   */
+  readonly expectedVersion?: number;
+  /**
+   * Optional second CAS predicate: reject with `CONFLICT` if the
+   * persisted `pid` differs. Paired with `expectedVersion` to defend
+   * against the niche case where a restart happens to land on the same
+   * version number (e.g. a crash-during-update left the version stuck).
+   */
+  readonly expectedPid?: number;
+  /**
+   * When true, the merge drops any previously-stored `endedAt` and
+   * `exitCode` from the record. Required for correct `started`-event
+   * handling: a transient/permanent restart produces a fresh `running`
+   * status, and the prior exit's terminal metadata would otherwise
+   * linger and mislead observers (e.g. showing `status=running` with
+   * a stale `exitCode=137`).
+   */
+  readonly clearTerminal?: boolean;
+  /**
+   * Epoch-ms timestamp of operator kill intent. Off-path killers (`koi
+   * bg kill`) set this alongside `status: "terminating"` so a later
+   * `crashed` event arriving within the freshness window is downgraded
+   * to `exited` (operator-initiated), while a `crashed` arriving long
+   * after a stranded `terminating` claim is treated as a genuine crash.
+   */
+  readonly signaledAt?: number;
+  /**
+   * When true, drops any previously-stored `signaledAt` from the record
+   * during merge. Symmetric to `clearTerminal` for the intent marker:
+   * required when claiming a fresh `terminating` status (so a stale
+   * stamp from a prior kill attempt cannot keep the freshness window
+   * open under ESRCH / fail-closed paths that skip stamping) and on
+   * start/restart transitions (any prior kill intent is obsoleted by
+   * a fresh process).
+   */
+  readonly clearSignaledAt?: boolean;
+}
+
+/**
+ * Discriminated union of registry change events. Emitted by `watch()`.
+ * Consumers use these to react to session lifecycle without polling.
+ */
+export type BackgroundSessionEvent =
+  | { readonly kind: "registered"; readonly record: BackgroundSessionRecord }
+  | { readonly kind: "updated"; readonly record: BackgroundSessionRecord }
+  | { readonly kind: "unregistered"; readonly workerId: WorkerId };
+
+/**
+ * Cross-process background-session registry. Backing store is
+ * implementation-defined (file-backed JSON, SQLite, remote KV, etc.);
+ * consumers should treat all operations as possibly-async and always `await`.
+ *
+ * Single-writer: multiple registry instances on the same backing directory
+ * produce undefined behavior. Integrations should share one registry
+ * instance per process.
+ */
+export interface BackgroundSessionRegistry {
+  readonly register: (record: BackgroundSessionRecord) => Promise<Result<void, KoiError>>;
+  readonly update: (
+    id: WorkerId,
+    patch: BackgroundSessionUpdate,
+  ) => Promise<Result<BackgroundSessionRecord, KoiError>>;
+  readonly unregister: (id: WorkerId) => Promise<Result<void, KoiError>>;
+  readonly get: (id: WorkerId) => Promise<BackgroundSessionRecord | undefined>;
+  readonly list: () => Promise<readonly BackgroundSessionRecord[]>;
+  readonly watch: () => AsyncIterable<BackgroundSessionEvent>;
+}
+
+/**
+ * Pure validator: checks that a candidate `BackgroundSessionRecord` is
+ * well-formed. Used by registry implementations to reject malformed writes
+ * early.
+ *
+ * Side-effect-free data validation, permitted in L0 per the architecture-doc
+ * exceptions for pure helpers that operate only on L0 types.
+ */
+export function validateBackgroundSessionRecord(
+  record: BackgroundSessionRecord,
+): Result<BackgroundSessionRecord, KoiError> {
+  if (record.workerId.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.workerId must be non-empty",
+        retryable: false,
+      },
+    };
+  }
+  if (record.agentId.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.agentId must be non-empty",
+        retryable: false,
+      },
+    };
+  }
+  if (!Number.isFinite(record.startedAt) || record.startedAt < 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.startedAt must be a non-negative finite number",
+        retryable: false,
+      },
+    };
+  }
+  if (record.command.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.command must be non-empty",
+        retryable: false,
+      },
+    };
+  }
+  if (!Number.isFinite(record.pid)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.pid must be a finite number",
+        retryable: false,
+      },
+    };
+  }
+  return { ok: true, value: record };
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +523,57 @@ export function validateSupervisorConfig(
         retryable: false,
       },
     };
+  }
+  if (config.heartbeat !== undefined) {
+    const h = config.heartbeat;
+    // 32-bit signed int max. setTimeout delays above this value silently
+    // fall back to 1ms in Node/Bun, causing immediate deadline fires — a
+    // common footgun when a config is in seconds or a user miscalculates.
+    const MAX_TIMER_MS = 2_147_483_647;
+    if (
+      !Number.isFinite(h.intervalMs) ||
+      !Number.isInteger(h.intervalMs) ||
+      h.intervalMs <= 0 ||
+      h.intervalMs > MAX_TIMER_MS
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "SupervisorConfig.heartbeat.intervalMs must be a positive integer <= 2^31-1 (setTimeout bound)",
+          retryable: false,
+        },
+      };
+    }
+    if (
+      !Number.isFinite(h.timeoutMs) ||
+      !Number.isInteger(h.timeoutMs) ||
+      h.timeoutMs <= 0 ||
+      h.timeoutMs > MAX_TIMER_MS
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "SupervisorConfig.heartbeat.timeoutMs must be a positive integer <= 2^31-1 (setTimeout bound)",
+          retryable: false,
+        },
+      };
+    }
+    if (h.timeoutMs <= h.intervalMs) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "SupervisorConfig.heartbeat.timeoutMs must be greater than intervalMs " +
+            "(otherwise every healthy worker times out before its next heartbeat lands)",
+          retryable: false,
+        },
+      };
+    }
   }
   return { ok: true, value: config };
 }

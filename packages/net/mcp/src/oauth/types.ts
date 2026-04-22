@@ -15,6 +15,14 @@ export interface McpOAuthConfig {
   readonly clientId?: string | undefined;
   readonly callbackPort?: number | undefined;
   readonly authServerMetadataUrl?: string | undefined;
+  /**
+   * RFC 8707 `resource` parameter. Defaults to `true` (spec-compliant MCP
+   * 2025-03-26). Set `false` for legacy authorization servers that reject
+   * the `resource` parameter with `invalid_target`/`invalid_request` —
+   * operators can then opt out on a per-server basis rather than hitting
+   * an unrecoverable auth failure.
+   */
+  readonly includeResourceParameter?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +59,38 @@ export interface OAuthRuntime {
    * The host decides how to present this (TUI prompt, CLI message, etc.).
    */
   readonly onReauthNeeded: (serverName: string) => Promise<void>;
+
+  /**
+   * Optional structured-failure observer. Fires when the provider takes a
+   * fail-closed branch — discovery failure, DCR rejection (insecure
+   * endpoint, confidential client, narrowed redirect_uris, missing
+   * registration_endpoint), or token-exchange failure. Lets hosts surface
+   * actionable diagnostics instead of a generic "auth failed" message.
+   * Implementations MUST NOT throw — failures here cannot affect the
+   * underlying auth flow.
+   */
+  readonly onAuthFailure?: ((reason: OAuthFailureReason) => void) | undefined;
 }
+
+/** Discriminated failure reasons for `OAuthRuntime.onAuthFailure`. */
+export type OAuthFailureReason =
+  | { readonly kind: "discovery_failed"; readonly serverName: string }
+  | { readonly kind: "dcr_unavailable"; readonly serverName: string }
+  | { readonly kind: "dcr_failed"; readonly serverName: string; readonly detail: string }
+  | {
+      readonly kind: "exchange_failed";
+      readonly serverName: string;
+      readonly invalidClient: boolean;
+    }
+  | { readonly kind: "state_mismatch"; readonly serverName: string }
+  /**
+   * runtime.authorize() rejected — local browser/callback failure
+   * (browser launch error, callback listener bind, callback timeout,
+   * user-cancelled). Distinct from `discovery_failed` so hosts can
+   * route remediation to local runtime (retry, instructions to open
+   * the URL manually) instead of incorrectly blaming the AS.
+   */
+  | { readonly kind: "authorize_failed"; readonly serverName: string; readonly detail: string };
 
 // ---------------------------------------------------------------------------
 // Token types
@@ -73,4 +112,40 @@ export interface AuthServerMetadata {
   readonly tokenEndpoint: string;
   readonly registrationEndpoint?: string | undefined;
   readonly codeChallengeMethodsSupported?: readonly string[] | undefined;
+}
+
+/**
+ * Persisted OAuth client info — produced by configured `clientId` or by
+ * Dynamic Client Registration (RFC 7591). Stored separately from tokens
+ * so `koi mcp logout` does not force re-registration.
+ *
+ * Registered records carry the `issuer` and `registrationEndpoint` they
+ * were created under so a later change to discovery (different auth
+ * server) invalidates the cached client instead of silently using a
+ * client id against the wrong issuer.
+ */
+export interface OAuthClientInfo {
+  readonly clientId: string;
+  /** Epoch ms when the client was persisted. 0 for configured static clients. */
+  readonly registeredAt: number;
+  /**
+   * Opaque per-registration generation id (random UUID for DCR
+   * registrations; empty string for configured static clients).
+   * Used as the CAS discriminator on invalidation: `clientId` alone
+   * is unsafe when an AS deterministically reissues the same id, and
+   * `registeredAt` (Date.now()) is not strictly unique under fast
+   * retries — two registrations can land in the same millisecond.
+   * A UUID has effectively-zero collision probability.
+   *
+   * Optional for backward compatibility with records persisted before
+   * this field existed: legacy records without a generation are
+   * NEVER eligible for CAS-delete (the invalidator skips the delete
+   * when expectedClient.generation is undefined / current.generation
+   * is undefined). Operators must clear such records manually.
+   */
+  readonly generation?: string | undefined;
+  /** Issuer the client was registered with (DCR only). Absent for configured static clients. */
+  readonly issuer?: string | undefined;
+  /** Registration endpoint used (DCR only). Absent for configured static clients. */
+  readonly registrationEndpoint?: string | undefined;
 }

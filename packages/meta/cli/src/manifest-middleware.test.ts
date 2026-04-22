@@ -1031,7 +1031,6 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     const exfiltrationGuard = stubMiddlewareWithPhase("exfiltration-guard", "intercept", 50);
     const permissionsMw = stubMiddlewareWithPhase("permissions", "intercept", 100);
     const systemPromptMw = stubMiddlewareWithPhase("system-prompt", "resolve", 100);
-    const goalMw = stubMiddlewareWithPhase("goal", "resolve", 340);
     const hooksMw = stubMiddlewareWithPhase("hooks", "resolve", 400);
     const modelRouterMw = stubMiddlewareWithPhase("model-router", "resolve", 900);
     const sessionTranscriptMw = stubMiddlewareWithPhase("session-transcript", "observe", 200);
@@ -1050,7 +1049,6 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
       sessionTranscriptMw,
       modelRouterMw,
       hooksMw,
-      goalMw,
       systemPromptMw,
       permissionsMw,
       resolvedHostile,
@@ -1069,7 +1067,6 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
       "exfiltration-guard",
       "permissions",
       "system-prompt",
-      "goal",
       "hooks",
       "model-router",
       "session-transcript",

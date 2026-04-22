@@ -6,8 +6,8 @@ import { COMMAND_DEFINITIONS, filterCommands } from "./command-definitions.js";
 // ---------------------------------------------------------------------------
 
 describe("COMMAND_DEFINITIONS", () => {
-  test("has exactly 22 commands", () => {
-    expect(COMMAND_DEFINITIONS).toHaveLength(22);
+  test("has exactly 26 commands", () => {
+    expect(COMMAND_DEFINITIONS).toHaveLength(26);
   });
 
   test("all command ids are unique", () => {
@@ -96,5 +96,23 @@ describe("filterCommands", () => {
     const copy = [...COMMAND_DEFINITIONS];
     filterCommands(COMMAND_DEFINITIONS, 0);
     expect(COMMAND_DEFINITIONS).toEqual(copy);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gov-9 command registration
+// ---------------------------------------------------------------------------
+
+describe("gov-9 command registration", () => {
+  test("nav:governance is registered with navigation category", () => {
+    const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "nav:governance");
+    expect(cmd).toBeDefined();
+    expect(cmd?.category).toBe("navigation");
+  });
+
+  test("system:governance-reset is registered with system category", () => {
+    const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "system:governance-reset");
+    expect(cmd).toBeDefined();
+    expect(cmd?.category).toBe("system");
   });
 });

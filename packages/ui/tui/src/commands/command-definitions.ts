@@ -75,6 +75,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "View loaded plugins and discovery errors",
     category: "navigation",
   },
+  {
+    id: "nav:governance",
+    label: "Governance",
+    description: "View sensor readings, alerts, rules, and middleware capabilities",
+    category: "navigation",
+  },
 
   // ---- Agent ----
   {
@@ -104,6 +110,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "Roll back the previous turn (file edits + conversation)",
     category: "agent",
     destructive: true,
+  },
+  {
+    id: "agent:summarize",
+    label: "Summarize",
+    description: "Summarize the current session (goal, status, actions, outcomes)",
+    category: "agent",
   },
 
   // ---- Session ----
@@ -159,6 +171,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     category: "system",
   },
   {
+    id: "system:model-switch",
+    label: "Switch model",
+    description: "Pick a model to use for the rest of this session",
+    category: "system",
+  },
+  {
     id: "system:cost",
     label: "Cost",
     description: "Show token usage and cost for this process",
@@ -182,6 +200,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     label: "MCP Servers",
     description: "View MCP server connections and authentication status",
     category: "navigation",
+  },
+  {
+    id: "system:governance-reset",
+    label: "Governance reset",
+    description: "Clear per-session alert dedup so re-crossings re-fire",
+    category: "system",
   },
   {
     id: "system:quit",

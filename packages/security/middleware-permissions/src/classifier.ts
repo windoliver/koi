@@ -132,7 +132,12 @@ export function createPatternPermissionBackend(config: PatternBackendConfig): Pe
   const askPatterns = expandGroups(config.rules.ask, groups);
   const allowPatterns = expandGroups(config.rules.allow, groups);
 
-  return {
+  const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
+    // Signals to the middleware that this backend's deny decisions
+    // carry the IS_DEFAULT_DENY symbol on fall-through denies.
+    // Used to opt this backend into dual-key bash enrichment without
+    // impacting custom backends that don't carry the marker.
+    supportsDefaultDenyMarker: true,
     check(query) {
       const toolId = query.resource;
 
@@ -162,6 +167,7 @@ export function createPatternPermissionBackend(config: PatternBackendConfig): Pe
       return { effect: "allow" };
     },
   };
+  return backend;
 }
 
 // ---------------------------------------------------------------------------

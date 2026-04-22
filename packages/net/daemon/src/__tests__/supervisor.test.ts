@@ -1386,6 +1386,22 @@ describe("supervisor correctness hardening", () => {
     liveWorkers.clear();
   });
 
+  it("supervisor internal agentId propagation (prereq for health())", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 2,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    expect(supervisor.ok).toBe(true);
+    if (!supervisor.ok) return;
+    const started = await supervisor.value.start(makeRequest("agentid-1"));
+    expect(started.ok).toBe(true);
+    const list = supervisor.value.list();
+    expect(list.some((d) => d.agentId === agentId("agent-agentid-1"))).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
   it("shutdown() fails closed when a quarantined worker cannot be torn down", async () => {
     // If a watch fault leaves a ghost that refuses to die, shutdown must
     // report failure instead of returning ok while the process runs on.
@@ -1585,5 +1601,995 @@ describe("supervisor correctness hardening", () => {
     // Shutdown must still work after the churn storm.
     const sd = await supervisorResult.value.shutdown("test");
     expect(sd.ok).toBe(true);
+  });
+});
+
+describe("supervisor.health()", () => {
+  it("returns status:ok and empty workers on a fresh supervisor", () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const h = supervisor.value.health();
+    expect(h.status).toBe("ok");
+    expect(h.reasons).toEqual([]);
+    expect(h.workers).toEqual([]);
+    expect(h.metrics.poolSize).toBe(0);
+    expect(h.metrics.maxWorkers).toBe(4);
+    expect(h.metrics.shuttingDown).toBe(false);
+  });
+
+  it("returns status:degraded with reason 'at_capacity' when pool is full", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 1,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("cap-1"));
+    const h = supervisor.value.health();
+    expect(h.status).toBe("degraded");
+    expect(h.reasons).toContain("at_capacity");
+    await supervisor.value.shutdown("test");
+  });
+
+  it("returns status:unhealthy with reason 'shutting_down' during shutdown", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("sd-1"));
+    const shutdownPromise = supervisor.value.shutdown("test");
+    // Pull health mid-shutdown — shuttingDown flag is set synchronously.
+    const h = supervisor.value.health();
+    expect(h.status).toBe("unhealthy");
+    expect(h.reasons).toEqual(["shutting_down"]);
+    await shutdownPromise;
+  });
+
+  it("includes non-heartbeat-opted workers with lastHeartbeatAt undefined", async () => {
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("no-hb"));
+    const h = supervisor.value.health();
+    const w = h.workers.find((x) => x.workerId === workerId("no-hb"));
+    expect(w).toBeDefined();
+    expect(w?.lastHeartbeatAt).toBeUndefined();
+    expect(w?.heartbeatDeadlineAt).toBeUndefined();
+    expect(w?.agentId).toBe(agentId("agent-no-hb"));
+    await supervisor.value.shutdown("test");
+  });
+
+  it("rejects heartbeat opt-in at start() when backend.supportsHeartbeat is falsy", async () => {
+    // Fake backend defaults to supportsHeartbeat=undefined → supervisor must
+    // reject the opt-in with a VALIDATION error rather than silently enabling
+    // tracking (which would trip every worker's deadline).
+    const { backend } = createFakeBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("no-cap-1"),
+      agentId: agentId("agent-no-cap"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("supportsHeartbeat");
+    }
+    await supervisor.value.shutdown("test");
+  });
+
+  it("mixed-backend registry: heartbeat opt-in skips higher-preference backend that lacks heartbeat", async () => {
+    // Regression proof: the higher-preference "subprocess" slot holds a
+    // backend that does NOT support heartbeat; the lower-preference
+    // "in-process" slot holds one that DOES. Old logic (no capability
+    // filter) picked subprocess by preference, then rejected opt-in via
+    // the capability gate — call would fail with VALIDATION. Fixed logic
+    // skips the unsupported candidate during selection and picks the
+    // heartbeat-capable in-process backend, so start() succeeds.
+    //
+    // We assert via the supervisor's behavior: start() succeeds and the
+    // live-worker count lands on the heartbeat-capable backend. If the
+    // filter were broken, either start() would fail or liveWorkerCount
+    // would end up on the wrong backend.
+    const noHb = createFakeBackend({ kind: "subprocess" }); // preferred but no-heartbeat
+    const hbCapable = createFakeBackend({ kind: "in-process", supportsHeartbeat: true });
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: {
+        subprocess: noHb.backend,
+        "in-process": hbCapable.backend,
+      },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("mixed-1"),
+      agentId: agentId("agent-mixed-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(true);
+    // Filter routed us to the capable backend, not the preferred-but-incapable one.
+    expect(hbCapable.liveWorkerCount()).toBeGreaterThan(0);
+    expect(noHb.liveWorkerCount()).toBe(0);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("mixed-backend registry: reports unavailable when all heartbeat-capable backends fail isAvailable probes", async () => {
+    // A heartbeat-capable backend is registered but transiently
+    // unavailable. We want a UNAVAILABLE (retryable) error rather than
+    // a VALIDATION (static misconfig) error — operators need distinct
+    // remediation paths for "backend is down" vs "backend is missing".
+    const hbButDown: ReturnType<typeof createFakeBackend> = createFakeBackend({
+      kind: "subprocess",
+      supportsHeartbeat: true,
+    });
+    // Monkey-patch isAvailable to return false so probe fails.
+    // biome-ignore lint/suspicious/noExplicitAny: test-only mutation of the fake backend probe.
+    (hbButDown.backend as any).isAvailable = (): boolean => false;
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { subprocess: hbButDown.backend },
+    });
+    if (!supervisor.ok) return;
+    const result = await supervisor.value.start({
+      workerId: workerId("mixed-down-1"),
+      agentId: agentId("agent-mixed-down-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+      expect(result.error.retryable).toBe(true);
+    }
+    await supervisor.value.shutdown("test");
+  });
+
+  it("heartbeat-opt-in worker: lastHeartbeatAt advances on each observed heartbeat", async () => {
+    const { backend, heartbeat } = createFakeBackend({ supportsHeartbeat: true });
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      heartbeat: { intervalMs: 50, timeoutMs: 200 },
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start({
+      workerId: workerId("hb-1"),
+      agentId: agentId("agent-hb-1"),
+      command: ["echo", "hb"],
+      backendHints: { heartbeat: true },
+    });
+    // Give the supervisor's watch IIFE a microtask to attach to the backend.
+    await new Promise((r) => setTimeout(r, 10));
+    heartbeat(workerId("hb-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const first = supervisor.value.health().workers.find((w) => w.workerId === workerId("hb-1"));
+    const firstTs = first?.lastHeartbeatAt;
+    expect(typeof firstTs).toBe("number");
+    await new Promise((r) => setTimeout(r, 20));
+    heartbeat(workerId("hb-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const second = supervisor.value.health().workers.find((w) => w.workerId === workerId("hb-1"));
+    expect(second?.lastHeartbeatAt).toBeGreaterThan(firstTs ?? 0);
+    await supervisor.value.shutdown("test");
+  });
+});
+
+describe("supervisor watch AbortSignal plumbing", () => {
+  // Future backends (tmux, remote RPC, managed cluster) may not guarantee
+  // terminal event emission on shutdown. A backend that stalls or drops its
+  // watch stream without emitting `exited`/`crashed` would leave the
+  // supervisor's watch IIFE dangling for the supervisor's lifetime. The
+  // contract requires the supervisor to pass a per-worker AbortSignal into
+  // `backend.watch(id, signal)` and abort it on stop()/shutdown() so
+  // backends can release watch-stream resources and the IIFE exits cleanly.
+
+  /**
+   * Backend whose watch generator NEVER emits a terminal event on
+   * terminate/kill. It only exits via the supervisor's AbortSignal. Used to
+   * prove the supervisor no longer depends on the backend emitting terminal
+   * events to drain its watch IIFE.
+   */
+  const makeStallingBackend = (): {
+    readonly backend: WorkerBackend;
+    readonly watchAborts: () => number;
+  } => {
+    let abortCount = 0;
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "stalling",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async (id) => {
+        // Flip alive so teardownWorker's isAlive poll can resolve — but
+        // deliberately emit NO terminal event on the watch stream.
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      kill: async (id) => {
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        const s = live.get(id);
+        if (s === undefined) return;
+        // Yield a synthetic "started" event so the IIFE's for-await has at
+        // least one iteration to enter, then wait indefinitely on the abort
+        // signal — no terminal event is ever emitted.
+        yield { kind: "started", workerId: id, at: Date.now() };
+        if (signal === undefined) {
+          // No signal plumbed — contract violated. Fail the test by leaking.
+          await new Promise<void>(() => {});
+          return;
+        }
+        if (signal.aborted) {
+          abortCount++;
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        abortCount++;
+      },
+    };
+    return { backend, watchAborts: () => abortCount };
+  };
+
+  it("backend.watch receives an AbortSignal parameter from the supervisor", async () => {
+    // Proof that the L0 contract change is wired: the supervisor passes a
+    // non-undefined signal into backend.watch on spawn.
+    let receivedSignal: AbortSignal | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "signal-capture",
+      isAvailable: () => true,
+      spawn: async (req) => ({
+        ok: true,
+        value: {
+          workerId: req.workerId,
+          agentId: req.agentId,
+          backendKind: "in-process",
+          startedAt: Date.now(),
+          signal: new AbortController().signal,
+        },
+      }),
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async () => false,
+      watch: async function* (id, signal) {
+        receivedSignal = signal;
+        yield { kind: "exited", workerId: id, at: Date.now(), code: 0, state: "terminated" };
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("sig-1"));
+    // Let the microtask-scheduled watch IIFE attach.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(receivedSignal).toBeInstanceOf(AbortSignal);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("stop() aborts the watch signal even when the backend never emits a terminal event", async () => {
+    const { backend, watchAborts } = makeStallingBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("stall-stop"));
+    // Let the IIFE attach to the backend's watch.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(0);
+    const stopped = await supervisor.value.stop(workerId("stall-stop"), "test");
+    expect(stopped.ok).toBe(true);
+    // Let the aborted iterator settle.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(1);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("shutdown() aborts every pool worker's watch signal", async () => {
+    const { backend, watchAborts } = makeStallingBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("stall-sd-1"));
+    await supervisor.value.start(makeRequest("stall-sd-2"));
+    await supervisor.value.start(makeRequest("stall-sd-3"));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(0);
+    const result = await supervisor.value.shutdown("test");
+    expect(result.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(watchAborts()).toBe(3);
+    // Pool must be empty — no IIFE leaks post-shutdown.
+    expect(supervisor.value.list().length).toBe(0);
+  });
+
+  it("stop() teardown failure quarantines the entry and preserves activeIds reservation", async () => {
+    // When terminate + kill both exhaust their deadlines, the OS process
+    // may still be alive. The supervisor must NOT release activeIds — a
+    // duplicate start() with the same workerId could otherwise race a
+    // still-live worker. Instead, quarantine the entry so stop()/shutdown()
+    // can retry teardown, and a duplicate start() rejects with CONFLICT.
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "unkillable",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill silently "succeed" but the worker stays alive —
+      // simulates a wedged backend whose signals never take effect.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        if (signal === undefined) {
+          await new Promise<void>(() => {});
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("unkillable-1"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    const stopped = await supervisor.value.stop(workerId("unkillable-1"), "test");
+    // teardownWorker fails (kill deadline expires while isAlive stays true).
+    expect(stopped.ok).toBe(false);
+    if (!stopped.ok) expect(stopped.error.code).toBe("INTERNAL");
+
+    // Duplicate start() MUST reject — activeIds reservation preserved via
+    // quarantine, even though abort triggered the IIFE's tidy-cleanup.
+    await new Promise((r) => setTimeout(r, 10));
+    const duplicate = await supervisor.value.start(makeRequest("unkillable-1"));
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.error.code).toBe("CONFLICT");
+
+    // Flip the worker dead and retry stop — quarantine path should clear.
+    const state = live.get(workerId("unkillable-1"));
+    if (state !== undefined) state.alive = false;
+    const retry = await supervisor.value.stop(workerId("unkillable-1"), "retry");
+    expect(retry.ok).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("quarantines (preserves activeIds) when watch closes early while worker still alive", async () => {
+    // Regression guard: a backend whose watch stream drops without emitting
+    // a terminal event (RPC disconnect, stream fault mid-stop) must NOT let
+    // the supervisor report the worker dead. The IIFE's tidy-cleanup
+    // confirms via isAlive before resolving exitedPromise; if the process
+    // is still alive, the entry is quarantined so activeIds stays reserved.
+    const live = new Map<string, { alive: boolean }>();
+    let closeWatch: (() => void) | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "drops-watch",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill silently succeed but process stays alive.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        // Park until the test explicitly closes the stream — simulating an
+        // RPC disconnect. No terminal event emitted, no abort honored.
+        await new Promise<void>((resolve) => {
+          closeWatch = resolve;
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("watch-drop-1"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Kick off stop() — it will race teardownWorker's poll against the
+    // (never-resolving) exitedPromise. Simultaneously, drop the watch
+    // stream so tidy-cleanup fires with the worker still alive.
+    const stopPromise = supervisor.value.stop(workerId("watch-drop-1"), "test");
+    await new Promise((r) => setTimeout(r, 5));
+    if (closeWatch !== undefined) closeWatch();
+    const stopped = await stopPromise;
+    // teardownWorker times out on deadline because isAlive keeps returning true.
+    expect(stopped.ok).toBe(false);
+
+    // Duplicate start must reject — activeIds preserved via quarantine.
+    const dup = await supervisor.value.start(makeRequest("watch-drop-1"));
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
+
+    // Flip worker dead and retry stop — quarantine path should now succeed.
+    const state = live.get(workerId("watch-drop-1"));
+    if (state !== undefined) state.alive = false;
+    const retry = await supervisor.value.stop(workerId("watch-drop-1"), "retry");
+    expect(retry.ok).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("pool-path stop() success clears a stale quarantine from a prior failed stop", async () => {
+    // Regression guard: if a prior stop() failed and inserted a quarantine
+    // record, a subsequent stop() that takes the pool path (because the
+    // IIFE tidy-cleanup hasn't run yet) and succeeds must clear the stale
+    // quarantine. Otherwise tidy-cleanup later sees quarantined.has(id) and
+    // skips activeIds.delete — the id stays reserved forever, future
+    // start() calls reject with permanent CONFLICT.
+    const live = new Map<string, { alive: boolean }>();
+    let killShouldFail = true;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "partial-recovery",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async (id) => {
+        if (killShouldFail) return { ok: true, value: undefined };
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      kill: async (id) => {
+        if (killShouldFail) return { ok: true, value: undefined };
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        if (signal === undefined) {
+          await new Promise<void>(() => {});
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("stale-q-1"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // First stop fails → quarantine set, activeIds preserved.
+    const firstStop = await supervisor.value.stop(workerId("stale-q-1"), "first");
+    expect(firstStop.ok).toBe(false);
+
+    // Let the IIFE's tidy-cleanup run so pool entry is drained before retry.
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Recover the backend so the next stop succeeds via quarantine path.
+    killShouldFail = false;
+    const retry = await supervisor.value.stop(workerId("stale-q-1"), "retry");
+    expect(retry.ok).toBe(true);
+
+    // Give any lingering IIFE tidy-cleanup a microtask to run.
+    await new Promise((r) => setTimeout(r, 20));
+
+    // activeIds must be released — fresh start() with same id should work.
+    const fresh = await supervisor.value.start(makeRequest("stale-q-1"));
+    expect(fresh.ok).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("heartbeat-timeout with failed teardown preserves activeIds via quarantine", async () => {
+    // Regression guard for the watch-fault branch (current === undefined):
+    // when heartbeat-timeout fires and stop()'s teardown fails, the entry
+    // is removed from the pool but stays quarantined. Any subsequent fault
+    // path — including the catch branch that sees current === undefined —
+    // must NOT release activeIds while the quarantine owns the id, or a
+    // fresh start() could race a still-live worker into a duplicate spawn.
+    const live = new Map<string, { alive: boolean }>();
+    let throwWatch: ((err: Error) => void) | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "unkillable-hb",
+      isAvailable: () => true,
+      supportsHeartbeat: true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill silently succeed but worker stays alive —
+      // teardownWorker exhausts both deadlines and returns INTERNAL.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        // Park on both abort and an external throw-handle so the test can
+        // force the catch branch to run after the heartbeat-timeout tear
+        // down has already dropped the pool entry.
+        await new Promise<void>((resolve, reject) => {
+          throwWatch = (err): void => reject(err);
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 30,
+      heartbeat: { intervalMs: 20, timeoutMs: 50 },
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    const started = await supervisor.value.start({
+      workerId: workerId("hb-unkillable-1"),
+      agentId: agentId("agent-hb-unkillable-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(started.ok).toBe(true);
+
+    // Wait past heartbeat deadline + teardown deadlines so the monitor
+    // has fired, stop() has observed teardown failure, and the pool entry
+    // has been removed but quarantine remains.
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Force the watch generator to throw AFTER the pool entry is gone —
+    // this drives the catch branch's `current === undefined` path.
+    if (throwWatch !== undefined) throwWatch(new Error("synthetic watch fault"));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // activeIds must still be reserved via quarantine.
+    const duplicate = await supervisor.value.start({
+      workerId: workerId("hb-unkillable-1"),
+      agentId: agentId("agent-hb-unkillable-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(duplicate.ok).toBe(false);
+    if (!duplicate.ok) expect(duplicate.error.code).toBe("CONFLICT");
+
+    // Let the worker die, then retry stop via the quarantine path so
+    // shutdown can drain cleanly.
+    const state = live.get(workerId("hb-unkillable-1"));
+    if (state !== undefined) state.alive = false;
+    await supervisor.value.stop(workerId("hb-unkillable-1"), "cleanup");
+    await supervisor.value.shutdown("test");
+  });
+
+  it("heartbeat-timeout failure does not let concurrent stop() clear activeIds", async () => {
+    // Regression guard: when heartbeat-timeout's teardown fails, the
+    // monitor must not resolve entry.exitedPromise — a concurrent stop()
+    // awaiting that promise would win a false "exited" signal, return
+    // ok, and clear quarantine + activeIds. With the worker still alive,
+    // a fresh start() could then race in (split-brain). Quarantine must
+    // hold activeIds until a teardown attempt confirms death.
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "hb-fail-no-resolve",
+      isAvailable: () => true,
+      supportsHeartbeat: true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill ignore the request; isAlive keeps returning true
+      // so teardownWorker exhausts both deadlines and returns INTERNAL.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 30,
+      heartbeat: { intervalMs: 20, timeoutMs: 50 },
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start({
+      workerId: workerId("hb-noresolve-1"),
+      agentId: agentId("agent-hb-noresolve-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+
+    // Start a concurrent external stop() that will park on exitedPromise
+    // inside teardownWorker, racing against the heartbeat-timeout's stop.
+    const concurrentStop = supervisor.value.stop(workerId("hb-noresolve-1"), "external");
+
+    // Wait long enough for heartbeat-timeout to fire and its stopRef to
+    // run teardown (which fails because terminate/kill don't actually kill).
+    await new Promise((r) => setTimeout(r, 250));
+
+    // The concurrent stop also fails (poll keeps reporting alive).
+    const stopped = await concurrentStop;
+    expect(stopped.ok).toBe(false);
+
+    // Worker is still alive in our fake backend — duplicate start() must
+    // reject because activeIds is preserved by the quarantine record.
+    const dup = await supervisor.value.start({
+      workerId: workerId("hb-noresolve-1"),
+      agentId: agentId("agent-hb-noresolve-1"),
+      command: ["echo", "x"],
+      backendHints: { heartbeat: true },
+    });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error.code).toBe("CONFLICT");
+
+    // Cleanup — flip dead and let shutdown drain via the quarantine path.
+    const state = live.get(workerId("hb-noresolve-1"));
+    if (state !== undefined) state.alive = false;
+    await supervisor.value.shutdown("test");
+  });
+
+  it("rapid stop()+start() cycles preserve successor identity (generation safety)", async () => {
+    // Regression guard: stop() awaits the prior IIFE's cleanupSettled
+    // before returning, so a successor start() always observes a fully-
+    // drained predecessor. Cycle multiple times to prove no stale
+    // coroutine corrupts a fresh entry.
+    const live = new Map<string, { alive: boolean; gen: number }>();
+    let nextGen = 0;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "cycle-friendly",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        nextGen += 1;
+        live.set(req.workerId, { alive: true, gen: nextGen });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async (id) => {
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      kill: async (id) => {
+        const s = live.get(id);
+        if (s !== undefined) s.alive = false;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+
+    for (let i = 1; i <= 4; i++) {
+      const started = await supervisor.value.start(makeRequest("gen-cycle"));
+      expect(started.ok).toBe(true);
+      const stopped = await supervisor.value.stop(workerId("gen-cycle"), "test");
+      expect(stopped.ok).toBe(true);
+    }
+    // Final start should still succeed — no stale coroutine left a
+    // dangling activeIds reservation or pool entry.
+    const final = await supervisor.value.start(makeRequest("gen-cycle"));
+    expect(final.ok).toBe(true);
+    expect(live.get(workerId("gen-cycle"))?.gen).toBe(5);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("watch-closed-early stop() defers activeIds release; quarantine retry frees the id", async () => {
+    // When the watch stream closes early (non-terminal), the IIFE tidy-
+    // cleanup probes liveness; if the worker is still alive, it
+    // quarantines and re-acquires the activeIds reservation. stop() awaits
+    // the IIFE's cleanupSettled before deciding whether to release —
+    // respecting the quarantine if it was set. Releasing the id later
+    // requires retrying stop() through the quarantine path.
+    const live = new Map<string, { alive: boolean }>();
+    let closeWatch: (() => void) | undefined;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "watch-closes-then-dies",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.get(id)?.alive ?? false,
+      watch: async function* (id) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        await new Promise<void>((resolve) => {
+          closeWatch = resolve;
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("close-then-die"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    const stopPromise = supervisor.value.stop(workerId("close-then-die"), "test");
+    await new Promise((r) => setTimeout(r, 5));
+    if (closeWatch !== undefined) closeWatch();
+    await new Promise((r) => setTimeout(r, 20));
+    const state = live.get(workerId("close-then-die"));
+    if (state !== undefined) state.alive = false;
+
+    const stopped = await stopPromise;
+    expect(stopped.ok).toBe(true);
+
+    // The IIFE quarantined when it observed stillAlive — activeIds is
+    // preserved even though stop() returned ok, because the quarantine
+    // claims ownership. A fresh start() must reject as CONFLICT until the
+    // quarantine is cleared via stop() retry.
+    const fresh = await supervisor.value.start(makeRequest("close-then-die"));
+    expect(fresh.ok).toBe(false);
+    if (!fresh.ok) expect(fresh.error.code).toBe("CONFLICT");
+
+    // Retry stop() through the quarantine path (worker now dead).
+    const retry = await supervisor.value.stop(workerId("close-then-die"), "retry");
+    expect(retry.ok).toBe(true);
+
+    const fresh2 = await supervisor.value.start(makeRequest("close-then-die"));
+    expect(fresh2.ok).toBe(true);
+    await supervisor.value.shutdown("test");
+  });
+
+  it("tidy-cleanup liveness probe is bounded when isAlive hangs", async () => {
+    // Regression guard: the post-loop tidy-cleanup's isAlive probe must
+    // not block the IIFE indefinitely if the backend's isAlive hangs (the
+    // same degraded conditions that caused the watch stream to close
+    // early). Bounding the probe lets stop()/shutdown() return within
+    // their deadlines instead of deadlocking on a wedged liveness check.
+    const live = new Map<string, { alive: boolean }>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "hanging-isalive",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        live.set(req.workerId, { alive: true });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: () => new Promise<boolean>(() => {}),
+      watch: async function* (id, signal) {
+        if (live.get(id) === undefined) return;
+        yield { kind: "started", workerId: id, at: Date.now() };
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 40,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("hang-probe-1"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // stop() enters its own teardown deadline (40ms terminate + 40ms kill),
+    // then aborts watch. The IIFE's tidy-cleanup must not get stuck on
+    // isAlive — if it did, the post-loop coroutine would leak and the
+    // shutdown drain below would exceed its deadline.
+    const before = Date.now();
+    await supervisor.value.stop(workerId("hang-probe-1"), "test");
+    const sd = await supervisor.value.shutdown("test");
+    const elapsed = Date.now() - before;
+    // Generous bound — the liveness probe timeout is 250ms; we should
+    // complete well under a second even with both stop + shutdown windows.
+    expect(elapsed).toBeLessThan(1500);
+    // Probe timed out → treated as unknown-alive → quarantine owns the id.
+    // Shutdown drains quarantines; teardownWorker still waits on isAlive
+    // which hangs, so shutdown itself is expected to fail closed here.
+    expect(sd.ok).toBe(false);
+  });
+
+  it("shutdown resolves within deadline even against a stalling backend", async () => {
+    // Without AbortSignal plumbing, a backend whose watch stream never emits
+    // a terminal event and never returns would leave shutdown() blocked on
+    // `entry.exitedPromise` until shutdownDeadlineMs * 2 elapses. With the
+    // signal in place, the IIFE exits promptly once stop() aborts it.
+    const { backend } = makeStallingBackend();
+    const supervisor = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 200,
+      backends: { "in-process": backend },
+    });
+    if (!supervisor.ok) return;
+    await supervisor.value.start(makeRequest("stall-deadline"));
+    await new Promise((r) => setTimeout(r, 10));
+    const before = Date.now();
+    const result = await supervisor.value.shutdown("test");
+    const elapsed = Date.now() - before;
+    expect(result.ok).toBe(true);
+    // Bound is `shutdownDeadlineMs * 2` in code, so well under that proves
+    // the abort is doing real work. Use a generous bound (1s) that still
+    // fails the pre-AbortSignal behavior.
+    expect(elapsed).toBeLessThan(1000);
   });
 });

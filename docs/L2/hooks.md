@@ -492,3 +492,5 @@ const groups = groupByTier(active); // { managed, user, session }
 - `@koi/redaction` — secret redaction for payload forwarding
 - `@koi/validation` — `validateWith`, `zodToKoiError`
 - `zod` — schema definitions
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

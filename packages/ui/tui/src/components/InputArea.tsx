@@ -34,7 +34,7 @@ interface TextareaRenderable {
 
 export interface InputAreaProps {
   /** Called when the user submits text (Enter). */
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, mode?: "queue" | "interrupt") => void;
   /** Called when slash command prefix is detected. Null = no overlay. */
   readonly onSlashDetected: (query: string | null) => void;
   /**
@@ -207,7 +207,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           break;
         }
         if (result.text.trim() !== "") {
-          props.onSubmit(result.text);
+          props.onSubmit(result.text, result.mode);
         }
         safeSetText("");
         props.onSlashDetected(null);

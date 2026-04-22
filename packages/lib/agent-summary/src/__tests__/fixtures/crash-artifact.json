@@ -1,0 +1,16 @@
+{
+  "entries": [
+    { "id": "u1", "role": "user", "content": "ask A", "timestamp": 1 },
+    { "id": "a1", "role": "assistant", "content": "answer A", "timestamp": 2 },
+    { "id": "u2", "role": "user", "content": "ask B", "timestamp": 3 },
+    { "id": "a2", "role": "assistant", "content": "answer B", "timestamp": 4 }
+  ],
+  "skipped": [
+    {
+      "lineNumber": 99,
+      "raw": "{\"role\":\"user\"",
+      "error": "unexpected eof",
+      "reason": "crash_artifact"
+    }
+  ]
+}

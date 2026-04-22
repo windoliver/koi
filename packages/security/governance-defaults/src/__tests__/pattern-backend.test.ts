@@ -269,4 +269,103 @@ describe("createPatternBackend", () => {
       }
     });
   });
+
+  describe("describeRules", () => {
+    test("returns empty array when backend has no rules and no defaultDeny", async () => {
+      const backend = createPatternBackend({ rules: [] });
+      expect(await backend.describeRules?.()).toEqual([]);
+    });
+
+    test("maps PatternRule fields to RuleDescriptor", async () => {
+      const backend = createPatternBackend({
+        rules: [
+          {
+            match: { kind: "tool_call", toolId: "Bash" },
+            decision: "deny",
+            rule: "deny-bash",
+            message: "Bash tool denied by policy",
+          },
+          {
+            match: { kind: "model_call", model: "gpt-4o" },
+            decision: "allow",
+            rule: "allow-gpt4o",
+          },
+        ],
+      });
+      const descriptors = await backend.describeRules?.();
+      expect(descriptors).toEqual([
+        {
+          id: "deny-bash",
+          description: "Bash tool denied by policy",
+          effect: "deny",
+          pattern: "tool_call:toolId=Bash",
+        },
+        {
+          id: "allow-gpt4o",
+          description: "allow-gpt4o",
+          effect: "allow",
+          pattern: "model_call:model=gpt-4o",
+        },
+      ]);
+    });
+
+    test("synthesizes id from index when rule.rule omitted", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: {}, decision: "deny" }],
+      });
+      const [d] = (await backend.describeRules?.()) ?? [];
+      expect(d?.id).toBe("pattern.0");
+      expect(d?.description).toBe("(no description)");
+      expect(d?.pattern).toBe("*");
+    });
+
+    test("describeMatch: kind only renders as bare kind string", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { kind: "model_call" }, decision: "deny", rule: "deny-model-calls" }],
+      });
+      const [d] = (await backend.describeRules?.()) ?? [];
+      expect(d?.pattern).toBe("model_call");
+    });
+
+    test("describeMatch: toolId only (no kind) renders as 'toolId=X'", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { toolId: "Bash" }, decision: "deny", rule: "deny-bash-any-kind" }],
+      });
+      const [d] = (await backend.describeRules?.()) ?? [];
+      expect(d?.pattern).toBe("toolId=Bash");
+    });
+
+    test("describeMatch: model only (no kind) renders as 'model=X'", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { model: "gpt-4o" }, decision: "allow", rule: "allow-gpt4o-any-kind" }],
+      });
+      const [d] = (await backend.describeRules?.()) ?? [];
+      expect(d?.pattern).toBe("model=gpt-4o");
+    });
+
+    test("appends synthetic default-deny rule when defaultDeny is true", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { kind: "tool_call" }, decision: "allow", rule: "allow-tools" }],
+        defaultDeny: true,
+      });
+      const descriptors = (await backend.describeRules?.()) ?? [];
+      expect(descriptors).toHaveLength(2);
+      expect(descriptors[1]).toEqual({
+        id: "default-deny",
+        description: "no rule matched and defaultDeny is enabled",
+        effect: "deny",
+        pattern: "*",
+      });
+    });
+
+    test("does not append default-deny when defaultDeny is false", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: {}, decision: "allow" }],
+        defaultDeny: false,
+      });
+      const descriptors = (await backend.describeRules?.()) ?? [];
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]?.id).not.toBe("default-deny");
+    });
+  });
 });

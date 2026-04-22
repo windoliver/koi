@@ -12,6 +12,7 @@ export default defineConfig({
     "src/common.ts",
     "src/context.ts",
     "src/delegation.ts",
+    "src/daemon.ts",
     "src/ecs.ts",
     "src/handoff.ts",
     "src/engine.ts",
@@ -49,6 +50,7 @@ export default defineConfig({
     "src/security-analyzer.ts",
     "src/pay-ledger.ts",
     "src/procfs.ts",
+    "src/process-descriptor.ts",
     "src/scratchpad.ts",
     "src/debug.ts",
     "src/zone.ts",
@@ -64,7 +66,9 @@ export default defineConfig({
       composite: false,
     },
   },
-  clean: true,
+  // Pre-push runs build and typecheck in parallel; both can trigger core build.
+  // Disabling clean avoids dist unlink races between concurrent tsup processes.
+  clean: false,
   treeshake: true,
   target: "node22",
 });

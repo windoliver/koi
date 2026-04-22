@@ -81,10 +81,11 @@ Built-in: `createBearerAuthProvider(token)` for static tokens.
 | `resolver.ts` | `createMcpResolver()` — Resolver<ToolDescriptor, Tool> |
 | `component-provider.ts` | `createMcpComponentProvider()` — ECS integration |
 | `oauth/provider.ts` | `createOAuthAuthProvider()` — OAuth 2.0 lifecycle |
-| `oauth/tokens.ts` | Token persistence + locked refresh via `@koi/secure-storage` |
+| `oauth/tokens.ts` | Token + client-info persistence + locked refresh via `@koi/secure-storage` |
 | `oauth/discovery.ts` | RFC 9728/8414 metadata discovery |
 | `oauth/pkce.ts` | PKCE code verifier + S256 challenge |
-| `oauth/types.ts` | `OAuthRuntime`, `OAuthTokens`, `McpOAuthConfig` |
+| `oauth/registration.ts` | RFC 7591 dynamic client registration |
+| `oauth/types.ts` | `OAuthRuntime`, `OAuthTokens`, `OAuthClientInfo`, `McpOAuthConfig` |
 
 ## Resolver
 
@@ -184,6 +185,8 @@ OAuth is supported for HTTP transport only (SSE does not inject auth headers).
 }
 ```
 
+`clientId` is optional. When omitted, Koi falls back to **Dynamic Client Registration (RFC 7591)** against the authorization server's `registration_endpoint` — the registered client id is persisted in `@koi/secure-storage` under key `mcp-oauth-client|{name}|{sha256(url)[:16]}` and reused across sessions. Registration happens once per server URL; clearing tokens (`koi mcp logout`) does not invalidate the stored client. If neither `clientId` nor a discoverable `registration_endpoint` is available, `startAuthFlow()` returns `false` and `koi mcp auth` fails closed.
+
 ### Architecture
 
 OAuth is split across two layers:
@@ -210,10 +213,17 @@ File-based locking (`~/.koi/locks/`) ensures safe concurrent access across agent
 ### OAuth Flow
 
 1. **Discovery**: RFC 9728 (Protected Resource Metadata) → RFC 8414 (Authorization Server Metadata)
-2. **Authorization**: PKCE challenge → browser → callback server → auth code
-3. **Token Exchange**: POST to token endpoint with code + verifier
-4. **Refresh**: Automatic on `token()` when access token is expired
-5. **Re-auth**: On 401 mid-session, connection transitions to `auth-needed` state
+2. **Client resolution**: configured `clientId` → stored registered client → DCR (RFC 7591) fallback
+3. **Authorization**: PKCE challenge → browser → callback server → auth code (includes `resource` per RFC 8707)
+4. **Token Exchange**: POST to token endpoint with code + verifier + `resource`
+5. **Refresh**: Automatic on `token()` when access token is expired; refresh body also carries `resource`
+6. **Re-auth**: On 401 mid-session, connection transitions to `auth-needed` state
+
+### RFC 8707 Resource Indicators
+
+Every authorization request, token exchange, and refresh carries `resource={serverUrl}` so the authorization server can bind the issued access token to the specific MCP server. Required by the 2025-03-26 MCP spec for servers that enforce per-resource scoping.
+
+Set `oauth.includeResourceParameter: false` for legacy authorization servers that reject the `resource` parameter with `invalid_target`/`invalid_request`. The default is `true` (spec-compliant); the opt-out exists only as a per-server compatibility escape hatch.
 
 ### CLI Commands
 
@@ -247,3 +257,5 @@ All MCP tools have `origin: "operator"` — they are operator-configured, not bu
 9. **Async-ready auth** — `token()` returns `string | Promise<string> | undefined` so the interface never needs a breaking change when OAuth 2.1 support is added.
 
 > **Maintenance note (PR #1506):** Fixed Biome lint warnings in test files (`noTemplateCurlyInString` in env-var expansion tests, `noNonNullAssertion` in e2e test). No functional changes.
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

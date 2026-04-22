@@ -1,0 +1,17 @@
+{
+  "entries": [
+    { "id": "u1", "role": "user", "content": "please list files", "timestamp": 1 },
+    { "id": "a1", "role": "assistant", "content": "calling list tool", "timestamp": 2 },
+    { "id": "tc1", "role": "tool_call", "content": "list {}", "timestamp": 3 },
+    { "id": "tr1", "role": "tool_result", "content": "[a.txt, b.txt]", "timestamp": 4 },
+    { "id": "u2", "role": "user", "content": "read a.txt", "timestamp": 5 },
+    { "id": "a2", "role": "assistant", "content": "calling read", "timestamp": 6 },
+    { "id": "tc2", "role": "tool_call", "content": "read {path: a.txt}", "timestamp": 7 },
+    { "id": "tr2", "role": "tool_result", "content": "hello world", "timestamp": 8 },
+    { "id": "u3", "role": "user", "content": "thanks", "timestamp": 9 },
+    { "id": "a3", "role": "assistant", "content": "welcome", "timestamp": 10 },
+    { "id": "u4", "role": "user", "content": "done", "timestamp": 11 },
+    { "id": "a4", "role": "assistant", "content": "goodbye", "timestamp": 12 }
+  ],
+  "skipped": []
+}

@@ -24,6 +24,20 @@ describe("createDebugInstrumentation", () => {
     instrumentation = createDebugInstrumentation({ enabled: true });
   });
 
+  describe("config validation", () => {
+    test("throws when bufferSize is zero", () => {
+      expect(() => createDebugInstrumentation({ enabled: true, bufferSize: 0 })).toThrow(
+        "bufferSize must be a positive integer",
+      );
+    });
+
+    test("throws when bufferSize is not an integer", () => {
+      expect(() => createDebugInstrumentation({ enabled: true, bufferSize: 1.5 })).toThrow(
+        "bufferSize must be a positive integer",
+      );
+    });
+  });
+
   describe("ring buffer", () => {
     test("stores and retrieves turn traces", () => {
       const provMap = new Map<string, MiddlewareSource>([["mw-a", "static"]]);

@@ -262,6 +262,22 @@ export interface ViolationStore {
 }
 
 // ---------------------------------------------------------------------------
+// RuleDescriptor — read-only describe-rules output (gov-9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable summary of a single backend rule. Used by `/governance`
+ * to render the active rule set; backends that don't expose rules omit the
+ * section. Pattern is optional because not all backends use glob/regex rules.
+ */
+export interface RuleDescriptor {
+  readonly id: string;
+  readonly description: string;
+  readonly effect: "allow" | "deny" | "advise";
+  readonly pattern?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // GovernanceBackend — composite interface
 // ---------------------------------------------------------------------------
 
@@ -289,4 +305,10 @@ export interface GovernanceBackend {
   readonly violations?: ViolationStore | undefined;
   /** Optional cleanup for stateful backends (connection pools, timers). */
   readonly dispose?: () => void | Promise<void>;
+  /**
+   * Optional rule introspection for read-only UIs (e.g., `/governance` view).
+   * Backends that don't expose rules can omit this. Errors should propagate;
+   * callers must wrap in try/catch and degrade gracefully.
+   */
+  readonly describeRules?: () => readonly RuleDescriptor[] | Promise<readonly RuleDescriptor[]>;
 }

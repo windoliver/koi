@@ -1,5 +1,6 @@
 // Cache-bust: snapshot regenerated for #1728 plugin summary state field.
 import { describe, expect, test } from "bun:test";
+import type { GovernanceSnapshot } from "@koi/core/governance";
 import { createInitialState } from "./initial.js";
 import { reduce } from "./reduce.js";
 import {
@@ -18,9 +19,11 @@ import {
 import type { PluginSummary, TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
 import {
   COMPACT_THRESHOLD,
+  MAX_ALERTS_IN_MEMORY,
   MAX_FINISHED_SPAWNS,
   MAX_MESSAGES,
   MAX_TOOL_RESULT_BYTES,
+  MAX_VIOLATIONS_IN_MEMORY,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +66,33 @@ describe("reduce — add_user_message", () => {
     });
     expect(next.messages).toHaveLength(2);
     expect(messageAt(next, 0).kind).toBe("system");
+  });
+});
+
+describe("reduce — submit queue", () => {
+  test("enqueue_submit appends in FIFO order", () => {
+    let state = createInitialState();
+    state = reduce(state, { kind: "enqueue_submit", text: "first" });
+    state = reduce(state, { kind: "enqueue_submit", text: "second" });
+    expect(state.queuedSubmits).toEqual(["first", "second"]);
+  });
+
+  test("dequeue_submit removes the head entry", () => {
+    const state = {
+      ...createInitialState(),
+      queuedSubmits: ["first", "second"] as readonly string[],
+    };
+    const next = reduce(state, { kind: "dequeue_submit" });
+    expect(next.queuedSubmits).toEqual(["second"]);
+  });
+
+  test("clear_submit_queue empties all queued submits", () => {
+    const state = {
+      ...createInitialState(),
+      queuedSubmits: ["first"] as readonly string[],
+    };
+    const next = reduce(state, { kind: "clear_submit_queue" });
+    expect(next.queuedSubmits).toEqual([]);
   });
 });
 
@@ -1342,6 +1372,105 @@ describe("reduce — permission_response", () => {
 });
 
 // ---------------------------------------------------------------------------
+// model picker actions
+// ---------------------------------------------------------------------------
+
+describe("reduce — model picker actions", () => {
+  test("model_picker_set_query updates query in open picker", () => {
+    const state: TuiState = {
+      ...createInitialState("anthropic/claude-sonnet-4-6"),
+      modal: { kind: "model-picker", query: "", status: "ready", models: [] },
+    };
+    const next = reduce(state, { kind: "model_picker_set_query", query: "opus" });
+    expect(next.modal).toEqual({
+      kind: "model-picker",
+      query: "opus",
+      status: "ready",
+      models: [],
+    });
+  });
+
+  test("model_picker_set_query is a no-op when a different modal is open", () => {
+    const state: TuiState = {
+      ...createInitialState(),
+      modal: { kind: "command-palette", query: "" },
+    };
+    const next = reduce(state, { kind: "model_picker_set_query", query: "opus" });
+    expect(next).toBe(state);
+  });
+
+  test("model_picker_fetched ok populates models and flips to ready", () => {
+    const state: TuiState = {
+      ...createInitialState(),
+      modal: { kind: "model-picker", query: "", status: "loading", models: [] },
+    };
+    const models = [{ id: "anthropic/claude-opus-4-7" }];
+    const next = reduce(state, { kind: "model_picker_fetched", result: { ok: true, models } });
+    expect(next.modal).toEqual({
+      kind: "model-picker",
+      query: "",
+      status: "ready",
+      models,
+    });
+  });
+
+  test("model_picker_fetched error flips to error with message", () => {
+    const state: TuiState = {
+      ...createInitialState(),
+      modal: { kind: "model-picker", query: "", status: "loading", models: [] },
+    };
+    const next = reduce(state, {
+      kind: "model_picker_fetched",
+      result: { ok: false, error: "timeout" },
+    });
+    expect(next.modal).toEqual({
+      kind: "model-picker",
+      query: "",
+      status: "error",
+      models: [],
+      error: "timeout",
+    });
+  });
+
+  test("model_switched updates state.modelName", () => {
+    const state = createInitialState("anthropic/claude-sonnet-4-6");
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.modelName).toBe("anthropic/claude-opus-4-7");
+  });
+
+  test("model_switched mirrors into sessionInfo.modelName when set", () => {
+    const state = stateWith({
+      modelName: "anthropic/claude-sonnet-4-6",
+      sessionInfo: {
+        modelName: "anthropic/claude-sonnet-4-6",
+        provider: "anthropic",
+        sessionName: "test",
+        sessionId: "abc123",
+      },
+    });
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.modelName).toBe("anthropic/claude-opus-4-7");
+    expect(next.sessionInfo?.modelName).toBe("anthropic/claude-opus-4-7");
+    expect(next.sessionInfo?.sessionId).toBe("abc123");
+  });
+
+  test("model_switched leaves null sessionInfo untouched", () => {
+    const state = createInitialState("anthropic/claude-sonnet-4-6");
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.sessionInfo).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // set_connection_status
 // ---------------------------------------------------------------------------
 
@@ -1657,6 +1786,7 @@ describe("reduce — clear_messages", () => {
   test("preserves all other state fields", () => {
     const state = stateWith({
       messages: [userMsg("a")],
+      queuedSubmits: ["queued"],
       activeView: "sessions",
       modal: { kind: "command-palette", query: "x" },
       connectionStatus: "connected",
@@ -1669,6 +1799,7 @@ describe("reduce — clear_messages", () => {
     expect(next.connectionStatus).toBe("connected");
     expect(next.layoutTier).toBe("wide");
     expect(next.zoomLevel).toBe(2);
+    expect(next.queuedSubmits).toEqual([]);
   });
 
   test("clear on already empty returns same reference", () => {
@@ -3271,5 +3402,183 @@ describe("reduce — set_plugin_summary", () => {
     const state = { ...createInitialState(), pluginSummary: summary };
     const next = reduce(state, { kind: "set_plugin_summary", summary });
     expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gov-9: governance + toast slices
+// ---------------------------------------------------------------------------
+
+describe("governance actions", () => {
+  test("set_governance_snapshot stores readings", () => {
+    const initialState = createInitialState();
+    const snap: GovernanceSnapshot = {
+      timestamp: 1,
+      healthy: true,
+      violations: [],
+      readings: [{ name: "turn_count", current: 5, limit: 10, utilization: 0.5 }],
+    };
+    const next = reduce(initialState, { kind: "set_governance_snapshot", snapshot: snap });
+    expect(next.governance.snapshot?.readings).toHaveLength(1);
+    expect(next.governance.snapshot?.readings[0]?.name).toBe("turn_count");
+  });
+
+  test("add_governance_alert appends and caps at MAX_ALERTS_IN_MEMORY", () => {
+    const initialState = createInitialState();
+    const alert = {
+      id: "a1",
+      ts: 1,
+      sessionId: "s",
+      variable: "cost_usd",
+      threshold: 0.8,
+      current: 1.6,
+      limit: 2,
+      utilization: 0.8,
+    };
+    const next = reduce(initialState, { kind: "add_governance_alert", alert });
+    expect(next.governance.alerts).toHaveLength(1);
+    expect(next.governance.alerts[0]?.id).toBe("a1");
+  });
+
+  test("add_governance_alert caps at MAX_ALERTS_IN_MEMORY (oldest evicted)", () => {
+    let s = createInitialState();
+    for (let i = 0; i < MAX_ALERTS_IN_MEMORY + 5; i += 1) {
+      s = reduce(s, {
+        kind: "add_governance_alert",
+        alert: {
+          id: `a${i}`,
+          ts: i,
+          sessionId: "s",
+          variable: "cost_usd",
+          threshold: 0.8,
+          current: 1,
+          limit: 2,
+          utilization: 0.5,
+        },
+      });
+    }
+    expect(s.governance.alerts).toHaveLength(MAX_ALERTS_IN_MEMORY);
+    // Prepend + head-cap means newest at [0], oldest evicted.
+    expect(s.governance.alerts[0]?.id).toBe(`a${MAX_ALERTS_IN_MEMORY + 4}`);
+    expect(s.governance.alerts[MAX_ALERTS_IN_MEMORY - 1]?.id).toBe("a5");
+  });
+
+  test("add_governance_violation caps at MAX_VIOLATIONS_IN_MEMORY (oldest evicted)", () => {
+    let s = createInitialState();
+    for (let i = 0; i < MAX_VIOLATIONS_IN_MEMORY + 3; i += 1) {
+      s = reduce(s, {
+        kind: "add_governance_violation",
+        violation: { id: `v${i}`, ts: i, variable: "cost_usd", reason: "x" },
+      });
+    }
+    expect(s.governance.violations).toHaveLength(MAX_VIOLATIONS_IN_MEMORY);
+    expect(s.governance.violations[0]?.id).toBe(`v${MAX_VIOLATIONS_IN_MEMORY + 2}`);
+    expect(s.governance.violations[MAX_VIOLATIONS_IN_MEMORY - 1]?.id).toBe("v3");
+  });
+
+  test("clear_governance_alerts empties the alerts array", () => {
+    const initialState = createInitialState();
+    const seeded = reduce(initialState, {
+      kind: "add_governance_alert",
+      alert: {
+        id: "x",
+        ts: 0,
+        sessionId: "s",
+        variable: "cost_usd",
+        threshold: 0.8,
+        current: 1,
+        limit: 2,
+        utilization: 0.5,
+      },
+    });
+    expect(seeded.governance.alerts).toHaveLength(1);
+    const cleared = reduce(seeded, { kind: "clear_governance_alerts" });
+    expect(cleared.governance.alerts).toHaveLength(0);
+  });
+
+  test("add_governance_violation prepends and caps", () => {
+    const initialState = createInitialState();
+    const violation = { id: "v1", ts: 1, variable: "cost_usd", reason: "limit exceeded" };
+    const next = reduce(initialState, { kind: "add_governance_violation", violation });
+    expect(next.governance.violations).toHaveLength(1);
+    expect(next.governance.violations[0]?.id).toBe("v1");
+  });
+
+  test("set_governance_rules replaces the rules array", () => {
+    const initialState = createInitialState();
+    const next = reduce(initialState, {
+      kind: "set_governance_rules",
+      rules: [{ id: "r1", description: "test", effect: "deny" }],
+    });
+    expect(next.governance.rules).toHaveLength(1);
+    expect(next.governance.rules[0]?.id).toBe("r1");
+  });
+
+  test("set_governance_capabilities replaces the capabilities array", () => {
+    const initialState = createInitialState();
+    const next = reduce(initialState, {
+      kind: "set_governance_capabilities",
+      capabilities: [{ label: "governance", description: "tracks 5 sensors" }],
+    });
+    expect(next.governance.capabilities).toHaveLength(1);
+    expect(next.governance.capabilities[0]?.label).toBe("governance");
+  });
+});
+
+describe("toast actions", () => {
+  test("add_toast appends; dismiss_toast removes by id", () => {
+    const initialState = createInitialState();
+    const t = { id: "t1", kind: "warn" as const, key: "k", title: "x", body: "y", ts: 1 };
+    const a = reduce(initialState, { kind: "add_toast", toast: t });
+    expect(a.toasts).toHaveLength(1);
+    const b = reduce(a, { kind: "dismiss_toast", id: "t1" });
+    expect(b.toasts).toHaveLength(0);
+  });
+
+  test("add_toast fold-merges by key (same key replaces)", () => {
+    const initialState = createInitialState();
+    const t1 = {
+      id: "t1",
+      kind: "warn" as const,
+      key: "cost@0.8",
+      title: "x",
+      body: "1.6",
+      ts: 1,
+    };
+    const t2 = {
+      id: "t2",
+      kind: "warn" as const,
+      key: "cost@0.8",
+      title: "x",
+      body: "1.7",
+      ts: 2,
+    };
+    const a = reduce(initialState, { kind: "add_toast", toast: t1 });
+    const b = reduce(a, { kind: "add_toast", toast: t2 });
+    expect(b.toasts).toHaveLength(1);
+    expect(b.toasts[0]?.id).toBe("t2");
+    expect(b.toasts[0]?.body).toBe("1.7");
+  });
+
+  test("add_toast caps queue at MAX_VISIBLE_TOASTS", () => {
+    const initialState = createInitialState();
+    let s = initialState;
+    for (let i = 0; i < 5; i += 1) {
+      s = reduce(s, {
+        kind: "add_toast",
+        toast: {
+          id: `t${i}`,
+          kind: "info" as const,
+          key: `k${i}`,
+          title: "t",
+          body: "b",
+          ts: i,
+        },
+      });
+    }
+    // MAX_VISIBLE_TOASTS = 3 — only the 3 most-recent should remain
+    expect(s.toasts).toHaveLength(3);
+    expect(s.toasts[0]?.id).toBe("t2");
+    expect(s.toasts[2]?.id).toBe("t4");
   });
 });

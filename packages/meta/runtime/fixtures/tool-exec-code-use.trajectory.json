@@ -1,0 +1,654 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "tool-exec-code-use",
+  "agent": {
+    "name": "golden-tool-exec-code-use",
+    "model_name": "anthropic/claude-sonnet-4-6",
+    "tool_definitions": [
+      {
+        "name": "execute_code",
+        "description": "Run a TypeScript/JavaScript script that calls registered tools via `tools.*`.\n\nUse this when you need to execute a multi-step pipeline where intermediate tool results do not need to appear in the conversation context — only the final return value of the script is returned.\n\nThe script receives a `tools` object with one async method per registered tool. Each method accepts the tool's normal arguments and returns its result.\n\nExample:\n```typescript\nconst files = await tools.glob({ pattern: \"**/*.ts\" });\nconst hits = await tools.grep({ pattern: \"TODO\", glob: \"**/*.ts\" });\nreturn { fileCount: files.length, todoCount: hits.length };\n```\n\nConstraints:\n- `await` every tool call (calls are async)\n- Sequential calls only — `Promise.all` across tools is not supported\n- The script may not import external modules\n- Timeout defaults to 30s, max 300s\n\nSecurity note: the script runs in a Bun Worker thread and has access to the same ambient globals as the host process (fetch, timers, Bun file APIs). All privileged operations should use `tools.*` so that permission middleware applies — but the runtime does NOT prevent direct ambient API access. Use this tool only when you trust the generated script."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:54.321Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:54.322Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-21T05:34:54.331Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "Call the execute_code tool with its `script` argument set to the following TypeScript source. The script runs inside a worker where `tools.add_numbers` is available even though add_numbers is not a separate top-level tool — the execute_code tool handles that internally. Script source:\nconst a = await tools.add_numbers({ a: 2, b: 3 });\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\nreturn b.result;\nAfter execute_code returns, reply with just the final number.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1238,
+        "completion_tokens": 102
+      },
+      "duration_ms": 3489,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "execute_code",
+            "description": "Run a TypeScript/JavaScript script that calls registered tools via `tools.*`.\n\nUse this when you need to execute a multi-step pipeline where intermediate tool results do not need to appear in the conversation context — only the final return value of the script is returned.\n\nThe script receives a `tools` object with one async method per registered tool. Each method accepts the tool's normal arguments and returns its result.\n\nExample:\n```typescript\nconst files = await tools.glob({ pattern: \"**/*.ts\" });\nconst hits = await tools.grep({ pattern: \"TODO\", glob: \"**/*.ts\" });\nreturn { fileCount: files.length, todoCount: hits.length };\n```\n\nConstraints:\n- `await` every tool call (calls are async)\n- Sequential calls only — `Promise.all` across tools is not supported\n- The script may not import external modules\n- Timeout defaults to 30s, max 300s\n\nSecurity note: the script runs in a Bun Worker thread and has access to the same ambient globals as the host process (fetch, timers, Bun file APIs). All privileged operations should use `tools.*` so that permission middleware applies — but the runtime does NOT prevent direct ambient API access. Use this tool only when you trust the generated script."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "c19e19abd5083247d022e2d8f18ae2a978713b639be201817b9bf465e61aacd1",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-21T05:34:57.827Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_execute_code_3",
+          "function_name": "execute_code",
+          "arguments": {
+            "script": "const a = await tools.add_numbers({ a: 2, b: 3 });\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\nreturn b.result;"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_execute_code_3",
+            "content": "{\"ok\":true,\"result\":15,\"toolCallCount\":2,\"durationMs\":4}"
+          }
+        ]
+      },
+      "duration_ms": 2,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.832Z",
+      "model_name": "hook:on-tool-exec",
+      "message": "tool.succeeded → on-tool-exec",
+      "duration_ms": 2.547165999999379,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-tool-exec",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-tool-exec"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.833Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 3493.8111249999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1776749697826,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.836Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "execute_code({\"script\":\"const a = await tools.add_numbers({ a: 2, b: 3 });\\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\\nreturn b.result;\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 11.116791999999805,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "execute_code",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.837Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 3492.5463330000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776749697825,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.838Z",
+      "model_name": "middleware:permissions",
+      "message": "execute_code({\"script\":\"const a = await tools.add_numbers({ a: 2, b: 3 });\\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\\nreturn b.result;\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 10.789749999999913,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "execute_code",
+            "resource": "execute_code",
+            "toolInput": "{\"script\":\"const a = await tools.add_numbers({ a: 2, b: 3 });\\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\\nreturn b.result;\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776749697835,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.839Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 3491.3485419999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776749697824,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.840Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 3491.2113340000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Call the execute_code tool with its `script` argument set to the following TypeScript source. The script runs inside a w",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Call the execute_code tool with its `script` argument set to the following TypeScript source. The script runs inside a w"
+          }
+        ],
+        "_original_timestamp": 1776749697823,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.841Z",
+      "model_name": "middleware:goal",
+      "message": "execute_code({\"script\":\"const a = await tools.add_numbers({ a: 2, b: 3 });\\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\\nreturn b.result;\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.83404100000007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776749697834,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.842Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 3490.986167,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776749697822,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.843Z",
+      "model_name": "middleware:hooks",
+      "message": "execute_code({\"script\":\"const a = await tools.add_numbers({ a: 2, b: 3 });\\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\\nreturn b.result;\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 9.819833000000472,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "execute_code",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          },
+          {
+            "event": "tool.succeeded",
+            "toolId": "execute_code",
+            "toolOutput": "{\"ok\":true,\"result\":15,\"toolCallCount\":2,\"durationMs\":4}",
+            "aggregated": "continue",
+            "hooks": [
+              {
+                "name": "on-tool-exec",
+                "decision": "continue",
+                "durationMs": 2.547165999999379
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1776749697833,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.844Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 3490.7277079999994,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776749697821,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:57.845Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "execute_code({\"script\":\"const a = await tools.add_numbers({ a: 2, b: 3 });\\nconst b = await tools.add_numbers({ a: a.result, b: 10 });\\nreturn b.result;\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 6.412166999999499,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776749697830,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "agent",
+      "timestamp": "2026-04-21T05:34:57.846Z",
+      "model_name": "anthropic/claude-sonnet-4-6",
+      "message": "{\"ok\":true,\"result\":15,\"toolCallCount\":2,\"durationMs\":4}",
+      "observation": {
+        "results": [
+          {
+            "content": "15"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1339,
+        "completion_tokens": 4
+      },
+      "duration_ms": 854,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "anthropic/claude-sonnet-4-6",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "execute_code",
+            "description": "Run a TypeScript/JavaScript script that calls registered tools via `tools.*`.\n\nUse this when you need to execute a multi-step pipeline where intermediate tool results do not need to appear in the conversation context — only the final return value of the script is returned.\n\nThe script receives a `tools` object with one async method per registered tool. Each method accepts the tool's normal arguments and returns its result.\n\nExample:\n```typescript\nconst files = await tools.glob({ pattern: \"**/*.ts\" });\nconst hits = await tools.grep({ pattern: \"TODO\", glob: \"**/*.ts\" });\nreturn { fileCount: files.length, todoCount: hits.length };\n```\n\nConstraints:\n- `await` every tool call (calls are async)\n- Sequential calls only — `Promise.all` across tools is not supported\n- The script may not import external modules\n- Timeout defaults to 30s, max 300s\n\nSecurity note: the script runs in a Bun Worker thread and has access to the same ambient globals as the host process (fetch, timers, Bun file APIs). All privileged operations should use `tools.*` so that permission middleware applies — but the runtime does NOT prevent direct ambient API access. Use this tool only when you trust the generated script."
+          }
+        ],
+        "responseModel": "anthropic/claude-sonnet-4-6",
+        "promptPrefixFingerprint": "c19e19abd5083247d022e2d8f18ae2a978713b639be201817b9bf465e61aacd1",
+        "turnIndex": 1,
+        "_original_timestamp": 1776749697838
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:58.698Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 857.656,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:58.699Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 857.6395840000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 1,
+            "allowedCount": 1,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776749698697,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:58.700Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 857.5492919999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776749698696,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:58.701Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 857.53125,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776749698695,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:58.702Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 857.5207499999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776749698694,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:58.703Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 857.4665000000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776749698693,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-21T05:34:58.704Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.048584000000118976,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1776749698700,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

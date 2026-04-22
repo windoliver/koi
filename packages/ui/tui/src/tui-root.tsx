@@ -26,7 +26,9 @@ import { McpView } from "./components/McpView.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
+import { GovernanceView } from "./components/GovernanceView.js";
 import { HelpView } from "./components/HelpView.js";
+import { ModelPicker } from "./components/ModelPicker.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
 import { SessionRename } from "./components/SessionRename.js";
@@ -34,9 +36,16 @@ import { CostDashboardView } from "./components/CostDashboardView.js";
 import { PluginsView } from "./components/PluginsView.js";
 import { TrajectoryView } from "./components/TrajectoryView.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { ToastOverlay } from "./components/Toast.js";
 import { handleGlobalKey } from "./keyboard.js";
 import type { TuiStore } from "./state/store.js";
-import type { SessionSummary, TuiModal, TuiView } from "./state/types.js";
+import type {
+  FetchModelsResult,
+  ModelEntry,
+  SessionSummary,
+  TuiModal,
+  TuiView,
+} from "./state/types.js";
 import { copyToClipboard } from "./utils/clipboard.js";
 import {
   StoreContext,
@@ -55,6 +64,7 @@ import {
  */
 const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:doctor": "doctor",
+  "nav:governance": "governance",
   "nav:help": "help",
   "nav:agents": "agents",
   "nav:trajectory": "trajectory",
@@ -69,6 +79,23 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
  */
 export function resolveNavCommand(commandId: string): TuiView | null {
   return NAV_VIEW_MAP[commandId] ?? null;
+}
+
+/**
+ * Side-effect plan for `system:governance-reset`:
+ * 1. Clear in-memory alerts in the TUI store.
+ * 2. Forward to the host via onCommand so the bridge can reset its
+ *    alert-tracker dedup state.
+ *
+ * Exported for testing — do not rely on this in external packages.
+ */
+export function executeGovernanceReset(
+  store: TuiStore,
+  onCommand: (commandId: string, args: string) => void,
+  args: string,
+): void {
+  store.dispatch({ kind: "clear_governance_alerts" });
+  onCommand("system:governance-reset", args);
 }
 
 function findCommandBySlashName(name: string): CommandDef | undefined {
@@ -92,7 +119,7 @@ export interface TuiRootProps {
   /** Called when the user selects a session to resume. */
   readonly onSessionSelect: (sessionId: string) => void;
   /** Called when the user submits a message in the conversation view. */
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, mode?: "queue" | "interrupt") => void;
   /** Called when the user triggers Ctrl+C interrupt. */
   readonly onInterrupt: () => void;
   /** Called when the user responds to a permission prompt (y/n/a). */
@@ -132,6 +159,26 @@ export interface TuiRootProps {
    * Null signals the overlay was dismissed.
    */
   readonly onAtQuery?: ((query: string | null) => void) | undefined;
+  /**
+   * Called when the model picker opens. The host performs the provider
+   * `/models` fetch (L2 TUI has no network code) and resolves with the
+   * typed result. TuiRoot dispatches `model_picker_fetched` on resolve.
+   */
+  readonly onFetchModels?: (() => Promise<FetchModelsResult>) | undefined;
+  /**
+   * Called when the user selects a model in the picker. The host mutates
+   * the current-model middleware box so subsequent turns use the new model.
+   *
+   * The full `ModelEntry` is forwarded (not just the id) so the host can
+   * plumb per-model metadata — specifically `contextLength` — into the
+   * runtime's per-turn budget resolution for models absent from the local
+   * registry.
+   *
+   * Returns `true` when the switch was applied, `false` when the host
+   * refused (e.g. a run is still in flight). TuiRoot only dispatches
+   * `model_switched` and the success toast on a confirmed mutation.
+   */
+  readonly onModelSwitch?: ((model: ModelEntry) => boolean | void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +197,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   const activeView = useTuiStore((s) => s.activeView);
   const modal = useTuiStore((s) => s.modal);
   const agentStatus = useTuiStore((s) => s.agentStatus);
+  const toasts = useTuiStore((s) => s.toasts);
+  const governance = useTuiStore((s) => s.governance);
 
   // #16: notify bridge when a turn completes (processing → idle transition)
   createEffect(
@@ -304,6 +353,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:new");
         if (cmd !== undefined) handleCommandSelect(cmd);
       },
+      onOpenSessions: () => {
+        const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:sessions");
+        if (cmd !== undefined) handleCommandSelect(cmd);
+      },
     });
   });
 
@@ -316,6 +369,74 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   /** Open the session picker. The createEffect above auto-refreshes the list. */
   const openSessionPicker = (): void => {
     store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
+  };
+
+  // Cache the /models fetch so reopening the picker within the same process
+  // does not hammer the provider. Keyed by the callback identity — if the host
+  // swaps in a new fetcher (baseUrl/apiKey change), the cache naturally misses.
+  // `let`: justified — single-slot cache, updated on first fetch.
+  let cachedModelFetch:
+    | { readonly fetcher: () => Promise<FetchModelsResult>; readonly pending: Promise<FetchModelsResult> }
+    | null = null;
+
+  const openModelPicker = (initialQuery: string): void => {
+    store.dispatch({
+      kind: "set_modal",
+      modal: { kind: "model-picker", query: initialQuery, status: "loading", models: [] },
+    });
+    const fetcher = props.onFetchModels;
+    if (fetcher === undefined) {
+      store.dispatch({
+        kind: "model_picker_fetched",
+        result: { ok: false, error: "Model fetching is not configured." },
+      });
+      return;
+    }
+    let pending: Promise<FetchModelsResult>;
+    if (cachedModelFetch !== null && cachedModelFetch.fetcher === fetcher) {
+      pending = cachedModelFetch.pending;
+    } else {
+      pending = fetcher();
+      cachedModelFetch = { fetcher, pending };
+    }
+    // Capture the promise we committed to so a later invalidation (e.g. the
+    // user reopens the picker after the failure below landed) can't racily
+    // clobber a fresher attempt.
+    const settled = pending;
+    void settled
+      .then((result) => {
+        // Invalidate the cache on failure so reopening the picker retries —
+        // transient outages (timeouts, auth blips) shouldn't stick for the
+        // rest of the process.
+        if (!result.ok && cachedModelFetch?.pending === settled) {
+          cachedModelFetch = null;
+        }
+        store.dispatch({ kind: "model_picker_fetched", result });
+      })
+      .catch(() => {
+        if (cachedModelFetch?.pending === settled) {
+          cachedModelFetch = null;
+        }
+      });
+  };
+
+  const handleModelSelect = (model: ModelEntry): void => {
+    store.dispatch({ kind: "set_modal", modal: null });
+    // Host owns the authoritative in-flight signal (e.g. AbortController).
+    // `agentStatus` lags the submit→first-event gap, so we defer the
+    // refusal decision to the host and react to its boolean result.
+    // When the host returns `undefined` (older callers) we assume success
+    // for backwards compatibility.
+    const applied = props.onModelSwitch?.(model);
+    if (applied === false) {
+      store.dispatch({
+        kind: "add_info",
+        message: "[Cannot switch models while a turn is in flight — finish or Esc-interrupt first.]",
+      });
+      return;
+    }
+    store.dispatch({ kind: "model_switched", model: model.id });
+    store.dispatch({ kind: "add_info", message: `[Model switched to ${model.id}]` });
   };
 
   const handleCommandSelect = (cmd: CommandDef, args = ""): void => {
@@ -337,6 +458,13 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       openSessionPicker();
       return;
     }
+    // system:model-switch opens the model picker modal inline. The host
+    // performs the /models fetch via onFetchModels and mutates the current-
+    // model middleware box via onModelSwitch.
+    if (cmd.id === "system:model-switch") {
+      openModelPicker(args);
+      return;
+    }
     if (cmd.id === "session:rename") {
       store.dispatch({ kind: "set_modal", modal: { kind: "session-rename" } });
       return;
@@ -347,6 +475,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     }
     if (cmd.id === "display:thinking") {
       store.dispatch({ kind: "toggle_thinking" });
+      return;
+    }
+    if (cmd.id === "system:governance-reset") {
+      executeGovernanceReset(store, props.onCommand, args);
       return;
     }
     props.onCommand(cmd.id, args);
@@ -369,6 +501,12 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
 
   const handleSlashSelect = (cmd: SlashCommand, args: string): void => {
     store.dispatch({ kind: "set_slash_query", query: null });
+    // `/model <query>` with args opens the picker prefilled with the query.
+    // Bare `/model` falls through to `system:model` (info notice).
+    if (cmd.name === "model" && args.trim().length > 0) {
+      openModelPicker(args.trim());
+      return;
+    }
     const commandDef = findCommandBySlashName(cmd.name);
     if (commandDef !== undefined) {
       handleCommandSelect(commandDef, args);
@@ -416,6 +554,9 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         <Match when={viewSignal() === "plugins"}>
           <PluginsView />
         </Match>
+        <Match when={viewSignal() === "governance"}>
+          <GovernanceView slice={governance()} />
+        </Match>
       </Switch>
 
       {/* Modal layer — overlays the active view (Decision 3A: single slot).
@@ -454,6 +595,23 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
           focused={true}
         />
       </Show>
+      {/* Model picker modal — fuzzy list of provider models. */}
+      <Show when={modal()?.kind === "model-picker"}>
+        <ModelPicker
+          onSelect={handleModelSelect}
+          onClose={dismissModal}
+          focused={true}
+        />
+      </Show>
+      {/* Toast overlay — top-right transient notifications (gov-9).
+          zIndex=100 intentionally exceeds MODAL_POSITION.zIndex (20)
+          so toasts remain visible over modals. Any new modal added
+          here MUST use MODAL_POSITION (or another zIndex < 100) to
+          preserve this ordering. */}
+      <ToastOverlay
+        toasts={toasts()}
+        onDismiss={(id) => store.dispatch({ kind: "dismiss_toast", id })}
+      />
     </box>
   );
 }

@@ -3,6 +3,7 @@ import type {
   GovernanceVerdict,
   PolicyRequest,
   PolicyRequestKind,
+  RuleDescriptor,
   Violation,
   ViolationSeverity,
 } from "@koi/core/governance-backend";
@@ -125,6 +126,28 @@ function violationFromRule(rule: PatternRule, idx: number): Violation {
   };
 }
 
+function describeMatch(match: PatternMatch): string {
+  const selectors: readonly string[] = [
+    ...(match.toolId !== undefined ? [`toolId=${match.toolId}`] : []),
+    ...(match.model !== undefined ? [`model=${match.model}`] : []),
+  ];
+  if (match.kind !== undefined) {
+    return selectors.length === 0 ? match.kind : `${match.kind}:${selectors.join(",")}`;
+  }
+  return selectors.length === 0 ? "*" : selectors.join(",");
+}
+
+// The "(no description)" literal is intentional user-facing fallback text.
+// TUI renderers should display it verbatim — do NOT treat it as a sentinel.
+function ruleToDescriptor(rule: PatternRule, idx: number): RuleDescriptor {
+  return {
+    id: rule.rule ?? `pattern.${idx}`,
+    description: rule.message ?? rule.rule ?? "(no description)",
+    effect: rule.decision,
+    pattern: describeMatch(rule.match),
+  };
+}
+
 export function createPatternBackend(config: PatternBackendConfig): GovernanceBackend {
   const { rules, defaultDeny = false } = config;
 
@@ -168,5 +191,25 @@ export function createPatternBackend(config: PatternBackendConfig): GovernanceBa
     return GOVERNANCE_ALLOW;
   }
 
-  return { evaluator: { evaluate } };
+  function describeRules(): readonly RuleDescriptor[] {
+    const out = rules.map((r, i) => ruleToDescriptor(r, i));
+    // `default-deny` is a reserved synthetic id. If a configured rule
+    // happens to use the same id and defaultDeny is true, the output
+    // will contain two entries with that id — the L0 contract does not
+    // guarantee uniqueness, and this is cheaper than validation here.
+    if (defaultDeny) {
+      return [
+        ...out,
+        {
+          id: "default-deny",
+          description: "no rule matched and defaultDeny is enabled",
+          effect: "deny",
+          pattern: "*",
+        },
+      ];
+    }
+    return out;
+  }
+
+  return { evaluator: { evaluate }, describeRules };
 }

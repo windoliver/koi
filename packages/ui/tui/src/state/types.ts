@@ -8,6 +8,8 @@
 import type { JsonObject } from "@koi/core/common";
 import type { CostBreakdown } from "@koi/core/cost-tracker";
 import type { EngineEvent } from "@koi/core/engine";
+import type { GovernanceSnapshot } from "@koi/core/governance";
+import type { RuleDescriptor } from "@koi/core/governance-backend";
 import type { ContentBlock, InboundMessage } from "@koi/core/message";
 import type { ApprovalDecision } from "@koi/core/middleware";
 
@@ -30,6 +32,25 @@ export const MAX_TOOL_RESULT_BYTES = 1_048_576;
 /** Maximum sessions retained in the session picker (most recent first). */
 export const MAX_SESSIONS = 50;
 
+/**
+ * Cap on persisted in-memory governance alerts (gov-9).
+ * Matches the JSONL persistence cap in `governance-bridge.ts` so the
+ * in-memory mirror never holds more than what's on disk.
+ */
+export const MAX_ALERTS_IN_MEMORY = 200;
+/**
+ * Cap on visible toasts in the queue (gov-9). Three is the empirical
+ * sweet spot — fewer feels under-informative for cascading alerts;
+ * more becomes overwhelming and hides the agent output beneath.
+ */
+export const MAX_VISIBLE_TOASTS = 3;
+/**
+ * Cap on persisted in-memory governance violations (gov-9). Lower than
+ * MAX_ALERTS_IN_MEMORY because violations are rarer per-session and
+ * the /governance view only renders the last ~10 anyway.
+ */
+export const MAX_VIOLATIONS_IN_MEMORY = 50;
+
 // ---------------------------------------------------------------------------
 // View & Modal
 // ---------------------------------------------------------------------------
@@ -44,7 +65,8 @@ export type TuiView =
   | "trajectory"
   | "cost"
   | "mcp"
-  | "plugins";
+  | "plugins"
+  | "governance";
 
 /** MCP server status entry for the /mcp view. */
 export interface McpServerInfo {
@@ -118,12 +140,36 @@ export interface PermissionPromptData {
   readonly sequenceNumber?: number | undefined;
 }
 
+/** Entry describing a model available for selection in the model picker. */
+export interface ModelEntry {
+  readonly id: string;
+  readonly contextLength?: number | undefined;
+  readonly pricingIn?: number | undefined;
+  readonly pricingOut?: number | undefined;
+}
+
+/**
+ * Result of a provider `/models` fetch. Lives in L2 TUI types so the host
+ * (L3 CLI) can inject a fetch callback without creating a reverse
+ * dependency from @koi/tui to @koi-agent/cli.
+ */
+export type FetchModelsResult =
+  | { readonly ok: true; readonly models: readonly ModelEntry[] }
+  | { readonly ok: false; readonly error: string };
+
 /** Transient overlay that preserves the underlying view. */
 export type TuiModal =
   | { readonly kind: "command-palette"; readonly query: string }
   | { readonly kind: "permission-prompt"; readonly prompt: PermissionPromptData }
   | { readonly kind: "session-picker" }
-  | { readonly kind: "session-rename" };
+  | { readonly kind: "session-rename" }
+  | {
+      readonly kind: "model-picker";
+      readonly query: string;
+      readonly status: "loading" | "ready" | "error";
+      readonly models: readonly ModelEntry[];
+      readonly error?: string | undefined;
+    };
 
 // ---------------------------------------------------------------------------
 // Session & Metrics
@@ -342,18 +388,76 @@ export interface PlanTask {
 }
 
 // ---------------------------------------------------------------------------
+// Governance (gov-9)
+// ---------------------------------------------------------------------------
+
+export interface GovernanceAlert {
+  readonly id: string;
+  readonly ts: number;
+  readonly sessionId: string;
+  readonly variable: string;
+  readonly threshold: number;
+  readonly current: number;
+  readonly limit: number;
+  readonly utilization: number;
+}
+
+export interface GovernanceViolation {
+  readonly id: string;
+  readonly ts: number;
+  readonly variable: string;
+  readonly reason: string;
+}
+
+/**
+ * TUI-local lite mirror of `@koi/core/middleware`'s `CapabilityFragment`.
+ * The TUI only needs label + description for `/governance` rendering; the
+ * lite mirror avoids coupling the TUI store to the full middleware-capability
+ * surface (which may grow over time).
+ */
+export interface CapabilityFragmentLite {
+  readonly label: string;
+  readonly description: string;
+}
+
+export interface GovernanceSlice {
+  readonly snapshot: GovernanceSnapshot | null;
+  readonly alerts: readonly GovernanceAlert[];
+  readonly violations: readonly GovernanceViolation[];
+  readonly rules: readonly RuleDescriptor[];
+  readonly capabilities: readonly CapabilityFragmentLite[];
+}
+
+export type ToastKind = "info" | "warn" | "error";
+
+export interface Toast {
+  readonly id: string;
+  readonly kind: ToastKind;
+  readonly key: string;
+  readonly title: string;
+  readonly body: string;
+  readonly ts: number;
+  /** Default 8000ms if omitted; consumers may override per-toast. */
+  readonly autoDismissMs?: number;
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
 /** Complete TUI rendering state. */
 export interface TuiState {
   readonly messages: readonly TuiMessage[];
+  /** Mid-turn user submits accepted for dispatch after the active run settles. */
+  readonly queuedSubmits: readonly string[];
   readonly activeView: TuiView;
   readonly modal: TuiModal | null;
   readonly connectionStatus: ConnectionStatus;
   readonly layoutTier: LayoutTier;
   readonly zoomLevel: number;
   // --- Status bar data ---
+  /** Currently selected model name. Empty string before the host sets it. */
+  readonly modelName: string;
   /** Set by the host on session start; null before first session. */
   readonly sessionInfo: SessionInfo | null;
   /** Cumulative metrics accumulated across all turns. */
@@ -428,6 +532,10 @@ export interface TuiState {
   readonly costBreakdown: CostBreakdown | null;
   /** Token throughput rate (tokens/sec) — null before first data push. */
   readonly tokenRate: { readonly inputPerSecond: number; readonly outputPerSecond: number } | null;
+  /** Governance read-only mirror — populated by the host bridge (gov-9). */
+  readonly governance: GovernanceSlice;
+  /** Active toast queue (gov-9). FIFO display, capped at MAX_VISIBLE_TOASTS. */
+  readonly toasts: readonly Toast[];
 }
 
 /** Summary of a trajectory step for display in the TUI /trajectory view. */
@@ -503,6 +611,9 @@ export type TuiAction =
       readonly id: string;
       readonly blocks: readonly ContentBlock[];
     }
+  | { readonly kind: "enqueue_submit"; readonly text: string }
+  | { readonly kind: "dequeue_submit" }
+  | { readonly kind: "clear_submit_queue" }
   | { readonly kind: "set_view"; readonly view: TuiView }
   | { readonly kind: "set_mcp_status"; readonly servers: readonly McpServerInfo[] }
   | { readonly kind: "set_modal"; readonly modal: TuiModal | null }
@@ -656,4 +767,23 @@ export type TuiAction =
   | {
       readonly kind: "set_plugin_summary";
       readonly summary: PluginSummary;
-    };
+    }
+  | { readonly kind: "set_governance_snapshot"; readonly snapshot: GovernanceSnapshot }
+  | { readonly kind: "add_governance_alert"; readonly alert: GovernanceAlert }
+  | { readonly kind: "add_governance_violation"; readonly violation: GovernanceViolation }
+  | { readonly kind: "clear_governance_alerts" }
+  | { readonly kind: "set_governance_rules"; readonly rules: readonly RuleDescriptor[] }
+  | {
+      readonly kind: "set_governance_capabilities";
+      readonly capabilities: readonly CapabilityFragmentLite[];
+    }
+  | { readonly kind: "add_toast"; readonly toast: Toast }
+  | { readonly kind: "dismiss_toast"; readonly id: string }
+  | { readonly kind: "model_picker_set_query"; readonly query: string }
+  | {
+      readonly kind: "model_picker_fetched";
+      readonly result:
+        | { readonly ok: true; readonly models: readonly ModelEntry[] }
+        | { readonly ok: false; readonly error: string };
+    }
+  | { readonly kind: "model_switched"; readonly model: string };

@@ -350,6 +350,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
   // Auto-detect bare HookConfig[] and wrap as "user" tier
   const registeredHooks: readonly RegisteredHook[] =
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     rawHooks.length > 0 && "hook" in rawHooks[0]!
       ? (rawHooks as readonly RegisteredHook[])
       : createRegisteredHooks(rawHooks as readonly HookConfig[], "user");

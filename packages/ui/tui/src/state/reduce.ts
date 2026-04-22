@@ -23,10 +23,13 @@ import type {
 } from "./types.js";
 import {
   COMPACT_THRESHOLD,
+  MAX_ALERTS_IN_MEMORY,
   MAX_FINISHED_SPAWNS,
   MAX_MESSAGES,
   MAX_SESSIONS,
   MAX_TOOL_RESULT_BYTES,
+  MAX_VIOLATIONS_IN_MEMORY,
+  MAX_VISIBLE_TOASTS,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -692,6 +695,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages };
     }
 
+    case "enqueue_submit":
+      return { ...state, queuedSubmits: [...state.queuedSubmits, action.text] };
+
+    case "dequeue_submit":
+      return state.queuedSubmits.length === 0
+        ? state
+        : { ...state, queuedSubmits: state.queuedSubmits.slice(1) };
+
+    case "clear_submit_queue":
+      return state.queuedSubmits.length === 0 ? state : { ...state, queuedSubmits: [] };
+
     case "set_view":
       return action.view === state.activeView ? state : { ...state, activeView: action.view };
 
@@ -702,6 +716,37 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return action.modal === null && state.modal === null
         ? state
         : { ...state, modal: action.modal };
+
+    case "model_picker_set_query": {
+      if (state.modal?.kind !== "model-picker") return state;
+      return { ...state, modal: { ...state.modal, query: action.query } };
+    }
+
+    case "model_picker_fetched": {
+      if (state.modal?.kind !== "model-picker") return state;
+      const nextModal = action.result.ok
+        ? {
+            ...state.modal,
+            status: "ready" as const,
+            models: action.result.models,
+          }
+        : {
+            ...state.modal,
+            status: "error" as const,
+            error: action.result.error,
+          };
+      return { ...state, modal: nextModal };
+    }
+
+    case "model_switched": {
+      // Keep `sessionInfo.modelName` in lockstep with the top-level
+      // `state.modelName` so diagnostics (doctor view, cost recording,
+      // transcript exports that read session metadata) see a single
+      // source of truth after a mid-session switch.
+      const nextSessionInfo =
+        state.sessionInfo === null ? null : { ...state.sessionInfo, modelName: action.model };
+      return { ...state, modelName: action.model, sessionInfo: nextSessionInfo };
+    }
 
     case "set_connection_status":
       return action.status === state.connectionStatus
@@ -769,6 +814,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "clear_messages":
       if (
         state.messages.length === 0 &&
+        state.queuedSubmits.length === 0 &&
         state.agentStatus === "idle" &&
         state.planTasks === null &&
         state.expandedToolCallIds.size === 0 &&
@@ -780,6 +826,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return {
         ...state,
         messages: [],
+        queuedSubmits: [],
         agentStatus: "idle",
         planTasks: null,
         runningToolCount: 0,
@@ -890,8 +937,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         };
       }
 
+      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
       const agentName = progress?.agentName ?? existingRecord!.agentName;
+      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
       const description = progress?.description ?? existingRecord!.description;
+      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
       const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
       const finishedAt = Date.now();
       const durationMs = finishedAt - startedAt;
@@ -1058,6 +1108,46 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         costBreakdown: action.breakdown,
         tokenRate: action.tokenRate ?? state.tokenRate,
       };
+
+    case "set_governance_snapshot":
+      return {
+        ...state,
+        governance: { ...state.governance, snapshot: action.snapshot },
+      };
+
+    case "add_governance_alert": {
+      const next = [action.alert, ...state.governance.alerts].slice(0, MAX_ALERTS_IN_MEMORY);
+      return { ...state, governance: { ...state.governance, alerts: next } };
+    }
+
+    case "add_governance_violation": {
+      const next = [action.violation, ...state.governance.violations].slice(
+        0,
+        MAX_VIOLATIONS_IN_MEMORY,
+      );
+      return { ...state, governance: { ...state.governance, violations: next } };
+    }
+
+    case "clear_governance_alerts":
+      return { ...state, governance: { ...state.governance, alerts: [] } };
+
+    case "set_governance_rules":
+      return { ...state, governance: { ...state.governance, rules: action.rules } };
+
+    case "set_governance_capabilities":
+      return {
+        ...state,
+        governance: { ...state.governance, capabilities: action.capabilities },
+      };
+
+    case "add_toast": {
+      const without = state.toasts.filter((t) => t.key !== action.toast.key);
+      const next = [...without, action.toast].slice(-MAX_VISIBLE_TOASTS);
+      return { ...state, toasts: next };
+    }
+
+    case "dismiss_toast":
+      return { ...state, toasts: state.toasts.filter((t) => t.id !== action.id) };
 
     default:
       return state;

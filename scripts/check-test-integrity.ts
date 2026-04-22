@@ -42,8 +42,11 @@ async function main(): Promise<void> {
     console.log("ℹ️  [test-archive] detected — archive moves exempt, other checks still enforced.");
   }
 
-  // Get changed files relative to base
-  const diffOutput = await $`git diff --name-status ${baseBranch} -- "*.test.ts"`.text();
+  // Get changed files relative to base. Include `.test.tsx` so a rename
+  // from `.test.ts` to `.test.tsx` (e.g. when adding JSX render tests)
+  // is detected as a rename rather than a deletion.
+  const diffOutput =
+    await $`git diff --name-status ${baseBranch} -- "*.test.ts" "*.test.tsx"`.text();
   const lines = diffOutput.trim().split("\n").filter(Boolean);
 
   const violations: Violation[] = [];
@@ -56,6 +59,13 @@ async function main(): Promise<void> {
     if (status === "D") {
       const file = parts[1]?.trim();
       if (file === undefined || file.startsWith("archive/")) continue;
+      // Treat `.test.ts` → `.test.tsx` (same basename) as a rename, not a
+      // deletion. Git's similarity-based rename detection misses these when
+      // JSX render assertions inflate the new file beyond the threshold.
+      if (file.endsWith(".test.ts")) {
+        const tsxPeer = `${file}x`;
+        if (await Bun.file(tsxPeer).exists()) continue;
+      }
       violations.push({ file, reason: "test file deleted" });
       continue;
     }

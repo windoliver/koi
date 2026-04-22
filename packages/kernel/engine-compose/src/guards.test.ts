@@ -341,6 +341,25 @@ describe("createLoopDetector", () => {
     });
   });
 
+  test("warning callback failure does not fail tool execution", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 1,
+      noProgressEnabled: false,
+      onWarning: () => {
+        throw new Error("loop warning callback failed");
+      },
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Warning callbacks are advisory; tool execution should still proceed.
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
   test("warning fires at most once per unique hash", async () => {
     const warnings: unknown[] = [];
     const detector = createLoopDetector({
@@ -1303,6 +1322,41 @@ describe("createSpawnGuard", () => {
     await p3;
   });
 
+  test("warning callback failure does not leak concurrent fan-out slot", async () => {
+    const guard = createSpawnGuard({
+      policy: {
+        maxFanOut: 1,
+        fanOutWarningAt: 0,
+        onWarning: () => {
+          throw new Error("fan-out warning callback failed");
+        },
+      },
+      agentDepth: 0,
+    });
+    const wrap = getToolWrap(guard);
+    const rid = runId("warn-leak");
+    const ctxTurn0: TurnContext = {
+      ...mockTurnContext(),
+      turnIndex: 0,
+      turnId: turnId(rid, 0),
+    };
+    const ctxTurn1: TurnContext = {
+      ...mockTurnContext(),
+      turnIndex: 1,
+      turnId: turnId(rid, 1),
+    };
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+
+    // First call throws from warning callback before next() executes.
+    await expect(wrap(ctxTurn0, mockToolRequest("forge_agent"), next)).rejects.toThrow(
+      "fan-out warning callback failed",
+    );
+
+    // New turn resets burst budget, so only directChildren leaks can block this call.
+    await wrap(ctxTurn1, mockToolRequest("forge_agent"), next);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
   test("no warning when threshold not configured", async () => {
     const onWarning = mock(() => {});
     const guard = createSpawnGuard({
@@ -1958,6 +2012,33 @@ describe("createLoopDetector — no-progress", () => {
     expect(next).toHaveBeenCalledTimes(4);
   });
 
+  test("stops no-progress serialization once output size ceiling is exceeded", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 3,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+
+    let tailAccessed = false;
+    const largeOutput = {
+      big: "x".repeat(70_000),
+      get tail(): string {
+        tailAccessed = true;
+        return "tail";
+      },
+    };
+
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse(largeOutput)));
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+
+    // We should bail out before traversing deep/extra properties.
+    expect(tailAccessed).toBe(false);
+  });
+
   test("skips no-progress check for oversized outputs", async () => {
     const detector = createLoopDetector({
       windowSize: 20,
@@ -1973,8 +2054,6 @@ describe("createLoopDetector — no-progress", () => {
     );
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse(hugeOutput)));
 
-    // If oversized outputs were fully hashed, call 2 would trigger no-progress.
-    // Bounded hashing should skip this check and allow all calls.
     await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
     await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
     await wrap(ctx, mockToolRequest("calc", { a: 3 }), next);
@@ -2396,6 +2475,142 @@ describe("createIterationGuard inactivity", () => {
         expect(e.message).toContain("Inactivity timeout");
       }
     }
+  });
+
+  test("successful model call cancels timeout timer and keeps forwarded signal alive", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 80, maxDurationMs: 80 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    let capturedSignal: AbortSignal | undefined;
+    const next: ModelNext = mock(async (req: ModelRequest) => {
+      capturedSignal = req.signal;
+      await new Promise((r) => setTimeout(r, 5));
+      return mockModelResponse();
+    });
+
+    await wrap(ctx, mockModelRequest(), next);
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal?.aborted).toBe(false);
+
+    // If timer cleanup is missing, the forwarded timeout signal flips to aborted later.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(capturedSignal?.aborted).toBe(false);
+  });
+
+  test("timeout aborts in-flight model call signal for cooperative providers", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    let sawAbort = false;
+    const hangingNext: ModelNext = mock(
+      (req: ModelRequest) =>
+        new Promise<ModelResponse>((_resolve, reject) => {
+          req.signal?.addEventListener(
+            "abort",
+            () => {
+              sawAbort = true;
+              reject(new DOMException("aborted", "AbortError"));
+            },
+            { once: true },
+          );
+        }),
+    );
+
+    try {
+      await wrap(ctx, mockModelRequest(), hangingNext);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      // Cooperative providers may reject with AbortError immediately once the
+      // timeout signal aborts, or the guard timeout may win the race first.
+      const isTimeout =
+        e instanceof KoiRuntimeError && e.code === "TIMEOUT" && e.message.includes("timeout");
+      const isAbortDomException =
+        e instanceof DOMException && e.name === "AbortError" && e.message === "aborted";
+      expect(isTimeout || isAbortDomException).toBe(true);
+    }
+    expect(sawAbort).toBe(true);
+  });
+
+  test("stream timeout aborts in-flight model stream signal for cooperative providers", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 30, maxDurationMs: 5_000 });
+    const wrap = getStreamWrap(guard);
+    const ctx = mockTurnContext();
+    let sawAbort = false;
+    const hangingStreamNext: StreamNext = (req: ModelRequest) => ({
+      [Symbol.asyncIterator](): AsyncIterator<ModelChunk> {
+        req.signal?.addEventListener(
+          "abort",
+          () => {
+            sawAbort = true;
+          },
+          { once: true },
+        );
+        return {
+          next: async (): Promise<IteratorResult<ModelChunk>> => {
+            await new Promise<void>(() => {
+              // Never resolves unless caller aborts + iter.return() unwinds.
+            });
+            return { done: true, value: undefined };
+          },
+          return: async (): Promise<IteratorResult<ModelChunk>> => {
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    });
+
+    try {
+      await collectChunks(wrap(ctx, mockModelRequest(), hangingStreamNext));
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      const isTimeout =
+        e instanceof KoiRuntimeError && e.code === "TIMEOUT" && e.message.includes("timeout");
+      const isAbortDomException =
+        e instanceof DOMException && e.name === "AbortError" && e.message === "aborted";
+      expect(isTimeout || isAbortDomException).toBe(true);
+    }
+    expect(sawAbort).toBe(true);
+  });
+
+  test("early stream close aborts forwarded model stream signal", async () => {
+    const guard = createIterationGuard({ maxInactivityMs: 500, maxDurationMs: 5_000 });
+    const wrap = getStreamWrap(guard);
+    const ctx = mockTurnContext();
+    let sawAbort = false;
+
+    const streamNext: StreamNext = (req: ModelRequest) => ({
+      [Symbol.asyncIterator](): AsyncIterator<ModelChunk> {
+        req.signal?.addEventListener(
+          "abort",
+          () => {
+            sawAbort = true;
+          },
+          { once: true },
+        );
+        let yielded = false;
+        return {
+          next: async (): Promise<IteratorResult<ModelChunk>> => {
+            if (!yielded) {
+              yielded = true;
+              return { done: false, value: { kind: "text_delta", delta: "partial" } };
+            }
+            await new Promise<void>(() => {
+              // Simulate a provider that would otherwise stay open indefinitely.
+            });
+            return { done: true, value: undefined };
+          },
+          return: async (): Promise<IteratorResult<ModelChunk>> => {
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    });
+
+    const iter = wrap(ctx, mockModelRequest(), streamNext)[Symbol.asyncIterator]();
+    const first = await iter.next();
+    expect(first.done).toBe(false);
+    await iter.return?.();
+    expect(sawAbort).toBe(true);
   });
 
   test("slow tool call completes without being reclassified as timeout", async () => {

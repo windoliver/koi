@@ -56,7 +56,7 @@ export interface TranscriptAdapterConfig {
    * (micro: truncate) and hardTriggerFraction (full: optimal-split truncate).
    * Set contextWindowSize or modelId so the registry can calibrate thresholds.
    */
-  readonly budgetConfig?: BudgetConfig;
+  readonly budgetConfig?: BudgetConfig | (() => BudgetConfig);
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,11 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         // otherwise fall back to naive message-count tail-slice.
         let contextMessages: readonly InboundMessage[];
         if (budgetConfig !== undefined) {
-          const budgetResult = await enforceBudget([...transcript], undefined, budgetConfig);
+          // Resolve per-turn so mid-session model switches pick up the new
+          // model's context window immediately on the next turn, without
+          // requiring the adapter to be rebuilt.
+          const resolvedBudget = typeof budgetConfig === "function" ? budgetConfig() : budgetConfig;
+          const budgetResult = await enforceBudget([...transcript], undefined, resolvedBudget);
           if (budgetResult.compaction !== "noop") {
             // Splice transcript in-place so future turns see the compacted history.
             transcript.splice(0, transcript.length, ...budgetResult.messages);
@@ -294,6 +298,9 @@ function explainNonCompletedStop(stopReason: string, metadata: unknown): string 
           readonly source?: string;
           readonly message?: string;
           readonly providerDetail?: { readonly error?: { readonly message?: string } | string };
+          readonly terminatedBy?: string;
+          readonly terminationReason?: string;
+          readonly elapsedMs?: number;
         }
       | undefined) ?? undefined;
   // Prefer explicit message, fall back to provider error message so users
@@ -307,6 +314,17 @@ function explainNonCompletedStop(stopReason: string, metadata: unknown): string 
   const effectiveMsg = meta?.message ?? providerMsg;
   const detail = effectiveMsg !== undefined ? ` — ${effectiveMsg}` : "";
   const source = meta?.source !== undefined ? ` (${meta.source})` : "";
+  // #1638: distinguish activity-timeout interrupts from user cancels so
+  // operators can diagnose silent-failure sessions. Reason is
+  // "idle" | "wall_clock"; elapsedMs is authoritative.
+  if (meta?.terminatedBy === "activity-timeout") {
+    const reason = meta.terminationReason ?? "unknown";
+    const elapsed = typeof meta.elapsedMs === "number" ? meta.elapsedMs : 0;
+    const seconds = Math.round(elapsed / 1000);
+    const label =
+      reason === "idle" ? "inactivity" : reason === "wall_clock" ? "wall-clock" : reason;
+    return `\n[Turn interrupted by activity timeout (${label}) after ${seconds}s.]\n`;
+  }
   switch (stopReason) {
     case "max_turns":
       return `\n[Turn ended: model reached the per-turn tool-call budget without producing a final reply${detail}. Try a more specific prompt, or split the work across multiple turns.]\n`;

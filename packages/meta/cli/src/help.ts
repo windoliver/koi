@@ -47,6 +47,20 @@ Options:
       --verifier-timeout <ms>      Per-iteration verifier timeout (default 120000)
       --allow-side-effects         Required with --until-pass (trust-boundary opt-in)
       --verifier-inherit-env       Forward parent env to verifier subprocess
+      --headless                   CI/CD mode: NDJSON stdout, auto-deny ask perms
+                                     exit 0=ok 1=agent-fail 2=perm-denied
+                                     3=budget 4=timeout 5=internal. Requires --prompt.
+      --allow-tool <name>          Whitelist a tool for auto-allow in --headless (repeatable)
+      --max-duration-ms <n>        Run deadline in ms + 10s teardown grace (--headless only).
+                                     Hard timeout: calls process.exit on expiry, so in-process
+                                     embedders should invoke via subprocess if they need to
+                                     survive the deadline.
+      --max-spend <usd>            Cumulative spend cap before governance fires (USD)
+      --max-turns <n>              Turn cap per run before governance fires
+      --max-spawn-depth <n>        Sub-agent spawn-depth cap before governance fires
+      --policy-file <path>         YAML/JSON file with governance rules (validated at boot)
+      --alert-threshold <pct>      Per-variable alert threshold in (0, 1]; repeatable (default 0.8, 0.95)
+      --no-governance              Disable governance wiring (mutually exclusive with gov flags)
   -h, --help                       Show this help
 `;
 
@@ -73,12 +87,17 @@ Options:
       --agent <id>                 Agent id (multi-agent manifests)
       --session <id>               Session id to open
       --resume <id>                Resume a prior session (loads transcript)
-      --goal <text>                Inject a goal; repeatable
       --until-pass <arg>           Convergence loop verifier argv; repeatable
       --max-iter <n>               Max loop iterations (default 10)
       --verifier-timeout <ms>      Per-iteration verifier timeout (default 120000)
       --allow-side-effects         Required with --until-pass
       --verifier-inherit-env       Forward parent env to verifier subprocess
+      --max-spend <usd>            Cumulative spend cap before governance fires (USD)
+      --max-turns <n>              Turn cap per run before governance fires
+      --max-spawn-depth <n>        Sub-agent spawn-depth cap before governance fires
+      --policy-file <path>         YAML/JSON file with governance rules (validated at boot)
+      --alert-threshold <pct>      Per-variable alert threshold in (0, 1]; repeatable (default 0.8, 0.95)
+      --no-governance              Disable governance wiring (mutually exclusive with gov flags)
   -h, --help                       Show this help
 `;
 
@@ -127,6 +146,21 @@ Options:
       --repair           Apply safe auto-repairs
       --json             Emit JSON instead of text
   -h, --help             Show this help
+`;
+
+const dreamHelp = `koi dream — Run dream memory consolidation
+
+Usage:
+  koi dream [options]
+
+Options:
+      --memory-dir <path>  Path to memory directory (default: ~/.koi/memory)
+      --model <name>       Model name for consolidation
+      --model-url <url>    OpenAI-compatible base URL
+      --api-key <key>      API key (overrides OPENROUTER_API_KEY / OPENAI_API_KEY)
+      --force              Skip gate check and run consolidation immediately
+      --json               Emit JSON instead of text
+  -h, --help               Show this help
 `;
 
 const stopHelp = `koi stop — Stop the running service
@@ -186,6 +220,27 @@ Options:
   -h, --help             Show this help
 `;
 
+const bgHelp = `koi bg — Manage background agent sessions
+
+Usage:
+  koi bg <subcommand> [worker-id] [options]
+
+Subcommands:
+  ps                     List background sessions
+  logs <id>              Tail a session's log file
+  kill <id>              Terminate a session (SIGTERM, then SIGKILL after 5s)
+  attach <id>            Attach to a session (read-only on subprocess backend)
+  detach                 Detach from an attached session (tmux backend only)
+
+Options:
+  -f, --follow           Keep tailing after printing existing log content (logs)
+      --json             Emit JSON instead of text (ps)
+      --registry-dir <p> Override the default registry directory
+  -h, --help             Show this help
+
+Default registry: $KOI_STATE_DIR/daemon/sessions, or ~/.koi/daemon/sessions.
+`;
+
 export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   init: initHelp,
   start: startHelp,
@@ -195,8 +250,10 @@ export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   logs: logsHelp,
   status: statusHelp,
   doctor: doctorHelp,
+  dream: dreamHelp,
   stop: stopHelp,
   deploy: deployHelp,
   mcp: mcpHelp,
   plugin: pluginHelp,
+  bg: bgHelp,
 };

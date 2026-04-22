@@ -150,11 +150,14 @@ export class FileIndex {
 
     outer: for (let i = 0; i < count; i++) {
       // O(1) bitmap reject: path must contain every a-z letter in the needle
+      // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
       if ((charBits[i]! & needleBitmap) !== needleBitmap) continue;
 
+      // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
       const haystack = caseSensitive ? paths[i]! : lowerPaths[i]!;
 
       // Fused indexOf scan: find positions + accumulate gap/consecutive terms
+      // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
       let pos = haystack.indexOf(needleChars[0]!);
       if (pos === -1) continue;
       posBuf[0] = pos;
@@ -162,6 +165,7 @@ export class FileIndex {
       let consecBonus = 0;
       let prev = pos;
       for (let j = 1; j < nLen; j++) {
+        // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
         pos = haystack.indexOf(needleChars[j]!, prev + 1);
         if (pos === -1) continue outer;
         posBuf[j] = pos;
@@ -177,11 +181,15 @@ export class FileIndex {
       }
 
       // Boundary/camelCase scoring
+      // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
       const originalPath = paths[i]!;
+      // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
       const hLen = pathLens[i]!;
       let score = nLen * SCORE_MATCH + consecBonus - gapPenalty;
+      // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
       score += scoreBonusAt(originalPath, posBuf[0]!, true);
       for (let j = 1; j < nLen; j++) {
+        // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
         score += scoreBonusAt(originalPath, posBuf[j]!, false);
       }
       // Length bonus: shorter paths score slightly higher

@@ -1,3 +1,5 @@
+import type { GovernanceFlags } from "./governance-flags.js";
+import { parseGovernanceFlags } from "./governance-flags.js";
 import type { BaseFlags } from "./shared.js";
 import { ParseError, typedParseArgs } from "./shared.js";
 
@@ -20,7 +22,6 @@ export interface TuiFlags extends BaseFlags {
    * "everything auto-discovered" behavior.
    */
   readonly manifest: string | undefined;
-  readonly goal: readonly string[];
   // --- Convergence loop mode (#1624) ---
   /**
    * Verifier argv for --until-pass mode. Repeatable flag: each
@@ -49,6 +50,14 @@ export interface TuiFlags extends BaseFlags {
    * in trusted environments — equivalent to rules `{ allow: ["*"] }`.
    */
   readonly yolo: boolean;
+  /**
+   * Governance CLI surface (gov-10). Bundled object keeps the flag module
+   * free-standing — per-flag validation, conflict detection, and defaults
+   * all live in `args/governance-flags.ts` so `koi start` and `koi tui`
+   * share one surface. Use `governance.maxSpendUsd ?? 0` to keep the
+   * pre-gov-10 "0 disables the cap" semantics at the call site.
+   */
+  readonly governance: GovernanceFlags;
 }
 
 export function parseTuiFlags(rest: readonly string[]): TuiFlags {
@@ -57,7 +66,6 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly session: string | undefined;
     readonly resume: string | undefined;
     readonly manifest: string | undefined;
-    readonly goal: string[] | undefined;
     readonly "until-pass": string[] | undefined;
     readonly "max-iter": string | undefined;
     readonly "verifier-timeout": string | undefined;
@@ -65,6 +73,12 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly "verifier-inherit-env": boolean | undefined;
     readonly yolo: boolean | undefined;
     readonly "dangerously-skip-permissions": boolean | undefined;
+    readonly "max-spend": string | undefined;
+    readonly "max-turns": string | undefined;
+    readonly "max-spawn-depth": string | undefined;
+    readonly "policy-file": string | undefined;
+    readonly "alert-threshold": string[] | undefined;
+    readonly "no-governance": boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -76,7 +90,6 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         session: { type: "string" },
         resume: { type: "string" },
         manifest: { type: "string" },
-        goal: { type: "string", multiple: true },
         "until-pass": { type: "string", multiple: true },
         "max-iter": { type: "string" },
         "verifier-timeout": { type: "string" },
@@ -84,6 +97,12 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         "verifier-inherit-env": { type: "boolean", default: false },
         yolo: { type: "boolean", default: false },
         "dangerously-skip-permissions": { type: "boolean", default: false },
+        "max-spend": { type: "string" },
+        "max-turns": { type: "string" },
+        "max-spawn-depth": { type: "string" },
+        "policy-file": { type: "string" },
+        "alert-threshold": { type: "string", multiple: true },
+        "no-governance": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -130,6 +149,18 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     }
   }
 
+  const governance = parseGovernanceFlags(
+    {
+      "max-spend": values["max-spend"],
+      "max-turns": values["max-turns"],
+      "max-spawn-depth": values["max-spawn-depth"],
+      "policy-file": values["policy-file"],
+      "alert-threshold": values["alert-threshold"],
+      "no-governance": values["no-governance"],
+    },
+    skipValidators,
+  );
+
   return {
     command: "tui" as const,
     version: versionRequested,
@@ -138,13 +169,13 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     session: values.session,
     resume: values.resume,
     manifest: values.manifest,
-    goal: values.goal ?? [],
     untilPass,
     maxIter: resolveMaxIterSafe(values["max-iter"], skipValidators),
     verifierTimeoutMs: resolveVerifierTimeoutMsSafe(values["verifier-timeout"], skipValidators),
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
     yolo: (values.yolo ?? false) || (values["dangerously-skip-permissions"] ?? false),
+    governance,
   };
 }
 

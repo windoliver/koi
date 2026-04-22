@@ -116,6 +116,15 @@ describe("ProcessTree", () => {
     expect(tree.size()).toBe(0);
     expect(tree.childrenOf(agentId("root"))).toEqual([]);
   });
+
+  test("cycle guard: self-parent does not loop in descendants/depth", () => {
+    // Malformed event stream (agent points at itself as parent) should not
+    // hang traversal helpers.
+    registry.register(entry("loop", "loop"));
+
+    expect(tree.descendantsOf(agentId("loop"))).toEqual([]);
+    expect(tree.depthOf(agentId("loop"))).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -180,5 +189,11 @@ describe("ProcessTree lineage", () => {
 
     const lin = tree.lineage(agentId("d"));
     expect(lin).toEqual([agentId("c"), agentId("b"), agentId("a")]);
+  });
+
+  test("lineage cycle guard: self-spawner does not loop forever", () => {
+    registry.register(entry("loop", undefined, "created", "loop"));
+
+    expect(tree.lineage(agentId("loop"))).toEqual([agentId("loop")]);
   });
 });

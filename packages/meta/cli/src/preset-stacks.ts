@@ -36,6 +36,8 @@ import type {
 } from "@koi/core";
 import type { CreateHookMiddlewareOptions } from "@koi/hooks";
 import { checkpointStack } from "./preset-stacks/checkpoint.js";
+import { codeExecStack } from "./preset-stacks/code-exec.js";
+import { dreamStack } from "./preset-stacks/dream.js";
 import { executionStack } from "./preset-stacks/execution.js";
 import { mcpStack } from "./preset-stacks/mcp.js";
 import { memoryStack } from "./preset-stacks/memory.js";
@@ -249,8 +251,12 @@ export const DEFAULT_STACKS: readonly PresetStack[] = [
   executionStack,
   checkpointStack,
   memoryStack,
+  // Dream after memory: shares the same memory directory and model adapter.
+  // No ordering constraint vs memory — both are early-phase, independent.
+  dreamStack,
   mcpStack,
   notebookStack,
+  codeExecStack,
   rulesStack,
   skillsStack,
   // Late-phase: spawn needs already-composed middleware for child

@@ -1,0 +1,998 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "artifacts-roundtrip",
+  "agent": {
+    "name": "golden-artifacts-roundtrip",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "artifact_save",
+        "description": "Save a text artifact to the content-addressed artifact store. Returns the new artifact id and version."
+      },
+      {
+        "name": "artifact_get",
+        "description": "Retrieve an artifact's UTF-8 text content by id."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.077Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.078Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-20T06:35:53.087Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use artifact_save to save an artifact named 'notes.txt' with content 'golden trajectory'. Then use artifact_get with the id you got back to fetch the content. Finally respond with just the retrieved content, nothing else.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 270,
+        "completion_tokens": 10
+      },
+      "duration_ms": 739,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 2,
+        "tools": [
+          {
+            "name": "artifact_save",
+            "description": "Save a text artifact to the content-addressed artifact store. Returns the new artifact id and version."
+          },
+          {
+            "name": "artifact_get",
+            "description": "Retrieve an artifact's UTF-8 text content by id."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "aacb68afa5940adceeb2aed057dfb0f43930bed7acfd63e8ff5845cd43d3d2fc",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-20T06:35:53.833Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_artifact_save_3",
+          "function_name": "artifact_save",
+          "arguments": {
+            "content": "golden trajectory",
+            "name": "notes.txt"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_artifact_save_3",
+            "content": "{\"ok\":true,\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\",\"version\":1,\"size\":17,\"contentHash\":\"b206aa8e09958a734727ea647cd709078366a2e189ca7624fba6cfebf17c065a\"}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.834Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 743.7302500000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1776666953832,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.839Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "artifact_save({\"content\":\"golden trajectory\",\"name\":\"notes.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 3.7590829999999187,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "artifact_save",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.840Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 742.4809169999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 2,
+            "allowedCount": 2,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776666953831,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.841Z",
+      "model_name": "middleware:permissions",
+      "message": "artifact_save({\"content\":\"golden trajectory\",\"name\":\"notes.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 3.4504579999997986,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "artifact_save",
+            "resource": "artifact_save",
+            "toolInput": "{\"content\":\"golden trajectory\",\"name\":\"notes.txt\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776666953838,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.842Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 741.3567079999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776666953830,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.843Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 741.2624169999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use artifact_save to save an artifact named 'notes.txt' with content 'golden trajectory'. Then use artifact_get with the",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use artifact_save to save an artifact named 'notes.txt' with content 'golden trajectory'. Then use artifact_get with the"
+          }
+        ],
+        "_original_timestamp": 1776666953829,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.844Z",
+      "model_name": "middleware:goal",
+      "message": "artifact_save({\"content\":\"golden trajectory\",\"name\":\"notes.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.5825410000002194,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776666953837,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.845Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 741.0382079999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776666953828,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.846Z",
+      "model_name": "middleware:hooks",
+      "message": "artifact_save({\"content\":\"golden trajectory\",\"name\":\"notes.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.5718329999999696,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "artifact_save",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776666953836,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.847Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 740.7867909999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776666953827,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:53.848Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "artifact_save({\"content\":\"golden trajectory\",\"name\":\"notes.txt\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.2693749999998545,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776666953835,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "agent",
+      "timestamp": "2026-04-20T06:35:53.849Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\",\"version\":1,\"size\":17,\"contentHash\":\"b206aa8e09958a734727ea647cd709078366a2e189ca7624fba6cfebf17c065a\"}",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 366,
+        "completion_tokens": 41
+      },
+      "duration_ms": 862,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 2,
+        "tools": [
+          {
+            "name": "artifact_save",
+            "description": "Save a text artifact to the content-addressed artifact store. Returns the new artifact id and version."
+          },
+          {
+            "name": "artifact_get",
+            "description": "Retrieve an artifact's UTF-8 text content by id."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "aacb68afa5940adceeb2aed057dfb0f43930bed7acfd63e8ff5845cd43d3d2fc",
+        "turnIndex": 1,
+        "_original_timestamp": 1776666953841
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "tool",
+      "timestamp": "2026-04-20T06:35:54.710Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_artifact_get_16",
+          "function_name": "artifact_get",
+          "arguments": {
+            "id": "art_b1d04a7b-aa03-4b84-8941-5d65d2937e82"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_artifact_get_16",
+            "content": "{\"ok\":true,\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\",\"size\":17,\"content\":\"golden trajectory\"}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.711Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 870.7012920000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1776666954709,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.716Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "artifact_get({\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.0013750000002801,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "artifact_get",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.717Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 870.6909169999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 2,
+            "allowedCount": 2,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776666954708,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.718Z",
+      "model_name": "middleware:permissions",
+      "message": "artifact_get({\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.9522090000000389,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "artifact_get",
+            "resource": "artifact_get",
+            "toolInput": "{\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776666954715,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.719Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 870.6177499999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776666954707,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.720Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 870.608041,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776666954706,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.721Z",
+      "model_name": "middleware:goal",
+      "message": "artifact_get({\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.8539579999996931,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776666954714,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.722Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 870.597166,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776666954705,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.723Z",
+      "model_name": "middleware:hooks",
+      "message": "artifact_get({\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.849999999999909,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "artifact_get",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776666954713,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.724Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 870.5533330000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776666954704,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:54.725Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "artifact_get({\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.8002500000002328,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776666954712,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "agent",
+      "timestamp": "2026-04-20T06:35:54.726Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"ok\":true,\"id\":\"art_b1d04a7b-aa03-4b84-8941-5d65d2937e82\",\"size\":17,\"content\":\"golden trajectory\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "golden trajectory\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 473,
+        "completion_tokens": 3
+      },
+      "duration_ms": 587,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 5,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 2,
+        "tools": [
+          {
+            "name": "artifact_save",
+            "description": "Save a text artifact to the content-addressed artifact store. Returns the new artifact id and version."
+          },
+          {
+            "name": "artifact_get",
+            "description": "Retrieve an artifact's UTF-8 text content by id."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "aacb68afa5940adceeb2aed057dfb0f43930bed7acfd63e8ff5845cd43d3d2fc",
+        "turnIndex": 2,
+        "_original_timestamp": 1776666954718
+      }
+    },
+    {
+      "step_id": 29,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:55.311Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 599.8617920000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 30,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:55.312Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 599.8420839999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 2,
+            "allowedCount": 2,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776666955310,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 31,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:55.313Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 599.7630829999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776666955309,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 32,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:55.314Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 599.7510830000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776666955308,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 33,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:55.315Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 599.7345,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776666955307,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 34,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:55.316Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 599.6288749999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776666955306,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 35,
+      "source": "system",
+      "timestamp": "2026-04-20T06:35:55.317Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.1229590000002645,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1776666955313,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

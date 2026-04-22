@@ -1,4 +1,4 @@
-import type { JsonObject, ManagedTaskBoard, Tool } from "@koi/core";
+import type { AgentId, JsonObject, ManagedTaskBoard, Tool } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, taskItemId } from "@koi/core";
 
 import { toJSONSchema, z } from "zod";
@@ -28,7 +28,7 @@ const schema = z.object({
     ),
 });
 
-export function createTaskCreateTool(board: ManagedTaskBoard): Tool {
+export function createTaskCreateTool(board: ManagedTaskBoard, agentId: AgentId): Tool {
   return {
     descriptor: {
       name: "task_create",
@@ -64,6 +64,7 @@ export function createTaskCreateTool(board: ManagedTaskBoard): Tool {
           : {}),
         ...(active_form !== undefined ? { activeForm: active_form } : {}),
         ...(metadata !== undefined ? { metadata } : {}),
+        createdBy: agentId,
       });
 
       if (!result.ok) {

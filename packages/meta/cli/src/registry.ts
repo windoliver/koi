@@ -27,8 +27,10 @@ export const COMMAND_LOADERS: Readonly<Record<KnownCommand, () => Promise<unknow
   logs: () => import("./commands/logs.js"),
   status: () => import("./commands/status.js"),
   doctor: () => import("./commands/doctor.js"),
+  dream: () => import("./commands/dream.js"),
   stop: () => import("./commands/stop.js"),
   deploy: () => import("./commands/deploy.js"),
   mcp: () => import("./commands/mcp.js"),
   plugin: () => import("./commands/plugin.js"),
+  bg: () => import("./commands/bg.js"),
 };

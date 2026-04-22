@@ -213,6 +213,17 @@ function makeFlags(
     allowSideEffects: false,
     verifierInheritEnv: false,
     allowRemoteFs: overrides.allowRemoteFs ?? false,
+    headless: false,
+    allowTools: [],
+    maxDurationMs: undefined,
+    governance: {
+      enabled: true,
+      maxSpendUsd: undefined,
+      maxTurns: undefined,
+      maxSpawnDepth: undefined,
+      policyFilePath: undefined,
+      alertThresholds: undefined,
+    },
   };
 }
 

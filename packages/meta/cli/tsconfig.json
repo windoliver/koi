@@ -8,6 +8,9 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../kernel/engine" },
+    { "path": "../../lib/agent-summary" },
+    { "path": "../../lib/artifacts" },
+    { "path": "../../net/daemon" },
     { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/channel-cli" },
     { "path": "../../lib/harness" },
@@ -15,6 +18,8 @@
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../lib/plugins" },
     { "path": "../../lib/query-engine" },
+    { "path": "../../mm/middleware-collective-memory" },
+    { "path": "../../mm/middleware-dream" },
     { "path": "../../mm/middleware-extraction" },
     { "path": "../../lib/middleware-otel" },
     { "path": "../../lib/middleware-task-anchor" },
@@ -22,6 +27,7 @@
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/audit-sink-sqlite" },
+    { "path": "../../lib/tool-exec" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/context-manager" },
     { "path": "../../mm/token-estimator" }

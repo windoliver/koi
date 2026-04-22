@@ -12,6 +12,11 @@
   },
   "dependencies": {
     "@koi/agent-runtime": "workspace:*",
+    "@koi/agent-summary": "workspace:*",
+    "@koi/artifacts": "workspace:*",
+    "@koi/artifacts-s3": "workspace:*",
+    "@koi/browser-ext": "workspace:*",
+    "@koi/browser-playwright": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/checkpoint": "workspace:*",
@@ -19,6 +24,7 @@
     "@koi/core": "workspace:*",
     "@koi/cost-aggregator": "workspace:*",
     "@koi/daemon": "workspace:*",
+    "@koi/debug": "workspace:*",
     "@koi/decision-ledger": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-compose": "workspace:*",
@@ -40,10 +46,12 @@
     "@koi/audit-sink-ndjson": "workspace:*",
     "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-dream": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",
+    "@koi/middleware-collective-memory": "workspace:*",
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/dream": "workspace:*",
-    "@koi/middleware-goal": "workspace:*",
+    "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
@@ -53,7 +61,9 @@
     "@koi/middleware-report": "workspace:*",
     "@koi/middleware-strict-agentic": "workspace:*",
     "@koi/middleware-task-anchor": "workspace:*",
+    "@koi/middleware-turn-prelude": "workspace:*",
     "@koi/outcome-evaluator": "workspace:*",
+    "@koi/watch-patterns": "workspace:*",
     "@koi/model-router": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
@@ -74,20 +84,27 @@
     "@koi/tasks": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
     "@koi/tools-core": "workspace:*",
+    "@koi/tool-exec": "workspace:*",
     "@koi/tool-browser": "workspace:*",
     "@koi/tool-notebook": "workspace:*",
     "@koi/lsp": "workspace:*",
     "@koi/tools-web": "workspace:*",
+    "@koi/url-safety": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.12.1"
+    "@aws-sdk/client-s3": "3.1032.0",
+    "@koi/blob-cas": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.12.1",
+    "@smithy/util-stream": "4.5.23",
+    "aws-sdk-client-mock": "4.1.0"
   },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "bun test",
+    "record": "bun scripts/record-cassettes.ts"
   }
 }

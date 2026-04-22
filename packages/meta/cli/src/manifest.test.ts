@@ -225,3 +225,117 @@ describe("loadManifestConfig: filesystem block", () => {
     expect(result.error.toLowerCase()).toContain("filesystem");
   });
 });
+
+// gov-10: manifest.governance section — feeds the same fields as the CLI
+// flags so both sources converge on the same runtime-factory shape. CLI
+// flags win at merge time; the loader only validates here.
+describe("loadManifestConfig: governance block (gov-10)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-gov10-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits governance when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.governance).toBeUndefined();
+  });
+
+  test("parses full governance block", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "governance:",
+        "  maxSpend: 2.50",
+        "  maxTurns: 50",
+        "  maxSpawnDepth: 3",
+        '  policyFile: "/abs/policies/default.yaml"',
+        "  alertThresholds: [0.7, 0.9]",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.governance).toEqual({
+      maxSpend: 2.5,
+      maxTurns: 50,
+      maxSpawnDepth: 3,
+      policyFile: "/abs/policies/default.yaml",
+      alertThresholds: [0.7, 0.9],
+    });
+  });
+
+  test("anchors relative policyFile to manifest dir", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "governance:",
+        "  policyFile: ./policies/default.yaml",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.governance?.policyFile).toBe(join(dir, "policies/default.yaml"));
+  });
+
+  test("rejects negative maxSpend", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "governance:", "  maxSpend: -1"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("maxSpend");
+  });
+
+  test("rejects non-integer maxTurns", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "governance:", "  maxTurns: 10.5"].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("maxTurns");
+  });
+
+  test("rejects alertThreshold outside (0, 1]", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "governance:",
+        "  alertThresholds: [0.5, 1.5]",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("alertThresholds");
+  });
+
+  test("rejects non-object governance block", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "governance: foo"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("governance");
+  });
+});

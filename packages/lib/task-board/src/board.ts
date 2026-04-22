@@ -113,6 +113,7 @@ function inputToTask(input: TaskInput, now: number): Task {
     version: 0,
     dependencies: input.dependencies ?? [],
     status: "pending",
+    ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
     ...(input.activeForm !== undefined ? { activeForm: input.activeForm } : {}),
     metadata: input.metadata,
     createdAt: now,
@@ -305,7 +306,7 @@ function createBoardFromState(
   function transitionTask(
     taskId: TaskItemId,
     to: TaskStatus,
-    patch?: Partial<Pick<Task, "assignedTo" | "error">>,
+    patch?: Partial<Pick<Task, "assignedTo" | "lastAssignedTo" | "error">>,
   ): Result<{ readonly task: Task; readonly items: ReadonlyMap<TaskItemId, Task> }, KoiError> {
     const task = items.get(taskId);
     if (task === undefined) {
@@ -506,7 +507,10 @@ function createBoardFromState(
           }
         }
       }
-      const result = transitionTask(taskId, "in_progress", { assignedTo: agentId });
+      const result = transitionTask(taskId, "in_progress", {
+        assignedTo: agentId,
+        lastAssignedTo: agentId,
+      });
       if (!result.ok) return { ok: false, error: result.error };
       const newBoard = createBoardFromState(result.value.items, results, unreachableIds, config);
       emit(config, { kind: "task:assigned", taskId, agentId }, newBoard);
@@ -588,6 +592,15 @@ function createBoardFromState(
         // transition that bypasses transitionTask, so we apply the
         // pending-only-marker invariant directly here. See the
         // stripDelegatedTo() docblock for the full rationale.
+        //
+        // Version-skew backfill: tasks persisted before `lastAssignedTo` was
+        // introduced have `assignedTo` set but `lastAssignedTo` undefined.
+        // Preserve the worker identity on the first post-upgrade transition
+        // that clears `assignedTo`. Never overwrite once set.
+        const backfilledLastAssignedTo =
+          task.lastAssignedTo === undefined && task.assignedTo !== undefined
+            ? { lastAssignedTo: task.assignedTo }
+            : {};
         const updated: Task = {
           ...task,
           status: "pending",
@@ -597,6 +610,7 @@ function createBoardFromState(
           error,
           updatedAt: now(),
           metadata: stripDelegatedTo(task.metadata),
+          ...backfilledLastAssignedTo,
         };
         const newItems = new Map(items);
         newItems.set(taskId, updated);
@@ -605,8 +619,20 @@ function createBoardFromState(
         return ok(newBoard);
       }
 
-      // Terminal failure
-      const result = transitionTask(taskId, "failed", { assignedTo: undefined, error });
+      // Terminal failure.
+      // Version-skew backfill: tasks persisted before `lastAssignedTo` was
+      // introduced have `assignedTo` set but `lastAssignedTo` undefined.
+      // Preserve the worker identity on the transition that clears `assignedTo`.
+      // Never overwrite once set.
+      const terminalBackfill =
+        task.lastAssignedTo === undefined && task.assignedTo !== undefined
+          ? { lastAssignedTo: task.assignedTo }
+          : {};
+      const result = transitionTask(taskId, "failed", {
+        ...terminalBackfill,
+        assignedTo: undefined,
+        error,
+      });
       if (!result.ok) return { ok: false, error: result.error };
 
       // Eager unreachable tracking: find newly unreachable downstream tasks
@@ -632,7 +658,14 @@ function createBoardFromState(
     kill(taskId: TaskItemId): Result<TaskBoard, KoiError> {
       const task = items.get(taskId);
       const prevStatus = task?.status ?? ("pending" as TaskStatus);
-      const result = transitionTask(taskId, "killed");
+      // Version-skew backfill: tasks persisted before `lastAssignedTo` was
+      // introduced have `assignedTo` set but `lastAssignedTo` undefined.
+      // Preserve the worker identity on kill. Never overwrite once set.
+      const killBackfill =
+        task !== undefined && task.lastAssignedTo === undefined && task.assignedTo !== undefined
+          ? { lastAssignedTo: task.assignedTo }
+          : undefined;
+      const result = transitionTask(taskId, "killed", killBackfill);
       if (!result.ok) return { ok: false, error: result.error };
 
       // Eager unreachable tracking: find newly unreachable downstream tasks

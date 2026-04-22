@@ -6,10 +6,14 @@
  * if only one flag type is needed.
  */
 
+export type { BgFlags, BgSubcommand } from "./bg.js";
+export { isBgFlags, parseBgFlags } from "./bg.js";
 export type { DeployFlags } from "./deploy.js";
 export { isDeployFlags, parseDeployFlags } from "./deploy.js";
 export type { DoctorFlags } from "./doctor.js";
 export { isDoctorFlags, parseDoctorFlags } from "./doctor.js";
+export type { DreamFlags } from "./dream.js";
+export { isDreamFlags, parseDreamFlags } from "./dream.js";
 export type { InitFlags } from "./init.js";
 export { isInitFlags, parseInitFlags } from "./init.js";
 export type { LogsFlags } from "./logs.js";
@@ -37,10 +41,14 @@ export { isTuiFlags, parseTuiFlags } from "./tui.js";
 // CliFlags union — the superset type used at the dispatch boundary
 // ---------------------------------------------------------------------------
 
+import type { BgFlags } from "./bg.js";
+import { parseBgFlags } from "./bg.js";
 import type { DeployFlags } from "./deploy.js";
 import { parseDeployFlags } from "./deploy.js";
 import type { DoctorFlags } from "./doctor.js";
 import { parseDoctorFlags } from "./doctor.js";
+import type { DreamFlags } from "./dream.js";
+import { parseDreamFlags } from "./dream.js";
 import type { InitFlags } from "./init.js";
 import { parseInitFlags } from "./init.js";
 import type { LogsFlags } from "./logs.js";
@@ -73,10 +81,12 @@ export type CliFlags =
   | LogsFlags
   | StatusFlags
   | DoctorFlags
+  | DreamFlags
   | StopFlags
   | DeployFlags
   | McpFlags
   | PluginFlags
+  | BgFlags
   | BaseFlags;
 
 // ---------------------------------------------------------------------------
@@ -92,10 +102,12 @@ export type KnownCommand =
   | "logs"
   | "status"
   | "doctor"
+  | "dream"
   | "stop"
   | "deploy"
   | "mcp"
-  | "plugin";
+  | "plugin"
+  | "bg";
 
 const KNOWN_COMMANDS: ReadonlyArray<KnownCommand> = [
   "init",
@@ -106,10 +118,12 @@ const KNOWN_COMMANDS: ReadonlyArray<KnownCommand> = [
   "logs",
   "status",
   "doctor",
+  "dream",
   "stop",
   "deploy",
   "mcp",
   "plugin",
+  "bg",
 ];
 
 export const COMMAND_NAMES: ReadonlyArray<KnownCommand> = KNOWN_COMMANDS;
@@ -133,10 +147,12 @@ const COMMAND_PARSERS: Readonly<Record<KnownCommand, CommandParser>> = {
   logs: parseLogsFlags,
   status: parseStatusFlags,
   doctor: parseDoctorFlags,
+  dream: parseDreamFlags,
   stop: parseStopFlags,
   deploy: parseDeployFlags,
   mcp: parseMcpFlags,
   plugin: parsePluginFlags,
+  bg: parseBgFlags,
 };
 
 // ---------------------------------------------------------------------------

@@ -21,8 +21,8 @@
 
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { hasBlob, readBlob } from "@koi/blob-cas";
 import type { CompensatingOp, FileOpRecord, FileSystemBackend, SnapshotNode } from "@koi/core";
-import { hasBlob, readBlob } from "./cas-store.js";
 import type { CheckpointPayload } from "./types.js";
 
 /**

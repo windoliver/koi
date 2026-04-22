@@ -6,6 +6,7 @@
  * produce warnings + source-aware poisoning to prevent silent fallback).
  */
 
+import type { Dirent } from "node:fs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentDefinition, AgentDefinitionSource, KoiError } from "@koi/core";
@@ -54,15 +55,98 @@ export interface LoadAgentsResult {
 // Implementation
 // ---------------------------------------------------------------------------
 
+const FRONTMATTER_OPENING_RE = /^---[ \t]*\r?\n/u;
+const FRONTMATTER_CLOSING_RE = /\r?\n---[ \t]*(?:\r?\n|$)/u;
+const FRONTMATTER_KEY_LINE_RE = /^([ \t]*)([a-zA-Z0-9_-]+)\s*:/;
+const FRONTMATTER_NAME_LINE_RE = /^([ \t]*)name\s*:\s*(['"]?)([a-zA-Z0-9-]+)\2(?:\s+#.*)?\s*$/;
+
+/** True when content starts with frontmatter opener but has no closing delimiter. */
+function hasUnclosedFrontmatter(content: string): boolean {
+  const openingMatch = FRONTMATTER_OPENING_RE.exec(content);
+  if (!openingMatch) return false;
+
+  const remainder = content.slice(openingMatch[0].length);
+  return !FRONTMATTER_CLOSING_RE.test(remainder);
+}
+
+/**
+ * Extract raw frontmatter text without parsing YAML.
+ *
+ * Handles both fully-delimited frontmatter and truncated blocks (opening
+ * delimiter with no closing delimiter), which is needed for fail-closed
+ * poisoning when YAML is malformed.
+ */
+function extractRawFrontmatter(content: string): string | undefined {
+  const openingMatch = FRONTMATTER_OPENING_RE.exec(content);
+  if (!openingMatch) return undefined;
+
+  const remainder = content.slice(openingMatch[0].length);
+  const closingMatch = FRONTMATTER_CLOSING_RE.exec(remainder);
+  if (!closingMatch) return remainder;
+
+  return remainder.slice(0, closingMatch.index);
+}
+
+/** Best-effort extraction of `name:` from raw frontmatter text. */
+function extractNameFromRawFrontmatter(content: string): string | undefined {
+  const rawFrontmatter = extractRawFrontmatter(content);
+  if (rawFrontmatter === undefined) return undefined;
+
+  const lines = rawFrontmatter.split(/\r?\n/u);
+
+  // Determine the minimum indentation level among YAML key lines. This is our
+  // best-effort approximation for "top-level" keys in malformed frontmatter.
+  let minKeyIndent: number | undefined;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+
+    const keyMatch = FRONTMATTER_KEY_LINE_RE.exec(line);
+    if (!keyMatch) continue;
+
+    const indent = keyMatch[1]?.length ?? 0;
+    if (minKeyIndent === undefined || indent < minKeyIndent) {
+      minKeyIndent = indent;
+    }
+  }
+
+  if (minKeyIndent === undefined) return undefined;
+
+  // Only accept name lines that match the top-level indentation. This avoids
+  // poisoning from nested values like `metadata:\n  name: researcher`.
+  for (const line of lines) {
+    const nameMatch = FRONTMATTER_NAME_LINE_RE.exec(line);
+    if (!nameMatch) continue;
+
+    const indent = nameMatch[1]?.length ?? 0;
+    if (indent !== minKeyIndent) continue;
+
+    return nameMatch[3];
+  }
+
+  return undefined;
+}
+
 /**
  * Try to extract the intended agent name from frontmatter, even when the
  * full parse pipeline fails. Returns undefined if frontmatter is unparseable.
  */
 function extractIntendedName(content: string): string | undefined {
   const fmResult = parseFrontmatter(content);
-  if (!fmResult.ok) return undefined;
-  const name = fmResult.value.meta.name;
-  return typeof name === "string" && name.length > 0 ? name : undefined;
+  if (fmResult.ok) {
+    const name = fmResult.value.meta.name;
+    if (typeof name === "string" && name.length > 0) return name;
+
+    // parseFrontmatter treats unclosed frontmatter as "no frontmatter";
+    // recover intended type for fail-closed poisoning in this case.
+    if (hasUnclosedFrontmatter(content)) {
+      return extractNameFromRawFrontmatter(content);
+    }
+    return undefined;
+  }
+
+  // Parse-free fallback is only for malformed YAML frontmatter.
+  return extractNameFromRawFrontmatter(content);
 }
 
 /** Derive the intended agent type from content (frontmatter name) or filename. */
@@ -97,9 +181,9 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
   const warnings: AgentLoadWarning[] = [];
   const failedTypes: FailedAgentType[] = [];
 
-  let entries: string[];
+  let entries: readonly Dirent[];
   try {
-    entries = readdirSync(dir);
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
@@ -119,12 +203,17 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
   }
 
   // Sort deterministically — readdirSync order varies across platforms
-  entries.sort();
+  const sortedEntries = [...entries].sort((a, b) => {
+    if (a.name < b.name) return -1;
+    if (a.name > b.name) return 1;
+    return 0;
+  });
 
-  for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue;
+  for (const entry of sortedEntries) {
+    // Files only — ignore directories like "researcher.md/" to avoid false poisoning.
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
 
-    const filePath = join(dir, entry);
+    const filePath = join(dir, entry.name);
     let content: string;
     try {
       content = readFileSync(filePath, "utf-8");
@@ -139,7 +228,7 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
         },
       });
       // Poison on read failure too — can't recover name, use filename
-      failedTypes.push({ agentType: entry.replace(/\.md$/, ""), source });
+      failedTypes.push({ agentType: entry.name.replace(/\.md$/, ""), source });
       continue;
     }
 
@@ -148,7 +237,7 @@ function loadFromDirectory(dir: string, source: AgentDefinitionSource): Director
       agents.push(result.value);
     } else {
       warnings.push({ filePath, error: result.error });
-      failedTypes.push({ agentType: deriveIntendedType(content, entry), source });
+      failedTypes.push({ agentType: deriveIntendedType(content, entry.name), source });
     }
   }
 

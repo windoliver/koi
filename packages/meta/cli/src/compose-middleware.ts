@@ -9,7 +9,7 @@
  * composition.
  *
  * Why a tagged record instead of a positional argument list:
- *   - Optional slots (modelRouter, goal, otel) stay `undefined`-friendly
+ *   - Optional slots (modelRouter, otel) stay `undefined`-friendly
  *     without `null`-sentinel gymnastics at the call site.
  *   - Adding a new slot doesn't silently shift existing arguments.
  *   - The field names document the canonical middleware layer vocabulary.
@@ -41,13 +41,20 @@ export interface MiddlewareCompositionInput {
   // --- Optional layers ---
 
   /**
+   * Current-model override middleware. Holds a host-owned mutable box of
+   * the "active model" string and rewrites `request.model` before the
+   * request reaches `modelRouter` / the adapter. Composed OUTER of
+   * modelRouter so router fallback chains see the latest model choice.
+   * Used by the TUI to implement mid-session model switching without
+   * rebuilding the runtime.
+   */
+  readonly currentModel?: KoiMiddleware | undefined;
+  /**
    * Model-router middleware (innermost model-call interceptor). When
    * set, routes each retry attempt through the provider failover
    * chain independently so retries benefit from fallback.
    */
   readonly modelRouter?: KoiMiddleware | undefined;
-  /** Goal reminder middleware — injected when the host supplies objectives. */
-  readonly goal?: KoiMiddleware | undefined;
   /**
    * Planning middleware — injects `write_plan` tool semantics. Composed
    * INSIDE permissions so its prompt-visibility gate sees the final
@@ -56,6 +63,15 @@ export interface MiddlewareCompositionInput {
    * prompt instead of steering the model toward a denied tool.
    */
   readonly plan?: KoiMiddleware | undefined;
+  /**
+   * Plan-persist middleware — file-backed persistence layered on top
+   * of planning. Sits adjacent to `plan` so they share the same
+   * composition zone: plan-persist intercepts `koi_plan_save` /
+   * `koi_plan_load`, and the planning bundle's `onPlanUpdate` hook
+   * (wired at construction) mirrors every `koi_plan_write` commit to
+   * disk. Optional and only meaningful when `plan` is also set.
+   */
+  readonly planPersist?: KoiMiddleware | undefined;
   /**
    * Preset / plugin middleware contributed by stack activation. Appended
    * after the checkpoint layer so presets can observe the core stack
@@ -103,7 +119,6 @@ export interface MiddlewareCompositionInput {
  *                                         already-redacted traffic
  *   [zone C-bottom]
  *             modelRouter?
- *             goal?
  *             systemPrompt?
  *             sessionTranscript?
  *
@@ -119,7 +134,7 @@ export interface MiddlewareCompositionInput {
  * can commit to `koi.yaml` from adding a middleware that logs raw
  * prompts or tool inputs before the guard runs.
  *
- * Zone C-bottom (modelRouter/goal/systemPrompt/sessionTranscript)
+ * Zone C-bottom (modelRouter/systemPrompt/sessionTranscript)
  * sits innermost because those layers need to be the last thing
  * touching the model payload: modelRouter routes the final call,
  * systemPrompt injects the final instructions, sessionTranscript
@@ -141,9 +156,12 @@ export function composeRuntimeMiddleware(
     // cannot observe or persist raw request/response data.
     ...(input.manifestMiddleware ?? []),
     // Zone C-bottom — optional innermost layers.
+    // `currentModel` wraps `modelRouter` from the outside so the router's
+    // fallback chain sees the latest host-picked model id.
+    ...(input.currentModel !== undefined ? [input.currentModel] : []),
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
-    ...(input.goal !== undefined ? [input.goal] : []),
     ...(input.plan !== undefined ? [input.plan] : []),
+    ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.sessionTranscript !== undefined ? [input.sessionTranscript] : []),
   ];
@@ -186,7 +204,7 @@ export function composeRuntimeMiddleware(
  * instance is safe because its state is keyed by sessionId — parent
  * and child have distinct sessionIds, so they never alias.
  *
- * Exports / lifecycle / optional innermost (modelRouter, goal,
+ * Exports / lifecycle / optional innermost (modelRouter,
  * sessionTranscript) are NOT inherited — they are per-runtime state
  * that does not make sense to share with a child agent.
  *
@@ -200,12 +218,14 @@ export function buildInheritedMiddlewareForChildren(input: {
   readonly hook: KoiMiddleware;
   readonly systemPrompt?: KoiMiddleware | undefined;
   readonly plan?: KoiMiddleware | undefined;
+  readonly planPersist?: KoiMiddleware | undefined;
 }): readonly KoiMiddleware[] {
   return [
     input.permissions,
     input.exfiltrationGuard,
     input.hook,
     ...(input.plan !== undefined ? [input.plan] : []),
+    ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
   ];
 }

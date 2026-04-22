@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Koi Browser Extension (dev)",
+  "version": "0.1.0",
+  "description": "Koi agent bridge - attaches to your live Chrome via chrome.debugger and native messaging.",
+  "key": "__DEV_PUBLIC_KEY__",
+  "permissions": [
+    "debugger",
+    "nativeMessaging",
+    "tabs",
+    "notifications",
+    "alarms",
+    "storage",
+    "webNavigation"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Koi",
+    "default_popup": "popup.html"
+  }
+}

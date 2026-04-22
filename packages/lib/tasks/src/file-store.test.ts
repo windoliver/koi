@@ -135,6 +135,37 @@ describe("createFileTaskBoardStore — filesystem-specific", () => {
     expect(result?.subject).toBe("Old task");
   });
 
+  // FS-1g: Legacy task missing createdBy loads with createdBy === undefined (no implicit backfill)
+  test("legacy task file without createdBy loads with createdBy === undefined (no implicit backfill)", async () => {
+    // Simulate a pre-migration task file that lacks createdBy entirely.
+    // The store must NOT synthesize createdBy in memory — doing so per-process
+    // would produce authorization split-brain when two processes read the same
+    // file-backed task and independently choose different synthetic creators.
+    //
+    // The task_output ACL fails closed on undefined creator. Callers needing
+    // legacy-read access must run an explicit on-disk migration that writes
+    // createdBy to each task JSON BEFORE this store sees the file.
+    const legacyTask = {
+      id: "task_1",
+      subject: "Old task",
+      description: "Old task",
+      status: "pending",
+      dependencies: [],
+      retries: 0,
+      version: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    await writeFile(join(testDir, "task_1.json"), JSON.stringify(legacyTask));
+
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
+    const result = await store.get(taskItemId("task_1"));
+
+    expect(result).toBeDefined();
+    expect(result?.createdBy).toBeUndefined();
+    await store[Symbol.asyncDispose]();
+  });
+
   // FS-2: Orphaned .tmp files cleaned on startup
   test("cleans orphaned .tmp files on startup", async () => {
     // Create orphaned temp files

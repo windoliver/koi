@@ -79,9 +79,23 @@ export interface GovernanceSnapshot {
 
 export type GovernanceEvent =
   | { readonly kind: "turn" }
+  /**
+   * Refund one or more previously recorded turns.
+   *
+   * Useful when a host temporarily increments turn-count for internal
+   * orchestration work (tool wrappers, retries, delegated internal loops)
+   * that should not consume user-visible turn budget.
+   */
+  | { readonly kind: "turn_refund"; readonly count: number }
   | { readonly kind: "spawn"; readonly depth: number }
   | { readonly kind: "spawn_release" }
   | { readonly kind: "forge"; readonly toolName?: string | undefined }
+  /**
+   * Emitted when a forge compilation finishes (success, failure, or abort) to
+   * decrement the concurrent `forge_depth` sensor. Must be paired with a prior
+   * `forge` emit or the counter drifts. Same discipline as spawn/spawn_release.
+   */
+  | { readonly kind: "forge_release" }
   | {
       readonly kind: "token_usage";
       readonly count: number;

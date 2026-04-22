@@ -17,10 +17,14 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
  */
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/bash-ast",
+  "@koi/bash-classifier",
   "@koi/bash-security",
+  "@koi/blob-cas",
+  "@koi/browser-a11y",
   "@koi/channel-base",
   "@koi/config",
   "@koi/context-manager",
+  "@koi/dream",
   "@koi/edit-match",
   "@koi/errors",
   "@koi/event-delivery",
@@ -44,7 +48,9 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/test",
   "@koi/token-estimator",
   "@koi/tools-core",
+  "@koi/url-safety",
   "@koi/validation",
+  "@koi/watch-patterns",
 ]);
 
 export const L1_PACKAGES: ReadonlySet<string> = new Set([
@@ -54,8 +60,11 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 ]);
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/artifacts-s3",
   "@koi/audit-sink-ndjson",
   "@koi/audit-sink-sqlite",
+  "@koi/browser-ext",
+  "@koi/browser-playwright",
   "@koi/checkpoint",
   "@koi/cost-aggregator",
   "@koi/loop",
@@ -63,6 +72,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/middleware-audit",
   "@koi/middleware-memory-recall",
   "@koi/middleware-strict-agentic",
+  "@koi/middleware-turn-prelude",
   "@koi/plugins",
   "@koi/sandbox-os",
   "@koi/session",

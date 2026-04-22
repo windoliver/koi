@@ -461,6 +461,7 @@ describe("tools/call — platform tools", () => {
     const result = await client.callTool({ name: "koi_list_agents", arguments: {} });
     // Verify visibility context was passed
     expect(registry.list).toHaveBeenCalledTimes(1);
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const [, visibility] = (registry.list as ReturnType<typeof mock>).mock.calls[0]!;
     expect(visibility).toEqual({ callerId: CALLER_ID });
     // Verify lean projection

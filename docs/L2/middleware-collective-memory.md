@@ -294,3 +294,11 @@ bun test packages/mm/middleware-collective-memory/
 | `compact.test.ts` | 8 | Threshold detection, compaction pipeline |
 
 **74 tests total, 96.5% coverage.**
+
+---
+
+## Recent changes (PR #1716)
+
+- E2E test helper `sessionCtx`/`turnCtx` updated to accept plain strings for `sessionId`/`runId` (now branded `SessionId`/`RunId` in L0) — avoids requiring call sites to use the `sessionId()` constructor explicitly in test fixtures
+- `scope` field in test fixtures corrected from `"session"` to `"agent"` — `ForgeScope = "agent" | "zone" | "global"` (no `"session"` variant)
+- `ResolveBrickContext` mock parameter type updated to use the exported interface directly, resolving `exactOptionalPropertyTypes` mismatch

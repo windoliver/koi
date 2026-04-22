@@ -111,13 +111,18 @@ function computeEffectiveTimeout(
 }
 
 /**
- * Create a timeout race promise and a cancellation hook.
- * The timer is always cleared by callers to avoid timer buildup on the hot path.
+ * Create a cancellable promise that rejects after `ms` milliseconds with a
+ * TIMEOUT error. The timer is unref'd so it doesn't keep the process alive.
  */
-function createTimeoutRace(timeout: EffectiveTimeout, limits: IterationLimits): TimeoutRace {
+function createTimeoutRace(
+  timeout: EffectiveTimeout,
+  limits: IterationLimits,
+  onTimeout?: () => void,
+): TimeoutRace {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const promise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
+      onTimeout?.();
       const message =
         timeout.source === "inactivity"
           ? `Inactivity timeout: no activity for ${limits.maxInactivityMs}ms (limit: ${limits.maxInactivityMs}ms)`
@@ -146,20 +151,6 @@ function createTimeoutRace(timeout: EffectiveTimeout, limits: IterationLimits): 
       timer = undefined;
     },
   };
-}
-
-async function raceWithTimeout<T>(
-  operation: Promise<T>,
-  timeout: EffectiveTimeout | undefined,
-  limits: IterationLimits,
-): Promise<T> {
-  if (timeout === undefined) return operation;
-  const race = createTimeoutRace(timeout, limits);
-  try {
-    return await Promise.race([operation, race.promise]);
-  } finally {
-    race.cancel();
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +249,29 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       // Without this, a non-streaming provider that stops responding would
       // hang the session indefinitely (same risk as stalled streams).
       const timeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
-      const response = await raceWithTimeout(next(request), timeout, limits);
+      let response: ModelResponse;
+      if (timeout === undefined) {
+        response = await next(request);
+      } else {
+        // Propagate timeout cancellation to cooperative providers.
+        const timeoutController = new AbortController();
+        const signal =
+          request.signal !== undefined
+            ? AbortSignal.any([request.signal, timeoutController.signal])
+            : timeoutController.signal;
+        const requestWithSignal = { ...request, signal };
+        const timeoutRace = createTimeoutRace(timeout, limits, () => {
+          timeoutController.abort();
+        });
+        const responsePromise = next(requestWithSignal);
+        // Prevent unhandled rejection when timeout wins and provider rejects later.
+        void responsePromise.catch(() => {});
+        try {
+          response = await Promise.race([responsePromise, timeoutRace.promise]);
+        } finally {
+          timeoutRace.cancel();
+        }
+      }
       touchActivity();
 
       trackUsage(response.usage?.inputTokens ?? 0, response.usage?.outputTokens ?? 0);
@@ -269,17 +282,43 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     wrapModelStream: (_ctx, request, next) => {
       checkLimits();
       touchActivity();
+      const timeoutController = new AbortController();
+      const signal =
+        request.signal !== undefined
+          ? AbortSignal.any([request.signal, timeoutController.signal])
+          : timeoutController.signal;
+      const requestWithSignal = { ...request, signal };
 
       return {
         async *[Symbol.asyncIterator]() {
-          const iter = next(request)[Symbol.asyncIterator]();
+          const iter = next(requestWithSignal)[Symbol.asyncIterator]();
+          // let justified: tracks whether provider stream ended naturally
+          let streamCompleted = false;
           try {
             for (;;) {
               // Race the next chunk against inactivity + wall-clock timeouts.
               // Without this, a stalled provider stream would hang indefinitely.
               const chunkTimeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
-              const result = await raceWithTimeout(iter.next(), chunkTimeout, limits);
-              if (result.done) break;
+              let result: IteratorResult<ModelChunk>;
+              if (chunkTimeout === undefined) {
+                result = await iter.next();
+              } else {
+                const chunkRace = createTimeoutRace(chunkTimeout, limits, () => {
+                  timeoutController.abort();
+                });
+                const nextChunk = iter.next();
+                // Prevent unhandled rejection when timeout wins and iterator rejects later.
+                void nextChunk.catch(() => {});
+                try {
+                  result = await Promise.race([nextChunk, chunkRace.promise]);
+                } finally {
+                  chunkRace.cancel();
+                }
+              }
+              if (result.done) {
+                streamCompleted = true;
+                break;
+              }
               const chunk = result.value;
               touchActivity();
               yield chunk;
@@ -291,6 +330,9 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
               }
             }
           } finally {
+            if (!streamCompleted && !timeoutController.signal.aborted) {
+              timeoutController.abort();
+            }
             // Cancel the underlying provider stream on timeout or early exit
             // to prevent leaked connections and background token consumption.
             await iter.return?.();
@@ -447,111 +489,6 @@ function checkPingPong(
 }
 
 /** Check for no-progress (identical output) on a per-tool basis and throw if stalled. */
-interface NoProgressHashLimits {
-  readonly maxNodes: number;
-  readonly maxStringLength: number;
-  readonly maxArrayLength: number;
-}
-
-const DEFAULT_NO_PROGRESS_HASH_LIMITS: NoProgressHashLimits = Object.freeze({
-  maxNodes: 2_048,
-  maxStringLength: 512,
-  maxArrayLength: 128,
-});
-
-/**
- * Hash tool output with bounded traversal to avoid full JSON serialization
- * costs on huge payloads. Returns undefined if traversal exceeds limits.
- */
-function hashOutputForNoProgress(
-  value: unknown,
-  limits: NoProgressHashLimits = DEFAULT_NO_PROGRESS_HASH_LIMITS,
-): number | undefined {
-  const seen = new Set<object>();
-  // let justified: mutable state for bounded traversal and incremental hashing
-  let nodesVisited = 0;
-  let exceeded = false;
-  let hash = fnv1a("output");
-
-  const mix = (token: string): void => {
-    hash ^= fnv1a(token);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  };
-
-  const visit = (node: unknown): void => {
-    if (exceeded) return;
-    nodesVisited++;
-    if (nodesVisited > limits.maxNodes) {
-      exceeded = true;
-      return;
-    }
-
-    if (node === null) {
-      mix("null");
-      return;
-    }
-
-    if (typeof node === "string") {
-      mix(`str:${node.slice(0, limits.maxStringLength)}`);
-      return;
-    }
-    if (typeof node === "number") {
-      mix(`num:${String(node)}`);
-      return;
-    }
-    if (typeof node === "boolean") {
-      mix(`bool:${node ? "1" : "0"}`);
-      return;
-    }
-    if (typeof node === "bigint") {
-      mix(`bigint:${String(node)}`);
-      return;
-    }
-    if (typeof node === "undefined") {
-      mix("undefined");
-      return;
-    }
-    if (typeof node === "symbol" || typeof node === "function") {
-      mix(`unsupported:${typeof node}`);
-      return;
-    }
-
-    if (Array.isArray(node)) {
-      mix("[");
-      mix(`len:${String(node.length)}`);
-      const boundedLength = Math.min(node.length, limits.maxArrayLength);
-      for (let i = 0; i < boundedLength; i++) {
-        visit(node[i]);
-        if (exceeded) return;
-      }
-      if (node.length > boundedLength) {
-        mix("truncated-array");
-      }
-      mix("]");
-      return;
-    }
-
-    const record = node as Record<string, unknown>;
-    if (seen.has(record)) {
-      mix("[Circular]");
-      return;
-    }
-    seen.add(record);
-    mix("{");
-    const keys = Object.keys(record).sort();
-    for (const key of keys) {
-      mix(`key:${key}`);
-      visit(record[key]);
-      if (exceeded) break;
-    }
-    mix("}");
-    seen.delete(record);
-  };
-
-  visit(value);
-  return exceeded ? undefined : hash >>> 0;
-}
-
 function checkNoProgress(
   toolId: string,
   outputHash: number,
@@ -578,6 +515,49 @@ function checkNoProgress(
     }
   } else {
     noProgressState.set(toolId, { hash: outputHash, count: 1 });
+  }
+}
+
+const MAX_NO_PROGRESS_SERIALIZED_CHARS = 65_536;
+const NO_PROGRESS_TOO_LARGE = Symbol("no-progress-too-large");
+
+/**
+ * Serialize tool output for no-progress hashing, aborting early once the
+ * payload exceeds the configured character ceiling.
+ */
+function serializeOutputForNoProgress(output: unknown): string | undefined {
+  // let justified: mutable estimate shared across replacer callbacks
+  let approximateSize = 0;
+  try {
+    const serialized = JSON.stringify(output, (key, value) => {
+      approximateSize += key.length;
+      if (typeof value === "string") {
+        approximateSize += value.length;
+      } else if (typeof value === "number" || typeof value === "boolean" || value === null) {
+        approximateSize += String(value).length;
+      } else {
+        // Conservative structural overhead for objects/arrays and other literals.
+        approximateSize += 8;
+      }
+      if (approximateSize > MAX_NO_PROGRESS_SERIALIZED_CHARS) {
+        throw NO_PROGRESS_TOO_LARGE;
+      }
+      return value;
+    });
+    if (
+      serialized === undefined ||
+      serialized.length === 0 ||
+      serialized.length > MAX_NO_PROGRESS_SERIALIZED_CHARS
+    ) {
+      return undefined;
+    }
+    return serialized;
+  } catch (error: unknown) {
+    if (error === NO_PROGRESS_TOO_LARGE) {
+      return undefined;
+    }
+    // Circular refs or non-serializable output — skip no-progress check.
+    return undefined;
   }
 }
 
@@ -791,7 +771,14 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
           threshold: detection.threshold,
         };
         if (detection.onWarning !== undefined) {
-          detection.onWarning(info);
+          try {
+            detection.onWarning(info);
+          } catch (e: unknown) {
+            console.warn(
+              "[koi:loop-detector] onWarning callback failed, continuing",
+              e instanceof Error ? e.message : String(e),
+            );
+          }
         }
         if (shouldInject) {
           pendingWarnings = [...pendingWarnings, info];
@@ -815,11 +802,13 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
       // Execute the tool call
       const response = await next(request);
 
-      // Post-call checks — bounded output hashing for no-progress detection.
-      // Skip check when outputs exceed hash limits to keep hot-path cost bounded.
+      // Post-call checks — hash output for no-progress detection.
+      // Serialize with an explicit size ceiling to avoid expensive work on
+      // oversized outputs.
       if (noProgressEnabled) {
-        const outputHash = hashOutputForNoProgress(response.output);
-        if (outputHash !== undefined) {
+        const serialized = serializeOutputForNoProgress(response.output);
+        if (serialized !== undefined) {
+          const outputHash = fnv1a(serialized);
           checkNoProgress(request.toolId, outputHash, noProgressState, noProgressThreshold);
         }
       }
@@ -883,6 +872,12 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
     policy.fanOutWarningAt,
     "maxFanOut",
     policy.maxFanOut,
+  );
+  validateWarningThreshold(
+    "totalProcessWarningAt",
+    policy.totalProcessWarningAt,
+    "maxTotalProcesses",
+    policy.maxTotalProcesses,
   );
 
   // Build spawn tool ID set for O(1) lookup
@@ -1015,36 +1010,9 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       directChildren++;
       spawnsThisTurn++;
 
-      // 5. Fire fan-out warning — at most once per session, and cover
-      //    BOTH enforcement paths. In the sequential turn-runner path
-      //    directChildren dips back to 0 between awaited spawns, so the
-      //    warning would never fire for same-turn bursts if it were
-      //    keyed only off directChildren (#1793).
-      if (
-        !firedFanOutWarning &&
-        policy.fanOutWarningAt !== undefined &&
-        policy.onWarning !== undefined
-      ) {
-        const concurrentTriggered = directChildren >= policy.fanOutWarningAt;
-        const burstTriggered = spawnsThisTurn >= policy.fanOutWarningAt;
-        if (concurrentTriggered || burstTriggered) {
-          firedFanOutWarning = true;
-          // Prefer whichever counter is higher so operators see the most
-          // pressing pressure first. On ties, prefer "concurrent" because
-          // in-flight children are the more immediate resource pressure.
-          const useBurst =
-            burstTriggered && (!concurrentTriggered || spawnsThisTurn > directChildren);
-          policy.onWarning({
-            kind: "fan_out",
-            reason: useBurst ? "per_turn_burst" : "concurrent",
-            current: useBurst ? spawnsThisTurn : directChildren,
-            limit: policy.maxFanOut,
-            warningAt: policy.fanOutWarningAt,
-          });
-        }
-      }
-
       // 6. Execute spawn:
+      //    - warning callback is inside this try so directChildren always
+      //      decrements even if onWarning throws.
       //    - directChildren always decrements (the in-flight slot is
       //      freed when this tool call unwinds).
       //    - spawnsThisTurn is NEVER refunded. This is deliberate:
@@ -1059,6 +1027,35 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       //      spawns burn the per-turn budget — is bounded to
       //      maxFanOut per turn and recoverable on the next turn.
       try {
+        // 5. Fire fan-out warning — at most once per session, and cover
+        //    BOTH enforcement paths. In the sequential turn-runner path
+        //    directChildren dips back to 0 between awaited spawns, so the
+        //    warning would never fire for same-turn bursts if it were
+        //    keyed only off directChildren (#1793).
+        if (
+          !firedFanOutWarning &&
+          policy.fanOutWarningAt !== undefined &&
+          policy.onWarning !== undefined
+        ) {
+          const concurrentTriggered = directChildren >= policy.fanOutWarningAt;
+          const burstTriggered = spawnsThisTurn >= policy.fanOutWarningAt;
+          if (concurrentTriggered || burstTriggered) {
+            firedFanOutWarning = true;
+            // Prefer whichever counter is higher so operators see the most
+            // pressing pressure first. On ties, prefer "concurrent" because
+            // in-flight children are the more immediate resource pressure.
+            const useBurst =
+              burstTriggered && (!concurrentTriggered || spawnsThisTurn > directChildren);
+            policy.onWarning({
+              kind: "fan_out",
+              reason: useBurst ? "per_turn_burst" : "concurrent",
+              current: useBurst ? spawnsThisTurn : directChildren,
+              limit: policy.maxFanOut,
+              warningAt: policy.fanOutWarningAt,
+            });
+          }
+        }
+
         return await next(request);
       } finally {
         directChildren--;
