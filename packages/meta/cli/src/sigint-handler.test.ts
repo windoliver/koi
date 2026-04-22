@@ -22,10 +22,14 @@ interface FakeTimer extends Timer {
 function createFakeClock(): {
   readonly setTimer: (fn: () => void, ms: number) => Timer;
   readonly advance: (ms: number) => void;
+  /** Advance the wall clock returned by `now()` without firing any timers. */
+  readonly advanceWallOnly: (ms: number) => void;
   readonly now: () => number;
   readonly pending: () => readonly FakeTimer[];
 } {
   let current = 0;
+  // Separate wall time so advanceWallOnly can move now() without triggering timers.
+  let wallTime = 0;
   const timers: {
     readonly at: number;
     readonly fn: () => void;
@@ -58,12 +62,17 @@ function createFakeClock(): {
       }
     }
     current = target;
+    wallTime = current; // keep wall time in sync when timers fire normally
+  };
+
+  const advanceWallOnly = (ms: number): void => {
+    wallTime += ms; // move now() without firing any scheduled timers
   };
 
   const pending = (): readonly FakeTimer[] =>
     timers.filter((t) => !t.timer.fired && !t.timer.cancelled).map((t) => t.timer);
 
-  return { setTimer, advance, now: () => current, pending };
+  return { setTimer, advance, advanceWallOnly, now: () => wallTime, pending };
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +518,47 @@ describe("createSigintHandler", () => {
     // After re-entry lastSignalAt must be reset so the coalesce guard passes.
     dynamicHandler.handleSignal();
     // Must reach onGraceful (fresh first tap), not onForce.
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
+  test("wall-clock-elapsed tap with delayed timer callback still gets re-entry (#1999 busy-loop)", () => {
+    // Regression: under a busy event loop the double-tap timer callback can be
+    // delayed. A second Ctrl+C arriving after 2000ms wall time but BEFORE the
+    // timer fires must still get the late-spawn grace re-entry — not force-exit.
+    let spawnActive = false;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn yet. doubleTapTimer scheduled for t+2000.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Advance wall clock past 2000ms WITHOUT firing the timer.
+    // Simulates a busy event loop that delays timer delivery.
+    clock.advanceWallOnly(2500); // now() = 2500, but timer hasn't fired
+
+    // Spawn starts late (after the nominal window).
+    spawnActive = true;
+
+    // Second Ctrl+C at t=2500ms wall — window elapsed by wall clock
+    // (2500 >= 2000), doubleTapTimer still non-null (delayed), spawn active →
+    // must get grace re-entry as fresh first tap, not force-exit.
+    dynamicHandler.handleSignal();
     expect(onGraceful).toHaveBeenCalledTimes(2);
     expect(onForce).not.toHaveBeenCalled();
   });

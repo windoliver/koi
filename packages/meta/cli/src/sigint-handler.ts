@@ -98,6 +98,8 @@ type State =
   | {
       readonly kind: "armed";
       readonly failsafeTimer: Timer | null;
+      /** Wall-clock timestamp (ms) when this arm was entered. */
+      readonly armedAt: number;
       doubleTapTimer: Timer | null;
     }
   | { readonly kind: "forced" };
@@ -165,14 +167,19 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
     }
 
     if (state.kind === "armed") {
-      // When the double-tap window has already elapsed (doubleTapTimer === null)
-      // and the dynamic policy says reset-to-idle, a spawn may have arrived after
-      // the original timer fired. Re-evaluate the policy at tap time: if it now
-      // returns "reset-to-idle", grant a one-shot re-entry as a fresh first tap
-      // instead of forcing. This covers late-starting spawns not visible when the
-      // timer originally evaluated (#1999 late-spawn path).
-      if (state.doubleTapTimer === null && resolveWindowElapsePolicy() === "reset-to-idle") {
+      // Window has elapsed either when the timer callback fired (doubleTapTimer
+      // === null) OR when wall-clock time has passed the window boundary —
+      // whichever comes first. Under a busy event loop the timer callback can be
+      // delayed, so doubleTapTimer !== null is not a reliable indicator that the
+      // window is still open. Using armedAt + doubleTapWindowMs gives a
+      // timer-delivery-independent answer.
+      const windowElapsedByWallClock = t - state.armedAt >= deps.doubleTapWindowMs;
+      if (
+        (state.doubleTapTimer === null || windowElapsedByWallClock) &&
+        resolveWindowElapsePolicy() === "reset-to-idle"
+      ) {
         state.failsafeTimer?.cancel();
+        state.doubleTapTimer?.cancel(); // cancel any still-pending timer
         state = { kind: "idle" };
         // Reset the coalesce timestamp so the re-entry is not silently dropped by
         // the deduplication guard at the top of handleSignal. Without this, with
@@ -201,7 +208,7 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
           }, deps.failsafeMs)
         : null;
     const doubleTapTimer = armDoubleTapTimer();
-    state = { kind: "armed", failsafeTimer, doubleTapTimer };
+    state = { kind: "armed", failsafeTimer, doubleTapTimer, armedAt: t };
     deps.write("\nInterrupting… (Ctrl+C again to force)\n");
     deps.onGraceful();
   };
