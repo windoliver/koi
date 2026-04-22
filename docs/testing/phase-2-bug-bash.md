@@ -814,10 +814,17 @@ mkdir -p "$MEMORY_DIR"
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 
-# Verify the session was actually created; fail fast rather than running assertions
-# against a non-existent TUI.
+# Verify the session was actually created AND the TUI stayed up (not just a tmux frame).
+# tmux has-session only proves the session shell was created; capture-pane after a brief
+# moment catches immediate crash/bootstrap failures before any assertions are run.
 if ! tmux has-session -t "$KOI_SESSION" 2>/dev/null; then
   echo "S25 HARNESS ERROR: tmux session '$KOI_SESSION' failed to start. Aborting." >&2
+  exit 1
+fi
+sleep 2   # allow bun startup to complete (TUI render typically < 1 s)
+_S25_PANE=$(tmux capture-pane -t "$KOI_SESSION" -p 2>/dev/null || echo "")
+if [ -z "$_S25_PANE" ]; then
+  echo "S25 HARNESS ERROR: TUI pane is empty — process may have exited immediately. Aborting." >&2
   exit 1
 fi
 ```
@@ -827,7 +834,7 @@ fi
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$MEMORY_DIR/`; frontmatter has `type: project` |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index has 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from `$MEMORY_DIR/`) |
-| Q159 | (cross-session persistence) Kill TUI, relaunch, `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch command: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Then ask `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
 | Q160 | `Remember: this project uses Bun 1.3 for all scripts.` (near-duplicate of Q156) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
 | Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
 ### Packages Not Testable via TUI (justified)
