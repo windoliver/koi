@@ -6,9 +6,9 @@
  * - Signal present + full ledger: acquireOrWait(signal) → bounded wait (backpressure)
  * - Already-aborted signal: acquireOrWait returns false → INTERNAL (not retryable)
  *
- * createAgentSpawnFn delegates to spawnChildAgent (streaming) or calls it directly
- * (non-streaming). Both paths wrap thrown KoiRuntimeErrors into SpawnResult so the
- * structured error contract is never broken by ledger errors.
+ * Both the streaming path (runSpawnedAgent → spawnChildAgent) and the non-streaming
+ * path (direct spawnChildAgent call) wrap thrown KoiRuntimeErrors into SpawnResult,
+ * preserving the structured error contract.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -53,7 +53,11 @@ function mockParentAgent(): Agent {
   };
 }
 
-function makeSpawnFn(ledger: SpawnLedger) {
+interface MakeSpawnFnOptions {
+  readonly reportStore?: Parameters<typeof createAgentSpawnFn>[0]["reportStore"];
+}
+
+function makeSpawnFn(ledger: SpawnLedger, opts: MakeSpawnFnOptions = {}) {
   const resolver = {
     resolve: () => ({
       ok: true as const,
@@ -91,6 +95,7 @@ function makeSpawnFn(ledger: SpawnLedger) {
     },
     adapter: mockAdapter,
     manifestTemplate: BASE_MANIFEST,
+    ...(opts.reportStore !== undefined ? { reportStore: opts.reportStore } : {}),
   });
 }
 
@@ -132,7 +137,7 @@ describe("SpawnLedger cap enforcement — unsignaled spawns (Issue #1996)", () =
 
   test("RATE_LIMIT is retryable — a freed slot could let the next attempt succeed", async () => {
     const ledger = createInMemorySpawnLedger(1);
-    ledger.acquire(); // fill it
+    ledger.acquire();
     const spawnFn = makeSpawnFn(ledger);
 
     const result = await spawnFn({ agentName: "child-agent", description: "at-cap" });
@@ -160,32 +165,84 @@ describe("SpawnLedger cap enforcement — unsignaled spawns (Issue #1996)", () =
 });
 
 // ---------------------------------------------------------------------------
+// Non-streaming path — structured error contract
+// ---------------------------------------------------------------------------
+
+describe("SpawnLedger cap enforcement — non-streaming (on_demand) delivery path", () => {
+  test("non-streaming path returns structured SpawnResult on ledger failure (not a thrown error)", async () => {
+    const ledger = createInMemorySpawnLedger(1);
+    ledger.acquire(); // fill the only slot
+
+    // on_demand delivery requires a reportStore — provide a minimal mock so we
+    // reach the non-streaming spawnChildAgent call (not the VALIDATION early-return).
+    const mockReportStore = {
+      put: async (_report: RunReport): Promise<void> => {
+        // no-op
+      },
+    };
+
+    const spawnFn = makeSpawnFn(ledger, { reportStore: mockReportStore });
+
+    // No signal → acquire() fast-fail; on_demand delivery routes through the
+    // non-streaming branch with its own catch-and-wrap for KoiRuntimeError.
+    const result = await spawnFn({
+      agentName: "child-agent",
+      description: "non-streaming ledger failure",
+      delivery: { kind: "on_demand" },
+    });
+
+    // Must be a structured SpawnResult (not a thrown exception)
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("RATE_LIMIT");
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Signaled spawn — bounded-wait backpressure via spawnChildAgent.acquireOrWait
 // ---------------------------------------------------------------------------
 
 describe("SpawnLedger cap enforcement — signaled spawns (backpressure path)", () => {
-  test("does NOT fast-fail when signal is present and ledger is full", async () => {
-    const ledger = createInMemorySpawnLedger(1);
-    ledger.acquire(); // fill the only slot
+  test("acquireOrWait is called and resolves true after a slot is released (backpressure)", async () => {
+    const realLedger = createInMemorySpawnLedger(1);
+    realLedger.acquire(); // fill the only slot
 
-    // Release the slot shortly after so acquireOrWait can succeed
+    // Spy on acquireOrWait to verify it was called AND resolved with true (acquired)
+    let acquireOrWaitCalled = false;
+    let acquireOrWaitResolution: boolean | undefined;
+
+    const spyLedger: SpawnLedger = {
+      acquire: () => realLedger.acquire(),
+      release: () => realLedger.release(),
+      activeCount: () => realLedger.activeCount(),
+      capacity: () => realLedger.capacity(),
+      acquireOrWait: async (signal: AbortSignal): Promise<boolean> => {
+        acquireOrWaitCalled = true;
+        const result = await (realLedger.acquireOrWait?.(signal) ?? Promise.resolve(false));
+        acquireOrWaitResolution = result;
+        return result;
+      },
+    };
+
+    // Release the held slot after 50 ms so the waiter can acquire
     const releaseTimer = setTimeout(() => {
-      ledger.release();
+      realLedger.release();
     }, 50);
 
-    const spawnFn = makeSpawnFn(ledger);
-    const result = await spawnFn({
+    const spawnFn = makeSpawnFn(spyLedger);
+    await spawnFn({
       agentName: "child-agent",
-      description: "waits for slot via acquireOrWait — not immediately rejected",
+      description: "waits for slot via acquireOrWait backpressure",
       signal: AbortSignal.timeout(2000),
     });
 
     clearTimeout(releaseTimer);
 
-    // Must NOT be RATE_LIMIT — the signaled path uses acquireOrWait (bounded wait)
-    if (!result.ok) {
-      expect(result.error.code).not.toBe("RATE_LIMIT");
-    }
+    // Key assertions: acquireOrWait was invoked AND it resolved true (slot acquired)
+    expect(acquireOrWaitCalled).toBe(true);
+    expect(acquireOrWaitResolution).toBe(true);
   });
 
   test("allows signaled spawn when ledger has capacity", async () => {
