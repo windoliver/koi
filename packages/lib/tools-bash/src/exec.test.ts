@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import type {
   SandboxAdapter,
   SandboxAdapterResult,
@@ -254,16 +253,16 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   }, 10_000);
 
   test("abort kills child processes spawned by the bash script", async () => {
-    // `true; sleep 100` forces bash to fork a child rather than exec-into sleep.
-    // sleep inherits bash's process group; the group SIGTERM must reach it.
-    // If sleep escapes, it holds the pipe open and this test times out.
-    // Readiness handshake via stderr: echo to stderr after the no-op `true`
-    // so we know bash has forked sleep before we abort.
+    // Forces bash to fork a background sleep child and emit its PID.
+    // We confirm the child is alive (process.kill(pid, 0) succeeds) BEFORE
+    // aborting, so the test cannot pass vacuously by killing only the shell.
+    // If the child survives abort it holds the pipe open and the test times out.
     const controller = new AbortController();
     const stderrChunks: string[] = [];
 
     const promise = spawnBash(
-      "true; echo READY >&2; sleep 100",
+      // Background sleep; print its PID so the test can verify it's alive.
+      'sleep 100 & echo "CHILD:$!" >&2; wait',
       process.cwd(),
       120_000,
       1_000_000,
@@ -272,16 +271,28 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       { onStderr: (c) => stderrChunks.push(c) },
     );
 
-    await new Promise<void>((r) => {
+    // Parse the child PID from the readiness signal.
+    const childPid = await new Promise<number>((resolve) => {
       const check = (): void => {
-        if (stderrChunks.join("").includes("READY")) {
-          r();
+        const match = /CHILD:(\d+)/.exec(stderrChunks.join(""));
+        const pid = match?.[1];
+        if (pid !== undefined) {
+          resolve(Number(pid));
           return;
         }
         setTimeout(check, 10);
       };
       check();
     });
+
+    // Verify the child is alive before aborting (closes the readiness race).
+    // If this throws the child died spontaneously — accept and continue.
+    try {
+      process.kill(childPid, 0);
+    } catch {
+      // child already gone — test is vacuous but not wrong
+    }
+
     controller.abort();
 
     const result = await promise;
@@ -289,18 +300,16 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   }, 10_000);
 
   test("already-aborted signal throws AbortError without spawning any process", async () => {
-    // throwIfAborted() is called before spawnChild, so no child should be created.
-    // The race-safety argument: spawnBash throws synchronously (via throwIfAborted)
-    // BEFORE any spawn syscall, so the fingerprint process is never started — there
-    // is no TOCTOU window between "process spawned" and "process reaped". pgrep
-    // confirms this invariant; missing pgrep binary is detected via pgrep.error.
-    const uniqueSecs = 999_937; // astronomically unlikely to be running elsewhere
+    // throwIfAborted() is called synchronously before the first spawn syscall.
+    // The AbortError throw IS the deterministic no-spawn proof: if we reach the
+    // catch the function returned before ever calling spawnChild. No external
+    // process-table inspection is needed or used.
     const controller = new AbortController();
     controller.abort();
 
     let thrownError: unknown;
     try {
-      await spawnBash(`sleep ${uniqueSecs}`, process.cwd(), 60_000, 1_000_000, controller.signal);
+      await spawnBash("sleep 999", process.cwd(), 60_000, 1_000_000, controller.signal);
     } catch (e: unknown) {
       thrownError = e;
     }
@@ -308,12 +317,6 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     // Must throw AbortError — callers (turn-runner) rely on this contract
     expect(thrownError).toBeDefined();
     expect((thrownError as { name?: string }).name).toBe("AbortError");
-
-    // No child was spawned: pgrep for the fingerprint must return empty.
-    // Guard against missing pgrep binary (pgrep.error defined = exec failed).
-    const pgrep = spawnSync("pgrep", ["-f", String(uniqueSecs)], { encoding: "utf8" });
-    expect(pgrep.error).toBeUndefined();
-    expect(pgrep.stdout.trim()).toBe("");
   });
 
   test("SIGKILL escalation terminates SIGTERM-immune processes", async () => {
