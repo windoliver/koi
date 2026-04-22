@@ -79,9 +79,11 @@ tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
 ( cd "$FIXTURE" && git reset --hard -q && git clean -fdq )
 rm -rf "$KOI_HOME/.koi/sessions"
-# Memory is file-backed under the fixture's git root, not $KOI_HOME.
-# resolveMemoryDir() writes to <gitRoot>/.koi/memory/ — clear that too.
-rm -rf "$FIXTURE/.koi/memory"
+# Memory is file-backed under the fixture's git root (resolveMemoryDir walks UP
+# to the nearest ancestor .git — not necessarily $FIXTURE itself).
+# Derive the real root before cleanup to avoid missing the live store.
+_FIXTURE_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "$FIXTURE")
+rm -rf "$_FIXTURE_GIT_ROOT/.koi/memory"
 mkdir -p "$KOI_HOME/.koi/sessions"
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
@@ -735,17 +737,23 @@ tmux new-session -d -s "$KOI_SESSION" \
 > omits `memory` from `stacks`. Run with the default stack (no `--manifest` flag) to exercise these scenarios.
 >
 > **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
-> When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$FIXTURE/.koi/memory"` explicitly.
+> When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$MEMORY_DIR"` explicitly
+> (where `$MEMORY_DIR` is the resolved store path set up in the S25 setup script).
 > Without this flag, dream and TUI operate on **different stores** — tracked as a separate bug.
 
-**Setup**: `$FIXTURE` must be a git repo. `resolveMemoryDir(cwd)` returns `<gitRoot>/.koi/memory/` when git is found, or `<cwd>/.koi/memory/` as detached fallback. The script below initializes git if needed and stores the resolved path in `$MEMORY_DIR`.
-```bash
-# Ensure fixture is a git repo — required for worktree-local memory path resolution.
-git -C "$FIXTURE" rev-parse --git-dir >/dev/null 2>&1 || git -C "$FIXTURE" init -q
+**Setup**: `$FIXTURE` must be an **isolated** git repo root (not a subdirectory of another repo).
+`resolveMemoryDir(cwd)` walks UP to the nearest `.git`, so a nested fixture would use an outer
+repo's store — producing data-loss risk and incorrect test coverage.
 
-# Resolve the ACTUAL git root (resolveMemoryDir walks UP to the nearest ancestor .git).
-# Use this root for cleanup/assertions; do NOT assume $FIXTURE itself is the root.
-GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel)
+```bash
+# SAFETY: require $FIXTURE to be a git root itself, not merely inside one.
+# A nested fixture risks rm-rf on an unrelated repo's .koi/memory.
+if [ ! -d "$FIXTURE/.git" ]; then
+  git -C "$FIXTURE" init -q   # creates $FIXTURE/.git, making it the root
+fi
+
+# One canonical memory dir — reused for TUI cleanup, assertions, and koi dream.
+GIT_ROOT="$FIXTURE"           # guaranteed: $FIXTURE/.git exists and is the root
 MEMORY_DIR="$GIT_ROOT/.koi/memory"
 
 # REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
