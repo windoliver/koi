@@ -1502,7 +1502,7 @@ Create `docs/guides/headless-mode.md`:
 
 Headless mode (`koi start --headless`) runs an agent as a non-interactive one-shot process. It is designed for CI/CD pipelines, GitHub Actions, cron jobs, and any automation where a human is not watching the terminal.
 
-All agent output is emitted as newline-delimited JSON (NDJSON) on **stdout**. Diagnostics go to **stderr**. The process exits with a structured exit code in the range 0–5.
+All agent output is emitted as newline-delimited JSON (NDJSON) on **stdout**. Diagnostics go to **stderr**. The process exits with a structured exit code in the range 0–6 (exit 6 is used only when `--result-schema` is supplied and validation fails).
 
 ## Quick Start
 
@@ -1524,7 +1524,7 @@ koi start --headless \
 | `--max-duration-ms` | integer | none | Hard wall-clock timeout in milliseconds. Covers bootstrap + run + teardown. |
 | `--max-turns` | integer | 25 | Maximum number of agent turns before stopping with exit 3. |
 | `--max-spend` | number | none | Maximum spend in USD before stopping with exit 3. |
-| `--result-schema` | string | none | Path to a JSON Schema file. Validates the agent's text output. Exit 1 on failure. |
+| `--result-schema` | string | none | Path to a Koi schema file (subset of JSON Schema). Checks required fields and type constraints in agent output. Does NOT enforce exact shape — extra fields are not rejected. Exit 6 on failure. |
 | `--manifest` | string | none | Path to an agent manifest YAML file. |
 | `--verbose` / `-v` | boolean | false | Emit additional diagnostic lines to stderr. |
 
@@ -1621,7 +1621,9 @@ Exit code **6** (SCHEMA_VALIDATION) is distinct from exit 1 (AGENT_FAILURE) so C
 
 ## Result Schema Validation
 
-Use `--result-schema` to enforce that the agent's text output is valid JSON matching a JSON Schema.
+Use `--result-schema` to check that the agent's text output is valid JSON satisfying a set of **required fields and type constraints**.
+
+> **Scope limitation:** `--result-schema` is NOT a full JSON Schema validator. It checks that declared required fields are present and have the correct types. Extra undeclared fields are NOT rejected (`additionalProperties` is unsupported). If you need exact-shape enforcement — e.g. to block undeclared fields or validate field counts — validate the output independently using a full JSON Schema library after retrieval. Do not rely on `--result-schema` as a security or trust boundary for downstream automation.
 
 **Example schema** (`.koi/pr-summary-schema.json`):
 
@@ -1636,7 +1638,7 @@ Use `--result-schema` to enforce that the agent's text output is valid JSON matc
 }
 ```
 
-**This is a Koi schema subset, not a full JSON Schema implementation.** Many standard JSON Schema keywords are unsupported.
+**This is a Koi schema subset, not a full JSON Schema implementation.** Many standard JSON Schema keywords are unsupported. It checks for required fields, type constraints, and enum membership — not exact object shape.
 
 **Supported type values:** `"object"`, `"array"`, `"string"`, `"number"`, `"integer"` (whole numbers only — `3.14` fails), `"boolean"`, `"null"`.
 
@@ -1786,7 +1788,7 @@ Check each item from issue #1648 is met:
 - [x] `--headless` flag disables TUI (pre-existing)
 - [x] JSON structured output on stdout/stderr (pre-existing)
 - [x] Ask permissions handled without blocking (pre-existing)
-- [x] All 6 exit codes documented and tested (pre-existing + Task 5 docs)
+- [x] All 7 exit codes (0–6) documented and tested (pre-existing 0–5 + new SCHEMA_VALIDATION=6)
 - [x] Hard budget flags enforced (pre-existing)
 - [x] Result schema validation — Task 1–4
 - [x] Sample GitHub Actions workflow in docs — Task 5
