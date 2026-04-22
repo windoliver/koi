@@ -1218,17 +1218,30 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             }
           }
         }
-        postRunPhaseComplete = true;
-        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-        if (!schemaResult.ok) {
-          finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+        // validateResultSchema is synchronous. A timer cannot preempt synchronous JS work,
+        // so check the wall clock after validation to enforce the deadline if it expired
+        // while the event loop was blocked by a large payload.
+        if (deadlineAt !== undefined && Date.now() > deadlineAt) {
+          postRunPhaseComplete = true;
+          if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
+          finalCode = HEADLESS_EXIT.TIMEOUT;
           emitResult({
-            exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
-            validationFailed: true,
-            error: schemaResult.error,
+            exitCode: HEADLESS_EXIT.TIMEOUT,
+            error: "max-duration-ms exceeded during schema validation",
           });
         } else {
-          emitResult();
+          postRunPhaseComplete = true;
+          if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
+          if (!schemaResult.ok) {
+            finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+            emitResult({
+              exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+              validationFailed: true,
+              error: schemaResult.error,
+            });
+          } else {
+            emitResult();
+          }
         }
       } else {
         postRunPhaseComplete = true;
