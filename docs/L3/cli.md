@@ -6,6 +6,7 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`koi tui` session picker peek panel (#1899)**: pressing Space on a highlighted session in the Ctrl+S session picker opens a peek panel showing the session name, message count, date, and full preview — without resuming it. Space again on the same row closes the panel; Up/Down navigation keeps the panel open and tracks the highlighted row. Esc closes the picker and clears peek state. The picker reduces its visible row count from 8 to 5 while the peek panel is active so the modal stays within a standard 24-row terminal. No CLI surface changes — this is purely a `@koi/tui` UX addition.
 - **`@koi/tui` — model-router spans now show routing decision (#2018)**: `/trajectory` view previously showed `[pass]` for all `middleware:model-router` spans because `summarizeDecision` had no handler for `router.*` keys. Now displays `→provider:model` (with ` fallback` suffix on secondary-target selection).
 
 - **`@koi/lsp` — `servers` now optional in `LspProviderConfig` (#2005)**: `createLspComponentProvider({ autoDetect: true })` previously crashed with `undefined is not an object (evaluating 'config.servers.map')` when `servers` was omitted. `LspProviderConfig.servers` is now `servers?` and both call sites in `resolveProviderConfig` / `mergeAutoDetected` guard with `?? []`. No CLI surface change — the fix is in the LSP library consumed by runtime's `config.lsp` wiring.
