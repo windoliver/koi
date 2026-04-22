@@ -1365,7 +1365,7 @@ These are fail-closed by default because they represent bootstrap-time execution
 | 1 | AGENT_FAILURE | Agent could not complete the task, or output failed schema validation | Yes, if idempotent |
 | 2 | PERMISSION_DENIED | A required tool was denied by the permission policy | No — add `--allow-tool` |
 | 3 | BUDGET_EXCEEDED | `--max-turns` or `--max-spend` was hit | Maybe — raise limits |
-| 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when MCP is disabled (`KOI_HEADLESS_ALLOW_MCP` unset). With MCP enabled, tool calls may have committed non-idempotent side effects before the timeout — retrying can cause duplicate actions. |
+| 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when all allowed tools are read-only and idempotent. A timeout does not guarantee no side effects occurred before the cut-off. Do NOT auto-retry if `Bash`, file-write, external API, or any MCP tool is allowed — retrying can duplicate deploys, mutations, or external actions. |
 | 5 | INTERNAL | Runtime assembly failed, schema file was invalid, or teardown failed | Check stderr |
 
 ## NDJSON Event Reference
@@ -1438,6 +1438,16 @@ Use `--result-schema` to enforce that the agent's text output is valid JSON matc
 **Supported keywords:** `type`, `required`, `properties`, `enum`.
 
 **Unsupported keywords** (e.g. `$ref`, `anyOf`, `pattern`) cause the schema to be rejected at boot with exit 5.
+
+**Important:** `--result-schema` validates the **entire concatenated assistant text output** as a single JSON document. Your prompt must instruct the model to output **only** JSON with no surrounding prose. Any preamble ("Here is the result:"), explanation, or trailing text will cause validation to fail with exit 1.
+
+```
+# Good: prompt instructs JSON-only output
+--prompt "Output a JSON object with fields count (number) and titles (array of strings). No preamble."
+
+# Bad: model adds prose before the JSON → fails schema validation
+"Here are the open PRs:\n{\"count\":3,\"titles\":[...]}"
+```
 
 If the agent's output is not valid JSON, or does not match the schema, the run exits with code 1 and an error message like:
 

@@ -65,6 +65,7 @@ After `runHeadless()` returns and `shutdownRuntime()` completes:
    - If `rawAssistantOverflow === true` → `emitResult({ exitCode: 1, error: "schema validation failed: assistant output exceeded 1 MB limit" })`
    - Otherwise → call `validateResultSchema(rawAssistantParts.join(""), resultSchemaObj)`
    - (where `rawAssistantParts` was populated via the `onRawAssistantText` callback before redaction; accumulation is capped at **1 MB UTF-8 bytes** — any chunk that would cross the cap is rejected in full and `rawAssistantOverflow` is set to `true`)
+   - **Contract:** `--result-schema` validates the **entire** concatenated assistant text as a single JSON document. The prompt must instruct the model to output ONLY JSON with no preamble or prose. If the model outputs any non-JSON text before or after the schema-conformant blob, validation will fail. This is intentional — `--result-schema` is for structured-only output modes, not for extracting JSON embedded in prose.
    - On failure → `emitResult({ exitCode: 1, error: schemaResult.error })`
    - On success → normal `emitResult()`
 4. Otherwise → normal `emitResult()`
