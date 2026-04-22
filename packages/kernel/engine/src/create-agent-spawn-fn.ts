@@ -295,46 +295,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       return { ok: false, error: validation.error };
     }
 
-    // Pre-flight capacity check for unsignaled spawns (Issue #1996):
-    // If no abort signal is provided, use acquire()+release() to fail fast when the ledger
-    // is full. Without this check an unsignaled spawn would queue indefinitely inside
-    // spawnChildAgent's acquireOrWait, which has no timeout.
-    //
-    // Signaled spawns bypass this block — spawnChildAgent will call acquireOrWait(signal)
-    // and wait up to the signal's timeout for a slot to free, which is the correct
-    // bounded-wait backpressure behavior.
-    //
-    // Already-aborted signal: classify as cancellation (INTERNAL, non-retryable), not
-    // capacity exhaustion (RATE_LIMIT, retryable), before we even touch the ledger.
-    if (request.signal !== undefined) {
-      if (request.signal.aborted) {
-        return {
-          ok: false,
-          error: {
-            code: "INTERNAL",
-            message: "Spawn cancelled: abort signal already fired before slot acquisition",
-            retryable: false,
-          },
-        };
-      }
-      // Signaled — fall through; spawnChildAgent owns bounded-wait via acquireOrWait(signal).
-    } else {
-      // Unsignaled — fast-fail at capacity (no backpressure mechanism available).
-      const capAvailable = await base.spawnLedger.acquire();
-      if (!capAvailable) {
-        return {
-          ok: false,
-          error: {
-            code: "RATE_LIMIT",
-            message: `Spawn limit reached: max concurrent agents (${base.spawnLedger.capacity()}) already running. Retry when a slot is available.`,
-            retryable: true,
-          },
-        };
-      }
-      // Propagate release failure — a stuck slot here is a resource leak that must be visible.
-      await base.spawnLedger.release();
-    }
-
     // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
     //      a) The parent manifest's spawn ceiling allows Spawn for children
