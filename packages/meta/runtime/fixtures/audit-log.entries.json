@@ -3,7 +3,7 @@
   "capturedAt": 1775864165320,
   "entries": [
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "timestamp": 1775864164790,
       "sessionId": "agent:a7554b72-c51e-4e41-9787-50d44f962d88:cd271562-5d42-4477-87ec-7724958ffe57",
       "agentId": "a7554b72-c51e-4e41-9787-50d44f962d88",
@@ -13,7 +13,7 @@
       "metadata": {}
     },
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "timestamp": 1775864164794,
       "sessionId": "agent:a7554b72-c51e-4e41-9787-50d44f962d88:cd271562-5d42-4477-87ec-7724958ffe57",
       "agentId": "a7554b72-c51e-4e41-9787-50d44f962d88",
@@ -68,7 +68,7 @@
       "durationMs": 394
     },
     {
-      "schema_version": 1,
+      "schema_version": 2,
       "timestamp": 1775864165203,
       "sessionId": "agent:a7554b72-c51e-4e41-9787-50d44f962d88:cd271562-5d42-4477-87ec-7724958ffe57",
       "agentId": "a7554b72-c51e-4e41-9787-50d44f962d88",

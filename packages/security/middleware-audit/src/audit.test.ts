@@ -268,13 +268,13 @@ describe("createAuditMiddleware", () => {
   // Redaction + truncation
   // ---------------------------------------------------------------------------
 
-  test("tool_call entry omits toolName when redactRequestBodies is true", async () => {
+  test("tool_call entry retains toolName even when redactRequestBodies is true", async () => {
     const redactMw = createAuditMiddleware({ sink, redactRequestBodies: true });
     await redactMw.wrapToolCall?.(ctx, { toolId: "Bash", input: {} }, makeToolHandler());
     await redactMw.flush();
     const entry = sink.entries[0];
     if (entry === undefined) throw new Error("expected entry");
-    expect(entry.toolName).toBeUndefined();
+    expect(entry.toolName).toBe("Bash");
     expect(entry.request).toBe("[redacted]");
   });
 
