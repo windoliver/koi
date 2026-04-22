@@ -178,7 +178,8 @@ function fnv1a(text: string): number {
  * type) are detected, not just content edits.
  */
 function recordSignatureText(record: ScannedMemory["record"]): string {
-  return `${record.name}\u0000${record.description}\u0000${record.type}\u0000${record.content}`;
+  const conf = record.confidence !== undefined ? `\u0000${String(record.confidence)}` : "";
+  return `${record.name}\u0000${record.description}\u0000${record.type}\u0000${record.content}${conf}`;
 }
 
 function signatureFromRecord(record: ScannedMemory["record"]): FileSignature {

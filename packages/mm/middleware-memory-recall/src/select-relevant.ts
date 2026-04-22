@@ -53,7 +53,13 @@ export function buildSelectorPrompt(
   maxFiles: number,
 ): string {
   const entries = manifest
-    .map((m) => `- [${m.type}] "${m.name}" (id: ${m.id}): ${m.description}`)
+    .map((m) => {
+      const trust =
+        m.confidence !== undefined && m.confidence < 1.0
+          ? ` [trust:${m.confidence.toFixed(1)}]`
+          : "";
+      return `- [${m.type}${trust}] "${m.name}" (id: ${m.id}): ${m.description}`;
+    })
     .join("\n");
 
   return `You are a memory relevance selector. Given a user's message and a list of stored memories, pick the ${String(maxFiles)} most relevant ones.
@@ -70,6 +76,7 @@ ${userMessage}
 
 Return ONLY a JSON array of memory IDs for the most relevant memories. Pick at most ${String(maxFiles)}.
 Only include memories you are confident will be helpful based on their name and description.
+When trust tags appear (e.g. [trust:0.7]), prefer higher-trust memories for the same topic; auto-inferred memories (lower trust) should only be selected when no validated alternative covers the topic.
 If none are relevant, return an empty array.
 
 Example response: ["mem-1", "mem-2"]`;
