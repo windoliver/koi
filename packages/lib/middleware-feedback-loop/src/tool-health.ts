@@ -8,7 +8,7 @@
  * All store writes are best-effort — session state is authoritative; store is async.
  */
 
-import type { ChainId, TrustTier } from "@koi/core";
+import type { ChainId, NodeId, TrustTier } from "@koi/core";
 import { chainId } from "@koi/core";
 import type { BrickId, BrickSnapshot } from "@koi/core/brick-snapshot";
 import { snapshotId } from "@koi/core/brick-snapshot";
@@ -396,7 +396,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       createdAt: now,
     };
 
-    const putResult = await snapshotChainStore.put(chainIdVal, snapshot, []);
+    const headResult = await snapshotChainStore.head(chainIdVal);
+    const parentIds: readonly NodeId[] =
+      headResult.ok && headResult.value !== undefined ? [headResult.value.nodeId] : [];
+    const putResult = await snapshotChainStore.put(chainIdVal, snapshot, parentIds);
     if (putResult !== undefined && !putResult.ok) {
       const event: HealthTransitionErrorEvent = {
         transition: "quarantine",
@@ -454,7 +457,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     const chainIdVal: ChainId = chainId(bId);
     const snapshot = buildDemotionSnapshot(bId, toolId, metrics, now, fromTier, toTier);
 
-    const putResult = await snapshotChainStore.put(chainIdVal, snapshot, []);
+    const headResult = await snapshotChainStore.head(chainIdVal);
+    const parentIds: readonly NodeId[] =
+      headResult.ok && headResult.value !== undefined ? [headResult.value.nodeId] : [];
+    const putResult = await snapshotChainStore.put(chainIdVal, snapshot, parentIds);
     if (putResult !== undefined && !putResult.ok) {
       const event: HealthTransitionErrorEvent = {
         transition: "demotion",
@@ -592,14 +598,19 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     },
 
     async dispose(): Promise<void> {
-      // Flush all dirty tools with a timeout guard
+      // Flush all dirty tools; timeout rejects so stalled flushes surface as errors
       const flushes: Promise<void>[] = [];
       for (const [toolId, state] of stateMap) {
         if (state.flushState.dirty && !state.flushState.flushing) {
-          const timeoutPromise = new Promise<void>((resolve) => {
-            setTimeout(resolve, flushTimeoutMs);
+          const timeoutError = new Error(`Flush timeout after ${flushTimeoutMs}ms`);
+          const timeoutPromise = new Promise<void>((_, reject) => {
+            setTimeout(() => reject(timeoutError), flushTimeoutMs);
           });
-          const flush = Promise.race([flushTool(toolId, state, true), timeoutPromise]);
+          const flush = Promise.race([flushTool(toolId, state, true), timeoutPromise]).catch(
+            (e: unknown) => {
+              onFlushError?.(toolId, e);
+            },
+          );
           flushes.push(flush);
         }
       }
