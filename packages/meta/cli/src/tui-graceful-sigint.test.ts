@@ -500,3 +500,56 @@ describe("createTuiSigintHandler — dynamic onWindowElapse (#1999 spawn regress
     expect(forceCount.n).toBe(1);
   });
 });
+
+describe("createTuiSigintHandler — onBgExitHint routing (#1912)", () => {
+  test("onBgExitHint is called instead of write for the bg banner when provided", () => {
+    const timers = createFakeTimers();
+    const writes: string[] = [];
+    const bgHints: string[] = [];
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => false,
+      hasActiveBackgroundTasks: () => true,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {},
+      write: (msg) => {
+        writes.push(msg);
+      },
+      onBgExitHint: (msg) => {
+        bgHints.push(msg);
+      },
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+    });
+
+    handler.handleSignal();
+
+    expect(bgHints.length).toBe(1);
+    expect(bgHints[0]).toContain("Background tasks still running");
+    // write must not receive the bg banner — raw stderr is bypassed (#1912)
+    expect(writes.join("")).not.toContain("Background tasks still running");
+  });
+
+  test("falls back to write when onBgExitHint is absent", () => {
+    const timers = createFakeTimers();
+    const writes: string[] = [];
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => false,
+      hasActiveBackgroundTasks: () => true,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {},
+      write: (msg) => {
+        writes.push(msg);
+      },
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+    });
+
+    handler.handleSignal();
+
+    expect(writes.join("")).toContain("Background tasks still running");
+  });
+});
