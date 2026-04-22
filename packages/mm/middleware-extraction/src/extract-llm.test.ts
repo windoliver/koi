@@ -39,9 +39,10 @@ describe("parseExtractionResponse", () => {
     expect(result[0]?.content).toBe("Always check nulls");
     expect(result[0]?.category).toBe("gotcha");
     expect(result[0]?.memoryType).toBe("feedback");
-    expect(result[0]?.confidence).toBe(0.9);
+    expect(result[0]?.confidence).toBe(1.0); // human-validated → 1.0
     expect(result[1]?.category).toBe("pattern");
     expect(result[1]?.memoryType).toBe("feedback"); // regression #1964: pattern -> feedback, not reference
+    expect(result[1]?.confidence).toBe(0.7); // auto-inferred → 0.7
   });
 
   test("handles JSON wrapped in markdown fences", () => {

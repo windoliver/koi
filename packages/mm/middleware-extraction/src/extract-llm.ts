@@ -9,7 +9,7 @@
  */
 
 import type { CollectiveMemoryCategory, MemoryType } from "@koi/core";
-import { mapCategoryToMemoryType } from "./extract-regex.js";
+import { CATEGORY_CONFIDENCE, mapCategoryToMemoryType } from "./extract-regex.js";
 import { sanitizeForExtraction } from "./sanitize.js";
 import type { ExtractionCandidate } from "./types.js";
 
@@ -28,9 +28,6 @@ function isValidCategory(value: string): value is CollectiveMemoryCategory {
 
 /** Maximum content length per extracted entry (characters). */
 const MAX_ENTRY_LENGTH = 500;
-
-/** Default confidence for LLM-extracted entries. */
-const LLM_CONFIDENCE = 0.9;
 
 /**
  * Builds the extraction prompt from accumulated tool outputs.
@@ -104,7 +101,7 @@ export function parseExtractionResponse(response: string): readonly ExtractionCa
         content: content.length > MAX_ENTRY_LENGTH ? content.slice(0, MAX_ENTRY_LENGTH) : content,
         memoryType,
         category,
-        confidence: LLM_CONFIDENCE,
+        confidence: CATEGORY_CONFIDENCE[category],
       });
     }
 

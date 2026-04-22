@@ -280,6 +280,7 @@ describe("memory-adapter E2E", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.action).toBe("updated");
+    if (result.value.action !== "updated") return;
     expect(result.value.record.confidence).toBe(0.7);
   });
 

@@ -40,7 +40,7 @@ const CATEGORY_TO_MEMORY_TYPE: Readonly<Record<CollectiveMemoryCategory, MemoryT
 // fully trusted (1.0). Auto-inferred categories (heuristic, pattern, context)
 // get reduced confidence (0.7) so they score below human-validated feedback in
 // salience: feedback(1.2) × 0.7 = 0.84, between project(1.0) and reference(0.8).
-const CATEGORY_CONFIDENCE: Readonly<Record<CollectiveMemoryCategory, number>> = {
+export const CATEGORY_CONFIDENCE: Readonly<Record<CollectiveMemoryCategory, number>> = {
   gotcha: 1.0,
   correction: 1.0,
   preference: 1.0,

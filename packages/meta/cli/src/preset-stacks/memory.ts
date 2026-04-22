@@ -194,7 +194,7 @@ export const memoryStack: PresetStack = {
               const migrated = await memoryBackend.update(existing.id, {
                 description,
                 type,
-                confidence,
+                ...(confidence !== undefined ? { confidence } : {}),
               });
               if (!migrated.ok) {
                 console.warn(
