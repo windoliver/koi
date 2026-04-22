@@ -373,10 +373,38 @@ describe("createToolHealthTracker", () => {
     loadCount = 0;
 
     expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
-    // Positive result IS memoized
+    // Positive result is TTL-cached within the window (default 5 min)
     await tracker.isQuarantined(TOOL_ID);
     await tracker.isQuarantined(TOOL_ID);
     expect(loadCount).toBe(1);
+  });
+
+  it("isQuarantined re-checks store after TTL expires and reflects unquarantine", async () => {
+    let now = 0;
+    const base = makeForgeStore();
+    const quarantinedBrick = { ...makeBrickArtifact(BID), lifecycle: "quarantined" as const };
+    await base.save(quarantinedBrick);
+
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore: base,
+      snapshotChainStore: makeSnapshotStore(),
+      clock: () => now,
+    });
+
+    // First call: quarantined
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
+
+    // Operator clears quarantine in the store
+    await base.save({ ...makeBrickArtifact(BID), lifecycle: "active" as const });
+
+    // Within TTL: still cached as quarantined
+    now = 1_000; // 1 second
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
+
+    // Past TTL (5 minutes + 1ms): re-checks store and sees recovery
+    now = 5 * 60 * 1_000 + 1;
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(false);
   });
 
   it("dispose flushes dirty tools without throwing", async () => {

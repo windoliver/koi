@@ -249,8 +249,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   const stateMap = new Map<string, ToolState>();
   // Session-local brick-level quarantine (covers aliases)
   const quarantinedBricks = new Set<BrickId>();
-  // Memoizes only positive (quarantined) results from forgeStore — negative results re-checked each call
-  const forgeQuarantinedBricks = new Set<BrickId>();
+  // TTL-bounded positive quarantine cache from forgeStore: brickId → timestamp of last confirmed check.
+  // Re-checked after QUARANTINE_POSITIVE_TTL_MS so operator recovery actions take effect in live sessions.
+  const QUARANTINE_POSITIVE_TTL_MS = 5 * 60 * 1_000; // 5 minutes
+  const forgeQuarantinedBricksAt = new Map<BrickId, number>();
 
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
@@ -586,16 +588,23 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const bId = resolveBrickId(toolId);
       if (bId === undefined) return false;
       if (quarantinedBricks.has(bId)) return true;
-      // Persisted quarantine: re-check store on every call unless we already confirmed quarantine.
-      // Only positive results are memoized — negative results are NOT cached so externally
-      // quarantined tools become visible on the next call without requiring session restart.
-      if (!forgeQuarantinedBricks.has(bId)) {
-        const loadResult = await forgeStore.load(bId);
-        if (loadResult.ok && loadResult.value.lifecycle === "quarantined") {
-          forgeQuarantinedBricks.add(bId);
-        }
+      // Persisted quarantine: positive results cached with TTL so operator recovery
+      // (clearing lifecycle in the store) takes effect within one TTL window.
+      // Negative results are never cached — externally quarantined tools become
+      // visible on the next call without requiring a session restart.
+      const cachedAt = forgeQuarantinedBricksAt.get(bId);
+      const now = clock();
+      if (cachedAt !== undefined && now - cachedAt < QUARANTINE_POSITIVE_TTL_MS) {
+        return true; // still within TTL window
       }
-      return forgeQuarantinedBricks.has(bId);
+      const loadResult = await forgeStore.load(bId);
+      if (loadResult.ok && loadResult.value.lifecycle === "quarantined") {
+        forgeQuarantinedBricksAt.set(bId, now);
+        return true;
+      }
+      // Not (or no longer) quarantined in store — evict stale cache entry
+      forgeQuarantinedBricksAt.delete(bId);
+      return false;
     },
 
     getSnapshot(toolId: string): ToolHealthSnapshot | undefined {
@@ -698,7 +707,12 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const toTier = nextTrustTier(currentTier);
       if (toTier === undefined) return false;
 
-      // Advance cooldown only after successful persistence — failed writes must not block retries
+      // Optimistically advance cooldown BEFORE awaiting I/O so concurrent callers observe
+      // the updated timestamp and cannot queue a second demotion within the same window.
+      // Roll back on failure so the next attempt is not permanently blocked.
+      const prevLastDemotedAt = state.lastDemotedAt;
+      state.lastDemotedAt = now;
+
       const demoted = await persistDemotion(
         toolId,
         bId,
@@ -707,8 +721,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         metrics,
         currentStoreVersion,
       );
-      if (demoted) {
-        state.lastDemotedAt = now;
+      if (!demoted) {
+        state.lastDemotedAt = prevLastDemotedAt;
       }
       return demoted;
     },
