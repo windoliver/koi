@@ -841,7 +841,7 @@ if [ "$_S25_PANE_DEAD" = "1" ]; then
 fi
 ```
 
-> **S25 plugin-hook assumption**: `KOI_DISABLE_HOOKS=1` disables user hooks but **not** plugin-contributed hooks (the runtime merges `pluginComponents.hooks` regardless). Q156-Q161 file-count assertions are only deterministic if no installed plugin writes memory files. If you have memory-aware plugins installed, add `--manifest '$FIXTURE/s25-memory-only.koi.yaml'` to the `koi tui` launch and create that manifest with `stacks: [memory]` and `plugins: []`.
+> **S25 plugin-hook assumption**: `KOI_DISABLE_HOOKS=1` disables user hooks but **not** plugin-contributed hooks (the runtime merges `pluginComponents.hooks` regardless). Q156-Q161 file-count assertions are only deterministic if no installed plugin writes memory files. If you have memory-aware plugins installed, add `--manifest "$FIXTURE/s25-memory-only.koi.yaml"` to the `koi tui` launch and create that manifest with `stacks: [memory]` and `plugins: []`.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
@@ -849,8 +849,18 @@ fi
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
 | Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
-| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem check (deterministic)**: `find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' ! -name 'MEMORY.md' \| wc -l` must output **2** (not 3). Exclude `MEMORY.md` (the index file) from the count. A third record file means dedup failed. Model response may vary; the record count is the authoritative regression signal. |
-| Q161 | `Delete the memory about input validation.` | memory_delete | `find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' ! -name 'MEMORY.md' \| wc -l` outputs **1**; `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact |
+| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem dedup check**: run the Q160 verification command below; count must be **2** (not 3). A third record file means dedup failed. Model response may vary; the record count is the authoritative regression signal. |
+| Q161 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q161 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
+
+**Q160 / Q161 verification commands** (pipe character cannot be escaped inside GFM table cells — run these in a terminal):
+
+```bash
+# Q160: dedup check — must output 2 (not 3)
+find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' ! -name 'MEMORY.md' | wc -l
+
+# Q161: deletion check — must output 1
+find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' ! -name 'MEMORY.md' | wc -l
+```
 ### Packages Not Testable via TUI (justified)
 
 The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun run test --filter=@koi/runtime`) and package-level unit tests.
