@@ -1792,6 +1792,55 @@ describe("createKoi duration fix", () => {
 });
 
 // ---------------------------------------------------------------------------
+// createKoi — resetIterationBudgetPerRun (issue #1917)
+// ---------------------------------------------------------------------------
+
+describe("createKoi resetIterationBudgetPerRun", () => {
+  test("second run() does not fail with stale duration accumulator", async () => {
+    // Regression for #1917: the iteration guard's startedAt/lastActivityMs
+    // accumulated across run() calls. With a tight maxDurationMs, the second
+    // run would immediately throw TIMEOUT because the guard thought ~60ms had
+    // elapsed when only milliseconds had.
+    //
+    // Uses a cooperating adapter (adapter.terminals present) so the
+    // if (adapter.terminals) path in koi.ts is exercised and resetForRun()
+    // is actually called between runs.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const guard = createIterationGuard({
+      maxTurns: 100,
+      maxDurationMs: 200, // tight budget: 200ms would expire if startedAt is stale
+      maxTokens: 100_000,
+    });
+
+    const modelTerminal = mock(() =>
+      Promise.resolve({ content: "ok", model: "test" } as import("@koi/core").ModelResponse),
+    );
+    const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [guard],
+      resetIterationBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    // First run should complete normally
+    const firstEvents = await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    expect(firstEvents.at(-1)?.kind).toBe("done");
+
+    // Wait long enough that a stale startedAt would trip the 200ms limit.
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Second run must not immediately throw TIMEOUT. Without resetForRun(),
+    // the guard's startedAt would still be from the first run and the 200ms
+    // limit would appear already consumed.
+    const secondEvents = await collectEvents(runtime.run({ kind: "text", text: "second" }));
+    expect(secondEvents.at(-1)?.kind).toBe("done");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // createKoi — streaming terminal wiring
 // ---------------------------------------------------------------------------
 

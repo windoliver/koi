@@ -160,7 +160,40 @@ function createTimeoutRace(
 // Iteration Guard
 // ---------------------------------------------------------------------------
 
-export function createIterationGuard(config?: Partial<IterationLimits>): KoiMiddleware {
+/**
+ * Returned by `createIterationGuard`. Extends `KoiMiddleware` with a
+ * `resetForRun()` method that resets the per-run iteration budget (turns,
+ * wall-clock timer, inactivity timer). Called by the engine when
+ * `resetIterationBudgetPerRun: true` is set, alongside the matching
+ * governance `iteration_reset`. Not wired automatically — callers must invoke
+ * it to keep guard and governance state in sync.
+ */
+export interface IterationGuardHandle extends KoiMiddleware {
+  readonly resetForRun: () => void;
+}
+
+/**
+ * Cross-package brand symbol. Using Symbol.for ensures that guards produced
+ * by different installed copies or versions of @koi/engine-compose are still
+ * recognised by isIterationGuardHandle.
+ */
+export const ITERATION_GUARD_BRAND: symbol = Symbol.for(
+  "@koi/engine-compose:iteration-guard-handle",
+);
+
+/**
+ * Type predicate — true iff `mw` was produced by `createIterationGuard`.
+ * Requires the own ITERATION_GUARD_BRAND symbol so only explicitly branded guards
+ * trigger per-run resets; generic middleware with unrelated `resetForRun` methods
+ * are not affected. Symbol.for ensures brand equality across module copies.
+ */
+export function isIterationGuardHandle(mw: KoiMiddleware): mw is IterationGuardHandle {
+  if (!Object.hasOwn(mw, ITERATION_GUARD_BRAND)) return false;
+  const candidate = mw as KoiMiddleware & { readonly resetForRun?: unknown };
+  return typeof candidate.resetForRun === "function";
+}
+
+export function createIterationGuard(config?: Partial<IterationLimits>): IterationGuardHandle {
   const limits: IterationLimits = {
     ...DEFAULT_ITERATION_LIMITS,
     ...config,
@@ -232,7 +265,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     totalTokens += inputTokens + outputTokens;
   }
 
-  return {
+  const guard: IterationGuardHandle = {
     name: "koi:iteration-guard",
     describeCapabilities: () => undefined,
     priority: 0,
@@ -240,6 +273,12 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     onSessionStart: async () => {
       turns = 0;
       totalTokens = 0;
+      startedAt = Date.now();
+      lastActivityMs = Date.now();
+    },
+
+    resetForRun: (): void => {
+      turns = 0;
       startedAt = Date.now();
       lastActivityMs = Date.now();
     },
@@ -355,6 +394,15 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       return response;
     },
   };
+  // Set the cross-package brand so isIterationGuardHandle works across
+  // separate installed copies of @koi/engine-compose (version-skew scenario).
+  Object.defineProperty(guard, ITERATION_GUARD_BRAND, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return guard;
 }
 
 // ---------------------------------------------------------------------------

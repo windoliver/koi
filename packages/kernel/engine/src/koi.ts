@@ -42,12 +42,17 @@ import {
   sessionId,
   toolToken,
 } from "@koi/core";
-import type { DebugInstrumentation, TerminalHandlers } from "@koi/engine-compose";
+import type {
+  DebugInstrumentation,
+  IterationGuardHandle,
+  TerminalHandlers,
+} from "@koi/engine-compose";
 import {
   composeExtensions,
   computeCapabilityBanner,
   createDebugInstrumentation,
   createDefaultGuardExtension,
+  isIterationGuardHandle,
   recomposeChains,
   resolveActiveMiddleware,
   runPermissionDecisionHooks,
@@ -570,6 +575,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: mutable ref for identity-based dynamic middleware skip
     let previousDynamicMw: readonly KoiMiddleware[] | undefined;
 
+    // let justified: guards already reset for the current run — prevents double-resets across recompositions
+    let resetGuardsCurrentRun: Set<IterationGuardHandle> | undefined;
+
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
 
@@ -625,6 +633,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         forgedMw ?? undefined,
         dynamicMw ?? undefined,
       );
+      // Reset iteration guards when armed by the run-start phase.
+      // resetGuardsCurrentRun is set to a new Set() at run start, used here, then
+      // cleared to undefined immediately after — so only this one pre-turn
+      // composition call can trigger resets. Mid-run recompositions skip this block.
+      if (resetGuardsCurrentRun !== undefined) {
+        for (const g of sorted.filter(isIterationGuardHandle)) {
+          if (!resetGuardsCurrentRun.has(g)) {
+            g.resetForRun();
+            resetGuardsCurrentRun.add(g);
+          }
+        }
+      }
+
       const chains = recomposeChains(sorted, terminals, debugInstrumentation, provenanceHints);
       activeToolChain = chains.toolChain;
       activeModelChain = chains.modelChain;
@@ -764,11 +785,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // Interactive hosts (TUI) opt in to give each user submit a fresh
       // turn/token/cost/duration budget. Spawn counts and rolling
       // error-rate windows are NOT reset (runtime-scoped resources).
+      // #1917: arm the per-run guard reset. The actual resetForRun() calls are
+      // deferred until after initial forge setup (see below) so the reset targets
+      // the final pre-turn middleware snapshot (static + forge + dynamic) rather
+      // than a stale snapshot. Cleared at run end so no leftover state bleeds
+      // into the next run's reset phase.
+      resetGuardsCurrentRun = undefined;
+
       if (options.resetIterationBudgetPerRun === true) {
         const govCtl = agent.component<GovernanceController>(GOVERNANCE);
         if (govCtl !== undefined) {
           await govCtl.record({ kind: "iteration_reset" });
         }
+        // Arm the guard reset. applyRecomposition(resetGuards=true) is called
+        // after initial forge setup to reset all guards at once.
+        resetGuardsCurrentRun = new Set();
       }
 
       // Wire registry watcher → engine events for child agent visibility.
@@ -977,6 +1008,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
         // Initial forge state (descriptors + forged middleware)
         await refreshForgeState(cachedTerminals);
+
+        // #1917: reset all iteration guards exactly once at the pre-turn boundary
+        // using the complete snapshot (static + forge + dynamic). Setting
+        // previousDynamicMw to the snapshot avoids a redundant identity-skip
+        // recomposition at the first turn boundary. resetGuardsCurrentRun is
+        // cleared immediately after so mid-run recompositions cannot re-issue
+        // fresh budgets.
+        if (resetGuardsCurrentRun !== undefined) {
+          const runStartDynamic = options.dynamicMiddleware?.() ?? [];
+          previousDynamicMw = runStartDynamic;
+          applyRecomposition(previousForgedMw ?? undefined, runStartDynamic, cachedTerminals);
+          resetGuardsCurrentRun = undefined;
+        }
 
         // Subscribe to forge push notifications for mid-session tool visibility.
         //
