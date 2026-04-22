@@ -24,12 +24,12 @@ export const PEEK_PREVIEW_MAX = 66;
  * Preview is normalized (newlines → spaces) and capped so it never
  * overflows the fixed-width modal.
  */
+function capLine(s: string): string {
+  return s.length > PEEK_PREVIEW_MAX ? s.slice(0, PEEK_PREVIEW_MAX - 1) + "…" : s;
+}
+
 export function getSessionPeekLines(s: SessionSummary): readonly string[] {
   const date = formatSessionDate(s.lastActivityAt);
   const normalized = s.preview.replace(/\r?\n|\r/g, " ");
-  const previewLine =
-    normalized.length > PEEK_PREVIEW_MAX
-      ? normalized.slice(0, PEEK_PREVIEW_MAX - 1) + "…"
-      : normalized;
-  return [s.name, `${date} · ${s.messageCount} messages`, previewLine];
+  return [capLine(s.name), capLine(`${date} · ${s.messageCount} messages`), capLine(normalized)];
 }

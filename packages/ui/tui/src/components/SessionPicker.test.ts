@@ -90,6 +90,23 @@ describe("getSessionPeekLines", () => {
     expect(lines[0]).toBe("My Session");
   });
 
+  test("long session name is capped at 66 chars with ellipsis", () => {
+    const name = "n".repeat(100);
+    const lines = getSessionPeekLines(makeSession({ name }));
+    expect((lines[0] ?? "").length).toBeLessThanOrEqual(66);
+    expect((lines[0] ?? "").endsWith("…")).toBe(true);
+  });
+
+  test("all 3 peek lines are ≤ 66 chars", () => {
+    const session = makeSession({
+      name: "n".repeat(100),
+      preview: "p".repeat(200),
+    });
+    for (const line of getSessionPeekLines(session)) {
+      expect(line.length).toBeLessThanOrEqual(66);
+    }
+  });
+
   test("second line contains message count", () => {
     const lines = getSessionPeekLines(makeSession({ messageCount: 12 }));
     expect(lines[1]).toContain("12 messages");
