@@ -13,6 +13,12 @@ import { CATEGORY_CONFIDENCE, mapCategoryToMemoryType } from "./extract-regex.js
 import { sanitizeForExtraction } from "./sanitize.js";
 import type { ExtractionCandidate } from "./types.js";
 
+// LLM-extracted categories cannot be fully trusted: the model self-assigns the
+// category label, so "gotcha"/"correction" from LLM output could be hallucinated
+// or weak. Cap at 0.9 so the LLM path stays below human-authored markers (1.0)
+// while still ranking above uncategorized auto-extracted heuristics (0.7).
+const LLM_CONFIDENCE_CAP = 0.9;
+
 const VALID_CATEGORIES = new Set<string>([
   "gotcha",
   "heuristic",
@@ -101,7 +107,7 @@ export function parseExtractionResponse(response: string): readonly ExtractionCa
         content: content.length > MAX_ENTRY_LENGTH ? content.slice(0, MAX_ENTRY_LENGTH) : content,
         memoryType,
         category,
-        confidence: CATEGORY_CONFIDENCE[category],
+        confidence: Math.min(LLM_CONFIDENCE_CAP, CATEGORY_CONFIDENCE[category]),
       });
     }
 

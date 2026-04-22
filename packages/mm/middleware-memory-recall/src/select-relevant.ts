@@ -20,6 +20,8 @@ export interface MemoryManifestEntry {
   readonly type: string;
   /** Opaque identifier for the memory record (used for selection, not shown to users). */
   readonly id: string;
+  /** Trust weight in [0,1]; undefined means full trust (1.0). */
+  readonly confidence?: number | undefined;
 }
 
 /** Configuration for the relevance selector. */
