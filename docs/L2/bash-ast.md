@@ -285,6 +285,33 @@ prefix `Run(...)` rules whenever any matched argv yields
 end-to-end deny path. Splitting (a) from (b) opens a fail-open
 window. See the design doc for the full bundling rationale.
 
+### Consumer wiring — `@koi/middleware-permissions`
+
+As of issue #1919, `@koi/middleware-permissions` consumes `evaluateBashCommand` in
+`wrapToolCall` when `enableBashSpecGuard: true` (default when `resolveBashCommand`
+is configured). The guard enforces two properties:
+
+1. **Exact-argv guard** — for `partial`/`refused` spec results, any `allow` from a
+   prefix `Run(...)` rule is downgraded to `ask` unless an exact-argv rule also
+   matches the full command string (e.g. `allow: bash:rm -rf /tmp` matches only
+   that exact form).
+
+2. **Semantic rule evaluation** — for `complete`/`partial` results, `Write(path)`,
+   `Read(path)`, and `Network(host)` rules are evaluated against the spec's
+   `writes`, `reads`, and `network[].host` fields respectively.
+
+`Write`, `Read`, and `Network` rules are authored in the `@koi/permissions` config
+using DSL syntax added in #1919:
+
+```json
+{"Write": "/etc/**", "effect": "deny", "reason": "no writes to system paths"}
+{"Read": "/proc/**", "effect": "deny"}
+{"Network": "evil.com", "effect": "deny"}
+```
+
+The `@koi/permissions` rule-loader normalises these into standard
+`{action: "write"/"read"/"network", pattern: path/host}` rules at load time.
+
 ## Too-Complex Category Taxonomy
 
 `AstAnalysis.too-complex.primaryCategory` is a stable closed enum that
