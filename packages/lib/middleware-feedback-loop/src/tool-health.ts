@@ -294,7 +294,12 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const merged = computeMergedFitness(deltas, existingFitness);
 
       const currentErrorRate = state.flushState.errorRateSinceFlush;
-      await forgeStore.update(bId, { fitness: merged });
+      const updateResult = await forgeStore.update(bId, { fitness: merged });
+      if (!updateResult.ok) {
+        state.flushState = { ...state.flushState, flushing: false };
+        onFlushError?.(toolId, updateResult.error);
+        return;
+      }
 
       // Reset deltas after successful flush
       state.deltaSinceFlush = {

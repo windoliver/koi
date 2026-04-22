@@ -103,8 +103,8 @@ function handleToolError(
  * - Session lifecycle: creates/disposes a ToolHealthTracker when forgeHealth is configured.
  */
 export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMiddleware {
-  // let-binding: mutable session-scoped tracker (reset each session)
-  let tracker: ToolHealthTracker | undefined;
+  // Per-session tracker map: keyed by sessionId to isolate concurrent sessions
+  const trackers = new Map<string, ToolHealthTracker>();
 
   return {
     name: "feedback-loop",
@@ -114,16 +114,17 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       return undefined;
     },
 
-    async onSessionStart(_ctx: SessionContext): Promise<void> {
+    async onSessionStart(ctx: SessionContext): Promise<void> {
       if (config.forgeHealth !== undefined) {
-        tracker = createToolHealthTracker(config.forgeHealth);
+        trackers.set(ctx.sessionId, createToolHealthTracker(config.forgeHealth));
       }
     },
 
-    async onSessionEnd(_ctx: SessionContext): Promise<void> {
+    async onSessionEnd(ctx: SessionContext): Promise<void> {
+      const tracker = trackers.get(ctx.sessionId);
       if (tracker !== undefined) {
+        trackers.delete(ctx.sessionId);
         await tracker.dispose();
-        tracker = undefined;
       }
     },
 
@@ -150,7 +151,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
     },
 
     async wrapToolCall(
-      _ctx: ToolCallCtx,
+      ctx: ToolCallCtx,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -158,6 +159,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
         return next(request);
       }
 
+      const tracker = trackers.get(ctx.session.sessionId);
       if (tracker !== undefined) {
         const brickId = config.forgeHealth?.resolveBrickId(request.toolId);
         if (brickId !== undefined && tracker.isQuarantined(request.toolId)) {
