@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/tui` — model-router spans now show routing decision (#2018)**: `/trajectory` view previously showed `[pass]` for all `middleware:model-router` spans because `summarizeDecision` had no handler for `router.*` keys. Now displays `→provider:model` (with ` fallback` suffix on secondary-target selection).
+
 - **`@koi/lsp` — `servers` now optional in `LspProviderConfig` (#2005)**: `createLspComponentProvider({ autoDetect: true })` previously crashed with `undefined is not an object (evaluating 'config.servers.map')` when `servers` was omitted. `LspProviderConfig.servers` is now `servers?` and both call sites in `resolveProviderConfig` / `mergeAutoDetected` guard with `?? []`. No CLI surface change — the fix is in the LSP library consumed by runtime's `config.lsp` wiring.
 - **`KOI_BROWSER_MOCK=1` — mock browser provider for dev/test (#2003)**: wires `@koi/tool-browser` and `@koi/url-safety` into the CLI. When both `KOI_BROWSER_MOCK=1` and `KOI_BROWSER_MOCK_CONFIRM=1` are set, a mock `BrowserProvider` (canned-response driver, no real Chromium) is injected into `extraProviders` so all 15 `browser_*` tools are available without a real browser. SSRF guard is active even in mock mode via `isSafeUrl`. Requires both env vars together — setting only `KOI_BROWSER_MOCK=1` fails fast at startup to prevent accidental activation from an inherited environment. An unmissable stderr warning is emitted when the mock backend is active.
 
