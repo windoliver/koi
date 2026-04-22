@@ -254,18 +254,25 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   // Ring must be large enough for both quarantine window and demotion window
   const ringSize = Math.max(windowSize, demotionCriteria.windowSize);
 
-  // Per-tool state map: keyed by toolId
+  // Health state keyed by BrickId (or toolId when brickId unavailable) so all aliases
+  // of the same brick share a single ring buffer, cooldown, and flush state.
   const stateMap = new Map<string, ToolState>();
   // Session-local brick-level quarantine (covers aliases)
   const quarantinedBricks = new Set<BrickId>();
   // Tracks in-flight quarantine/demotion persistence promises so dispose() can await them.
   const pendingHealthWrites = new Set<Promise<unknown>>();
 
+  // Canonical key for stateMap: BrickId when resolvable, else toolId (fallback for unregistered tools)
+  function stateKey(toolId: string): string {
+    return (resolveBrickId(toolId) as string | undefined) ?? toolId;
+  }
+
   function getOrCreate(toolId: string): ToolState {
-    let s = stateMap.get(toolId);
+    const key = stateKey(toolId);
+    let s = stateMap.get(key);
     if (s === undefined) {
       s = makeToolState(ringSize);
-      stateMap.set(toolId, s);
+      stateMap.set(key, s);
     }
     return s;
   }
@@ -635,7 +642,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
 
     async isQuarantined(toolId: string): Promise<boolean> {
       // Fast path: in-session quarantine (no I/O)
-      if (stateMap.get(toolId)?.sessionQuarantined === true) return true;
+      if (stateMap.get(stateKey(toolId))?.sessionQuarantined === true) return true;
       const bId = resolveBrickId(toolId);
       if (bId === undefined) return false;
       // in-memory set populated by checkAndQuarantine_ this session
@@ -647,7 +654,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     },
 
     getSnapshot(toolId: string): ToolHealthSnapshot | undefined {
-      const state = stateMap.get(toolId);
+      const state = stateMap.get(stateKey(toolId));
       if (state === undefined) return undefined;
       const bId = resolveBrickId(toolId);
       const metrics = computeWindowMetrics(state, windowSize);

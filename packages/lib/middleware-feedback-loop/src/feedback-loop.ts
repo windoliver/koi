@@ -161,18 +161,63 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       });
     },
 
-    // Validators and gates require a complete ModelResponse and cannot run on a stream.
-    // Streaming calls always pass through. When validators/gates are configured,
-    // onStreamValidationSkipped fires so callers can observe the skip.
+    // When model validators/gates are configured, streams are buffered to completion
+    // before validation. The done chunk carries the full ModelResponse; validation runs
+    // on it exactly as in wrapModelCall. On validation retry, the stream is re-run.
+    // Transport-only config and no-check config: pass through without buffering.
     async *wrapModelStream(
       _ctx: ModelCallCtx,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      if (hasModelChecks(config)) {
-        config.onStreamValidationSkipped?.();
+      if (!hasModelChecks(config)) {
+        yield* next(request);
+        return;
       }
-      yield* next(request);
+
+      // Adapt stream handler to ModelHandler: buffer chunks, return done.response.
+      // lastChunks tracks the most recent stream so we can re-yield after validation.
+      let lastChunks: readonly ModelChunk[] = [];
+
+      const streamAsModel: ModelHandler = async (req: ModelRequest): Promise<ModelResponse> => {
+        const chunks: ModelChunk[] = [];
+        for await (const chunk of next(req)) {
+          chunks.push(chunk);
+          if (chunk.kind === "error") {
+            lastChunks = chunks;
+            throw Object.assign(new Error(chunk.message), {
+              cause: { code: "TRANSPORT_ERROR", retryable: chunk.retryable ?? false },
+            });
+          }
+          if (chunk.kind === "done") {
+            lastChunks = chunks;
+            return chunk.response;
+          }
+        }
+        throw Object.assign(new Error("Stream ended without done chunk"), {
+          cause: { code: "TRANSPORT_ERROR", retryable: false },
+        });
+      };
+
+      try {
+        await runWithRetry(request, streamAsModel, {
+          validators: config.validators ?? [],
+          gates: config.gates ?? [],
+          repairStrategy: config.repairStrategy ?? defaultRepairStrategy,
+          validationMaxAttempts:
+            config.retry?.validation?.maxAttempts ?? VALIDATION_DEFAULT_MAX_ATTEMPTS,
+          transportMaxAttempts:
+            config.retry?.transport?.maxAttempts ?? TRANSPORT_DEFAULT_MAX_ATTEMPTS,
+          onRetry: config.onRetry,
+          onGateFail: config.onGateFail,
+        });
+      } catch (err) {
+        yield { kind: "error", message: String(err), retryable: false };
+        return;
+      }
+
+      // Validation passed — re-yield the final stream's chunks
+      yield* lastChunks;
     },
 
     async wrapToolCall(

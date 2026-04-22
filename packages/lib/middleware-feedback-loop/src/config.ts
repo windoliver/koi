@@ -54,8 +54,6 @@ export interface FeedbackLoopConfig {
   readonly repairStrategy?: RepairStrategy | undefined;
   readonly onRetry?: ((attempt: number, errors: readonly ValidationError[]) => void) | undefined;
   readonly onGateFail?: ((gate: Gate, errors: readonly ValidationError[]) => void) | undefined;
-  /** Called when a streaming model call bypasses validators/gates (streaming is pass-through). */
-  readonly onStreamValidationSkipped?: (() => void) | undefined;
   readonly forgeHealth?: ForgeHealthConfig | undefined;
 }
 

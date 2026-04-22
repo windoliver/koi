@@ -173,23 +173,25 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(result).toBeDefined();
     });
 
-    it("wrapModelStream passes through even when validators are configured", async () => {
-      const skipCallback = mock(() => {});
+    it("wrapModelStream buffers and validates when validators are configured", async () => {
+      let validateCallCount = 0;
       const validator: Validator = {
         name: "v",
         validate(_r: ModelResponse): ValidationResult {
+          validateCallCount++;
           return { valid: true };
         },
       };
 
-      const mw = createFeedbackLoopMiddleware({
-        validators: [validator],
-        onStreamValidationSkipped: skipCallback,
-      });
+      const mw = createFeedbackLoopMiddleware({ validators: [validator] });
 
-      const chunks: ModelChunk[] = [{ kind: "text", text: "hello" }];
+      const modelResponse: ModelResponse = { content: "hello", model: "m", stopReason: "stop" };
+      const sourceChunks: ModelChunk[] = [
+        { kind: "text_delta", delta: "hello" },
+        { kind: "done", response: modelResponse },
+      ];
       const next = async function* (_req: ModelRequest): AsyncIterable<ModelChunk> {
-        for (const c of chunks) yield c;
+        for (const c of sourceChunks) yield c;
       };
 
       const collected: ModelChunk[] = [];
@@ -200,10 +202,39 @@ describe("createFeedbackLoopMiddleware", () => {
         }
       }
 
-      // Stream must pass through intact (not errored)
-      expect(collected).toEqual(chunks);
-      // Callback must fire to make the skip observable
-      expect(skipCallback).toHaveBeenCalledTimes(1);
+      // All chunks yielded after validation passes
+      expect(collected).toHaveLength(2);
+      expect(collected[0]).toEqual({ kind: "text_delta", delta: "hello" });
+      expect((collected[1] as { kind: "done"; response: ModelResponse }).kind).toBe("done");
+      // Validator ran on the buffered response
+      expect(validateCallCount).toBe(1);
+    });
+
+    it("wrapModelStream yields error chunk when gate blocks buffered stream", async () => {
+      const gate: Gate = {
+        name: "block-gate",
+        validate(_r: ModelResponse | ToolResponse): ValidationResult {
+          return { valid: false, errors: [{ validator: "block-gate", message: "blocked" }] };
+        },
+      };
+
+      const mw = createFeedbackLoopMiddleware({ gates: [gate] });
+
+      const modelResponse: ModelResponse = { content: "bad", model: "m", stopReason: "stop" };
+      const next = async function* (_req: ModelRequest): AsyncIterable<ModelChunk> {
+        yield { kind: "done", response: modelResponse };
+      };
+
+      const collected: ModelChunk[] = [];
+      const ctx = mockTurnCtx();
+      if (mw.wrapModelStream !== undefined) {
+        for await (const chunk of mw.wrapModelStream(ctx, mockModelRequest(), next)) {
+          collected.push(chunk);
+        }
+      }
+
+      expect(collected).toHaveLength(1);
+      expect(collected[0]?.kind).toBe("error");
     });
 
     it("throws when a gate fails (not retried)", async () => {

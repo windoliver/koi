@@ -438,6 +438,38 @@ describe("createToolHealthTracker", () => {
     expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
   });
 
+  it("health state aggregated by BrickId: failures across aliases share one ring buffer", async () => {
+    // Two different toolIds that resolve to the same brick must share health state.
+    // Without this, a flaky brick can evade quarantine by distributing calls across aliases.
+    const TOOL_A = "tool-a";
+    const TOOL_B = "tool-b"; // alias for same brick
+    const forgeStore = makeForgeStore();
+    await forgeStore.save(makeBrickArtifact(BID));
+
+    const tracker = createToolHealthTracker({
+      resolveBrickId: (toolId: string) =>
+        toolId === TOOL_A || toolId === TOOL_B ? BID : undefined,
+      forgeStore,
+      snapshotChainStore: makeSnapshotStore(),
+      quarantineThreshold: 0.5,
+      windowSize: 4,
+    });
+
+    // Record 2 failures via alias A and 1 failure via alias B = 3 failures total
+    tracker.recordFailure(TOOL_A, 10, "err");
+    tracker.recordFailure(TOOL_A, 10, "err");
+    tracker.recordFailure(TOOL_B, 10, "err");
+    tracker.recordSuccess(TOOL_B, 10); // 3/4 = 75% >= threshold 50%
+
+    // Quarantine must trigger because the shared ring buffer sees 75% errors
+    const quarantined = await tracker.checkAndQuarantine(TOOL_A);
+    expect(quarantined).toBe(true);
+
+    // Both aliases must be blocked
+    expect(await tracker.isQuarantined(TOOL_A)).toBe(true);
+    expect(await tracker.isQuarantined(TOOL_B)).toBe(true);
+  });
+
   it("isQuarantined re-checks forgeStore on every call so operator quarantine is immediate", async () => {
     let loadCount = 0;
     const base = makeForgeStore();
