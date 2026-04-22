@@ -122,25 +122,24 @@ The entire pipeline is E2E tested with a real LLM (OpenRouter → Gemini):
 │         createConfiguredKoi, core types                     │
 │                                                             │
 │  ┌───────────────────┐  ┌────────────────────────────────┐  │
-│  │ L3 Subpaths (19)  │  │ Orphaned L2 Domain Groups (5) │  │
+│  │ L3 Subpaths (18)  │  │ Orphaned L2 Domain Groups (5) │  │
 │  │                   │  │                                │  │
 │  │ koi/channels      │  │ koi/tools      — MCP, web,    │  │
 │  │ koi/sandbox       │  │                  github, exec  │  │
 │  │ koi/forge         │  │ koi/infra      — config,      │  │
 │  │ koi/gateway       │  │                  scheduler,    │  │
-│  │ koi/goals         │  │                  search, store │  │
-│  │ koi/governance    │  │ koi/safety     — eval, doctor, │  │
-│  │ koi/nexus         │  │                  self-test,    │  │
-│  │ koi/ipc           │  │                  verified-loop │  │
-│  │ koi/node          │  │ koi/middleware — event-trace,  │  │
-│  │ koi/workspace     │  │                  report,       │  │
-│  │ koi/skills        │  │                  reflex, rules │  │
-│  │ koi/autonomous    │  │ koi/observability — dashboard, │  │
-│  │ koi/quality       │  │                    webhooks,   │  │
-│  │ koi/retry         │  │                    transcript, │  │
-│  │ koi/rlm           │  │                    bundle      │  │
-│  │ koi/context-arena │  └────────────────────────────────┘  │
-│  │ koi/tool-stack    │                                      │
+│  │ koi/governance    │  │                  search, store │  │
+│  │ koi/nexus         │  │ koi/safety     — eval, doctor, │  │
+│  │ koi/ipc           │  │                  self-test,    │  │
+│  │ koi/node          │  │                  verified-loop │  │
+│  │ koi/workspace     │  │ koi/middleware — event-trace,  │  │
+│  │ koi/skills        │  │                  report,       │  │
+│  │ koi/autonomous    │  │                  reflex, rules │  │
+│  │ koi/quality       │  │ koi/observability — dashboard, │  │
+│  │ koi/retry         │  │                    webhooks,   │  │
+│  │ koi/rlm           │  │                    transcript, │  │
+│  │ koi/context-arena │  │                    bundle      │  │
+│  │ koi/tool-stack    │  └────────────────────────────────┘  │
 │  │ koi/cli           │                                      │
 │  │ koi/spawner       │                                      │
 │  └───────────────────┘                                      │
