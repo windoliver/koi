@@ -160,7 +160,7 @@ function formatTokens(step: TrajectoryStepSummary): string | undefined {
 }
 
 /** Summarize the first decision into a compact suffix label. */
-function summarizeDecision(d: Record<string, unknown>): string | undefined {
+export function summarizeDecision(d: Record<string, unknown>): string | undefined {
   // Permissions MW — filter phase
   if (d.phase === "filter" && typeof d.allowedCount === "number" && typeof d.totalTools === "number") {
     return `filter:${d.allowedCount}/${d.totalTools}`;
@@ -201,6 +201,12 @@ function summarizeDecision(d: Record<string, unknown>): string | undefined {
   // Checkpoint — capture
   if (d.action === "capture") {
     return d.captured === true ? `capture:${String(d.path ?? "")}` : "skip";
+  }
+  // Model router — routing decision
+  if (typeof d["router.target.selected"] === "string") {
+    const selected = d["router.target.selected"];
+    const fallback = d["router.fallback_occurred"] === true ? " fallback" : "";
+    return selected.length > 0 ? `→${selected}${fallback}` : `exhausted${fallback}`;
   }
   return undefined;
 }
