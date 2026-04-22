@@ -295,10 +295,16 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       return { ok: false, error: validation.error };
     }
 
-    // Acquire a slot before allocating any per-child resources.
-    // Preserves acquireOrWait backpressure semantics when signal+acquireOrWait available;
-    // falls back to immediate acquire() when backpressure is unavailable (no signal).
-    // Handles abort-before-acquire as a cancellation, not a capacity error (Issue #1996).
+    // Pre-flight capacity check (Issue #1996): acquire then immediately release so
+    // callers get an instant PERMISSION rejection when the ledger is full, rather than
+    // queueing indefinitely in spawnChildAgent's acquireOrWait.
+    //
+    // TOCTOU note: a slot may be taken between release and spawnChildAgent's re-acquire.
+    // That is intentional — spawnChildAgent owns the long-lived slot and its acquireOrWait
+    // provides backpressure. This layer only enforces the cap at the call boundary.
+    //
+    // Abort-before-acquire: if signal already fired, classify as cancellation (INTERNAL,
+    // not retryable) rather than capacity exhaustion (PERMISSION, retryable).
     if (request.signal?.aborted) {
       return {
         ok: false,
@@ -309,38 +315,19 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         },
       };
     }
-    let slotAcquired: boolean;
-    if (base.spawnLedger.acquireOrWait !== undefined && request.signal !== undefined) {
-      slotAcquired = await base.spawnLedger.acquireOrWait(request.signal);
-      if (!slotAcquired) {
-        return {
-          ok: false,
-          error: {
-            code: "INTERNAL",
-            message: "Spawn cancelled: abort signal fired while waiting for a process slot",
-            retryable: false,
-          },
-        };
-      }
-    } else {
-      slotAcquired = await base.spawnLedger.acquire();
-      if (!slotAcquired) {
-        return {
-          ok: false,
-          error: {
-            code: "PERMISSION",
-            message: `Spawn limit reached: max concurrent agents (${base.spawnLedger.capacity()}) already running. Retry when a slot is available.`,
-            retryable: true,
-          },
-        };
-      }
+    const capAvailable = await base.spawnLedger.acquire();
+    if (!capAvailable) {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Spawn limit reached: max concurrent agents (${base.spawnLedger.capacity()}) already running. Retry when a slot is available.`,
+          retryable: true,
+        },
+      };
     }
-    // Propagate release failures — a stuck slot is a resource leak that must be visible.
-    // Called only from early-exit paths before spawnChildAgent; post-spawn release is
-    // owned by the terminated-event handler in spawnChildAgent (slotPreAcquired=true).
-    const releaseSlot = async (): Promise<void> => {
-      await base.spawnLedger.release();
-    };
+    // Propagate release failure — a stuck slot here is a resource leak that must be visible.
+    await base.spawnLedger.release();
 
     // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
@@ -382,7 +369,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     //     Without the appropriate sink the child runs but output is silently lost.
     //     Validated up front so rejected spawns cost zero per-child resources.
     if (policy.kind === "on_demand" && options.reportStore === undefined) {
-      await releaseSlot();
       return {
         ok: false,
         error: {
@@ -394,7 +380,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       };
     }
     if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
-      await releaseSlot();
       return {
         ok: false,
         error: {
@@ -445,20 +430,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         perChildUnwind = factoryResult.unwind;
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
-        // Best-effort release: original factory error takes precedence, but include
-        // any release failure in the message so operators can detect a leaked slot.
-        let releaseNote = "";
-        try {
-          await base.spawnLedger.release();
-        } catch (releaseErr: unknown) {
-          const releaseMsg = releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
-          releaseNote = ` (WARNING: slot release also failed — ledger may report false capacity: ${releaseMsg})`;
-        }
         return {
           ok: false,
           error: {
             code: "INTERNAL",
-            message: `Per-child middleware factory failed for "${request.agentName}": ${message}${releaseNote}`,
+            message: `Per-child middleware factory failed for "${request.agentName}": ${message}`,
             retryable: false,
           },
         };
@@ -491,7 +467,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       manifest,
       adapter,
       signal: request.signal,
-      slotPreAcquired: true,
       ...(isFork ? { fork: true as const } : {}),
       ...(childProviders.length > 0 ? { providers: childProviders } : {}),
       ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
@@ -648,7 +623,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           } finally {
             spawnResult.handle.terminate();
             await spawnResult.handle.waitForCompletion();
-            // Slot released via the terminated event in spawnChildAgent (slotPreAcquired=true).
             // dispose() can reject when manifest-middleware
             // cleanup (e.g. refcounted audit close, per-child
             // drain) surfaces accumulated failures. That failure
@@ -787,7 +761,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       await tryUnwindPerChild();
       throw e;
     }
-    // Slot released via the terminated event in spawnChildAgent (slotPreAcquired=true).
   };
 }
 
