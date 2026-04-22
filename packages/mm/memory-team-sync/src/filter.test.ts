@@ -64,6 +64,51 @@ describe("filterMemoryForSync", () => {
     });
   });
 
+  // Regression #1964: personal contact data must not leave the local store
+  // even when a misbehaving caller stores it as reference instead of user.
+  describe("email/contact blocking (regression #1964)", () => {
+    test("blocks reference memory containing email address in content", () => {
+      const memory = createMemory("1", "reference", "infra contact: alice@example.com");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(false);
+      expect(result.blocked?.reason).toBe("secret_detected");
+      expect(result.blocked?.detail).toContain("email");
+    });
+
+    test("blocks project memory containing email address in content", () => {
+      const memory = createMemory("1", "project", "escalate to bob@company.org if blocked");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(false);
+      expect(result.blocked?.reason).toBe("secret_detected");
+    });
+
+    test("blocks memory with email in name field", () => {
+      const memory: MemoryRecord = {
+        ...createMemory("1", "reference"),
+        name: "Contact alice@example.com",
+      };
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(false);
+      expect(result.blocked?.reason).toBe("secret_detected");
+    });
+
+    test("blocks memory with email in description field", () => {
+      const memory: MemoryRecord = {
+        ...createMemory("1", "reference"),
+        description: "reach out to alice@example.com for help",
+      };
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(false);
+      expect(result.blocked?.reason).toBe("secret_detected");
+    });
+
+    test("allows reference memory with no email", () => {
+      const memory = createMemory("1", "reference", "bugs tracked in Linear INGEST project");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(true);
+    });
+  });
+
   describe("secret scanning", () => {
     test("blocks memory with password in content", () => {
       const memory = createMemory(

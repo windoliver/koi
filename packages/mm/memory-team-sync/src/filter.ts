@@ -30,11 +30,29 @@ export interface FilterResult {
 }
 
 /**
+ * RFC-5322-aligned email pattern. Intentionally conservative: any
+ * `word@word.tld`-shaped token is treated as a personal contact pointer
+ * and blocked from leaving the local store, regardless of memory type.
+ * Team sync is not a contact-sharing mechanism.
+ */
+const EMAIL_PATTERN = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
+
+/** Returns true if any of the memory's text fields contain an email address. */
+function containsEmail(memory: MemoryRecord): boolean {
+  return (
+    EMAIL_PATTERN.test(memory.content) ||
+    EMAIL_PATTERN.test(memory.name) ||
+    EMAIL_PATTERN.test(memory.description)
+  );
+}
+
+/**
  * Filters a memory for team sync eligibility.
  *
  * Checks in order:
  * 1. Type must be in allowedTypes (user is always denied)
- * 2. Content must pass secret scanning (fail-closed on error)
+ * 2. Email/contact pattern check — blocks personal contacts regardless of type
+ * 3. Content must pass secret scanning (fail-closed on error)
  */
 export function filterMemoryForSync(
   memory: MemoryRecord,
@@ -60,6 +78,19 @@ export function filterMemoryForSync(
         memoryId: memory.id,
         reason: "type_denied",
         detail: `type "${memory.type}" not in allowed types`,
+      },
+    };
+  }
+
+  // Block memories containing email addresses — personal contact data must
+  // not leave the local store even if mis-typed as reference or project.
+  if (containsEmail(memory)) {
+    return {
+      passed: false,
+      blocked: {
+        memoryId: memory.id,
+        reason: "secret_detected",
+        detail: "email address detected — personal contact data is not sync-eligible",
       },
     };
   }
