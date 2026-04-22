@@ -202,7 +202,6 @@ Each re-exports the corresponding L3 meta-package verbatim:
 | `koi/context-arena` | `@koi/context-arena` | Context window management |
 | `koi/forge` | `@koi/forge` | Self-extending agent forge |
 | `koi/gateway` | `@koi/gateway-stack` | Gateway routing |
-| `koi/goals` | `@koi/goal-stack` | Goal tracking |
 | `koi/governance` | `@koi/governance` | Policy and permissions |
 | `koi/ipc` | `@koi/ipc-stack` + `@koi/handoff` + `@koi/name-service` | Inter-process communication |
 | `koi/nexus` | `@koi/nexus` | Nexus integration |

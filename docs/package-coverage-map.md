@@ -54,7 +54,6 @@ Each line shows package name, package description, test-file count, and any exis
 - `@koi/cli` (packages/meta/cli) - Interactive command-line interface for agent initialization and local execution. Tests: 17. Docs: docs/L3/cli.md.
 - `@koi/context-arena` (packages/meta/context-arena) - Compose all context sources - personality, bootstrap, conversation, memory - with budget allocation. Tests: 5. Docs: docs/L3/context-arena.md.
 - `@koi/forge` (packages/meta/forge) - Self-extending system for agent composition, verification, integrity attestation, and policy enforcement. Tests: 20. Docs: docs/L2/forge.md.
-- `@koi/goal-stack` (packages/meta/goal-stack) - Goal-directed middleware bundle composing anchor, reminder, and planning middleware. Tests: 4. Docs: docs/L3/goal-stack.md.
 - `@koi/governance` (packages/meta/governance) - Enterprise compliance stack composing 11 middleware for permissions, approvals, auditing, and guardrails. Tests: 7. Docs: docs/L3/governance.md.
 - `@koi/ipc-stack` (packages/meta/ipc-stack) - IPC meta-package composing messaging, delegation, workspace, scratchpad, and federation via createIpcStack(). Tests: 4. Docs: docs/L3/ipc-stack.md.
 - `@koi/nexus` (packages/meta/nexus) - One-line Nexus wiring: single config, all backends auto-wired, auto-provisioned, auto-scoped per agent. Tests: 6. Docs: docs/L3/nexus.md.
@@ -81,7 +80,6 @@ Each line shows package name, package description, test-file count, and any exis
 - `@koi/middleware-event-rules` (packages/middleware/middleware-event-rules) - Declarative YAML rule engine mapping engine events to actions - no middleware code needed. Tests: 7. Docs: docs/L2/middleware-event-rules.md.
 - `@koi/middleware-feedback-loop` (packages/middleware/middleware-feedback-loop) - Validate model and tool outputs, retry with error feedback, enforce quality gates. Tests: 17. Docs: docs/L2/middleware-feedback-loop.md.
 - `@koi/middleware-fs-rollback` (packages/middleware/middleware-fs-rollback) - Capture filesystem snapshots during tool calls and enable rollback to prior states. Tests: 4.
-- `@koi/middleware-goal` (packages/middleware/middleware-goal) - Goal-directed middleware trio: anchor (todo injection), reminder (adaptive periodic), and planning (write_plan tool). Tests: 11. Docs: docs/L2/middleware-goal.md.
 - `@koi/middleware-guided-retry` (packages/middleware/middleware-guided-retry) - Inject constraint hints into model calls after backtrack or fork events. Tests: 4.
 - `@koi/middleware-output-verifier` (packages/middleware/middleware-output-verifier) - Run deterministic and LLM-as-judge quality checks before delivering model outputs. Tests: 4. Docs: docs/L2/middleware-output-verifier.md.
 - `@koi/middleware-reflex` (packages/middleware/middleware-reflex) - Rule-based short-circuit middleware for known message patterns. Tests: 4. Docs: docs/L2/middleware-reflex.md.

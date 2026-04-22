@@ -24,7 +24,7 @@ Turn 2:  mandate silently overwritten in context → agent behaves differently
 Turn 3:  attacker achieves goal hijacking
 ```
 
-Existing defences (goal-anchor, goal-reminder) keep objectives in the model's attention
+Existing defences (task-anchor, planning middleware) keep objectives in the model's attention
 but cannot **verify** the mandate has not been replaced at the context level. A sufficiently
 capable injection can still override them because they rely on the model's instruction
 following, not cryptographic proof.
@@ -536,7 +536,7 @@ onSessionEnd("sess-A") → delete "sess-A"
 
 ```
 priority: 400  audit-log          (logs every turn)
-priority: 340  goal-anchor        (injects objectives into context)
+priority: 340  task-anchor        (injects task-board reminders into context)
 priority: 290  intent-capsule     ← THIS (verifies mandate before model call)
 priority: 100  permissions        (enforces tool access control)
                ─────────────────────────────────────────────
@@ -545,8 +545,8 @@ priority: 100  permissions        (enforces tool access control)
 
 **Why 290?** The capsule check must run before the model is invoked and before
 tool permissions are evaluated — a tampered mandate should halt unconditionally,
-not be subject to permission caching or tool filtering. Placing it after `goal-anchor`
-(340) ensures goal anchoring happens regardless; the capsule only blocks if the
+not be subject to permission caching or tool filtering. Placing it after `task-anchor`
+(340) ensures task board injection happens regardless; the capsule only blocks if the
 underlying mandate has been tampered.
 
 ---
@@ -619,8 +619,7 @@ L2  @koi/middleware-intent-capsule ◄──────────────
 ## Related
 
 - [`@koi/crypto-utils`](./crypto-utils.md) — Ed25519 + SHA-256 primitives used by this package
-- [`@koi/middleware-goal-anchor`](./middleware-goal-anchor.md) — keeps objectives in model attention (complementary, not a substitute)
-- [`@koi/middleware-goal-reminder`](./middleware-goal-reminder.md) — periodic reminder injection
+- [`@koi/middleware-task-anchor`](./middleware-task-anchor.md) — keeps task-board state in model attention (complementary, not a substitute)
 - [`@koi/middleware-permissions`](./middleware-permissions.md) — tool-level access control
 - [`@koi/doctor`](./doctor.md) — static analysis rules including `goal-hijack:missing-intent-capsule`
 - [OWASP Top 10 for LLM Applications — ASI01](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
