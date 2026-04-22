@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import type { InboundMessage, ModelRequest } from "@koi/core";
 import { buildRequestBody, mapMessages } from "./request-mapper.js";
 import type { ResolvedCompat, ResolvedConfig } from "./types.js";
-import { DEFAULT_CAPABILITIES, resolveCompat } from "./types.js";
+import { DEFAULT_CAPABILITIES, resolveCompat, resolveConfig } from "./types.js";
 
 const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model");
 
@@ -751,5 +751,77 @@ describe("buildRequestBody", () => {
     expect(Array.isArray(messages[0]?.content)).toBe(true);
     const blocks = messages[0]?.content as Array<{ type: string; cache_control?: unknown }>;
     expect(blocks[0]?.cache_control).toEqual({ type: "ephemeral" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRequestBody — thinkingDisplay
+// ---------------------------------------------------------------------------
+
+describe("buildRequestBody — thinkingDisplay", () => {
+  const baseConfig = {
+    apiKey: "test-key",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "anthropic/claude-sonnet-4",
+  } as const;
+
+  const baseRequest: ModelRequest = {
+    messages: [],
+    systemPrompt: undefined,
+    model: undefined,
+    maxTokens: undefined,
+    temperature: undefined,
+  };
+
+  test('thinkingDisplay "full" emits reasoning: { effort: "medium" }', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      compat: { supportsReasoning: true, thinkingDisplay: "full" },
+    });
+    const body = buildRequestBody(baseRequest, config);
+    expect(body["reasoning"]).toEqual({ effort: "medium" });
+    expect(body["thinking"]).toBeUndefined();
+  });
+
+  test('thinkingDisplay "hidden" emits reasoning: { exclude: true }', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      compat: { supportsReasoning: true, thinkingDisplay: "hidden" },
+    });
+    const body = buildRequestBody(baseRequest, config);
+    expect(body["reasoning"]).toEqual({ exclude: true });
+    expect(body["thinking"]).toBeUndefined();
+  });
+
+  test('thinkingDisplay "summarized" on anthropic model emits thinking: { type: "summarized" } + reasoning: { effort }', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      model: "anthropic/claude-sonnet-4",
+      compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
+    });
+    const body = buildRequestBody(baseRequest, config);
+    expect(body["reasoning"]).toEqual({ effort: "medium" });
+    expect(body["thinking"]).toEqual({ type: "summarized" });
+  });
+
+  test('thinkingDisplay "summarized" on non-anthropic model omits thinking field', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      model: "openai/gpt-4o",
+      compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
+    });
+    const body = buildRequestBody(baseRequest, config);
+    expect(body["reasoning"]).toEqual({ effort: "medium" });
+    expect(body["thinking"]).toBeUndefined();
+  });
+
+  test("thinkingDisplay is ignored when supportsReasoning is false", () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      compat: { supportsReasoning: false, thinkingDisplay: "hidden" },
+    });
+    const body = buildRequestBody(baseRequest, config);
+    expect(body["reasoning"]).toBeUndefined();
+    expect(body["thinking"]).toBeUndefined();
   });
 });
