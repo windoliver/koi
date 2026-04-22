@@ -1198,9 +1198,10 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     let finalCode: number = headlessCode;
     try {
       await shutdownRuntime();
-      // If teardown consumed the remaining budget, exit 6 (not exit 4): the agent
-      // completed all tool calls before we got here, so CI must NOT retry.
-      // The error text names teardown explicitly so operators don't investigate the prompt.
+      // If teardown consumed the remaining budget before schema validation could run,
+      // emit INTERNAL (exit 5) rather than SCHEMA_VALIDATION (exit 6). The agent ran
+      // successfully and schema validation never started — this is a teardown/timing
+      // problem, not a prompt or schema problem. Operators should check stderr.
       if (
         deadlineAt !== undefined &&
         Date.now() >= deadlineAt &&
@@ -1208,15 +1209,23 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         resultSchemaObj !== undefined &&
         !shutdownFailed
       ) {
+        // Flush buffered assistant text before exit: validation never ran, so there is no
+        // "unvalidated output" concern — the agent completed successfully.
+        for (const line of bufferedAssistantTextLines) {
+          process.stdout.write(line);
+        }
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-        finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+        finalCode = HEADLESS_EXIT.INTERNAL;
         emitResult({
-          exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
-          validationFailed: true,
-          error: "schema validation skipped: max-duration-ms exhausted during teardown",
+          exitCode: HEADLESS_EXIT.INTERNAL,
+          error: "teardown exhausted max-duration-ms; schema validation skipped — check stderr",
         });
       } else if (shutdownFailed) {
+        // Flush buffered text so the model's output is visible before the INTERNAL result.
+        for (const line of bufferedAssistantTextLines) {
+          process.stdout.write(line);
+        }
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         finalCode = HEADLESS_EXIT.INTERNAL;
@@ -1286,6 +1295,12 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           }
         }
       } else {
+        // Non-schema exit (AGENT_FAILURE, PERMISSION_DENIED, TIMEOUT, INTERNAL, or schema
+        // not requested). Flush any buffered assistant_text so the model's diagnostic output
+        // is visible even when --result-schema is active but validation didn't run.
+        for (const line of bufferedAssistantTextLines) {
+          process.stdout.write(line);
+        }
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         emitResult();

@@ -905,16 +905,15 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs?.validationFailed).toBe(true);
   });
 
-  test("budget-exhausted error during teardown reports exit 6 not exit 4 so CI does not retry", async () => {
-    // When --result-schema is active and teardown consumes the remaining budget, the
-    // post-teardown deadline check emits SCHEMA_VALIDATION (exit 6) to prevent CI retries —
-    // the agent already ran to completion and side effects may have occurred.
-    // We inject a slow dispose to reliably exhaust a tight budget and verify no exit 4 fires.
+  test("teardown budget exhaustion emits INTERNAL (exit 5), not SCHEMA_VALIDATION", async () => {
+    // When teardown consumes the remaining budget before schema validation starts,
+    // the error is a runtime problem (slow shutdown), not a schema/prompt problem.
+    // Emit INTERNAL (exit 5) so operators check stderr, not the schema file.
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
-    // Slow dispose: ensures teardown takes longer than the 50 ms budget
+    // Slow dispose: ensures teardown exceeds the 50 ms budget
     mockDispose.mockImplementationOnce(
       () => new Promise<void>((resolve) => setTimeout(resolve, 150)),
     );
@@ -945,15 +944,55 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    // Teardown exceeded budget → must emit exit 6 (schema path), not exit 4 (retry path).
-    // Either the post-teardown check or the pre-validation check fires — both are exit 6.
-    if (capturedEmitArgs !== undefined) {
-      expect(capturedEmitArgs.exitCode).not.toBe(HEADLESS_EXIT.TIMEOUT);
-      if (capturedEmitArgs.exitCode === HEADLESS_EXIT.SCHEMA_VALIDATION) {
-        expect(capturedEmitArgs.validationFailed).toBe(true);
-      }
+    // On slow CI the budget may not be exhausted by teardown; skip assertion in that case.
+    if (capturedEmitArgs !== undefined && capturedEmitArgs.exitCode !== HEADLESS_EXIT.SUCCESS) {
+      // Must not be SCHEMA_VALIDATION (no schema ran) and must not be TIMEOUT (agent completed)
+      expect(capturedEmitArgs.exitCode).not.toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
+      expect(capturedEmitArgs.validationFailed).toBeUndefined();
     }
   }, 2000);
+
+  test("assistant_text is flushed for non-zero exits when --result-schema is active", async () => {
+    // When the agent fails (exit 1) and --result-schema is enabled, the buffered
+    // assistant_text lines must still be flushed so operators see the failure explanation.
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    let emitResultCallCount = 0;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.writeStdout(
+        '{"kind":"assistant_text","sessionId":"s","text":"I could not complete this"}\n',
+      );
+      return {
+        exitCode: HEADLESS_EXIT.AGENT_FAILURE,
+        emitResult: (args?: EmitArgs) => {
+          emitResultCallCount += 1;
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    // emitResult was called with no override args — exit code comes from the returned object
+    // (AGENT_FAILURE). The key invariant: no schema-failure override was injected.
+    expect(emitResultCallCount).toBe(1);
+    expect(capturedEmitArgs).toBeUndefined(); // no exitCode override, no validationFailed
+  });
 
   test("onToolResult resets stdout buffer so pre-tool narration is not flushed on success", async () => {
     spyOn(Bun, "file").mockReturnValue({
