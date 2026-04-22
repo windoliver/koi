@@ -12,20 +12,22 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("computePermissionPromptWidth", () => {
+  // Outer box occupies: MODAL_POSITION.left(2) + width + BORDER_CHROME(2) columns.
+  // Width must satisfy: left(2) + width + borders(2) <= terminalCols.
+
   test("returns PERMISSION_PROMPT_WIDTH on wide terminals", () => {
-    // On terminals wider than left_offset(2) + preferred_width(60) the modal
-    // uses its preferred width, never wider.
+    // min breakpoint: left(2) + 60 + borders(2) = 64 cols needed.
     expect(computePermissionPromptWidth(100)).toBe(PERMISSION_PROMPT_WIDTH);
     expect(computePermissionPromptWidth(80)).toBe(PERMISSION_PROMPT_WIDTH);
-    expect(computePermissionPromptWidth(62)).toBe(PERMISSION_PROMPT_WIDTH);
+    expect(computePermissionPromptWidth(64)).toBe(PERMISSION_PROMPT_WIDTH);
   });
 
-  test("shrinks on narrow terminals so the modal fits within available columns", () => {
-    // On a 60-col terminal: 60 - left_offset(2) = 58 available columns.
+  test("shrinks on narrow terminals so the full outer box fits", () => {
+    // 60-col: width = 60 - left(2) - borders(2) = 56 → outer box = 2 + 56 + 2 = 60 ✓
     expect(computePermissionPromptWidth(60)).toBeLessThan(PERMISSION_PROMPT_WIDTH);
-    expect(computePermissionPromptWidth(60)).toBe(58);
-    // On a 40-col terminal: 40 - 2 = 38.
-    expect(computePermissionPromptWidth(40)).toBe(38);
+    expect(computePermissionPromptWidth(60)).toBe(56);
+    // 40-col: width = 40 - 2 - 2 = 36 → outer box = 2 + 36 + 2 = 40 ✓
+    expect(computePermissionPromptWidth(40)).toBe(36);
   });
 
   test("clamps to minimum so the modal remains legible even on very narrow terminals", () => {

@@ -37,13 +37,21 @@ export const PERMISSION_PROMPT_WIDTH = 60;
 const PERMISSION_PROMPT_MIN_WIDTH = 30;
 
 /**
+ * Border chrome: 1 col left + 1 col right. Subtracted from the available
+ * columns so the outer box (left_offset + width + borders) never exceeds
+ * the terminal column count.
+ */
+const BORDER_CHROME = 2;
+
+/**
  * Compute the clamped modal width for a given terminal column count.
+ * The outer box occupies: MODAL_POSITION.left + width + BORDER_CHROME columns.
  * Exported for unit testing without needing a render context.
  */
 export function computePermissionPromptWidth(terminalCols: number): number {
   return Math.min(
     PERMISSION_PROMPT_WIDTH,
-    Math.max(terminalCols - MODAL_POSITION.left, PERMISSION_PROMPT_MIN_WIDTH),
+    Math.max(terminalCols - MODAL_POSITION.left - BORDER_CHROME, PERMISSION_PROMPT_MIN_WIDTH),
   );
 }
 
