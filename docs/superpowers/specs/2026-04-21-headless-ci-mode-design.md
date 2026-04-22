@@ -62,13 +62,14 @@ After `runHeadless()` returns and `shutdownRuntime()` completes:
 1. If `shutdownFailed` → emit INTERNAL, skip schema validation (teardown failure takes precedence)
 2. If `headlessCode !== SUCCESS` → emit original exit code, skip schema validation (agent already failed)
 3. If `resultSchemaObj !== undefined && headlessCode === SUCCESS` → check `rawAssistantOverflow` first:
-   - If `rawAssistantOverflow === true` → `emitResult({ exitCode: 1, validationFailed: true, error: "schema validation failed: assistant output exceeded 1 MB limit" })`
+   - If `rawAssistantOverflow === true` → `emitResult({ exitCode: 6, validationFailed: true, error: "schema validation failed: assistant output exceeded 1 MB limit" })`
    - Otherwise → call `validateResultSchema(rawAssistantParts.join(""), resultSchemaObj)`
    - (where `rawAssistantParts` was populated via the `onRawAssistantText` callback before redaction; accumulation is capped at **1 MB UTF-8 bytes** — any chunk that would cross the cap is rejected in full and `rawAssistantOverflow` is set to `true`)
-   - **Contract:** `--result-schema` validates the **entire concatenated assistant text** (all `assistant_text` events across all turns) as a single JSON document. The prompt must produce JSON-only output with no prose, preamble, or tool-call narration anywhere in the output. Any non-JSON text from any turn will cause validation to fail with exit 1. This is intentional — `--result-schema` is a strict gate for structured-only output modes.
-   - On failure → `emitResult({ exitCode: 1, validationFailed: true, error: schemaResult.error })`
+   - **Contract:** `--result-schema` validates the **entire concatenated assistant text** (all `assistant_text` events across all turns) as a single JSON document. The prompt must produce JSON-only output with no prose, preamble, or tool-call narration anywhere in the output. Any non-JSON text from any turn will cause validation to fail with exit 6 (SCHEMA_VALIDATION). This is intentional — `--result-schema` is a strict gate for structured-only output modes.
+   - On failure → `emitResult({ exitCode: 6, validationFailed: true, error: schemaResult.error })`
    - On success → normal `emitResult()`
-   - **Machine-distinguishable:** Schema validation failures set `validationFailed: true` in the `result` NDJSON event. Callers that need to distinguish schema failures from ordinary agent failures (exit 1) should check `select(.kind=="result") | .validationFailed == true` rather than parsing the error string. The shared exit code 1 is kept because a schema miss is post-run (agent already completed) — CI retry logic should use `validationFailed` to decide whether retry is appropriate.
+   - **Machine-distinguishable:** Schema validation failures use exit code **6** (`SCHEMA_VALIDATION`), distinct from exit 1 (`AGENT_FAILURE`). This is safe for CI retry logic — exit 6 means the agent completed all tool calls, so retry is inappropriate. The `validationFailed: true` NDJSON field is belt-and-suspenders for callers that parse the result event directly.
+   - **`additionalProperties` is NOT supported.** Extra object fields beyond those declared in `properties` are not rejected. If strict exact-shape enforcement is required, validate the output independently using external tooling.
 4. Otherwise → normal `emitResult()`
 
 ### Minimal JSON Schema validator — `headless/validate-schema.ts`
@@ -88,7 +89,7 @@ New file, zero new dependencies. Exports three functions:
 
 **Annotation keywords** (accepted, ignored during validation): `$schema`, `title`, `description`, `$comment`. Standard schema files with these headers can be used without manual stripping.
 
-**Unsupported keywords** (exit 5 at boot): `$ref`, `anyOf`/`oneOf`/`allOf`/`not`, `pattern`, `patternProperties`, `format`, `if/then/else`, `const`, `multipleOf`, `minimum`, `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`, and all others not listed above. A clear error is emitted rather than silently ignoring unsupported keywords.
+**Unsupported keywords** (exit 5 at boot): `$ref`, `anyOf`/`oneOf`/`allOf`/`not`, `additionalProperties`, `pattern`, `patternProperties`, `format`, `if/then/else`, `const`, `multipleOf`, `minimum`, `maximum`, `minLength`, `maxLength`, `minItems`, `maxItems`, and all others not listed above. A clear error is emitted rather than silently ignoring unsupported keywords.
 
 ### Assistant text accumulation
 
@@ -173,11 +174,12 @@ Companion schema file `.koi/pr-summary-schema.json` shown in the guide:
 
 | File | Change |
 |------|--------|
+| `packages/meta/cli/src/headless/exit-codes.ts` | Add `SCHEMA_VALIDATION: 6` exit code |
 | `packages/meta/cli/src/args/start.ts` | Add `resultSchema: string \| undefined` to `StartFlags`, add `--result-schema` flag, parse-time guard |
 | `packages/meta/cli/src/args/start.test.ts` | Tests for `--result-schema` parse rules |
-| `packages/meta/cli/src/headless/validate-schema.ts` | New: fail-closed JSON Schema validator + `validateResultSchema` helper |
+| `packages/meta/cli/src/headless/validate-schema.ts` | New: fail-closed schema validator + `validateResultSchema` helper |
 | `packages/meta/cli/src/headless/validate-schema.test.ts` | New: validator unit tests + `validateResultSchema` integration tests |
-| `packages/meta/cli/src/headless/run.ts` | Add `onRawAssistantText` callback to `RunHeadlessOptions` + `translateEvent` |
+| `packages/meta/cli/src/headless/run.ts` | Add `onRawAssistantText` callback to `RunHeadlessOptions` + `validateFailed` to `emitResult` override type |
 | `packages/meta/cli/src/commands/start.ts` | Boot-time schema load, `rawAssistantParts` accumulator via callback, post-run validation |
 | `docs/guides/headless-mode.md` | New: user guide + safe GitHub Actions recipe |
 
@@ -190,8 +192,8 @@ Companion schema file `.koi/pr-summary-schema.json` shown in the guide:
 | `--result-schema` without `--headless` | `ParseError` at parse time |
 | Schema file not found | exit 5, `result-schema rejected: ENOENT` |
 | Schema file is invalid JSON | exit 5, `result-schema rejected: invalid JSON` |
-| Agent output is not JSON | exit 1, `schema validation failed: assistant output is not valid JSON` |
-| Agent output is JSON but fails schema | exit 1, `schema validation failed: .titles is required` |
+| Agent output is not JSON | exit 6, `validationFailed: true`, error contains `not valid JSON` |
+| Agent output is JSON but fails schema | exit 6, `validationFailed: true`, error contains `.titles is required` |
 | Agent output matches schema | exit 0, normal result |
 | `shutdownFailed` + valid schema | exit 5 (teardown takes precedence) |
 

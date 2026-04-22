@@ -805,13 +805,36 @@ And update the return object:
 
 (Both lines added after `maxDurationMs: undefined`.)
 
+- [ ] **Step 5d: Add `SCHEMA_VALIDATION` exit code to `exit-codes.ts`**
+
+Schema validation failures happen _after_ `runHeadless()` returns successfully — the agent completed all tool calls. Reusing exit 1 (AGENT_FAILURE) creates a retry hazard for CI wrappers that key retry logic off process exit status alone. A distinct exit code prevents misclassification.
+
+In `packages/meta/cli/src/headless/exit-codes.ts`, add:
+
+```typescript
+export const HEADLESS_EXIT = {
+  SUCCESS: 0,
+  AGENT_FAILURE: 1,
+  PERMISSION_DENIED: 2,
+  BUDGET_EXCEEDED: 3,
+  TIMEOUT: 4,
+  INTERNAL: 5,
+  SCHEMA_VALIDATION: 6,
+} as const;
+```
+
+(No change needed to `mapErrorToExitCode` — schema failures are emitted directly by `commands/start.ts`, not via the error-to-exit-code path.)
+
+Also update `help.ts` to document exit code 6 in the headless flags section.
+
 - [ ] **Step 6: Commit**
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
 git add packages/meta/cli/src/args/start.ts packages/meta/cli/src/args/start.test.ts \
-  packages/meta/cli/src/help.ts packages/meta/cli/src/commands/start.test.ts
-git commit -m "feat(headless): add --result-schema flag to parseStartFlags (#1648)"
+  packages/meta/cli/src/help.ts packages/meta/cli/src/commands/start.test.ts \
+  packages/meta/cli/src/headless/exit-codes.ts
+git commit -m "feat(headless): add --result-schema flag + SCHEMA_VALIDATION exit code (#1648)"
 ```
 
 ---
@@ -1232,7 +1255,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.AGENT_FAILURE);
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
     expect(capturedEmitArgs?.validationFailed).toBe(true);
     expect(capturedEmitArgs?.error).toContain("not valid JSON");
   });
@@ -1406,13 +1429,14 @@ Replace the `else { emitResult(); }` branch with:
         // Only runs when the agent succeeded (exit 0) and teardown was clean.
         // shutdownFailed=true takes precedence and is handled by the branch above.
         const schemaResult = rawAssistantOverflow
-          ? { ok: false as const, error: "schema validation failed: assistant output exceeded 1 MB limit; cannot validate truncated output" }
+          ? { ok: false as const, error: "schema validation failed: assistant output exceeded 1 MB limit" }
           : validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
         if (!schemaResult.ok) {
-          finalCode = HEADLESS_EXIT.AGENT_FAILURE;
-          // validationFailed=true lets CI callers distinguish schema failures from ordinary
-          // agent failures (both exit 1) without parsing the error string.
-          emitResult({ exitCode: HEADLESS_EXIT.AGENT_FAILURE, validationFailed: true, error: schemaResult.error });
+          finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+          // Exit 6 (SCHEMA_VALIDATION) is distinct from exit 1 (AGENT_FAILURE) so CI
+          // retry logic can distinguish a post-run formatting failure from an in-run agent
+          // failure. The validationFailed field is belt-and-suspenders for NDJSON parsers.
+          emitResult({ exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION, validationFailed: true, error: schemaResult.error });
         } else {
           emitResult();
         }
@@ -1536,7 +1560,8 @@ These are fail-closed by default because they represent bootstrap-time execution
 | Code | Name | Meaning | Retry? |
 |------|------|---------|--------|
 | 0 | SUCCESS | Agent completed the task | — |
-| 1 | AGENT_FAILURE | Agent could not complete the task. Also used for `--result-schema` validation failures. | **Schema failure (`result.validationFailed === true`):** do NOT retry — the agent completed all tool calls. Fix the prompt or schema. **Agent failure:** retry only if idempotent. Use `result.validationFailed` (not string parsing) to distinguish the two cases. |
+| 1 | AGENT_FAILURE | Agent could not complete the task. | Retry only if all allowed tools are idempotent. |
+| 6 | SCHEMA_VALIDATION | Agent output did not match `--result-schema`. Agent completed all tool calls before this check. | Do NOT retry — the agent finished its work. Fix the prompt or schema and run again. The `result` event also sets `validationFailed: true`. |
 | 2 | PERMISSION_DENIED | A required tool was denied by the permission policy | No — add `--allow-tool` |
 | 3 | BUDGET_EXCEEDED | `--max-turns` or `--max-spend` was hit | Maybe — raise limits |
 | 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when all allowed tools are read-only and idempotent. A timeout does not guarantee no side effects occurred before the cut-off. Do NOT auto-retry if `Bash`, file-write, external API, or any MCP tool is allowed — retrying can duplicate deploys, mutations, or external actions. |
@@ -1589,10 +1614,10 @@ The terminal event. Always the last line. Contains the final exit code.
 On failure:
 
 ```json
-{"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":1,"validationFailed":true,"error":"schema validation failed: .titles is required"}
+{"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":6,"validationFailed":true,"error":"schema validation failed: .titles is required"}
 ```
 
-When `validationFailed` is `true`, the agent **completed all tool calls** before the failure. Check this field (not the error string) to distinguish schema failures from ordinary agent failures — both use exit code 1. Do not auto-retry — the agent's work is done, only the output format was wrong. Fix the prompt or schema and run again.
+Exit code **6** (SCHEMA_VALIDATION) is distinct from exit 1 (AGENT_FAILURE) so CI retry logic can safely distinguish the two at the process-exit level. The `validationFailed: true` field is belt-and-suspenders for NDJSON parsers. The agent **completed all tool calls** before this check — do not auto-retry. Fix the prompt or schema and run again.
 
 ## Result Schema Validation
 
@@ -1613,17 +1638,17 @@ Use `--result-schema` to enforce that the agent's text output is valid JSON matc
 
 **This is a Koi schema subset, not a full JSON Schema implementation.** Many standard JSON Schema keywords are unsupported.
 
-**Supported type values:** `"object"`, `"array"`, `"string"`, `"number"`, `"integer"` (alias for number — any JSON number), `"boolean"`, `"null"`.
+**Supported type values:** `"object"`, `"array"`, `"string"`, `"number"`, `"integer"` (whole numbers only — `3.14` fails), `"boolean"`, `"null"`.
 
 **Supported keywords:** `type`, `required`, `properties`, `enum` (scalar values only), `items` (validates each array element recursively).
 
 **Annotation-only keywords** (accepted, not validated): `$schema`, `title`, `description`, `$comment`. Standard schema files with these headers work without modification.
 
-**Unsupported keywords** cause exit 5 at boot: `$ref`, `anyOf`/`oneOf`/`allOf`/`not`, `pattern`, `format`, `if/then/else`, `const`, and others not listed above.
+**Unsupported keywords** cause exit 5 at boot: `$ref`, `anyOf`/`oneOf`/`allOf`/`not`, `pattern`, `format`, `if/then/else`, `const`, `additionalProperties`, and others not listed above.
 
-**Unsupported keywords** (e.g. `$ref`, `anyOf`, `pattern`) cause the schema to be rejected at boot with exit 5.
+**Extra fields are NOT rejected.** `additionalProperties` is not supported. An object `{"count":1,"unexpected":"data"}` passes a schema with `required: ["count"]`. If downstream automation requires exact-shape enforcement, validate the parsed output independently. This limitation is inherent to the Koi schema subset — use external tooling if strict schema conformance is required.
 
-**Important:** `--result-schema` validates the **entire concatenated assistant text output** across all turns as a single JSON document. Your prompt must instruct the model to output **only** JSON with no surrounding prose. Any preamble ("Here is the result:"), explanation, or trailing text — even from a tool-narration turn — will cause validation to fail with exit 1.
+**Important:** `--result-schema` validates the **entire concatenated assistant text output** across all turns as a single JSON document. Your prompt must instruct the model to output **only** JSON with no surrounding prose. Any preamble ("Here is the result:"), explanation, or trailing text — even from a tool-narration turn — will cause validation to fail with exit 6 (SCHEMA_VALIDATION).
 
 **Multi-turn/tool-use caution:** The 1 MB accumulation cap applies to the full transcript, not just the final JSON payload. A verbose model doing multiple tool calls before emitting a small JSON result can hit the cap before reaching the final answer, causing a schema-failure exit 1 after all tool work has already completed. For best results, use `--result-schema` with single-turn prompts that produce structured JSON directly.
 
@@ -1635,10 +1660,10 @@ Use `--result-schema` to enforce that the agent's text output is valid JSON matc
 "Here are the open PRs:\n{\"count\":3,\"titles\":[...]}"
 ```
 
-If the agent's output is not valid JSON, or does not match the schema, the run exits with code 1 and an error message like:
+If the agent's output is not valid JSON, or does not match the schema, the run exits with code **6** (`SCHEMA_VALIDATION`) and the result event includes `"validationFailed":true`:
 
 ```
-{"kind":"result","ok":false,"exitCode":1,"error":"schema validation failed: .titles is required"}
+{"kind":"result","ok":false,"exitCode":6,"validationFailed":true,"error":"schema validation failed: .titles is required"}
 ```
 
 ## CI Recipe — GitHub Actions
