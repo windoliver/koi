@@ -111,7 +111,7 @@ export interface TrustDemotionEvent {
 
 export interface ToolHealthSnapshot {
   readonly toolId: string;
-  readonly brickId: BrickId;
+  readonly brickId?: BrickId | undefined;
   readonly healthState: HealthState;
   readonly trustTier: TrustTier | undefined;
   readonly errorRate: number;

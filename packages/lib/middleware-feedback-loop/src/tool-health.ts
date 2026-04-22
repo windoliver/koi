@@ -661,7 +661,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
       return {
         toolId,
-        brickId: bId ?? ("unknown" as BrickId),
+        brickId: bId, // undefined when resolution fails — do not fabricate a fake ID
         healthState: state.healthState,
         trustTier: undefined,
         errorRate,

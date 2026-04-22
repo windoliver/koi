@@ -170,7 +170,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      if (!hasModelChecks(config)) {
+      if (!hasModelChecks(config) && !hasTransportRetry(config)) {
         yield* next(request);
         return;
       }
