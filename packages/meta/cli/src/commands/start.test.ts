@@ -192,6 +192,8 @@ function makeFlags(
     noTui: boolean;
     contextWindow: number;
     allowRemoteFs: boolean;
+    headless: boolean;
+    resultSchema: string | undefined;
   }> = {},
 ): import("../args/start.js").StartFlags {
   return {
@@ -213,9 +215,10 @@ function makeFlags(
     allowSideEffects: false,
     verifierInheritEnv: false,
     allowRemoteFs: overrides.allowRemoteFs ?? false,
-    headless: false,
+    headless: overrides.headless ?? false,
     allowTools: [],
     maxDurationMs: undefined,
+    resultSchema: overrides.resultSchema,
     governance: {
       enabled: true,
       maxSpendUsd: undefined,

@@ -7,6 +7,7 @@ export const HEADLESS_EXIT = {
   BUDGET_EXCEEDED: 3,
   TIMEOUT: 4,
   INTERNAL: 5,
+  SCHEMA_VALIDATION: 6,
 } as const;
 
 export type HeadlessExitCode = (typeof HEADLESS_EXIT)[keyof typeof HEADLESS_EXIT];
