@@ -98,7 +98,15 @@ type State =
   | {
       readonly kind: "armed";
       readonly failsafeTimer: Timer | null;
-      /** Wall-clock timestamp (ms) when this arm was entered. */
+      /** Monotonic arm-generation counter — incremented on every idle→armed transition.
+       *  Used as a generation key so stale doubleTapTimer callbacks from a prior arm
+       *  can detect that the state has moved on and bail without mutating the new arm.
+       *  Wall-clock time is not safe here: two arms within the same millisecond share
+       *  the same `Date.now()` value, which would allow a stale callback to pass the
+       *  guard and corrupt the new arm's state. */
+      readonly armGen: number;
+      /** Wall-clock timestamp (ms) when this arm was entered — used only for the
+       *  `windowElapsedByWallClock` guard in `handleSignal`, not as a generation key. */
       readonly armedAt: number;
       doubleTapTimer: Timer | null;
     }
@@ -106,6 +114,8 @@ type State =
 
 export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
   let state: State = { kind: "idle" };
+  // let: justified — incremented on every idle→armed transition; generation key for timer guard
+  let armGen = 0;
   const now = deps.now ?? ((): number => Date.now());
   const coalesceWindowMs = deps.coalesceWindowMs ?? 0;
   const onWindowElapse = deps.onWindowElapse ?? "stay-armed";
@@ -128,12 +138,15 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
     deps.onForce();
   };
 
-  const armDoubleTapTimer = (capturedArmedAt: number): Timer =>
+  const armDoubleTapTimer = (capturedArmGen: number): Timer =>
     deps.setTimer(() => {
       // Guard: bail if the state has moved on since this timer was scheduled.
-      // After a late-spawn re-entry the handler re-arms with a new armedAt; a
-      // delayed callback from the previous arm must not corrupt the new arm.
-      if (state.kind !== "armed" || state.armedAt !== capturedArmedAt) return;
+      // After a late-spawn re-entry the handler re-arms with a new armGen; a
+      // delayed callback from the previous arm (different armGen) must not
+      // corrupt the new arm. A monotonic counter is used — not armedAt — because
+      // two arms within the same millisecond would share the same Date.now()
+      // value and a stale callback would pass a timestamp-based guard.
+      if (state.kind !== "armed" || state.armGen !== capturedArmGen) return;
       // Double-tap window elapsed. Behavior depends on host policy:
       //   - stay-armed: clear the double-tap slot but stay in the armed
       //     state. Subsequent taps force until complete() is called.
@@ -210,8 +223,9 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
             force();
           }, deps.failsafeMs)
         : null;
-    const doubleTapTimer = armDoubleTapTimer(t); // bind timer to this arm's generation
-    state = { kind: "armed", failsafeTimer, doubleTapTimer, armedAt: t };
+    const thisArmGen = ++armGen; // monotonic; unique even for same-millisecond re-arms
+    const doubleTapTimer = armDoubleTapTimer(thisArmGen);
+    state = { kind: "armed", failsafeTimer, doubleTapTimer, armGen: thisArmGen, armedAt: t };
     deps.write("\nInterrupting… (Ctrl+C again to force)\n");
     deps.onGraceful();
   };

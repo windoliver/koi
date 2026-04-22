@@ -1726,8 +1726,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Track active spawns for the current drain — updated before the
       // try-catch so SIGINT policy is never affected by UI dispatch failures.
       // Set-based: late terminals from a previous drain delete a missing key
-      // (no-op); late spawn_requested from a previous drain add a transient
-      // entry that its matching terminal will remove — no net effect (#1999 r4).
+      // (no-op). A late spawn_requested without a matching terminal in this drain
+      // would create a phantom entry, but cannot happen: an agent's terminal event
+      // is always ordered AFTER its spawn_requested in the event stream, so if
+      // spawn_requested was delayed to this drain, its terminal is also delayed
+      // to this drain and will remove the entry. Out-of-order delivery would be
+      // a bug in the engine's event bus, not this handler.
       if (event.kind === "spawn_requested") {
         activeDrainSpawnIds.add(event.agentId);
       } else {
@@ -1931,10 +1935,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: set of agentIds whose spawn_requested has fired but whose
   // agent_status_changed (terminal) has not yet arrived, for the CURRENT drain.
   // Reset at processSubmit start. Keyed by agentId so late terminal events from
-  // previous drains (delete on a missing key) are no-ops, and so late spawn_requested
-  // events from a previous drain that arrive after reset simply add a transient entry
-  // that the matching terminal will remove. Avoids integer under/over-count from
-  // cross-drain event interleaving (#1999, adversarial review round 4).
+  // previous drains (delete on a missing key) are no-ops. Cross-drain phantom
+  // entries (late spawn_requested without a matching terminal) cannot arise in
+  // practice: event ordering guarantees terminal is always delivered after
+  // spawn_requested for the same agent (#1999, adversarial review rounds 4 + 7).
   let activeDrainSpawnIds: Set<string> = new Set<string>();
   // let: one-shot flag — true after the first double-tap window elapses with an
   // active spawn. Provides exactly one grace reset-to-idle to protect against the
