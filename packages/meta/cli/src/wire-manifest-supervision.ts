@@ -19,7 +19,7 @@
  * in the runtime + TUI rather than silently dropped at parse time.
  */
 
-import type { AgentId, AgentManifest, SupervisionConfig } from "@koi/core";
+import type { AgentId, AgentManifest, AgentRegistry, SupervisionConfig } from "@koi/core";
 import { agentId as makeAgentId } from "@koi/core";
 import type { KoiRuntime, SupervisionWiring } from "@koi/engine";
 import { createInMemoryRegistry, createInProcessSpawnChildFn, wireSupervision } from "@koi/engine";
@@ -33,6 +33,9 @@ export interface SupervisedChildSummary {
 
 export interface ManifestSupervisionHandle {
   readonly wiring: SupervisionWiring;
+  /** Exposed for tests + future TUI queries; production callers should not
+   *  mutate the registry directly. */
+  readonly registry: AgentRegistry;
   readonly dispose: () => Promise<void>;
 }
 
@@ -132,6 +135,10 @@ export async function wireManifestSupervision(
     const summary: SupervisedChildSummary[] = [];
     for (const entry of list) {
       if (entry.parentId !== parentId) continue;
+      // Terminated children are not deregistered by the reconciler; if we
+      // included them, every restart (transient/permanent) would leave a
+      // growing trail of stale rows in the TUI. Surface only live phases.
+      if (entry.status.phase === "terminated") continue;
       summary.push({
         agentId: String(entry.agentId),
         childSpecName: String(entry.metadata.childSpecName ?? "(unnamed)"),
@@ -156,6 +163,7 @@ export async function wireManifestSupervision(
 
   return {
     wiring,
+    registry,
     dispose: async (): Promise<void> => {
       unwatch();
       await wiring[Symbol.asyncDispose]();

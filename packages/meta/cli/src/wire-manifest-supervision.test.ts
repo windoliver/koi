@@ -172,6 +172,61 @@ describe("wireManifestSupervision: end-to-end", () => {
     }
   });
 
+  test("terminated children are filtered out of the TUI snapshot", async () => {
+    // Regression: without the filter, every transient/permanent restart
+    // would accumulate stale terminated rows in the /agents view since
+    // the reconciler does not deregister terminated entries.
+    const snapshots: SupervisedChildSummary[][] = [];
+    const runtime = createMockRuntime();
+    const handle = await wireManifestSupervision({
+      runtime,
+      supervisorManifestName: "test-parent",
+      supervision: {
+        strategy: { kind: "one_for_one" },
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        children: [
+          { name: "worker-a", restart: "permanent" },
+          { name: "worker-b", restart: "permanent" },
+        ],
+      },
+      onChange: (children) => {
+        snapshots.push([...children]);
+      },
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const beforeKill = snapshots.at(-1) ?? [];
+      expect(beforeKill).toHaveLength(2);
+
+      // Terminate one of the two spawned children via the registry.
+      const listResult = handle.registry.list();
+      if (listResult instanceof Promise) {
+        throw new Error("in-memory registry should be synchronous");
+      }
+      const liveEntries = listResult.filter(
+        (e) => e.parentId === PARENT_ID && e.status.phase === "running",
+      );
+      expect(liveEntries.length).toBeGreaterThanOrEqual(1);
+      const victim = liveEntries[0];
+      if (victim === undefined) throw new Error("unreachable");
+      handle.registry.transition(victim.agentId, "terminated", victim.status.generation, {
+        kind: "error",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const afterKill = snapshots.at(-1) ?? [];
+      // The terminated one must not show; the live sibling remains (plus
+      // any respawn the reconciler issued in response).
+      for (const c of afterKill) {
+        expect(c.phase).not.toBe("terminated");
+      }
+    } finally {
+      await handle.dispose();
+    }
+  });
+
   test("dispose is idempotent + unsubscribes the registry watcher", async () => {
     const runtime = createMockRuntime();
     const handle = await wireManifestSupervision({
