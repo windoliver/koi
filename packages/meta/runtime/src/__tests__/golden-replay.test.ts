@@ -12008,3 +12008,31 @@ describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
     await driver.dispose?.();
   });
 });
+
+describe("Golden: @koi/middleware-feedback-loop", () => {
+  test("createFeedbackLoopMiddleware returns a KoiMiddleware with correct priority and name", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const mw = createFeedbackLoopMiddleware({});
+    expect(mw.name).toBe("feedback-loop");
+    expect(mw.priority).toBe(450);
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapToolCall).toBe("function");
+  });
+
+  test("shouldFlush returns false when not dirty", async () => {
+    const { shouldFlush } = await import("@koi/middleware-feedback-loop");
+    expect(
+      shouldFlush(
+        {
+          dirty: false,
+          flushing: false,
+          invocationsSinceFlush: 100,
+          errorRateSinceFlush: 0,
+          lastFlushedErrorRate: 0,
+        },
+        10,
+        0.05,
+      ),
+    ).toBe(false);
+  });
+});

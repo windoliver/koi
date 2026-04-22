@@ -803,6 +803,7 @@
         "@koi/middleware-dream": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
+        "@koi/middleware-feedback-loop": "workspace:*",
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
