@@ -444,6 +444,77 @@ describe("createToolHealthTracker", () => {
     expect(await tracker.isQuarantined(TOOL_ID)).toBe(false);
   });
 
+  it("skips quarantine snapshot and reports error when head() fails", async () => {
+    const errors: string[] = [];
+    const headError = { code: "INTERNAL" as const, message: "chain unavailable", retryable: false };
+    const base = makeSnapshotStore();
+    const snapshotChainStore = {
+      ...base,
+      head: async () => ({ ok: false as const, error: headError }),
+    } as typeof base;
+
+    const forgeStore = makeForgeStore();
+    await forgeStore.save(makeBrickArtifact(BID));
+
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore,
+      snapshotChainStore,
+      quarantineThreshold: 0.1,
+      windowSize: 5,
+      onHealthTransitionError: (e) => errors.push(`${e.transition}:${e.phase}`),
+      clock: () => 100_000,
+    });
+
+    for (let i = 0; i < 5; i++) tracker.recordFailure(TOOL_ID, 10, "err");
+    await tracker.checkAndQuarantine(TOOL_ID);
+
+    // Quarantine in forgeStore must have succeeded (lifecycle changed)
+    expect(forgeStore.data.get(BID)?.lifecycle).toBe("quarantined");
+    // head() failure must have been reported
+    expect(errors).toContain("quarantine:snapshot");
+  });
+
+  it("skips demotion snapshot and reports error when head() fails", async () => {
+    const errors: string[] = [];
+    const headError = { code: "INTERNAL" as const, message: "chain unavailable", retryable: false };
+    const base = makeSnapshotStore();
+    const snapshotChainStore = {
+      ...base,
+      head: async () => ({ ok: false as const, error: headError }),
+    } as typeof base;
+
+    const forgeStore = makeForgeStore();
+    await forgeStore.save(makeBrickArtifact(BID));
+
+    const demotions: string[] = [];
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore,
+      snapshotChainStore,
+      demotionCriteria: {
+        errorRateThreshold: 0.3,
+        windowSize: 5,
+        minSampleSize: 3,
+        gracePeriodMs: 0,
+        demotionCooldownMs: 0,
+      },
+      onDemotion: (e) => demotions.push(e.toTier),
+      onHealthTransitionError: (e) => errors.push(`${e.transition}:${e.phase}`),
+      clock: () => 100_000,
+    });
+
+    for (let i = 0; i < 4; i++) tracker.recordFailure(TOOL_ID, 10, "err");
+    tracker.recordSuccess(TOOL_ID, 10);
+    const demoted = await tracker.checkAndDemote(TOOL_ID);
+
+    // Demotion in forgeStore must have succeeded
+    expect(demoted).toBe(true);
+    expect(demotions.length).toBeGreaterThan(0);
+    // head() failure must have been reported
+    expect(errors).toContain("demotion:snapshot");
+  });
+
   it("dispose flushes dirty tools without throwing", async () => {
     const tracker = createToolHealthTracker({
       resolveBrickId: () => BID,

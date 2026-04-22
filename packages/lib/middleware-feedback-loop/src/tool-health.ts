@@ -473,8 +473,17 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     };
 
     const headResult = await snapshotChainStore.head(chainIdVal);
+    if (!headResult.ok) {
+      onHealthTransitionError?.({
+        transition: "quarantine",
+        phase: "snapshot",
+        brickId: bId,
+        error: headResult.error,
+      });
+      return;
+    }
     const parentIds: readonly NodeId[] =
-      headResult.ok && headResult.value !== undefined ? [headResult.value.nodeId] : [];
+      headResult.value !== undefined ? [headResult.value.nodeId] : [];
     const putResult = await snapshotChainStore.put(chainIdVal, snapshot, parentIds);
     if (putResult !== undefined && !putResult.ok) {
       const event: HealthTransitionErrorEvent = {
@@ -569,8 +578,25 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     const snapshot = buildDemotionSnapshot(bId, toolId, metrics, now, fromTier, toTier);
 
     const headResult = await snapshotChainStore.head(chainIdVal);
+    if (!headResult.ok) {
+      onHealthTransitionError?.({
+        transition: "demotion",
+        phase: "snapshot",
+        brickId: bId,
+        error: headResult.error,
+      });
+      // forgeStore write succeeded — fire callback and return success; only snapshot was skipped
+      onDemotion?.({
+        brickId: bId,
+        from: fromTier,
+        to: toTier,
+        reason: "error_rate",
+        evidence: { errorRate, sampleSize: metrics.totalCount },
+      });
+      return true;
+    }
     const parentIds: readonly NodeId[] =
-      headResult.ok && headResult.value !== undefined ? [headResult.value.nodeId] : [];
+      headResult.value !== undefined ? [headResult.value.nodeId] : [];
     const putResult = await snapshotChainStore.put(chainIdVal, snapshot, parentIds);
     if (putResult !== undefined && !putResult.ok) {
       const event: HealthTransitionErrorEvent = {

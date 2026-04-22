@@ -4,6 +4,32 @@ import { runGates } from "./gate.js";
 import type { Gate, RepairStrategy, ValidationError, Validator } from "./types.js";
 import { runValidators } from "./validators.js";
 
+/**
+ * Extracts retryability from an error, handling three shapes:
+ * 1. Full KoiError thrown directly → use isRetryable()
+ * 2. Error with partial KoiError-shaped cause ({ code, retryable }) but missing message →
+ *    adapters often throw Error('msg', { cause: { code, retryable } }) without a full KoiError
+ * 3. Anything else → toKoiError() fallback (returns retryable: false)
+ */
+export function resolveRetryable(err: unknown): boolean {
+  if (isKoiError(err)) return isRetryable(err);
+  if (err instanceof Error) {
+    const cause = err.cause;
+    if (isKoiError(cause)) return isRetryable(cause);
+    // Partial cause: has code + retryable but no message (not a full KoiError)
+    if (
+      cause !== null &&
+      cause !== undefined &&
+      typeof cause === "object" &&
+      "retryable" in cause &&
+      typeof (cause as { retryable: unknown }).retryable === "boolean"
+    ) {
+      return (cause as { retryable: boolean }).retryable;
+    }
+  }
+  return isRetryable(toKoiError(err));
+}
+
 export interface RetryOptions {
   readonly validators: readonly Validator[];
   readonly gates: readonly Gate[];
@@ -33,13 +59,7 @@ export async function runWithRetry(
     try {
       response = await next(currentRequest);
     } catch (err) {
-      // Only retry errors that explicitly carry retryable KoiError metadata. Adapters may
-      // wrap a KoiError in Error.cause — check cause before falling back to toKoiError()
-      // which hard-codes retryable: false for plain errors. Plain errors with no KoiError
-      // info (request-shape bugs, auth config, serialization failures) are treated as
-      // non-retryable so deterministic failures fail fast rather than exhaust the budget.
-      const koiErr = err instanceof Error && isKoiError(err.cause) ? err.cause : toKoiError(err);
-      if (!isRetryable(koiErr)) throw err;
+      if (!resolveRetryable(err)) throw err;
       transportErrors++;
       if (transportErrors > options.transportMaxAttempts) throw err;
       // Emit onRetry so transport-error retries are observable alongside validation retries
