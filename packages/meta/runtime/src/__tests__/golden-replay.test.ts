@@ -9389,7 +9389,7 @@ describe("Golden: @koi/middleware-extraction", () => {
     expect(mapCategoryToMemoryType("correction")).toBe("feedback");
     expect(mapCategoryToMemoryType("heuristic")).toBe("feedback"); // regression #1964: was "reference"
     expect(mapCategoryToMemoryType("pattern")).toBe("feedback"); // regression #1964: was "reference"
-    expect(mapCategoryToMemoryType("preference")).toBe("user");
+    expect(mapCategoryToMemoryType("preference")).toBe("user"); // correct type; not persisted until user-scoped store exists
     expect(mapCategoryToMemoryType("context")).toBe("project");
 
     // Extractor combines markers + heuristics
