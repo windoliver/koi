@@ -637,22 +637,27 @@ export function createSupervisionReconciler(deps: {
     const state = getOrCreateState(agentId, config);
     initializeChildMap(agentId, config, state);
 
-    // Find terminated children that need restart
+    // Find children that need to be (re)spawned. OTP semantics distinguish
+    // three cases:
+    //   A. Never spawned — always spawn, even for `restart: temporary`. OTP
+    //      treats temporary children as "start once, never restart"; the
+    //      initial start is unconditional.
+    //   B. Was spawned, then deregistered out-of-band — treat as abnormal
+    //      death, apply restart-type filter (temporary does not restart).
+    //   C. Terminated in-place — apply `shouldRestart` (handles transient's
+    //      abnormal-only rule and temporary's never rule).
     const terminatedSpecs: ChildSpec[] = [];
     for (const spec of config.children) {
       const childId = state.childMap.get(spec.name);
       if (childId === undefined) {
-        // Child not yet spawned or was deregistered — treat as needing restart
-        // (unless temporary)
-        if (spec.restart !== "temporary") {
-          terminatedSpecs.push(spec);
-        }
+        // Case A — never spawned. Unconditional.
+        terminatedSpecs.push(spec);
         continue;
       }
 
       const childEntry = await deps.registry.lookup(childId);
       if (childEntry === undefined) {
-        // Deregistered — needs restart (unless temporary)
+        // Case B — was spawned, now deregistered. Respect restart type.
         if (spec.restart !== "temporary") {
           terminatedSpecs.push(spec);
         }
@@ -660,6 +665,7 @@ export function createSupervisionReconciler(deps: {
       }
 
       if (childEntry.status.phase === "terminated") {
+        // Case C — terminated in-place.
         if (shouldRestart(spec, childEntry)) {
           terminatedSpecs.push(spec);
         }
