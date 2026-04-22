@@ -840,12 +840,12 @@ fi
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$MEMORY_DIR/`; frontmatter has `type: project` |
-| Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index has 2 entries |
-| Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from `$MEMORY_DIR/`) |
-| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
-| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156 — differs by only "its" → "the"; word-token Jaccard ≈ 0.78, above the 0.7 dedup threshold) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
-| Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
+| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | At least one `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index updated. (Do **not** assert on `type:` or exact frontmatter — the model chooses these fields based on prompt phrasing and may legitimately produce different values.) |
+| Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
+| Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (files still in `$MEMORY_DIR/`); response references both Bun 1.3 and input validation |
+| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | Model acknowledges the memory already exists or notes a conflict — OR a second file is written without a warning (either outcome is acceptable; the goal is that no silent data loss occurs). Do **not** assert exact Jaccard threshold — dedup fires only when model-generated `name`+`type` collide AND content similarity exceeds backend threshold. |
+| Q161 | `Delete the memory about input validation.` | memory_delete | File count in `$MEMORY_DIR/` drops by 1; `MEMORY.md` index no longer references input validation; asking `What do you remember?` after deletion does not return the deleted fact |
 ### Packages Not Testable via TUI (justified)
 
 The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun run test --filter=@koi/runtime`) and package-level unit tests.
@@ -910,8 +910,10 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
 | **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | default stack; git-backed `$FIXTURE`; dream gate requires ≥ 5 sessions + 24 h — never fires in 2-session run, so file-count assertions are deterministic |
 
-**All scenarios (S1-S25) run with the full TUI middleware stack** (default stack set, no `--manifest`):
+**TUI scenarios (S1-S14, S16-S25) run with the full TUI middleware stack** (default stack set, no `--manifest`):
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
+
+**S13 and S15** use `koi start` (non-TUI) and activate stacks via `--manifest`. See those scenario headings for their specific stack configuration.
 
 Note: S25's file-count assertions are not affected by `dreamStack` because dream consolidation requires ≥ 5 sessions + 24 h elapsed — the 2-session S25 run never triggers it.
 
