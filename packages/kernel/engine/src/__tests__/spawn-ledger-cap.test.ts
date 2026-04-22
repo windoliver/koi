@@ -1,14 +1,16 @@
 /**
  * Tests for SpawnLedger cap enforcement in createAgentSpawnFn (Issue #1996).
  *
- * Verifies that the max-concurrent-agents cap is actually enforced:
- * - acquire() called before spawning
- * - reject with PERMISSION error when at capacity
- * - release() called when child completes or errors
+ * Two acquisition paths:
+ *   - No signal / no acquireOrWait → acquire() → immediate PERMISSION on capacity
+ *   - Signal + acquireOrWait present → acquireOrWait(signal) → backpressure; INTERNAL on cancel
+ *
+ * slotPreAcquired=true is passed to spawnChildAgent so the terminated-event release
+ * balances the slot acquired here.
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Agent, AgentManifest, SubsystemToken, Tool } from "@koi/core";
+import type { Agent, AgentManifest, SpawnLedger, SubsystemToken, Tool } from "@koi/core";
 import { agentId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { createAgentSpawnFn } from "../create-agent-spawn-fn.js";
 import { createInMemorySpawnLedger } from "../spawn-ledger.js";
@@ -49,7 +51,7 @@ function mockParentAgent(): Agent {
   };
 }
 
-function makeSpawnFn(ledger: ReturnType<typeof createInMemorySpawnLedger>) {
+function makeSpawnFn(ledger: SpawnLedger) {
   const resolver = {
     resolve: () => ({
       ok: true as const,
@@ -91,21 +93,19 @@ function makeSpawnFn(ledger: ReturnType<typeof createInMemorySpawnLedger>) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// No-signal path: immediate acquire() → PERMISSION on full ledger
 // ---------------------------------------------------------------------------
 
-describe("SpawnLedger cap enforcement (Issue #1996)", () => {
-  test("rejects spawn with PERMISSION error when ledger is at capacity", async () => {
+describe("SpawnLedger cap enforcement — no-signal path (Issue #1996)", () => {
+  test("rejects immediately with PERMISSION when ledger is at capacity (no signal)", async () => {
     const ledger = createInMemorySpawnLedger(1);
-    // Fill the only slot
-    const acquired = ledger.acquire();
-    expect(acquired).toBe(true);
-
+    ledger.acquire(); // fill the only slot
     const spawnFn = makeSpawnFn(ledger);
+
     const result = await spawnFn({
       agentName: "child-agent",
-      description: "this should be rejected — no slots available",
-      signal: AbortSignal.timeout(1000),
+      description: "should be rejected immediately",
+      // no signal → falls back to acquire() → immediate rejection
     });
 
     expect(result.ok).toBe(false);
@@ -116,81 +116,124 @@ describe("SpawnLedger cap enforcement (Issue #1996)", () => {
     }
   });
 
-  test("does not consume a ledger slot when rejecting at capacity", async () => {
+  test("does not consume a slot when rejecting at capacity (no signal)", async () => {
     const ledger = createInMemorySpawnLedger(2);
-    // Fill both slots
     ledger.acquire();
     ledger.acquire();
     expect(ledger.activeCount()).toBe(2);
 
     const spawnFn = makeSpawnFn(ledger);
-    await spawnFn({
-      agentName: "child-agent",
-      description: "rejected spawn",
-      signal: AbortSignal.timeout(1000),
-    });
+    await spawnFn({ agentName: "child-agent", description: "rejected" });
 
-    // Slot count must stay at 2 — rejected spawn must not leak or over-release
     expect(ledger.activeCount()).toBe(2);
   });
 
-  test("allows spawn when ledger has capacity", async () => {
+  test("calls acquire() via no-signal path when acquireOrWait would be bypassed", async () => {
+    let acquireCallCount = 0;
+    const realLedger = createInMemorySpawnLedger(5);
+    // Strip acquireOrWait so the fallback acquire() path is exercised
+    const spyLedger: SpawnLedger = {
+      acquire: () => {
+        acquireCallCount++;
+        return realLedger.acquire();
+      },
+      release: () => realLedger.release(),
+      activeCount: () => realLedger.activeCount(),
+      capacity: () => realLedger.capacity(),
+    };
+
+    const spawnFn = makeSpawnFn(spyLedger);
+    await spawnFn({ agentName: "child-agent", description: "probe" });
+
+    expect(acquireCallCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Signal path: acquireOrWait(signal) → backpressure + cancellation semantics
+// ---------------------------------------------------------------------------
+
+describe("SpawnLedger cap enforcement — signal/acquireOrWait path (Issue #1996)", () => {
+  test("uses acquireOrWait when signal and acquireOrWait are both available", async () => {
+    let acquireOrWaitCallCount = 0;
+    const realLedger = createInMemorySpawnLedger(5);
+    const spyLedger: SpawnLedger = {
+      acquire: () => realLedger.acquire(),
+      release: () => realLedger.release(),
+      activeCount: () => realLedger.activeCount(),
+      capacity: () => realLedger.capacity(),
+      acquireOrWait: (signal) => {
+        acquireOrWaitCallCount++;
+        return realLedger.acquireOrWait!(signal);
+      },
+    };
+
+    const spawnFn = makeSpawnFn(spyLedger);
+    await spawnFn({
+      agentName: "child-agent",
+      description: "probe acquireOrWait",
+      signal: AbortSignal.timeout(1000),
+    });
+
+    expect(acquireOrWaitCallCount).toBe(1);
+  });
+
+  test("returns INTERNAL (not retryable) when abort signal fires before slot acquired", async () => {
+    const ledger = createInMemorySpawnLedger(1);
+    ledger.acquire(); // fill the only slot so acquireOrWait blocks
+
+    const spawnFn = makeSpawnFn(ledger);
+    // Already-aborted signal → pre-acquire abort check fires immediately
+    const abortedSignal = AbortSignal.abort();
+
+    const result = await spawnFn({
+      agentName: "child-agent",
+      description: "cancelled spawn",
+      signal: abortedSignal,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("INTERNAL");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  test("allows spawn when ledger has capacity (with signal)", async () => {
     const ledger = createInMemorySpawnLedger(5);
     const spawnFn = makeSpawnFn(ledger);
 
     const result = await spawnFn({
       agentName: "child-agent",
-      description: "this should proceed past the ledger gate",
+      description: "proceeds past the ledger gate",
       signal: AbortSignal.timeout(1000),
     });
 
-    // Must not be a PERMISSION error from the ledger gate.
-    // May fail for other reasons (no real engine) — that is expected in unit tests.
+    // Not a capacity error. May fail at engine level (no real engine) — expected.
     if (!result.ok) {
       expect(result.error.code).not.toBe("PERMISSION");
-      // Specifically must not mention capacity
       expect(result.error.message).not.toMatch(/concurrent|capacity|slot/i);
     }
   });
 
-  test("calls acquire() exactly once per spawn attempt", async () => {
-    let acquireCallCount = 0;
-    const realLedger = createInMemorySpawnLedger(5);
-    const spyLedger = {
-      ...realLedger,
-      acquire: () => {
-        acquireCallCount++;
-        return realLedger.acquire();
-      },
-    };
-
-    const spawnFn = makeSpawnFn(spyLedger);
-    await spawnFn({
-      agentName: "child-agent",
-      description: "probe spawn slot acquisition",
-      signal: AbortSignal.timeout(1000),
-    });
-
-    expect(acquireCallCount).toBe(1);
-  });
-
-  test("releases slot after spawn fails at engine level", async () => {
+  test("releases slot exactly once after spawn fails at engine level", async () => {
     let releaseCallCount = 0;
     const realLedger = createInMemorySpawnLedger(5);
-    const spyLedger = {
-      ...realLedger,
+    const spyLedger: SpawnLedger = {
+      acquire: () => realLedger.acquire(),
       release: () => {
         releaseCallCount++;
         return realLedger.release();
       },
+      activeCount: () => realLedger.activeCount(),
+      capacity: () => realLedger.capacity(),
+      // No acquireOrWait — use acquire() path so we control the count precisely
     };
 
     const spawnFn = makeSpawnFn(spyLedger);
-    // Spawn will fail at engine level (no real engine), release must still fire
     await spawnFn({
       agentName: "child-agent",
-      description: "probe spawn slot release",
-      signal: AbortSignal.timeout(1000),
+      description: "probe slot release",
     });
 
     expect(releaseCallCount).toBe(1);

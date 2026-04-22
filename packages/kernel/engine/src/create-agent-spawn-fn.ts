@@ -296,27 +296,50 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     }
 
     // Acquire a slot before allocating any per-child resources.
-    // Enforces the max-concurrent-agents cap (Issue #1996).
-    const slotAcquired = await base.spawnLedger.acquire();
-    if (!slotAcquired) {
+    // Preserves acquireOrWait backpressure semantics when signal+acquireOrWait available;
+    // falls back to immediate acquire() when backpressure is unavailable (no signal).
+    // Handles abort-before-acquire as a cancellation, not a capacity error (Issue #1996).
+    if (request.signal?.aborted) {
       return {
         ok: false,
         error: {
-          code: "PERMISSION",
-          message: `Spawn limit reached: max concurrent agents (${base.spawnLedger.capacity()}) already running. Retry when a slot is available.`,
-          retryable: true,
+          code: "INTERNAL",
+          message: "Spawn cancelled: abort signal already fired before slot acquisition",
+          retryable: false,
         },
       };
     }
-    const releaseSlot = async (): Promise<void> => {
-      try {
-        await base.spawnLedger.release();
-      } catch (releaseErr) {
-        console.error(
-          `[agent-spawn] spawnLedger.release() failed for "${request.agentName}"`,
-          releaseErr,
-        );
+    let slotAcquired: boolean;
+    if (base.spawnLedger.acquireOrWait !== undefined && request.signal !== undefined) {
+      slotAcquired = await base.spawnLedger.acquireOrWait(request.signal);
+      if (!slotAcquired) {
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: "Spawn cancelled: abort signal fired while waiting for a process slot",
+            retryable: false,
+          },
+        };
       }
+    } else {
+      slotAcquired = await base.spawnLedger.acquire();
+      if (!slotAcquired) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Spawn limit reached: max concurrent agents (${base.spawnLedger.capacity()}) already running. Retry when a slot is available.`,
+            retryable: true,
+          },
+        };
+      }
+    }
+    // Propagate release failures — a stuck slot is a resource leak that must be visible.
+    // Called only from early-exit paths before spawnChildAgent; post-spawn release is
+    // owned by the terminated-event handler in spawnChildAgent (slotPreAcquired=true).
+    const releaseSlot = async (): Promise<void> => {
+      await base.spawnLedger.release();
     };
 
     // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
@@ -421,13 +444,21 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         childMiddleware.push(...factoryResult.middleware);
         perChildUnwind = factoryResult.unwind;
       } catch (e: unknown) {
-        await releaseSlot();
         const message = e instanceof Error ? e.message : String(e);
+        // Best-effort release: original factory error takes precedence, but include
+        // any release failure in the message so operators can detect a leaked slot.
+        let releaseNote = "";
+        try {
+          await base.spawnLedger.release();
+        } catch (releaseErr: unknown) {
+          const releaseMsg = releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
+          releaseNote = ` (WARNING: slot release also failed — ledger may report false capacity: ${releaseMsg})`;
+        }
         return {
           ok: false,
           error: {
             code: "INTERNAL",
-            message: `Per-child middleware factory failed for "${request.agentName}": ${message}`,
+            message: `Per-child middleware factory failed for "${request.agentName}": ${message}${releaseNote}`,
             retryable: false,
           },
         };
