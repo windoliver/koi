@@ -1197,10 +1197,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           try {
             schemaResult = validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
           } catch (_e: unknown) {
-            schemaResult = {
-              ok: false,
-              error: "schema validation failed: validator encountered deeply nested structure",
-            };
+            if (_e instanceof RangeError) {
+              schemaResult = {
+                ok: false,
+                error: "schema validation failed: validator encountered deeply nested structure",
+              };
+            } else {
+              throw _e;
+            }
           }
         }
         if (!schemaResult.ok) {
