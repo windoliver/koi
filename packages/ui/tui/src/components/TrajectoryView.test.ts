@@ -40,7 +40,6 @@ describe("summarizeDecision", () => {
         "router.fallback_occurred": false,
       });
       expect(result).toBe("→openrouter:google/gemin…");
-      expect(result!.length).toBeLessThanOrEqual(26); // →(1) + 23 chars + ellipsis(1) = 25
     });
 
     test("truncates long model IDs with fallback suffix", () => {
