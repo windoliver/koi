@@ -8,7 +8,7 @@ import { buildRequestBody, mapMessages } from "./request-mapper.js";
 import type { ResolvedCompat, ResolvedConfig } from "./types.js";
 import { DEFAULT_CAPABILITIES, resolveCompat } from "./types.js";
 
-const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1");
+const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model");
 
 const CONFIG: ResolvedConfig = {
   apiKey: "test-key",
@@ -492,7 +492,7 @@ describe("mapMessages", () => {
   // ---------------------------------------------------------------------------
 
   test("converts thinking metadata to text when requiresThinkingAsText", () => {
-    const thinkingCompat = resolveCompat("https://openrouter.ai/api/v1", {
+    const thinkingCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model", {
       requiresThinkingAsText: true,
     });
     const msg: InboundMessage = {
@@ -512,7 +512,7 @@ describe("mapMessages", () => {
   // ---------------------------------------------------------------------------
 
   test("inserts bridge assistant message when requiresAssistantAfterToolResult", () => {
-    const bridgeCompat = resolveCompat("https://openrouter.ai/api/v1", {
+    const bridgeCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model", {
       requiresAssistantAfterToolResult: true,
     });
     const messages: readonly InboundMessage[] = [
@@ -720,7 +720,7 @@ describe("buildRequestBody", () => {
       ...CONFIG,
       baseUrl: "https://my-custom-proxy.example.com/v1",
       model: "anthropic/claude-sonnet-4",
-      compat: resolveCompat("https://my-custom-proxy.example.com/v1"),
+      compat: resolveCompat("https://my-custom-proxy.example.com/v1", "anthropic/claude-sonnet-4"),
     };
     const request: ModelRequest = {
       messages: [makeMessage("hi")],
@@ -739,7 +739,7 @@ describe("buildRequestBody", () => {
       ...CONFIG,
       baseUrl: "https://openrouter.ai/api/v1",
       model: "anthropic/claude-sonnet-4",
-      compat: resolveCompat("https://openrouter.ai/api/v1"),
+      compat: resolveCompat("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4"),
     };
     const request: ModelRequest = {
       messages: [makeMessage("hi")],
