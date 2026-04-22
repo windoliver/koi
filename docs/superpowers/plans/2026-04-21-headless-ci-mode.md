@@ -129,10 +129,16 @@ describe("validateSchema — type", () => {
     }
   });
 
-  test("'integer' type accepts any JSON number (alias for number)", () => {
+  test("'integer' type accepts whole numbers only", () => {
     expect(validateSchema(42, { type: "integer" }).ok).toBe(true);
-    expect(validateSchema(3.14, { type: "integer" }).ok).toBe(true); // JSON has no integer type
-    expect(validateSchema("42", { type: "integer" }).ok).toBe(false);
+    expect(validateSchema(3.14, { type: "integer" }).ok).toBe(false); // fractional rejected
+    expect(validateSchema("42", { type: "integer" }).ok).toBe(false); // string rejected
+  });
+
+  test("'integer' failure message mentions 'fractional' for non-integer numbers", () => {
+    const result = validateSchema(3.14, { type: "integer" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("fractional");
   });
 });
 
@@ -360,8 +366,9 @@ const SUPPORTED_KEYWORDS = new Set(["type", "required", "properties", "enum", "i
 // without manual stripping, even though this validator is NOT a full JSON Schema implementation.
 const ANNOTATION_KEYWORDS = new Set(["$schema", "title", "description", "$comment"]);
 
-// Supported type values. "integer" is accepted as an alias for "number" so that schemas
-// generated from OpenAPI/Zod tooling (which emit "integer") don't fail at boot with exit 5.
+// Supported type values. "integer" is accepted so schemas generated from OpenAPI/Zod tooling
+// (which emit "integer") don't fail at boot with exit 5. At runtime, "integer" is validated
+// with Number.isInteger — fractional numbers are rejected.
 const VALUE_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
 
 
@@ -504,9 +511,16 @@ export function validateSchema(
       };
     }
     const actual = valueType(value);
-    // "integer" is an alias for "number" — any JSON number satisfies it.
-    const expected = s.type === "integer" ? "number" : s.type;
-    if (actual !== expected) {
+    if (s.type === "integer") {
+      // "integer" requires a whole number — fractional JSON numbers must be rejected.
+      if (typeof value !== "number" || !Number.isInteger(value)) {
+        return {
+          ok: false,
+          path: path || ".",
+          message: `expected integer, got ${typeof value === "number" ? "fractional number" : actual}`,
+        };
+      }
+    } else if (actual !== s.type) {
       return {
         ok: false,
         path: path || ".",
@@ -863,6 +877,18 @@ interface RunHeadlessOptions {
 }
 ```
 
+**Also update `HeadlessOutcome.emitResult` override type** (around line 68 of `run.ts`) to accept the new `validationFailed` field passed by `commands/start.ts`:
+
+```typescript
+  readonly emitResult: (override?: {
+    readonly exitCode: HeadlessExitCode;
+    readonly error?: string;
+    readonly validationFailed?: boolean;
+  }) => void;
+```
+
+And forward it in the `emitResult` closure body (around line 227) so the field appears in the NDJSON output. In the `emit({ kind: "result", ... })` call, spread the override fields — the `validationFailed` field will be serialised automatically if present.
+
 There are **two** emission paths for `assistant_text` in `run.ts` — both must fire the raw callback before redaction:
 
 **Path A — `text_delta` events (streaming):** In `translateEvent`, in the `"text_delta"` case:
@@ -1188,7 +1214,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
-    let capturedEmitArgs: { exitCode?: number; error?: string } | undefined;
+    let capturedEmitArgs: { exitCode?: number; error?: string; validationFailed?: boolean } | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.("not json");
       return {
@@ -1207,6 +1233,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     }
 
     expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.AGENT_FAILURE);
+    expect(capturedEmitArgs?.validationFailed).toBe(true);
     expect(capturedEmitArgs?.error).toContain("not valid JSON");
   });
 
@@ -1215,7 +1242,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
-    let capturedEmitArgs: { exitCode?: number; error?: string } | undefined;
+    let capturedEmitArgs: { exitCode?: number; error?: string; validationFailed?: boolean } | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
@@ -1243,7 +1270,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
-    let capturedEmitArgs: { exitCode?: number; error?: string } | undefined;
+    let capturedEmitArgs: { exitCode?: number; error?: string; validationFailed?: boolean } | undefined;
     spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
@@ -1379,11 +1406,13 @@ Replace the `else { emitResult(); }` branch with:
         // Only runs when the agent succeeded (exit 0) and teardown was clean.
         // shutdownFailed=true takes precedence and is handled by the branch above.
         const schemaResult = rawAssistantOverflow
-          ? { ok: false as const, error: `schema validation failed: assistant output exceeded 1 MB limit; cannot validate truncated output` }
+          ? { ok: false as const, error: "schema validation failed: assistant output exceeded 1 MB limit; cannot validate truncated output" }
           : validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
         if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.AGENT_FAILURE;
-          emitResult({ exitCode: HEADLESS_EXIT.AGENT_FAILURE, error: schemaResult.error });
+          // validationFailed=true lets CI callers distinguish schema failures from ordinary
+          // agent failures (both exit 1) without parsing the error string.
+          emitResult({ exitCode: HEADLESS_EXIT.AGENT_FAILURE, validationFailed: true, error: schemaResult.error });
         } else {
           emitResult();
         }
@@ -1507,7 +1536,7 @@ These are fail-closed by default because they represent bootstrap-time execution
 | Code | Name | Meaning | Retry? |
 |------|------|---------|--------|
 | 0 | SUCCESS | Agent completed the task | — |
-| 1 | AGENT_FAILURE | Agent could not complete the task. Also used for `--result-schema` validation failures. | **Schema failure:** do NOT retry — the agent completed all tool calls. Fix the prompt or schema. **Agent failure:** retry only if idempotent. Distinguish by checking `result.error`: schema failures start with `schema validation failed:`. |
+| 1 | AGENT_FAILURE | Agent could not complete the task. Also used for `--result-schema` validation failures. | **Schema failure (`result.validationFailed === true`):** do NOT retry — the agent completed all tool calls. Fix the prompt or schema. **Agent failure:** retry only if idempotent. Use `result.validationFailed` (not string parsing) to distinguish the two cases. |
 | 2 | PERMISSION_DENIED | A required tool was denied by the permission policy | No — add `--allow-tool` |
 | 3 | BUDGET_EXCEEDED | `--max-turns` or `--max-spend` was hit | Maybe — raise limits |
 | 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when all allowed tools are read-only and idempotent. A timeout does not guarantee no side effects occurred before the cut-off. Do NOT auto-retry if `Bash`, file-write, external API, or any MCP tool is allowed — retrying can duplicate deploys, mutations, or external actions. |
@@ -1560,10 +1589,10 @@ The terminal event. Always the last line. Contains the final exit code.
 On failure:
 
 ```json
-{"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":1,"error":"schema validation failed: .titles is required"}
+{"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":1,"validationFailed":true,"error":"schema validation failed: .titles is required"}
 ```
 
-When the `error` field starts with `schema validation failed:`, the agent **completed all tool calls** before the failure. Do not auto-retry — the agent's work is done, only the output format was wrong. Fix the prompt or schema and run again.
+When `validationFailed` is `true`, the agent **completed all tool calls** before the failure. Check this field (not the error string) to distinguish schema failures from ordinary agent failures — both use exit code 1. Do not auto-retry — the agent's work is done, only the output format was wrong. Fix the prompt or schema and run again.
 
 ## Result Schema Validation
 
