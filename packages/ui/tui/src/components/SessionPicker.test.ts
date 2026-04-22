@@ -106,10 +106,10 @@ describe("getSessionPeekLines", () => {
     expect(lines[2]).toBe(preview);
   });
 
-  test("truncates long preview to 66 chars with ellipsis", () => {
+  test("truncates long preview to 65 chars + ellipsis (total = 66)", () => {
     const longPreview = "x".repeat(200);
     const lines = getSessionPeekLines(makeSession({ preview: longPreview }));
-    expect(lines[2]).toBe(`${"x".repeat(66)}…`);
+    expect(lines[2]).toBe(`${"x".repeat(65)}…`);
   });
 
   test("no ellipsis when preview is exactly at cap length", () => {
@@ -119,11 +119,10 @@ describe("getSessionPeekLines", () => {
     expect(lines[2]?.endsWith("…")).toBe(false);
   });
 
-  test("preview lines stay within modal inner width (66 chars)", () => {
+  test("preview line never exceeds 66 chars (hard modal width)", () => {
     const longPreview = "a".repeat(200);
     const lines = getSessionPeekLines(makeSession({ preview: longPreview }));
-    // +1 for the ellipsis character
-    expect((lines[2] ?? "").length).toBeLessThanOrEqual(67);
+    expect((lines[2] ?? "").length).toBeLessThanOrEqual(66);
   });
 
   test("normalizes newlines to spaces in preview", () => {
@@ -139,12 +138,12 @@ describe("getSessionPeekLines", () => {
     expect((lines[2] ?? "").length).toBeLessThanOrEqual(66);
   });
 
-  test("CRLF pushes normalized over cap: ellipsis appended, total ≤ 67", () => {
+  test("CRLF pushes normalized over cap: ellipsis appended, total ≤ 66", () => {
     // raw = 68 (65 + "\r\n" + "b"), normalized = "a"×65 + " " + "b" = 67 chars > 66 cap
     const preview = "a".repeat(65) + "\r\n" + "b";
     const lines = getSessionPeekLines(makeSession({ preview }));
     expect((lines[2] ?? "").endsWith("…")).toBe(true);
-    expect((lines[2] ?? "").length).toBeLessThanOrEqual(67);
+    expect((lines[2] ?? "").length).toBeLessThanOrEqual(66);
   });
 
   test("does not truncate 40-char boundary (well under cap)", () => {

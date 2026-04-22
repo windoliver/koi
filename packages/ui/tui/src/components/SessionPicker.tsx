@@ -61,10 +61,13 @@ export function SessionPicker(props: SessionPickerProps): JSX.Element {
     return sessions().find((s) => s.id === id) ?? null;
   });
 
-  // peekedId is always current — SelectOverlay fires onNavigate via createEffect
-  // whenever selectedIdx changes (keyboard or list refresh).
-  const handlePeek = (_session: SessionSummary): void => {
-    setPeekActive((prev) => !prev);
+  const handlePeek = (session: SessionSummary): void => {
+    if (peekActive() && peekedId() === session.id) {
+      setPeekActive(false);
+    } else {
+      setPeekedId(session.id);
+      setPeekActive(true);
+    }
   };
 
   const handleNavigate = (session: SessionSummary): void => {

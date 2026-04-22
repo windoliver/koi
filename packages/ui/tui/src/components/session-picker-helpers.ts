@@ -27,7 +27,9 @@ export const PEEK_PREVIEW_MAX = 66;
 export function getSessionPeekLines(s: SessionSummary): readonly string[] {
   const date = formatSessionDate(s.lastActivityAt);
   const normalized = s.preview.replace(/\r?\n|\r/g, " ");
-  const preview = normalized.slice(0, PEEK_PREVIEW_MAX);
-  const suffix = normalized.length > PEEK_PREVIEW_MAX ? "…" : "";
-  return [s.name, `${date} · ${s.messageCount} messages`, `${preview}${suffix}`];
+  const previewLine =
+    normalized.length > PEEK_PREVIEW_MAX
+      ? normalized.slice(0, PEEK_PREVIEW_MAX - 1) + "…"
+      : normalized;
+  return [s.name, `${date} · ${s.messageCount} messages`, previewLine];
 }
