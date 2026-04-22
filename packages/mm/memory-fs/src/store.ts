@@ -447,11 +447,15 @@ async function upsertRecord(
     if (!force) {
       return { action: "conflict", existing: nameTypeMatch };
     }
-    // Force update — overwrite the matched record's description, content, and confidence.
+    // Force update — overwrite description and content; carry confidence forward
+    // only when the new input explicitly provides it. Omitting confidence preserves
+    // the existing trust metadata so older callers (unaware of confidence) cannot
+    // silently downgrade high-confidence validated records to 1.0 (the implicit
+    // default) on a mixed-version rollout.
     const updated = await updateRecord(ctx, nameTypeMatch.id, {
       description: canonicalDescription,
       content: canonicalInput.content,
-      confidence: canonicalInput.confidence,
+      ...(canonicalInput.confidence !== undefined ? { confidence: canonicalInput.confidence } : {}),
     });
     return { action: "updated", record: updated.record };
   }

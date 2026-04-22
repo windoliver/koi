@@ -591,11 +591,11 @@ describe("createMemoryStore", () => {
       expect(all[0]?.confidence).toBe(0.7);
     });
 
-    test("force=true clears confidence when new input has no confidence (legacy fallback)", async () => {
+    test("force=true preserves existing confidence when new input omits confidence", async () => {
       const dir = makeDir();
       const store = createMemoryStore({ dir });
 
-      // Store with explicit confidence first
+      // Store with explicit high confidence (human-validated record)
       await store.upsert(
         {
           name: "extracted-def456",
@@ -607,7 +607,8 @@ describe("createMemoryStore", () => {
         { force: false },
       );
 
-      // Overwrite without confidence — should persist undefined (not retain old value)
+      // Overwrite from a caller unaware of confidence — must NOT silently clear the
+      // existing trust metadata, which would promote 0.9 → 1.0 (implicit default).
       const updated = await store.upsert(
         {
           name: "extracted-def456",
@@ -620,7 +621,7 @@ describe("createMemoryStore", () => {
 
       expect(updated.action).toBe("updated");
       if (updated.action !== "updated") throw new Error("unreachable");
-      expect(updated.record.confidence).toBeUndefined();
+      expect(updated.record.confidence).toBe(0.9);
     });
 
     test("skips when no name+type match but Jaccard content is similar", async () => {

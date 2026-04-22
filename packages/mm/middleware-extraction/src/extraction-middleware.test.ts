@@ -403,6 +403,48 @@ describe("createExtractionMiddleware", () => {
 
       expect(memory.stored[0]?.confidence).toBe(0.7);
     });
+
+    test("[LEARNING:heuristic] marker gets confidence=0.7 (not 1.0)", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse("[LEARNING:heuristic] prefer small focused functions"),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(0.7);
+    });
+
+    test("[LEARNING:pattern] marker gets confidence=0.7 (not 1.0)", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse("[LEARNING:pattern] always wrap async calls in try-catch"),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(0.7);
+    });
+
+    test("[LEARNING:correction] marker gets confidence=1.0 (human-validated)", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse("[LEARNING:correction] use import type not import for type-only imports"),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(1.0);
+    });
   });
 
   describe("memoryType propagation (issue #1966)", () => {
@@ -962,11 +1004,11 @@ describe("createExtractionMiddleware", () => {
     // Catches regressions where the adapter or persistCandidates re-introduces a
     // hardcoded default (e.g. type: "feedback" for all) after mapCategoryToMemoryType runs.
     //
-    // Known limitation: salience scoring weights by `type` only (feedback=1.2,
-    // reference=0.8). Auto-extracted heuristic/pattern entries share the same type
-    // as human-validated gotcha/correction — the `category` field is the only
-    // persisted boundary until confidence/source metadata is threaded through the
-    // schema and scoring pipeline.
+    // Salience scoring uses both type weight (feedback=1.2) and confidence multiplier:
+    // gotcha/correction markers get confidence=1.0 (score 1.2×1.0=1.2),
+    // heuristic/pattern markers get confidence=0.7 (score 1.2×0.7=0.84).
+    // The category field provides an additional downstream filter for consumers
+    // that want to distinguish fully-validated from auto-inferred feedback.
 
     const cases: ReadonlyArray<{
       readonly marker: string;

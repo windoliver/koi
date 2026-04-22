@@ -317,6 +317,13 @@ export function serializeMemoryFrontmatter(
     `type: ${frontmatter.type}`,
   ];
   if (frontmatter.confidence !== undefined) {
+    if (
+      !Number.isFinite(frontmatter.confidence) ||
+      frontmatter.confidence < 0 ||
+      frontmatter.confidence > 1
+    ) {
+      return undefined;
+    }
     lines.push(`confidence: ${frontmatter.confidence}`);
   }
   lines.push("---", "", content);
@@ -374,6 +381,20 @@ export function validateMemoryRecordInput(
       field: "content",
       message: "content is required and must be a non-empty string",
     });
+  }
+
+  if (input.confidence !== undefined) {
+    if (
+      typeof input.confidence !== "number" ||
+      !Number.isFinite(input.confidence) ||
+      input.confidence < 0 ||
+      input.confidence > 1
+    ) {
+      errors.push({
+        field: "confidence",
+        message: "confidence must be a finite number in [0, 1]",
+      });
+    }
   }
 
   return errors;

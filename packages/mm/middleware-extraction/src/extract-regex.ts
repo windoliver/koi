@@ -36,6 +36,19 @@ const CATEGORY_TO_MEMORY_TYPE: Readonly<Record<CollectiveMemoryCategory, MemoryT
   context: "project",
 };
 
+// Human-validated categories (explicit corrections, warnings, preferences) are
+// fully trusted (1.0). Auto-inferred categories (heuristic, pattern, context)
+// get reduced confidence (0.7) so they score below human-validated feedback in
+// salience: feedback(1.2) × 0.7 = 0.84, between project(1.0) and reference(0.8).
+const CATEGORY_CONFIDENCE: Readonly<Record<CollectiveMemoryCategory, number>> = {
+  gotcha: 1.0,
+  correction: 1.0,
+  preference: 1.0,
+  heuristic: 0.7,
+  pattern: 0.7,
+  context: 0.7,
+};
+
 export function mapCategoryToMemoryType(category: CollectiveMemoryCategory): MemoryType {
   return CATEGORY_TO_MEMORY_TYPE[category];
 }
@@ -83,7 +96,7 @@ function extractMarkers(output: string): readonly ExtractionCandidate[] {
         content: truncate(content),
         memoryType: mapCategoryToMemoryType(category),
         category,
-        confidence: 1.0,
+        confidence: CATEGORY_CONFIDENCE[category],
       });
     }
     match = MARKER_REGEX.exec(output);
