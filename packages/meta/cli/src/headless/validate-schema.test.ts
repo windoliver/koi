@@ -221,6 +221,25 @@ describe("validateSchema — runtime validation", () => {
     const result = validateSchema(42, { type: "object", required: ["x"] });
     expect(result.ok).toBe(false);
   });
+
+  test("rejects schema where a property sub-schema is not an object", () => {
+    const result = validateLoadedSchema({
+      type: "object",
+      properties: { name: 42 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("fails at runtime: invalid type string in schema", () => {
+    const result = validateSchema("hello", { type: "datetime" } as Record<string, unknown>);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("type");
+  });
+
+  test("fails: required check on non-object value without type constraint", () => {
+    const result = validateSchema(42, { required: ["x"] });
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("validateResultSchema — end-to-end schema validation path", () => {
