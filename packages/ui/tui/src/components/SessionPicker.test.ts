@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionSummary } from "../state/types.js";
-import { formatSessionDate, getSessionDescription } from "./session-picker-helpers.js";
+import {
+  formatSessionDate,
+  getSessionDescription,
+  getSessionPeekLines,
+} from "./session-picker-helpers.js";
 
 // ---------------------------------------------------------------------------
 // formatSessionDate
@@ -59,5 +63,53 @@ describe("getSessionDescription", () => {
   test("short preview is not truncated", () => {
     const desc = getSessionDescription(makeSession({ preview: "Short" }));
     expect(desc).toContain("Short");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSessionPeekLines
+// ---------------------------------------------------------------------------
+
+describe("getSessionPeekLines", () => {
+  const makeSession = (overrides?: Partial<SessionSummary>): SessionSummary => ({
+    id: "s1",
+    name: "My Session",
+    lastActivityAt: new Date("2026-03-01T10:00:00Z").getTime(),
+    messageCount: 12,
+    preview: "Use the glob tool to list files in the current directory",
+    ...overrides,
+  });
+
+  test("returns exactly 3 lines", () => {
+    const lines = getSessionPeekLines(makeSession());
+    expect(lines.length).toBe(3);
+  });
+
+  test("first line is the session name", () => {
+    const lines = getSessionPeekLines(makeSession({ name: "My Session" }));
+    expect(lines[0]).toBe("My Session");
+  });
+
+  test("second line contains message count", () => {
+    const lines = getSessionPeekLines(makeSession({ messageCount: 12 }));
+    expect(lines[1]).toContain("12 messages");
+  });
+
+  test("second line contains a formatted date", () => {
+    const lines = getSessionPeekLines(makeSession());
+    expect(/\d/.test(lines[1] ?? "")).toBe(true);
+  });
+
+  test("third line is the full preview without truncation", () => {
+    const longPreview = "x".repeat(120);
+    const lines = getSessionPeekLines(makeSession({ preview: longPreview }));
+    expect(lines[2]).toBe(longPreview);
+    expect((lines[2] ?? "").length).toBe(120);
+  });
+
+  test("does not truncate 40-char boundary", () => {
+    const preview = "a".repeat(41);
+    const lines = getSessionPeekLines(makeSession({ preview }));
+    expect(lines[2]).toBe(preview);
   });
 });

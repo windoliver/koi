@@ -47,6 +47,8 @@ export interface SelectOverlayProps<T> {
   readonly focused: boolean;
   /** Shown when items is empty. */
   readonly emptyText?: string | undefined;
+  /** Called when Space is pressed on the highlighted item — peek without selecting. */
+  readonly onPeek?: ((item: T) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +68,10 @@ export function SelectOverlay<T>(props: SelectOverlayProps<T>): JSX.Element {
       },
       onMoveUp: list.moveUp,
       onMoveDown: list.moveDown,
+      onPeek: (): void => {
+        const item = props.items[list.selectedIdx()];
+        if (item !== undefined) props.onPeek?.(item);
+      },
     });
   });
 

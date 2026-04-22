@@ -4,14 +4,22 @@
  * Data injected via set_session_list action (already sorted most-recent-first,
  * capped at MAX_SESSIONS by the reducer). No I/O in this component.
  * Uses SelectOverlay for list rendering + keyboard navigation.
+ *
+ * Space toggles a peek panel showing the full session preview without
+ * the 40-character truncation applied in the list description.
  */
 
 import type { JSX } from "solid-js";
+import { Show, createSignal } from "solid-js";
 import { useTuiStore } from "../store-context.js";
 import type { SessionSummary } from "../state/types.js";
 import { COLORS, MODAL_POSITION } from "../theme.js";
 import { SelectOverlay } from "./SelectOverlay.js";
-import { formatSessionDate, getSessionDescription } from "./session-picker-helpers.js";
+import {
+  formatSessionDate,
+  getSessionDescription,
+  getSessionPeekLines,
+} from "./session-picker-helpers.js";
 
 export { formatSessionDate, getSessionDescription };
 
@@ -40,6 +48,16 @@ const getSessionLabel = (s: SessionSummary): string => s.name;
 
 export function SessionPicker(props: SessionPickerProps): JSX.Element {
   const sessions = useTuiStore((s) => s.sessions);
+  const [peeked, setPeeked] = createSignal<SessionSummary | null>(null);
+
+  const handlePeek = (session: SessionSummary): void => {
+    setPeeked((prev) => (prev?.id === session.id ? null : session));
+  };
+
+  const handleClose = (): void => {
+    setPeeked(null);
+    props.onClose();
+  };
 
   return (
     <box
@@ -54,7 +72,9 @@ export function SessionPicker(props: SessionPickerProps): JSX.Element {
         <text fg={COLORS.purple}>
           <b>{"Sessions"}</b>
         </text>
-        <text fg={COLORS.textMuted}>{" — select to resume, Esc to cancel"}</text>
+        <text fg={COLORS.textMuted}>
+          {" — Enter to resume · Space to peek · Esc to cancel"}
+        </text>
       </box>
 
       {/* Session list */}
@@ -63,10 +83,24 @@ export function SessionPicker(props: SessionPickerProps): JSX.Element {
         getLabel={getSessionLabel}
         getDescription={getSessionDescription}
         onSelect={props.onSelect}
-        onClose={props.onClose}
+        onClose={handleClose}
         focused={props.focused}
         emptyText="No saved sessions yet"
+        onPeek={handlePeek}
       />
+
+      {/* Peek panel — shown when the user presses Space on a session */}
+      <Show when={peeked()}>
+        {(session: () => SessionSummary) => (
+          <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingBottom={1}>
+            <text fg={COLORS.purple}>{"─".repeat(66)}</text>
+            <text fg={COLORS.cyan}>{"Preview"}</text>
+            {getSessionPeekLines(session()).map((line, i) => (
+              <text fg={i === 0 ? COLORS.white : COLORS.textMuted}>{line}</text>
+            ))}
+          </box>
+        )}
+      </Show>
     </box>
   );
 }

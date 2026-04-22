@@ -12,3 +12,13 @@ export function formatSessionDate(ts: number): string {
 
 export const getSessionDescription = (s: SessionSummary): string =>
   `${formatSessionDate(s.lastActivityAt)} · ${s.messageCount} messages · ${s.preview.slice(0, 40)}`;
+
+/**
+ * Lines shown in the peek panel for a session.
+ * Returns the full preview without truncation so the user can read enough
+ * context to distinguish similar-looking sessions.
+ */
+export function getSessionPeekLines(s: SessionSummary): readonly string[] {
+  const date = formatSessionDate(s.lastActivityAt);
+  return [s.name, `${date} · ${s.messageCount} messages`, s.preview];
+}
