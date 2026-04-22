@@ -104,9 +104,23 @@ When mounting OAuth-gated connectors (gdrive, gmail, etc.) via the local bridge 
 import { createAuthNotificationHandler, createLocalTransport } from "@koi/fs-nexus";
 
 const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
-const unsubscribe = transport.subscribe(createAuthNotificationHandler(channel));
+const handler = createAuthNotificationHandler(channel);
+const unsubscribe = transport.subscribe(handler);
 // channel.send() fires on auth_required / auth_progress / auth_complete
+// on teardown:
+unsubscribe();
+handler.dispose(); // cancel pending watchdog timers + gate late callbacks
 ```
+
+The handler dedupes `auth_progress` heartbeats per-provider: only the first
+heartbeat in a flow emits to the channel; subsequent ones are suppressed until
+`auth_required` / `auth_complete` resets the flow. Per-provider epochs and
+per-send attempt tokens guard against stale `channel.send()` callbacks
+corrupting later flows. A 45 s watchdog clears `pending` entries if a
+`channel.send()` never settles so heartbeats resume. Call `handler.dispose()`
+synchronously during teardown before awaiting the transport close — the
+dispose-then-unsubscribe ordering prevents pre-queued microtasks from firing
+against a closed transport.
 
 **Notification types:**
 
