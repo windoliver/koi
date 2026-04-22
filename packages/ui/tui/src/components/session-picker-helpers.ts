@@ -35,7 +35,7 @@ function charDisplayWidth(cp: string): number {
     (c >= 0xfe30 && c <= 0xfe4f) || // CJK Compatibility Forms
     (c >= 0xff01 && c <= 0xff60) || // Fullwidth ASCII / Roman
     (c >= 0xffe0 && c <= 0xffe6) || // Fullwidth Signs
-    (c >= 0x1f300 && c <= 0x1feff) || // Emoji / Misc Symbols
+    (c >= 0x1f100 && c <= 0x1feff) || // Emoji / Misc Symbols / Regional Indicators
     (c >= 0x20000 && c <= 0x3fffd) // CJK Extension B-H
   )
     return 2;
@@ -43,25 +43,42 @@ function charDisplayWidth(cp: string): number {
   return 1;
 }
 
+const _segmenter = new Intl.Segmenter();
+
+/**
+ * Display width of one grapheme cluster.
+ * Width = width of the first non-zero-width code point in the cluster so that
+ * ZWJ sequences (👨‍👩‍👧), flags (🇺🇸), and variation selectors all collapse
+ * to the width of their base glyph rather than summing code-point widths.
+ */
+function graphemeDisplayWidth(grapheme: string): number {
+  for (const cp of grapheme) {
+    const w = charDisplayWidth(cp);
+    if (w > 0) return w;
+  }
+  return 1;
+}
+
 /**
  * Clip `s` so its terminal display width stays within `maxCols`.
+ * Segments by grapheme cluster (Intl.Segmenter) so multi-code-point emoji
+ * such as flags and ZWJ sequences are never split mid-glyph.
  * Reserves one column for the ellipsis when truncation is needed so the
  * result always fits: w(content) + 1(ellipsis) ≤ maxCols.
  */
 function capLine(s: string, maxCols: number = PEEK_PREVIEW_MAX): string {
-  const codePoints = [...s];
+  const graphemes = [..._segmenter.segment(s)];
   let w = 0;
-  let byteIdx = 0;
-  for (let ci = 0; ci < codePoints.length; ci++) {
-    const cp = codePoints[ci] ?? "";
-    const cw = charDisplayWidth(cp);
-    const hasMore = ci < codePoints.length - 1;
-    // Reserve 1 col for "…" only when more chars follow (truncation would be needed).
-    if (w + cw + (hasMore ? 1 : 0) > maxCols) {
-      return s.slice(0, byteIdx) + "…";
+  let charIdx = 0;
+  for (let gi = 0; gi < graphemes.length; gi++) {
+    const seg = graphemes[gi];
+    const gw = graphemeDisplayWidth(seg?.segment ?? "");
+    const hasMore = gi < graphemes.length - 1;
+    if (w + gw + (hasMore ? 1 : 0) > maxCols) {
+      return `${s.slice(0, charIdx)}…`;
     }
-    w += cw;
-    byteIdx += cp.length;
+    w += gw;
+    charIdx += (seg?.segment ?? "").length;
   }
   return s;
 }

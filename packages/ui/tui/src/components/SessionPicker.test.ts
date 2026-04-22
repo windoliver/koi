@@ -193,4 +193,36 @@ describe("getSessionPeekLines", () => {
     // 32 emoji (64 cols) + "…" = within 66 cols; emoji are surrogate pairs (2 JS code units each)
     expect([...resultName.replace("…", "")].length).toBeLessThanOrEqual(32);
   });
+
+  test("flag emoji (2-code-point grapheme cluster) is not split mid-cluster", () => {
+    // 🇺🇸 = 2 regional indicator code points but 1 grapheme → renders as 2 cols
+    const flag = "🇺🇸";
+    const preview = flag.repeat(40);
+    const lines = getSessionPeekLines(makeSession({ preview }));
+    const result = lines[2] ?? "";
+    // Result must be truncated and must not end with a dangling regional indicator
+    expect(result.endsWith("…")).toBe(true);
+    const content = result.slice(0, -1); // strip ellipsis
+    // Every grapheme cluster must be a complete flag (not a dangling half)
+    const seg = new Intl.Segmenter();
+    for (const { segment } of seg.segment(content)) {
+      expect(segment).toBe(flag);
+    }
+  });
+
+  test("ZWJ family emoji (multi-code-point cluster) is never split", () => {
+    // 👨‍👩‍👧 is a ZWJ sequence; must be treated as 1 grapheme of width 2
+    const family = "👨‍👩‍👧";
+    const preview = family.repeat(40);
+    const lines = getSessionPeekLines(makeSession({ preview }));
+    const result = lines[2] ?? "";
+    // Result must be truncated
+    expect(result.endsWith("…")).toBe(true);
+    const content = result.slice(0, -1);
+    const seg = new Intl.Segmenter();
+    // Every cluster in the output must equal the original family emoji (no partial ZWJ)
+    for (const { segment } of seg.segment(content)) {
+      expect(segment).toBe(family);
+    }
+  });
 });
