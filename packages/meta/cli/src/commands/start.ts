@@ -1182,8 +1182,9 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       // Latch BEFORE clearing the timer so a callback already on the
       // Node timer queue sees postRunPhaseComplete=true and no-ops
       // instead of racing the normal-exit path with a spurious exit 4.
+      // Note: clearTimeout is deferred until after schema validation so
+      // --max-duration-ms continues to cover the validation phase.
       postRunPhaseComplete = true;
-      if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
       // Any teardown failure is machine-visible as INTERNAL, regardless of
       // the run's own exit code. Preserving, e.g., PERMISSION_DENIED when
       // the session transcript was not flushed would hide exactly the
@@ -1191,6 +1192,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       // code is preserved in the NDJSON result's error string for
       // diagnostics.
       if (shutdownFailed) {
+        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         finalCode = HEADLESS_EXIT.INTERNAL;
         emitResult({
           exitCode: HEADLESS_EXIT.INTERNAL,
@@ -1217,6 +1219,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             }
           }
         }
+        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
           emitResult({
@@ -1228,6 +1231,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           emitResult();
         }
       } else {
+        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         emitResult();
       }
     } catch (e: unknown) {

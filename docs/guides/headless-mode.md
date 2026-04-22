@@ -127,6 +127,8 @@ On schema validation failure (exit 6):
 
 `--result-schema` validates the agent's **final text segment** against a JSON Schema subset before reporting success. For tool-using agents, "final text segment" means the text produced after the last tool result — intermediate narration before tool calls is discarded. For agents that use no tools, the entire output is validated. Either way, the agent must produce only JSON in the final segment: no prose, preamble, or trailing narration.
 
+> **Stdout note:** `assistant_text` events on stdout may include intermediate narration emitted during tool use. Only the `result` event's `exitCode` and `validationFailed` fields reflect schema validation outcome. CI scripts must check the `result` event — not concatenate `assistant_text` chunks — to determine whether schema validation passed.
+
 > **Scope limitation:** `additionalProperties` is not supported. Extra fields beyond those declared in `properties` are not rejected. If exact-shape enforcement is required, validate the output independently using external tooling.
 
 ### Supported keywords
