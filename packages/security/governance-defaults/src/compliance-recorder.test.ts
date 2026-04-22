@@ -41,6 +41,29 @@ function makeSink(): AuditSink & { readonly logs: AuditEntry[] } {
 }
 
 describe("createAuditSinkComplianceRecorder", () => {
+  test("sessionId getter is resolved at record time (rotation-safe)", async () => {
+    // Simulates the runtime's live-session-id mutable ref: a rotation
+    // (cycleSession/rebindSessionId) must be reflected in every
+    // subsequent compliance_event, not snapshotted at wiring time.
+    const sink = makeSink();
+    let liveSessionId = "startup-sess";
+    const recorder = createAuditSinkComplianceRecorder(sink, {
+      sessionId: () => liveSessionId,
+    });
+
+    await recorder.recordCompliance(makeRecord());
+    liveSessionId = "rotated-sess";
+    await recorder.recordCompliance(makeRecord());
+
+    // Micro-task: fire-and-forget sink.log happens synchronously in the
+    // fake sink, but guard against any deferral with a macrotask.
+    await Promise.resolve();
+
+    expect(sink.logs).toHaveLength(2);
+    expect(sink.logs[0]?.sessionId).toBe("startup-sess");
+    expect(sink.logs[1]?.sessionId).toBe("rotated-sess");
+  });
+
   test("maps ComplianceRecord to AuditEntry with compliance_event kind", async () => {
     const sink = makeSink();
     const recorder = createAuditSinkComplianceRecorder(sink, {

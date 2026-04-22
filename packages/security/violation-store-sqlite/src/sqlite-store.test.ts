@@ -161,4 +161,19 @@ describe("createSqliteViolationStore — concurrency + persistence", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("flush never throws even when the underlying DB has been closed", () => {
+    // Simulates a transient/terminal write failure: close the store so
+    // the next flush hits a closed DB. Callers are the governance hot
+    // path (onViolation) and a setInterval tick — a thrown error would
+    // either corrupt the governance decision path or become an
+    // unhandled rejection that crashes the process. Test asserts the
+    // flush remains silent-on-error. Console noise is expected.
+    const store = createSqliteViolationStore({ dbPath: ":memory:" });
+    store.record(makeViolation(), A1, "S", 1);
+    store.close();
+    // close() already tried to flush. Calling flush() again on the
+    // closed DB must not throw.
+    expect(() => store.flush()).not.toThrow();
+  });
 });

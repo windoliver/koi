@@ -2086,6 +2086,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | ReadonlySet<string>
       | undefined;
 
+    // Hoisted above the audit/governance blocks: compliance recorders
+    // and the onViolation callback need a LIVE session id (rotates on
+    // cycleSession / rebindSessionId) rather than the static
+    // construction-time `config.session.sessionId`. Assigned at line
+    // ~2601 after createKoi returns; the getters below only dereference
+    // it when recordCompliance / onViolation fire, which happens after
+    // the runtime is built.
+    // let: justified — single mutable ref shared across closures.
+    let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
+    const getLiveSessionId = (): string =>
+      runtimeForRotation?.sessionId ?? config.session?.sessionId ?? "no-session";
+
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
     // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
@@ -2143,7 +2155,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(auditSink, {
-          sessionId: config.session?.sessionId ?? "no-session",
+          sessionId: getLiveSessionId,
         }),
       );
       auditPresetExtras.push(auditMw);
@@ -2211,7 +2223,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(sqliteSink, {
-          sessionId: config.session?.sessionId ?? "no-session",
+          sessionId: getLiveSessionId,
         }),
       );
       auditPresetExtras.push(sqliteAuditMw);
@@ -2375,13 +2387,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               : {}),
             // Persist every violation to the SQLite store when configured.
             // Additive — does not remove any other subscribers (e.g. bridge).
-            // sessionId is captured from ambient config so the bridge's
-            // `loadRecentViolations({ sessionId })` query can find them.
+            // sessionId is resolved from the live runtime at callback time
+            // so `cycleSession` / `rebindSessionId` keep persisted rows
+            // attributed to the current session — the bridge's
+            // `loadRecentViolations({ sessionId })` query can find them
+            // against the rotated id, and pre-runtime fires fall back
+            // to the startup id (or "no-session" if the host omitted one).
             ...(violationStore !== undefined
               ? {
                   onViolation: (verdict: GovernanceVerdict, request: PolicyRequest) => {
                     if (verdict.ok) return;
-                    const sid = config.session?.sessionId ?? "no-session";
+                    const sid = getLiveSessionId();
                     for (const v of verdict.violations) {
                       violationStore.record(v, request.agentId, sid, request.timestamp);
                     }
@@ -2490,8 +2506,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // returns; the engine never invokes `rotateSessionId` during
     // construction, only during a later `cycleSession()`, so the
     // ref is always populated by the time the callback fires.
-    // let justified: assigned on the line below
-    let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
+    // (`runtimeForRotation` is declared above the audit wiring.)
     const runtime = await createKoi({
       manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
       adapter: engineAdapter,

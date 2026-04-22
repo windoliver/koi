@@ -38,6 +38,10 @@ const CREATE_IDX_SEV_TS = `
 
 export function initViolationSchema(db: Database): void {
   db.run(PRAGMA_WAL);
+  // Contention tolerance. Governance can fire violations from multiple
+  // agent runs against the same DB; without this, SQLITE_BUSY would
+  // surface as thrown errors into the governance decision path.
+  db.run("PRAGMA busy_timeout = 5000");
   db.run(CREATE_TABLE);
   db.run(CREATE_IDX_TS);
   db.run(CREATE_IDX_AGENT_TS);

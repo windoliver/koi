@@ -12,7 +12,15 @@ import type { AuditEntry, AuditSink, ComplianceRecord, ComplianceRecorder } from
 const DEFAULT_AUDIT_SCHEMA_VERSION = 1;
 
 export interface AuditSinkComplianceRecorderCtx {
-  readonly sessionId: string;
+  /**
+   * Session identity for the audit entry. Accepts either a static string
+   * or a getter invoked per `recordCompliance` call. Hosts whose session
+   * id can rotate at runtime (`cycleSession`, `rebindSessionId`) MUST
+   * pass a getter — a snapshotted string would tag every compliance
+   * event with the construction-time session, misattributing all rows
+   * written after a rotation.
+   */
+  readonly sessionId: string | (() => string);
   readonly schemaVersion?: number | undefined;
   readonly onError?: ((err: unknown) => void) | undefined;
 }
@@ -27,13 +35,15 @@ export function createAuditSinkComplianceRecorder(
     ((err: unknown): void => {
       console.warn("[compliance-recorder] sink.log failed:", err);
     });
+  const resolveSessionId =
+    typeof ctx.sessionId === "function" ? ctx.sessionId : (): string => ctx.sessionId as string;
 
   return {
     recordCompliance(record: ComplianceRecord): ComplianceRecord {
       const entry: AuditEntry = {
         schema_version: schemaVersion,
         timestamp: record.evaluatedAt,
-        sessionId: ctx.sessionId,
+        sessionId: resolveSessionId(),
         agentId: record.request.agentId,
         turnIndex: 0,
         kind: "compliance_event",

@@ -114,24 +114,42 @@ export function createSqliteViolationStore(
 
   const buffer: BufferedEntry[] = [];
 
+  // Flush attempts MUST NOT throw into callers. Three call sites — timer
+  // callback, record() when buffer is full, and close() — would all push
+  // the exception into paths that cannot handle it: an `onViolation`
+  // governance callback, a setInterval unhandled rejection (process
+  // crash), or a shutdown sequence. On transient SQLite failures we keep
+  // the buffer intact so the next tick retries; on persistent failures
+  // the buffer grows bounded-ish by the maxBufferSize threshold and log
+  // volume stays proportional to flush cadence.
   function flushBuffer(): void {
     if (buffer.length === 0) return;
-    const tx = db.transaction(() => {
-      for (const e of buffer) {
-        insertStmt.run({
-          $timestamp: e.timestamp,
-          $rule: e.violation.rule,
-          $severity: e.violation.severity,
-          $message: e.violation.message,
-          $contextJson:
-            e.violation.context !== undefined ? JSON.stringify(e.violation.context) : null,
-          $agentId: e.agentId,
-          $sessionId: e.sessionId ?? null,
-        });
-      }
-    });
-    tx();
-    buffer.length = 0;
+    const snapshot = buffer.slice();
+    try {
+      const tx = db.transaction(() => {
+        for (const e of snapshot) {
+          insertStmt.run({
+            $timestamp: e.timestamp,
+            $rule: e.violation.rule,
+            $severity: e.violation.severity,
+            $message: e.violation.message,
+            $contextJson:
+              e.violation.context !== undefined ? JSON.stringify(e.violation.context) : null,
+            $agentId: e.agentId,
+            $sessionId: e.sessionId ?? null,
+          });
+        }
+      });
+      tx();
+      // Only drop on transaction success. Splice from the front in case
+      // record() appended more entries while the tx was mid-flight.
+      buffer.splice(0, snapshot.length);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[violation-store-sqlite] flush of ${snapshot.length} entries failed; retained in buffer: ${message}`,
+      );
+    }
   }
 
   const timer = setInterval(flushBuffer, flushIntervalMs);
