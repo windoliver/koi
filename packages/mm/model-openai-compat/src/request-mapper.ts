@@ -429,7 +429,17 @@ export function buildRequestBody(
   // `reasoning_content` in the SSE stream when this field is present.
   // Models without reasoning capability ignore it silently.
   if (config.compat.supportsReasoning) {
-    body.reasoning = { effort: config.compat.defaultReasoningEffort };
+    const td = config.compat.thinkingDisplay;
+    if (td === "hidden") {
+      body.reasoning = { exclude: true };
+    } else if (td === "summarized") {
+      if (effectiveModel.startsWith("anthropic/")) {
+        body.thinking = { type: "summarized" };
+      }
+      body.reasoning = { effort: config.compat.defaultReasoningEffort };
+    } else {
+      body.reasoning = { effort: config.compat.defaultReasoningEffort };
+    }
   }
 
   return body;
