@@ -910,7 +910,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | default stack; no `--manifest` override; git-backed `$FIXTURE` |
+| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | `--manifest s25-memory-only.koi.yaml` (`stacks: [memory]`); `dreamStack` excluded for deterministic file-count assertions; git-backed `$FIXTURE`. ⚠ Memory+dream integration (default stack) is **not** covered by S25 — test separately with an ad-hoc TUI session without `--manifest`. |
 
 **All scenarios run with the full TUI middleware stack:**
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
