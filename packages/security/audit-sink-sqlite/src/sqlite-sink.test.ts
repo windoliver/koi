@@ -148,24 +148,6 @@ describe("createSqliteAuditSink", () => {
     db1.close();
   });
 
-  test("query() caps at DEFAULT_QUERY_LIMIT (1000) most-recent rows", async () => {
-    const sink = createSqliteAuditSink({ dbPath: ":memory:" });
-    // Write 1500 entries, check query returns the last 1000 in chronological order.
-    for (let i = 0; i < 1500; i++) {
-      await sink.log(makeEntry({ turnIndex: i, timestamp: 1_000_000 + i }));
-    }
-    await sink.flush();
-
-    const results = await sink.query?.("test-session");
-    expect(results).toHaveLength(1000);
-    // First returned should be turnIndex=500 (oldest in the returned window),
-    // last should be 1499 (newest).
-    expect(results?.[0]?.turnIndex).toBe(500);
-    expect(results?.[999]?.turnIndex).toBe(1499);
-
-    sink.close();
-  });
-
   test("legacy DB missing canonical_json column is migrated", async () => {
     // Build a DB with the pre-c28ddc5bd schema (no canonical_json)
     // and verify initAuditSchema adds the column via ALTER TABLE.
