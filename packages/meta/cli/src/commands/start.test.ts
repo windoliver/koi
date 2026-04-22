@@ -570,6 +570,12 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   const VALID_SCHEMA = '{"type":"object","required":["count"]}';
 
   let exitSpy: ReturnType<typeof spyOn>;
+  // Tracked so afterEach can restore them regardless of which test created them,
+  // preventing spy leakage across test files when bun shares module instances.
+  let runHeadlessSpy: ReturnType<typeof spyOn> | undefined;
+  let bunFileSpy: ReturnType<typeof spyOn> | undefined;
+  let stdoutWriteSpy: ReturnType<typeof spyOn> | undefined;
+  let validateResultSchemaSpy: ReturnType<typeof spyOn> | undefined;
 
   beforeEach(() => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
@@ -582,6 +588,14 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     delete process.env.OPENROUTER_API_KEY;
     exitSpy.mockRestore();
     mockDispose.mockReset();
+    runHeadlessSpy?.mockRestore();
+    runHeadlessSpy = undefined;
+    bunFileSpy?.mockRestore();
+    bunFileSpy = undefined;
+    stdoutWriteSpy?.mockRestore();
+    stdoutWriteSpy = undefined;
+    validateResultSchemaSpy?.mockRestore();
+    validateResultSchemaSpy = undefined;
   });
 
   test("exit 5 when schema file cannot be read", async () => {
@@ -631,13 +645,13 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("exit 6 (SCHEMA_VALIDATION) when agent succeeds but output fails schema", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.("not json");
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
@@ -666,14 +680,14 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("exit 0 when agent succeeds and output matches schema", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
     let emitResultCallCount = 0;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
@@ -703,13 +717,13 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("exit 6 (SCHEMA_VALIDATION) when assistant output overflows 1 MB cap", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       // Send a text chunk larger than 1 MB to trigger rawAssistantOverflow
       opts.onRawAssistantText?.("x".repeat(1024 * 1024 + 1));
       return {
@@ -739,7 +753,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("shutdown failure after agent success: exit 6 + validationSkipped (non-retryable)", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
@@ -750,7 +764,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       validationSkipped?: boolean;
     };
     let capturedEmitArgs: EmitArgs | undefined;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
@@ -793,7 +807,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       validationSkipped?: boolean;
     };
     let capturedEmitArgs: EmitArgs | undefined;
-    spyOn(runModule, "runHeadless").mockImplementation(async () => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async () => {
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
         emitResult: (args?: EmitArgs) => {
@@ -824,14 +838,14 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("onToolResult callback resets raw buffer so only post-tool text is validated", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
     let emitResultCallCount = 0;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       // Simulate: narration before tool, then tool fires, then final JSON
       opts.onRawAssistantText?.("I will look up the count now...");
       opts.onToolResult?.(); // reset
@@ -869,7 +883,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     // which we can observe indirectly: if validation passes, buffered lines are written
     // before emitResult is called; if validation fails, they are dropped.
     // We test this by capturing the writeStdout calls inside the runHeadless mock.
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
@@ -878,7 +892,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     let capturedEmitArgs: EmitArgs | undefined;
     let emitResultCallCount = 0;
 
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":3,"titles":["a"]}');
       // Simulate runHeadless writing an assistant_text line; capture whether writeStdout
       // is called immediately (unbuffered) vs held until later.
@@ -917,14 +931,14 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("assistant_text lines are dropped from stdout when schema validation fails", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
 
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.("not json at all");
       opts.writeStdout('{"kind":"assistant_text","sessionId":"s","text":"not json at all"}\n');
       return {
@@ -958,12 +972,12 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     // emitted to stdout on success applies banner redaction so engine-internal annotations never
     // reach CI logs. A JSON payload where a string VALUE looks like a banner must still validate
     // (schema sees raw), but the emitted text replaces the banner content with a length marker.
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     const stdoutLines: string[] = [];
-    spyOn(process.stdout, "write").mockImplementation(
+    stdoutWriteSpy = spyOn(process.stdout, "write").mockImplementation(
       (chunk: string | Uint8Array, encodingOrCb?: unknown, cb?: unknown): boolean => {
         if (typeof chunk === "string") stdoutLines.push(chunk);
         const callback = typeof encodingOrCb === "function" ? encodingOrCb : cb;
@@ -975,7 +989,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
     let emitResultCallCount = 0;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       // Simulate raw text that contains a banner-shaped string as a JSON string value.
       // Banner redaction rewrites "[Turn failed: ...]" to "[Turn failed: N chars redacted]"
       // but schema validation sees the original and still validates against the schema.
@@ -1018,7 +1032,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     // side effects ran). Exit 6 with validationSkipped:true distinguishes this from:
     //   - validationFailed:true (schema check ran and output did not match)
     //   - INTERNAL exit 5 (infrastructure failure, potentially retriable)
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
@@ -1034,7 +1048,7 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       validationSkipped?: boolean;
     };
     let capturedEmitArgs: EmitArgs | undefined;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":3,"titles":["a"]}');
       return {
         exitCode: HEADLESS_EXIT.SUCCESS,
@@ -1074,14 +1088,14 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     // --result-schema contract: model output only appears on stdout when validation passed.
     // On AGENT_FAILURE the buffer is discarded — no unvalidated text is emitted.
     // emitResult is called with no override args (exit code comes from the returned object).
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
     let emitResultCallCount = 0;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.writeStdout(
         '{"kind":"assistant_text","sessionId":"s","text":"I could not complete this"}\n',
       );
@@ -1113,14 +1127,14 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("onToolResult resets stdout buffer so pre-tool narration is not flushed on success", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
     type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
     let capturedEmitArgs: EmitArgs | undefined;
     let emitResultCallCount = 0;
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       // Pre-tool narration: written via writeStdout and accumulated in rawAssistantParts
       opts.onRawAssistantText?.("I will fetch the data now...");
       opts.writeStdout('{"kind":"assistant_text","sessionId":"s","text":"I will fetch..."}\n');
@@ -1157,13 +1171,13 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
   });
 
   test("schema validation skipped when agent exits non-zero", async () => {
-    spyOn(Bun, "file").mockReturnValue({
+    bunFileSpy = spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
 
-    const validateSpy = spyOn(validateModule, "validateResultSchema");
+    validateResultSchemaSpy = spyOn(validateModule, "validateResultSchema");
 
-    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+    runHeadlessSpy = spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
       opts.onRawAssistantText?.('{"count":5}');
       return {
         exitCode: HEADLESS_EXIT.TIMEOUT,
@@ -1184,6 +1198,6 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    expect(validateSpy).not.toHaveBeenCalled();
+    expect(validateResultSchemaSpy).not.toHaveBeenCalled();
   });
 });
