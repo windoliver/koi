@@ -35,7 +35,14 @@ const MAX_BUFFER_BACKLOG = 10_000;
 const CLOSE_FLUSH_ATTEMPTS = 3;
 
 interface BufferedEntry {
-  readonly violation: Violation;
+  readonly rule: string;
+  readonly severity: ViolationSeverity;
+  readonly message: string;
+  /** Pre-serialized at record() time to isolate per-entry serialization
+   *  failures from batch flushes. A malformed context (BigInt, circular
+   *  reference) that failed to serialize is stored here as `null` so
+   *  the batch cannot poison-drop healthy siblings. */
+  readonly contextJson: string | null;
   readonly agentId: AgentId;
   readonly sessionId: string | undefined;
   readonly timestamp: number;
@@ -152,11 +159,10 @@ export function createSqliteViolationStore(
         for (const e of snapshot) {
           insertStmt.run({
             $timestamp: e.timestamp,
-            $rule: e.violation.rule,
-            $severity: e.violation.severity,
-            $message: e.violation.message,
-            $contextJson:
-              e.violation.context !== undefined ? JSON.stringify(e.violation.context) : null,
+            $rule: e.rule,
+            $severity: e.severity,
+            $message: e.message,
+            $contextJson: e.contextJson,
             $agentId: e.agentId,
             $sessionId: e.sessionId ?? null,
           });
@@ -273,7 +279,34 @@ export function createSqliteViolationStore(
       sessionId: string | undefined,
       timestamp: number,
     ): void {
-      buffer.push({ violation, agentId: agentIdArg, sessionId, timestamp });
+      // Serialize context eagerly so a malformed context (BigInt,
+      // circular reference, other JSON.stringify throwers) is caught
+      // here and quarantined to THIS entry only. Batch flushes stay
+      // pure data writes; one bad violation can no longer poison a
+      // whole buffer snapshot and cascade into backlog-cap drops of
+      // unrelated entries.
+      let contextJson: string | null = null;
+      if (violation.context !== undefined) {
+        try {
+          contextJson = JSON.stringify(violation.context);
+        } catch (err) {
+          console.warn(
+            `[violation-store-sqlite] could not serialize context for rule="${violation.rule}"; storing row with context=null: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          contextJson = null;
+        }
+      }
+      buffer.push({
+        rule: violation.rule,
+        severity: violation.severity,
+        message: violation.message,
+        contextJson,
+        agentId: agentIdArg,
+        sessionId,
+        timestamp,
+      });
       if (buffer.length >= maxBufferSize) {
         flushBuffer();
       }

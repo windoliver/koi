@@ -2376,9 +2376,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
+        // Explicit operator configuration is honored fail-closed: when
+        // `config.violationSqlitePath` was supplied and non-empty, a
+        // failure to open that path is a configuration error, not a
+        // best-effort degradation. Operators who asked for durable
+        // violation logging get a hard error rather than a silent
+        // downgrade that would hide compliance failures.
+        //
+        // The implicit default (~/.koi/violations.db) still degrades
+        // gracefully — missing $HOME, read-only runners, containers —
+        // because no one EXPLICITLY asked for persistence there.
+        const explicitPath =
+          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
+        if (explicitPath) {
+          throw new Error(
+            `violation store: failed to open explicitly-configured path "${resolvedViolationPath}": ${message}. ` +
+              'Fix the path, make it writable, or pass --violation-sqlite="" to disable persistence explicitly.',
+            { cause: err },
+          );
+        }
         console.warn(
-          `[koi-runtime] violation store disabled — could not open "${resolvedViolationPath}": ${message}. ` +
-            'Set --violation-sqlite=<path> to a writable location, or pass "" to disable explicitly.',
+          `[koi-runtime] violation store disabled — could not open default "${resolvedViolationPath}": ${message}. ` +
+            'Pass --violation-sqlite=<path> to a writable location, or --violation-sqlite="" to silence this.',
         );
         violationStore = undefined;
       }

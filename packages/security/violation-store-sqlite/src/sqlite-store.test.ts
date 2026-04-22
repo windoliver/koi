@@ -162,6 +162,34 @@ describe("createSqliteViolationStore — concurrency + persistence", () => {
     }
   });
 
+  test("malformed context (BigInt) is quarantined to that entry, batch still commits", async () => {
+    // JSON.stringify throws on BigInt. Pre-serialization at record()
+    // time means the bad row is stored with context=null; the batch
+    // flush is a pure data write and cannot be poisoned by one bad
+    // context shape. Healthy siblings must still land on disk.
+    const store = createSqliteViolationStore({ dbPath: ":memory:" });
+    store.record(makeViolation({ rule: "healthy-before" }), A1, "S1", 1);
+    store.record(
+      {
+        rule: "poison",
+        severity: "warning",
+        message: "has BigInt context",
+        context: { big: 9_999_999_999_999_999_999n as unknown as string },
+      },
+      A1,
+      "S1",
+      2,
+    );
+    store.record(makeViolation({ rule: "healthy-after" }), A1, "S1", 3);
+    store.flush();
+
+    const page = await store.getViolations({ sessionId: sessionId("S1"), limit: 10 });
+    expect(page.items).toHaveLength(3);
+    const rules = page.items.map((v) => v.rule).sort();
+    expect(rules).toEqual(["healthy-after", "healthy-before", "poison"]);
+    store.close();
+  });
+
   test("buffer backlog is capped on sustained flush failures", () => {
     // Create a store, close its DB to poison flushes, then record
     // >MAX_BUFFER_BACKLOG entries and assert the buffer stays bounded
