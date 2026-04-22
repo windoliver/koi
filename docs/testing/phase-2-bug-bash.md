@@ -824,20 +824,24 @@ mkdir -p "$MEMORY_DIR"
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 
-# Verify the session was actually created AND the TUI stayed up (not just a tmux frame).
-# tmux has-session only proves the session shell was created; capture-pane after a brief
-# moment catches immediate crash/bootstrap failures before any assertions are run.
+# Verify the session was actually created and the TUI process did not exit immediately.
+# Approach: has-session (tmux frame exists) + pane_dead check (process still alive).
+# Checking only for non-empty pane output is NOT sufficient — a stack trace or shell
+# prompt left behind by a crashed bun process would still yield non-empty output.
 if ! tmux has-session -t "$KOI_SESSION" 2>/dev/null; then
   echo "S25 HARNESS ERROR: tmux session '$KOI_SESSION' failed to start. Aborting." >&2
   exit 1
 fi
 sleep 2   # allow bun startup to complete (TUI render typically < 1 s)
-_S25_PANE=$(tmux capture-pane -t "$KOI_SESSION" -p 2>/dev/null || echo "")
-if [ -z "$_S25_PANE" ]; then
-  echo "S25 HARNESS ERROR: TUI pane is empty — process may have exited immediately. Aborting." >&2
+_S25_PANE_DEAD=$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}' 2>/dev/null || echo "1")
+if [ "$_S25_PANE_DEAD" = "1" ]; then
+  echo "S25 HARNESS ERROR: TUI process exited immediately after launch (pane_dead=1). Aborting." >&2
+  tmux capture-pane -t "$KOI_SESSION" -p 2>/dev/null || true   # show last output for diagnosis
   exit 1
 fi
 ```
+
+> **S25 plugin-hook assumption**: `KOI_DISABLE_HOOKS=1` disables user hooks but **not** plugin-contributed hooks (the runtime merges `pluginComponents.hooks` regardless). Q156-Q161 file-count assertions are only deterministic if no installed plugin writes memory files. If you have memory-aware plugins installed, add `--manifest '$FIXTURE/s25-memory-only.koi.yaml'` to the `koi tui` launch and create that manifest with `stacks: [memory]` and `plugins: []`.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
