@@ -407,6 +407,71 @@ describe("createSigintHandler", () => {
     expect(onForce).toHaveBeenCalledTimes(1);
   });
 
+  test("onWindowElapse as function: late-arriving reset-to-idle at tap time prevents force (#1999 late-spawn)", () => {
+    // Regression: if a spawn starts AFTER the 2s window already fired with
+    // stay-armed, the next Ctrl+C should NOT force-exit — the tap-time re-check
+    // sees the late spawn and gives a grace re-entry.
+    let spawnActive = false; // spawn not yet started
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn yet.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Window elapses with no spawn → stay-armed.
+    clock.advance(2500);
+    expect(onForce).not.toHaveBeenCalled();
+
+    // Spawn starts LATE — after the window has already fired.
+    spawnActive = true;
+
+    // Second Ctrl+C — tap-time re-check: spawn active, grace not consumed →
+    // reset to idle, re-enter as fresh first tap, NOT a force.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
+  test("onWindowElapse as function: tap-time re-check does not loop when policy returns stay-armed", () => {
+    // Guard: tap-time re-check must not recursively re-enter when policy stays stay-armed.
+    const stayHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => "stay-armed",
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+    stayHandler.handleSignal();
+    clock.advance(2500); // window elapses → stay-armed
+    stayHandler.handleSignal(); // tap-time check: still stay-armed → force (no recursion)
+    expect(onForce).toHaveBeenCalledTimes(1);
+    expect(onGraceful).toHaveBeenCalledTimes(1); // no re-entry
+  });
+
   test("signals within coalesce window are treated as one tap", () => {
     const coalescingHandler = createSigintHandler({
       onGraceful: () => {

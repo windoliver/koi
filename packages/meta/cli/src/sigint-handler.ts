@@ -165,11 +165,22 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
     }
 
     if (state.kind === "armed") {
-      // Any tap after the first graceful request — within the double-tap
-      // window OR after it elapsed — forces exit. Once the interrupt
-      // sequence has started, the only way back to idle is `complete()`;
-      // subsequent taps are the user's "get out NOW" escape hatch, not a
-      // request to re-enter the graceful path.
+      // When the double-tap window has already elapsed (doubleTapTimer === null)
+      // and the dynamic policy says reset-to-idle, a spawn may have arrived after
+      // the original timer fired. Re-evaluate the policy at tap time: if it now
+      // returns "reset-to-idle", grant a one-shot re-entry as a fresh first tap
+      // instead of forcing. This covers late-starting spawns not visible when the
+      // timer originally evaluated (#1999 late-spawn path).
+      if (state.doubleTapTimer === null && resolveWindowElapsePolicy() === "reset-to-idle") {
+        state.failsafeTimer?.cancel();
+        state = { kind: "idle" };
+        handleSignal(); // re-enter as fresh first tap (single recursion, safe)
+        return;
+      }
+      // Any other tap after the first graceful request — within the window OR
+      // after it elapsed — forces exit. Once the interrupt sequence has started,
+      // the only way back to idle is `complete()` or the re-entry guard above;
+      // subsequent taps are the user's "get out NOW" escape hatch.
       force();
       return;
     }
