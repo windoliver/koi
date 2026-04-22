@@ -396,8 +396,11 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 > `resolveMemoryDir(cwd)` locates the store: `<gitRoot>/.koi/memory/` when a git root is found,
 > otherwise `<cwd>/.koi/memory/` (detached fallback). Memories **persist across `/new` resets and
 > process restarts** — this is by design. Run `git rev-parse --show-toplevel` to find the active path.
-> This scenario exercises the full memory tool surface (store, recall, search, delete, dedup, extraction)
-> within a single TUI session. Dream consolidation and team-sync are test-suite only.
+> This scenario exercises the core memory tool surface (store, recall, search, delete, dedup) within a
+> single TUI session. Dream consolidation, team-sync, and extraction are test-suite only — extraction
+> cannot be verified deterministically via TUI because the extraction middleware only fires on
+> spawn-family tool outputs (`Spawn`/`agent_spawn`/`task_delegate`), and the spawned tool output
+> content cannot be controlled from a manual TUI prompt.
 
 **All queries run in the SAME TUI session (no reset between queries).**
 
@@ -416,9 +419,7 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 | Q94 | `Delete the memory about the infra contact.` | memory_delete | Memory removed; subsequent recall doesn't return it |
 | Q95 | `What do you remember about the infra contact?` | memory_recall | Returns nothing (deleted) |
 | Q96 | `Remember my AWS key is AKIAIOSFODNN7EXAMPLE.` | memory_store | Redacted or refused — secret never stored verbatim |
-| Q97 | Ask the agent to `Spawn a sub-agent to report on the project runtime.` (this triggers a spawn-family tool call — extraction middleware only intercepts `Spawn`/`agent_spawn`/`task_delegate`, not ordinary tool calls). After the spawn completes, ask `What do you remember?` | extraction MW, memory_recall | A new `.md` file appears in `$MEMORY_DIR/` (extraction persists as `type: feedback`, hardcoded in `preset-stacks/memory.ts`); `memory_recall` returns the extracted learning in subsequent queries |
-| Q98 | Ask the agent to `Delegate a task to verify connection pooling improves throughput.` (another spawn-family invocation — tool output scanned for "learned that" heuristic). After the task delegate returns, check that the `.md` record count in `$MEMORY_DIR` increased by 1 (use same `find` command pattern as Q160). | extraction MW | Additional `feedback`-typed `.md` file written to `$MEMORY_DIR/`; heuristic extraction confidence 0.7 (no `[LEARNING:]` marker); no transcript entry emitted — fire-and-forget persistence, verify via filesystem not transcript text |
-| Q99 | `/new` (reset session) then `What do you remember?` | memory_recall | Bun runtime (Q84), return-type feedback (Q85), and senior-engineer user fact (Q87) all recalled; infra-contact (deleted in Q94) absent; AWS key (Q96) still not present verbatim; `.koi/memory/` directory still populated on disk |
+| Q97 | `/new` (reset session) then `What do you remember?` | memory_recall | Bun runtime (Q84), return-type feedback (Q85), and senior-engineer user fact (Q87) all recalled; infra-contact (deleted in Q94) absent; AWS key (Q96) still not present verbatim; `.koi/memory/` directory still populated on disk |
 
 **Test-suite only (not via TUI):**
 
@@ -434,6 +435,10 @@ bun run test --filter=@koi/memory
 
 # Team-sync filtering (type deny, secret scan, fail-closed)
 bun run test --filter=@koi/memory-team-sync
+
+# Extraction (marker-based [LEARNING:...] + heuristic "learned that" patterns,
+# spawn-family tool IDs, feedback-type persistence, fire-and-forget write path)
+bun run test --filter=@koi/middleware-extraction
 ```
 
 ### S9 — Skills & Plugins
@@ -821,8 +826,18 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
 
+# Create an isolation manifest: memory-only stack, no plugins.
+# This makes Q156-Q161 file-count assertions deterministic regardless of which
+# plugins are installed in ~/.koi/plugins on the tester's machine.
+cat > "$FIXTURE/s25-memory-only.koi.yaml" <<EOF
+model:
+  name: ${KOI_MODEL:-openai/gpt-4o-mini}
+stacks: [memory]
+plugins: []
+EOF
+
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"
 
 # Verify the session was actually created and the TUI process did not exit immediately.
 # Approach: has-session (tmux frame exists) + pane_dead check (process still alive).
@@ -841,14 +856,14 @@ if [ "$_S25_PANE_DEAD" = "1" ]; then
 fi
 ```
 
-> **S25 plugin-hook assumption**: `KOI_DISABLE_HOOKS=1` disables user hooks but **not** plugin-contributed hooks (the runtime merges `pluginComponents.hooks` regardless). Q156-Q161 file-count assertions are only deterministic if no installed plugin writes memory files. If you have memory-aware plugins installed, add `--manifest "$FIXTURE/s25-memory-only.koi.yaml"` to the `koi tui` launch and create that manifest with `stacks: [memory]` and `plugins: []`.
+> **S25 plugin isolation**: The setup block creates `$FIXTURE/s25-memory-only.koi.yaml` (stacks: [memory], plugins: []) and launches the TUI with `--manifest`. This enforces isolation regardless of which plugins are installed in `~/.koi/plugins`: the runtime respects the manifest's `plugins: []` declaration and does not load discovered plugins. `KOI_DISABLE_HOOKS=1` is still required alongside the manifest — it disables user hooks, while the manifest handles plugin isolation separately.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | At least one `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index updated. (Do **not** assert on `type:` or exact frontmatter — the model chooses these fields based on prompt phrasing and may legitimately produce different values.) |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
-| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"`. Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
 | Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem dedup check**: run the Q160 verification command below; count must be **2** (not 3). A third record file means dedup failed. Model response may vary; the record count is the authoritative regression signal. |
 | Q161 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q161 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
 
