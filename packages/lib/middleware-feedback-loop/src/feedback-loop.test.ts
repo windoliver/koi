@@ -208,6 +208,43 @@ describe("createFeedbackLoopMiddleware", () => {
       }
     });
 
+    it("blocks in-session-quarantined tool even when resolveBrickId returns undefined", async () => {
+      // Uses the real tracker to prove the session-quarantine fast-path works.
+      // Scenario: resolveBrickId always fails (config skew), but the tool was
+      // session-quarantined based on failure-rate. The middleware must still block it.
+      const sessionCtx = mockSessionCtx();
+
+      const forgeHealth: ForgeHealthConfig = {
+        ...makeMinimalForgeHealth(),
+        resolveBrickId: (_toolId: string) => undefined, // resolution always fails
+        quarantineThreshold: 0.1, // low threshold so 5 failures trigger it
+        windowSize: 5,
+      };
+
+      // Create a real tracker, spy on the factory so the middleware uses this instance,
+      // then manipulate it directly to trigger session quarantine.
+      const realTracker = toolHealthModule.createToolHealthTracker(forgeHealth);
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(realTracker);
+      try {
+        const mw2 = createFeedbackLoopMiddleware({ forgeHealth });
+        await mw2.onSessionStart?.(sessionCtx);
+
+        // Record failures to breach quarantine threshold, then quarantine
+        for (let i = 0; i < 5; i++) realTracker.recordFailure("test-tool", 10, "err");
+        await realTracker.checkAndQuarantine("test-tool");
+
+        // Tool is session-quarantined. resolveBrickId still returns undefined.
+        // Middleware must block the call.
+        const next = mock(async (_req: ToolRequest) => mockToolResponse());
+        const result = await mw2.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
+
+        expect(next).not.toHaveBeenCalled();
+        expect((result?.output as { kind: string }).kind).toBe("forge_tool_quarantined");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("rejects tool call when toolValidators fail (pre-execution, no side effects)", async () => {
       const validator: ToolRequestValidator = {
         name: "arg-check",
