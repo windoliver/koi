@@ -205,7 +205,7 @@ function checkRuntimeRequired(value: unknown, s: RawSchema, path: string): Schem
   }
   const obj = value as Record<string, unknown>;
   for (const key of s.required as string[]) {
-    if (!(key in obj)) {
+    if (!Object.hasOwn(obj, key)) {
       const fieldPath = path ? `${path}.${key}` : key;
       return { ok: false, path: fieldPath, message: `${key} is required` };
     }
@@ -236,7 +236,7 @@ function checkRuntimeProperties(
   }
   const obj = value as Record<string, unknown>;
   for (const [key, subSchema] of Object.entries(s.properties as Record<string, unknown>)) {
-    if (key in obj) {
+    if (Object.hasOwn(obj, key)) {
       const subPath = path ? `${path}.${key}` : key;
       const result = validateSchema(obj[key], subSchema, subPath);
       if (!result.ok) return result;

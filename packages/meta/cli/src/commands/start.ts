@@ -1187,12 +1187,22 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           error: `teardown failure (run exited ${headlessCode}); see stderr for disposer / transcript errors`,
         });
       } else if (resultSchemaObj !== undefined && headlessCode === HEADLESS_EXIT.SUCCESS) {
-        const schemaResult = rawAssistantOverflow
-          ? {
-              ok: false as const,
-              error: "schema validation failed: assistant output exceeded 1 MB limit",
-            }
-          : validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
+        let schemaResult: { readonly ok: true } | { readonly ok: false; readonly error: string };
+        if (rawAssistantOverflow) {
+          schemaResult = {
+            ok: false,
+            error: "schema validation failed: assistant output exceeded 1 MB limit",
+          };
+        } else {
+          try {
+            schemaResult = validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
+          } catch (_e: unknown) {
+            schemaResult = {
+              ok: false,
+              error: "schema validation failed: validator encountered deeply nested structure",
+            };
+          }
+        }
         if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
           emitResult({

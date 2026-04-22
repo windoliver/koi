@@ -275,6 +275,27 @@ describe("validateSchema — runtime validation", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("array");
   });
+
+  test("fails: required check does not treat inherited property 'constructor' as present", () => {
+    // Regression: `key in obj` matches Object.prototype.constructor — must use Object.hasOwn
+    const result = validateSchema({}, { type: "object", required: ["constructor"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("constructor");
+  });
+
+  test("fails: required check does not treat inherited property 'toString' as present", () => {
+    const result = validateSchema({}, { type: "object", required: ["toString"] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("toString");
+  });
+
+  test("passes: properties check does not spuriously fail for inherited property name absent in value", () => {
+    // If `key in obj` were used, schema property 'constructor' would descend into Object.prototype.constructor
+    // (a function), causing a spurious type failure when the own field is absent.
+    // With Object.hasOwn the field is absent → skip → ok.
+    const result = validateSchema({}, { properties: { constructor: { type: "string" } } });
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("validateResultSchema — end-to-end schema validation path", () => {
