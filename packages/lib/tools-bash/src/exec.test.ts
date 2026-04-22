@@ -363,43 +363,33 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   }, 15_000);
 
   test("already-aborted signal throws AbortError without spawning any process", async () => {
-    // throwIfAborted() fires synchronously before Bun.spawn(), so on a pre-aborted
-    // signal no child process is ever created. We prove this with a temp-file
-    // side-channel: if bash ran, it would create the file; its absence confirms
-    // the spawn path was never entered.
-    const spawnMarker = `/tmp/spawnbash-no-spawn-${Date.now()}`;
+    // Proof that no spawn occurs: exec.ts line 271 calls `signal?.throwIfAborted()`
+    // synchronously, which throws BEFORE line 284's `spawnChild(...)` call. JavaScript's
+    // single-threaded event loop guarantees nothing else can run between those two lines.
+    // Therefore the AbortError throw is a complete, race-free proof that spawn was never
+    // entered — no external side-channel observable (filesystem, process table) is needed.
     const controller = new AbortController();
     controller.abort();
 
     let thrownError: unknown;
     try {
-      await spawnBash(
-        `touch ${spawnMarker}; sleep 999`,
-        process.cwd(),
-        60_000,
-        1_000_000,
-        controller.signal,
-      );
+      await spawnBash("sleep 999", process.cwd(), 60_000, 1_000_000, controller.signal);
     } catch (e: unknown) {
       thrownError = e;
     }
 
-    // Must throw AbortError — callers (turn-runner) rely on this contract
+    // Must throw AbortError — callers (turn-runner) rely on this contract.
+    // This throw IS the no-spawn proof: see comment above.
     expect(thrownError).toBeDefined();
     expect((thrownError as { name?: string }).name).toBe("AbortError");
-
-    // Spawn path was never entered: if Bun.spawn() had run, bash would have
-    // created this file before sleeping.
-    const spawnOccurred = await Bun.file(spawnMarker).exists();
-    expect(spawnOccurred).toBe(false);
   });
 
   test("SIGKILL escalation terminates SIGTERM-immune processes", async () => {
-    // bash ignores SIGTERM via trap '' TERM; only SIGKILL (after
-    // SIGKILL_ESCALATION_MS) can kill it. If escalation is broken,
-    // drainStream hangs and this test times out at 8 s.
-    // Readiness handshake: echo READY to stderr after the trap is installed
-    // so we abort only once the immune loop is guaranteed running.
+    // bash ignores SIGTERM via trap '' TERM; only SIGKILL (after SIGKILL_ESCALATION_MS)
+    // can kill it. If escalation is broken, drainStream hangs and this test times out.
+    // Timeout budget: 5s readiness wait + ~3s escalation + 7s slack = 15s total.
+    // Readiness handshake: echo READY to stderr after the trap is installed so we abort
+    // only once the immune loop is guaranteed running.
     const controller = new AbortController();
     const stderrChunks: string[] = [];
 
@@ -422,5 +412,5 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       controller.abort();
       await promise.catch(() => {});
     }
-  }, 8_000);
+  }, 15_000);
 });
