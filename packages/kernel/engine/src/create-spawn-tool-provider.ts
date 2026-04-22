@@ -244,6 +244,15 @@ export function createSpawnExecutor(
     const agentName = String(args.agentName ?? "");
     const description = String(args.description ?? "");
 
+    // Guard: if the caller's abort signal is already fired, the originating
+    // turn was cancelled before this tool executor ran. Skip the spawn entirely
+    // rather than emitting spawn_requested into a future turn's event stream.
+    // This closes the window where a queued-but-late executor runs after the
+    // drain reset and pollutes the new turn's SIGINT spawn-tracking state.
+    if (signal.aborted) {
+      throw new Error("spawn aborted before start", { cause: signal.reason });
+    }
+
     // Emit spawn_requested event BEFORE the child runs — the host can use this
     // to render an inline spawn_call block and populate /agents view state.
     // Use a synthetic agentId since the real one is allocated inside spawnFn.

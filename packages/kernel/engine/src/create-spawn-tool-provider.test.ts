@@ -404,4 +404,32 @@ describe("createSpawnToolProvider", () => {
       "model_stream failed",
     );
   });
+
+  test("executor with already-aborted signal throws without emitting spawn_requested (#1999 late-drain guard)", async () => {
+    // Regression: if the caller's abort signal is already fired when the executor
+    // runs (e.g. a queued tool call from a cancelled turn runs after drain reset),
+    // spawn_requested must NOT be emitted to the new turn's onSpawnEvent. This
+    // prevents cross-drain SIGINT policy poisoning.
+    const spawnFnCalled = { value: false };
+    const mockSpawnFn = async (): Promise<{ ok: true; value: string }> => {
+      spawnFnCalled.value = true;
+      return { ok: true, value: "result" };
+    };
+    const eventsReceived: string[] = [];
+    const onSpawnEvent = (event: { kind: string }): void => {
+      eventsReceived.push(event.kind);
+    };
+
+    const alreadyAborted = AbortSignal.abort(new Error("turn cancelled"));
+    const execute = createSpawnExecutor(mockSpawnFn, onSpawnEvent);
+
+    await expect(
+      execute({ agentName: "researcher", description: "Research" }, { signal: alreadyAborted }),
+    ).rejects.toThrow("spawn aborted before start");
+
+    // spawn_requested must NOT have been emitted — cross-drain pollution prevented
+    expect(eventsReceived).toHaveLength(0);
+    // spawnFn must not have been called
+    expect(spawnFnCalled.value).toBe(false);
+  });
 });
