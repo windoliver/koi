@@ -2099,13 +2099,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // Compliance recorders accumulated from each active audit sink.
     // Used later to populate governanceBackend.compliance.
     const complianceRecorders: ComplianceRecorder[] = [];
-    // First queryable audit sink. Both NDJSON and SQLite sinks implement
-    // `.query(sessionId)` today; we capture whichever is wired. When both
-    // are active, SQLite wins (the second branch overwrites) because its
-    // indexed lookup is faster than NDJSON's full-file scan for the
-    // session-filtered query the ledger issues.
-    // Passed into createDecisionLedger so /trajectory shows audit:ok and
-    // surfaces compliance_event / permission_decision rows in the audit lane.
+    // Audit sink passed into createDecisionLedger so /trajectory shows
+    // audit:ok and surfaces compliance_event / permission_decision rows
+    // in the audit lane. Only the SQLite sink is captured: NDJSON's
+    // `.query(sessionId)` re-parses the entire file on every call, and
+    // the TUI refreshes the ledger after every settled turn — NDJSON
+    // would degrade to O(n²) cumulative work over a long session.
+    // NDJSON-only setups therefore see `audit:n/a` by design; enable
+    // SQLite for live ledger access.
     let ledgerAuditSink: AuditSink | undefined;
     if (config.auditNdjsonPath !== undefined) {
       // Collision guard: refuse to start if the legacy host-level
@@ -2146,9 +2147,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }),
       );
       auditPresetExtras.push(auditMw);
-      if (typeof auditSink.query === "function") {
-        ledgerAuditSink = auditSink;
-      }
+      // Deliberately NOT captured into `ledgerAuditSink`. The ledger is
+      // refreshed after every settled turn; NDJSON `.query(sessionId)`
+      // re-parses the entire file on each call, so long sessions would
+      // degrade to O(n²) cumulative work. NDJSON-only setups accept
+      // `audit:n/a` in /trajectory — point KOI_AUDIT_SQLITE at a DB (or
+      // enable both) to get the live audit lane. NDJSON remains the
+      // right sink for offline compliance export and forensic replay.
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
         close: () => auditSink.close(),
@@ -2210,9 +2215,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }),
       );
       auditPresetExtras.push(sqliteAuditMw);
-      if (typeof sqliteSink.query === "function") {
-        ledgerAuditSink = sqliteSink;
-      }
+      ledgerAuditSink = sqliteSink;
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
         close: async () => sqliteSink.close(),
