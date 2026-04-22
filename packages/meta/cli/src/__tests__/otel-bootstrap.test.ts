@@ -46,9 +46,11 @@ describe("buildResource", () => {
     expect(resource.attributes["service.name"]).toBe("koi");
   });
 
-  test("defaults: service.version=dev when KOI_VERSION unset", () => {
+  test("defaults: service.version omitted when KOI_VERSION unset", () => {
     const resource = buildResource("headless");
-    expect(resource.attributes["service.version"]).toBe("dev");
+    // service.version must not default to a fake "dev" — omit it entirely so
+    // unversioned builds don't collapse into a bogus version bucket in collectors.
+    expect(resource.attributes["service.version"]).toBeUndefined();
   });
 
   test("defaults: koi.mode reflects bootstrap arg", () => {
@@ -92,14 +94,24 @@ describe("buildResource", () => {
     expect(resource.attributes["service.name"]).toBe("from-service-name");
   });
 
-  test("malformed OTEL_RESOURCE_ATTRIBUTES entries are skipped silently", () => {
+  test("malformed OTEL_RESOURCE_ATTRIBUTES entries are skipped with a warning", () => {
     // "a" has no "=", "=1" has empty key, extra commas produce empty pairs
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      if (typeof chunk === "string") stderrWrites.push(chunk);
+      return true;
+    };
     process.env.OTEL_RESOURCE_ATTRIBUTES = "a,,=1,,valid=yes";
     const resource = buildResource("headless");
+    process.stderr.write = origWrite;
+
     expect(resource.attributes.valid).toBe("yes");
-    // Malformed entries must not throw and must not set garbage keys
+    // Malformed entries must not set garbage keys
     expect(resource.attributes.a).toBeUndefined();
     expect(resource.attributes[""]).toBeUndefined();
+    // Operator must get a warning — "a" and "=1" both emit one
+    expect(stderrWrites.some((w) => w.includes("malformed") || w.includes("empty key"))).toBe(true);
   });
 
   test("percent-encoded OTEL_RESOURCE_ATTRIBUTES values are decoded", () => {

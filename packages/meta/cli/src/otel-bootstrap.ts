@@ -38,11 +38,18 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   // Start with Koi defaults — env vars overwrite these below.
   const attrs: Record<string, string> = {
     "service.name": "koi",
-    "service.version": process.env.KOI_VERSION ?? "dev",
     "koi.mode": mode,
     "process.runtime.name": "bun",
     "process.runtime.version": Bun.version,
   };
+
+  // Only emit service.version when KOI_VERSION is explicitly set by the build.
+  // Defaulting to a fake "dev" string collapses all unversioned builds into one
+  // bucket and makes rollout/rollback triage by version misleading.
+  const koiVersion = process.env.KOI_VERSION;
+  if (koiVersion !== undefined && koiVersion.length > 0) {
+    attrs["service.version"] = koiVersion;
+  }
 
   // OTEL_RESOURCE_ATTRIBUTES — comma-separated key=value pairs, values may be
   // percent-encoded per OTel spec. Overwrites any matching default above.
@@ -50,10 +57,22 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   if (rawAttrs !== undefined && rawAttrs.length > 0) {
     for (const pair of rawAttrs.split(",")) {
       const eq = pair.indexOf("=");
-      if (eq <= 0) continue;
+      if (eq <= 0) {
+        if (pair.trim().length > 0) {
+          process.stderr.write(
+            `[koi] OTel: skipping malformed OTEL_RESOURCE_ATTRIBUTES entry "${pair.trim()}" (expected key=value)\n`,
+          );
+        }
+        continue;
+      }
       const key = pair.slice(0, eq).trim();
       const value = pair.slice(eq + 1).trim();
-      if (key.length === 0) continue;
+      if (key.length === 0) {
+        process.stderr.write(
+          `[koi] OTel: skipping OTEL_RESOURCE_ATTRIBUTES entry with empty key (value="${value}")\n`,
+        );
+        continue;
+      }
       try {
         attrs[key] = decodeURIComponent(value);
       } catch {
