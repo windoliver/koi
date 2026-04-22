@@ -2236,9 +2236,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     write: (msg: string) => {
       process.stderr.write(msg);
     },
-    // #1912: route the bg-exit hint through the TUI store so OpenTUI owns
+    // #1912: route both SIGINT hints through the TUI store so OpenTUI owns
     // the layout. Raw process.stderr.write during an active OpenTUI frame
     // causes row duplication and character-level overlay.
+    onInterruptHint: (msg: string) => {
+      dispatchNotice(store, "interrupt-hint", msg.trim());
+    },
     onBgExitHint: (msg: string) => {
       dispatchNotice(store, "bg-exit-hint", msg.trim());
     },

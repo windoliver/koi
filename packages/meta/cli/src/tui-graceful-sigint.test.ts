@@ -501,7 +501,40 @@ describe("createTuiSigintHandler — dynamic onWindowElapse (#1999 spawn regress
   });
 });
 
-describe("createTuiSigintHandler — onBgExitHint routing (#1912)", () => {
+describe("createTuiSigintHandler — onInterruptHint + onBgExitHint routing (#1912)", () => {
+  test("bg-only first Ctrl+C: no raw write() when both hint overrides are provided", () => {
+    const timers = createFakeTimers();
+    const writes: string[] = [];
+    const interruptHints: string[] = [];
+    const bgHints: string[] = [];
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => false,
+      hasActiveBackgroundTasks: () => true,
+      abortActiveStream: () => {},
+      onShutdown: () => {},
+      onForce: () => {},
+      write: (msg) => {
+        writes.push(msg);
+      },
+      onInterruptHint: (msg) => {
+        interruptHints.push(msg);
+      },
+      onBgExitHint: (msg) => {
+        bgHints.push(msg);
+      },
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+    });
+
+    handler.handleSignal();
+
+    // Both hints routed through store callbacks, not raw write (#1912)
+    expect(interruptHints.join("")).toContain("Interrupting");
+    expect(bgHints.join("")).toContain("Background tasks still running");
+    expect(writes).toHaveLength(0);
+  });
+
   test("onBgExitHint is called instead of write for the bg banner when provided", () => {
     const timers = createFakeTimers();
     const writes: string[] = [];
@@ -531,7 +564,7 @@ describe("createTuiSigintHandler — onBgExitHint routing (#1912)", () => {
     expect(writes.join("")).not.toContain("Background tasks still running");
   });
 
-  test("falls back to write when onBgExitHint is absent", () => {
+  test("falls back to write when hint overrides are absent", () => {
     const timers = createFakeTimers();
     const writes: string[] = [];
     const handler = createTuiSigintHandler({
@@ -550,6 +583,7 @@ describe("createTuiSigintHandler — onBgExitHint routing (#1912)", () => {
 
     handler.handleSignal();
 
+    expect(writes.join("")).toContain("Interrupting");
     expect(writes.join("")).toContain("Background tasks still running");
   });
 });

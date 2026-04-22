@@ -89,6 +89,12 @@ export interface TuiSigintDeps {
   readonly onForce: () => void;
   readonly write: (msg: string) => void;
   /**
+   * Optional: route the "Interrupting…" hint through the TUI store instead
+   * of raw stderr so OpenTUI owns the layout on first tap (#1912).
+   * Falls back to `write` when absent.
+   */
+  readonly onInterruptHint?: (msg: string) => void;
+  /**
    * Optional: route the bg-exit hint through the TUI store instead of raw
    * stdout so OpenTUI owns the layout. When provided, this is called instead
    * of `write` for the "Background tasks still running" banner (#1912).
@@ -189,6 +195,7 @@ export function createTuiSigintHandler(deps: TuiSigintDeps): SigintHandler {
       deps.onForce();
     },
     write: deps.write,
+    ...(deps.onInterruptHint !== undefined ? { onInterruptHint: deps.onInterruptHint } : {}),
     doubleTapWindowMs: deps.doubleTapWindowMs,
     setTimer: deps.setTimer,
     ...(deps.coalesceWindowMs !== undefined ? { coalesceWindowMs: deps.coalesceWindowMs } : {}),
