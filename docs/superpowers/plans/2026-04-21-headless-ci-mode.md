@@ -981,13 +981,15 @@ In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before
     // Raw assistant text accumulator for --result-schema validation.
     // Populated via onRawAssistantText before redactEngineBanners() is applied,
     // so schema validation sees the model's actual output, not the sanitized version.
-    // Hard cap: 1 MB. If any chunk is dropped (overflow), rawAssistantOverflow is
-    // set to true and post-run validation fails immediately without parsing.
-    // Schema validation is only meaningful for structured outputs that fit in memory.
+    //
+    // CAUTION: Accumulates the ENTIRE assistant text stream across ALL turns,
+    // including any narration before/after tool calls. The 1 MB cap applies to
+    // this full transcript, not just the final JSON payload. For multi-turn or
+    // tool-using runs, verbose models can hit the cap before emitting the final
+    // answer. Use --result-schema only with prompts that produce JSON-only output
+    // with no prose. If the cap is hit, validation fails with exit 1 (not 5)
+    // because it is a prompt-design issue, not operator misconfiguration.
     const RAW_PARTS_CAP_BYTES = 1 * 1024 * 1024; // 1 MB
-    // Accumulates the ENTIRE assistant text stream across all turns.
-    // --result-schema validates this full concatenation — the prompt must produce
-    // JSON-only output with no prose, preamble, or tool-narration interspersed.
     const rawAssistantParts: string[] = [];
     let rawAssistantPartsBytes = 0;
     let rawAssistantOverflow = false;
@@ -1518,7 +1520,9 @@ Use `--result-schema` to enforce that the agent's text output is valid JSON matc
 
 **Unsupported keywords** (e.g. `$ref`, `anyOf`, `pattern`) cause the schema to be rejected at boot with exit 5.
 
-**Important:** `--result-schema` validates the **entire concatenated assistant text output** as a single JSON document. Your prompt must instruct the model to output **only** JSON with no surrounding prose. Any preamble ("Here is the result:"), explanation, or trailing text will cause validation to fail with exit 1.
+**Important:** `--result-schema` validates the **entire concatenated assistant text output** across all turns as a single JSON document. Your prompt must instruct the model to output **only** JSON with no surrounding prose. Any preamble ("Here is the result:"), explanation, or trailing text — even from a tool-narration turn — will cause validation to fail with exit 1.
+
+**Multi-turn/tool-use caution:** The 1 MB accumulation cap applies to the full transcript, not just the final JSON payload. A verbose model doing multiple tool calls before emitting a small JSON result can hit the cap before reaching the final answer, causing a schema-failure exit 1 after all tool work has already completed. For best results, use `--result-schema` with single-turn prompts that produce structured JSON directly.
 
 ```
 # Good: prompt instructs JSON-only output
