@@ -154,16 +154,25 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       });
     },
 
-    // NOTE: wrapModelStream is always a passthrough — validators and gates only run
-    // in wrapModelCall (non-streaming). Validators require a complete ModelResponse and
-    // cannot operate on a partial stream without buffering; buffering silently degrades
-    // token-by-token delivery and creates unbounded memory sinks. Callers that need
-    // validation must use the non-streaming path.
+    // Fail closed: when validators or gates are configured, streaming cannot be validated
+    // (validators need a complete ModelResponse). Yield a non-retryable error so callers
+    // get an explicit failure rather than a silent policy bypass. Callers that need
+    // real-time streaming must leave validators/gates unconfigured and use wrapModelCall
+    // for validated responses.
     async *wrapModelStream(
       _ctx: ModelCallCtx,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
+      if (hasModelChecks(config)) {
+        yield {
+          kind: "error",
+          message:
+            "Streaming is not supported when validators or gates are configured. Use wrapModelCall instead.",
+          retryable: false,
+        };
+        return;
+      }
       yield* next(request);
     },
 

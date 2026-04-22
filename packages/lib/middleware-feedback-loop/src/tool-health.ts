@@ -126,7 +126,7 @@ interface ToolState {
   activeFlush: Promise<void> | undefined; // mutable
 }
 
-function makeToolState(ringSize: number): ToolState {
+function makeToolState(ringSize: number, sessionStartAt: number): ToolState {
   return {
     ring: [],
     ringSize,
@@ -134,7 +134,10 @@ function makeToolState(ringSize: number): ToolState {
     totalRecorded: 0,
     healthState: "healthy",
     sessionQuarantined: false,
-    lastPromotedAt: 0,
+    // Conservative default: treat the tool as just-promoted at session start so the
+    // grace period applies within this session. lastPromotedAt is never hydrated from
+    // the store — this is a session-local approximation.
+    lastPromotedAt: sessionStartAt,
     lastDemotedAt: 0,
     flushState: {
       dirty: false,
@@ -258,7 +261,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
     if (s === undefined) {
-      s = makeToolState(ringSize);
+      s = makeToolState(ringSize, clock());
       stateMap.set(toolId, s);
     }
     return s;
