@@ -757,9 +757,11 @@ tmux new-session -d -s "$KOI_SESSION" \
 > (where `$MEMORY_DIR` is the resolved store path set up in the S25 setup script).
 > Without this flag, dream and TUI operate on **different stores** — tracked as a separate bug.
 
-**Setup**: `$FIXTURE` must be an **isolated** git repo root (not a subdirectory of another repo).
-`resolveMemoryDir(cwd)` walks UP to the nearest `.git`, so a nested fixture would use an outer
-repo's store — producing data-loss risk and incorrect test coverage.
+**Setup**: `$FIXTURE` must contain its own initialized Git repo (`.git` present at `$FIXTURE` itself).
+`resolveMemoryDir(cwd)` walks UP to the **first directory containing `.git`**, so as long as
+`$FIXTURE/.git` exists, memory resolves to `$FIXTURE/.koi/memory` — even if `$FIXTURE` is nested
+inside a parent repo. The dangerous case is `$FIXTURE` having **no local `.git`**, which makes
+the resolver skip up to an ancestor repo. The safety check below ensures `$FIXTURE` is its own root.
 
 ```bash
 # SAFETY: $FIXTURE must be its own isolated git root (not a subdirectory of another repo,
@@ -809,7 +811,7 @@ The following L2 packages cannot be exercised through TUI queries due to archite
 | Package | Reason | Test Approach |
 |---------|--------|---------------|
 | `@koi/memory-fs` (concurrent writes) | Concurrent multi-process write safety requires parallel writers; a single TUI session only exercises sequential turns. | `bun run test --filter=@koi/memory-fs` — unit suite exercises parallel writes via locking primitives |
-| `@koi/dream` | Offline batch memory consolidation job. Requires injected `listMemories`, `writeMemory`, `deleteMemory`, and `modelCall` handles. No triggering surface in TUI or CLI. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation` |
+| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI: `koi dream --memory-dir "$MEMORY_DIR"` (requires API key; validate it reads `$MEMORY_DIR`, locks `.dream.lock`, and writes consolidated output). Full behavior tested by unit suite. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: `koi dream --memory-dir "$MEMORY_DIR"` |
 | `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun run test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
 
 ### Always-On Packages (implicitly tested by every TUI session)
