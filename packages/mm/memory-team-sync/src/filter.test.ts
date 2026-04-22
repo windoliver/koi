@@ -64,26 +64,44 @@ describe("filterMemoryForSync", () => {
     });
   });
 
-  // Regression #1964: privacy architecture — personal contact data is kept
-  // private via the user-type hardblock, not content scanning (#1964).
-  describe("contact data privacy via type classification (regression #1964)", () => {
-    test("blocks personal contact memory stored correctly as user type", () => {
-      // The correct path: model follows guidance and classifies as user
+  // Regression #1964: contact data privacy — primary boundary is user-type hardblock;
+  // secondary boundary is email backstop on reference memories.
+  describe("contact data privacy (regression #1964)", () => {
+    test("blocks personal contact correctly classified as user", () => {
       const memory = createMemory("1", "user", "infra contact: alice@example.com");
       const result = filterMemoryForSync(memory);
       expect(result.passed).toBe(false);
       expect(result.blocked?.reason).toBe("type_denied");
     });
 
-    test("reference memory with system/tool URL passes sync (git@github.com is a valid reference)", () => {
-      // git SSH remotes are legitimate reference content and must not be blocked
+    test("blocks reference memory containing email — misclassification backstop", () => {
+      const memory = createMemory("1", "reference", "infra contact: alice@example.com");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(false);
+      expect(result.blocked?.reason).toBe("secret_detected");
+      expect(result.blocked?.detail).toContain("personal contacts as user type");
+    });
+
+    test("allows reference memory with SSH git remote (git@github.com:org/repo)", () => {
+      // SSH git remotes have `:` after the domain — excluded by PERSONAL_EMAIL_PATTERN
       const memory = createMemory("1", "reference", "repo: git@github.com:org/koi.git");
       const result = filterMemoryForSync(memory);
       expect(result.passed).toBe(true);
     });
 
-    test("reference memory with shared service alias passes sync", () => {
-      const memory = createMemory("1", "reference", "file bugs at support@company.com");
+    test("allows reference memory with clean system/tool pointer", () => {
+      const memory = createMemory("1", "reference", "bugs tracked in Linear INGEST project");
+      const result = filterMemoryForSync(memory);
+      expect(result.passed).toBe(true);
+    });
+
+    test("allows feedback memory with email in operational content", () => {
+      // feedback memories may legitimately reference emails in guidance context
+      const memory = createMemory(
+        "1",
+        "feedback",
+        "escalate to oncall-eng@company.com for prod issues",
+      );
       const result = filterMemoryForSync(memory);
       expect(result.passed).toBe(true);
     });
