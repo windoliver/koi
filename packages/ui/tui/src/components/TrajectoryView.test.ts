@@ -110,10 +110,13 @@ describe("summarizeDecision", () => {
 
 describe("formatMwSpanSuffix", () => {
   test("router decision with nextCalled false is NOT labeled BLOCKED (terminal handler)", () => {
-    const step = makeStep(
-      [{ "router.target.selected": "openai:gpt-4o", "router.fallback_occurred": false }],
-      false,
-    );
+    const step = {
+      ...makeStep(
+        [{ "router.target.selected": "openai:gpt-4o", "router.fallback_occurred": false }],
+        false,
+      ),
+      identifier: "middleware:model-router",
+    };
     expect(formatMwSpanSuffix(step)).toBe("→openai:gpt-4o");
   });
 
@@ -143,9 +146,19 @@ describe("formatMwSpanSuffix", () => {
     expect(formatMwSpanSuffix(makeStep(undefined, true))).toBe("pass");
   });
 
-  test("model-router with no decisions and nextCalled false shows exhausted (failed route, no decision emitted)", () => {
-    // wrapModelCall throws before reportRouteDecision on exhaustion — identifier-based detection
+  test("model-router with no decisions and nextCalled false shows failed (pre-decision or exhaustion)", () => {
+    // wrapModelCall throws before reportDecision on some failure paths; use neutral "failed" label
     const step = { ...makeStep(undefined, false), identifier: "middleware:model-router" };
-    expect(formatMwSpanSuffix(step)).toBe("exhausted");
+    expect(formatMwSpanSuffix(step)).toBe("failed");
+  });
+
+  test("non-router middleware emitting router.* keys still shows BLOCKED when nextCalled false", () => {
+    // terminal check requires both identifier AND decision shape — key shape alone is not enough
+    const step = makeStep(
+      [{ "router.target.selected": "openai:gpt-4o", "router.fallback_occurred": false }],
+      false,
+    );
+    // identifier is "middleware:test" (not model-router) → BLOCKED despite router.* key
+    expect(formatMwSpanSuffix(step)).toBe("→openai:gpt-4o BLOCKED");
   });
 });

@@ -223,8 +223,11 @@ export function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefi
       const summary = summarizeDecision(first as Record<string, unknown>);
       if (summary !== undefined) {
         const extra = decisions.length > 1 ? ` +${decisions.length - 1}` : "";
-        // Model-router is terminal (never calls next) but not a blocker — detect by router.* key presence
+        // Model-router is terminal (never calls next) but not a blocker.
+        // Gate on both identifier and decision shape to avoid false-negatives for other
+        // middleware that happen to emit router.* keys.
         const isTerminal =
+          step.identifier === "middleware:model-router" &&
           typeof (first as Record<string, unknown>)["router.target.selected"] === "string";
         const blocked = nextCalled === false && !isTerminal;
         return blocked ? `${summary} BLOCKED${extra}` : `${summary}${extra}`;
@@ -232,10 +235,11 @@ export function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefi
     }
   }
   // Fallback: "pass" for no-op hooks, "BLOCKED" if chain stopped.
-  // Model-router throws before emitting a decision on exhaustion — no decisions + nextCalled=false
-  // means routing failure, not a middleware block.
+  // Model-router throws before emitting a decision on some failure paths (e.g. pre-decision
+  // exceptions). Use "failed" — a neutral label that distinguishes routing failure from an
+  // actual middleware block without over-specifying the cause.
   if (nextCalled === false) {
-    return step.identifier === "middleware:model-router" ? "exhausted" : "BLOCKED";
+    return step.identifier === "middleware:model-router" ? "failed" : "BLOCKED";
   }
   return "pass";
 }
