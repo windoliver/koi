@@ -88,6 +88,19 @@ export interface TuiSigintDeps {
    */
   readonly onForce: () => void;
   readonly write: (msg: string) => void;
+  /**
+   * Optional: route the "Interrupting…" hint through the TUI store instead
+   * of raw stderr so OpenTUI owns the layout on first tap (#1912).
+   * Falls back to `write` when absent.
+   */
+  readonly onInterruptHint?: (msg: string) => void;
+  /**
+   * Optional: route the bg-exit hint through the TUI store instead of raw
+   * stdout so OpenTUI owns the layout. When provided, this is called instead
+   * of `write` for the "Background tasks still running" banner (#1912).
+   * Falls back to `write` when absent (e.g. in tests that predate this dep).
+   */
+  readonly onBgExitHint?: (hint: string) => void;
   readonly setTimer: (fn: () => void, ms: number) => Timer;
   readonly doubleTapWindowMs: number;
   readonly coalesceWindowMs?: number;
@@ -148,7 +161,7 @@ export function createTuiSigintHandler(deps: TuiSigintDeps): SigintHandler {
           // bg-wait arm too — any other branch would have taken the
           // invalidation path above).
           invalidateCurrentBgWait?.();
-          deps.write(action.hint);
+          (deps.onBgExitHint ?? deps.write)(action.hint);
           // Generation-scoped self-disarm. Only THIS arm's timer is
           // allowed to complete THIS arm; a stale timer from an earlier
           // arm whose `valid` flag was flipped to false is a no-op.
@@ -182,6 +195,7 @@ export function createTuiSigintHandler(deps: TuiSigintDeps): SigintHandler {
       deps.onForce();
     },
     write: deps.write,
+    ...(deps.onInterruptHint !== undefined ? { onInterruptHint: deps.onInterruptHint } : {}),
     doubleTapWindowMs: deps.doubleTapWindowMs,
     setTimer: deps.setTimer,
     ...(deps.coalesceWindowMs !== undefined ? { coalesceWindowMs: deps.coalesceWindowMs } : {}),
