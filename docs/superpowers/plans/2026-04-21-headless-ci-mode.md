@@ -206,6 +206,57 @@ describe("validateSchema — properties", () => {
   });
 });
 
+describe("validateSchema — items", () => {
+  test("passes when all array elements match item schema", () => {
+    const schema = { type: "array", items: { type: "string" } };
+    expect(validateSchema(["a", "b", "c"], schema).ok).toBe(true);
+  });
+
+  test("fails with indexed path when element type mismatches", () => {
+    const schema = { type: "array", items: { type: "string" } };
+    const result = validateSchema(["a", 42, "c"], schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.path).toContain("[1]");
+      expect(result.message).toContain("number");
+    }
+  });
+
+  test("empty array passes any items schema", () => {
+    expect(validateSchema([], { type: "array", items: { type: "string" } }).ok).toBe(true);
+  });
+});
+
+describe("validateSchema — annotation keywords ($schema, title, description)", () => {
+  test("accepts schema with $schema annotation", () => {
+    const result = validateSchema({ count: 5 }, {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts schema with title and description", () => {
+    const result = validateSchema("hello", { title: "Name", description: "A name", type: "string" });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("validateLoadedSchema — annotation keywords accepted", () => {
+  test("accepts $schema at root", () => {
+    const result = validateLoadedSchema({
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts title and description at root", () => {
+    const result = validateLoadedSchema({ title: "Output", description: "Agent output", type: "object" });
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("validateSchema — enum", () => {
   test("passes when value is in enum", () => {
     expect(validateSchema("open", { enum: ["open", "closed"] }).ok).toBe(true);
@@ -303,7 +354,10 @@ export type SchemaValidationResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly path: string; readonly message: string };
 
-const SUPPORTED_KEYWORDS = new Set(["type", "required", "properties", "enum"]);
+const SUPPORTED_KEYWORDS = new Set(["type", "required", "properties", "enum", "items"]);
+
+// Annotation-only keywords: accepted at schema load time, ignored during validation.
+const ANNOTATION_KEYWORDS = new Set(["$schema", "title", "description", "$comment"]);
 
 const VALUE_TYPES = new Set(["object", "array", "string", "number", "boolean", "null"]);
 
@@ -323,7 +377,7 @@ function validateSchemaStructure(
   const s = schema as Record<string, unknown>;
 
   for (const key of Object.keys(s)) {
-    if (!SUPPORTED_KEYWORDS.has(key)) {
+    if (!SUPPORTED_KEYWORDS.has(key) && !ANNOTATION_KEYWORDS.has(key)) {
       return {
         ok: false,
         message: `unsupported schema keyword at ${path || "root"}: ${key}`,
@@ -387,6 +441,12 @@ function validateSchemaStructure(
     }
   }
 
+  if ("items" in s) {
+    const itemsPath = path ? `${path}.items` : "items";
+    const result = validateSchemaStructure(s.items, itemsPath);
+    if (!result.ok) return result;
+  }
+
   return { ok: true };
 }
 
@@ -411,7 +471,8 @@ export function validateLoadedSchema(
  * values — if the schema itself is invalid (e.g. type: "integer"), returns an
  * error rather than silently skipping the constraint.
  *
- * Supported keywords: type, required, properties, enum.
+ * Supported keywords: type, required, properties, enum, items.
+ * Annotation keywords accepted but not validated: $schema, title, description, $comment.
  * Unsupported keywords cause an immediate error.
  */
 export function validateSchema(
@@ -425,7 +486,7 @@ export function validateSchema(
   const s = schema as Record<string, unknown>;
 
   for (const key of Object.keys(s)) {
-    if (!SUPPORTED_KEYWORDS.has(key)) {
+    if (!SUPPORTED_KEYWORDS.has(key) && !ANNOTATION_KEYWORDS.has(key)) {
       return { ok: false, path: path || ".", message: `unsupported schema keyword: ${key}` };
     }
   }
@@ -508,6 +569,17 @@ export function validateSchema(
         if (!result.ok) return result;
       }
     }
+  }
+
+  if ("items" in s) {
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        const elemPath = path ? `${path}[${i}]` : `[${i}]`;
+        const result = validateSchema(value[i], s.items, elemPath);
+        if (!result.ok) return result;
+      }
+    }
+    // If value is not an array, "items" silently skips — "type: array" would have caught it already.
   }
 
   return { ok: true };
@@ -750,6 +822,12 @@ interface RunHeadlessOptions {
    * The emitted NDJSON stream still carries the redacted version.
    */
   readonly onRawAssistantText?: ((text: string) => void) | undefined;
+  /**
+   * Called when a tool_result event is processed. Used by --result-schema
+   * to reset the raw-text accumulator, so only the FINAL assistant message
+   * (after all tool calls) is validated — not the entire session stream.
+   */
+  readonly onToolResultSeen?: (() => void) | undefined;
 }
 ```
 
@@ -781,7 +859,7 @@ There are **two** emission paths for `assistant_text` in `run.ts` — both must 
         }
 ```
 
-**`translateEvent` signature change:** Pass `onRawAssistantText` as an additional parameter (minimum diff, no closure change needed):
+**`translateEvent` signature change:** Pass both callbacks as additional parameters:
 
 Change from:
 
@@ -801,13 +879,24 @@ function translateEvent(
   emit: ReturnType<typeof createEmitter>,
   toolNamesByCallId: Map<string, string>,
   onRawAssistantText: ((text: string) => void) | undefined,
+  onToolResultSeen: (() => void) | undefined,
 ): boolean {
+```
+
+In the `"tool_result"` case of `translateEvent`, call `onToolResultSeen` so the accumulator is reset before the next assistant message arrives:
+
+```typescript
+    case "tool_result": {
+      onToolResultSeen?.();   // reset raw-text accumulator before next assistant turn
+      // ... existing tool_result emit logic ...
+      return true;
+    }
 ```
 
 Update the call site in `runHeadless`:
 
 ```typescript
-      if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText)) {
+      if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText, opts.onToolResultSeen)) {
 ```
 
 **Also add a test to `run.test.ts`** verifying the callback fires for both paths and is not invoked with redacted text. Append to `run.test.ts`:
@@ -916,6 +1005,13 @@ In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before
     const rawAssistantParts: string[] = [];
     let rawAssistantPartsBytes = 0;
     let rawAssistantOverflow = false;
+    // Resets the accumulator so only the FINAL assistant message is validated.
+    // Called when a tool_result event fires — the next assistant text is the continuation.
+    const resetRawAssistantParts = (): void => {
+      rawAssistantParts.length = 0;
+      rawAssistantPartsBytes = 0;
+      rawAssistantOverflow = false;
+    };
 ```
 
 Then pass the callback in the `runHeadless()` call:
@@ -942,6 +1038,7 @@ Then pass the callback in the `runHeadless()` call:
             rawAssistantPartsBytes += chunkBytes;
           }
         : undefined,
+      onToolResultSeen: resultSchemaObj !== undefined ? resetRawAssistantParts : undefined,
     });
 ```
 
@@ -1435,7 +1532,9 @@ Use `--result-schema` to enforce that the agent's text output is valid JSON matc
 }
 ```
 
-**Supported keywords:** `type`, `required`, `properties`, `enum`.
+**Supported keywords:** `type`, `required`, `properties`, `enum`, `items` (validates each array element recursively).
+
+**Annotation-only keywords** (accepted, not validated): `$schema`, `title`, `description`, `$comment`. Standard schema files generated by tooling can be used without manual stripping.
 
 **Unsupported keywords** (e.g. `$ref`, `anyOf`, `pattern`) cause the schema to be rejected at boot with exit 5.
 
