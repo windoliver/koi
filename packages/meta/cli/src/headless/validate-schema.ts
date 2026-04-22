@@ -222,7 +222,18 @@ function checkRuntimeProperties(
   if (typeof s.properties !== "object" || s.properties === null || Array.isArray(s.properties)) {
     return { ok: false, path: path || "", message: "invalid schema: properties must be an object" };
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return { ok: true };
+  // Fail closed: `properties` implies the value must be an object. Without
+  // this guard, a schema like `{ properties: { id: { type: "number" } } }`
+  // would silently pass for a string value because the property-walk loop
+  // never runs. A `type: "object"` sibling would catch it, but authors
+  // commonly omit the redundant type on nested sub-schemas.
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {
+      ok: false,
+      path: path || "",
+      message: `expected object (properties keyword requires an object value), got ${valueType(value)}`,
+    };
+  }
   const obj = value as Record<string, unknown>;
   for (const [key, subSchema] of Object.entries(s.properties as Record<string, unknown>)) {
     if (key in obj) {
@@ -235,7 +246,17 @@ function checkRuntimeProperties(
 }
 
 function checkRuntimeItems(value: unknown, s: RawSchema, path: string): SchemaValidationResult {
-  if (s.items === undefined || !Array.isArray(value)) return { ok: true };
+  if (s.items === undefined) return { ok: true };
+  // Fail closed: `items` implies the value must be an array. Same reasoning
+  // as checkRuntimeProperties — omitting `type: "array"` on a nested schema
+  // must not silently skip element validation.
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      path: path || "",
+      message: `expected array (items keyword requires an array value), got ${valueType(value)}`,
+    };
+  }
   for (let i = 0; i < value.length; i++) {
     const subPath = path ? `${path}[${i}]` : `[${i}]`;
     const result = validateSchema(value[i], s.items, subPath);

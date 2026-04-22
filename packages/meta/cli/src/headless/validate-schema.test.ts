@@ -240,6 +240,41 @@ describe("validateSchema — runtime validation", () => {
     const result = validateSchema(42, { required: ["x"] });
     expect(result.ok).toBe(false);
   });
+
+  test("fails: properties keyword on a non-object value (no sibling type)", () => {
+    // Regression: without explicit type:"object", properties must still fail closed
+    // when the value is not an object. Previously silently passed.
+    const result = validateSchema("oops", { properties: { id: { type: "number" } } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("object");
+  });
+
+  test("fails: nested properties on wrong type without explicit type annotation", () => {
+    // The reviewer-verified bypass case from the adversarial review.
+    const schema = {
+      type: "object",
+      properties: { user: { properties: { id: { type: "number" } } } },
+    };
+    const result = validateSchema({ user: "oops" }, schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("object");
+  });
+
+  test("fails: items keyword on a non-array value (no sibling type)", () => {
+    // Regression: without explicit type:"array", items must still fail closed
+    // when the value is not an array. Previously silently passed.
+    const result = validateSchema(123, { items: { type: "string" } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("array");
+  });
+
+  test("fails: nested items on wrong type without explicit type annotation", () => {
+    // The reviewer-verified bypass case: names:123 against {properties:{names:{items:{type:"string"}}}}
+    const schema = { type: "object", properties: { names: { items: { type: "string" } } } };
+    const result = validateSchema({ names: 123 }, schema);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("array");
+  });
 });
 
 describe("validateResultSchema — end-to-end schema validation path", () => {
