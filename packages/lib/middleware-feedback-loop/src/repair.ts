@@ -2,7 +2,10 @@ import type { InboundMessage } from "@koi/core/message";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import type { RepairStrategy, ValidationError } from "./types.js";
 
-const FEEDBACK_SENDER_ID = "system:feedback-loop";
+// Use "user" role so feedback is a normal conversation turn, not a privileged system message.
+// Adapters map "system:*" senders to the model's system role, which would elevate validator
+// error text above the user conversation and can weaken instruction hierarchy.
+const FEEDBACK_SENDER_ID = "user";
 
 export function formatErrors(errors: readonly ValidationError[]): string {
   return errors

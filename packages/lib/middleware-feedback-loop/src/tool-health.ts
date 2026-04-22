@@ -252,10 +252,6 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   const stateMap = new Map<string, ToolState>();
   // Session-local brick-level quarantine (covers aliases)
   const quarantinedBricks = new Set<BrickId>();
-  // TTL-bounded positive quarantine cache from forgeStore: brickId → timestamp of last confirmed check.
-  // Re-checked after QUARANTINE_POSITIVE_TTL_MS so operator recovery actions take effect in live sessions.
-  const QUARANTINE_POSITIVE_TTL_MS = 5 * 60 * 1_000; // 5 minutes
-  const forgeQuarantinedBricksAt = new Map<BrickId, number>();
   // Tracks in-flight quarantine/demotion persistence promises so dispose() can await them.
   const pendingHealthWrites = new Set<Promise<unknown>>();
 
@@ -636,24 +632,13 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       if (stateMap.get(toolId)?.sessionQuarantined === true) return true;
       const bId = resolveBrickId(toolId);
       if (bId === undefined) return false;
+      // in-memory set populated by checkAndQuarantine_ this session
       if (quarantinedBricks.has(bId)) return true;
-      // Persisted quarantine: positive results cached with TTL so operator recovery
-      // (clearing lifecycle in the store) takes effect within one TTL window.
-      // Negative results are never cached — externally quarantined tools become
-      // visible on the next call without requiring a session restart.
-      const cachedAt = forgeQuarantinedBricksAt.get(bId);
-      const now = clock();
-      if (cachedAt !== undefined && now - cachedAt < QUARANTINE_POSITIVE_TTL_MS) {
-        return true; // still within TTL window
-      }
+      // Always recheck the store for persisted quarantine — no positive-result caching.
+      // Caching positive results would delay operator recovery (unquarantine via store
+      // update) from taking effect in live sessions.
       const loadResult = await forgeStore.load(bId);
-      if (loadResult.ok && loadResult.value.lifecycle === "quarantined") {
-        forgeQuarantinedBricksAt.set(bId, now);
-        return true;
-      }
-      // Not (or no longer) quarantined in store — evict stale cache entry
-      forgeQuarantinedBricksAt.delete(bId);
-      return false;
+      return loadResult.ok && loadResult.value.lifecycle === "quarantined";
     },
 
     getSnapshot(toolId: string): ToolHealthSnapshot | undefined {
