@@ -211,10 +211,35 @@ describe("execSandboxed — callback threading", () => {
 // are closed. If any child survives the abort (orphan), spawnBash hangs
 // and the test times out. Returning == all processes dead.
 //
-// No wall-clock timing assertions — correctness is proved by:
-//   1. The function returning at all (pipe close = all processes dead)
-//   2. pgrep confirming a specific PID was never created (no-spawn path)
+// For fd-redirecting children (those that close/redirect inherited fds),
+// a PID-based assertion after abort provides additional proof that the
+// process-group kill reached them even when pipe closure cannot.
 // ---------------------------------------------------------------------------
+
+// Polls `chunks` for `pattern` with a bounded timeout so tests cannot hang
+// indefinitely if callback delivery regresses (which would leak subprocesses).
+function waitForPattern(
+  chunks: string[],
+  pattern: RegExp,
+  timeoutMs: number,
+): Promise<RegExpExecArray> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = (): void => {
+      const match = pattern.exec(chunks.join(""));
+      if (match !== null) {
+        resolve(match);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`pattern ${String(pattern)} not seen within ${timeoutMs}ms`));
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  });
+}
 
 describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   test("abort resolves spawnBash for a long-running command", async () => {
@@ -235,21 +260,16 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       { onStdout: (c) => stdoutChunks.push(c) },
     );
 
-    // Wait until the process signals it is running before aborting.
-    await new Promise<void>((r) => {
-      const check = (): void => {
-        if (stdoutChunks.join("").includes("READY")) {
-          r();
-          return;
-        }
-        setTimeout(check, 10);
-      };
-      check();
-    });
-    controller.abort();
-
-    const result = await promise;
-    expect(result.exitCode).not.toBe(0);
+    try {
+      await waitForPattern(stdoutChunks, /READY/, 5_000);
+      controller.abort();
+      const result = await promise;
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      // Ensure the process group is killed on all paths (timeout, assertion failure).
+      controller.abort();
+      await promise.catch(() => {});
+    }
   }, 10_000);
 
   test("abort kills child processes spawned by the bash script", async () => {
@@ -271,29 +291,22 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       { onStderr: (c) => stderrChunks.push(c) },
     );
 
-    // Parse the child PID from the readiness signal.
-    const childPid = await new Promise<number>((resolve) => {
-      const check = (): void => {
-        const match = /CHILD:(\d+)/.exec(stderrChunks.join(""));
-        const pid = match?.[1];
-        if (pid !== undefined) {
-          resolve(Number(pid));
-          return;
-        }
-        setTimeout(check, 10);
-      };
-      check();
-    });
+    try {
+      const match = await waitForPattern(stderrChunks, /CHILD:(\d+)/, 5_000);
+      const rawPid = match[1];
+      if (rawPid === undefined) throw new Error("CHILD pattern matched but capture group missing");
+      const childPid = Number(rawPid);
 
-    // Hard precondition: child MUST be alive before we abort.
-    // If kill(pid,0) throws, the child was not yet started or died spontaneously —
-    // both indicate test-setup failure rather than the cleanup scenario under test.
-    expect(() => process.kill(childPid, 0)).not.toThrow();
+      // Hard precondition: child MUST be alive before we abort.
+      expect(() => process.kill(childPid, 0)).not.toThrow();
 
-    controller.abort();
-
-    const result = await promise;
-    expect(result.exitCode).not.toBe(0);
+      controller.abort();
+      const result = await promise;
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
+    }
   }, 10_000);
 
   test("abort kills fd-redirecting descendants that do not hold the inherited pipe", async () => {
@@ -317,38 +330,36 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       { onStderr: (c) => stderrChunks.push(c) },
     );
 
-    const childPid = await new Promise<number>((resolve) => {
-      const check = (): void => {
-        const match = /DETACHED:(\d+)/.exec(stderrChunks.join(""));
-        const pid = match?.[1];
-        if (pid !== undefined) {
-          resolve(Number(pid));
-          return;
+    try {
+      const match = await waitForPattern(stderrChunks, /DETACHED:(\d+)/, 5_000);
+      const rawPid = match[1];
+      if (rawPid === undefined)
+        throw new Error("DETACHED pattern matched but capture group missing");
+      const childPid = Number(rawPid);
+
+      // Hard precondition: child must be alive and pipe-detached before abort.
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+
+      controller.abort();
+      await promise; // pipe closes when bash (the waiter) dies
+
+      // Poll until the fd-redirecting child is gone. It received SIGTERM via
+      // process-group kill and has no signal handler, so it dies quickly.
+      // Surviving past 2 s means process-group kill is broken.
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(childPid, 0);
+        } catch {
+          break;
         }
-        setTimeout(check, 10);
-      };
-      check();
-    });
-
-    // Hard precondition: child must be alive and pipe-detached before abort.
-    expect(() => process.kill(childPid, 0)).not.toThrow();
-
-    controller.abort();
-    await promise; // pipe closes when bash (the waiter) dies
-
-    // Poll until the fd-redirecting child is gone. It received SIGTERM via process-
-    // group kill and has no signal handler, so it dies quickly. Surviving past 2 s
-    // means process-group kill is broken.
-    const deadline = Date.now() + 2_000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(childPid, 0);
-      } catch {
-        break;
+        await new Promise<void>((r) => setTimeout(r, 20));
       }
-      await new Promise<void>((r) => setTimeout(r, 20));
+      expect(() => process.kill(childPid, 0)).toThrow();
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
     }
-    expect(() => process.kill(childPid, 0)).toThrow();
   }, 15_000);
 
   test("already-aborted signal throws AbortError without spawning any process", async () => {
@@ -402,19 +413,14 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       { onStderr: (c) => stderrChunks.push(c) },
     );
 
-    await new Promise<void>((r) => {
-      const check = (): void => {
-        if (stderrChunks.join("").includes("READY")) {
-          r();
-          return;
-        }
-        setTimeout(check, 10);
-      };
-      check();
-    });
-    controller.abort();
-
-    // Returns only after SIGKILL escalation (~3 s). Timing out = escalation broken.
-    await promise;
+    try {
+      await waitForPattern(stderrChunks, /READY/, 5_000);
+      controller.abort();
+      // Returns only after SIGKILL escalation (~3 s). Timing out = escalation broken.
+      await promise;
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
+    }
   }, 8_000);
 });
