@@ -1723,20 +1723,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
-      // Track active spawns for the current drain — updated before the
-      // try-catch so SIGINT policy is never affected by UI dispatch failures.
-      // Set-based: late terminals from a previous drain delete a missing key
-      // (no-op). A late spawn_requested without a matching terminal in this drain
-      // would create a phantom entry, but cannot happen: an agent's terminal event
-      // is always ordered AFTER its spawn_requested in the event stream, so if
-      // spawn_requested was delayed to this drain, its terminal is also delayed
-      // to this drain and will remove the entry. Out-of-order delivery would be
-      // a bug in the engine's event bus, not this handler.
-      if (event.kind === "spawn_requested") {
-        activeDrainSpawnIds.add(event.agentId);
-      } else {
-        activeDrainSpawnIds.delete(event.agentId);
-      }
+      // Delegate SIGINT spawn tracking to the current drain's handler.
+      // currentDrainSpawnHandler is non-null only while a drain is active;
+      // events arriving between drains (gap between one drain's finally and
+      // the next drain's setup) are no-ops for SIGINT policy — they cannot
+      // affect activeDrainSpawnIds.size and therefore cannot trigger the
+      // one-shot grace reset-to-idle by mistake (#1999 r11).
+      currentDrainSpawnHandler?.(event);
       // Defense-in-depth: store.dispatch can throw if the reducer or
       // SolidJS reactivity hits an edge case. A throwing callback must
       // not crash the spawn flow — the engine wraps this in safeSpawnEvent
@@ -1934,12 +1927,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let activeController: AbortController | null = null;
   // let: set of agentIds whose spawn_requested has fired but whose
   // agent_status_changed (terminal) has not yet arrived, for the CURRENT drain.
-  // Reset at processSubmit start. Keyed by agentId so late terminal events from
-  // previous drains (delete on a missing key) are no-ops. Cross-drain phantom
-  // entries (late spawn_requested without a matching terminal) cannot arise in
-  // practice: event ordering guarantees terminal is always delivered after
-  // spawn_requested for the same agent (#1999, adversarial review rounds 4 + 7).
+  // Accessed by the onWindowElapse probe; updated only through
+  // currentDrainSpawnHandler (see below) to ensure generation-scoping.
   let activeDrainSpawnIds: Set<string> = new Set<string>();
+  // let: per-drain delegate for spawn SIGINT tracking. Replaced at each drain
+  // start with a closure over the drain's own Set, then set to null at drain end.
+  // Events that arrive between drains (after the previous drain's finally block
+  // and before the next drain's setup) are no-ops. Combined with the engine-level
+  // pre-start abort guard (which prevents spawn_requested from cancelled
+  // executors), this closes the cross-drain pollution window (#1999 r11).
+  let currentDrainSpawnHandler:
+    | ((event: { readonly kind: string; readonly agentId: string }) => void)
+    | null = null;
   // let: one-shot flag — true after the first double-tap window elapses with an
   // active spawn. Provides exactly one grace reset-to-idle to protect against the
   // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
@@ -3331,11 +3330,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
-        // Reset the spawn set and grace flag for this drain. onSpawnEvent updates
-        // activeDrainSpawnIds; spawnGraceUsed tracks whether the one-shot idle-
-        // reset grace has been consumed. A fresh Set ensures late events from the
-        // previous drain are no-ops in this drain's tracking.
-        activeDrainSpawnIds = new Set<string>();
+        // Install the per-drain spawn-tracking delegate. Using a fresh Set and a
+        // new closure (instead of mutating the shared set) means events that
+        // arrive between drains — after the previous drain's finally clears the
+        // handler and before this point — are no-ops for SIGINT policy. The
+        // delegate is cleared in the finally block below.
+        const drainIds = new Set<string>();
+        activeDrainSpawnIds = drainIds;
+        currentDrainSpawnHandler = (event): void => {
+          if (event.kind === "spawn_requested") {
+            drainIds.add(event.agentId);
+          } else {
+            drainIds.delete(event.agentId);
+          }
+        };
         spawnGraceUsed = false;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
@@ -3431,6 +3439,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         if (isStillActive) {
           activeController = null;
           activeRunPromise = null;
+        }
+        // Drop the per-drain spawn-tracking delegate so any events arriving
+        // between this drain's end and the next drain's setup are no-ops for
+        // SIGINT policy (cannot inflate activeDrainSpawnIds.size). Guard with
+        // isStillActive: a stale finally from a replaced run must not clear the
+        // handler that the newer run just installed.
+        if (isStillActive) {
+          currentDrainSpawnHandler = null;
         }
         // The active run has settled. Reset the double-tap window so a
         // later Ctrl+C is treated as a fresh first tap rather than a

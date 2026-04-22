@@ -254,12 +254,20 @@ export function createSpawnExecutor(
     // rather than an unexpected tool failure.
     if (signal.aborted) {
       const reason = signal.reason;
+      // Re-throw the original reason when it already carries meaningful abort
+      // semantics: AbortError (user cancel) or TimeoutError (deadline exceeded).
+      // Preserving TimeoutError is critical — mapping it to AbortError would
+      // make a deadline failure look like a user interrupt to the TUI.
       if (
         reason instanceof Error &&
-        (reason.name === "AbortError" || (reason as { code?: unknown }).code === "ABORT_ERR")
+        (reason.name === "AbortError" ||
+          reason.name === "TimeoutError" ||
+          (reason as { code?: unknown }).code === "ABORT_ERR")
       ) {
         throw reason;
       }
+      // Unknown reason: surface as AbortError so the engine's interrupted path
+      // handles it cleanly rather than treating it as an unexpected tool failure.
       throw new DOMException("spawn aborted before start", "AbortError");
     }
 
