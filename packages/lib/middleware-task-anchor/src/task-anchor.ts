@@ -330,14 +330,18 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
       state.injectedThisTurn = true;
       state.forceInjectNextTurn = false;
       state.forceRequiresTasks = false;
-      ctx.reportDecision?.({
-        action: "inject",
-        promptLength: text.length,
-        reminderKind: taskCount > 0 ? "task-list" : "empty-board-nudge",
-        forced,
-        idle: idleAtInject,
-        taskCount,
-      });
+      try {
+        ctx.reportDecision?.({
+          action: "inject",
+          promptLength: text.length,
+          reminderKind: taskCount > 0 ? "task-list" : "empty-board-nudge",
+          forced,
+          idle: idleAtInject,
+          taskCount,
+        });
+      } catch (e: unknown) {
+        swallowError(e, { package: "@koi/middleware-task-anchor", operation: "reportDecision" });
+      }
       return next(prepend(request, reminderMessage(text)));
     },
 
@@ -397,14 +401,18 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
       state.injectedThisTurn = true;
       state.forceInjectNextTurn = false;
       state.forceRequiresTasks = false;
-      ctx.reportDecision?.({
-        action: "inject",
-        promptLength: text.length,
-        reminderKind: taskCount > 0 ? "task-list" : "empty-board-nudge",
-        forced,
-        idle: idleAtInject,
-        taskCount,
-      });
+      try {
+        ctx.reportDecision?.({
+          action: "inject",
+          promptLength: text.length,
+          reminderKind: taskCount > 0 ? "task-list" : "empty-board-nudge",
+          forced,
+          idle: idleAtInject,
+          taskCount,
+        });
+      } catch (e: unknown) {
+        swallowError(e, { package: "@koi/middleware-task-anchor", operation: "reportDecision" });
+      }
       yield* next(prepend(request, reminderMessage(text)));
     },
 

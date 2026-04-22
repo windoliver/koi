@@ -1029,6 +1029,49 @@ describe("createTaskAnchorMiddleware — reportDecision observability (#2015)", 
     const decision = spy.mock.calls[0]?.[0] as JsonObject | undefined;
     expect(decision?.promptLength).toBe(injectedText.length);
   });
+
+  test("throwing reportDecision does not abort model call — injection still delivered", async () => {
+    const board = makeBoard([makeTask({ id: tid("t1"), subject: "Fix bug", status: "pending" })]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0);
+
+    const throwingCtx: TurnContext = {
+      ...makeTurnCtx(session, 1),
+      reportDecision: () => {
+        throw new Error("telemetry sink exploded");
+      },
+    };
+    await mw.onBeforeTurn?.(throwingCtx);
+    const capture: Capture = {};
+    // Must not throw — swallowError absorbs the reportDecision failure
+    await mw.wrapModelCall?.(throwingCtx, makeRequest(), captureHandler(capture));
+    // Injection must still have reached the model
+    expect(extractInjected(capture)).toBeDefined();
+  });
+
+  test("throwing reportDecision does not abort model stream — injection still delivered", async () => {
+    const board = makeBoard([makeTask({ id: tid("t1"), subject: "Fix bug", status: "pending" })]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await mw.onBeforeTurn?.(makeTurnCtx(session, 0));
+    await mw.onAfterTurn?.(makeTurnCtx(session, 0));
+
+    const throwingCtx: TurnContext = {
+      ...makeTurnCtx(session, 1),
+      reportDecision: () => {
+        throw new Error("telemetry sink exploded");
+      },
+    };
+    await mw.onBeforeTurn?.(throwingCtx);
+    const capture: Capture = {};
+    const iter = mw.wrapModelStream?.(throwingCtx, makeRequest(), captureStream(capture));
+    // Must not throw
+    if (iter) for await (const _ of iter) void _;
+    expect(extractInjected(capture)).toBeDefined();
+  });
 });
 
 describe("createTaskAnchorMiddleware — session lifecycle", () => {
