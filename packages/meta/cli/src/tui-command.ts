@@ -1723,6 +1723,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
+      // Track active spawns for the current drain — updated before the
+      // try-catch so SIGINT policy is never affected by UI dispatch failures.
+      if (event.kind === "spawn_requested") {
+        drainSpawnCount++;
+      } else {
+        // agent_status_changed — terminal event; clamp to 0 to stay consistent
+        // if a terminal fires without a prior spawn_requested (e.g. #1855 recovery).
+        drainSpawnCount = Math.max(0, drainSpawnCount - 1);
+      }
       // Defense-in-depth: store.dispatch can throw if the reducer or
       // SolidJS reactivity hits an edge case. A throwing callback must
       // not crash the spawn flow — the engine wraps this in safeSpawnEvent
@@ -1918,6 +1927,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+  // let: net count of spawn_requested minus agent_status_changed (terminal) events
+  // for the CURRENT drain. Reset at processSubmit start. Updated directly from
+  // onSpawnEvent — independent of UI store dispatch success — so SIGINT window-
+  // elapse policy is runtime-authoritative and scoped to the current turn (#1999).
+  let drainSpawnCount = 0;
   // let: preflight latch — set synchronously at onSubmit entry before the
   // first await (runtimeReady / resetBarrier), cleared in finally. Closes
   // the submit-then-switch race where `activeController` is still null
@@ -2127,10 +2141,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // drain promise won't resolve until the child finishes. If the child
     // outlives the 2s double-tap window, stay-armed causes the second Ctrl+C
     // to force-exit instead of starting a fresh cancellation. Switch to
-    // reset-to-idle while spawns are active so the window auto-clears; the
-    // user's second Ctrl+C is then treated as a fresh first tap.
+    // reset-to-idle while spawns from the current drain are still active so
+    // the window auto-clears; the user's second Ctrl+C is then treated as a
+    // fresh first tap. Uses drainSpawnCount (runtime-authoritative, scoped to
+    // the current drain) rather than the UI store (which can go stale).
     onWindowElapse: (): "stay-armed" | "reset-to-idle" =>
-      store.getState().activeSpawns.size > 0 ? "reset-to-idle" : "stay-armed",
+      drainSpawnCount > 0 ? "reset-to-idle" : "stay-armed",
   });
   // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
   // prop) and the `agent:interrupt` command both route through here.
@@ -3299,6 +3315,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
+        // Reset the spawn counter for this drain. onSpawnEvent updates it as
+        // spawn_requested / agent_status_changed events fire during this turn.
+        drainSpawnCount = 0;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;
