@@ -1,29 +1,35 @@
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { SessionContext, TurnContext } from "@koi/core";
+import { runId, sessionId, turnId } from "@koi/core";
 import type { ModelRequest, ModelResponse, ToolRequest, ToolResponse } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
 import { createFeedbackLoopMiddleware } from "./feedback-loop.js";
-import type { Gate, ValidationError, ValidationResult, Validator } from "./types.js";
+import type { ToolHealthTracker } from "./tool-health.js";
+import * as toolHealthModule from "./tool-health.js";
+import type { Gate, ValidationResult, Validator } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Minimal mock helpers
 // ---------------------------------------------------------------------------
 
 function mockSessionCtx(): SessionContext {
+  const sid = sessionId("sess-1");
+  const rid = runId("run-1");
   return {
     agentId: "test-agent",
-    sessionId: "sess-1" as unknown as SessionContext["sessionId"],
-    runId: "run-1" as unknown as SessionContext["runId"],
+    sessionId: sid,
+    runId: rid,
     metadata: {},
   };
 }
 
 function mockTurnCtx(): TurnContext {
+  const rid = runId("run-1");
   return {
     session: mockSessionCtx(),
     turnIndex: 0,
-    turnId: "turn-1" as unknown as TurnContext["turnId"],
+    turnId: turnId(rid, 0),
     messages: [],
     metadata: {},
   };
@@ -49,6 +55,40 @@ function mockToolResponse(): ToolResponse {
   return { output: "ok" };
 }
 
+/** Minimal ForgeHealthConfig with typed stubs that satisfy the interfaces. */
+function makeMinimalForgeHealth(): ForgeHealthConfig {
+  return {
+    resolveBrickId: (_toolId: string) => undefined,
+    forgeStore: {
+      save: async () => ({ ok: true, value: undefined }),
+      load: async () => ({
+        ok: false,
+        error: { code: "NOT_FOUND", message: "not found", retryable: false, context: {} },
+      }),
+      search: async () => ({ ok: true, value: [] }),
+      remove: async () => ({ ok: true, value: undefined }),
+      update: async () => ({ ok: true, value: undefined }),
+      exists: async () => ({ ok: true, value: false }),
+    } as ForgeHealthConfig["forgeStore"],
+    snapshotChainStore: {
+      put: async () => ({ ok: true, value: undefined }),
+      get: async () => ({
+        ok: false,
+        error: { code: "NOT_FOUND", message: "not found", retryable: false, context: {} },
+      }),
+      head: async () => ({ ok: true, value: undefined }),
+      list: async () => ({ ok: true, value: [] }),
+      ancestors: async () => ({ ok: true, value: [] }),
+      fork: async () => ({
+        ok: false,
+        error: { code: "NOT_FOUND", message: "not found", retryable: false, context: {} },
+      }),
+      prune: async () => ({ ok: true, value: 0 }),
+      close: () => {},
+    } as ForgeHealthConfig["snapshotChainStore"],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -68,7 +108,7 @@ describe("createFeedbackLoopMiddleware", () => {
 
     it("retries model call on validation failure and returns fixed response", async () => {
       let callCount = 0;
-      const retryCallback = mock((_attempt: number, _errors: readonly ValidationError[]) => {});
+      const retryCallback = mock(() => {});
 
       const validator: Validator = {
         name: "test-validator",
@@ -91,11 +131,7 @@ describe("createFeedbackLoopMiddleware", () => {
       };
 
       const mw = createFeedbackLoopMiddleware(config);
-      let nextCallCount = 0;
-      const next = mock(async (_req: ModelRequest) => {
-        nextCallCount++;
-        return nextCallCount === 1 ? mockModelResponse() : mockModelResponse();
-      });
+      const next = mock(async (_req: ModelRequest) => mockModelResponse());
 
       const result = await mw.wrapModelCall?.(mockTurnCtx(), mockModelRequest(), next);
 
@@ -136,27 +172,77 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(next).toHaveBeenCalledTimes(1);
       expect(result).toBe(response);
     });
+
+    it("throws when tool is quarantined", async () => {
+      const sessionCtx = mockSessionCtx();
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess: () => {},
+        recordFailure: () => {},
+        getSnapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: (_toolId: string) => true,
+        dispose: async () => {},
+      };
+
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        await mw.onSessionStart?.(sessionCtx);
+
+        const next = mock(async (_req: ToolRequest) => mockToolResponse());
+        await expect(
+          mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next),
+        ).rejects.toBeInstanceOf(KoiRuntimeError);
+
+        expect(next).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("records failure and checks health when tool call throws", async () => {
+      const sessionCtx = mockSessionCtx();
+      const recordFailure = mock((_toolId: string, _latencyMs: number, _reason: string) => {});
+      const fakeTracker: ToolHealthTracker = {
+        recordSuccess: () => {},
+        recordFailure,
+        getSnapshot: () => undefined,
+        checkAndQuarantine: async () => false,
+        checkAndDemote: async () => false,
+        isQuarantined: (_toolId: string) => false,
+        dispose: async () => {},
+      };
+
+      const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
+      try {
+        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        await mw.onSessionStart?.(sessionCtx);
+
+        const toolError = new Error("tool exploded");
+        const next = mock(async (_req: ToolRequest): Promise<ToolResponse> => {
+          throw toolError;
+        });
+
+        await expect(mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next)).rejects.toBe(
+          toolError,
+        );
+
+        expect(recordFailure).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   describe("session lifecycle", () => {
-    it("creates tracker on session start and disposes on session end", async () => {
-      // Minimal ForgeHealthConfig with stub implementations
-      const minimalForgeHealth: ForgeHealthConfig = {
-        resolveBrickId: (_toolId: string) => undefined,
-        forgeStore: {
-          getFitness: async () => undefined,
-          setFitness: async () => {},
-          deleteFitness: async () => {},
-        } as unknown as ForgeHealthConfig["forgeStore"],
-        snapshotChainStore: {
-          append: async () => {},
-          getChain: async () => [],
-          getLatest: async () => undefined,
-          subscribe: () => () => {},
-        } as unknown as ForgeHealthConfig["snapshotChainStore"],
-      };
+    let mw: ReturnType<typeof createFeedbackLoopMiddleware>;
 
-      const mw = createFeedbackLoopMiddleware({ forgeHealth: minimalForgeHealth });
+    beforeEach(() => {
+      mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+    });
+
+    it("creates tracker on session start and disposes on session end", async () => {
       const sessionCtx = mockSessionCtx();
 
       // onSessionStart should not throw

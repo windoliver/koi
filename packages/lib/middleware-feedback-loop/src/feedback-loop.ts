@@ -10,6 +10,10 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+
+type ModelCallCtx = Parameters<NonNullable<KoiMiddleware["wrapModelCall"]>>[0];
+type ToolCallCtx = Parameters<NonNullable<KoiMiddleware["wrapToolCall"]>>[0];
+
 import { KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig } from "./config.js";
 import { defaultRepairStrategy } from "./repair.js";
@@ -69,18 +73,19 @@ async function handleToolSuccess(
   return response;
 }
 
-async function handleToolError(
+function handleToolError(
   toolId: string,
   err: unknown,
   startMs: number,
   tracker: ToolHealthTracker | undefined,
-): Promise<never> {
+): never {
   const latencyMs = Date.now() - startMs;
 
   if (tracker !== undefined) {
     tracker.recordFailure(toolId, latencyMs, String(err));
-    await tracker.checkAndQuarantine(toolId);
-    await tracker.checkAndDemote(toolId);
+    // checkAndQuarantine/checkAndDemote are fire-and-forget here; errors surface via onHealthTransitionError
+    void tracker.checkAndQuarantine(toolId);
+    void tracker.checkAndDemote(toolId);
   }
 
   throw err;
@@ -119,7 +124,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
     },
 
     async wrapModelCall(
-      _ctx: Parameters<NonNullable<KoiMiddleware["wrapModelCall"]>>[0],
+      _ctx: ModelCallCtx,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
@@ -141,7 +146,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
     },
 
     async wrapToolCall(
-      _ctx: Parameters<NonNullable<KoiMiddleware["wrapToolCall"]>>[0],
+      _ctx: ToolCallCtx,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
