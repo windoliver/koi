@@ -1789,6 +1789,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // durable persistence (#1842) lands. Hosts that accept the
     // limitation can opt in today.
     ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
+    // KOI_FEEDBACK_LOOP_ENABLED=true opts into @koi/middleware-feedback-loop.
+    // Activates model-response validation + tool-health tracking with an
+    // empty config (observe-only, no validators, no quarantine thresholds).
+    ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.

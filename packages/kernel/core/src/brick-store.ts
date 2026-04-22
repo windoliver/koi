@@ -416,6 +416,8 @@ export interface BrickUpdate {
   readonly trigger?: readonly string[] | undefined;
   /** Updated community namespace. */
   readonly namespace?: string | undefined;
+  /** Updated trust tier (e.g., after health-based demotion). */
+  readonly trustTier?: TrustTier | undefined;
   /**
    * Optimistic locking: expected current `storeVersion` of the brick.
    * If provided, the update is rejected with CONFLICT when the stored

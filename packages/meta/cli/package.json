@@ -71,6 +71,7 @@
     "@koi/middleware-dream": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",
     "@koi/middleware-memory-recall": "workspace:*",
+    "@koi/middleware-feedback-loop": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-plan-persist": "workspace:*",
