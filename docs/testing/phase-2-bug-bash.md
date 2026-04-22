@@ -36,12 +36,13 @@ export KOI_HOME="/tmp/koi-home-${NAMESPACE}"
 rm -rf "$KOI_HOME"
 mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
 
-# Hermetic hook isolation: KOI_HOOKS_CONFIG_PATH takes precedence over HOME-derived
-# paths in runtime-factory.ts/shared-wiring.ts, so wiping KOI_HOME alone is not enough.
-# Unset it and disable user hooks to prevent external hooks from injecting prompts or
-# commands into the bug-bash session.
+# Hook path isolation: KOI_HOOKS_CONFIG_PATH takes precedence over HOME-derived
+# hook paths in runtime-factory.ts/shared-wiring.ts. Unset it so all hook
+# loading is rooted under the fresh $KOI_HOME rather than the operator's machine.
+# Do NOT export KOI_DISABLE_HOOKS here — that would break S6 (Q21-Q22) which
+# requires user hooks to actually fire. Hook disabling is applied per-scenario
+# only (currently: S25, which needs hermetic sessions for file-count assertions).
 unset KOI_HOOKS_CONFIG_PATH
-export KOI_DISABLE_HOOKS=1
 
 # Initialize $FIXTURE as an isolated git repo — required by §1.5 reset and S25 setup.
 # Must be a standalone root (not nested inside another repo) so resolveMemoryDir()
@@ -843,8 +844,8 @@ fi
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | At least one `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index updated. (Do **not** assert on `type:` or exact frontmatter — the model chooses these fields based on prompt phrasing and may legitimately produce different values.) |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
-| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (files still in `$MEMORY_DIR/`); response references both Bun 1.3 and input validation |
-| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | Model acknowledges the memory already exists or notes a conflict — OR a second file is written without a warning (either outcome is acceptable; the goal is that no silent data loss occurs). Do **not** assert exact Jaccard threshold — dedup fires only when model-generated `name`+`type` collide AND content similarity exceeds backend threshold. |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Then verify TUI started (same check as setup): `sleep 2; tmux has-session -t "$KOI_SESSION" && tmux capture-pane -t "$KOI_SESSION" -p` — abort if pane is empty. Only then ask `What do you remember?` | memory_recall | Both memories survive restart (files still in `$MEMORY_DIR/`); response references both Bun 1.3 and input validation |
+| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem check (deterministic)**: run `ls "$MEMORY_DIR"/*.md \| wc -l` — must equal **2** (not 3). If a third file was created, dedup did not fire and a regression is present. Model-level response may vary (conflict acknowledgment or silent no-op are both acceptable), but no new `.md` file must appear in `$MEMORY_DIR`. |
 | Q161 | `Delete the memory about input validation.` | memory_delete | File count in `$MEMORY_DIR/` drops by 1; `MEMORY.md` index no longer references input validation; asking `What do you remember?` after deletion does not return the deleted fact |
 ### Packages Not Testable via TUI (justified)
 
