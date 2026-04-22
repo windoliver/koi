@@ -9,6 +9,7 @@
  * and denial tracking.
  */
 
+import { createSpecRegistry } from "@koi/bash-ast";
 import { canonicalPrefix, classifyCommand, UNSAFE_PREFIX } from "@koi/bash-classifier";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
@@ -570,6 +571,12 @@ export function createPermissionsMiddleware(
     serializeTurnContext,
   });
 
+  // Spec guard: enabled when resolveBashCommand is configured and
+  // enableBashSpecGuard is not explicitly set to false.
+  const specRegistry = createSpecRegistry();
+  const specGuardEnabled =
+    config.resolveBashCommand !== undefined && config.enableBashSpecGuard !== false;
+
   // Wire up wrapToolCall via factory
   const { wrapToolCall } = createWrapToolCall({
     config,
@@ -585,6 +592,8 @@ export function createPermissionsMiddleware(
     getTurnSoftDenyCounter,
     getSoftDenyLog,
     handleAskDecision,
+    specRegistry,
+    specGuardEnabled,
   });
 
   // -----------------------------------------------------------------------

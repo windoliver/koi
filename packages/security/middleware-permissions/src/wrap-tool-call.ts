@@ -5,12 +5,14 @@
  * Accepts all closure dependencies as explicit factory parameters.
  */
 
+import type { CommandSpec } from "@koi/bash-ast";
 import { classifyCommand, UNSAFE_PREFIX } from "@koi/bash-classifier";
 import type { AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type { ToolHandler, ToolRequest, ToolResponse, TurnContext } from "@koi/core/middleware";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
 import { KoiRuntimeError } from "@koi/errors";
+import { evaluateSpecGuard } from "./bash-spec-guard.js";
 import type { PermissionsMiddlewareConfig } from "./config.js";
 import { DEFAULT_SOFT_DENY_PER_TURN_CAP } from "./config.js";
 import type { DenialTracker } from "./denial-tracker.js";
@@ -66,6 +68,10 @@ export interface WrapToolCallDeps {
     decision: PermissionDecision & { readonly effect: "ask" },
     dispatchApprovalOutcome?: (d: PermissionDecision) => void,
   ) => Promise<ToolResponse>;
+  /** Pre-built spec registry (from createSpecRegistry). */
+  readonly specRegistry: ReadonlyMap<string, CommandSpec>;
+  /** Whether bash-ast spec-aware enforcement is enabled. */
+  readonly specGuardEnabled: boolean;
 }
 
 export function createWrapToolCall(deps: WrapToolCallDeps): {
@@ -89,6 +95,8 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     getTurnSoftDenyCounter,
     getSoftDenyLog,
     handleAskDecision,
+    specRegistry,
+    specGuardEnabled,
   } = deps;
 
   async function wrapToolCall(
@@ -230,6 +238,26 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         }
       }
     }
+    // Bash spec guard: evaluate Write/Read/Network rules + exact-argv enforcement.
+    // Runs after the dangerous-command ratchet so that any further downgrade
+    // (deny/ask) from semantic rules is respected on top of prefix policy.
+    if (specGuardEnabled && decision.effect !== "deny") {
+      const raw = config.resolveBashCommand?.(request.toolId, request.input);
+      if (raw !== undefined && raw.trim().length > 0) {
+        const specOutcome = await evaluateSpecGuard({
+          toolId: request.toolId,
+          rawCommand: raw,
+          currentDecision: decision,
+          resolveQuery: (q) => resolveDecision(q, ctx.session.sessionId as string),
+          baseQuery: enrichedQuery,
+          registry: specRegistry,
+        });
+        if (specOutcome.kind === "spec-evaluated") {
+          decision = specOutcome.decision;
+        }
+      }
+    }
+
     const durationMs = clock() - startMs;
 
     // Non-deny paths: audit + dispatch here. Deny paths handle their own

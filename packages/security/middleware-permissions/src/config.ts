@@ -232,6 +232,12 @@ export interface PermissionsMiddlewareConfig {
    * turn boundary via `onBeforeTurn`. Default: 3. #1650.
    */
   readonly softDenyPerTurnCap?: number;
+  /**
+   * Enable bash-ast spec-aware enforcement. Defaults to `true` when
+   * `resolveBashCommand` is configured. Set to `false` to use legacy
+   * prefix-only enforcement.
+   */
+  readonly enableBashSpecGuard?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
