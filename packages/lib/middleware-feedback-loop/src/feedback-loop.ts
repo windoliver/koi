@@ -262,17 +262,14 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       }
 
       const tracker = trackers.get(ctx.session.sessionId);
-      if (tracker !== undefined) {
-        const brickId = config.forgeHealth?.resolveBrickId(request.toolId);
-        if (brickId !== undefined && (await tracker.isQuarantined(request.toolId))) {
-          const feedback: ForgeToolErrorFeedback = {
-            kind: "forge_tool_quarantined",
-            brickId,
-            toolId: request.toolId,
-            message: `Tool "${request.toolId}" is quarantined and cannot execute.`,
-          };
-          return { output: feedback };
-        }
+      if (tracker !== undefined && (await tracker.isQuarantined(request.toolId))) {
+        const feedback: ForgeToolErrorFeedback = {
+          kind: "forge_tool_quarantined",
+          brickId: config.forgeHealth?.resolveBrickId(request.toolId),
+          toolId: request.toolId,
+          message: `Tool "${request.toolId}" is quarantined and cannot execute.`,
+        };
+        return { output: feedback };
       }
 
       // Pre-execution validation — fail closed before any side effects

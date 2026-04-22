@@ -689,18 +689,27 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     },
 
     async dispose(): Promise<void> {
-      // First await any in-flight quarantine/demotion persistence writes
+      // Bound in-flight quarantine/demotion writes — they hit the same stores as flush.
+      // Do not block session teardown indefinitely on a degraded store.
       if (pendingHealthWrites.size > 0) {
-        await Promise.allSettled(Array.from(pendingHealthWrites));
+        const healthWriteTimeout = new Promise<void>((resolve) => {
+          setTimeout(resolve, flushTimeoutMs);
+        });
+        await Promise.race([
+          Promise.allSettled(Array.from(pendingHealthWrites)),
+          healthWriteTimeout,
+        ]);
       }
       // Collect and await ALL pending flushes: tools already flushing (activeFlush)
       // and tools that are dirty but not yet flushing.
       const flushes: Promise<void>[] = [];
       for (const [toolId, state] of stateMap) {
         if (state.flushState.flushing && state.activeFlush !== undefined) {
-          // Already-running flush — await it directly (it already has its own timeout-race)
+          // Background flush started on the hot path has no built-in timeout — bound it here.
+          const alreadyRunning = state.activeFlush;
+          const t = new Promise<void>((resolve) => setTimeout(resolve, flushTimeoutMs));
           flushes.push(
-            state.activeFlush.catch((e: unknown) => {
+            Promise.race([alreadyRunning, t]).catch((e: unknown) => {
               onFlushError?.(toolId, e);
             }),
           );

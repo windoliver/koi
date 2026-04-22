@@ -515,6 +515,35 @@ describe("createToolHealthTracker", () => {
     expect(errors).toContain("demotion:snapshot");
   });
 
+  it("dispose completes within timeout even when store is unresponsive", async () => {
+    // Simulates a hung forgeStore: update() never resolves
+    const base = makeForgeStore();
+    await base.save(makeBrickArtifact(BID));
+    const hungStore = {
+      ...base,
+      update: (_id: BrickId, _patch: unknown) => new Promise<never>(() => {}),
+    } as typeof base;
+
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore: hungStore,
+      snapshotChainStore: makeSnapshotStore(),
+      quarantineThreshold: 0.1,
+      windowSize: 5,
+      flushTimeoutMs: 50, // very short timeout so test completes fast
+      clock: () => 100_000,
+    });
+
+    for (let i = 0; i < 5; i++) tracker.recordFailure(TOOL_ID, 10, "err");
+    // Fire-and-forget quarantine write (will hang in hungStore.update)
+    void tracker.checkAndQuarantine(TOOL_ID);
+
+    // dispose() must not hang — it races the pending write against flushTimeoutMs
+    const start = Date.now();
+    await tracker.dispose();
+    expect(Date.now() - start).toBeLessThan(500); // well within CI budget
+  });
+
   it("dispose flushes dirty tools without throwing", async () => {
     const tracker = createToolHealthTracker({
       resolveBrickId: () => BID,

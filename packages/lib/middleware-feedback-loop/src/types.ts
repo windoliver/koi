@@ -122,7 +122,7 @@ export interface ToolHealthSnapshot {
 /** Returned when a quarantined tool is requested — tool never executes. */
 export interface ForgeToolErrorFeedback {
   readonly kind: "forge_tool_quarantined";
-  readonly brickId: BrickId;
+  readonly brickId?: BrickId | undefined;
   readonly toolId: string;
   readonly message: string;
 }
