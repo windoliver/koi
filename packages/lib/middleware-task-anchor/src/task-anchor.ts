@@ -13,6 +13,9 @@ import type {
   SessionContext,
   SessionId,
   TaskBoard,
+  ToolHandler,
+  ToolRequest,
+  ToolResponse,
   TurnContext,
 } from "@koi/core";
 import { KoiRuntimeError, swallowError } from "@koi/errors";
@@ -405,7 +408,11 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
       yield* next(prepend(request, reminderMessage(text)));
     },
 
-    async wrapToolCall(ctx, request, next) {
+    async wrapToolCall(
+      ctx: TurnContext,
+      request: ToolRequest,
+      next: ToolHandler,
+    ): Promise<ToolResponse> {
       const state = sessions.get(ctx.session.sessionId);
       const response = await next(request);
 

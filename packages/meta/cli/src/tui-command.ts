@@ -1623,6 +1623,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     );
   }
 
+  // Declared before runtimeReady to avoid Temporal Dead Zone: the .then()
+  // callback registered on runtimeReady can fire during the `await
+  // createCostBridge` below, before the original `let` at line 2055 is reached.
+  let governanceBridge: GovernanceBridge | undefined;
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -2054,9 +2059,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // bridge is undefined and all governanceBridge?.xxx() call sites no-op.
   // Future work (e.g. --max-spend CLI flag) will instantiate a controller
   // and the bridge will start surfacing alerts in /governance.
-  // let: justified — set inside the optional block (runtimeReady.then), read by
-  // call sites below that execute after the runtime resolves.
-  let governanceBridge: GovernanceBridge | undefined;
+  // (Declaration moved before runtimeReady — see comment there for why.)
 
   // ---------------------------------------------------------------------------
   // 4. Helpers
