@@ -559,7 +559,7 @@ Expected: all tests pass, 0 failures.
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-bun run typecheck --filter=@koi/cli 2>&1 | tail -5
+bun run typecheck --filter=@koi-agent/cli 2>&1 | tail -5
 ```
 
 Expected: `Tasks: 1 successful`
@@ -677,7 +677,7 @@ Expected: all tests pass.
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-bun run typecheck --filter=@koi/cli 2>&1 | tail -5
+bun run typecheck --filter=@koi-agent/cli 2>&1 | tail -5
 ```
 
 Expected: `Tasks: 1 successful`
@@ -857,7 +857,12 @@ In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before
     // Raw assistant text accumulator for --result-schema validation.
     // Populated via onRawAssistantText before redactEngineBanners() is applied,
     // so schema validation sees the model's actual output, not the sanitized version.
+    // Hard cap: 1 MB. If exceeded, validation will fail with a clear error rather
+    // than OOM. Schema validation is only meaningful for structured outputs that
+    // fit in memory; very large streaming outputs are not a supported use case.
+    const RAW_PARTS_CAP_BYTES = 1 * 1024 * 1024; // 1 MB
     const rawAssistantParts: string[] = [];
+    let rawAssistantPartsBytes = 0;
 ```
 
 Then pass the callback in the `runHeadless()` call:
@@ -872,7 +877,12 @@ Then pass the callback in the `runHeadless()` call:
       runtime,
       externalSignal: controller.signal,
       onRawAssistantText: resultSchemaObj !== undefined
-        ? (text) => { rawAssistantParts.push(text); }
+        ? (text) => {
+            if (rawAssistantPartsBytes < RAW_PARTS_CAP_BYTES) {
+              rawAssistantParts.push(text);
+              rawAssistantPartsBytes += text.length;
+            }
+          }
         : undefined,
     });
 ```
@@ -887,7 +897,7 @@ In the post-run validation block (Task 4 Step 2), use `rawAssistantParts` instea
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-bun run typecheck --filter=@koi/cli 2>&1 | tail -5
+bun run typecheck --filter=@koi-agent/cli 2>&1 | tail -5
 ```
 
 Expected: `Tasks: 1 successful`
@@ -1165,7 +1175,12 @@ Replace the `else { emitResult(); }` branch with:
         // --result-schema: validate the assembled assistant text against the schema.
         // Only runs when the agent succeeded (exit 0) and teardown was clean.
         // shutdownFailed=true takes precedence and is handled by the branch above.
-        const schemaResult = validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
+        const assembled = rawAssistantPartsBytes >= RAW_PARTS_CAP_BYTES
+          ? undefined
+          : rawAssistantParts.join("");
+        const schemaResult = assembled === undefined
+          ? { ok: false as const, error: `schema validation failed: assistant output exceeded 1 MB limit and could not be validated` }
+          : validateResultSchema(assembled, resultSchemaObj);
         if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.AGENT_FAILURE;
           emitResult({ exitCode: HEADLESS_EXIT.AGENT_FAILURE, error: schemaResult.error });
@@ -1187,7 +1202,7 @@ import { validateLoadedSchema, validateResultSchema } from "../headless/validate
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-bun run test --filter=@koi/cli 2>&1 | tail -15
+bun run test --filter=@koi-agent/cli 2>&1 | tail -15
 ```
 
 Expected: all tests pass including the new `--result-schema` flag test.
@@ -1196,7 +1211,7 @@ Expected: all tests pass including the new `--result-schema` flag test.
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-bun run typecheck --filter=@koi/cli 2>&1 | tail -5
+bun run typecheck --filter=@koi-agent/cli 2>&1 | tail -5
 ```
 
 Expected: `Tasks: 1 successful`
@@ -1205,7 +1220,7 @@ Expected: `Tasks: 1 successful`
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-bun run lint --filter=@koi/cli 2>&1 | tail -10
+bun run lint --filter=@koi-agent/cli 2>&1 | tail -10
 ```
 
 Expected: no errors.
@@ -1394,7 +1409,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Koi
-        run: npm install -g @koi/cli
+        run: npm install -g @koi-agent/cli
 
       - name: Run agent
         id: koi
@@ -1458,9 +1473,9 @@ Expected: file exists, starts with `# Headless Mode`.
 
 ```bash
 cd /Users/sophiawj/private/koi/.worktrees/feat/headless-ci-mode
-bun run test --filter=@koi/cli 2>&1 | tail -10
-bun run typecheck --filter=@koi/cli 2>&1 | tail -5
-bun run lint --filter=@koi/cli 2>&1 | tail -5
+bun run test --filter=@koi-agent/cli 2>&1 | tail -10
+bun run typecheck --filter=@koi-agent/cli 2>&1 | tail -5
+bun run lint --filter=@koi-agent/cli 2>&1 | tail -5
 ```
 
 Expected: all pass.
