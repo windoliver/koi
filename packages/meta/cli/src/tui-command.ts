@@ -1823,6 +1823,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         for (const alert of recent) {
           store.dispatch({ kind: "add_governance_alert", alert });
         }
+        // Seed up to 10 most-recent persisted violations for the current
+        // session so /governance's "Recent violations" panel is populated
+        // on restart / resume. Load is async (SQLite) — fire-and-forget
+        // so startup isn't blocked on history backfill.
+        void governanceBridge
+          .loadRecentViolations(10)
+          .then((violations) => {
+            // Synthesize UI-shape fields: id is per-entry counter, ts
+            // is load-time (the ViolationStore row timestamp is not
+            // exposed in the Violation shape — it would need an L0
+            // widening to surface). Order is preserved from the DB.
+            for (const v of violations) {
+              store.dispatch({
+                kind: "add_governance_violation",
+                violation: {
+                  id: `backfill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  ts: Date.now(),
+                  variable: v.rule,
+                  reason: v.message,
+                },
+              });
+            }
+          })
+          .catch((err: unknown) => {
+            console.warn("[tui-command] violation backfill failed:", err);
+          });
         // Initial snapshot push so the view has data before the first turn.
         governanceBridge.pollSnapshot();
       }

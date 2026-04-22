@@ -8,8 +8,10 @@
 
 import type { AuditEntry, AuditSink, ComplianceRecord, ComplianceRecorder } from "@koi/core";
 
-/** Default AuditEntry.schema_version for compliance events when ctx omits one. */
-const DEFAULT_AUDIT_SCHEMA_VERSION = 1;
+/** Default AuditEntry.schema_version for compliance events when ctx omits
+ *  one. v2 matches the audit middleware's current default after
+ *  `compliance_event` was added to AuditEntry.kind. */
+const DEFAULT_AUDIT_SCHEMA_VERSION = 2;
 
 export interface AuditSinkComplianceRecorderCtx {
   /**

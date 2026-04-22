@@ -125,6 +125,12 @@ export function createSqliteViolationStore(
   const maxBufferSize = config.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
 
   const buffer: BufferedEntry[] = [];
+  // Idempotency latch: close() may be invoked from multiple parallel
+  // paths (runtime.dispose() manifest hook + shutdownBackgroundTasks in
+  // TUI hosts). Second call is a no-op; bun:sqlite throws on
+  // double-close so we short-circuit before touching the handle.
+  // let: justified — flipped on first close.
+  let isClosed = false;
 
   // Flush attempts MUST NOT throw into callers. Three call sites — timer
   // callback, record() when buffer is full, and close() — would all push
@@ -279,6 +285,8 @@ export function createSqliteViolationStore(
       flushBuffer();
     },
     close(): void {
+      if (isClosed) return;
+      isClosed = true;
       clearInterval(timer);
       // Retry the final drain a few times before closing the DB. The
       // old behavior flushed once and silently dropped anything the

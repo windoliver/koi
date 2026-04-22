@@ -2355,6 +2355,25 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           mkdirSync(parent, { recursive: true });
         }
         violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
+        // Register close on manifest shutdown so `runtime.dispose()`
+        // drains the buffer and releases the SQLite handle. Without
+        // this, non-TUI embeddings that use `runtime.dispose()` as the
+        // terminal lifecycle boundary would leak the timer/handle and
+        // drop the final buffered entries — `shutdownBackgroundTasks()`
+        // below is TUI-specific. close() is idempotent so the parallel
+        // call paths are safe.
+        const storeForHook = violationStore;
+        manifestMiddlewareShutdownHooks.push(() => {
+          try {
+            storeForHook.close();
+          } catch (err) {
+            console.warn(
+              `[koi/${hostId}] ViolationStore dispose-time close failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(

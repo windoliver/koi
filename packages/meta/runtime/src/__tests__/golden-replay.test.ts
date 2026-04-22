@@ -1467,12 +1467,16 @@ describe("audit-log entries sidecar (golden file)", () => {
     expect(kinds).toContain("session_end");
   });
 
-  test("all entries have schema_version=1 and required fields", async () => {
+  test("all entries have schema_version=2 and required fields", async () => {
+    // v2 introduced the `compliance_event` kind (PR #1393). Producers
+    // bumped per the L0 contract ("increment when the shape changes");
+    // the fixture tracks the current producer output so deviations are
+    // caught as a cassette-vs-code drift.
     const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
       readonly entries: readonly Record<string, unknown>[];
     };
     for (const entry of sidecar.entries) {
-      expect(entry.schema_version).toBe(1);
+      expect(entry.schema_version).toBe(2);
       expect(typeof entry.agentId).toBe("string");
       expect(typeof entry.sessionId).toBe("string");
       expect(typeof entry.durationMs).toBe("number");
