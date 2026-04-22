@@ -118,6 +118,7 @@ import {
   validatePluginManifest,
 } from "@koi/plugins";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import type { Cassette } from "@koi/replay";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import {
   createInMemoryTranscript,
@@ -158,7 +159,6 @@ import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.j
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { Cassette } from "../src/cassette/types.js";
 import { createInteractionProvider } from "../src/create-interaction-provider.js";
 import { createHookObserver } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
@@ -791,7 +791,13 @@ async function recordCassette(
   await Bun.write(
     path,
     JSON.stringify(
-      { name, model: cassModel, recordedAt: Date.now(), chunks } satisfies Cassette,
+      {
+        schemaVersion: "cassette-v1",
+        name,
+        model: cassModel,
+        recordedAt: Date.now(),
+        chunks,
+      } satisfies Cassette,
       null,
       2,
     ),
@@ -4752,6 +4758,27 @@ await recordCassette("skills-mcp-bridge", () =>
   }),
 );
 
+// feedback-loop-pass: @koi/middleware-feedback-loop — tool-use turn through
+// feedback-loop MW (pass-through validator). Cassette captures first model call
+// (tool request); replay drives the wrapModelStream + wrapToolCall hooks.
+await recordCassette("feedback-loop-pass", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+          },
+        ],
+      },
+    ],
+    tools: [addTool.descriptor],
+  }),
+);
+
 await recordCassette("exfiltration-guard-block", () =>
   modelAdapter.stream({
     messages: [
@@ -4975,7 +5002,7 @@ await mcpPlatformServer.stop();
 nexusTransport?.close();
 await artifactStore.close();
 
-console.log(`\nDone. ${12 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${13 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
@@ -4990,6 +5017,7 @@ console.log("  fixtures/notebook-read.cassette.json");
 console.log("  fixtures/notebook-add-cell.cassette.json");
 console.log("  fixtures/lsp-hover.cassette.json");
 console.log("  fixtures/browser-snapshot.cassette.json");
+console.log("  fixtures/feedback-loop-pass.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);
 }

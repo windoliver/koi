@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:25.763Z",
+      "timestamp": "2026-04-22T10:13:20.951Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:25.764Z",
+      "timestamp": "2026-04-22T10:13:20.952Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-22T10:01:25.773Z",
+      "timestamp": "2026-04-22T10:13:20.961Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 128,
         "completion_tokens": 7
       },
-      "duration_ms": 1129,
+      "duration_ms": 618,
       "outcome": "success",
       "extra": {
         "totalMessages": 1,
@@ -84,7 +84,7 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-22T10:01:26.909Z",
+      "timestamp": "2026-04-22T10:13:21.586Z",
       "tool_calls": [
         {
           "tool_call_id": "call_add_numbers_3",
@@ -109,9 +109,9 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.910Z",
+      "timestamp": "2026-04-22T10:13:21.587Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 1133.9122499999999,
+      "duration_ms": 623.0499580000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -120,7 +120,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1776852086908,
+        "_original_timestamp": 1776852801585,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -129,7 +129,7 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.915Z",
+      "timestamp": "2026-04-22T10:13:21.592Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "add_numbers({\"a\":3,\"b\":4})",
       "observation": {
@@ -139,7 +139,7 @@
           }
         ]
       },
-      "duration_ms": 2.1487500000000637,
+      "duration_ms": 2.256832999999915,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -164,9 +164,9 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.916Z",
+      "timestamp": "2026-04-22T10:13:21.593Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 1132.661625,
+      "duration_ms": 621.7957079999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -183,7 +183,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1776852086907,
+        "_original_timestamp": 1776852801584,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -192,7 +192,7 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.917Z",
+      "timestamp": "2026-04-22T10:13:21.594Z",
       "model_name": "middleware:permissions",
       "message": "add_numbers({\"a\":3,\"b\":4})",
       "observation": {
@@ -202,7 +202,7 @@
           }
         ]
       },
-      "duration_ms": 1.86912499999994,
+      "duration_ms": 1.9438330000000406,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -222,7 +222,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1776852086914,
+        "_original_timestamp": 1776852801591,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -231,9 +231,9 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.918Z",
+      "timestamp": "2026-04-22T10:13:21.595Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 1131.5217079999998,
+      "duration_ms": 620.6343340000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -242,7 +242,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1776852086906,
+        "_original_timestamp": 1776852801583,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -251,9 +251,9 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.919Z",
+      "timestamp": "2026-04-22T10:13:21.596Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 1131.391125,
+      "duration_ms": 620.4937909999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -269,7 +269,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776852086905,
+        "_original_timestamp": 1776852801582,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -278,7 +278,7 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.920Z",
+      "timestamp": "2026-04-22T10:13:21.597Z",
       "model_name": "middleware:hooks",
       "message": "add_numbers({\"a\":3,\"b\":4})",
       "observation": {
@@ -288,7 +288,7 @@
           }
         ]
       },
-      "duration_ms": 1.032457999999906,
+      "duration_ms": 1.0801669999998467,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -305,7 +305,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776852086913,
+        "_original_timestamp": 1776852801590,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -314,9 +314,9 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.921Z",
+      "timestamp": "2026-04-22T10:13:21.598Z",
       "model_name": "middleware:semantic-retry",
-      "duration_ms": 1131.165375,
+      "duration_ms": 620.261583,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -325,7 +325,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776852086904,
+        "_original_timestamp": 1776852801581,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -334,7 +334,7 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.922Z",
+      "timestamp": "2026-04-22T10:13:21.599Z",
       "model_name": "middleware:semantic-retry",
       "message": "add_numbers({\"a\":3,\"b\":4})",
       "observation": {
@@ -344,7 +344,7 @@
           }
         ]
       },
-      "duration_ms": 0.7547920000001795,
+      "duration_ms": 0.797249999999849,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -353,7 +353,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776852086912,
+        "_original_timestamp": 1776852801589,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -362,9 +362,9 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.923Z",
+      "timestamp": "2026-04-22T10:13:21.600Z",
       "model_name": "middleware:feedback-loop",
-      "duration_ms": 1130.945333,
+      "duration_ms": 620.034875,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -373,7 +373,7 @@
         "phase": "resolve",
         "priority": 450,
         "nextCalled": true,
-        "_original_timestamp": 1776852086903,
+        "_original_timestamp": 1776852801580,
         "__koi": {
           "identifier": "middleware:feedback-loop"
         }
@@ -382,7 +382,7 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:26.924Z",
+      "timestamp": "2026-04-22T10:13:21.601Z",
       "model_name": "middleware:feedback-loop",
       "message": "add_numbers({\"a\":3,\"b\":4})",
       "observation": {
@@ -392,7 +392,7 @@
           }
         ]
       },
-      "duration_ms": 0.7002909999998792,
+      "duration_ms": 0.7398339999999735,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -401,7 +401,7 @@
         "phase": "resolve",
         "priority": 450,
         "nextCalled": true,
-        "_original_timestamp": 1776852086911,
+        "_original_timestamp": 1776852801588,
         "__koi": {
           "identifier": "middleware:feedback-loop"
         }
@@ -410,7 +410,7 @@
     {
       "step_id": 15,
       "source": "agent",
-      "timestamp": "2026-04-22T10:01:26.925Z",
+      "timestamp": "2026-04-22T10:13:21.602Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"result\":7}",
       "observation": {
@@ -421,10 +421,10 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 156,
+        "prompt_tokens": 157,
         "completion_tokens": 2
       },
-      "duration_ms": 498,
+      "duration_ms": 476,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -439,15 +439,15 @@
         "responseModel": "google/gemini-2.0-flash-001",
         "promptPrefixFingerprint": "62b48aff4a734f1e2df469fa314ce046931abffb84c3ccce7ee7affc89d0330a",
         "turnIndex": 1,
-        "_original_timestamp": 1776852086917
+        "_original_timestamp": 1776852801594
       }
     },
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:27.421Z",
+      "timestamp": "2026-04-22T10:13:22.076Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 508.1573330000001,
+      "duration_ms": 487.0195419999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -464,9 +464,9 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:27.422Z",
+      "timestamp": "2026-04-22T10:13:22.077Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 508.1469159999999,
+      "duration_ms": 487.00016600000004,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -483,7 +483,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1776852087420,
+        "_original_timestamp": 1776852802075,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -492,9 +492,9 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:27.423Z",
+      "timestamp": "2026-04-22T10:13:22.078Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 508.0584160000003,
+      "duration_ms": 486.81375000000025,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -503,7 +503,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1776852087419,
+        "_original_timestamp": 1776852802074,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -512,9 +512,9 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:27.424Z",
+      "timestamp": "2026-04-22T10:13:22.079Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 508.0448329999999,
+      "duration_ms": 486.78966700000024,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -530,7 +530,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776852087418,
+        "_original_timestamp": 1776852802073,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -539,9 +539,9 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:27.425Z",
+      "timestamp": "2026-04-22T10:13:22.080Z",
       "model_name": "middleware:semantic-retry",
-      "duration_ms": 508.01145799999995,
+      "duration_ms": 486.683542,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -550,7 +550,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776852087417,
+        "_original_timestamp": 1776852802072,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -559,9 +559,9 @@
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:27.426Z",
+      "timestamp": "2026-04-22T10:13:22.081Z",
       "model_name": "middleware:feedback-loop",
-      "duration_ms": 508.0024590000003,
+      "duration_ms": 486.6667500000003,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -570,7 +570,7 @@
         "phase": "resolve",
         "priority": 450,
         "nextCalled": true,
-        "_original_timestamp": 1776852087416,
+        "_original_timestamp": 1776852802071,
         "__koi": {
           "identifier": "middleware:feedback-loop"
         }
@@ -579,7 +579,7 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-22T10:01:27.427Z",
+      "timestamp": "2026-04-22T10:13:22.082Z",
       "model_name": "middleware:hooks",
       "observation": {
         "results": [
@@ -588,7 +588,7 @@
           }
         ]
       },
-      "duration_ms": 0.04500000000007276,
+      "duration_ms": 0.13416700000016135,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -597,7 +597,7 @@
         "phase": "resolve",
         "priority": 400,
         "stopGateResult": "continue",
-        "_original_timestamp": 1776852087423,
+        "_original_timestamp": 1776852802078,
         "__koi": {
           "identifier": "middleware:hooks"
         }

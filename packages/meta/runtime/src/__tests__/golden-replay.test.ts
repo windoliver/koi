@@ -12036,6 +12036,100 @@ describe("Golden: @koi/middleware-feedback-loop", () => {
     ).toBe(false);
   });
 
+  test("MW composes through createKoi with feedback-loop-pass cassette", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const cassette = await loadCassette(`${FIXTURES}/feedback-loop-pass.cassette.json`);
+    const trajDir = `/tmp/koi-feedback-loop-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-feedback-loop";
+
+    const store = createAtifDocumentStore(
+      { agentName: "feedback-loop-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "feedback-loop-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    const feedbackHandle = createFeedbackLoopMiddleware({
+      validators: [{ name: "pass-through", validate: (_response) => ({ valid: true }) }],
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks, { secondCallText: "7" });
+
+    const runtime = await createKoi({
+      manifest: { name: "feedback-loop-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, feedbackHandle, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+
+    // feedback-loop spans present
+    expect(mwNames.has("feedback-loop")).toBe(true);
+
+    // permissions still works alongside
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool call executed successfully through feedback-loop chain
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Model steps present
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // wrapModelStream span present (validator ran)
+    const feedbackSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "feedback-loop");
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span present (tool health check ran)
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (pass-through validator)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  }, 15000);
+
   test("feedback-loop-pass trajectory: middleware spans appear for both wrapModelStream and wrapToolCall", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
