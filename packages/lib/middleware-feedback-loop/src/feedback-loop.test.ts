@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { SessionContext, TurnContext } from "@koi/core";
 import { runId, sessionId, turnId } from "@koi/core";
 import type { BrickId } from "@koi/core/brick-snapshot";
-import type { ModelRequest, ModelResponse, ToolRequest, ToolResponse } from "@koi/core/middleware";
+import type {
+  ModelChunk,
+  ModelRequest,
+  ModelResponse,
+  ToolRequest,
+  ToolResponse,
+} from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
 import { createFeedbackLoopMiddleware } from "./feedback-loop.js";
@@ -165,6 +171,39 @@ describe("createFeedbackLoopMiddleware", () => {
 
       expect(next).toHaveBeenCalledTimes(3);
       expect(result).toBeDefined();
+    });
+
+    it("wrapModelStream passes through even when validators are configured", async () => {
+      const skipCallback = mock(() => {});
+      const validator: Validator = {
+        name: "v",
+        validate(_r: ModelResponse): ValidationResult {
+          return { valid: true };
+        },
+      };
+
+      const mw = createFeedbackLoopMiddleware({
+        validators: [validator],
+        onStreamValidationSkipped: skipCallback,
+      });
+
+      const chunks: ModelChunk[] = [{ kind: "text", text: "hello" }];
+      const next = async function* (_req: ModelRequest): AsyncIterable<ModelChunk> {
+        for (const c of chunks) yield c;
+      };
+
+      const collected: ModelChunk[] = [];
+      const ctx = mockTurnCtx();
+      if (mw.wrapModelStream !== undefined) {
+        for await (const chunk of mw.wrapModelStream(ctx, mockModelRequest(), next)) {
+          collected.push(chunk);
+        }
+      }
+
+      // Stream must pass through intact (not errored)
+      expect(collected).toEqual(chunks);
+      // Callback must fire to make the skip observable
+      expect(skipCallback).toHaveBeenCalledTimes(1);
     });
 
     it("throws when a gate fails (not retried)", async () => {

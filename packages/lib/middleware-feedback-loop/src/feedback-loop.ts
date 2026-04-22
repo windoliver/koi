@@ -161,24 +161,16 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       });
     },
 
-    // Fail closed: when validators or gates are configured, streaming cannot be validated
-    // (validators need a complete ModelResponse). Yield a non-retryable error so callers
-    // get an explicit failure rather than a silent policy bypass. Callers that need
-    // real-time streaming must leave validators/gates unconfigured and use wrapModelCall
-    // for validated responses.
+    // Validators and gates require a complete ModelResponse and cannot run on a stream.
+    // Streaming calls always pass through. When validators/gates are configured,
+    // onStreamValidationSkipped fires so callers can observe the skip.
     async *wrapModelStream(
       _ctx: ModelCallCtx,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       if (hasModelChecks(config)) {
-        yield {
-          kind: "error",
-          message:
-            "Streaming is not supported when validators or gates are configured. Use wrapModelCall instead.",
-          retryable: false,
-        };
-        return;
+        config.onStreamValidationSkipped?.();
       }
       yield* next(request);
     },

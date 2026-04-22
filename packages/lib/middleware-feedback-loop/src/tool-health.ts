@@ -227,9 +227,6 @@ const DEFAULT_ERROR_RATE_DELTA = 0.05;
 const DEFAULT_FLUSH_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_CONSECUTIVE_FLUSH_FAILURES = 5;
 const DEFAULT_FLUSH_SUSPENSION_COOLDOWN_MS = 60_000;
-// Negative-result quarantine cache TTL: healthy tools avoid a store read on every call.
-// Short enough (10s) that an operator quarantine via store update takes effect quickly.
-const QUARANTINE_NEGATIVE_TTL_MS = 10_000;
 
 export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTracker {
   const {
@@ -261,9 +258,6 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   const stateMap = new Map<string, ToolState>();
   // Session-local brick-level quarantine (covers aliases)
   const quarantinedBricks = new Set<BrickId>();
-  // Negative cache: timestamp when we last confirmed a brick was NOT quarantined.
-  // Avoids a store read on every healthy tool call; expires in QUARANTINE_NEGATIVE_TTL_MS.
-  const notQuarantinedAt = new Map<BrickId, number>();
   // Tracks in-flight quarantine/demotion persistence promises so dispose() can await them.
   const pendingHealthWrites = new Set<Promise<unknown>>();
 
@@ -646,19 +640,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       if (bId === undefined) return false;
       // in-memory set populated by checkAndQuarantine_ this session
       if (quarantinedBricks.has(bId)) return true;
-      // Negative cache: if we recently confirmed not-quarantined, skip the store read.
-      // Positive results (quarantine) are never cached — operators can unquarantine via
-      // the store and it takes effect within QUARANTINE_NEGATIVE_TTL_MS.
-      const lastChecked = notQuarantinedAt.get(bId);
-      if (lastChecked !== undefined && clock() - lastChecked < QUARANTINE_NEGATIVE_TTL_MS) {
-        return false;
-      }
+      // Always recheck the store — no caching. Positive or negative caching would delay
+      // operator-triggered quarantine changes from taking effect in active sessions.
       const loadResult = await forgeStore.load(bId);
-      const quarantined = loadResult.ok && loadResult.value.lifecycle === "quarantined";
-      if (!quarantined) {
-        notQuarantinedAt.set(bId, clock());
-      }
-      return quarantined;
+      return loadResult.ok && loadResult.value.lifecycle === "quarantined";
     },
 
     getSnapshot(toolId: string): ToolHealthSnapshot | undefined {
@@ -762,10 +747,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     state.healthState = "quarantined";
     const bId = resolveBrickId(toolId);
     if (bId !== undefined) {
-      // Record brick-level quarantine so all aliases of this brick are blocked.
-      // Invalidate negative cache so the quarantine takes immediate effect.
+      // Record brick-level quarantine so all aliases of this brick are blocked
       quarantinedBricks.add(bId);
-      notQuarantinedAt.delete(bId);
       // Best-effort persist — errors are reported via onHealthTransitionError
       await persistQuarantine(toolId, bId, metrics);
       // Notify caller after session quarantine is confirmed (persist is best-effort)
@@ -816,11 +799,15 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     // quarantine and demotion are independent: a quarantined tool must still have its trust
     // tier demoted so the lower tier persists across session rollover and unquarantine.
     const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
+    // Mirror computeHealthAction: lastPromotedAt === 0 means no promotion observed this
+    // session — skip the grace period so chronically bad tools are not shielded.
+    const graceOk =
+      state.lastPromotedAt === 0 || now - state.lastPromotedAt >= demotionCriteria.gracePeriodMs;
     const canDemote =
       toTier !== undefined &&
       errorRate >= demotionCriteria.errorRateThreshold &&
       metrics.totalCount >= demotionCriteria.minSampleSize &&
-      now - state.lastPromotedAt >= demotionCriteria.gracePeriodMs &&
+      graceOk &&
       now - state.lastDemotedAt >= demotionCriteria.demotionCooldownMs;
 
     if (!canDemote) return false;

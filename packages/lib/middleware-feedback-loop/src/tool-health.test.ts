@@ -354,6 +354,37 @@ describe("createToolHealthTracker", () => {
     expect(forgeStore.data.get(BID)?.trustTier).toBe("community");
   });
 
+  it("demotes when lastPromotedAt is 0 (fresh session) even with non-zero gracePeriodMs", async () => {
+    // Regression: checkAndDemote_() had an unconditional grace check that blocked demotion
+    // in fresh sessions because now - 0 < gracePeriodMs when now is small. The fix mirrors
+    // computeHealthAction: lastPromotedAt === 0 skips the grace gate entirely.
+    const forgeStore = makeForgeStore();
+    await forgeStore.save(makeBrickArtifact(BID));
+
+    const demotions: string[] = [];
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore,
+      snapshotChainStore: makeSnapshotStore(),
+      demotionCriteria: {
+        errorRateThreshold: 0.3,
+        windowSize: 5,
+        minSampleSize: 3,
+        gracePeriodMs: 60_000, // 60s grace — would block if lastPromotedAt=0 were a real ts
+        demotionCooldownMs: 0,
+      },
+      onDemotion: (e) => demotions.push(e.to),
+      clock: () => 100, // now=100 < gracePeriodMs=60_000, but lastPromotedAt=0 → skip gate
+    });
+
+    for (let i = 0; i < 4; i++) tracker.recordFailure(TOOL_ID, 10, "err");
+    tracker.recordSuccess(TOOL_ID, 10);
+
+    const demoted = await tracker.checkAndDemote(TOOL_ID);
+    expect(demoted).toBe(true);
+    expect(demotions[0]).toBe("community");
+  });
+
   it("demotes trust tier even when tool is already session-quarantined", async () => {
     const forgeStore = makeForgeStore();
     await forgeStore.save(makeBrickArtifact(BID));
@@ -407,7 +438,7 @@ describe("createToolHealthTracker", () => {
     expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
   });
 
-  it("isQuarantined negative cache: skips store read for healthy tools within TTL", async () => {
+  it("isQuarantined re-checks forgeStore on every call so operator quarantine is immediate", async () => {
     let loadCount = 0;
     const base = makeForgeStore();
     const forgeStore = {
@@ -418,61 +449,17 @@ describe("createToolHealthTracker", () => {
       },
     } as typeof base;
 
-    let now = 0;
     const tracker = createToolHealthTracker({
       resolveBrickId: () => BID,
       forgeStore,
       snapshotChainStore: makeSnapshotStore(),
-      clock: () => now,
     });
 
-    // First call: store read required (cold)
-    await tracker.isQuarantined(TOOL_ID);
-    expect(loadCount).toBe(1);
-
-    // Subsequent calls within TTL: served from negative cache
+    // Brick not quarantined — re-checked on every call (no caching)
     await tracker.isQuarantined(TOOL_ID);
     await tracker.isQuarantined(TOOL_ID);
-    expect(loadCount).toBe(1); // no additional store reads
-
-    // Advance clock past TTL (10_000ms) — cache expires, store re-checked
-    now = 11_000;
     await tracker.isQuarantined(TOOL_ID);
-    expect(loadCount).toBe(2);
-  });
-
-  it("isQuarantined negative cache: quarantine set in store is visible after TTL expiry", async () => {
-    let loadCount = 0;
-    const base = makeForgeStore();
-    const forgeStore = {
-      ...base,
-      load: async (id: BrickId) => {
-        loadCount++;
-        return base.load(id);
-      },
-    } as typeof base;
-
-    let now = 0;
-    const tracker = createToolHealthTracker({
-      resolveBrickId: () => BID,
-      forgeStore,
-      snapshotChainStore: makeSnapshotStore(),
-      clock: () => now,
-    });
-
-    // First call: not quarantined → negative cache set
-    expect(await tracker.isQuarantined(TOOL_ID)).toBe(false);
-
-    // Operator quarantines brick in store
-    const quarantinedBrick = { ...makeBrickArtifact(BID), lifecycle: "quarantined" as const };
-    await base.save(quarantinedBrick);
-
-    // Within TTL: still returns false (cached)
-    expect(await tracker.isQuarantined(TOOL_ID)).toBe(false);
-
-    // After TTL: re-checks store and sees quarantine
-    now = 11_000;
-    expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
+    expect(loadCount).toBe(3);
   });
 
   it("isQuarantined reflects operator unquarantine immediately (no positive cache)", async () => {
