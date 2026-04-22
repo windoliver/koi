@@ -2414,6 +2414,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     activeController?.abort();
     activeController = null;
 
+    // Clear session-scoped spawn tracking so stale children from the old
+    // session cannot influence SIGINT grace policy in the new session (#1999).
+    sessionLiveSpawnIds.clear();
+    spawnGraceUsed = false;
+
     // Cancel any pending permission prompts and dismiss the modal so a
     // session reset (`agent:clear`, `session:new`, resume) doesn't leave
     // the user stuck behind a stale 60-minute approval window. The bridge
@@ -3326,9 +3331,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
-        // Reset the one-shot grace flag each drain so each new turn gets
-        // one reset-to-idle opportunity if a spawn outlives the window (#1999).
-        spawnGraceUsed = false;
+        // Reset the one-shot grace flag only when no spawns survived from
+        // prior drains. If a wedged child is still live, the grace was already
+        // consumed and must not be re-granted — otherwise the force-exit path
+        // is unreachable for truly stuck children (#1999 r12).
+        if (sessionLiveSpawnIds.size === 0) {
+          spawnGraceUsed = false;
+        }
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;
