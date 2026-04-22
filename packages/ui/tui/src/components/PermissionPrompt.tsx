@@ -62,6 +62,14 @@ export function computePermissionPromptWidth(terminalCols: number): number {
   return Math.min(PERMISSION_PROMPT_WIDTH, Math.max(available, PERMISSION_PROMPT_MIN_WIDTH));
 }
 
+/**
+ * Modal widths below this threshold trigger the stacked (vertical) layout for
+ * title metadata and key hints. The horizontal hints row needs ~76 columns;
+ * stacking below 50 keeps all approval actions visible at 40-col terminal size.
+ * Exported for unit testing.
+ */
+export const PERMISSION_PROMPT_NARROW_THRESHOLD = 50;
+
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
   medium: COLORS.amber,
@@ -156,6 +164,10 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
     computePermissionPromptWidth(props.terminalWidth ?? PERMISSION_PROMPT_WIDTH)
   );
 
+  // Stacked layout when the computed modal width is below the threshold where
+  // horizontal hint rows would overflow. (#1913)
+  const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
+
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
@@ -176,28 +188,38 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       width={modalWidth()}
       {...MODAL_POSITION}
     >
-      {/* Title */}
-      <box flexDirection="row" gap={1}>
-        <text fg={COLORS.white}><b>{"Permission Required"}</b></text>
-        <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
-        {/* Counter hint — shows queue position when multiple prompts are
-            pending in the bridge queue, OR the monotonically incrementing
-            sequence number when prompts arrive one at a time (the common
-            engine-serialized case). Lets the user tell that the prompt
-            that appeared after pressing y is a NEW tool call, not a
-            re-render of the same one. (#1759) */}
-        <Show
-          when={(props.prompt.queueDepth ?? 0) > 1}
-          fallback={
-            <Show when={props.prompt.sequenceNumber !== undefined}>
-              <text fg={COLORS.amber}>{`#${props.prompt.sequenceNumber}`}</text>
-            </Show>
-          }
-        >
-          <text fg={COLORS.amber}>
-            {`(${props.prompt.queuePosition ?? 1} of ${props.prompt.queueDepth})`}
-          </text>
-        </Show>
+      {/* Title — stacks risk label below the heading on narrow terminals so
+          "Permission Required [MEDIUM] (1 of 9)" (38+ chars) never clips. */}
+      <box flexDirection={isNarrow() ? "column" : "row"} gap={isNarrow() ? 0 : 1}>
+        <box flexDirection="row" gap={1}>
+          <text fg={COLORS.white}><b>{"Permission Required"}</b></text>
+          <Show when={!isNarrow()}>
+            <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
+          </Show>
+        </box>
+        <box flexDirection="row" gap={1}>
+          <Show when={isNarrow()}>
+            <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
+          </Show>
+          {/* Counter hint — shows queue position when multiple prompts are
+              pending in the bridge queue, OR the monotonically incrementing
+              sequence number when prompts arrive one at a time (the common
+              engine-serialized case). Lets the user tell that the prompt
+              that appeared after pressing y is a NEW tool call, not a
+              re-render of the same one. (#1759) */}
+          <Show
+            when={(props.prompt.queueDepth ?? 0) > 1}
+            fallback={
+              <Show when={props.prompt.sequenceNumber !== undefined}>
+                <text fg={COLORS.amber}>{`#${props.prompt.sequenceNumber}`}</text>
+              </Show>
+            }
+          >
+            <text fg={COLORS.amber}>
+              {`(${props.prompt.queuePosition ?? 1} of ${props.prompt.queueDepth})`}
+            </text>
+          </Show>
+        </box>
       </box>
 
       {/* Tool info */}
@@ -223,17 +245,34 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         </box>
       </Show>
 
-      {/* Key hints — always-allow copy explicitly names the tool and scope */}
+      {/* Key hints — stacked on narrow terminals so all actions remain visible.
+          Wide: single row "[y] Allow once  [n] Deny  [a]...  [Esc]"
+          Narrow: one hint per line so each fits within the clamped box. */}
       <Show when={props.focused}>
-        <box flexDirection="row" marginTop={1} gap={2}>
-          <text fg={COLORS.success}>{"[y] Allow once"}</text>
-          <text fg={COLORS.danger}>{"[n] Deny"}</text>
-          <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
-          <Show when={permanentAvailable()}>
-            <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
-          </Show>
-          <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
-        </box>
+        <Show
+          when={!isNarrow()}
+          fallback={
+            <box flexDirection="column" marginTop={1}>
+              <text fg={COLORS.success}>{"[y] Allow once"}</text>
+              <text fg={COLORS.danger}>{"[n] Deny"}</text>
+              <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
+              <Show when={permanentAvailable()}>
+                <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
+              </Show>
+              <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
+            </box>
+          }
+        >
+          <box flexDirection="row" marginTop={1} gap={2}>
+            <text fg={COLORS.success}>{"[y] Allow once"}</text>
+            <text fg={COLORS.danger}>{"[n] Deny"}</text>
+            <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
+            <Show when={permanentAvailable()}>
+              <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
+            </Show>
+            <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
+          </box>
+        </Show>
       </Show>
     </box>
   );

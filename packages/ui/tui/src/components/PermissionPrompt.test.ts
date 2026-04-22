@@ -3,6 +3,7 @@ import {
   computePermissionPromptWidth,
   formatInputPreview,
   normalizeReason,
+  PERMISSION_PROMPT_NARROW_THRESHOLD,
   PERMISSION_PROMPT_WIDTH,
   processPermissionKey,
 } from "./PermissionPrompt.js";
@@ -50,6 +51,32 @@ describe("computePermissionPromptWidth", () => {
       const w = computePermissionPromptWidth(cols);
       expect(LEFT + w + BORDER).toBeLessThanOrEqual(cols);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PERMISSION_PROMPT_NARROW_THRESHOLD — responsive layout contract (#1913)
+// ---------------------------------------------------------------------------
+
+describe("PERMISSION_PROMPT_NARROW_THRESHOLD", () => {
+  test("40-col terminal produces a modal width below the threshold → stacked layout", () => {
+    // computePermissionPromptWidth(40) = 36, which is < PERMISSION_PROMPT_NARROW_THRESHOLD(50).
+    expect(computePermissionPromptWidth(40)).toBeLessThan(PERMISSION_PROMPT_NARROW_THRESHOLD);
+  });
+
+  test("wide terminal produces a modal width at or above the threshold → horizontal layout", () => {
+    // computePermissionPromptWidth(100) = PERMISSION_PROMPT_WIDTH(60) >= 50.
+    expect(computePermissionPromptWidth(100)).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_NARROW_THRESHOLD,
+    );
+    expect(computePermissionPromptWidth(64)).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_NARROW_THRESHOLD,
+    );
+  });
+
+  test("threshold is between the narrow and wide breakpoints", () => {
+    expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeGreaterThan(36); // 40-col modal width
+    expect(PERMISSION_PROMPT_NARROW_THRESHOLD).toBeLessThanOrEqual(PERMISSION_PROMPT_WIDTH);
   });
 });
 
