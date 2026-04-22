@@ -39,12 +39,25 @@ const CREATE_INDEX_TS_KIND = `
   ON audit_log(timestamp, kind)
 `;
 
+interface TableInfoRow {
+  readonly name: string;
+}
+
 /** Initialize the audit schema and WAL mode on the given database. */
 export function initAuditSchema(db: Database): void {
   db.run(PRAGMA_WAL);
   db.run(CREATE_TABLE);
   db.run(CREATE_INDEX_SESSION);
   db.run(CREATE_INDEX_TS_KIND);
+  // Forward-compat migration for DBs created before `canonical_json`
+  // was added (commit c28ddc5bd). CREATE TABLE IF NOT EXISTS is a
+  // no-op when the table already exists, so a legacy DB never gets
+  // the new column without an explicit ALTER. Old rows get NULL here;
+  // `AuditLogRow.canonical_json` is already typed `string | null`.
+  const cols = db.prepare("PRAGMA table_info(audit_log)").all() as readonly TableInfoRow[];
+  if (!cols.some((c) => c.name === "canonical_json")) {
+    db.run("ALTER TABLE audit_log ADD COLUMN canonical_json TEXT");
+  }
 }
 
 /** Prepared insert statement for batch operations. */

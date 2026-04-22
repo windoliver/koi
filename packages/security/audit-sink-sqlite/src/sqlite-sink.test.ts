@@ -1,5 +1,7 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { AuditEntry } from "@koi/core";
+import { initAuditSchema } from "./schema.js";
 import { createSqliteAuditSink } from "./sqlite-sink.js";
 
 // ---------------------------------------------------------------------------
@@ -104,6 +106,42 @@ describe("createSqliteAuditSink", () => {
     void sink.log(makeEntry());
     sink.close();
     expect(true).toBe(true);
+  });
+
+  test("legacy DB missing canonical_json column is migrated", async () => {
+    // Build a DB with the pre-c28ddc5bd schema (no canonical_json)
+    // and verify initAuditSchema adds the column via ALTER TABLE.
+    const db = new Database(":memory:");
+    db.run(`CREATE TABLE audit_log (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      schema_version INTEGER NOT NULL,
+      timestamp      INTEGER NOT NULL,
+      session_id     TEXT    NOT NULL,
+      agent_id       TEXT    NOT NULL,
+      turn_index     INTEGER NOT NULL,
+      kind           TEXT    NOT NULL,
+      request        TEXT,
+      response       TEXT,
+      error          TEXT,
+      duration_ms    INTEGER NOT NULL,
+      prev_hash      TEXT,
+      signature      TEXT,
+      metadata       TEXT
+    )`);
+
+    // Sanity check: column absent before migration.
+    interface Col {
+      readonly name: string;
+    }
+    const before = db.prepare("PRAGMA table_info(audit_log)").all() as readonly Col[];
+    expect(before.some((c) => c.name === "canonical_json")).toBe(false);
+
+    initAuditSchema(db);
+
+    const after = db.prepare("PRAGMA table_info(audit_log)").all() as readonly Col[];
+    expect(after.some((c) => c.name === "canonical_json")).toBe(true);
+
+    db.close();
   });
 
   test("multiple entries preserve insertion order", async () => {
