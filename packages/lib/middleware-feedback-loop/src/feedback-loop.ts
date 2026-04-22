@@ -35,8 +35,10 @@ function hasModelChecks(config: FeedbackLoopConfig): boolean {
 }
 
 function hasTransportRetry(config: FeedbackLoopConfig): boolean {
+  // transportMaxAttempts semantics: 0 = no retries, 1 = one retry, etc.
+  // Any explicitly set value >= 1 means the caller wants at least one transport retry.
   const maxAttempts = config.retry?.transport?.maxAttempts;
-  return maxAttempts !== undefined && maxAttempts > 1;
+  return maxAttempts !== undefined && maxAttempts >= 1;
 }
 
 function hasToolChecks(config: FeedbackLoopConfig): boolean {

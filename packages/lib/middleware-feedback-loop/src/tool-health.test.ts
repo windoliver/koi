@@ -407,7 +407,7 @@ describe("createToolHealthTracker", () => {
     expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
   });
 
-  it("isQuarantined re-checks forgeStore each call for negative results (no stale cache)", async () => {
+  it("isQuarantined negative cache: skips store read for healthy tools within TTL", async () => {
     let loadCount = 0;
     const base = makeForgeStore();
     const forgeStore = {
@@ -418,28 +418,61 @@ describe("createToolHealthTracker", () => {
       },
     } as typeof base;
 
+    let now = 0;
     const tracker = createToolHealthTracker({
       resolveBrickId: () => BID,
       forgeStore,
       snapshotChainStore: makeSnapshotStore(),
+      clock: () => now,
     });
 
-    // Brick not quarantined — negative result must NOT be cached
+    // First call: store read required (cold)
     await tracker.isQuarantined(TOOL_ID);
-    await tracker.isQuarantined(TOOL_ID);
-    await tracker.isQuarantined(TOOL_ID);
-    expect(loadCount).toBe(3); // re-checked each call so external quarantine is visible
+    expect(loadCount).toBe(1);
 
-    // Now quarantine the brick in the store
+    // Subsequent calls within TTL: served from negative cache
+    await tracker.isQuarantined(TOOL_ID);
+    await tracker.isQuarantined(TOOL_ID);
+    expect(loadCount).toBe(1); // no additional store reads
+
+    // Advance clock past TTL (10_000ms) — cache expires, store re-checked
+    now = 11_000;
+    await tracker.isQuarantined(TOOL_ID);
+    expect(loadCount).toBe(2);
+  });
+
+  it("isQuarantined negative cache: quarantine set in store is visible after TTL expiry", async () => {
+    let loadCount = 0;
+    const base = makeForgeStore();
+    const forgeStore = {
+      ...base,
+      load: async (id: BrickId) => {
+        loadCount++;
+        return base.load(id);
+      },
+    } as typeof base;
+
+    let now = 0;
+    const tracker = createToolHealthTracker({
+      resolveBrickId: () => BID,
+      forgeStore,
+      snapshotChainStore: makeSnapshotStore(),
+      clock: () => now,
+    });
+
+    // First call: not quarantined → negative cache set
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(false);
+
+    // Operator quarantines brick in store
     const quarantinedBrick = { ...makeBrickArtifact(BID), lifecycle: "quarantined" as const };
     await base.save(quarantinedBrick);
-    loadCount = 0;
 
-    // All three calls must hit the store — positive results are never cached
+    // Within TTL: still returns false (cached)
+    expect(await tracker.isQuarantined(TOOL_ID)).toBe(false);
+
+    // After TTL: re-checks store and sees quarantine
+    now = 11_000;
     expect(await tracker.isQuarantined(TOOL_ID)).toBe(true);
-    await tracker.isQuarantined(TOOL_ID);
-    await tracker.isQuarantined(TOOL_ID);
-    expect(loadCount).toBe(3);
   });
 
   it("isQuarantined reflects operator unquarantine immediately (no positive cache)", async () => {
