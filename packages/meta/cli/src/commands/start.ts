@@ -310,6 +310,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // Absolute-deadline accessor used by both the engine run and the
   // post-run backstop to keep total runtime under --max-duration-ms.
   // (deadlineAt + remainingBudget defined above.)
+  // Code 6 (SCHEMA_VALIDATION) is intentionally excluded: it is only set
+  // post-run by the schema-validation block, never via the bail() path.
   const bail = async (message: string, headlessCode: 1 | 2 | 3 | 4 | 5 = 5): Promise<ExitCode> => {
     // Latch BEFORE clearing so any already-queued bootstrap timer callback
     // sees the phase-complete flag and no-ops. clearTimeout alone cannot
@@ -1146,7 +1148,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
                 rawAssistantOverflow = true;
                 return;
               }
-              rawAssistantParts.push(text);
+              rawAssistantParts.push(text); // let — streaming accumulation bounded by 1 MB cap above
               rawAssistantPartsBytes += chunkBytes;
             }
           : undefined,

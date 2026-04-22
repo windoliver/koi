@@ -92,7 +92,7 @@ Emitted for each chunk of text the agent produces.
 Emitted when the agent calls a tool. Args are summarized (type + size) — raw values are not logged to protect CI secrets.
 
 ```json
-{"kind":"tool_call","sessionId":"ses_abc123","toolName":"web_fetch","args":{"type":"object","keys":["url"]}}
+{"kind":"tool_call","sessionId":"ses_abc123","toolName":"web_fetch","args":{"type":"object","size":1}}
 ```
 
 ### `tool_result`
@@ -100,7 +100,7 @@ Emitted when the agent calls a tool. Args are summarized (type + size) — raw v
 Emitted when a tool returns.
 
 ```json
-{"kind":"tool_result","sessionId":"ses_abc123","toolName":"web_fetch","ok":true,"result":{"type":"string","length":4821}}
+{"kind":"tool_result","sessionId":"ses_abc123","toolName":"web_fetch","ok":true,"result":{"type":"string","size":4821}}
 ```
 
 ### `result`
