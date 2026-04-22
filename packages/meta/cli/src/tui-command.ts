@@ -1605,6 +1605,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  if (process.env.KOI_BROWSER_MOCK === "1") {
+    // Require explicit confirmation to prevent accidental enablement via inherited env vars.
+    // Both variables must be present together; KOI_BROWSER_MOCK alone is not enough.
+    if (process.env.KOI_BROWSER_MOCK_CONFIRM !== "1") {
+      process.stderr.write(
+        "\nError: KOI_BROWSER_MOCK=1 requires KOI_BROWSER_MOCK_CONFIRM=1 to also be set.\n" +
+          "  This prevents browser mock mode from being enabled by an inherited environment.\n" +
+          "  To activate: set both KOI_BROWSER_MOCK=1 KOI_BROWSER_MOCK_CONFIRM=1\n\n",
+      );
+      process.exit(2);
+    }
+    process.stderr.write(
+      "\n⚠️  KOI_BROWSER_MOCK=1 — browser tools use a SIMULATED (mock) driver.\n" +
+        "   No real browser is launched. All browser_* results are canned test responses.\n" +
+        "   Do NOT use this mode to verify real browser automation outcomes.\n\n",
+    );
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
