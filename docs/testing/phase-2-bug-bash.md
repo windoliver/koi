@@ -944,14 +944,14 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | default stack; git-backed `$FIXTURE`; dream gate requires ≥ 5 sessions + 24 h — never fires in 2-session run, so file-count assertions are deterministic |
+| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | **isolation manifest** (`stacks: [memory], plugins: []`); git-backed `$FIXTURE`; setup block creates the manifest and passes `--manifest` — no dream, no spawn, no plugin hooks |
 
-**TUI scenarios (S1-S14, S16-S25) run with the full TUI middleware stack** (default stack set, no `--manifest`):
+**TUI scenarios (S1-S14, S16-S24) run with the full TUI middleware stack** (default stack set, no `--manifest`):
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
 
-**S13 and S15** use `koi start` (non-TUI) and activate stacks via `--manifest`. See those scenario headings for their specific stack configuration.
+**S25** uses a `memory`-only isolation manifest (`stacks: [memory], plugins: []`) — see the S25 setup block for details. It does not run the full default stack.
 
-Note: S25's file-count assertions are not affected by `dreamStack` because dream consolidation requires ≥ 5 sessions + 24 h elapsed — the 2-session S25 run never triggers it.
+**S13 and S15** use `koi start` (non-TUI) and activate stacks via `--manifest`. See those scenario headings for their specific stack configuration.
 
 Optional MW (model-router, goal, otel, audit, report) require explicit config — tested in S20-S23.
 
