@@ -78,7 +78,10 @@ tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```bash
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
 ( cd "$FIXTURE" && git reset --hard -q && git clean -fdq )
-rm -rf "$KOI_HOME/.koi/sessions" "$KOI_HOME/.koi/memory"
+rm -rf "$KOI_HOME/.koi/sessions"
+# Memory is file-backed under the fixture's git root, not $KOI_HOME.
+# resolveMemoryDir() writes to <gitRoot>/.koi/memory/ — clear that too.
+rm -rf "$FIXTURE/.koi/memory"
 mkdir -p "$KOI_HOME/.koi/sessions"
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
@@ -349,8 +352,9 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 ### S14 — Memory Deep
 
 > The TUI uses a **file-backed** memory store (`@koi/memory-fs` via `memoryStack`).
-> Each memory is written to `<gitRoot>/.koi/memory/` as a Markdown file with frontmatter.
-> Memories **persist across `/new` resets and process restarts** — this is by design.
+> `resolveMemoryDir(cwd)` locates the store: `<gitRoot>/.koi/memory/` when a git root is found,
+> otherwise `<cwd>/.koi/memory/` (detached fallback). Memories **persist across `/new` resets and
+> process restarts** — this is by design. Run `git rev-parse --show-toplevel` to find the active path.
 > This scenario exercises the full memory tool surface (store, recall, search, delete, dedup, extraction)
 > within a single TUI session. Dream consolidation and team-sync are test-suite only.
 
@@ -373,7 +377,7 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 | Q96 | `Remember my AWS key is AKIAIOSFODNN7EXAMPLE.` | memory_store | Redacted or refused — secret never stored verbatim |
 | Q97 | (have agent run a tool that outputs `[LEARNING:pattern] Always validate input at boundaries`) verify extraction | extraction MW | Transcript shows extracted learning stored as `reference` type (marker-based, confidence 1.0) |
 | Q98 | (have agent run a tool whose output contains `Learned that connection pooling improves throughput`) verify extraction | extraction MW | Heuristic extraction fires ("learned that" pattern, confidence 0.7); stored as `reference` |
-| Q99 | `/new` (reset session) then `What do you remember?` | memory_recall | Returns stored memories — file-backed store persists across `/new`; `.koi/memory/` files untouched |
+| Q99 | `/new` (reset session) then `What do you remember?` | memory_recall | Bun runtime (Q84), return-type feedback (Q85), and senior-engineer user fact (Q87) all recalled; infra-contact (deleted in Q94) absent; AWS key (Q96) still not present verbatim; `.koi/memory/` directory still populated on disk |
 
 **Test-suite only (not via TUI):**
 
@@ -438,7 +442,7 @@ bun run test --filter=@koi/memory-team-sync
 | Q62 | Trajectory view | `/trajectory` (after ≥1 turn) | ATIF steps displayed with kind/duration/outcome |
 | Q63 | Sessions view | Ctrl+S or `/sessions` | Session list renders with recent sessions |
 | Q64 | Command palette | Ctrl+P → type partial command | Fuzzy-filtered command list; Enter executes |
-| Q65 | New session | Ctrl+N or `/new` | Fresh session starts; memory cleared |
+| Q65 | New session | Ctrl+N or `/new` | Fresh session starts; conversation history cleared; **persisted memories survive** (file-backed store is not wiped) |
 
 ### S12 — Resilience & Edge Cases
 
@@ -724,33 +728,49 @@ tmux new-session -d -s "$KOI_SESSION" \
 
 ### S25 — File-Based Memory Persistence
 
-> `@koi/memory-fs` is wired into the TUI via `memoryStack` (`packages/meta/cli/src/preset-stacks/memory.ts`).
-> `createMemoryStore` stores each memory as a Markdown file with frontmatter under `<gitRoot>/.koi/memory/`,
+> `@koi/memory-fs` is wired into the **TUI/runtime** via `memoryStack` (`packages/meta/cli/src/preset-stacks/memory.ts`).
+> `createMemoryStore` stores each memory as a Markdown file with frontmatter under the resolved memory directory,
 > maintains a `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
-> No env-var toggle needed — the file-backed store is always active.
+> `memoryStack` is active in the **default TUI stack set** — it can be disabled via `--manifest` if the manifest
+> omits `memory` from `stacks`. Run with the default stack (no `--manifest` flag) to exercise these scenarios.
+>
+> **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
+> When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$FIXTURE/.koi/memory"` explicitly.
+> Without this flag, dream and TUI operate on **different stores** — tracked as a separate bug.
 
-**Setup**: launch TUI normally (no extra env vars needed).
+**Setup**: `$FIXTURE` must be a git repo. `resolveMemoryDir(cwd)` returns `<gitRoot>/.koi/memory/` when git is found, or `<cwd>/.koi/memory/` as detached fallback. The script below initializes git if needed and stores the resolved path in `$MEMORY_DIR`.
 ```bash
+# Ensure fixture is a git repo — required for worktree-local memory path resolution.
+git -C "$FIXTURE" rev-parse --git-dir >/dev/null 2>&1 || git -C "$FIXTURE" init -q
+
+# Resolve the ACTUAL git root (resolveMemoryDir walks UP to the nearest ancestor .git).
+# Use this root for cleanup/assertions; do NOT assume $FIXTURE itself is the root.
+GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel)
+MEMORY_DIR="$GIT_ROOT/.koi/memory"
+
+# REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
+rm -rf "$MEMORY_DIR"
+mkdir -p "$MEMORY_DIR"
+
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `<gitRoot>/.koi/memory/`; frontmatter has `type: project` |
-| Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file created; `MEMORY.md` index has 2 entries |
-| Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from filesystem) |
+| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$MEMORY_DIR/`; frontmatter has `type: project` |
+| Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index has 2 entries |
+| Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from `$MEMORY_DIR/`) |
 | Q159 | (cross-session persistence) Kill TUI, relaunch, `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
 | Q160 | `Remember: this project uses Bun 1.3 for all scripts.` (near-duplicate of Q156) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
-| Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `.koi/memory/`; `MEMORY.md` index updated to 1 entry |
-| Q162 | (concurrent safety) Rapidly send 3 `Remember: ...` prompts in sequence | memory_store ×3 | All 3 stored without corruption; `MEMORY.md` consistent; no lock contention errors |
-
+| Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
 ### Packages Not Testable via TUI (justified)
 
 The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun run test --filter=@koi/runtime`) and package-level unit tests.
 
 | Package | Reason | Test Approach |
 |---------|--------|---------------|
+| `@koi/memory-fs` (concurrent writes) | Concurrent multi-process write safety requires parallel writers; a single TUI session only exercises sequential turns. | `bun run test --filter=@koi/memory-fs` — unit suite exercises parallel writes via locking primitives |
 | `@koi/dream` | Offline batch memory consolidation job. Requires injected `listMemories`, `writeMemory`, `deleteMemory`, and `modelCall` handles. No triggering surface in TUI or CLI. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation` |
 | `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun run test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
 
@@ -806,7 +826,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q162 | 2 (restart for Q159) | always-on (no env var needed) |
+| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | default stack; no `--manifest` override; git-backed `$FIXTURE` |
 
 **All scenarios run with the full TUI middleware stack:**
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
@@ -905,7 +925,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
-| @koi/memory-fs | **S25** | Q156-Q162 (always-on via `memoryStack`) |
+| @koi/memory-fs | **S25** | Q156-Q161 (`memoryStack` in default stack set; disabled when manifest omits `memory`; concurrent-write safety via unit test) |
 | @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
 | @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
 | @koi/dream | non-TUI | `bun run test --filter=@koi/dream` (offline batch job) |
@@ -1096,7 +1116,7 @@ bun run test --filter=@koi/model-openai-compat # adapter tested via provider sel
 ## 8. Exit Criteria
 
 1. All S1-S25 scenarios run at least once (S18-S20 skip if not wired)
-2. All Q1-Q162 queries executed with pass/fail recorded
+2. All Q1-Q161 TUI queries executed with pass/fail recorded (Q162 moved to unit test — run `bun run test --filter=@koi/memory-fs`)
 3. All S16 golden queries pass (`bun run test --filter=@koi/runtime` green)
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass
