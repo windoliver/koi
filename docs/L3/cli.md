@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/lsp` — `servers` now optional in `LspProviderConfig` (#2005)**: `createLspComponentProvider({ autoDetect: true })` previously crashed with `undefined is not an object (evaluating 'config.servers.map')` when `servers` was omitted. `LspProviderConfig.servers` is now `servers?` and both call sites in `resolveProviderConfig` / `mergeAutoDetected` guard with `?? []`. No CLI surface change — the fix is in the LSP library consumed by runtime's `config.lsp` wiring.
+
 - **playwright / playwright-core bundling fix (tsup.config.ts)**: `playwright` and `playwright-core` added to the CLI's esbuild `external` list. Both packages are only ever loaded via lazy `async import()` inside browser-driver init paths, so marking them external prevents their un-resolvable CJS `chromium-bidi` requires from failing the bundle at build time while leaving startup behavior unchanged.
 
 
