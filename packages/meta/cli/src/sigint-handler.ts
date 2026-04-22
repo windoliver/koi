@@ -128,8 +128,12 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
     deps.onForce();
   };
 
-  const armDoubleTapTimer = (): Timer =>
+  const armDoubleTapTimer = (capturedArmedAt: number): Timer =>
     deps.setTimer(() => {
+      // Guard: bail if the state has moved on since this timer was scheduled.
+      // After a late-spawn re-entry the handler re-arms with a new armedAt; a
+      // delayed callback from the previous arm must not corrupt the new arm.
+      if (state.kind !== "armed" || state.armedAt !== capturedArmedAt) return;
       // Double-tap window elapsed. Behavior depends on host policy:
       //   - stay-armed: clear the double-tap slot but stay in the armed
       //     state. Subsequent taps force until complete() is called.
@@ -137,7 +141,6 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
       //     request; go back to idle so the next SIGINT is a fresh first
       //     tap. Failsafe (if any) is cancelled because there is no
       //     in-flight graceful request to guard anymore.
-      if (state.kind !== "armed") return;
       if (resolveWindowElapsePolicy() === "reset-to-idle") {
         state.failsafeTimer?.cancel();
         state = { kind: "idle" };
@@ -207,7 +210,7 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
             force();
           }, deps.failsafeMs)
         : null;
-    const doubleTapTimer = armDoubleTapTimer();
+    const doubleTapTimer = armDoubleTapTimer(t); // bind timer to this arm's generation
     state = { kind: "armed", failsafeTimer, doubleTapTimer, armedAt: t };
     deps.write("\nInterrupting… (Ctrl+C again to force)\n");
     deps.onGraceful();

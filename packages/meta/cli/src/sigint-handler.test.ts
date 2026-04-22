@@ -563,6 +563,61 @@ describe("createSigintHandler", () => {
     expect(onForce).not.toHaveBeenCalled();
   });
 
+  test("re-entry re-arms with new generation; force-exit still reachable after spawn ends (#1999 generation guard)", () => {
+    // After a late-spawn re-entry the handler cancels the old timer and re-arms
+    // with a fresh generation (new armedAt). The generation guard in
+    // armDoubleTapTimer ensures any stale callback cannot corrupt the new arm.
+    // This test verifies the observable invariant: after re-arm, a second tap
+    // past the new arm's window still forces exit (the new arm is intact).
+    let spawnActive = false;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn. Timer A (generation 0) scheduled.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Advance wall clock past 2000ms without firing any timers.
+    clock.advanceWallOnly(2500);
+    spawnActive = true;
+
+    // Second Ctrl+C triggers re-entry (wall-clock elapsed + reset-to-idle):
+    // Timer A is cancelled, handler re-arms with timer B (generation 2500).
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+
+    // Spawn ends — timer B's window-elapse policy switches to stay-armed.
+    spawnActive = false;
+
+    // Fire timer B (timer A was cancelled during re-entry). With stay-armed
+    // policy, the new arm stays in the armed state (doubleTapTimer cleared).
+    clock.advance(2000);
+
+    // Advance wall clock past timer B's window.
+    clock.advanceWallOnly(2500);
+
+    // Third Ctrl+C: new arm is intact (armed, window elapsed by wall clock,
+    // stay-armed policy) → force-exit. If re-arm was corrupted, this would
+    // arm a third time instead.
+    dynamicHandler.handleSignal();
+    expect(onForce).toHaveBeenCalledTimes(1);
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+  });
+
   test("signals within coalesce window are treated as one tap", () => {
     const coalescingHandler = createSigintHandler({
       onGraceful: () => {
