@@ -1932,6 +1932,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // onSpawnEvent — independent of UI store dispatch success — so SIGINT window-
   // elapse policy is runtime-authoritative and scoped to the current turn (#1999).
   let drainSpawnCount = 0;
+  // let: one-shot flag — true after the first double-tap window elapses with an
+  // active spawn. Provides exactly one grace reset-to-idle to protect against the
+  // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
+  // revert to stay-armed and the force-exit path remains reachable. Reset each drain.
+  let spawnGraceUsed = false;
   // let: preflight latch — set synchronously at onSubmit entry before the
   // first await (runtimeReady / resetBarrier), cleared in finally. Closes
   // the submit-then-switch race where `activeController` is still null
@@ -2137,16 +2142,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
-    // #1999: when a child spawn is still running after the first Ctrl+C, the
-    // drain promise won't resolve until the child finishes. If the child
-    // outlives the 2s double-tap window, stay-armed causes the second Ctrl+C
-    // to force-exit instead of starting a fresh cancellation. Switch to
-    // reset-to-idle while spawns from the current drain are still active so
-    // the window auto-clears; the user's second Ctrl+C is then treated as a
-    // fresh first tap. Uses drainSpawnCount (runtime-authoritative, scoped to
-    // the current drain) rather than the UI store (which can go stale).
-    onWindowElapse: (): "stay-armed" | "reset-to-idle" =>
-      drainSpawnCount > 0 ? "reset-to-idle" : "stay-armed",
+    // #1999: one-shot grace period for spawns that outlive the double-tap window.
+    // When the child is still running 2s after Ctrl+C, a second tap is likely
+    // not intentional — reset to idle so it starts a fresh cancel instead of
+    // forcing exit. But this grace is one-shot (spawnGraceUsed): after the user
+    // has already gotten one grace period, subsequent windows revert to
+    // stay-armed so the force-exit path remains reachable for truly stuck spawns.
+    onWindowElapse: (): "stay-armed" | "reset-to-idle" => {
+      if (drainSpawnCount > 0 && !spawnGraceUsed) {
+        spawnGraceUsed = true;
+        return "reset-to-idle";
+      }
+      return "stay-armed";
+    },
   });
   // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
   // prop) and the `agent:interrupt` command both route through here.
@@ -3315,9 +3323,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
-        // Reset the spawn counter for this drain. onSpawnEvent updates it as
-        // spawn_requested / agent_status_changed events fire during this turn.
+        // Reset the spawn counter and grace flag for this drain. onSpawnEvent
+        // updates drainSpawnCount as spawn_requested / agent_status_changed
+        // events fire; spawnGraceUsed tracks whether the one-shot idle-reset
+        // grace period has been consumed for this turn.
         drainSpawnCount = 0;
+        spawnGraceUsed = false;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;

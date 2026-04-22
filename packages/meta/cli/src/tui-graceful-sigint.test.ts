@@ -446,4 +446,57 @@ describe("createTuiSigintHandler — dynamic onWindowElapse (#1999 spawn regress
     handler.handleSignal(); // still armed → force
     expect(forceCount.n).toBe(1);
   });
+
+  test("force-exit still reachable for wedged spawn: grace is one-shot, then stay-armed (#1999)", () => {
+    // Regression guard for the fix-of-the-fix: the grace reset-to-idle is
+    // consumed exactly once. After that, the window reverts to stay-armed so
+    // the user can force-exit a truly stuck drain with one more rapid double-tap.
+    const spawnActive = true;
+    let graceUsed = false;
+    const timers = createFakeTimers();
+    const forceCount = { n: 0 };
+    const abortCount = { n: 0 };
+    const handler = createTuiSigintHandler({
+      hasActiveForegroundStream: () => true,
+      hasActiveBackgroundTasks: () => false,
+      abortActiveStream: () => {
+        abortCount.n += 1;
+      },
+      onShutdown: () => {},
+      onForce: () => {
+        forceCount.n += 1;
+      },
+      write: () => {},
+      setTimer: timers.setTimer,
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 0,
+      onWindowElapse: () => {
+        if (spawnActive && !graceUsed) {
+          graceUsed = true;
+          return "reset-to-idle"; // one-shot grace
+        }
+        return "stay-armed"; // all subsequent windows: stay armed
+      },
+    });
+
+    // First Ctrl+C — abort stream, child in flight.
+    handler.handleSignal();
+    expect(abortCount.n).toBe(1);
+    expect(forceCount.n).toBe(0);
+
+    // Grace period: 2s elapses, spawn still active → reset-to-idle (grace consumed).
+    timers.advance(2500);
+
+    // Second Ctrl+C — fresh first tap (grace was given). Child still stuck.
+    handler.handleSignal();
+    expect(abortCount.n).toBe(2);
+    expect(forceCount.n).toBe(0);
+
+    // Grace exhausted: 2s elapses again, spawn STILL active → stay-armed now.
+    timers.advance(2500);
+
+    // Third Ctrl+C — still armed → force-exit. Emergency escape is reachable.
+    handler.handleSignal();
+    expect(forceCount.n).toBe(1);
+  });
 });
