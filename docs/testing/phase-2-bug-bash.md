@@ -832,6 +832,12 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
 
+# Clear any plugins installed during prior scenarios (e.g. S9 installs a plugin under
+# $KOI_HOME/.koi/plugins). The §1.5 reset does not remove plugins, so they can bleed into S25
+# and cause memory_store tool calls from plugin hooks to write unexpected .md files,
+# breaking Q156-Q161 file-count assertions.
+rm -rf "$KOI_HOME/.koi/plugins"
+
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 
@@ -852,7 +858,7 @@ if [ "$_S25_PANE_DEAD" = "1" ]; then
 fi
 ```
 
-> **S25 plugin isolation**: `KOI_DISABLE_HOOKS=1` disables user hooks. Plugin-contributed hooks (`pluginComponents.hooks`) are not loaded because the runtime discovers plugins via `join(homedir(), '.koi', 'plugins')`, and `homedir()` returns `$KOI_HOME` (the fake home set by `HOME='$KOI_HOME'` in the tmux launch). No operator-installed plugins are visible. File-count assertions in Q156-Q161 are therefore deterministic without a `--manifest`.
+> **S25 plugin isolation**: `KOI_DISABLE_HOOKS=1` disables user hooks. The setup block also runs `rm -rf "$KOI_HOME/.koi/plugins"` to clear any plugins installed during earlier scenarios (e.g. S9). Plugin discovery is rooted at `join(homedir(), '.koi', 'plugins')`, and `homedir()` returns `$KOI_HOME` (the fake home), so both operator-installed and bug-bash-installed plugins are excluded. File-count assertions in Q156-Q161 are therefore deterministic.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
@@ -860,7 +866,7 @@ fi
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
 | Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
-| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem dedup check**: run the Q160 verification command below; count must be **2** (not 3). **Caveat**: dedup fires only when the model generates the same `name` + `type` as Q156; if the model chooses different values, a third file is written and the check is inconclusive (not a backend regression). For authoritative dedup coverage, run `bun run test --filter=@koi/memory-fs`. |
+| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem dedup check**: run the Q160 verification command below; count must be **2** (not 3). `memory_store` uses a two-stage dedup: first a same-(name,type) collision check, then a broad Jaccard content-similarity scan across ALL existing records (threshold 0.7). The near-identical Q160 content should trigger stage 2 regardless of model-chosen name/type. A count of 3 means dedup failed; treat it as a regression. For deterministic coverage, run `bun run test --filter=@koi/memory-fs`. |
 | Q161 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q161 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
 
 **Q160 / Q161 verification commands** (pipe character cannot be escaped inside GFM table cells — run these in a terminal):
