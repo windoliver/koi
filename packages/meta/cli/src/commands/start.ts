@@ -1209,11 +1209,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         resultSchemaObj !== undefined &&
         !shutdownFailed
       ) {
-        // Flush buffered assistant text before exit: validation never ran, so there is no
-        // "unvalidated output" concern — the agent completed successfully.
-        for (const line of bufferedAssistantTextLines) {
-          process.stdout.write(line);
-        }
+        // Validation never ran — do NOT flush buffered assistant text.
+        // The --result-schema contract: model output only appears when validation passed.
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         finalCode = HEADLESS_EXIT.INTERNAL;
@@ -1222,10 +1219,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           error: "teardown exhausted max-duration-ms; schema validation skipped — check stderr",
         });
       } else if (shutdownFailed) {
-        // Flush buffered text so the model's output is visible before the INTERNAL result.
-        for (const line of bufferedAssistantTextLines) {
-          process.stdout.write(line);
-        }
+        // Validation did not complete — do NOT flush buffered text.
+        // The --result-schema contract: model output only appears when validation passed.
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         finalCode = HEADLESS_EXIT.INTERNAL;
@@ -1295,12 +1290,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           }
         }
       } else {
-        // Non-schema exit (AGENT_FAILURE, PERMISSION_DENIED, TIMEOUT, INTERNAL, or schema
-        // not requested). Flush any buffered assistant_text so the model's diagnostic output
-        // is visible even when --result-schema is active but validation didn't run.
-        for (const line of bufferedAssistantTextLines) {
-          process.stdout.write(line);
-        }
+        // Non-schema exit (AGENT_FAILURE, PERMISSION_DENIED, TIMEOUT, INTERNAL, or schema not
+        // requested). When --result-schema is active, validation did not complete — discard the
+        // buffer. When schema is not active, the buffer is always empty (writeStdoutFn never
+        // pushed to it), so the loop is a no-op anyway.
+        // The --result-schema contract: model output only appears when validation passed.
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         emitResult();

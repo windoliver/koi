@@ -952,9 +952,10 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     }
   }, 2000);
 
-  test("assistant_text is flushed for non-zero exits when --result-schema is active", async () => {
-    // When the agent fails (exit 1) and --result-schema is enabled, the buffered
-    // assistant_text lines must still be flushed so operators see the failure explanation.
+  test("assistant_text buffer is discarded for non-zero exits when --result-schema is active", async () => {
+    // --result-schema contract: model output only appears on stdout when validation passed.
+    // On AGENT_FAILURE the buffer is discarded — no unvalidated text is emitted.
+    // emitResult is called with no override args (exit code comes from the returned object).
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),
     } as ReturnType<typeof Bun.file>);
@@ -988,10 +989,9 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
       if (!(e instanceof ExitError)) throw e;
     }
 
-    // emitResult was called with no override args — exit code comes from the returned object
-    // (AGENT_FAILURE). The key invariant: no schema-failure override was injected.
+    // emitResult called once with no override — AGENT_FAILURE exit, no validationFailed
     expect(emitResultCallCount).toBe(1);
-    expect(capturedEmitArgs).toBeUndefined(); // no exitCode override, no validationFailed
+    expect(capturedEmitArgs).toBeUndefined();
   });
 
   test("onToolResult resets stdout buffer so pre-tool narration is not flushed on success", async () => {

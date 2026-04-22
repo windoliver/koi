@@ -1060,7 +1060,9 @@ describe("runHeadless", () => {
 describe("runHeadless — onRawAssistantText callback", () => {
   const SESSION = "sess-raw-test";
 
-  test("fires with raw delta text before redaction", async () => {
+  test("fires with redacted delta text so schema validation operates on the same bytes as stdout", async () => {
+    // onRawAssistantText receives the post-redaction text — the same bytes written to stdout.
+    // This ensures schema validation is not bypassed by banner-redaction.
     const raw: string[] = [];
     await runAndEmit({
       sessionId: SESSION,
@@ -1076,7 +1078,10 @@ describe("runHeadless — onRawAssistantText callback", () => {
         raw.push(t);
       },
     });
-    expect(raw.join("")).toContain("secret-token-abc");
+    // Banner redaction replaces the secret payload — raw receives "[Turn failed: N chars redacted]",
+    // NOT the original secret text. Both stdout and the validation input are redacted identically.
+    expect(raw.join("")).not.toContain("secret-token-abc");
+    expect(raw.join("")).toContain("chars redacted");
   });
 
   test("fires via done.output.content fallback when no deltas were emitted", async () => {
