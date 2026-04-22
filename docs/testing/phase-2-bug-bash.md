@@ -622,9 +622,11 @@ tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true KOI_REPORT_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
+**Precondition**: S21 requires the task board surface to be active — task-anchor only arms after a successful `task_create` call. Verify Q134 produced at least one `task_create` before running Q135-Q138; if not, retry Q134 with a more explicit instruction.
+
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q134 | `Help me write unit tests for the math module and ensure 100% coverage. Break this into tasks.` | task_create | Model calls `task_create` to decompose into subtasks; task board shows 2+ tasks |
+| Q134 | `Help me write unit tests for the math module and ensure 100% coverage. Use task_create to decompose this into individual tasks.` | task_create | Model calls `task_create` at least once; task board shows 2+ tasks. **Stop and retry if task_create was not called.** |
 | Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write, task_update | Works toward task; model calls `task_update` when done; task status transitions to completed |
 | Q136 | `Tell me about the weather.` (repeat 4× — deliberate idle turns) | none | After ~3 idle turns, task-anchor fires: `<system-reminder>` with task list injected; model re-orients |
 | Q137 | `Use koi_plan_write to create a structured plan for the remaining coverage work.` | koi_plan_write | Model calls `koi_plan_write` with pending/in_progress items; plan injected as system message next turn |
@@ -901,7 +903,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/spawn-tools | **S17** | Q102-Q109 (agent spawning — fully wired in TUI) |
 | @koi/tool-browser | **S18** | Q110-Q117 (wire `createBrowserProvider` into TUI first) |
 | @koi/lsp | **S19** | Q118-Q125 (wire `createLspComponentProvider` into TUI first) |
-| @koi/middleware-task-anchor | **S21** | Q134-Q138 (always wired; task board reminders on idle turns) |
+| @koi/middleware-task-anchor | **S21** | Q134-Q138 (active when task-board surface is enabled; requires task_create call first) |
 | @koi/middleware-planning | **S21** | Q137 (`KOI_PLANNING_ENABLED=true`; `koi_plan_write` tool) |
 | @koi/middleware-report | **S21** | Q139-Q140 (`KOI_REPORT_ENABLED=true`) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
