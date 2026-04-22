@@ -838,4 +838,115 @@ describe("createExtractionMiddleware", () => {
       expect(memory.stored[0]?.content).toBe("Use builder pattern");
     });
   });
+
+  describe("regression fixtures — S14 Q97 and Q98 (issue #1966)", () => {
+    // Exact reproduction scenarios from the issue. These are the inputs that
+    // triggered all three bugs: wrong type, category-as-description, JSON artifact.
+
+    test("S14 Q97: marker extraction from structured spawn output — clean content and correct type", async () => {
+      // Spawn tool returns JSON where a child agent echoed the LEARNING marker
+      // inside the result field. Before the fix: type=feedback (hardcoded for all),
+      // content="Always validate input at boundaries\"}" (JSON artifact).
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse(
+          JSON.stringify({
+            result: "[LEARNING:pattern] Always validate input at boundaries",
+            status: "done",
+          }),
+        ),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(1);
+      const stored = memory.stored[0];
+      expect(stored?.content).toBe("Always validate input at boundaries");
+      expect(stored?.category).toBe("pattern");
+      expect(stored?.type).toBe("feedback");
+    });
+
+    test("S14 Q98: heuristic extraction from structured spawn output — clean content and correct type", async () => {
+      // Spawn tool returns JSON where a child agent echoed the LEARNING marker
+      // inside the output field. Before the fix: type=feedback (hardcoded for all),
+      // content="connection pooling improves throughput\"}" (JSON artifact).
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse(
+          JSON.stringify({
+            output: "[LEARNING:heuristic] connection pooling improves throughput",
+            status: "done",
+          }),
+        ),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(1);
+      const stored = memory.stored[0];
+      expect(stored?.content).toBe("connection pooling improves throughput");
+      expect(stored?.category).toBe("heuristic");
+      expect(stored?.type).toBe("feedback");
+    });
+  });
+
+  describe("category mapping invariant — all 6 categories through adapter boundary (issue #1966)", () => {
+    // Single invariant: every CollectiveMemoryCategory maps to the correct MemoryType
+    // end-to-end through the full middleware pipeline (raw tool output → store call).
+    // Catches regressions where the adapter or persistCandidates re-introduces a
+    // hardcoded default (e.g. type: "feedback" for all) after mapCategoryToMemoryType runs.
+
+    const cases: ReadonlyArray<{
+      readonly marker: string;
+      readonly category: string;
+      readonly expectedType: string;
+      readonly expectedStored: boolean;
+    }> = [
+      { marker: "gotcha", category: "gotcha", expectedType: "feedback", expectedStored: true },
+      {
+        marker: "correction",
+        category: "correction",
+        expectedType: "feedback",
+        expectedStored: true,
+      },
+      {
+        marker: "heuristic",
+        category: "heuristic",
+        expectedType: "feedback",
+        expectedStored: true,
+      },
+      { marker: "pattern", category: "pattern", expectedType: "feedback", expectedStored: true },
+      { marker: "preference", category: "preference", expectedType: "user", expectedStored: false },
+      { marker: "context", category: "context", expectedType: "project", expectedStored: true },
+    ];
+
+    for (const { marker, category, expectedType, expectedStored } of cases) {
+      test(`[LEARNING:${marker}] → type=${expectedType}, stored=${expectedStored}`, async () => {
+        const memory = createMockMemory();
+        const mw = createExtractionMiddleware({ memory });
+        await mw.onSessionStart?.(createSessionCtx());
+
+        const content = `test learning for category ${marker}`;
+        const next = mock(async () => toolResponse(`[LEARNING:${marker}] ${content}`));
+        await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+        await new Promise((r) => setTimeout(r, 10));
+
+        if (expectedStored) {
+          expect(memory.stored).toHaveLength(1);
+          expect(memory.stored[0]?.category).toBe(category);
+          expect(memory.stored[0]?.type).toBe(expectedType);
+          expect(memory.stored[0]?.content).toBe(content);
+        } else {
+          // preference → user type, skipped by persistCandidates (no namespace-isolated store)
+          expect(memory.stored).toHaveLength(0);
+        }
+      });
+    }
+  });
 });
