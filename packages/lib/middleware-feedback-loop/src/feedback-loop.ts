@@ -20,6 +20,7 @@ import { defaultRepairStrategy } from "./repair.js";
 import { runWithRetry } from "./retry.js";
 import type { ToolHealthTracker } from "./tool-health.js";
 import { createToolHealthTracker } from "./tool-health.js";
+import type { ForgeToolErrorFeedback } from "./types.js";
 
 const VALIDATION_DEFAULT_MAX_ATTEMPTS = 3;
 const TRANSPORT_DEFAULT_MAX_ATTEMPTS = 1;
@@ -154,8 +155,17 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
         return next(request);
       }
 
-      if (tracker?.isQuarantined(request.toolId)) {
-        throw KoiRuntimeError.from("VALIDATION", `Tool "${request.toolId}" is quarantined`);
+      if (tracker !== undefined) {
+        const brickId = config.forgeHealth?.resolveBrickId(request.toolId);
+        if (brickId !== undefined && tracker.isQuarantined(request.toolId)) {
+          const feedback: ForgeToolErrorFeedback = {
+            kind: "forge_tool_quarantined",
+            brickId,
+            toolId: request.toolId,
+            message: `Tool "${request.toolId}" is quarantined and cannot execute.`,
+          };
+          return { output: feedback };
+        }
       }
 
       const startMs = Date.now();

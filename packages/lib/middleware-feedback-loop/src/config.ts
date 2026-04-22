@@ -47,7 +47,6 @@ export interface ForgeHealthConfig {
 export interface FeedbackLoopConfig {
   readonly validators?: readonly Validator[] | undefined;
   readonly gates?: readonly Gate[] | undefined;
-  readonly toolValidators?: readonly Validator[] | undefined;
   readonly toolGates?: readonly Gate[] | undefined;
   readonly retry?: RetryConfig | undefined;
   readonly repairStrategy?: RepairStrategy | undefined;

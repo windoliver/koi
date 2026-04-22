@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { SessionContext, TurnContext } from "@koi/core";
 import { runId, sessionId, turnId } from "@koi/core";
+import type { BrickId } from "@koi/core/brick-snapshot";
 import type { ModelRequest, ModelResponse, ToolRequest, ToolResponse } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
@@ -173,8 +174,9 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(result).toBe(response);
     });
 
-    it("throws when tool is quarantined", async () => {
+    it("returns structured quarantine feedback when tool is quarantined", async () => {
       const sessionCtx = mockSessionCtx();
+      const fakeBrickId = "brick-test-1" as BrickId;
       const fakeTracker: ToolHealthTracker = {
         recordSuccess: () => {},
         recordFailure: () => {},
@@ -185,17 +187,22 @@ describe("createFeedbackLoopMiddleware", () => {
         dispose: async () => {},
       };
 
+      const forgeHealth: ForgeHealthConfig = {
+        ...makeMinimalForgeHealth(),
+        resolveBrickId: (_toolId: string) => fakeBrickId,
+      };
+
       const spy = spyOn(toolHealthModule, "createToolHealthTracker").mockReturnValue(fakeTracker);
       try {
-        const mw = createFeedbackLoopMiddleware({ forgeHealth: makeMinimalForgeHealth() });
+        const mw = createFeedbackLoopMiddleware({ forgeHealth });
         await mw.onSessionStart?.(sessionCtx);
 
         const next = mock(async (_req: ToolRequest) => mockToolResponse());
-        await expect(
-          mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next),
-        ).rejects.toBeInstanceOf(KoiRuntimeError);
+        const result = await mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next);
 
         expect(next).not.toHaveBeenCalled();
+        expect(result).toBeDefined();
+        expect((result?.output as { kind: string }).kind).toBe("forge_tool_quarantined");
       } finally {
         spy.mockRestore();
       }

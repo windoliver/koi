@@ -232,13 +232,16 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     ...config.demotionCriteria,
   };
 
+  // Ring must be large enough for both quarantine window and demotion window
+  const ringSize = Math.max(windowSize, demotionCriteria.windowSize);
+
   // Per-tool state map: keyed by toolId
   const stateMap = new Map<string, ToolState>();
 
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
     if (s === undefined) {
-      s = makeToolState(windowSize);
+      s = makeToolState(ringSize);
       stateMap.set(toolId, s);
     }
     return s;
@@ -364,23 +367,16 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     }
   }
 
-  async function persistDemotion(
-    toolId: string,
+  function buildDemotionSnapshot(
     bId: BrickId,
+    toolId: string,
+    metrics: ToolHealthMetrics,
+    now: number,
     fromTier: TrustTier,
     toTier: TrustTier,
-    metrics: ToolHealthMetrics,
-  ): Promise<void> {
-    const now = clock();
+  ): BrickSnapshot {
     const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
-
-    // Note: BrickUpdate does not expose trustTier — demotion is recorded via snapshot
-    // chain and surfaced through the onDemotion callback. The store's trust tier field
-    // can only be updated via a full save() or a future promoteAndUpdate() call.
-
-    // SnapshotChainStore record (best-effort)
-    const chainIdVal: ChainId = chainId(bId);
-    const snapshot: BrickSnapshot = {
+    return {
       snapshotId: snapshotId(`${bId}-demote-${now}`),
       brickId: bId,
       version: "1",
@@ -397,6 +393,25 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       artifact: {},
       createdAt: now,
     };
+  }
+
+  async function persistDemotion(
+    toolId: string,
+    bId: BrickId,
+    fromTier: TrustTier,
+    toTier: TrustTier,
+    metrics: ToolHealthMetrics,
+  ): Promise<void> {
+    const now = clock();
+    const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
+
+    // Note: BrickUpdate does not expose trustTier — demotion is recorded via snapshot
+    // chain and surfaced through the onDemotion callback. The store's trust tier field
+    // can only be updated via a full save() or a future promoteAndUpdate() call.
+
+    // SnapshotChainStore record (best-effort)
+    const chainIdVal: ChainId = chainId(bId);
+    const snapshot = buildDemotionSnapshot(bId, toolId, metrics, now, fromTier, toTier);
 
     const putResult = await snapshotChainStore.put(chainIdVal, snapshot, []);
     if (putResult !== undefined && !putResult.ok) {
