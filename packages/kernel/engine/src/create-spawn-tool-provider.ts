@@ -249,8 +249,18 @@ export function createSpawnExecutor(
     // rather than emitting spawn_requested into a future turn's event stream.
     // This closes the window where a queued-but-late executor runs after the
     // drain reset and pollutes the new turn's SIGINT spawn-tracking state.
+    // Re-throw as an AbortError so the engine's existing interrupt-detection
+    // path recognises this as a clean user-cancel (stopReason: "interrupted")
+    // rather than an unexpected tool failure.
     if (signal.aborted) {
-      throw new Error("spawn aborted before start", { cause: signal.reason });
+      const reason = signal.reason;
+      if (
+        reason instanceof Error &&
+        (reason.name === "AbortError" || (reason as { code?: unknown }).code === "ABORT_ERR")
+      ) {
+        throw reason;
+      }
+      throw new DOMException("spawn aborted before start", "AbortError");
     }
 
     // Emit spawn_requested event BEFORE the child runs — the host can use this

@@ -423,9 +423,12 @@ describe("createSpawnToolProvider", () => {
     const alreadyAborted = AbortSignal.abort(new Error("turn cancelled"));
     const execute = createSpawnExecutor(mockSpawnFn, onSpawnEvent);
 
-    await expect(
-      execute({ agentName: "researcher", description: "Research" }, { signal: alreadyAborted }),
-    ).rejects.toThrow("spawn aborted before start");
+    const rejection = execute(
+      { agentName: "researcher", description: "Research" },
+      { signal: alreadyAborted },
+    );
+    // Must reject as an AbortError so the engine's interrupted path picks it up
+    await expect(rejection).rejects.toMatchObject({ name: "AbortError" });
 
     // spawn_requested must NOT have been emitted — cross-drain pollution prevented
     expect(eventsReceived).toHaveLength(0);
