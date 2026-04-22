@@ -904,6 +904,89 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs?.validationFailed).toBe(true);
   });
 
+  test("exit 6 (SCHEMA_VALIDATION) when stdout buffer overflows 1 MB cap", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      // Send valid JSON to the validation accumulator (schema would pass on its own)
+      opts.onRawAssistantText?.('{"count":3,"titles":["a"]}');
+      // Send >1 MB of assistant_text via writeStdout to overflow the stdout buffer cap
+      const bigLine = `{"kind":"assistant_text","sessionId":"s","text":"${"x".repeat(1024 * 1024 + 1)}"}\n`;
+      opts.writeStdout(bigLine);
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
+    expect(capturedEmitArgs?.validationFailed).toBe(true);
+    expect(capturedEmitArgs?.error).toContain("exceeded 1 MB limit");
+  });
+
+  test("onToolResult resets stdout buffer so pre-tool narration is not flushed on success", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    let emitResultCallCount = 0;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      // Pre-tool narration: written via writeStdout and accumulated in rawAssistantParts
+      opts.onRawAssistantText?.("I will fetch the data now...");
+      opts.writeStdout('{"kind":"assistant_text","sessionId":"s","text":"I will fetch..."}\n');
+      // Tool fires: both buffers reset
+      opts.onToolResult?.();
+      // Post-tool final JSON
+      opts.onRawAssistantText?.('{"count":3,"titles":["a"]}');
+      opts.writeStdout('{"kind":"assistant_text","sessionId":"s","text":"{\\"count\\":3}"}\n');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          emitResultCallCount += 1;
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    // Pre-tool narration was discarded on tool boundary → only final JSON validated → passes
+    expect(emitResultCallCount).toBe(1);
+    expect(capturedEmitArgs).toBeUndefined();
+  });
+
   test("schema validation skipped when agent exits non-zero", async () => {
     spyOn(Bun, "file").mockReturnValue({
       text: () => Promise.resolve(VALID_SCHEMA),

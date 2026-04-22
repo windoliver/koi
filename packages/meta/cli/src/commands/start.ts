@@ -1127,11 +1127,22 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // only flushed to stdout AFTER validation passes. This prevents automation from
     // acting on unvalidated content streamed mid-run. Other event kinds (tool_call,
     // tool_result, session_start) are emitted in real-time as usual.
+    // Bounded at RAW_PARTS_CAP_BYTES (same 1 MB cap as the validation accumulator).
     // let: populated during run, flushed (or dropped) in the post-run validation block
     const bufferedAssistantTextLines: string[] = [];
+    let bufferedAssistantBytes = 0;
+    let bufferedAssistantOverflow = false;
     const writeStdoutFn = (s: string): void => {
       if (resultSchemaObj !== undefined && s.includes('"kind":"assistant_text"')) {
-        bufferedAssistantTextLines.push(s);
+        if (!bufferedAssistantOverflow) {
+          const lineBytes = Buffer.byteLength(s, "utf8");
+          if (bufferedAssistantBytes + lineBytes > RAW_PARTS_CAP_BYTES) {
+            bufferedAssistantOverflow = true; // let — set once, never cleared except on tool boundary
+          } else {
+            bufferedAssistantTextLines.push(s);
+            bufferedAssistantBytes += lineBytes;
+          }
+        }
         return;
       }
       process.stdout.write(s);
@@ -1173,6 +1184,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               rawAssistantParts.length = 0; // let — reset on each tool completion
               rawAssistantPartsBytes = 0;
               rawAssistantOverflow = false;
+              // Keep stdout buffer aligned with the validation segment: discard pre-tool
+              // narration so only the final post-tool segment is flushed on success.
+              bufferedAssistantTextLines.length = 0;
+              bufferedAssistantBytes = 0;
+              bufferedAssistantOverflow = false;
             }
           : undefined,
     });
@@ -1261,6 +1277,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
               validationFailed: true,
               error: schemaResult.error,
+            });
+          } else if (bufferedAssistantOverflow) {
+            // Stdout buffer overflowed: we can't flush a truncated stream.
+            // Fail closed as SCHEMA_VALIDATION — agent completed, do NOT retry.
+            finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+            emitResult({
+              exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+              validationFailed: true,
+              error: "schema validation failed: assistant output exceeded 1 MB limit",
             });
           } else {
             // Flush buffered assistant_text lines before emitting the result event.
