@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`KOI_BROWSER_MOCK=1` — mock browser provider for dev/test (#2003)**: wires `@koi/tool-browser` and `@koi/url-safety` into the CLI. When both `KOI_BROWSER_MOCK=1` and `KOI_BROWSER_MOCK_CONFIRM=1` are set, a mock `BrowserProvider` (canned-response driver, no real Chromium) is injected into `extraProviders` so all 15 `browser_*` tools are available without a real browser. SSRF guard is active even in mock mode via `isSafeUrl`. Requires both env vars together — setting only `KOI_BROWSER_MOCK=1` fails fast at startup to prevent accidental activation from an inherited environment. An unmissable stderr warning is emitted when the mock backend is active.
+
 - **playwright / playwright-core bundling fix (tsup.config.ts)**: `playwright` and `playwright-core` added to the CLI's esbuild `external` list. Both packages are only ever loaded via lazy `async import()` inside browser-driver init paths, so marking them external prevents their un-resolvable CJS `chromium-bidi` requires from failing the bundle at build time while leaving startup behavior unchanged.
 
 
