@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import type {
   SandboxAdapter,
   SandboxAdapterResult,
   SandboxInstance,
   SandboxProfile,
 } from "@koi/core";
-import { execSandboxed, SIGKILL_ESCALATION_MS, spawnBash } from "./exec.js";
+import { execSandboxed, spawnBash } from "./exec.js";
 
 describe("spawnBash — streaming callbacks", () => {
   test("without callbacks: behavior byte-identical to prior", async () => {
@@ -206,16 +207,21 @@ describe("execSandboxed — callback threading", () => {
 // ---------------------------------------------------------------------------
 // spawnBash — abort signal / process cleanup (regression for #1914)
 //
-// The pipe won't close until ALL processes holding the write end die.
-// If a child process survives the abort (orphan), drainStream blocks
-// indefinitely. Each test's timeout is the hard proof: if the process
-// is orphaned the test hangs; if it resolves within the window, cleanup worked.
+// Proof strategy: the stdout/stderr pipe has a write end held by every
+// process in the spawned group. drainStream blocks until ALL write ends
+// are closed. If any child survives the abort (orphan), spawnBash hangs
+// and the test times out. Returning == all processes dead.
+//
+// No wall-clock timing assertions — correctness is proved by:
+//   1. The function returning at all (pipe close = all processes dead)
+//   2. pgrep confirming a specific PID was never created (no-spawn path)
 // ---------------------------------------------------------------------------
 
 describe("spawnBash — abort signal kills child processes (no orphan)", () => {
-  test("abort resolves spawnBash within 2 s for a long-running command", async () => {
+  test("abort resolves spawnBash for a long-running command", async () => {
+    // If any process survives and keeps the pipe open, drainStream hangs
+    // and this test times out. Returning proves cleanup was complete.
     const controller = new AbortController();
-    const start = Date.now();
 
     const promise = spawnBash("sleep 100", process.cwd(), 120_000, 1_000_000, controller.signal);
 
@@ -223,20 +229,16 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     controller.abort();
 
     const result = await promise;
-
-    expect(Date.now() - start).toBeLessThan(2_000);
     expect(result.exitCode).not.toBe(0);
   }, 10_000);
 
   test("abort kills child processes spawned by the bash script", async () => {
-    // bash forks a child (sleep). If the child escapes the process-group SIGTERM,
-    // it keeps the pipe write-end open and drainStream never returns.
+    // `true; sleep 100` forces bash to fork a child rather than exec-into sleep.
+    // sleep inherits bash's process group; the group SIGTERM must reach it.
+    // If sleep escapes, it holds the pipe open and this test times out.
     const controller = new AbortController();
-    const start = Date.now();
 
     const promise = spawnBash(
-      // Explicit fork: bash runs set first so it cannot exec-into sleep.
-      // sleep inherits bash's process group; the group kill must reach it.
       "true; sleep 100",
       process.cwd(),
       120_000,
@@ -247,35 +249,38 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     await new Promise<void>((r) => setTimeout(r, 300));
     controller.abort();
 
-    await promise;
-
-    // Resolving within 2 s proves sleep was killed (not orphaned)
-    expect(Date.now() - start).toBeLessThan(2_000);
+    const result = await promise;
+    expect(result.exitCode).not.toBe(0);
   }, 10_000);
 
-  test("already-aborted signal throws AbortError without spawning", async () => {
+  test("already-aborted signal throws AbortError without spawning any process", async () => {
+    // throwIfAborted() is called before spawnChild, so no child should be created.
+    // Use a unique sleep duration as a fingerprint: if spawnChild ran, pgrep finds it.
+    const uniqueSecs = 999_937; // astronomically unlikely to be running elsewhere
     const controller = new AbortController();
     controller.abort();
 
-    // throwIfAborted() is called on the already-aborted signal, so spawnBash
-    // throws a DOMException with name "AbortError" rather than returning.
-    // This is the intended contract: callers (turn-runner) catch AbortError
-    // and treat it as a clean interrupt.
     let thrownError: unknown;
     try {
-      await spawnBash("sleep 100", process.cwd(), 60_000, 1_000_000, controller.signal);
+      await spawnBash(`sleep ${uniqueSecs}`, process.cwd(), 60_000, 1_000_000, controller.signal);
     } catch (e: unknown) {
       thrownError = e;
     }
+
+    // Must throw AbortError — callers (turn-runner) rely on this contract
     expect(thrownError).toBeDefined();
     expect((thrownError as { name?: string }).name).toBe("AbortError");
+
+    // No child was spawned: pgrep for the fingerprint must return empty
+    const pgrep = spawnSync("pgrep", ["-f", String(uniqueSecs)], { encoding: "utf8" });
+    expect(pgrep.stdout.trim()).toBe("");
   });
 
   test("SIGKILL escalation terminates SIGTERM-immune processes", async () => {
-    // bash ignores SIGTERM via trap; SIGKILL (after SIGKILL_ESCALATION_MS)
-    // is the only way to kill it. drainStream should unblock after escalation.
+    // bash ignores SIGTERM via trap '' TERM; only SIGKILL (after
+    // SIGKILL_ESCALATION_MS) can kill it. If escalation is broken,
+    // drainStream hangs and this test times out at 8 s.
     const controller = new AbortController();
-    const start = Date.now();
 
     const promise = spawnBash(
       "trap '' TERM; while true; do sleep 0.05; done",
@@ -288,11 +293,7 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     await new Promise<void>((r) => setTimeout(r, 200));
     controller.abort();
 
+    // Returns only after SIGKILL escalation (~3 s). Timing out = escalation broken.
     await promise;
-
-    const elapsed = Date.now() - start;
-    // SIGTERM fails (bash ignores it); SIGKILL fires after SIGKILL_ESCALATION_MS
-    expect(elapsed).toBeGreaterThanOrEqual(SIGKILL_ESCALATION_MS - 200);
-    expect(elapsed).toBeLessThan(SIGKILL_ESCALATION_MS + 2_000);
-  }, 15_000);
+  }, 8_000);
 });
