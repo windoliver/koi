@@ -79,11 +79,15 @@ tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
 ( cd "$FIXTURE" && git reset --hard -q && git clean -fdq )
 rm -rf "$KOI_HOME/.koi/sessions"
-# Memory is file-backed under the fixture's git root (resolveMemoryDir walks UP
-# to the nearest ancestor .git — not necessarily $FIXTURE itself).
-# Derive the real root before cleanup to avoid missing the live store.
-_FIXTURE_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "$FIXTURE")
-rm -rf "$_FIXTURE_GIT_ROOT/.koi/memory"
+# Memory is file-backed under the fixture's git root (resolveMemoryDir writes to
+# <gitRoot>/.koi/memory). Abort cleanup if $FIXTURE is not its own isolated root
+# to prevent accidentally wiping a different repo's persisted memory store.
+_FIXTURE_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [ "$_FIXTURE_GIT_ROOT" != "$FIXTURE" ]; then
+  echo "HARNESS ERROR: \$FIXTURE ($FIXTURE) is not an isolated git root (resolved: $_FIXTURE_GIT_ROOT). Aborting to prevent data loss." >&2
+  exit 1
+fi
+rm -rf "$FIXTURE/.koi/memory"
 mkdir -p "$KOI_HOME/.koi/sessions"
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
@@ -746,14 +750,18 @@ tmux new-session -d -s "$KOI_SESSION" \
 repo's store — producing data-loss risk and incorrect test coverage.
 
 ```bash
-# SAFETY: require $FIXTURE to be a git root itself, not merely inside one.
-# A nested fixture risks rm-rf on an unrelated repo's .koi/memory.
-if [ ! -d "$FIXTURE/.git" ]; then
-  git -C "$FIXTURE" init -q   # creates $FIXTURE/.git, making it the root
+# SAFETY: $FIXTURE must be its own isolated git root (not a subdirectory of another repo,
+# and not merely containing a .git file from a broken symlink).
+# Use rev-parse to validate: handles both .git directories and linked worktrees (.git file).
+_S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
+  # $FIXTURE is nested inside another repo, or not a git repo at all — initialize it.
+  git -C "$FIXTURE" init -q
+  _S25_GIT_ROOT="$FIXTURE"
 fi
 
 # One canonical memory dir — reused for TUI cleanup, assertions, and koi dream.
-GIT_ROOT="$FIXTURE"           # guaranteed: $FIXTURE/.git exists and is the root
+GIT_ROOT="$_S25_GIT_ROOT"    # proven: $FIXTURE is (or is now) its own git root
 MEMORY_DIR="$GIT_ROOT/.koi/memory"
 
 # REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
