@@ -4,7 +4,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { buildResource } from "../otel-bootstrap.js";
+import { buildResource, parseOtelResourceAttributes } from "../otel-bootstrap.js";
 
 // Snapshot and restore env vars touched by each test.
 const ENV_KEYS = ["OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES", "KOI_VERSION"] as const;
@@ -94,24 +94,23 @@ describe("buildResource", () => {
     expect(resource.attributes["service.name"]).toBe("from-service-name");
   });
 
-  test("malformed OTEL_RESOURCE_ATTRIBUTES entries are skipped with a warning", () => {
-    // "a" has no "=", "=1" has empty key, extra commas produce empty pairs
+  test("malformed OTEL_RESOURCE_ATTRIBUTES discards entire value and warns", () => {
+    // Fail-closed: one bad pair must discard everything, not partially apply
     const stderrWrites: string[] = [];
     const origWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = (chunk: string | Uint8Array) => {
       if (typeof chunk === "string") stderrWrites.push(chunk);
       return true;
     };
-    process.env.OTEL_RESOURCE_ATTRIBUTES = "a,,=1,,valid=yes";
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "valid=yes,bad-no-equals,other=ok";
     const resource = buildResource("headless");
     process.stderr.write = origWrite;
 
-    expect(resource.attributes.valid).toBe("yes");
-    // Malformed entries must not set garbage keys
-    expect(resource.attributes.a).toBeUndefined();
-    expect(resource.attributes[""]).toBeUndefined();
-    // Operator must get a warning — "a" and "=1" both emit one
-    expect(stderrWrites.some((w) => w.includes("malformed") || w.includes("empty key"))).toBe(true);
+    // The valid pair must NOT be applied — entire value is discarded
+    expect(resource.attributes.valid).toBeUndefined();
+    expect(resource.attributes.other).toBeUndefined();
+    // Operator must get a warning
+    expect(stderrWrites.some((w) => w.includes("malformed"))).toBe(true);
   });
 
   test("percent-encoded OTEL_RESOURCE_ATTRIBUTES values are decoded", () => {
@@ -124,6 +123,34 @@ describe("buildResource", () => {
     process.env.KOI_VERSION = "0.5.0";
     const resource = buildResource("headless");
     expect(resource.attributes["service.version"]).toBe("0.5.0");
+  });
+});
+
+describe("parseOtelResourceAttributes", () => {
+  test("parses valid key=value pairs", () => {
+    expect(parseOtelResourceAttributes("a=1,b=2")).toEqual({ a: "1", b: "2" });
+  });
+
+  test("decodes percent-encoded values", () => {
+    expect(parseOtelResourceAttributes("greeting=hello%20world")).toEqual({
+      greeting: "hello world",
+    });
+  });
+
+  test("returns undefined for entry missing equals sign", () => {
+    expect(parseOtelResourceAttributes("valid=yes,bad-no-equals,other=ok")).toBeUndefined();
+  });
+
+  test("returns undefined for entry with empty key", () => {
+    expect(parseOtelResourceAttributes("=value")).toBeUndefined();
+  });
+
+  test("returns undefined for invalid percent-encoding", () => {
+    expect(parseOtelResourceAttributes("key=%GG")).toBeUndefined();
+  });
+
+  test("skips empty segments from trailing/double commas", () => {
+    expect(parseOtelResourceAttributes("a=1,,b=2,")).toEqual({ a: "1", b: "2" });
   });
 });
 

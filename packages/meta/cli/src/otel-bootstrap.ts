@@ -53,30 +53,20 @@ export function buildResource(mode: "tui" | "headless"): Resource {
 
   // OTEL_RESOURCE_ATTRIBUTES — comma-separated key=value pairs, values may be
   // percent-encoded per OTel spec. Overwrites any matching default above.
+  //
+  // Fail-closed: any malformed pair or decode error discards the entire env var.
+  // Partial application (some pairs applied, some skipped) creates split service
+  // identity that is harder to detect than a clean "no overrides" baseline.
   const rawAttrs = process.env.OTEL_RESOURCE_ATTRIBUTES;
   if (rawAttrs !== undefined && rawAttrs.length > 0) {
-    for (const pair of rawAttrs.split(",")) {
-      const eq = pair.indexOf("=");
-      if (eq <= 0) {
-        if (pair.trim().length > 0) {
-          process.stderr.write(
-            `[koi] OTel: skipping malformed OTEL_RESOURCE_ATTRIBUTES entry "${pair.trim()}" (expected key=value)\n`,
-          );
-        }
-        continue;
-      }
-      const key = pair.slice(0, eq).trim();
-      const value = pair.slice(eq + 1).trim();
-      if (key.length === 0) {
-        process.stderr.write(
-          `[koi] OTel: skipping OTEL_RESOURCE_ATTRIBUTES entry with empty key (value="${value}")\n`,
-        );
-        continue;
-      }
-      try {
-        attrs[key] = decodeURIComponent(value);
-      } catch {
-        attrs[key] = value;
+    const parsed = parseOtelResourceAttributes(rawAttrs);
+    if (parsed === undefined) {
+      process.stderr.write(
+        "[koi] OTel: OTEL_RESOURCE_ATTRIBUTES is malformed — ignoring entire value to avoid partial resource identity.\n",
+      );
+    } else {
+      for (const [k, v] of Object.entries(parsed)) {
+        attrs[k] = v;
       }
     }
   }
@@ -88,6 +78,34 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   }
 
   return defaultResource().merge(resourceFromAttributes(attrs));
+}
+
+/**
+ * Parse OTEL_RESOURCE_ATTRIBUTES into a key→value map.
+ *
+ * Returns `undefined` if any pair is malformed or any value fails
+ * percent-decoding — fail-closed so operators get a clean error rather than
+ * partially-wrong resource metadata on their spans.
+ *
+ * Exported for unit testing — not part of the public CLI API.
+ */
+export function parseOtelResourceAttributes(raw: string): Record<string, string> | undefined {
+  const result: Record<string, string> = {};
+  for (const pair of raw.split(",")) {
+    const trimmed = pair.trim();
+    if (trimmed.length === 0) continue; // skip empty segments from trailing commas
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) return undefined; // no "=" or "=" is first char → malformed
+    const key = trimmed.slice(0, eq).trim();
+    if (key.length === 0) return undefined; // empty key → malformed
+    const rawValue = trimmed.slice(eq + 1);
+    try {
+      result[key] = decodeURIComponent(rawValue);
+    } catch {
+      return undefined; // percent-decode failure → malformed
+    }
+  }
+  return result;
 }
 
 /** Return value from initOtelSdk — call shutdown() for graceful flush. */
