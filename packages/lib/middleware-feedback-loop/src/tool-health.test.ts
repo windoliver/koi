@@ -3,7 +3,7 @@ import type { ChainId, NodeId, SnapshotChainStore, SnapshotNode } from "@koi/cor
 import { nodeId } from "@koi/core";
 import type { BrickId, BrickSnapshot } from "@koi/core/brick-snapshot";
 import { brickId } from "@koi/core/brick-snapshot";
-import type { BrickArtifact, ForgeStore } from "@koi/core/brick-store";
+import type { BrickArtifact, BrickUpdate, ForgeStore } from "@koi/core/brick-store";
 import { computeHealthAction, createToolHealthTracker } from "./tool-health.js";
 import type { DemotionCriteria, ToolHealthMetrics } from "./types.js";
 
@@ -30,7 +30,7 @@ function makeForgeStore(): ForgeStore & { data: Map<string, BrickArtifact> } {
       data.delete(id);
       return { ok: true, value: undefined };
     },
-    update: async (id: BrickId) => {
+    update: async (id: BrickId, patch: BrickUpdate) => {
       const b = data.get(id);
       if (!b) {
         return {
@@ -38,6 +38,7 @@ function makeForgeStore(): ForgeStore & { data: Map<string, BrickArtifact> } {
           error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
         };
       }
+      data.set(id, { ...b, ...patch } as BrickArtifact);
       return { ok: true, value: undefined };
     },
     exists: async (id: BrickId) => ({ ok: true, value: data.has(id) }),

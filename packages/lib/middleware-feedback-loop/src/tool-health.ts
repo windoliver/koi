@@ -12,8 +12,8 @@ import type { ChainId, NodeId, TrustTier } from "@koi/core";
 import { chainId } from "@koi/core";
 import type { BrickId, BrickSnapshot } from "@koi/core/brick-snapshot";
 import { snapshotId } from "@koi/core/brick-snapshot";
-import type { BrickArtifact, BrickFitnessMetrics } from "@koi/core/brick-store";
-import { createLatencySampler, recordLatency } from "@koi/validation";
+import type { BrickFitnessMetrics } from "@koi/core/brick-store";
+import { createLatencySampler, mergeSamplers, recordLatency } from "@koi/validation";
 import type { ForgeHealthConfig } from "./config.js";
 import { DEFAULT_DEMOTION_CRITERIA } from "./config.js";
 import { computeMergedFitness, shouldFlush } from "./fitness-flush.js";
@@ -301,11 +301,19 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       return;
     }
 
+    // Swap to a fresh accumulator BEFORE any I/O so events recorded during the
+    // flush are preserved in the new buffer rather than being zeroed on success.
     const deltas = {
       successCount: state.deltaSinceFlush.successCount,
       errorCount: state.deltaSinceFlush.errorCount,
       latencySampler: state.deltaSinceFlush.sampler,
       lastUsedAt: state.deltaSinceFlush.lastUsedAt,
+    };
+    state.deltaSinceFlush = {
+      successCount: 0,
+      errorCount: 0,
+      sampler: createLatencySampler(),
+      lastUsedAt: 0,
     };
 
     try {
@@ -335,27 +343,38 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       }
 
       if (!updateResult.ok) {
+        // Merge the original deltas back into the new accumulator so they are
+        // retried on the next flush rather than silently dropped.
+        state.deltaSinceFlush = {
+          successCount: state.deltaSinceFlush.successCount + deltas.successCount,
+          errorCount: state.deltaSinceFlush.errorCount + deltas.errorCount,
+          sampler: mergeSamplers(state.deltaSinceFlush.sampler, deltas.latencySampler),
+          lastUsedAt: Math.max(state.deltaSinceFlush.lastUsedAt, deltas.lastUsedAt),
+        };
         state.flushState = { ...state.flushState, flushing: false };
         recordFlushFailure(toolId, state, updateResult.error, bypassSuspension);
         return;
       }
 
-      // Successful flush — reset per-tool circuit breaker and dirty counters
+      // Successful flush — reset circuit breaker; deltaSinceFlush already swapped above.
       state.consecutiveFlushFailures = 0;
-      state.deltaSinceFlush = {
-        successCount: 0,
-        errorCount: 0,
-        sampler: createLatencySampler(),
-        lastUsedAt: 0,
-      };
+      const hasPendingEvents =
+        state.deltaSinceFlush.successCount > 0 || state.deltaSinceFlush.errorCount > 0;
       state.flushState = {
-        dirty: false,
+        dirty: hasPendingEvents,
         flushing: false,
-        invocationsSinceFlush: 0,
+        invocationsSinceFlush: hasPendingEvents ? state.flushState.invocationsSinceFlush : 0,
         errorRateSinceFlush: currentErrorRate,
         lastFlushedErrorRate: currentErrorRate,
       };
     } catch (e: unknown) {
+      // Merge original deltas back so they survive the exception.
+      state.deltaSinceFlush = {
+        successCount: state.deltaSinceFlush.successCount + deltas.successCount,
+        errorCount: state.deltaSinceFlush.errorCount + deltas.errorCount,
+        sampler: mergeSamplers(state.deltaSinceFlush.sampler, deltas.latencySampler),
+        lastUsedAt: Math.max(state.deltaSinceFlush.lastUsedAt, deltas.lastUsedAt),
+      };
       state.flushState = { ...state.flushState, flushing: false };
       recordFlushFailure(toolId, state, e, bypassSuspension);
     }
@@ -464,15 +483,17 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     fromTier: TrustTier,
     toTier: TrustTier,
     metrics: ToolHealthMetrics,
-    currentBrick: BrickArtifact,
-  ): Promise<void> {
+    currentStoreVersion: number | undefined,
+  ): Promise<boolean> {
     const now = clock();
     const errorRate = metrics.totalCount > 0 ? metrics.errorCount / metrics.totalCount : 0;
 
-    // Persist the new trust tier via full save (BrickUpdate has no trustTier field).
-    // storeVersion is carried through the spread for OCC; retry once on CONFLICT.
-    let saveResult = await forgeStore.save({ ...currentBrick, trustTier: toTier });
-    if (!saveResult.ok && saveResult.error.code === "CONFLICT") {
+    // Persist trust tier via targeted update() + OCC; retry once on CONFLICT
+    let updateResult = await forgeStore.update(bId, {
+      trustTier: toTier,
+      expectedVersion: currentStoreVersion,
+    });
+    if (!updateResult.ok && updateResult.error.code === "CONFLICT") {
       const retryLoad = await forgeStore.load(bId);
       if (!retryLoad.ok) {
         const event: HealthTransitionErrorEvent = {
@@ -482,19 +503,22 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
           error: retryLoad.error,
         };
         onHealthTransitionError?.(event);
-        return;
+        return false;
       }
-      saveResult = await forgeStore.save({ ...retryLoad.value, trustTier: toTier });
+      updateResult = await forgeStore.update(bId, {
+        trustTier: toTier,
+        expectedVersion: retryLoad.value.storeVersion,
+      });
     }
-    if (!saveResult.ok) {
+    if (!updateResult.ok) {
       const event: HealthTransitionErrorEvent = {
         transition: "demotion",
         phase: "forgeStore",
         brickId: bId,
-        error: saveResult.error,
+        error: updateResult.error,
       };
       onHealthTransitionError?.(event);
-      return; // abort — don't snapshot or fire callback if authoritative write failed
+      return false; // abort — don't snapshot or fire callback if authoritative write failed
     }
 
     // SnapshotChainStore record (best-effort)
@@ -524,6 +548,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       evidence: { errorRate, sampleSize: metrics.totalCount },
     };
     onDemotion?.(demotionEvent);
+    return true;
   }
 
   return {
@@ -621,7 +646,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const bId = resolveBrickId(toolId);
       if (bId === undefined) return false;
 
-      // Load current brick — required to read tier and to persist the updated tier via save()
+      // Load current brick to get trust tier and storeVersion for OCC
       const loadResult = await forgeStore.load(bId);
       if (!loadResult.ok) {
         const event: HealthTransitionErrorEvent = {
@@ -633,8 +658,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         onHealthTransitionError?.(event);
         return false;
       }
-      const currentBrick = loadResult.value;
-      const currentTier: TrustTier = currentBrick.trustTier ?? "local";
+      const currentTier: TrustTier = loadResult.value.trustTier ?? "local";
+      const currentStoreVersion = loadResult.value.storeVersion;
 
       const metrics = computeWindowMetrics(state, demotionCriteria.windowSize);
       const now = clock();
@@ -655,9 +680,19 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const toTier = nextTrustTier(currentTier);
       if (toTier === undefined) return false;
 
-      state.lastDemotedAt = now;
-      await persistDemotion(toolId, bId, currentTier, toTier, metrics, currentBrick);
-      return true;
+      // Advance cooldown only after successful persistence — failed writes must not block retries
+      const demoted = await persistDemotion(
+        toolId,
+        bId,
+        currentTier,
+        toTier,
+        metrics,
+        currentStoreVersion,
+      );
+      if (demoted) {
+        state.lastDemotedAt = now;
+      }
+      return demoted;
     },
 
     async dispose(): Promise<void> {
