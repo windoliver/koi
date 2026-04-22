@@ -149,8 +149,30 @@ describe("parseOtelResourceAttributes", () => {
     expect(parseOtelResourceAttributes("key=%GG")).toBeUndefined();
   });
 
+  test("returns undefined for empty value", () => {
+    expect(parseOtelResourceAttributes("service.name=")).toBeUndefined();
+  });
+
   test("skips empty segments from trailing/double commas", () => {
     expect(parseOtelResourceAttributes("a=1,,b=2,")).toEqual({ a: "1", b: "2" });
+  });
+});
+
+describe("buildResource empty-value protection", () => {
+  test("service.name= in OTEL_RESOURCE_ATTRIBUTES does not blank out default", () => {
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      if (typeof chunk === "string") stderrWrites.push(chunk);
+      return true;
+    };
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "service.name=";
+    const resource = buildResource("headless");
+    process.stderr.write = origWrite;
+
+    // Default must be preserved — empty override must be rejected
+    expect(resource.attributes["service.name"]).toBe("koi");
+    expect(stderrWrites.some((w) => w.includes("malformed"))).toBe(true);
   });
 });
 

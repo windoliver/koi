@@ -99,11 +99,14 @@ export function parseOtelResourceAttributes(raw: string): Record<string, string>
     const key = trimmed.slice(0, eq).trim();
     if (key.length === 0) return undefined; // empty key → malformed
     const rawValue = trimmed.slice(eq + 1);
+    let value: string;
     try {
-      result[key] = decodeURIComponent(rawValue);
+      value = decodeURIComponent(rawValue);
     } catch {
       return undefined; // percent-decode failure → malformed
     }
+    if (value.length === 0) return undefined; // empty value → malformed (prevents erasing defaults)
+    result[key] = value;
   }
   return result;
 }
