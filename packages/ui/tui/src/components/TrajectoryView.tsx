@@ -207,12 +207,13 @@ export function summarizeDecision(d: Record<string, unknown>): string | undefine
     const raw = d["router.target.selected"];
     const selected = raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
     const fallback = d["router.fallback_occurred"] === true ? " fallback" : "";
-    return selected.length > 0 ? `→${selected}${fallback}` : `exhausted${fallback}`;
+    // "exhausted" means all targets failed — omit fallback suffix to avoid conflating with success
+    return selected.length > 0 ? `→${selected}${fallback}` : "exhausted";
   }
   return undefined;
 }
 
-function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefined {
+export function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefined {
   if (step.middlewareSpan === undefined) return undefined;
   const { decisions, nextCalled, hook } = step.middlewareSpan;
   // Prefer decision summary over hook name
@@ -222,7 +223,11 @@ function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefined {
       const summary = summarizeDecision(first as Record<string, unknown>);
       if (summary !== undefined) {
         const extra = decisions.length > 1 ? ` +${decisions.length - 1}` : "";
-        return nextCalled === false ? `${summary} BLOCKED${extra}` : `${summary}${extra}`;
+        // Model-router is terminal (never calls next) but not a blocker — detect by router.* key presence
+        const isTerminal =
+          typeof (first as Record<string, unknown>)["router.target.selected"] === "string";
+        const blocked = nextCalled === false && !isTerminal;
+        return blocked ? `${summary} BLOCKED${extra}` : `${summary}${extra}`;
       }
     }
   }

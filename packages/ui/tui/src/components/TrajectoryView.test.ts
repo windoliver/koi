@@ -1,5 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { summarizeDecision } from "./TrajectoryView.js";
+import type { TrajectoryStepSummary } from "../state/types.js";
+import { formatMwSpanSuffix, summarizeDecision } from "./TrajectoryView.js";
+
+function makeStep(
+  decisions: readonly Record<string, unknown>[] | undefined,
+  nextCalled: boolean,
+): TrajectoryStepSummary {
+  return {
+    stepIndex: 0,
+    turnIndex: 0,
+    kind: "model_call",
+    identifier: "middleware:test",
+    durationMs: 10,
+    outcome: "success",
+    timestamp: 0,
+    requestText: undefined,
+    responseText: undefined,
+    errorText: undefined,
+    tokens: undefined,
+    middlewareSpan: { hook: "wrapModelCall", phase: "resolve", nextCalled, decisions },
+  };
+}
 
 describe("summarizeDecision", () => {
   describe("model-router decisions", () => {
@@ -29,6 +50,16 @@ describe("summarizeDecision", () => {
         "router.target.attempted": ["openai:gpt-4o"],
         "router.fallback_occurred": false,
         "router.latency_ms": 50,
+      });
+      expect(result).toBe("exhausted");
+    });
+
+    test("exhausted with fallback_occurred true shows exhausted without fallback suffix", () => {
+      // all targets failed — fallback was attempted but also failed; "fallback" suffix would be misleading
+      const result = summarizeDecision({
+        "router.target.selected": "",
+        "router.target.attempted": ["openai:gpt-4o", "anthropic:claude-3-haiku"],
+        "router.fallback_occurred": true,
       });
       expect(result).toBe("exhausted");
     });
@@ -74,5 +105,41 @@ describe("summarizeDecision", () => {
         "capture:/tmp/ckpt",
       );
     });
+  });
+});
+
+describe("formatMwSpanSuffix", () => {
+  test("router decision with nextCalled false is NOT labeled BLOCKED (terminal handler)", () => {
+    const step = makeStep(
+      [{ "router.target.selected": "openai:gpt-4o", "router.fallback_occurred": false }],
+      false,
+    );
+    expect(formatMwSpanSuffix(step)).toBe("→openai:gpt-4o");
+  });
+
+  test("non-router decision with nextCalled false IS labeled BLOCKED", () => {
+    const step = makeStep([{ phase: "execute", action: "deny", toolId: "bash" }], false);
+    expect(formatMwSpanSuffix(step)).toBe("deny:bash BLOCKED");
+  });
+
+  test("router decision with nextCalled true shows summary without BLOCKED suffix", () => {
+    const step = makeStep(
+      [
+        {
+          "router.target.selected": "anthropic:claude-3-haiku",
+          "router.fallback_occurred": true,
+        },
+      ],
+      true,
+    );
+    expect(formatMwSpanSuffix(step)).toBe("→anthropic:claude-3-haiku fallback");
+  });
+
+  test("no decisions and nextCalled false shows BLOCKED", () => {
+    expect(formatMwSpanSuffix(makeStep(undefined, false))).toBe("BLOCKED");
+  });
+
+  test("no decisions and nextCalled true shows pass", () => {
+    expect(formatMwSpanSuffix(makeStep(undefined, true))).toBe("pass");
   });
 });
