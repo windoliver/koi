@@ -236,3 +236,120 @@ describe("createSkillInjectorMiddleware", () => {
     expect(received[0]?.systemPrompt).toBe("Always use bullet points.");
   });
 });
+
+describe("createSkillInjectorMiddleware — progressive mode", () => {
+  test("injects <available_skills> XML block when skills have empty content", async () => {
+    // In progressive mode, provider sets content: "" on all components
+    const skills = new Map([skill("commit", ""), skill("review", "")]);
+    const agent = mockAgent(skills);
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+    const { wrapModelCall } = assertHooks(mw);
+    const request = mockRequest();
+
+    const received: ModelRequest[] = [];
+    const next = async (req: ModelRequest): Promise<ModelResponse> => {
+      received.push(req);
+      return DONE_RESPONSE;
+    };
+
+    await wrapModelCall(mockTurnContext(), request, next);
+
+    expect(received).toHaveLength(1);
+    const prompt = received[0]?.systemPrompt ?? "";
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain('name="commit"');
+    expect(prompt).toContain('name="review"');
+    expect(prompt).toContain("</available_skills>");
+    expect(prompt).not.toContain("---");
+  });
+
+  test("progressive XML block is sorted alphabetically for cache stability", async () => {
+    const skills = new Map([skill("zebra", ""), skill("alpha", "")]);
+    const agent = mockAgent(skills);
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+    const { wrapModelCall } = assertHooks(mw);
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), mockRequest(), async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    const alphaPos = prompt.indexOf('name="alpha"');
+    const zebraPos = prompt.indexOf('name="zebra"');
+    expect(alphaPos).toBeLessThan(zebraPos);
+  });
+
+  test("progressive XML block tokens << eager bodies tokens (regression)", async () => {
+    const bigBody = "A".repeat(3000);
+    const eagerSkills = new Map(
+      Array.from({ length: 10 }, (_, i) => skill(`skill-${String(i)}`, bigBody)),
+    );
+    const progressiveSkills = new Map(
+      Array.from({ length: 10 }, (_, i) => skill(`skill-${String(i)}`, "")),
+    );
+
+    const eagerAgent = mockAgent(eagerSkills);
+    const progressiveAgent = mockAgent(progressiveSkills);
+
+    const eagerMw = createSkillInjectorMiddleware({ agent: eagerAgent });
+    const progressiveMw = createSkillInjectorMiddleware({
+      agent: progressiveAgent,
+      progressive: true,
+    });
+    const { wrapModelCall: eagerCall } = assertHooks(eagerMw);
+    const { wrapModelCall: progressiveCall } = assertHooks(progressiveMw);
+
+    const eagerReceived: ModelRequest[] = [];
+    const progressiveReceived: ModelRequest[] = [];
+
+    await eagerCall(mockTurnContext(), mockRequest(), async (req) => {
+      eagerReceived.push(req);
+      return DONE_RESPONSE;
+    });
+    await progressiveCall(mockTurnContext(), mockRequest(), async (req) => {
+      progressiveReceived.push(req);
+      return DONE_RESPONSE;
+    });
+
+    const eagerLen = eagerReceived[0]?.systemPrompt?.length ?? 0;
+    const progressiveLen = progressiveReceived[0]?.systemPrompt?.length ?? 0;
+
+    expect(progressiveLen).toBeLessThan(eagerLen / 10);
+    expect(eagerLen).toBeGreaterThan(25000);
+  });
+
+  test("progressive passes through unchanged when no skills", async () => {
+    const agent = mockAgent(new Map());
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+    const { wrapModelCall } = assertHooks(mw);
+    const request = mockRequest("existing prompt");
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), request, async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    expect(received[0]).toBe(request);
+  });
+
+  test("progressive XML block prepended before existing systemPrompt", async () => {
+    const skills = new Map([skill("commit", "")]);
+    const agent = mockAgent(skills);
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+    const { wrapModelCall } = assertHooks(mw);
+    const request = mockRequest("You are a helpful assistant.");
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), request, async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    expect(prompt).toMatch(/^<available_skills>/);
+    expect(prompt).toContain("You are a helpful assistant.");
+  });
+});

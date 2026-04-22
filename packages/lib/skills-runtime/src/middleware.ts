@@ -40,6 +40,14 @@ export interface SkillInjectorConfig {
    * Or pass a direct reference when the agent is already assembled.
    */
   readonly agent: Agent | (() => Agent);
+  /**
+   * When true: inject an `<available_skills>` XML block (name + description per
+   * skill) instead of concatenated full bodies. Use with `createSkillProvider`
+   * configured as `{ progressive: true }` so components have empty content.
+   *
+   * Default: false (inject full bodies, legacy behavior).
+   */
+  readonly progressive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +112,30 @@ function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
 /** Max chars of systemPrompt to include in decision metadata. */
 const PROMPT_PREVIEW_LIMIT = 800;
 
+/** Escapes XML attribute special chars in a skill name or description. */
+function escapeXmlAttr(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Renders the <available_skills> XML block from skill metadata.
+ * One self-closing <skill> element per skill, sorted alphabetically.
+ * Prompt-cache-stable: same sort order as sortedSkills().
+ */
+function generateAvailableSkillsBlock(skills: readonly SkillComponent[]): string {
+  const items = skills
+    .map(
+      (s) =>
+        `  <skill name="${escapeXmlAttr(s.name)}" description="${escapeXmlAttr(s.description)}" />`,
+    )
+    .join("\n");
+  return `<available_skills>\n${items}\n</available_skills>`;
+}
+
 /**
  * Build the decision payload for skill injection.
  * Captures skill names, per-skill content length, and a preview of
@@ -126,6 +158,22 @@ function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObje
   } as JsonObject;
 }
 
+/**
+ * Returns a new ModelRequest with an <available_skills> XML block prepended
+ * to systemPrompt. Contains name + description for each skill (no bodies).
+ * If no skills are attached, returns the original request unchanged.
+ */
+function injectSkillsProgressive(agent: Agent, request: ModelRequest): ModelRequest {
+  const sorted = sortedSkills(agent);
+  if (sorted.length === 0) return request;
+
+  const block = generateAvailableSkillsBlock(sorted);
+  const existing = request.systemPrompt;
+  const systemPrompt =
+    existing !== undefined && existing.length > 0 ? `${block}\n\n${existing}` : block;
+  return { ...request, systemPrompt };
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -142,7 +190,7 @@ function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObje
  * the agent entity).
  */
 export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiMiddleware {
-  const { agent: agentOrFn } = config;
+  const { agent: agentOrFn, progressive = false } = config;
 
   return {
     name: "skill-injector",
@@ -155,9 +203,9 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const agent = resolveAgent(agentOrFn);
-      const injected = injectSkills(agent, request);
-      // Only report when skills are actually injected (injectSkills returns
-      // original request unchanged when no skills — reference equality check)
+      const injected = progressive
+        ? injectSkillsProgressive(agent, request)
+        : injectSkills(agent, request);
       if (injected !== request) {
         ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
       }
@@ -170,8 +218,9 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       const agent = resolveAgent(agentOrFn);
-      const injected = injectSkills(agent, request);
-      // Only report when skills are actually injected (reference equality check)
+      const injected = progressive
+        ? injectSkillsProgressive(agent, request)
+        : injectSkills(agent, request);
       if (injected !== request) {
         ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
       }
