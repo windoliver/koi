@@ -401,6 +401,8 @@ interface AuditEntry {
     readonly agentId: string;
     readonly turnIndex: number;
     readonly kind: "model_call" | "tool_call" | "session_start" | "session_end" | "secret_access" | "permission_decision" | "config_change";
+    /** Populated for tool_call entries — the tool's identifier. */
+    readonly toolName?: string;
     readonly request?: unknown;
     readonly response?: unknown;
     readonly error?: unknown;
