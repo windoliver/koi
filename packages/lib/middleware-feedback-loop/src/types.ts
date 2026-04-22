@@ -1,7 +1,7 @@
 import type { TrustTier } from "@koi/core";
 import type { BrickId } from "@koi/core/brick-snapshot";
 import type { BrickFitnessMetrics, LatencySampler } from "@koi/core/brick-store";
-import type { ModelRequest, ModelResponse, ToolResponse } from "@koi/core/middleware";
+import type { ModelRequest, ModelResponse, ToolRequest, ToolResponse } from "@koi/core/middleware";
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -21,6 +21,12 @@ export interface ValidationResult {
 export interface Validator {
   readonly name: string;
   readonly validate: (response: ModelResponse) => ValidationResult | Promise<ValidationResult>;
+}
+
+/** Pre-execution validator for tool requests. Runs before the tool handler is invoked. */
+export interface ToolRequestValidator {
+  readonly name: string;
+  readonly validate: (request: ToolRequest) => ValidationResult | Promise<ValidationResult>;
 }
 
 export interface Gate {

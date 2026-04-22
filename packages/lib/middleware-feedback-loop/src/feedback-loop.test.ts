@@ -8,7 +8,7 @@ import type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
 import { createFeedbackLoopMiddleware } from "./feedback-loop.js";
 import type { ToolHealthTracker } from "./tool-health.js";
 import * as toolHealthModule from "./tool-health.js";
-import type { Gate, ValidationResult, Validator } from "./types.js";
+import type { Gate, ToolRequestValidator, ValidationResult, Validator } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Minimal mock helpers
@@ -206,6 +206,25 @@ describe("createFeedbackLoopMiddleware", () => {
       } finally {
         spy.mockRestore();
       }
+    });
+
+    it("rejects tool call when toolValidators fail (pre-execution, no side effects)", async () => {
+      const validator: ToolRequestValidator = {
+        name: "arg-check",
+        validate(_request: ToolRequest): ValidationResult {
+          return { valid: false, errors: [{ validator: "arg-check", message: "bad argument" }] };
+        },
+      };
+
+      const mw = createFeedbackLoopMiddleware({ toolValidators: [validator] });
+      const next = mock(async (_req: ToolRequest) => mockToolResponse());
+
+      await expect(
+        mw.wrapToolCall?.(mockTurnCtx(), mockToolRequest(), next),
+      ).rejects.toBeInstanceOf(KoiRuntimeError);
+
+      // Tool must NOT have been invoked — validation failed before execution
+      expect(next).not.toHaveBeenCalled();
     });
 
     it("records failure and checks health when tool call throws", async () => {

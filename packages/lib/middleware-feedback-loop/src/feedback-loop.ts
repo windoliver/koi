@@ -35,6 +35,7 @@ function hasModelChecks(config: FeedbackLoopConfig): boolean {
 function hasToolChecks(config: FeedbackLoopConfig): boolean {
   return (
     config.forgeHealth !== undefined ||
+    (config.toolValidators !== undefined && config.toolValidators.length > 0) ||
     (config.toolGates !== undefined && config.toolGates.length > 0)
   );
 }
@@ -171,6 +172,25 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
             message: `Tool "${request.toolId}" is quarantined and cannot execute.`,
           };
           return { output: feedback };
+        }
+      }
+
+      // Pre-execution validation — fail closed before any side effects
+      if (config.toolValidators !== undefined && config.toolValidators.length > 0) {
+        const validationErrors: string[] = [];
+        for (const validator of config.toolValidators) {
+          const result = await validator.validate(request);
+          if (!result.valid) {
+            for (const e of result.errors ?? []) {
+              validationErrors.push(`[${validator.name}] ${e.message}`);
+            }
+          }
+        }
+        if (validationErrors.length > 0) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            `Tool request validation failed for "${request.toolId}": ${validationErrors.join("; ")}`,
+          );
         }
       }
 

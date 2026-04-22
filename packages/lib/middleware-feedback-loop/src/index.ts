@@ -20,6 +20,7 @@ export type {
   ToolFlushState,
   ToolHealthMetrics,
   ToolHealthSnapshot,
+  ToolRequestValidator,
   TrustDemotionEvent,
   ValidationError,
   ValidationResult,

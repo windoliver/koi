@@ -1,5 +1,5 @@
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
-import { isKoiError, isRetryable, KoiRuntimeError } from "@koi/errors";
+import { isKoiError, isRetryable, KoiRuntimeError, toKoiError } from "@koi/errors";
 import { runGates } from "./gate.js";
 import type { Gate, RepairStrategy, ValidationError, Validator } from "./types.js";
 import { runValidators } from "./validators.js";
@@ -33,17 +33,13 @@ export async function runWithRetry(
     try {
       response = await next(currentRequest);
     } catch (err) {
-      // Only skip retry when the error explicitly carries non-retryable KoiError metadata.
-      // Plain Error instances (network stack, provider client) have no retryability info and
-      // should be retried — they represent transient transport failures, not policy blocks.
-      // Non-retryable conditions (auth failures, request-shape errors, policy blocks) always
-      // surface as KoiErrors with retryable: false, either thrown directly or in Error.cause.
-      const koiErr = isKoiError(err)
-        ? err
-        : err instanceof Error && isKoiError(err.cause)
-          ? err.cause
-          : null;
-      if (koiErr !== null && !isRetryable(koiErr)) throw err;
+      // Only retry errors that explicitly carry retryable KoiError metadata. Adapters may
+      // wrap a KoiError in Error.cause — check cause before falling back to toKoiError()
+      // which hard-codes retryable: false for plain errors. Plain errors with no KoiError
+      // info (request-shape bugs, auth config, serialization failures) are treated as
+      // non-retryable so deterministic failures fail fast rather than exhaust the budget.
+      const koiErr = err instanceof Error && isKoiError(err.cause) ? err.cause : toKoiError(err);
+      if (!isRetryable(koiErr)) throw err;
       transportErrors++;
       if (transportErrors > options.transportMaxAttempts) throw err;
       // Emit onRetry so transport-error retries are observable alongside validation retries
