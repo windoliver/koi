@@ -98,7 +98,7 @@ describe("runWithRetry", () => {
         gates: [],
         repairStrategy: defaultRepairStrategy,
         validationMaxAttempts: 3,
-        transportMaxAttempts: 1,
+        transportMaxAttempts: 0,
       }),
     ).rejects.toThrow("network");
     expect(next).toHaveBeenCalledTimes(1);
