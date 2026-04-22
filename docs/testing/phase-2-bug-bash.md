@@ -76,7 +76,7 @@ The TUI (`koi tui`) is configured via **environment variables and CLI flags**. I
 | Scenario | Required stacks | Notes |
 |----------|-----------------|-------|
 | S14 — memory persist/recall | default stack (no `--manifest`) | Runs without a manifest so memory tools are exercised within the same shipped default stack configuration users get. Extraction is wired into `memoryStack` but its TUI-level behavior is covered by the `@koi/runtime` golden tests (see "Test-suite only" in S14 below). |
-| S25 — memory dir isolation | `memory`-only isolation manifest (`stacks: [memory], plugins: []`) | The S25 setup block creates `$FIXTURE/s25-memory-only.koi.yaml` and passes `--manifest` at launch. This makes Q156-Q161 file-count assertions deterministic regardless of installed plugins. **S25 does not cover default-stack behavior** (no dream, no spawn, no plugin hooks) — those paths are covered by other scenarios and golden replay tests. |
+| S25 — memory dir isolation | default stack (no `--manifest`) | Dream consolidation requires ≥ 5 sessions + 24 h (gate in `@koi/dream`). S25 runs only 2 sessions on a fresh harness, so `dreamStack` is active but consolidation never fires — file-count assertions are safe. Plugin isolation is provided by `HOME='$KOI_HOME'` in the tmux launch: `homedir()` returns `$KOI_HOME`, so plugins at `~/.koi/plugins` are not visible to the launched process. |
 | S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
 
 ```bash
@@ -782,13 +782,13 @@ tmux new-session -d -s "$KOI_SESSION" \
 > `createMemoryStore` stores each memory as a Markdown file with frontmatter under the resolved memory directory,
 > maintains a `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
 >
-> **S25 runs with an isolation manifest** (`stacks: [memory], plugins: []`). The setup block creates
-> `$FIXTURE/s25-memory-only.koi.yaml` and passes `--manifest` to `koi tui`. Only the `memory` preset
-> stack is active — `dreamStack`, spawn stacks, and all discovered plugins are excluded. This makes
-> Q156-Q161 file-count assertions deterministic on any machine, regardless of installed plugins.
-> **S25 scope**: validates `@koi/memory-fs` store/recall/dedup/delete/persistence in isolation.
-> Default-stack integration (dream + spawn + plugin hooks) is covered by other scenarios and the
-> `@koi/runtime` golden replay suite.
+> **S25 runs on the default TUI stack** (no `--manifest`). Dream consolidation only fires when the gate
+> is satisfied: ≥ 5 sessions elapsed AND ≥ 24 h since the last dream (`packages/mm/dream/src/gate.ts`).
+> S25 uses only 2 sessions on a fresh harness (initial + restart for Q159), so `dreamStack` is active
+> but consolidation never runs — `$MEMORY_DIR` file counts are safe.
+> Plugin isolation is guaranteed by the harness: every tmux launch sets `HOME='$KOI_HOME'`, and the
+> runtime resolves plugins via `join(homedir(), '.koi', 'plugins')`. Since `homedir()` returns `$KOI_HOME`,
+> no operator-installed plugins are visible to the launched process.
 >
 > **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
 > When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$MEMORY_DIR"` explicitly
@@ -832,18 +832,8 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
 rm -rf "$MEMORY_DIR"
 mkdir -p "$MEMORY_DIR"
 
-# Create an isolation manifest: memory-only stack, no plugins.
-# This makes Q156-Q161 file-count assertions deterministic regardless of which
-# plugins are installed in ~/.koi/plugins on the tester's machine.
-cat > "$FIXTURE/s25-memory-only.koi.yaml" <<EOF
-model:
-  name: ${KOI_MODEL:-openai/gpt-4o-mini}
-stacks: [memory]
-plugins: []
-EOF
-
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 
 # Verify the session was actually created and the TUI process did not exit immediately.
 # Approach: has-session (tmux frame exists) + pane_dead check (process still alive).
@@ -862,15 +852,15 @@ if [ "$_S25_PANE_DEAD" = "1" ]; then
 fi
 ```
 
-> **S25 plugin isolation**: The setup block creates `$FIXTURE/s25-memory-only.koi.yaml` (stacks: [memory], plugins: []) and launches the TUI with `--manifest`. This enforces isolation regardless of which plugins are installed in `~/.koi/plugins`: the runtime respects the manifest's `plugins: []` declaration and does not load discovered plugins. `KOI_DISABLE_HOOKS=1` is still required alongside the manifest — it disables user hooks, while the manifest handles plugin isolation separately.
+> **S25 plugin isolation**: `KOI_DISABLE_HOOKS=1` disables user hooks. Plugin-contributed hooks (`pluginComponents.hooks`) are not loaded because the runtime discovers plugins via `join(homedir(), '.koi', 'plugins')`, and `homedir()` returns `$KOI_HOME` (the fake home set by `HOME='$KOI_HOME'` in the tmux launch). No operator-installed plugins are visible. File-count assertions in Q156-Q161 are therefore deterministic without a `--manifest`.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
 | Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | At least one `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index updated. (Do **not** assert on `type:` or exact frontmatter — the model chooses these fields based on prompt phrasing and may legitimately produce different values.) |
 | Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
 | Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3 (read from `$MEMORY_DIR/`); no hallucination |
-| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui --manifest '$FIXTURE/s25-memory-only.koi.yaml'"`. Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
-| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem dedup check**: run the Q160 verification command below; count must be **2** (not 3). A third record file means dedup failed. Model response may vary; the record count is the authoritative regression signal. |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"`. Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
+| Q160 | `Remember: this project uses Bun 1.3 as the runtime.` (near-duplicate of Q156) | memory_store | **Filesystem dedup check**: run the Q160 verification command below; count must be **2** (not 3). **Caveat**: dedup fires only when the model generates the same `name` + `type` as Q156; if the model chooses different values, a third file is written and the check is inconclusive (not a backend regression). For authoritative dedup coverage, run `bun run test --filter=@koi/memory-fs`. |
 | Q161 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q161 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
 
 **Q160 / Q161 verification commands** (pipe character cannot be escaped inside GFM table cells — run these in a terminal):
@@ -944,12 +934,10 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | **isolation manifest** (`stacks: [memory], plugins: []`); git-backed `$FIXTURE`; setup block creates the manifest and passes `--manifest` — no dream, no spawn, no plugin hooks |
+| **S25** | Memory FS Persistence | Q156-Q161 | 2 (restart for Q159) | default stack; git-backed `$FIXTURE`; dream gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; plugin isolation via fake `$KOI_HOME` |
 
-**TUI scenarios (S1-S14, S16-S24) run with the full TUI middleware stack** (default stack set, no `--manifest`):
+**TUI scenarios (S1-S14, S16-S25) run with the full TUI middleware stack** (default stack set, no `--manifest`):
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
-
-**S25** uses a `memory`-only isolation manifest (`stacks: [memory], plugins: []`) — see the S25 setup block for details. It does not run the full default stack.
 
 **S13 and S15** use `koi start` (non-TUI) and activate stacks via `--manifest`. See those scenario headings for their specific stack configuration.
 
