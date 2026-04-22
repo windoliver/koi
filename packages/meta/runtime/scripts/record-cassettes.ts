@@ -28,6 +28,7 @@
  *   @koi/fs-local             — local filesystem backend
  *   @koi/skills-runtime       — skill discovery + SkillComponent attach
  *   @koi/outcome-evaluator    — LLM-as-judge rubric iteration loop
+ *   @koi/middleware-feedback-loop — model validation + tool-health MW (feedback-loop-pass)
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
@@ -81,6 +82,7 @@ import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createFeedbackLoopMiddleware } from "@koi/middleware-feedback-loop";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -4188,6 +4190,39 @@ const queries: readonly QueryConfig[] = [
     hooks: [],
     providers: [],
     afterRecord: recordAgentSummarySidecar,
+  },
+
+  // @koi/middleware-feedback-loop — model validation + tool-health middleware.
+  // Exercises wrapModelCall with a pass-through validator and wrapToolCall
+  // health tracking path. The validator always passes so the trajectory captures
+  // a normal tool-use turn with the feedback-loop middleware in the chain.
+  // Proves the middleware is correctly installed and does not block normal flow.
+  {
+    name: "feedback-loop-pass",
+    prompt:
+      "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    maxTurns: 2,
+    extraMiddleware: [
+      createFeedbackLoopMiddleware({
+        validators: [
+          {
+            name: "pass-through",
+            validate: (_response) => ({ valid: true }),
+          },
+        ],
+      }),
+    ],
   },
 ];
 

@@ -12035,4 +12035,50 @@ describe("Golden: @koi/middleware-feedback-loop", () => {
       ),
     ).toBe(false);
   });
+
+  test("feedback-loop-pass trajectory: middleware spans appear for both wrapModelStream and wrapToolCall", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const raw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "feedback-loop-pass.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+        };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // At least one agent step (model response)
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    // At least one tool step (add_numbers executed)
+    expect(trajectory.steps.some((s) => s.source === "tool")).toBe(true);
+
+    // feedback-loop middleware spans are present
+    const feedbackSpans = trajectory.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra.middlewareName === "feedback-loop",
+    );
+    expect(feedbackSpans.length).toBeGreaterThanOrEqual(2);
+
+    // wrapModelStream span is present (validator ran on model response)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span is present (tool health tracking ran)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (validator passed)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  });
 });
