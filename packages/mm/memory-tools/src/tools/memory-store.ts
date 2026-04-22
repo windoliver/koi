@@ -171,7 +171,12 @@ export function createMemoryStoreTool(
         type: {
           type: "string",
           enum: ["user", "feedback", "project", "reference"],
-          description: "Memory category",
+          description:
+            "Memory category. Choose by content: " +
+            "feedback = work/coding guidance, style rules, 'always/never do X' (not project); " +
+            "user = facts about the person's role, expertise, preferences; " +
+            "project = ongoing work, deadlines, decisions, milestones; " +
+            "reference = pointers to people, URLs, or systems — contact/email/URL patterns (not user).",
         },
         content: { type: "string", description: "The memory content body" },
         force: {

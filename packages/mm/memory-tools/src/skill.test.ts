@@ -61,3 +61,30 @@ describe("MEMORY_TOOL_SKILL_CONTENT", () => {
     expect(MEMORY_TOOL_SKILL_CONTENT).not.toContain("Storage location");
   });
 });
+
+// Regression tests for #1964 — type misclassification (Q85, Q86)
+describe("type classification guidance (regression #1964)", () => {
+  test("skill feedback examples include coding-style / work-guidance patterns", () => {
+    const content = generateMemoryToolSkillContent();
+    // feedback must signal it covers behavioral/style guidance ("always do X"), not just corrections
+    expect(content).toMatch(/always|style|guideline|return type/i);
+  });
+
+  test("skill reference examples include person-contact pointers, not just tool URLs", () => {
+    const content = generateMemoryToolSkillContent();
+    // reference must cover contacts/people pointers, not only Linear/Slack tool links
+    expect(content).toMatch(/contact|email/i);
+  });
+
+  test("skill type table disambiguates feedback from project with explicit markers", () => {
+    const content = generateMemoryToolSkillContent();
+    // The table row for feedback must distinguish it from project (ongoing work vs behavioral guidance)
+    expect(content).toMatch(/feedback[^|]*\|[^|]*(?:guidance|style|always|behavior|prefer)/i);
+  });
+
+  test("skill type table disambiguates reference from user with explicit markers", () => {
+    const content = generateMemoryToolSkillContent();
+    // reference row must mention contact / pointer patterns
+    expect(content).toMatch(/reference[^|]*\|[^|]*(?:contact|pointer|where|http|email)/i);
+  });
+});

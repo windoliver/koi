@@ -49,10 +49,16 @@ ${storageSection}
 
 | Type | Purpose | Examples |
 |------|---------|---------|
-| \`user\` | Role, preferences, expertise | "prefers TypeScript", "senior engineer" |
-| \`feedback\` | Corrections AND validated approaches | "don't mock the DB", "single PR was right call" |
-| \`project\` | Ongoing work, deadlines, decisions | "merge freeze March 5", "auth rewrite for compliance" |
-| \`reference\` | Pointers to external systems | "bugs tracked in Linear INGEST project" |
+| \`user\` | Facts about the person: role, expertise, preferences | "prefers TypeScript", "senior engineer at Acme" |
+| \`feedback\` | Work/coding guidance and validated approaches — "always do X", "never do Y", style rules | "always use explicit return types on exports", "don't mock the DB" |
+| \`project\` | Ongoing work, deadlines, decisions, milestones — time-bound facts about what is happening | "merge freeze March 5", "auth rewrite for compliance" |
+| \`reference\` | Pointers to people, URLs, or systems — "contact for X is Y", "X is tracked in Y", email/URL/Slack links | "infra contact: alice@example.com", "bugs tracked in Linear INGEST" |
+
+**Quick disambiguation:**
+- "Always/never do X" → \`feedback\` (not \`project\`)
+- "Contact for X is Y" / person email / URL → \`reference\` (not \`user\`)
+- Ongoing initiative or deadline → \`project\` (not \`feedback\`)
+- Person's role, skill level, stated preference → \`user\` (not \`reference\`)
 
 ### When to store
 
