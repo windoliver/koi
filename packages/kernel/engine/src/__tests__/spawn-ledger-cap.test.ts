@@ -2,17 +2,24 @@
  * Tests for SpawnLedger cap enforcement via spawnChildAgent (Issue #1996).
  *
  * Cap enforcement lives in spawnChildAgent, not createAgentSpawnFn:
- * - No signal + full ledger: acquire() returns false → RATE_LIMIT (fast-fail)
- * - Signal present + full ledger: acquireOrWait(signal) → bounded wait (backpressure)
- * - Already-aborted signal: acquireOrWait returns false → INTERNAL (not retryable)
+ * - acquireOrWait absent + full ledger: acquire() returns false → RATE_LIMIT
+ * - acquireOrWait present + signal + full ledger: bounded wait (backpressure)
+ * - acquireOrWait present + already-aborted signal: INTERNAL (non-retryable)
  *
- * Both the streaming path (runSpawnedAgent → spawnChildAgent) and the non-streaming
- * path (direct spawnChildAgent call) wrap thrown KoiRuntimeErrors into SpawnResult,
- * preserving the structured error contract.
+ * SpawnRequest.signal is required. The acquire() path (no backpressure) is reached
+ * when the ledger does not implement acquireOrWait — regardless of whether a signal
+ * is present.
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Agent, AgentManifest, SpawnLedger, SubsystemToken, Tool } from "@koi/core";
+import type {
+  Agent,
+  AgentManifest,
+  ReportStore,
+  SpawnLedger,
+  SubsystemToken,
+  Tool,
+} from "@koi/core";
 import { agentId, DEFAULT_SANDBOXED_POLICY } from "@koi/core";
 import { createAgentSpawnFn } from "../create-agent-spawn-fn.js";
 import { createInMemorySpawnLedger } from "../spawn-ledger.js";
@@ -53,11 +60,27 @@ function mockParentAgent(): Agent {
   };
 }
 
-interface MakeSpawnFnOptions {
-  readonly reportStore?: Parameters<typeof createAgentSpawnFn>[0]["reportStore"];
+/**
+ * Minimal ledger with no acquireOrWait — forces spawnChildAgent to use acquire()
+ * (non-blocking fast-fail) regardless of whether a signal is present.
+ */
+function makeSimpleLedger(capacity: number): SpawnLedger {
+  const inner = createInMemorySpawnLedger(capacity);
+  return {
+    acquire: () => inner.acquire(),
+    release: () => inner.release(),
+    activeCount: () => inner.activeCount(),
+    capacity: () => inner.capacity(),
+    // acquireOrWait intentionally absent — triggers acquire() fast-fail path
+  };
 }
 
-function makeSpawnFn(ledger: SpawnLedger, opts: MakeSpawnFnOptions = {}) {
+const MOCK_REPORT_STORE: ReportStore = {
+  put: async () => {},
+  getBySession: async () => [],
+};
+
+function makeSpawnFn(ledger: SpawnLedger, reportStore?: ReportStore) {
   const resolver = {
     resolve: () => ({
       ok: true as const,
@@ -95,24 +118,25 @@ function makeSpawnFn(ledger: SpawnLedger, opts: MakeSpawnFnOptions = {}) {
     },
     adapter: mockAdapter,
     manifestTemplate: BASE_MANIFEST,
-    ...(opts.reportStore !== undefined ? { reportStore: opts.reportStore } : {}),
+    ...(reportStore !== undefined ? { reportStore } : {}),
   });
 }
 
 // ---------------------------------------------------------------------------
-// Unsignaled spawn — fast-fail at capacity via spawnChildAgent.acquire()
+// acquire() path — fast-fail at capacity (no acquireOrWait on ledger)
 // ---------------------------------------------------------------------------
 
-describe("SpawnLedger cap enforcement — unsignaled spawns (Issue #1996)", () => {
-  test("rejects with RATE_LIMIT when ledger is at capacity and no signal provided", async () => {
-    const ledger = createInMemorySpawnLedger(1);
+describe("SpawnLedger cap enforcement — acquire() path (no acquireOrWait) (Issue #1996)", () => {
+  test("rejects with RATE_LIMIT when ledger is at capacity (acquire() returns false)", async () => {
+    const ledger = makeSimpleLedger(1);
     ledger.acquire(); // fill the only slot
     const spawnFn = makeSpawnFn(ledger);
 
-    // No signal → spawnChildAgent uses acquire() (non-blocking) → false → RATE_LIMIT
+    // Even with a signal, no acquireOrWait → spawnChildAgent falls back to acquire()
     const result = await spawnFn({
       agentName: "child-agent",
-      description: "should be rejected — ledger full, no signal to wait on",
+      description: "ledger full, no acquireOrWait → fast-fail",
+      signal: AbortSignal.timeout(2000),
     });
 
     expect(result.ok).toBe(false);
@@ -123,24 +147,32 @@ describe("SpawnLedger cap enforcement — unsignaled spawns (Issue #1996)", () =
   });
 
   test("does not consume a slot on RATE_LIMIT rejection", async () => {
-    const ledger = createInMemorySpawnLedger(2);
+    const ledger = makeSimpleLedger(2);
     ledger.acquire();
     ledger.acquire();
     expect(ledger.activeCount()).toBe(2);
 
     const spawnFn = makeSpawnFn(ledger);
-    await spawnFn({ agentName: "child-agent", description: "rejected" });
+    await spawnFn({
+      agentName: "child-agent",
+      description: "rejected",
+      signal: AbortSignal.timeout(2000),
+    });
 
     // acquire() returned false — no slot was taken, count unchanged
     expect(ledger.activeCount()).toBe(2);
   });
 
   test("RATE_LIMIT is retryable — a freed slot could let the next attempt succeed", async () => {
-    const ledger = createInMemorySpawnLedger(1);
+    const ledger = makeSimpleLedger(1);
     ledger.acquire();
     const spawnFn = makeSpawnFn(ledger);
 
-    const result = await spawnFn({ agentName: "child-agent", description: "at-cap" });
+    const result = await spawnFn({
+      agentName: "child-agent",
+      description: "at-cap",
+      signal: AbortSignal.timeout(2000),
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("RATE_LIMIT");
@@ -148,16 +180,17 @@ describe("SpawnLedger cap enforcement — unsignaled spawns (Issue #1996)", () =
     }
   });
 
-  test("allows unsignaled spawn when ledger has capacity", async () => {
-    const ledger = createInMemorySpawnLedger(5);
+  test("allows spawn when ledger has capacity", async () => {
+    const ledger = makeSimpleLedger(5);
     const spawnFn = makeSpawnFn(ledger);
 
     const result = await spawnFn({
       agentName: "child-agent",
       description: "proceeds past cap check, fails at engine level",
+      signal: AbortSignal.timeout(2000),
     });
 
-    // Not a RATE_LIMIT error from the cap check. May fail at engine level — expected.
+    // Not a RATE_LIMIT error. May fail at engine level — expected.
     if (!result.ok) {
       expect(result.error.code).not.toBe("RATE_LIMIT");
     }
@@ -170,24 +203,17 @@ describe("SpawnLedger cap enforcement — unsignaled spawns (Issue #1996)", () =
 
 describe("SpawnLedger cap enforcement — non-streaming (on_demand) delivery path", () => {
   test("non-streaming path returns structured SpawnResult on ledger failure (not a thrown error)", async () => {
-    const ledger = createInMemorySpawnLedger(1);
-    ledger.acquire(); // fill the only slot
+    const ledger = makeSimpleLedger(1);
+    ledger.acquire();
 
-    // on_demand delivery requires a reportStore — provide a minimal mock so we
+    // on_demand delivery requires a reportStore — provide a complete stub so we
     // reach the non-streaming spawnChildAgent call (not the VALIDATION early-return).
-    const mockReportStore = {
-      put: async (_report: RunReport): Promise<void> => {
-        // no-op
-      },
-    };
+    const spawnFn = makeSpawnFn(ledger, MOCK_REPORT_STORE);
 
-    const spawnFn = makeSpawnFn(ledger, { reportStore: mockReportStore });
-
-    // No signal → acquire() fast-fail; on_demand delivery routes through the
-    // non-streaming branch with its own catch-and-wrap for KoiRuntimeError.
     const result = await spawnFn({
       agentName: "child-agent",
       description: "non-streaming ledger failure",
+      signal: AbortSignal.timeout(2000),
       delivery: { kind: "on_demand" },
     });
 
@@ -201,15 +227,14 @@ describe("SpawnLedger cap enforcement — non-streaming (on_demand) delivery pat
 });
 
 // ---------------------------------------------------------------------------
-// Signaled spawn — bounded-wait backpressure via spawnChildAgent.acquireOrWait
+// acquireOrWait path — bounded-wait backpressure (acquireOrWait present)
 // ---------------------------------------------------------------------------
 
-describe("SpawnLedger cap enforcement — signaled spawns (backpressure path)", () => {
-  test("acquireOrWait is called and resolves true after a slot is released (backpressure)", async () => {
+describe("SpawnLedger cap enforcement — acquireOrWait() backpressure path", () => {
+  test("acquireOrWait is called and resolves true after a slot is released", async () => {
     const realLedger = createInMemorySpawnLedger(1);
     realLedger.acquire(); // fill the only slot
 
-    // Spy on acquireOrWait to verify it was called AND resolved with true (acquired)
     let acquireOrWaitCalled = false;
     let acquireOrWaitResolution: boolean | undefined;
 
@@ -240,12 +265,12 @@ describe("SpawnLedger cap enforcement — signaled spawns (backpressure path)", 
 
     clearTimeout(releaseTimer);
 
-    // Key assertions: acquireOrWait was invoked AND it resolved true (slot acquired)
+    // Key assertions: acquireOrWait was invoked AND resolved true (slot acquired)
     expect(acquireOrWaitCalled).toBe(true);
     expect(acquireOrWaitResolution).toBe(true);
   });
 
-  test("allows signaled spawn when ledger has capacity", async () => {
+  test("allows spawns when ledger has capacity (acquireOrWait fast-path)", async () => {
     const ledger = createInMemorySpawnLedger(5);
     const spawnFn = makeSpawnFn(ledger);
 
@@ -267,9 +292,9 @@ describe("SpawnLedger cap enforcement — signaled spawns (backpressure path)", 
 // ---------------------------------------------------------------------------
 
 describe("SpawnLedger cap check — cancellation semantics", () => {
-  test("returns INTERNAL (not retryable) when signal is already aborted", async () => {
-    // acquireOrWait with an already-aborted signal returns false, and
-    // spawnChildAgent classifies that as INTERNAL (cancellation), not RATE_LIMIT.
+  test("returns INTERNAL (not retryable) when signal is already aborted (acquireOrWait path)", async () => {
+    // acquireOrWait with an already-aborted signal returns false immediately,
+    // and spawnChildAgent classifies that as INTERNAL (cancellation), not RATE_LIMIT.
     const ledger = createInMemorySpawnLedger(5);
     const spawnFn = makeSpawnFn(ledger);
 
@@ -286,20 +311,24 @@ describe("SpawnLedger cap check — cancellation semantics", () => {
     }
   });
 
-  test("RATE_LIMIT (no signal) vs INTERNAL (already-aborted signal) are distinct", async () => {
-    const fullLedger = createInMemorySpawnLedger(1);
-    fullLedger.acquire();
-    const spawnFn = makeSpawnFn(fullLedger);
+  test("RATE_LIMIT (no acquireOrWait, capacity full) vs INTERNAL (already-aborted) are distinct codes", async () => {
+    // No acquireOrWait → RATE_LIMIT
+    const simpleFull = makeSimpleLedger(1);
+    simpleFull.acquire();
+    const spawnFn = makeSpawnFn(simpleFull);
 
-    // No signal → fast-fail RATE_LIMIT
-    const rateLimitResult = await spawnFn({ agentName: "child-agent", description: "at-cap" });
+    const rateLimitResult = await spawnFn({
+      agentName: "child-agent",
+      description: "at-cap via acquire()",
+      signal: AbortSignal.timeout(2000),
+    });
     expect(rateLimitResult.ok).toBe(false);
     if (!rateLimitResult.ok) {
       expect(rateLimitResult.error.code).toBe("RATE_LIMIT");
       expect(rateLimitResult.error.retryable).toBe(true);
     }
 
-    // Already-aborted signal → INTERNAL (cancellation, non-retryable)
+    // Already-aborted signal + acquireOrWait → INTERNAL (cancellation)
     const ledger2 = createInMemorySpawnLedger(5);
     const spawnFn2 = makeSpawnFn(ledger2);
     const cancelResult = await spawnFn2({
