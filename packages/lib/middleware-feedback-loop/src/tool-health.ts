@@ -118,6 +118,10 @@ interface ToolState {
     sampler: ReturnType<typeof createLatencySampler>; // mutable: replaced on recordLatency
     lastUsedAt: number; // mutable
   };
+
+  // Per-tool flush suspension circuit breaker — isolated so one tool can't stop others
+  consecutiveFlushFailures: number; // mutable
+  flushSuspendedUntil: number; // mutable: epoch ms; 0 = not suspended
 }
 
 function makeToolState(ringSize: number): ToolState {
@@ -143,6 +147,8 @@ function makeToolState(ringSize: number): ToolState {
       sampler: createLatencySampler(),
       lastUsedAt: 0,
     },
+    consecutiveFlushFailures: 0,
+    flushSuspendedUntil: 0,
   };
 }
 
@@ -231,10 +237,6 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     onFlushError,
   } = config;
 
-  // Flush suspension circuit breaker — shared across all tools in this tracker
-  let consecutiveFlushFailures = 0;
-  let flushSuspendedUntil = 0; // epoch ms; 0 = not suspended
-
   const demotionCriteria: DemotionCriteria = {
     ...DEFAULT_DEMOTION_CRITERIA,
     ...config.demotionCriteria,
@@ -270,10 +272,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     state.deltaSinceFlush.sampler = recordLatency(state.deltaSinceFlush.sampler, latencyMs);
     updateFlushState(state, now);
 
-    // Fire-and-forget background flush if threshold reached and not suspended
+    // Fire-and-forget background flush if threshold reached and this tool is not suspended
     const now2 = clock();
     if (
-      now2 >= flushSuspendedUntil &&
+      now2 >= state.flushSuspendedUntil &&
       shouldFlush(state.flushState, flushThreshold, errorRateDeltaThreshold)
     ) {
       void flushTool(toolId, state, false);
@@ -313,12 +315,12 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       const updateResult = await forgeStore.update(bId, { fitness: merged });
       if (!updateResult.ok) {
         state.flushState = { ...state.flushState, flushing: false };
-        recordFlushFailure(toolId, updateResult.error, bypassSuspension);
+        recordFlushFailure(toolId, state, updateResult.error, bypassSuspension);
         return;
       }
 
-      // Successful flush — reset circuit breaker and dirty counters
-      consecutiveFlushFailures = 0;
+      // Successful flush — reset per-tool circuit breaker and dirty counters
+      state.consecutiveFlushFailures = 0;
       state.deltaSinceFlush = {
         successCount: 0,
         errorCount: 0,
@@ -334,17 +336,22 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       };
     } catch (e: unknown) {
       state.flushState = { ...state.flushState, flushing: false };
-      recordFlushFailure(toolId, e, bypassSuspension);
+      recordFlushFailure(toolId, state, e, bypassSuspension);
     }
   }
 
-  function recordFlushFailure(toolId: string, error: unknown, bypassSuspension: boolean): void {
+  function recordFlushFailure(
+    toolId: string,
+    state: ToolState,
+    error: unknown,
+    bypassSuspension: boolean,
+  ): void {
     onFlushError?.(toolId, error);
     if (bypassSuspension) return; // dispose() flushes always proceed regardless
-    consecutiveFlushFailures += 1;
-    if (consecutiveFlushFailures >= maxConsecutiveFlushFailures) {
-      flushSuspendedUntil = clock() + flushSuspensionCooldownMs;
-      consecutiveFlushFailures = 0;
+    state.consecutiveFlushFailures += 1;
+    if (state.consecutiveFlushFailures >= maxConsecutiveFlushFailures) {
+      state.flushSuspendedUntil = clock() + flushSuspensionCooldownMs;
+      state.consecutiveFlushFailures = 0;
     }
   }
 
@@ -496,7 +503,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         trustTier: undefined,
         errorRate,
         totalCount: metrics.totalCount,
-        flushSuspended: clock() < flushSuspendedUntil,
+        flushSuspended: clock() < state.flushSuspendedUntil,
       };
     },
 

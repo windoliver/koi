@@ -70,8 +70,9 @@ async function handleToolSuccess(
 
   if (tracker !== undefined) {
     tracker.recordSuccess(toolId, latencyMs);
-    await tracker.checkAndQuarantine(toolId);
-    await tracker.checkAndDemote(toolId);
+    // Fire-and-forget: health I/O must not turn a successful tool call into a failure
+    void tracker.checkAndQuarantine(toolId);
+    void tracker.checkAndDemote(toolId);
   }
 
   return response;
