@@ -183,7 +183,7 @@ describe("createFeedbackLoopMiddleware", () => {
         getSnapshot: () => undefined,
         checkAndQuarantine: async () => false,
         checkAndDemote: async () => false,
-        isQuarantined: (_toolId: string) => true,
+        isQuarantined: async (_toolId: string) => true,
         dispose: async () => {},
       };
 
@@ -217,7 +217,7 @@ describe("createFeedbackLoopMiddleware", () => {
         getSnapshot: () => undefined,
         checkAndQuarantine: async () => false,
         checkAndDemote: async () => false,
-        isQuarantined: (_toolId: string) => false,
+        isQuarantined: async (_toolId: string) => false,
         dispose: async () => {},
       };
 

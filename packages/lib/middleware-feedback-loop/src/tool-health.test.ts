@@ -30,7 +30,7 @@ function makeForgeStore(): ForgeStore & { data: Map<string, BrickArtifact> } {
       data.delete(id);
       return { ok: true, value: undefined };
     },
-    update: async (id: BrickId, updates: Partial<BrickArtifact>) => {
+    update: async (id: BrickId) => {
       const b = data.get(id);
       if (!b) {
         return {
@@ -38,7 +38,6 @@ function makeForgeStore(): ForgeStore & { data: Map<string, BrickArtifact> } {
           error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
         };
       }
-      data.set(id, { ...b, ...updates });
       return { ok: true, value: undefined };
     },
     exists: async (id: BrickId) => ({ ok: true, value: data.has(id) }),
