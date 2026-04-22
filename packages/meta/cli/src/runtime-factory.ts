@@ -2099,7 +2099,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // Compliance recorders accumulated from each active audit sink.
     // Used later to populate governanceBackend.compliance.
     const complianceRecorders: ComplianceRecorder[] = [];
-    // First queryable audit sink (SQLite only — NDJSON has no .query).
+    // First queryable audit sink. Both NDJSON and SQLite sinks implement
+    // `.query(sessionId)` today; we capture whichever is wired. When both
+    // are active, SQLite wins (the second branch overwrites) because its
+    // indexed lookup is faster than NDJSON's full-file scan for the
+    // session-filtered query the ledger issues.
     // Passed into createDecisionLedger so /trajectory shows audit:ok and
     // surfaces compliance_event / permission_decision rows in the audit lane.
     let ledgerAuditSink: AuditSink | undefined;
@@ -2142,6 +2146,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }),
       );
       auditPresetExtras.push(auditMw);
+      if (typeof auditSink.query === "function") {
+        ledgerAuditSink = auditSink;
+      }
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
         close: () => auditSink.close(),
@@ -2203,7 +2210,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }),
       );
       auditPresetExtras.push(sqliteAuditMw);
-      ledgerAuditSink = sqliteSink;
+      if (typeof sqliteSink.query === "function") {
+        ledgerAuditSink = sqliteSink;
+      }
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
         close: async () => sqliteSink.close(),
