@@ -48,12 +48,7 @@ async function handleToolSuccess(
 ): Promise<ToolResponse> {
   const latencyMs = Date.now() - startMs;
 
-  if (tracker !== undefined) {
-    tracker.recordSuccess(toolId, latencyMs);
-    await tracker.checkAndQuarantine(toolId);
-    await tracker.checkAndDemote(toolId);
-  }
-
+  // Gates run BEFORE health accounting — one invocation = exactly one health outcome
   if (config.toolGates !== undefined && config.toolGates.length > 0) {
     for (const gate of config.toolGates) {
       const result = await gate.validate(response);
@@ -62,6 +57,8 @@ async function handleToolSuccess(
         config.onGateFail?.(gate, errors);
         if (gate.countAsHealthFailure === true && tracker !== undefined) {
           tracker.recordFailure(toolId, latencyMs, `gate "${gate.name}" failed`);
+          void tracker.checkAndQuarantine(toolId);
+          void tracker.checkAndDemote(toolId);
         }
         throw KoiRuntimeError.from(
           "VALIDATION",
@@ -69,6 +66,12 @@ async function handleToolSuccess(
         );
       }
     }
+  }
+
+  if (tracker !== undefined) {
+    tracker.recordSuccess(toolId, latencyMs);
+    await tracker.checkAndQuarantine(toolId);
+    await tracker.checkAndDemote(toolId);
   }
 
   return response;
