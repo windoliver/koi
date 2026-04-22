@@ -36,6 +36,8 @@ mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
 # Initialize $FIXTURE as an isolated git repo — required by §1.5 reset and S25 setup.
 # Must be a standalone root (not nested inside another repo) so resolveMemoryDir()
 # and all cleanup scripts target $FIXTURE/.koi/memory exclusively.
+# Always recreate from scratch so setup is idempotent (safe to rerun).
+rm -rf "$FIXTURE"
 mkdir -p "$FIXTURE"
 git -C "$FIXTURE" init -q
 # Create an initial commit so `git reset --hard HEAD` works in §1.5.
