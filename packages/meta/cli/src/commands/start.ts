@@ -42,7 +42,7 @@ import {
   HEADLESS_EXIT,
   runHeadless,
 } from "../headless/run.js";
-import { validateLoadedSchema } from "../headless/validate-schema.js";
+import { validateLoadedSchema, validateResultSchema } from "../headless/validate-schema.js";
 import { loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
@@ -1184,6 +1184,23 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           exitCode: HEADLESS_EXIT.INTERNAL,
           error: `teardown failure (run exited ${headlessCode}); see stderr for disposer / transcript errors`,
         });
+      } else if (resultSchemaObj !== undefined && headlessCode === HEADLESS_EXIT.SUCCESS) {
+        const schemaResult = rawAssistantOverflow
+          ? {
+              ok: false as const,
+              error: "schema validation failed: assistant output exceeded 1 MB limit",
+            }
+          : validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
+        if (!schemaResult.ok) {
+          finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+          emitResult({
+            exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+            validationFailed: true,
+            error: schemaResult.error,
+          });
+        } else {
+          emitResult();
+        }
       } else {
         emitResult();
       }

@@ -7,8 +7,11 @@
  * abort, manifest loading, and error propagation.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { EngineOutput } from "@koi/core";
+import { HEADLESS_EXIT } from "../headless/exit-codes.js";
+import * as runModule from "../headless/run.js";
+import * as validateModule from "../headless/validate-schema.js";
 import { ExitCode } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -58,10 +61,26 @@ const mockRuntime = { run: mockRun, dispose: mockDispose };
 mock.module("@koi/engine", () => ({
   createKoi: mock(async () => mockRuntime),
   createSystemPromptMiddleware: mock((_prompt: string) => ({})),
+  createGovernanceController: mock(() => ({})),
+  createSpawnToolProvider: mock(() => ({})),
+  createInMemorySpawnLedger: mock(() => ({})),
+}));
+
+// Mock `createKoiRuntime` from runtime-factory directly so tests
+// don't need to satisfy the full downstream mock chain
+// (shared-wiring, @koi/runtime, required-middleware, etc.).
+mock.module("../runtime-factory.js", () => ({
+  createKoiRuntime: mock(async () => ({
+    runtime: mockRuntime,
+    transcript: [],
+    shutdownBackgroundTasks: mock(() => false),
+  })),
 }));
 
 mock.module("@koi/harness", () => ({
   createCliHarness: mock(() => mockHarness),
+  renderEngineEvent: mock((_event: unknown, _verbose: boolean, _newline: boolean) => null),
+  shouldRender: mock((_event: unknown, _verbose: boolean) => false),
 }));
 
 mock.module("@koi/channel-cli", () => ({
@@ -95,6 +114,7 @@ const mockLoadManifest = mock(
 
 mock.module("../manifest.js", () => ({
   loadManifestConfig: mockLoadManifest,
+  CORE_MIDDLEWARE_BLOCKLIST: [] as readonly string[],
 }));
 
 // Mock resolveFileSystem from @koi/runtime so nexus gate tests don't
@@ -110,6 +130,19 @@ const mockResolveFileSystem = mock((_config: unknown, _cwd: string) => ({
 
 mock.module("@koi/runtime", () => ({
   resolveFileSystem: mockResolveFileSystem,
+  resolveFileSystemAsync: mock(async (_config: unknown, _cwd: string) => ({
+    name: "mock-nexus-async",
+    read: mock(async () => ({ ok: true, value: { content: "", path: "", size: 0 } })),
+    write: mock(async () => ({ ok: true, value: { path: "", bytesWritten: 0 } })),
+    edit: mock(async () => ({ ok: true, value: { path: "", hunksApplied: 0 } })),
+    list: mock(async () => ({ ok: true, value: { entries: [], truncated: false } })),
+    search: mock(async () => ({ ok: true, value: { matches: [], truncated: false } })),
+  })),
+  validateFileSystemConfig: mock((_config: unknown) => ({ ok: true as const })),
+  wrapMiddlewareWithTrace: mock((_mw: unknown) => _mw),
+  createHookObserver: mock(() => ({})),
+  createSkillsMcpBridge: mock(() => ({})),
+  createArtifactToolProvider: mock(() => ({})),
 }));
 
 // Mock @koi/session so tests don't touch the filesystem. We
@@ -174,6 +207,17 @@ mock.module("../shared-wiring.js", () => ({
   loadUserRegisteredHooks: mock(async () => []),
   mergeUserAndPluginHooks: mock((u: unknown[], _p: unknown[]) => u),
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
+  buildCoreMiddleware: mock(() => ({
+    permissions: {},
+    hook: {},
+    systemPrompt: undefined,
+    sessionTranscript: undefined,
+  })),
+  buildCoreProviders: mock(() => []),
+  buildSessionTranscriptMw: mock(() => ({})),
+  buildSystemPromptMw: mock(() => ({})),
+  buildHookMw: mock(() => ({})),
+  USER_HOOKS_CONFIG_PATH: "",
 }));
 
 // ---------------------------------------------------------------------------
@@ -505,5 +549,220 @@ describe("run() — nexus two-gate trust boundary", () => {
     // to runtime assembly (which uses mocked dependencies) and succeeds.
     const result = await run(makeFlags({ manifest: "koi.yaml", allowRemoteFs: true }));
     expect(result).toBe(ExitCode.OK);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExitError sentinel — thrown by the process.exit spy so tests can assert
+// on the exit code without actually terminating the process.
+// ---------------------------------------------------------------------------
+
+class ExitError extends Error {
+  readonly code: number;
+  constructor(code: number) {
+    super(`process.exit(${code})`);
+    this.code = code;
+  }
+}
+
+describe("commands/start — --result-schema wiring (#1648)", () => {
+  const VALID_SCHEMA = '{"type":"object","required":["count"]}';
+
+  let exitSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    exitSpy = spyOn(process, "exit").mockImplementation((code?: number): never => {
+      throw new ExitError(code ?? 0);
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.OPENROUTER_API_KEY;
+    exitSpy.mockRestore();
+    mockDispose.mockReset();
+  });
+
+  test("exit 5 when schema file cannot be read", async () => {
+    const bunFileMock = spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.reject(new Error("ENOENT: no such file or directory")),
+    } as ReturnType<typeof Bun.file>);
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./missing.json",
+        }),
+      );
+      throw new Error("expected process.exit to be called");
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+      expect(e.code).toBe(HEADLESS_EXIT.INTERNAL);
+    } finally {
+      bunFileMock.mockRestore();
+    }
+  });
+
+  test("exit 5 when schema file contains invalid JSON", async () => {
+    const bunFileMock = spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve("not json {{{"),
+    } as ReturnType<typeof Bun.file>);
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./bad.json",
+        }),
+      );
+      throw new Error("expected process.exit to be called");
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+      expect(e.code).toBe(HEADLESS_EXIT.INTERNAL);
+    } finally {
+      bunFileMock.mockRestore();
+    }
+  });
+
+  test("exit 6 (SCHEMA_VALIDATION) when agent succeeds but output fails schema", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.("not json");
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.SCHEMA_VALIDATION);
+    expect(capturedEmitArgs?.validationFailed).toBe(true);
+    expect(capturedEmitArgs?.error).toContain("not valid JSON");
+  });
+
+  test("exit 0 when agent succeeds and output matches schema", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.('{"count":5}');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    expect(capturedEmitArgs?.exitCode ?? HEADLESS_EXIT.SUCCESS).toBe(HEADLESS_EXIT.SUCCESS);
+    expect(capturedEmitArgs?.error).toBeUndefined();
+  });
+
+  test("shutdown failure takes precedence: exit 5 even when schema would pass", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.('{"count":5}');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    mockDispose.mockImplementationOnce(async () => {
+      throw new Error("disposer blew up");
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    expect(capturedEmitArgs?.exitCode).toBe(HEADLESS_EXIT.INTERNAL);
+  });
+
+  test("schema validation skipped when agent exits non-zero", async () => {
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    const validateSpy = spyOn(validateModule, "validateResultSchema");
+
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      opts.onRawAssistantText?.('{"count":5}');
+      return {
+        exitCode: HEADLESS_EXIT.TIMEOUT,
+        emitResult: (_args?: { exitCode?: number; error?: string }) => {},
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    expect(validateSpy).not.toHaveBeenCalled();
   });
 });
