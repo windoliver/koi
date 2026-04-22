@@ -256,6 +256,8 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   // Re-checked after QUARANTINE_POSITIVE_TTL_MS so operator recovery actions take effect in live sessions.
   const QUARANTINE_POSITIVE_TTL_MS = 5 * 60 * 1_000; // 5 minutes
   const forgeQuarantinedBricksAt = new Map<BrickId, number>();
+  // Tracks in-flight quarantine/demotion persistence promises so dispose() can await them.
+  const pendingHealthWrites = new Set<Promise<unknown>>();
 
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
@@ -645,114 +647,26 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       };
     },
 
-    async checkAndQuarantine(toolId: string): Promise<boolean> {
-      const state = getOrCreate(toolId);
-      if (state.sessionQuarantined) return true;
-
-      const metrics = computeWindowMetrics(state, windowSize);
-      const action = computeHealthAction(
-        metrics,
-        state.healthState,
-        "verified", // default tier for quarantine check — actual tier loaded during demotion
-        quarantineThreshold,
-        windowSize,
-        demotionCriteria,
-        state.lastPromotedAt,
-        state.lastDemotedAt,
-        clock(),
-      );
-
-      if (action.action !== "quarantine") return false;
-
-      // Always quarantine in session first — safety invariant holds even if store fails
-      state.sessionQuarantined = true;
-      state.healthState = "quarantined";
-      const bId = resolveBrickId(toolId);
-      if (bId !== undefined) {
-        // Record brick-level quarantine so all aliases of this brick are blocked
-        quarantinedBricks.add(bId);
-        // Best-effort persist — errors are reported via onHealthTransitionError
-        await persistQuarantine(toolId, bId, metrics);
-        // Notify caller after session quarantine is confirmed (persist is best-effort)
-        config.onQuarantine?.(bId);
-      } else {
-        // No brickId — report as transition error
-        const event: HealthTransitionErrorEvent = {
-          transition: "quarantine",
-          phase: "forgeStore",
-          brickId: "unknown" as BrickId,
-          error: new Error(`No BrickId found for tool '${toolId}'`),
-        };
-        onHealthTransitionError?.(event);
-      }
-
-      return true;
+    checkAndQuarantine(toolId: string): Promise<boolean> {
+      const p = checkAndQuarantine_(toolId);
+      // Register so dispose() can await any in-flight persist calls
+      pendingHealthWrites.add(p);
+      p.finally(() => pendingHealthWrites.delete(p));
+      return p;
     },
 
-    async checkAndDemote(toolId: string): Promise<boolean> {
-      const state = getOrCreate(toolId);
-      // Do NOT skip demotion when in-session quarantine is active: quarantine and demotion
-      // are independent transitions. Demotion must still be persisted so trust tier survives
-      // session rollover and operator unquarantine.
-
-      const bId = resolveBrickId(toolId);
-      if (bId === undefined) return false;
-
-      // Load current brick to get trust tier and storeVersion for OCC
-      const loadResult = await forgeStore.load(bId);
-      if (!loadResult.ok) {
-        const event: HealthTransitionErrorEvent = {
-          transition: "demotion",
-          phase: "forgeStore",
-          brickId: bId,
-          error: loadResult.error,
-        };
-        onHealthTransitionError?.(event);
-        return false;
-      }
-      const currentTier: TrustTier = loadResult.value.trustTier ?? "local";
-      const currentStoreVersion = loadResult.value.storeVersion;
-
-      const metrics = computeWindowMetrics(state, demotionCriteria.windowSize);
-      const now = clock();
-      const action = computeHealthAction(
-        metrics,
-        state.healthState,
-        currentTier,
-        quarantineThreshold,
-        windowSize,
-        demotionCriteria,
-        state.lastPromotedAt,
-        state.lastDemotedAt,
-        now,
-      );
-
-      if (action.action !== "demote") return false;
-
-      const toTier = nextTrustTier(currentTier);
-      if (toTier === undefined) return false;
-
-      // Optimistically advance cooldown BEFORE awaiting I/O so concurrent callers observe
-      // the updated timestamp and cannot queue a second demotion within the same window.
-      // Roll back on failure so the next attempt is not permanently blocked.
-      const prevLastDemotedAt = state.lastDemotedAt;
-      state.lastDemotedAt = now;
-
-      const demoted = await persistDemotion(
-        toolId,
-        bId,
-        currentTier,
-        toTier,
-        metrics,
-        currentStoreVersion,
-      );
-      if (!demoted) {
-        state.lastDemotedAt = prevLastDemotedAt;
-      }
-      return demoted;
+    checkAndDemote(toolId: string): Promise<boolean> {
+      const p = checkAndDemote_(toolId);
+      pendingHealthWrites.add(p);
+      p.finally(() => pendingHealthWrites.delete(p));
+      return p;
     },
 
     async dispose(): Promise<void> {
+      // First await any in-flight quarantine/demotion persistence writes
+      if (pendingHealthWrites.size > 0) {
+        await Promise.allSettled(Array.from(pendingHealthWrites));
+      }
       // Collect and await ALL pending flushes: tools already flushing (activeFlush)
       // and tools that are dirty but not yet flushing.
       const flushes: Promise<void>[] = [];
@@ -783,4 +697,111 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       stateMap.clear();
     },
   };
+
+  async function checkAndQuarantine_(toolId: string): Promise<boolean> {
+    const state = getOrCreate(toolId);
+    if (state.sessionQuarantined) return true;
+
+    const metrics = computeWindowMetrics(state, windowSize);
+    const action = computeHealthAction(
+      metrics,
+      state.healthState,
+      "verified", // default tier for quarantine check — actual tier loaded during demotion
+      quarantineThreshold,
+      windowSize,
+      demotionCriteria,
+      state.lastPromotedAt,
+      state.lastDemotedAt,
+      clock(),
+    );
+
+    if (action.action !== "quarantine") return false;
+
+    // Always quarantine in session first — safety invariant holds even if store fails
+    state.sessionQuarantined = true;
+    state.healthState = "quarantined";
+    const bId = resolveBrickId(toolId);
+    if (bId !== undefined) {
+      // Record brick-level quarantine so all aliases of this brick are blocked
+      quarantinedBricks.add(bId);
+      // Best-effort persist — errors are reported via onHealthTransitionError
+      await persistQuarantine(toolId, bId, metrics);
+      // Notify caller after session quarantine is confirmed (persist is best-effort)
+      config.onQuarantine?.(bId);
+    } else {
+      // No brickId — report as transition error
+      const event: HealthTransitionErrorEvent = {
+        transition: "quarantine",
+        phase: "forgeStore",
+        brickId: "unknown" as BrickId,
+        error: new Error(`No BrickId found for tool '${toolId}'`),
+      };
+      onHealthTransitionError?.(event);
+    }
+
+    return true;
+  }
+
+  async function checkAndDemote_(toolId: string): Promise<boolean> {
+    const state = getOrCreate(toolId);
+    // Do NOT skip demotion when in-session quarantine is active: quarantine and demotion
+    // are independent transitions. Demotion must still be persisted so trust tier survives
+    // session rollover and operator unquarantine.
+
+    const bId = resolveBrickId(toolId);
+    if (bId === undefined) return false;
+
+    // Load current brick to get trust tier and storeVersion for OCC
+    const loadResult = await forgeStore.load(bId);
+    if (!loadResult.ok) {
+      const event: HealthTransitionErrorEvent = {
+        transition: "demotion",
+        phase: "forgeStore",
+        brickId: bId,
+        error: loadResult.error,
+      };
+      onHealthTransitionError?.(event);
+      return false;
+    }
+    const currentTier: TrustTier = loadResult.value.trustTier ?? "local";
+    const currentStoreVersion = loadResult.value.storeVersion;
+
+    const metrics = computeWindowMetrics(state, demotionCriteria.windowSize);
+    const now = clock();
+    const action = computeHealthAction(
+      metrics,
+      state.healthState,
+      currentTier,
+      quarantineThreshold,
+      windowSize,
+      demotionCriteria,
+      state.lastPromotedAt,
+      state.lastDemotedAt,
+      now,
+    );
+
+    if (action.action !== "demote") return false;
+
+    const toTier = nextTrustTier(currentTier);
+    if (toTier === undefined) return false;
+
+    // Optimistically advance cooldown BEFORE awaiting I/O so concurrent callers observe
+    // the updated timestamp and cannot queue a second demotion within the same window.
+    // Roll back on failure so the next attempt is not permanently blocked.
+    const prevLastDemotedAt = state.lastDemotedAt;
+    state.lastDemotedAt = now;
+
+    const demoted = await persistDemotion(
+      toolId,
+      bId,
+      currentTier,
+      toTier,
+      metrics,
+      currentStoreVersion,
+    );
+    if (!demoted) {
+      state.lastDemotedAt = prevLastDemotedAt;
+    }
+    return demoted;
+  }
 }
