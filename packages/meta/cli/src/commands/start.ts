@@ -1221,13 +1221,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         // validateResultSchema is synchronous. A timer cannot preempt synchronous JS work,
         // so check the wall clock after validation to enforce the deadline if it expired
         // while the event loop was blocked by a large payload.
+        // Use SCHEMA_VALIDATION (exit 6), not TIMEOUT (exit 4): the agent already completed
+        // all tool calls before this check, so CI must NOT retry (side effects already ran).
         if (deadlineAt !== undefined && Date.now() > deadlineAt) {
           postRunPhaseComplete = true;
           if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
-          finalCode = HEADLESS_EXIT.TIMEOUT;
+          finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
           emitResult({
-            exitCode: HEADLESS_EXIT.TIMEOUT,
-            error: "max-duration-ms exceeded during schema validation",
+            exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+            validationFailed: true,
+            error: "schema validation failed: max-duration-ms exceeded during schema validation",
           });
         } else {
           postRunPhaseComplete = true;
