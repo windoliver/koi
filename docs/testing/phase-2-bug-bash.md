@@ -812,7 +812,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 **All scenarios run with the full TUI middleware stack:**
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
 
-Optional MW (model-router, otel, audit, report) require explicit config — tested in S20-S23.
+Optional MW (model-router, planning, otel, audit, report) require explicit config — tested in S20-S23.
 
 ---
 
@@ -902,8 +902,8 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/tool-browser | **S18** | Q110-Q117 (wire `createBrowserProvider` into TUI first) |
 | @koi/lsp | **S19** | Q118-Q125 (wire `createLspComponentProvider` into TUI first) |
 | @koi/middleware-task-anchor | **S21** | Q134-Q138 (always wired; task board reminders on idle turns) |
-| @koi/middleware-planning | **S21** | Q137 (always wired; `write_plan` tool) |
-| @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
+| @koi/middleware-planning | **S21** | Q137 (`KOI_PLANNING_ENABLED=true`; `koi_plan_write` tool) |
+| @koi/middleware-report | **S21** | Q139-Q140 (`KOI_REPORT_ENABLED=true`) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
 | @koi/memory-fs | **S25** | Q156-Q162 (wire `KOI_MEMORY_DIR` first) |
