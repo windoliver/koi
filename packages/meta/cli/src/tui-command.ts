@@ -1725,12 +1725,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     onSpawnEvent: (event): void => {
       // Track active spawns for the current drain — updated before the
       // try-catch so SIGINT policy is never affected by UI dispatch failures.
+      // Set-based: late terminals from a previous drain delete a missing key
+      // (no-op); late spawn_requested from a previous drain add a transient
+      // entry that its matching terminal will remove — no net effect (#1999 r4).
       if (event.kind === "spawn_requested") {
-        drainSpawnCount++;
+        activeDrainSpawnIds.add(event.agentId);
       } else {
-        // agent_status_changed — terminal event; clamp to 0 to stay consistent
-        // if a terminal fires without a prior spawn_requested (e.g. #1855 recovery).
-        drainSpawnCount = Math.max(0, drainSpawnCount - 1);
+        activeDrainSpawnIds.delete(event.agentId);
       }
       // Defense-in-depth: store.dispatch can throw if the reducer or
       // SolidJS reactivity hits an edge case. A throwing callback must
@@ -1927,11 +1928,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
-  // let: net count of spawn_requested minus agent_status_changed (terminal) events
-  // for the CURRENT drain. Reset at processSubmit start. Updated directly from
-  // onSpawnEvent — independent of UI store dispatch success — so SIGINT window-
-  // elapse policy is runtime-authoritative and scoped to the current turn (#1999).
-  let drainSpawnCount = 0;
+  // let: set of agentIds whose spawn_requested has fired but whose
+  // agent_status_changed (terminal) has not yet arrived, for the CURRENT drain.
+  // Reset at processSubmit start. Keyed by agentId so late terminal events from
+  // previous drains (delete on a missing key) are no-ops, and so late spawn_requested
+  // events from a previous drain that arrive after reset simply add a transient entry
+  // that the matching terminal will remove. Avoids integer under/over-count from
+  // cross-drain event interleaving (#1999, adversarial review round 4).
+  let activeDrainSpawnIds: Set<string> = new Set<string>();
   // let: one-shot flag — true after the first double-tap window elapses with an
   // active spawn. Provides exactly one grace reset-to-idle to protect against the
   // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
@@ -2149,7 +2153,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // has already gotten one grace period, subsequent windows revert to
     // stay-armed so the force-exit path remains reachable for truly stuck spawns.
     onWindowElapse: (): "stay-armed" | "reset-to-idle" => {
-      if (drainSpawnCount > 0 && !spawnGraceUsed) {
+      if (activeDrainSpawnIds.size > 0 && !spawnGraceUsed) {
         spawnGraceUsed = true;
         return "reset-to-idle";
       }
@@ -3323,11 +3327,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
-        // Reset the spawn counter and grace flag for this drain. onSpawnEvent
-        // updates drainSpawnCount as spawn_requested / agent_status_changed
-        // events fire; spawnGraceUsed tracks whether the one-shot idle-reset
-        // grace period has been consumed for this turn.
-        drainSpawnCount = 0;
+        // Reset the spawn set and grace flag for this drain. onSpawnEvent updates
+        // activeDrainSpawnIds; spawnGraceUsed tracks whether the one-shot idle-
+        // reset grace has been consumed. A fresh Set ensures late events from the
+        // previous drain are no-ops in this drain's tracking.
+        activeDrainSpawnIds = new Set<string>();
         spawnGraceUsed = false;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;

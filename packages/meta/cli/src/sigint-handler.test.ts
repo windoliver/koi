@@ -472,6 +472,47 @@ describe("createSigintHandler", () => {
     expect(onGraceful).toHaveBeenCalledTimes(1); // no re-entry
   });
 
+  test("late-spawn re-entry works with non-zero coalesceWindowMs (TUI default 150ms)", () => {
+    // Regression: recursive handleSignal() call hit the coalesce guard because
+    // lastSignalAt was already set. With coalesceWindowMs=150 (TUI default),
+    // the re-entry was silently dropped — no graceful action, no force.
+    // Fix: lastSignalAt is reset to NEGATIVE_INFINITY before re-entry.
+    let spawnActive = false;
+    const dynamicHandler = createSigintHandler({
+      onGraceful: () => {
+        onGraceful();
+      },
+      onForce: () => {
+        onForce();
+      },
+      write: (msg: string) => {
+        write(msg);
+      },
+      doubleTapWindowMs: 2000,
+      coalesceWindowMs: 150, // TUI production value
+      onWindowElapse: () => (spawnActive ? "reset-to-idle" : "stay-armed"),
+      setTimer: clock.setTimer,
+      now: clock.now,
+    });
+
+    // First Ctrl+C — no spawn yet.
+    dynamicHandler.handleSignal();
+    expect(onGraceful).toHaveBeenCalledTimes(1);
+
+    // Window elapses, no spawn → stay-armed.
+    clock.advance(2500);
+
+    // Spawn starts late.
+    spawnActive = true;
+
+    // Second Ctrl+C — tap-time re-check: spawn active, grace not consumed.
+    // After re-entry lastSignalAt must be reset so the coalesce guard passes.
+    dynamicHandler.handleSignal();
+    // Must reach onGraceful (fresh first tap), not onForce.
+    expect(onGraceful).toHaveBeenCalledTimes(2);
+    expect(onForce).not.toHaveBeenCalled();
+  });
+
   test("signals within coalesce window are treated as one tap", () => {
     const coalescingHandler = createSigintHandler({
       onGraceful: () => {

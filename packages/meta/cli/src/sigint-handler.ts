@@ -174,6 +174,12 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
       if (state.doubleTapTimer === null && resolveWindowElapsePolicy() === "reset-to-idle") {
         state.failsafeTimer?.cancel();
         state = { kind: "idle" };
+        // Reset the coalesce timestamp so the re-entry is not silently dropped by
+        // the deduplication guard at the top of handleSignal. Without this, with
+        // any non-zero coalesceWindowMs (TUI uses 150ms) the recursive call would
+        // be treated as a duplicate of the just-processed signal and return
+        // immediately, leaving the handler in idle with no graceful action taken.
+        lastSignalAt = Number.NEGATIVE_INFINITY;
         handleSignal(); // re-enter as fresh first tap (single recursion, safe)
         return;
       }
