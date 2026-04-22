@@ -208,6 +208,28 @@ describe("createSqliteViolationStore — concurrency + persistence", () => {
     expect(() => store.flush()).not.toThrow();
   });
 
+  test("close() returns droppedCount so callers can fail-closed on loss", () => {
+    const store = createSqliteViolationStore({ dbPath: ":memory:" });
+    // First close(): clean shutdown, 0 dropped.
+    const first = store.close();
+    expect(first.droppedCount).toBe(0);
+
+    // Store the dropped count exposed at construction time by re-creating.
+    const store2 = createSqliteViolationStore({ dbPath: ":memory:" });
+    store2.close();
+    // Poison it: records after close fail to flush and count as dropped
+    // once backlog overflows. We can't easily force an over-cap scenario
+    // without a huge loop, so here we just assert the shape.
+    for (let i = 0; i < 11_000; i++) {
+      store2.record(makeViolation(), A1, "S", 1 + i);
+    }
+    // close() already ran; new records accumulate in the buffer and
+    // the cap-eviction path runs on flush attempts triggered by
+    // record() overflow. The idempotent close short-circuits so we
+    // read droppedCount directly.
+    expect(store2.droppedCount()).toBeGreaterThan(0);
+  });
+
   test("flush never throws even when the underlying DB has been closed", () => {
     // Simulates a transient/terminal write failure: close the store so
     // the next flush hits a closed DB. Callers are the governance hot

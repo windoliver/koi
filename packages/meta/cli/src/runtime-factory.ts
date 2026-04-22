@@ -2331,14 +2331,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // config required for /governance history backfill to work).
     // Operators can override via --violation-sqlite=<path>.
     // Explicit "" (empty string) disables the default.
-    const resolvedViolationPath =
-      config.violationSqlitePath !== undefined
-        ? config.violationSqlitePath.length > 0
-          ? config.violationSqlitePath
-          : undefined
-        : governanceEnabled
-          ? join(homedir(), ".koi", "violations.db")
-          : undefined;
+    // Violation store is a governance surface — if governance is
+    // disabled (`--no-governance`), we never open the DB even when an
+    // explicit `--violation-sqlite` path was passed. This prevents a
+    // configuration mismatch from hard-failing startup during incident
+    // mitigation: the operator disabling governance expects governance
+    // side-effects (including durable violation writes) to be off. An
+    // explicit path combined with `--no-governance` is ambiguous; we
+    // warn so the contradiction is visible and move on without the
+    // store.
+    let resolvedViolationPath: string | undefined;
+    if (!governanceEnabled) {
+      if (config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0) {
+        console.warn(
+          `[koi-runtime] ignoring --violation-sqlite="${config.violationSqlitePath}" — governance is disabled. ` +
+            "Enable governance to persist violations.",
+        );
+      }
+      resolvedViolationPath = undefined;
+    } else {
+      resolvedViolationPath =
+        config.violationSqlitePath !== undefined
+          ? config.violationSqlitePath.length > 0
+            ? config.violationSqlitePath
+            : undefined
+          : join(homedir(), ".koi", "violations.db");
+    }
     // Degrade gracefully if the default DB path is unreachable. Auto-
     // wiring runs whenever governance is enabled, but `~/.koi` may be
     // unwritable (containers, read-only runners, restricted service
@@ -2362,13 +2380,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // drop the final buffered entries — `shutdownBackgroundTasks()`
         // below is TUI-specific. close() is idempotent so the parallel
         // call paths are safe.
+        //
+        // Explicit-path fail-closed signaling: if close() reports a
+        // non-zero `droppedCount` AND the operator supplied the path
+        // explicitly, we throw so the aggregate shutdown surface marks
+        // dispose as failed. Operators who asked for durable violation
+        // logging must see the loss as an error, not a warn-line.
+        // The implicit default path still swallows with a warning —
+        // best-effort, same convention as the graceful-open branch.
         const storeForHook = violationStore;
+        const explicitStorePath =
+          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
         manifestMiddlewareShutdownHooks.push(() => {
           try {
-            storeForHook.close();
+            const { droppedCount } = storeForHook.close();
+            if (droppedCount > 0 && explicitStorePath) {
+              throw new Error(
+                `violation store: ${droppedCount} violation(s) were dropped on shutdown for explicitly-configured path "${resolvedViolationPath}". ` +
+                  "Durable persistence failed during this run; inspect prior warnings for the underlying SQLite error.",
+              );
+            }
           } catch (err) {
+            if (explicitStorePath) throw err;
             console.warn(
-              `[koi/${hostId}] ViolationStore dispose-time close failed: ${
+              `[koi/${hostId}] ViolationStore dispose-time close failed (default path, continuing): ${
                 err instanceof Error ? err.message : String(err)
               }`,
             );

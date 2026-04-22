@@ -118,7 +118,16 @@ export interface SqliteViolationStore extends ViolationStore {
     timestamp: number,
   ) => void;
   readonly flush: () => void;
-  readonly close: () => void;
+  /** Close and drain the buffer. Returns a machine-readable outcome:
+   *  `droppedCount` is the number of buffered violations NOT persisted
+   *  (either evicted by the backlog cap or still buffered after all
+   *  retries failed). Callers that configured an explicit path can
+   *  fail-closed on non-zero — warn-only logging would hide evidence
+   *  loss during the exact failure modes operators need forensics. */
+  readonly close: () => { readonly droppedCount: number };
+  /** Total violations evicted by the backlog-cap policy since open.
+   *  Read any time; useful for health checks and metrics. */
+  readonly droppedCount: () => number;
 }
 
 export function createSqliteViolationStore(
@@ -138,6 +147,12 @@ export function createSqliteViolationStore(
   // double-close so we short-circuit before touching the handle.
   // let: justified — flipped on first close.
   let isClosed = false;
+  // Cumulative count of buffered violations evicted by the backlog cap.
+  // Exposed via `droppedCount()` and returned from `close()` so callers
+  // configured with explicit-path fail-closed semantics can surface a
+  // hard health signal rather than trusting warn-only logs.
+  // let: justified — incremented inside flushBuffer on cap eviction.
+  let evictedCount = 0;
 
   // Flush attempts MUST NOT throw into callers. Three call sites — timer
   // callback, record() when buffer is full, and close() — would all push
@@ -181,8 +196,9 @@ export function createSqliteViolationStore(
       if (buffer.length > MAX_BUFFER_BACKLOG) {
         const overflow = buffer.length - MAX_BUFFER_BACKLOG;
         buffer.splice(0, overflow);
+        evictedCount += overflow;
         console.warn(
-          `[violation-store-sqlite] buffer backlog exceeded ${MAX_BUFFER_BACKLOG}; dropped ${overflow} oldest entries to bound memory.`,
+          `[violation-store-sqlite] buffer backlog exceeded ${MAX_BUFFER_BACKLOG}; dropped ${overflow} oldest entries to bound memory (total dropped: ${evictedCount}).`,
         );
       }
       return false;
@@ -317,14 +333,15 @@ export function createSqliteViolationStore(
     flush(): void {
       flushBuffer();
     },
-    close(): void {
-      if (isClosed) return;
+    close(): { readonly droppedCount: number } {
+      if (isClosed) return { droppedCount: evictedCount };
       isClosed = true;
       clearInterval(timer);
       // Retry the final drain a few times before closing the DB. The
       // old behavior flushed once and silently dropped anything the
-      // attempt didn't land. If all attempts fail, log the exact count
-      // of dropped entries so the audit loss is visible in logs.
+      // attempt didn't land. If all attempts fail, attribute the
+      // still-buffered entries to evictedCount so callers see the
+      // total loss as a single machine-readable number.
       let drained = false;
       for (let i = 0; i < CLOSE_FLUSH_ATTEMPTS; i++) {
         if (flushBuffer()) {
@@ -333,11 +350,17 @@ export function createSqliteViolationStore(
         }
       }
       if (!drained && buffer.length > 0) {
+        evictedCount += buffer.length;
         console.warn(
-          `[violation-store-sqlite] close() giving up after ${CLOSE_FLUSH_ATTEMPTS} attempts — ${buffer.length} buffered entries were not persisted.`,
+          `[violation-store-sqlite] close() giving up after ${CLOSE_FLUSH_ATTEMPTS} attempts — ${buffer.length} buffered entries were not persisted (total dropped: ${evictedCount}).`,
         );
+        buffer.length = 0;
       }
       db.close();
+      return { droppedCount: evictedCount };
+    },
+    droppedCount(): number {
+      return evictedCount;
     },
   };
 }
