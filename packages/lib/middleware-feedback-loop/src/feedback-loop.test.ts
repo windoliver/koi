@@ -142,6 +142,31 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(result).toBeDefined();
     });
 
+    it("retries transport failures when retry.transport.maxAttempts configured without validators", async () => {
+      // Transport-only retry config must enter runWithRetry even when no validators/gates
+      // are configured. Without this, operators who set retry.transport.maxAttempts get
+      // silently ignored and see first-error surfacing instead of retries.
+      let callCount = 0;
+      const transportError = Object.assign(new Error("transient network error"), {
+        cause: { code: "TRANSPORT_ERROR", retryable: true },
+      });
+
+      const mw = createFeedbackLoopMiddleware({
+        retry: { transport: { maxAttempts: 3 } },
+      });
+
+      const next = mock(async (_req: ModelRequest): Promise<ModelResponse> => {
+        callCount++;
+        if (callCount < 3) throw transportError;
+        return mockModelResponse();
+      });
+
+      const result = await mw.wrapModelCall?.(mockTurnCtx(), mockModelRequest(), next);
+
+      expect(next).toHaveBeenCalledTimes(3);
+      expect(result).toBeDefined();
+    });
+
     it("throws when a gate fails (not retried)", async () => {
       const gate: Gate = {
         name: "strict-gate",

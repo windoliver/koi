@@ -74,12 +74,16 @@ export function computeHealthAction(
     return { state: "quarantined", action: "quarantine" };
   }
 
-  // Demotion check: sustained degradation with all criteria gates
+  // Demotion check: sustained degradation with all criteria gates.
+  // Grace period only applies when we have a real promotion timestamp (> 0).
+  // lastPromotedAt === 0 means "no promotion observed this session" — skip grace period
+  // so a chronically bad tool from a prior session isn't protected indefinitely.
+  const graceOk = lastPromotedAt === 0 || now - lastPromotedAt >= demotionCriteria.gracePeriodMs;
   const canDemote =
     nextTrustTier(currentTrustTier) !== undefined &&
     errorRate >= demotionCriteria.errorRateThreshold &&
     totalCount >= demotionCriteria.minSampleSize &&
-    now - lastPromotedAt >= demotionCriteria.gracePeriodMs &&
+    graceOk &&
     now - lastDemotedAt >= demotionCriteria.demotionCooldownMs;
 
   // Degraded: 75% of quarantine threshold
@@ -126,7 +130,7 @@ interface ToolState {
   activeFlush: Promise<void> | undefined; // mutable
 }
 
-function makeToolState(ringSize: number, sessionStartAt: number): ToolState {
+function makeToolState(ringSize: number): ToolState {
   return {
     ring: [],
     ringSize,
@@ -134,10 +138,9 @@ function makeToolState(ringSize: number, sessionStartAt: number): ToolState {
     totalRecorded: 0,
     healthState: "healthy",
     sessionQuarantined: false,
-    // Conservative default: treat the tool as just-promoted at session start so the
-    // grace period applies within this session. lastPromotedAt is never hydrated from
-    // the store — this is a session-local approximation.
-    lastPromotedAt: sessionStartAt,
+    // 0 = no promotion observed this session. Grace period is skipped when 0 so a
+    // chronically bad tool from a prior session is not shielded indefinitely.
+    lastPromotedAt: 0,
     lastDemotedAt: 0,
     flushState: {
       dirty: false,
@@ -261,7 +264,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   function getOrCreate(toolId: string): ToolState {
     let s = stateMap.get(toolId);
     if (s === undefined) {
-      s = makeToolState(ringSize, clock());
+      s = makeToolState(ringSize);
       stateMap.set(toolId, s);
     }
     return s;

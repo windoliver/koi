@@ -34,6 +34,11 @@ function hasModelChecks(config: FeedbackLoopConfig): boolean {
   );
 }
 
+function hasTransportRetry(config: FeedbackLoopConfig): boolean {
+  const maxAttempts = config.retry?.transport?.maxAttempts;
+  return maxAttempts !== undefined && maxAttempts > 1;
+}
+
 function hasToolChecks(config: FeedbackLoopConfig): boolean {
   return (
     config.forgeHealth !== undefined ||
@@ -137,7 +142,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      if (!hasModelChecks(config)) {
+      if (!hasModelChecks(config) && !hasTransportRetry(config)) {
         return next(request);
       }
 

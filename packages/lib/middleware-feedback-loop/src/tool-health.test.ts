@@ -179,6 +179,32 @@ describe("computeHealthAction", () => {
     expect(result.action).toBe("demote");
   });
 
+  it("does not block demotion when lastPromotedAt is 0 (no promotion observed)", () => {
+    // lastPromotedAt=0 means no promotion seen this session. Grace period must be skipped
+    // so a chronically bad tool from a prior session is not shielded indefinitely.
+    // Use criteria with a short cooldown (100ms) and long grace (5000ms).
+    // now=200: cooldown passes (200 >= 100) but normal grace arithmetic would block
+    // (200 - 0 = 200 < 5000ms). With lastPromotedAt=0 the grace gate must be skipped.
+    const shortCooldownCriteria: DemotionCriteria = {
+      ...criteria,
+      demotionCooldownMs: 100,
+      gracePeriodMs: 5_000,
+    };
+    const metrics: ToolHealthMetrics = { errorCount: 3, totalCount: 5, entries: [] };
+    const result = computeHealthAction(
+      metrics,
+      "healthy",
+      "verified",
+      0.5,
+      10,
+      shortCooldownCriteria,
+      0, // lastPromotedAt — 0 = unknown, skip grace period
+      0,
+      200, // now: cooldown ok (200 >= 100), grace would block if lastPromotedAt=200
+    );
+    expect(result.action).toBe("demote");
+  });
+
   it("blocks demotion during grace period", () => {
     const metrics: ToolHealthMetrics = { errorCount: 3, totalCount: 5, entries: [] };
     // lastPromotedAt=4500, now=5000 → only 500ms < 1000ms grace
