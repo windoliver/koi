@@ -603,44 +603,36 @@ export KOI_AUDIT_ENABLED=true
 | Q132 | (verify SQLite sink) `sqlite3 ~/.koi/audit/<hash>.sqlite "SELECT kind, count(*) FROM audit_log GROUP BY kind"` | — | All 3+ kinds present; counts match NDJSON |
 | Q133 | (verify signing) Inspect `signature` field in audit entries | — | Non-null Ed25519 signatures on every entry (when `signing: true`) |
 
-### S21 — Goal Tracking & Run Report
+### S21 — Task Planning & Run Report
 
-> `@koi/middleware-goal` is **already wired** via `--goal` CLI flag (`tui-command.ts`).
-> Injects `## Active Goals` message every N turns (adaptive interval: base=5, max=20).
-> Detects drift (objective keywords absent from last 3 messages) and completion (`[x]`, "done", "completed").
->
-> `@koi/middleware-report` is **NOT currently wired**. Accumulates per-session activity data
-> and produces a `RunReport` at session end. Needs `createReportMiddleware` added to `allMiddleware`.
+> User states objectives in first message; model decomposes via `task_create` (#1848 pattern).
+> `@koi/middleware-task-anchor` re-injects task board state after idle turns (CC parity).
+> `@koi/middleware-planning` exposes the `koi_plan_write` tool for structured plans (opt-in via `KOI_PLANNING_ENABLED=true`).
+> `@koi/middleware-report` accumulates per-session activity and emits a `RunReport` on quit (opt-in via `KOI_REPORT_ENABLED=true`).
 
-**Prerequisites for report MW**: wire `@koi/middleware-report` into `tui-runtime.ts`.
-
-```typescript
-// tui-runtime.ts wiring sketch for report MW
-import { createReportMiddleware } from "@koi/middleware-report";
-const reportHandle = createReportMiddleware({
-  objective: config.goals?.join("; "),
-  onReport: (report, formatted) => console.log("[run-report]", formatted),
-});
-// Add reportHandle.middleware to allMiddleware (after otelHandle, before checkpointMw)
-```
-
-**Setup**: launch TUI with goals.
+**Setup** (Q134-Q138 — task anchor + planning):
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
-   --goal 'Write unit tests for the math module' \
-   --goal 'Ensure 100% test coverage'"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
+
+**Setup** (Q139-Q140 — also enable run-report):
+```bash
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true KOI_REPORT_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+```
+
+**Precondition**: S21 requires the task board surface to be active — task-anchor only arms after a successful `task_create` call. Verify Q134 produced at least one `task_create` before running Q135-Q138; if not, retry Q134 with a more explicit instruction.
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q134 | `What are my current goals?` | none | Agent mentions both goals (reads from injected `## Active Goals` block) |
-| Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write | Works toward goal; goal completion not triggered yet |
-| Q136 | `Tell me about the weather.` (repeat 5× across turns — deliberate drift) | none | After ~5 turns off-topic, goal re-injection fires (adaptive interval resets); agent re-states objectives |
-| Q137 | `I've finished writing all the tests. The test coverage goal is done.` | none | Completion detection fires for "Ensure 100% test coverage" goal; `[x]` shown on next injection |
-| Q138 | Check `/trajectory` after Q135-Q137 | — | `middleware:goal` steps visible; `reportDecision` shows `{ objectives, completedCount, totalCount }` |
-| Q139 | (report MW, if wired) Quit TUI after Q134-Q138 | — | `RunReport` printed: summary with turn count, action count, duration, token usage |
-| Q140 | (report MW, if wired) Verify `RunReport.actions` | — | Ring buffer contains model_call + tool_call entries matching session history |
+| Q134 | `Help me write unit tests for the math module and ensure 100% coverage. Use task_create to decompose this into individual tasks.` | task_create | Model calls `task_create` at least once; task board shows 2+ tasks. **Stop and retry if task_create was not called.** |
+| Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write, task_update | Works toward task; model calls `task_update` when done; task status transitions to completed |
+| Q136 | `Tell me about the weather.` (repeat 4× — deliberate idle turns) | none | After ~3 idle turns, task-anchor fires: `<system-reminder>` with task list injected; model re-orients |
+| Q137 | `Use koi_plan_write to create a structured plan for the remaining coverage work.` | koi_plan_write | Model calls `koi_plan_write` with pending/in_progress items; plan injected as system message next turn |
+| Q138 | Check `/trajectory` after Q134-Q137 | — | `middleware:task-anchor` steps visible on idle turns; `middleware:planning` spans on Q137; `task_create`/`task_update` and `koi_plan_write` tool steps |
+| Q139 | (KOI_REPORT_ENABLED=true) Quit TUI after Q134-Q138 | — | `RunReport` printed: summary with turn count, action count, duration, token usage |
+| Q140 | (KOI_REPORT_ENABLED=true) Verify `RunReport.actions` | — | Ring buffer contains model_call + tool_call entries matching session history |
 
 ### S22 — Model Router & Failover
 
@@ -813,7 +805,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S18** | Browser Automation | Q110-Q117 | 1 | Wire `@koi/tool-browser` into TUI first |
 | **S19** | LSP Integration | Q118-Q125 | 1 | Wire `@koi/lsp` into TUI; `typescript-language-server` on PATH |
 | **S20** | Audit Stack | Q126-Q133 | 1 | Wire audit MW + sinks; `KOI_AUDIT_ENABLED=true` |
-| **S21** | Goal Tracking & Report | Q134-Q140 | 1 | `--goal "..."` (already wired); report MW needs wiring |
+| **S21** | Task Planning & Report | Q134-Q140 | 1 | `KOI_PLANNING_ENABLED=true`; add `KOI_REPORT_ENABLED=true` for Q139-Q140 |
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
@@ -822,7 +814,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 **All scenarios run with the full TUI middleware stack:**
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
 
-Optional MW (model-router, goal, otel, audit, report) require explicit config — tested in S20-S23.
+Optional MW (model-router, planning, otel, audit, report) require explicit config — tested in S20-S23.
 
 ---
 
@@ -845,7 +837,6 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/checkpoint | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q43 | `*` | |
 | @koi/middleware-audit | — | — | — | — | — | — | — | — | — | — | — | — | **S20**: Q126-Q133 (wire first) |
 | @koi/middleware-report | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q139-Q140 (wire first) |
-| @koi/middleware-goal | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q134-Q138 (`--goal` flag) |
 | @koi/middleware-otel | — | — | — | — | — | — | — | — | — | — | — | — | **S23**: Q147-Q152 (`KOI_OTEL_ENABLED`) |
 
 `*` = always-on middleware; fires on every query in that scenario. Bold Q = explicitly tests that package.
@@ -912,8 +903,9 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/spawn-tools | **S17** | Q102-Q109 (agent spawning — fully wired in TUI) |
 | @koi/tool-browser | **S18** | Q110-Q117 (wire `createBrowserProvider` into TUI first) |
 | @koi/lsp | **S19** | Q118-Q125 (wire `createLspComponentProvider` into TUI first) |
-| @koi/middleware-goal | **S21** | Q134-Q138 (`--goal` flag, already wired) |
-| @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
+| @koi/middleware-task-anchor | **S21** | Q134-Q138 (active when task-board surface is enabled; requires task_create call first) |
+| @koi/middleware-planning | **S21** | Q137 (`KOI_PLANNING_ENABLED=true`; `koi_plan_write` tool) |
+| @koi/middleware-report | **S21** | Q139-Q140 (`KOI_REPORT_ENABLED=true`) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
 | @koi/memory-fs | **S25** | Q156-Q162 (wire `KOI_MEMORY_DIR` first) |
@@ -1060,7 +1052,7 @@ bun run test --filter=@koi/runtime
 | spawn-agent, spawn-coordinator, spawn-fork | agent-runtime, spawn-tools | Spawn lifecycle: define → load → spawn → inherit permissions → complete |
 | spawn-inheritance, spawn-allowlist, spawn-manifest-ceiling | agent-runtime, spawn-tools | Tool narrowing, permission inheritance, manifest ceiling enforcement |
 | model-router | model-router | Failover chain; circuit-breaker trips; health probe recovery |
-| goal-tracking, goal-callback | middleware-goal, middleware-report | Goal injection; drift detection; completion callback fires |
+| task-planning, task-anchor, write-plan | middleware-task-anchor, middleware-planning, middleware-report | task_create decomposition; idle-turn re-injection; write_plan structured plan; run-report on quit |
 | otel-spans | middleware-otel | OpenTelemetry spans emitted; semantic conventions correct |
 | memory-recall-pipeline | memory (core) | Salience scoring; exponential decay; token budget; format with trust boundary |
 | memory-fs | memory-fs | File persistence; Jaccard dedup; MEMORY.md index rebuild; concurrent writes |
