@@ -1935,6 +1935,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // createSpawnExecutor prevents stale spawn_requested events from cancelled
   // turns from entering this set, so no per-drain scoping is needed (#1999 r12).
   const sessionLiveSpawnIds = new Set<string>();
+  // let: snapshot of sessionLiveSpawnIds taken when abortActiveStream() fires
+  // (the first Ctrl+C graceful path). onWindowElapse checks ONLY these specific
+  // spawn IDs so children from unrelated earlier turns cannot influence grace
+  // policy for the current interrupted turn (#1999 r13).
+  let armedSpawnSnapshot: ReadonlySet<string> | null = null;
   // let: one-shot flag — true after the first double-tap window elapses with an
   // active spawn. Provides exactly one grace reset-to-idle to protect against the
   // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
@@ -2007,6 +2012,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // `stopReason: "interrupted"`. The cancelPending call still runs to
     // dismiss the modal and keep the bridge usable for the next turn.
     // (#1759 review round 5)
+    // Snapshot live spawns at interrupt time so onWindowElapse can distinguish
+    // children belonging to THIS interrupted turn from survivors of earlier turns.
+    armedSpawnSnapshot = new Set(sessionLiveSpawnIds);
     activeController?.abort();
     permissionBridge.cancelPending("Turn cancelled by user");
   };
@@ -2146,13 +2154,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
     // #1999: one-shot grace period for spawns that outlive the double-tap window.
-    // When the child is still running 2s after Ctrl+C, a second tap is likely
-    // not intentional — reset to idle so it starts a fresh cancel instead of
-    // forcing exit. But this grace is one-shot (spawnGraceUsed): after the user
-    // has already gotten one grace period, subsequent windows revert to
+    // When a child that was alive at interrupt time is still running 2s after
+    // Ctrl+C, a second tap is likely not intentional — reset to idle so it
+    // starts a fresh cancel instead of forcing exit. Checked against the snapshot
+    // taken at abort time (armedSpawnSnapshot) so only children from THIS turn's
+    // interrupt sequence count; survivors from unrelated earlier turns are ignored.
+    // Grace is one-shot (spawnGraceUsed): once used, subsequent windows revert to
     // stay-armed so the force-exit path remains reachable for truly stuck spawns.
     onWindowElapse: (): "stay-armed" | "reset-to-idle" => {
-      if (sessionLiveSpawnIds.size > 0 && !spawnGraceUsed) {
+      const hasArmedLiveSpawn =
+        armedSpawnSnapshot !== null &&
+        armedSpawnSnapshot.size > 0 &&
+        [...armedSpawnSnapshot].some((id) => sessionLiveSpawnIds.has(id));
+      if (hasArmedLiveSpawn && !spawnGraceUsed) {
         spawnGraceUsed = true;
         return "reset-to-idle";
       }
@@ -2417,6 +2431,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Clear session-scoped spawn tracking so stale children from the old
     // session cannot influence SIGINT grace policy in the new session (#1999).
     sessionLiveSpawnIds.clear();
+    armedSpawnSnapshot = null;
     spawnGraceUsed = false;
 
     // Cancel any pending permission prompts and dismiss the modal so a
@@ -3433,13 +3448,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           activeController = null;
           activeRunPromise = null;
         }
-        // The active run has settled. Reset the double-tap window so a
-        // later Ctrl+C is treated as a fresh first tap rather than a
-        // late-arriving second tap of a cancellation that already
-        // completed. Only safe when this run is still the active one —
-        // a stale finally from a reset-and-replaced run must not
-        // disarm SIGINT state that now belongs to a newer turn.
+        // The active run has settled. Clear the interrupt-time spawn snapshot
+        // so the next turn starts fresh (no stale snapshot from a completed
+        // interrupt sequence). Then reset the double-tap window so a later
+        // Ctrl+C is treated as a fresh first tap rather than a late-arriving
+        // second tap of a cancellation that already completed.
+        // Both guarded: stale finally from a reset-and-replaced run must not
+        // disarm SIGINT state belonging to a newer turn.
         if (isStillActive) {
+          armedSpawnSnapshot = null;
           sigintHandler.complete();
         }
       }
