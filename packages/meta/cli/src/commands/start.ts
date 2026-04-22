@@ -1127,22 +1127,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // only flushed to stdout AFTER validation passes. This prevents automation from
     // acting on unvalidated content streamed mid-run. Other event kinds (tool_call,
     // tool_result, session_start) are emitted in real-time as usual.
-    // Bounded at RAW_PARTS_CAP_BYTES (same 1 MB cap as the validation accumulator).
+    // No separate byte cap here — rawAssistantParts (the validation input) is already
+    // capped at RAW_PARTS_CAP_BYTES. Applying a cap to the serialized NDJSON lines
+    // (which include escaping + framing overhead) would reject valid payloads near the limit.
     // let: populated during run, flushed (or dropped) in the post-run validation block
     const bufferedAssistantTextLines: string[] = [];
-    let bufferedAssistantBytes = 0;
-    let bufferedAssistantOverflow = false;
     const writeStdoutFn = (s: string): void => {
       if (resultSchemaObj !== undefined && s.includes('"kind":"assistant_text"')) {
-        if (!bufferedAssistantOverflow) {
-          const lineBytes = Buffer.byteLength(s, "utf8");
-          if (bufferedAssistantBytes + lineBytes > RAW_PARTS_CAP_BYTES) {
-            bufferedAssistantOverflow = true; // let — set once, never cleared except on tool boundary
-          } else {
-            bufferedAssistantTextLines.push(s);
-            bufferedAssistantBytes += lineBytes;
-          }
-        }
+        bufferedAssistantTextLines.push(s);
         return;
       }
       process.stdout.write(s);
@@ -1187,8 +1179,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               // Keep stdout buffer aligned with the validation segment: discard pre-tool
               // narration so only the final post-tool segment is flushed on success.
               bufferedAssistantTextLines.length = 0;
-              bufferedAssistantBytes = 0;
-              bufferedAssistantOverflow = false;
             }
           : undefined,
     });
@@ -1208,17 +1198,25 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     let finalCode: number = headlessCode;
     try {
       await shutdownRuntime();
-      // postRunPhaseComplete is set immediately BEFORE each emitResult() call (not before
-      // validation) so the deadline watchdog remains active through schema validation.
-      // validateResultSchema is synchronous — no yield point between validation and emission
-      // — so there is no race between the watchdog and the normal-exit path.
-      // Any teardown failure is machine-visible as INTERNAL, regardless of
-      // the run's own exit code. Preserving, e.g., PERMISSION_DENIED when
-      // the session transcript was not flushed would hide exactly the
-      // failure mode CI retry/recovery logic needs to detect. The original
-      // code is preserved in the NDJSON result's error string for
-      // diagnostics.
-      if (shutdownFailed) {
+      // If teardown consumed the remaining budget, exit 6 (not exit 4): the agent
+      // completed all tool calls before we got here, so CI must NOT retry.
+      // The error text names teardown explicitly so operators don't investigate the prompt.
+      if (
+        deadlineAt !== undefined &&
+        Date.now() >= deadlineAt &&
+        headlessCode === HEADLESS_EXIT.SUCCESS &&
+        resultSchemaObj !== undefined &&
+        !shutdownFailed
+      ) {
+        postRunPhaseComplete = true;
+        if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
+        finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
+        emitResult({
+          exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+          validationFailed: true,
+          error: "schema validation skipped: max-duration-ms exhausted during teardown",
+        });
+      } else if (shutdownFailed) {
         postRunPhaseComplete = true;
         if (processDeadlineTimer !== undefined) clearTimeout(processDeadlineTimer);
         finalCode = HEADLESS_EXIT.INTERNAL;
@@ -1277,15 +1275,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
               exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
               validationFailed: true,
               error: schemaResult.error,
-            });
-          } else if (bufferedAssistantOverflow) {
-            // Stdout buffer overflowed: we can't flush a truncated stream.
-            // Fail closed as SCHEMA_VALIDATION — agent completed, do NOT retry.
-            finalCode = HEADLESS_EXIT.SCHEMA_VALIDATION;
-            emitResult({
-              exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
-              validationFailed: true,
-              error: "schema validation failed: assistant output exceeded 1 MB limit",
             });
           } else {
             // Flush buffered assistant_text lines before emitting the result event.
