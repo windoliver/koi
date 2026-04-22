@@ -769,6 +769,11 @@ _S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo 
 if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
   # $FIXTURE is nested inside another repo, or not a git repo at all — initialize it.
   git -C "$FIXTURE" init -q
+  # Create an initial commit (same as §1.2) so git reset --hard works in §1.5.
+  git -C "$FIXTURE" \
+    -c user.name='koi-bugbash' \
+    -c user.email='koi-bugbash@example.invalid' \
+    commit --allow-empty -q -m "chore: fixture init"
   # Re-validate after init to confirm isolation before any destructive cleanup.
   _S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
   if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
