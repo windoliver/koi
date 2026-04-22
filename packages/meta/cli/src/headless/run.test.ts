@@ -1060,9 +1060,11 @@ describe("runHeadless", () => {
 describe("runHeadless — onRawAssistantText callback", () => {
   const SESSION = "sess-raw-test";
 
-  test("fires with redacted delta text so schema validation operates on the same bytes as stdout", async () => {
-    // onRawAssistantText receives the post-redaction text — the same bytes written to stdout.
-    // This ensures schema validation is not bypassed by banner-redaction.
+  test("fires with raw (unredacted) delta text for schema validation", async () => {
+    // onRawAssistantText receives the raw model output before banner redaction so that
+    // schema validation operates on the agent's actual output. Banner redaction is applied
+    // only to the emitted NDJSON assistant_text event written to stdout. A valid JSON payload
+    // that contains a banner-shaped string must still validate correctly.
     const raw: string[] = [];
     await runAndEmit({
       sessionId: SESSION,
@@ -1078,10 +1080,8 @@ describe("runHeadless — onRawAssistantText callback", () => {
         raw.push(t);
       },
     });
-    // Banner redaction replaces the secret payload — raw receives "[Turn failed: N chars redacted]",
-    // NOT the original secret text. Both stdout and the validation input are redacted identically.
-    expect(raw.join("")).not.toContain("secret-token-abc");
-    expect(raw.join("")).toContain("chars redacted");
+    // Raw (unredacted) text is passed to the schema accumulator
+    expect(raw.join("")).toContain("secret-token-abc");
   });
 
   test("fires via done.output.content fallback when no deltas were emitted", async () => {

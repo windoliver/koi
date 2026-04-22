@@ -148,15 +148,12 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
         if (!emittedAssistantText) {
           const fallback = extractTextFromContent(event.output.content);
           if (fallback.length > 0) {
+            opts.onRawAssistantText?.(fallback);
             // Redact engine error banners here too — done.output.content
             // is populated from the same reason string at engine-catch
             // time, so it can carry the same secret-bearing interpolated
             // error.message text as text_delta does.
-            const redactedFallback = redactEngineBanners(fallback);
-            // Pass the REDACTED text so schema validation operates on the same
-            // bytes that will appear in stdout, not the raw pre-redaction payload.
-            opts.onRawAssistantText?.(redactedFallback);
-            emit({ kind: "assistant_text", text: redactedFallback });
+            emit({ kind: "assistant_text", text: redactEngineBanners(fallback) });
             emittedAssistantText = true;
           }
         }
@@ -503,10 +500,8 @@ function translateEvent(
   switch (event.kind) {
     case "text_delta": {
       if (event.delta.length > 0) {
-        const redacted = redactEngineBanners(event.delta);
-        // Pass the REDACTED text so schema validation operates on the same bytes as stdout.
-        onRawAssistantText?.(redacted);
-        emit({ kind: "assistant_text", text: redacted });
+        onRawAssistantText?.(event.delta);
+        emit({ kind: "assistant_text", text: redactEngineBanners(event.delta) });
         return true;
       }
       return false;

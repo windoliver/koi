@@ -905,6 +905,48 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     expect(capturedEmitArgs?.validationFailed).toBe(true);
   });
 
+  test("valid JSON containing banner-shaped string passes schema validation (raw text validated, not redacted)", async () => {
+    // Schema validation uses the raw model output, not the banner-redacted stdout text.
+    // A valid JSON payload that contains "[Turn failed: ...]" as a string value must still
+    // validate against the schema — the banner regex must not corrupt validation input.
+    spyOn(Bun, "file").mockReturnValue({
+      text: () => Promise.resolve(VALID_SCHEMA),
+    } as ReturnType<typeof Bun.file>);
+
+    type EmitArgs = { exitCode?: number; error?: string; validationFailed?: boolean };
+    let capturedEmitArgs: EmitArgs | undefined;
+    let emitResultCallCount = 0;
+    spyOn(runModule, "runHeadless").mockImplementation(async (opts) => {
+      // Simulate raw text that contains a banner-shaped string as a JSON string value.
+      // Banner redaction would rewrite this, but schema validation must see the raw text.
+      opts.onRawAssistantText?.('{"count":1,"titles":["[Turn failed: details here.]"]}');
+      return {
+        exitCode: HEADLESS_EXIT.SUCCESS,
+        emitResult: (args?: EmitArgs) => {
+          emitResultCallCount += 1;
+          capturedEmitArgs = args;
+        },
+      };
+    });
+
+    const { run } = await import("./start.js");
+    try {
+      await run(
+        makeFlags({
+          headless: true,
+          mode: { kind: "prompt", text: "hello" },
+          resultSchema: "./schema.json",
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof ExitError)) throw e;
+    }
+
+    // Raw text is validated — banner-shaped string does not break schema validation
+    expect(emitResultCallCount).toBe(1);
+    expect(capturedEmitArgs).toBeUndefined(); // no schema failure
+  });
+
   test("teardown budget exhaustion emits INTERNAL (exit 5), not SCHEMA_VALIDATION", async () => {
     // When teardown consumes the remaining budget before schema validation starts,
     // the error is a runtime problem (slow shutdown), not a schema/prompt problem.
