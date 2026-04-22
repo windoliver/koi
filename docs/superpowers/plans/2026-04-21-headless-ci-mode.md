@@ -1280,7 +1280,7 @@ The following are **off by default** in headless mode and require environment va
 | Feature | Env var to enable |
 |---------|------------------|
 | MCP server connections | `KOI_HEADLESS_ALLOW_MCP=1` |
-| User-installed plugins | `KOI_HEADLESS_ALLOW_PLUGINS=1` |
+| Manifest-declared plugins (user-installed plugin autoload remains disabled) | `KOI_HEADLESS_ALLOW_PLUGINS=1` |
 | Manifest-declared middleware | `KOI_HEADLESS_ALLOW_MIDDLEWARE=1` |
 | User hook scripts | `KOI_HEADLESS_ALLOW_HOOKS=1` |
 | Session transcript persistence | `KOI_HEADLESS_PERSIST_TRANSCRIPT=1` |
@@ -1295,7 +1295,7 @@ These are fail-closed by default because they represent bootstrap-time execution
 | 1 | AGENT_FAILURE | Agent could not complete the task, or output failed schema validation | Yes, if idempotent |
 | 2 | PERMISSION_DENIED | A required tool was denied by the permission policy | No — add `--allow-tool` |
 | 3 | BUDGET_EXCEEDED | `--max-turns` or `--max-spend` was hit | Maybe — raise limits |
-| 4 | TIMEOUT | `--max-duration-ms` was exceeded | Yes, with a longer timeout |
+| 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when MCP is disabled (`KOI_HEADLESS_ALLOW_MCP` unset). With MCP enabled, tool calls may have committed non-idempotent side effects before the timeout — retrying can cause duplicate actions. |
 | 5 | INTERNAL | Runtime assembly failed, schema file was invalid, or teardown failed | Check stderr |
 
 ## NDJSON Event Reference
@@ -1428,15 +1428,21 @@ jobs:
             exit 1
           fi
 
-      - name: Upload NDJSON log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: koi-output
-          path: koi-output.ndjson
+      # OPTIONAL DEBUG ONLY: Do not enable this in production workflows.
+      # koi-output.ndjson contains assistant_text events which may include
+      # sensitive data from tool outputs. Treat the file as sensitive and
+      # never upload it by default. Only enable this step when debugging,
+      # and ensure artifact access is restricted to trusted collaborators.
+      #
+      # - name: Upload NDJSON log (DEBUG ONLY)
+      #   if: always()
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: koi-output
+      #     path: koi-output.ndjson
 ```
 
-The `continue-on-error: true` on the agent step ensures the "Extract result" step always runs, giving you control over how exit codes map to workflow failures. The NDJSON log is uploaded as an artifact for debugging.
+The `continue-on-error: true` on the agent step ensures the "Check result" step always runs, giving you control over how exit codes map to workflow failures.
 ````
 
 - [ ] **Step 2: Verify the file exists and is well-formed**
