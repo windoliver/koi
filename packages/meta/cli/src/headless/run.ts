@@ -123,7 +123,14 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
   let exitCode: HeadlessExitCode = HEADLESS_EXIT.SUCCESS;
   let errMessage: string | undefined;
   let sawDone = false;
+  // Tracks whether the agent emitted any text in the current segment (since last tool result).
+  // Reset on each tool_result so the done.output.content fallback fires correctly for
+  // the final segment even if narration was emitted before an earlier tool call.
   let emittedAssistantText = false;
+  const handleToolResult = (): void => {
+    emittedAssistantText = false;
+    opts.onToolResult?.();
+  };
 
   try {
     for await (const event of opts.runtime.run({
@@ -132,7 +139,7 @@ export async function runHeadless(opts: RunHeadlessOptions): Promise<HeadlessOut
       signal: controller.signal,
     })) {
       if (
-        translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText, opts.onToolResult)
+        translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText, handleToolResult)
       ) {
         emittedAssistantText = true;
       }

@@ -1104,7 +1104,47 @@ describe("runHeadless — onRawAssistantText callback", () => {
     expect(raw.join("")).toBe('{"count":1}');
   });
 
+  test("done.output.content fallback fires for final segment even after narration pre-tool", async () => {
+    // Regression: if text_delta fires before a tool, emittedAssistantText was permanently set,
+    // causing the done.output.content fallback to be skipped for the final segment.
+    const cid = toolCallId("c1");
+    const raw: string[] = [];
+    const stdout: string[] = [];
+    await runAndEmit({
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: (s) => stdout.push(s),
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        { kind: "text_delta", delta: "I will look this up..." },
+        { kind: "tool_call_start", callId: cid, toolName: "fs_read", args: {} },
+        { kind: "tool_result", callId: cid, output: "file contents" },
+        {
+          kind: "done",
+          output: {
+            content: [{ kind: "text", text: '{"result":"ok"}' }],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        },
+      ]),
+      onRawAssistantText: (t) => {
+        raw.push(t);
+      },
+      onToolResult: () => {
+        raw.length = 0; // simulate schema buffer reset
+      },
+    });
+    // Final segment from done.output.content should have fired
+    expect(raw.join("")).toBe('{"result":"ok"}');
+    // And been emitted to stdout as assistant_text
+    const assistantLines = stdout.filter((l) => l.includes('"assistant_text"'));
+    expect(assistantLines.length).toBeGreaterThanOrEqual(2); // narration + final answer
+  });
+
   test("onToolResult fires after each tool_result event", async () => {
+    const cid2 = toolCallId("c2");
     const resets: number[] = [];
     let resetCount = 0;
     await runAndEmit({
@@ -1115,8 +1155,8 @@ describe("runHeadless — onRawAssistantText callback", () => {
       writeStderr: () => {},
       runtime: runtimeFromEvents([
         { kind: "text_delta", delta: "thinking..." },
-        { kind: "tool_call_start", callId: "c1", toolName: "fs_read", args: {} },
-        { kind: "tool_result", callId: "c1", output: "file contents" },
+        { kind: "tool_call_start", callId: cid2, toolName: "fs_read", args: {} },
+        { kind: "tool_result", callId: cid2, output: "file contents" },
         { kind: "text_delta", delta: '{"done":true}' },
         DONE,
       ]),
