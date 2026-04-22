@@ -1703,6 +1703,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // tries to attach. This is safe here because extraProviders are only
     // assembled onto the root TUI agent — create-agent-spawn-fn.ts does
     // NOT propagate extraProviders into childProviders for spawned agents.
+    // Limitation: browser_* tools are therefore NOT available in spawned
+    // sub-agents. Workflows that delegate browser work to a child agent
+    // will lose those tools after the spawn. This is a known scope
+    // restriction of the mock dev/test path, not a bug in production.
     ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
       ? {
           extraProviders: [
@@ -1714,8 +1718,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     // Mock driver never opens a real connection, so SSRF
                     // protection only needs to block IP literals and known
                     // metadata hostnames — no DNS resolution required.
-                    // This keeps mock mode usable in offline/hermetic CI
-                    // and with synthetic test domains (*.local, app.test).
+                    // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
+                    // so mDNS/RFC6762 names are still rejected by design.
                     isUrlAllowed: (url) => {
                       try {
                         const { protocol, hostname } = new URL(url);
