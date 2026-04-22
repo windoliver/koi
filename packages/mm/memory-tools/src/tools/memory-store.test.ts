@@ -29,10 +29,12 @@ describe("memory_store schema type field (regression #1964)", () => {
     );
   });
 
-  test("type description distinguishes reference from user", () => {
-    // reference = contact/pointer ('contact for X is Y'); user = facts about the person
-    expect(getTypeDesc()).toMatch(
-      /reference.*(?:contact|pointer|where)|(?:contact|pointer|where).*reference/i,
+  test("type description routes person contacts to user, not reference", () => {
+    // person contacts must stay in user (private) — reference is sync-eligible (#1964 privacy fix)
+    const desc = getTypeDesc();
+    expect(desc).toMatch(/user.*(?:contact|email)|(?:contact|email).*user/i);
+    expect(desc).toMatch(
+      /reference.*(?:system|tool|url|tracked)|(?:system|tool|url|tracked).*reference/i,
     );
   });
 });

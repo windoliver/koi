@@ -70,21 +70,24 @@ describe("type classification guidance (regression #1964)", () => {
     expect(content).toMatch(/always|style|guideline|return type/i);
   });
 
-  test("skill reference examples include person-contact pointers, not just tool URLs", () => {
+  test("skill routes person contacts to user (private), not reference (sync-eligible)", () => {
     const content = generateMemoryToolSkillContent();
-    // reference must cover contacts/people pointers, not only Linear/Slack tool links
-    expect(content).toMatch(/contact|email/i);
+    // Person email/contact must be routed to `user` to avoid team-sync disclosure (#1964 privacy fix)
+    expect(content).toMatch(/user[^\n]*contact|contact[^\n]*user/i);
+    // reference row must NOT include person email as an example
+    const refRow = content.match(/\|\s*`reference`[^\n]*/)?.[0] ?? "";
+    expect(refRow).not.toMatch(/email|alice|person.*contact/i);
   });
 
   test("skill type table disambiguates feedback from project with explicit markers", () => {
     const content = generateMemoryToolSkillContent();
-    // The table row for feedback must distinguish it from project (ongoing work vs behavioral guidance)
+    // feedback row must cover style/guidance patterns ("always do X")
     expect(content).toMatch(/feedback[^|]*\|[^|]*(?:guidance|style|always|behavior|prefer)/i);
   });
 
-  test("skill type table disambiguates reference from user with explicit markers", () => {
+  test("skill type table scopes reference to systems/tools, not person contacts", () => {
     const content = generateMemoryToolSkillContent();
-    // reference row must mention contact / pointer patterns
-    expect(content).toMatch(/reference[^|]*\|[^|]*(?:contact|pointer|where|http|email)/i);
+    // reference row must be scoped to external systems/tools/URLs
+    expect(content).toMatch(/reference[^|]*\|[^|]*(?:system|tool|url|dashboard|tracked)/i);
   });
 });

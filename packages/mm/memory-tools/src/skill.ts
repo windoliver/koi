@@ -49,16 +49,17 @@ ${storageSection}
 
 | Type | Purpose | Examples |
 |------|---------|---------|
-| \`user\` | Facts about the person: role, expertise, preferences | "prefers TypeScript", "senior engineer at Acme" |
+| \`user\` | Facts about the person: role, expertise, preferences, and personal contacts | "prefers TypeScript", "senior engineer at Acme", "infra contact: alice@example.com" |
 | \`feedback\` | Work/coding guidance and validated approaches — "always do X", "never do Y", style rules | "always use explicit return types on exports", "don't mock the DB" |
 | \`project\` | Ongoing work, deadlines, decisions, milestones — time-bound facts about what is happening | "merge freeze March 5", "auth rewrite for compliance" |
-| \`reference\` | Pointers to people, URLs, or systems — "contact for X is Y", "X is tracked in Y", email/URL/Slack links | "infra contact: alice@example.com", "bugs tracked in Linear INGEST" |
+| \`reference\` | Pointers to external **systems, tools, or URLs** — "X is tracked in Y", dashboard links, service URLs | "bugs tracked in Linear INGEST", "oncall dashboard: grafana.internal/d/api-latency" |
 
 **Quick disambiguation:**
 - "Always/never do X" → \`feedback\` (not \`project\`)
-- "Contact for X is Y" / person email / URL → \`reference\` (not \`user\`)
+- Person email / personal contact pointer → \`user\` (private — NOT \`reference\`)
+- Tool/system/URL pointer ("tracked in X", "dashboard at Y") → \`reference\`
 - Ongoing initiative or deadline → \`project\` (not \`feedback\`)
-- Person's role, skill level, stated preference → \`user\` (not \`reference\`)
+- Person's role, skill level, stated preference → \`user\`
 
 ### When to store
 
