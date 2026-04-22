@@ -23,7 +23,7 @@ import { createToolHealthTracker } from "./tool-health.js";
 import type { ForgeToolErrorFeedback } from "./types.js";
 
 const VALIDATION_DEFAULT_MAX_ATTEMPTS = 3;
-const TRANSPORT_DEFAULT_MAX_ATTEMPTS = 1;
+const TRANSPORT_DEFAULT_MAX_ATTEMPTS = 2;
 
 function hasModelChecks(config: FeedbackLoopConfig): boolean {
   return (
@@ -172,12 +172,14 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       }
 
       const startMs = Date.now();
+      // Only wrap next() — gate throws from handleToolSuccess must not go through handleToolError
+      let response: ToolResponse;
       try {
-        const response = await next(request);
-        return handleToolSuccess(request.toolId, response, startMs, tracker, config);
+        response = await next(request);
       } catch (err: unknown) {
         return handleToolError(request.toolId, err, startMs, tracker);
       }
+      return handleToolSuccess(request.toolId, response, startMs, tracker, config);
     },
   };
 }
