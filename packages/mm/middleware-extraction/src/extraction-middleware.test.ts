@@ -19,12 +19,14 @@ function createMockMemory(): MemoryComponent & {
     content: string;
     category?: string | undefined;
     type?: string | undefined;
+    confidence?: number | undefined;
   }>;
 } {
   const stored: Array<{
     content: string;
     category?: string | undefined;
     type?: string | undefined;
+    confidence?: number | undefined;
   }> = [];
   return {
     stored,
@@ -32,7 +34,12 @@ function createMockMemory(): MemoryComponent & {
       return [];
     },
     async store(content: string, options?: Parameters<MemoryComponent["store"]>[1]) {
-      stored.push({ content, category: options?.category, type: options?.type });
+      stored.push({
+        content,
+        category: options?.category,
+        type: options?.type,
+        confidence: options?.confidence,
+      });
     },
   };
 }
@@ -369,6 +376,32 @@ describe("createExtractionMiddleware", () => {
       // Session A ends — should trigger LLM call (A has an output)
       await mw.onSessionEnd?.(sessA);
       expect(modelCall).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("confidence propagation (issue #1966)", () => {
+    test("regex marker confidence (1.0) flows through to store options", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () => toolResponse("[LEARNING:gotcha] Always check null"));
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(1.0);
+    });
+
+    test("heuristic confidence (0.7) flows through to store options", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () => toolResponse("avoid: using var in strict mode"));
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(0.7);
     });
   });
 

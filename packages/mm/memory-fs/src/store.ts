@@ -233,7 +233,12 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
   }
 
   const serialized = serializeMemoryFrontmatter(
-    { name: input.name, description: input.description, type: input.type },
+    {
+      name: input.name,
+      description: input.description,
+      type: input.type,
+      confidence: input.confidence,
+    },
     input.content,
   );
   if (serialized === undefined) {
@@ -257,6 +262,7 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
     // Fresh file: all three (birthtime, mtime, ctime) are now.
     createdAt: Math.min(fileStat.birthtimeMs, fileStat.mtimeMs),
     updatedAt: fileStat.ctimeMs,
+    confidence: persisted?.frontmatter.confidence,
   };
 
   return { action: "created", record };
@@ -279,6 +285,7 @@ async function updateRecord(
     description: patch.description ?? existing.description,
     type: patch.type ?? existing.type,
     content: patch.content ?? existing.content,
+    confidence: patch.confidence ?? existing.confidence,
   };
 
   // Guard renames/type changes against collisions. If either name or
@@ -303,7 +310,12 @@ async function updateRecord(
   }
 
   const serialized = serializeMemoryFrontmatter(
-    { name: updated.name, description: updated.description, type: updated.type },
+    {
+      name: updated.name,
+      description: updated.description,
+      type: updated.type,
+      confidence: updated.confidence,
+    },
     updated.content,
   );
   if (serialized === undefined) {
@@ -362,6 +374,7 @@ async function updateRecord(
     // ctimeMs is always bumped by utimes, so it tracks the true update
     // time even after mtime was stamped back to the original createdAt.
     updatedAt: updatedStat.ctimeMs,
+    confidence: persisted?.frontmatter.confidence,
   };
 
   return { record };
@@ -455,7 +468,12 @@ async function upsertRecord(
 
   // Step 3: Create new record
   const serialized = serializeMemoryFrontmatter(
-    { name: canonicalName, description: canonicalDescription, type: canonicalInput.type },
+    {
+      name: canonicalName,
+      description: canonicalDescription,
+      type: canonicalInput.type,
+      confidence: canonicalInput.confidence,
+    },
     canonicalInput.content,
   );
   if (serialized === undefined) {
@@ -475,6 +493,7 @@ async function upsertRecord(
     filePath: filename,
     createdAt: Math.min(fileStat.birthtimeMs, fileStat.mtimeMs),
     updatedAt: fileStat.ctimeMs,
+    confidence: persisted?.frontmatter.confidence,
   };
 
   return { action: "created", record };
@@ -611,6 +630,7 @@ async function recordFromFile(dir: string, filename: string): Promise<MemoryReco
       filePath: filename,
       createdAt: Math.min(linkStat.birthtimeMs, linkStat.mtimeMs),
       updatedAt: linkStat.ctimeMs,
+      confidence: parsed.frontmatter.confidence,
     };
   } catch (e: unknown) {
     // File vanished between readdir and read — skip it

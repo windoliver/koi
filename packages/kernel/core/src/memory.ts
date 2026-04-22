@@ -79,6 +79,8 @@ export interface MemoryFrontmatter {
   readonly name: string;
   readonly description: string;
   readonly type: MemoryType;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
 }
 
 /** A complete memory record with frontmatter + content. */
@@ -91,6 +93,8 @@ export interface MemoryRecord {
   readonly filePath: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
 }
 
 /** Input shape for creating a new memory record. */
@@ -99,6 +103,8 @@ export interface MemoryRecordInput {
   readonly description: string;
   readonly type: MemoryType;
   readonly content: string;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
 }
 
 /** Sparse update shape for modifying a memory record. */
@@ -107,6 +113,7 @@ export interface MemoryRecordPatch {
   readonly description?: string | undefined;
   readonly type?: MemoryType | undefined;
   readonly content?: string | undefined;
+  readonly confidence?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +194,9 @@ function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined 
     if (colonIndex === -1) return undefined;
 
     const key = trimmedLine.slice(0, colonIndex).trim();
-    if (key !== "name" && key !== "description" && key !== "type") return undefined;
+    if (key !== "name" && key !== "description" && key !== "type" && key !== "confidence") {
+      return undefined;
+    }
     if (fields.has(key)) return undefined;
 
     const value = trimmedLine.slice(colonIndex + 1).trim();
@@ -201,7 +210,14 @@ function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined 
   if (!name || !description || !type) return undefined;
   if (!isMemoryType(type)) return undefined;
 
-  return { name, description, type };
+  const rawConfidence = fields.get("confidence");
+  const confidence: number | undefined =
+    rawConfidence !== undefined ? Number(rawConfidence) : undefined;
+  if (confidence !== undefined && (Number.isNaN(confidence) || confidence < 0 || confidence > 1)) {
+    return undefined;
+  }
+
+  return { name, description, type, ...(confidence !== undefined ? { confidence } : {}) };
 }
 
 /**
@@ -294,15 +310,17 @@ export function serializeMemoryFrontmatter(
   if (name.length === 0) return undefined;
   if (description.length === 0) return undefined;
 
-  return [
+  const lines = [
     "---",
     `name: ${name}`,
     `description: ${description}`,
     `type: ${frontmatter.type}`,
-    "---",
-    "",
-    content,
-  ].join("\n");
+  ];
+  if (frontmatter.confidence !== undefined) {
+    lines.push(`confidence: ${frontmatter.confidence}`);
+  }
+  lines.push("---", "", content);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------

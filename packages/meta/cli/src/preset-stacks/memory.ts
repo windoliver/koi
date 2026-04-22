@@ -132,6 +132,7 @@ export const memoryStack: PresetStack = {
           // same record rather than accumulate distinct entries in the store.
           const category = options?.category ?? "general";
           const type = options?.type ?? "feedback";
+          const confidence = options?.confidence;
           const hash = createHash("sha256")
             .update(`${content}\x00${category}`)
             .digest("hex")
@@ -145,7 +146,13 @@ export const memoryStack: PresetStack = {
           const description = `${type}: ${category} — ${excerpt}`;
           // force: true — overwrite a stale same-name+same-type record on re-extraction.
           const result = await memoryBackend.storeWithDedup(
-            { name, description, type, content },
+            {
+              name,
+              description,
+              type,
+              content,
+              ...(confidence !== undefined ? { confidence } : {}),
+            },
             { force: true },
           );
           if (!result.ok) {

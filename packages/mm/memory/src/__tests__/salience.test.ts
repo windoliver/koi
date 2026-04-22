@@ -146,6 +146,41 @@ describe("scoreMemories", () => {
     expect(scored[0]?.memory.record.type).toBe("feedback");
   });
 
+  test("low-confidence feedback scores below full-confidence feedback", () => {
+    const fresh = makeMemory("feedback", 0);
+    const lowConf: ScannedMemory = {
+      record: {
+        ...fresh.record,
+        id: "low-conf" as import("@koi/core").MemoryRecordId,
+        confidence: 0.7,
+      },
+      fileSize: 100,
+    };
+    const scored = scoreMemories([fresh, lowConf], undefined, now);
+    expect(scored[0]?.memory.record.id).toBe(fresh.record.id);
+    expect(scored[1]?.memory.record.confidence).toBe(0.7);
+    expect(scored[0]?.salienceScore).toBeGreaterThan(scored[1]?.salienceScore ?? 0);
+  });
+
+  test("undefined confidence treated as 1.0 (full trust)", () => {
+    const mem = makeMemory("feedback", 0);
+    const scored = scoreMemories([mem], undefined, now);
+    expect(scored[0]?.salienceScore).toBeCloseTo(1.2, 5);
+  });
+
+  test("confidence 0.7 on feedback yields effective weight ~0.84", () => {
+    const mem: ScannedMemory = {
+      record: {
+        ...makeMemory("feedback", 0).record,
+        id: "conf-test" as import("@koi/core").MemoryRecordId,
+        confidence: 0.7,
+      },
+      fileSize: 100,
+    };
+    const scored = scoreMemories([mem], undefined, now);
+    expect(scored[0]?.salienceScore).toBeCloseTo(1.2 * 0.7, 5);
+  });
+
   test("includes decay and type relevance in result", () => {
     const memories = [makeMemory("user", 0)];
     const scored = scoreMemories(memories, undefined, now);
