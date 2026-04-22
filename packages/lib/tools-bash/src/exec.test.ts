@@ -285,13 +285,10 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       check();
     });
 
-    // Verify the child is alive before aborting (closes the readiness race).
-    // If this throws the child died spontaneously — accept and continue.
-    try {
-      process.kill(childPid, 0);
-    } catch {
-      // child already gone — test is vacuous but not wrong
-    }
+    // Hard precondition: child MUST be alive before we abort.
+    // If kill(pid,0) throws, the child was not yet started or died spontaneously —
+    // both indicate test-setup failure rather than the cleanup scenario under test.
+    expect(() => process.kill(childPid, 0)).not.toThrow();
 
     controller.abort();
 
@@ -300,16 +297,23 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   }, 10_000);
 
   test("already-aborted signal throws AbortError without spawning any process", async () => {
-    // throwIfAborted() is called synchronously before the first spawn syscall.
-    // The AbortError throw IS the deterministic no-spawn proof: if we reach the
-    // catch the function returned before ever calling spawnChild. No external
-    // process-table inspection is needed or used.
+    // throwIfAborted() fires synchronously before Bun.spawn(), so on a pre-aborted
+    // signal no child process is ever created. We prove this with a temp-file
+    // side-channel: if bash ran, it would create the file; its absence confirms
+    // the spawn path was never entered.
+    const spawnMarker = `/tmp/spawnbash-no-spawn-${Date.now()}`;
     const controller = new AbortController();
     controller.abort();
 
     let thrownError: unknown;
     try {
-      await spawnBash("sleep 999", process.cwd(), 60_000, 1_000_000, controller.signal);
+      await spawnBash(
+        `touch ${spawnMarker}; sleep 999`,
+        process.cwd(),
+        60_000,
+        1_000_000,
+        controller.signal,
+      );
     } catch (e: unknown) {
       thrownError = e;
     }
@@ -317,6 +321,11 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
     // Must throw AbortError — callers (turn-runner) rely on this contract
     expect(thrownError).toBeDefined();
     expect((thrownError as { name?: string }).name).toBe("AbortError");
+
+    // Spawn path was never entered: if Bun.spawn() had run, bash would have
+    // created this file before sleeping.
+    const spawnOccurred = await Bun.file(spawnMarker).exists();
+    expect(spawnOccurred).toBe(false);
   });
 
   test("SIGKILL escalation terminates SIGTERM-immune processes", async () => {
