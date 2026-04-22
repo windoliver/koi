@@ -14,7 +14,22 @@ The middleware intercepts `wrapToolCall` for spawn-family tools (`Spawn`,
    cheap model extraction pass on `onSessionEnd` (fire-and-forget)
 
 Extracted learnings are stored via `MemoryComponent.store()` with
-`CollectiveMemoryCategory` preserved as `MemoryStoreOptions.category`.
+`CollectiveMemoryCategory` preserved as `MemoryStoreOptions.category` and
+the correct `MemoryType` passed as `MemoryStoreOptions.type` (fix #1966 —
+previously the `type` field was absent; adapters defaulted to `"feedback"`
+regardless of category).
+
+## JSON output filtering (#1966)
+
+Before extraction, spawn tool output is pre-processed through an allowlist
+(`OUTPUT_FIELD_NAMES`: `result`, `output`, `text`, `message`, `content`,
+`response`, `summary`) applied recursively at every nesting level. This
+prevents poisoning via echoed request text, task subjects, metadata, or
+raw command streams (`stdout`/`stderr`).
+
+Command-result envelopes (`{ stdout, exitCode }`) are detected via
+`isCommandResultEnvelope` and skipped entirely — `stdout` is raw subprocess
+output, not model-authored content.
 
 ## Category → MemoryType mapping
 
@@ -29,10 +44,10 @@ The regex extractor maps `CollectiveMemoryCategory` to `MemoryType` before persi
 
 ## Safety
 
-- Candidates are scanned for secrets via `@koi/redaction` before persistence
+- Secret scan (`@koi/redaction`) runs before any logging — credentials never appear in logs
 - `<untrusted-data>` boundary tokens are escaped in LLM extraction prompts
-- Preference learnings (mapped to `MemoryType: "user"`) are excluded from
-  persistence since `MemoryComponent.store()` cannot set the record type
+- Preference learnings (`MemoryType: "user"`) are excluded from persistence; no content excerpt logged
+- Namespace isolation: throws on `namespace=` to fail closed rather than silently crossing tenant boundaries
 - Session state is keyed by `SessionId` to prevent cross-session bleed
 
 ## Configuration
