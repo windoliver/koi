@@ -822,12 +822,6 @@ interface RunHeadlessOptions {
    * The emitted NDJSON stream still carries the redacted version.
    */
   readonly onRawAssistantText?: ((text: string) => void) | undefined;
-  /**
-   * Called when a tool_result event is processed. Used by --result-schema
-   * to reset the raw-text accumulator, so only the FINAL assistant message
-   * (after all tool calls) is validated — not the entire session stream.
-   */
-  readonly onToolResultSeen?: (() => void) | undefined;
 }
 ```
 
@@ -859,7 +853,7 @@ There are **two** emission paths for `assistant_text` in `run.ts` — both must 
         }
 ```
 
-**`translateEvent` signature change:** Pass both callbacks as additional parameters:
+**`translateEvent` signature change:** Pass `onRawAssistantText` as an additional parameter (minimum diff, no closure change needed):
 
 Change from:
 
@@ -879,24 +873,13 @@ function translateEvent(
   emit: ReturnType<typeof createEmitter>,
   toolNamesByCallId: Map<string, string>,
   onRawAssistantText: ((text: string) => void) | undefined,
-  onToolResultSeen: (() => void) | undefined,
 ): boolean {
-```
-
-In the `"tool_result"` case of `translateEvent`, call `onToolResultSeen` so the accumulator is reset before the next assistant message arrives:
-
-```typescript
-    case "tool_result": {
-      onToolResultSeen?.();   // reset raw-text accumulator before next assistant turn
-      // ... existing tool_result emit logic ...
-      return true;
-    }
 ```
 
 Update the call site in `runHeadless`:
 
 ```typescript
-      if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText, opts.onToolResultSeen)) {
+      if (translateEvent(event, emit, toolNamesByCallId, opts.onRawAssistantText)) {
 ```
 
 **Also add a test to `run.test.ts`** verifying the callback fires for both paths and is not invoked with redacted text. Append to `run.test.ts`:
@@ -1002,16 +985,12 @@ In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before
     // set to true and post-run validation fails immediately without parsing.
     // Schema validation is only meaningful for structured outputs that fit in memory.
     const RAW_PARTS_CAP_BYTES = 1 * 1024 * 1024; // 1 MB
+    // Accumulates the ENTIRE assistant text stream across all turns.
+    // --result-schema validates this full concatenation — the prompt must produce
+    // JSON-only output with no prose, preamble, or tool-narration interspersed.
     const rawAssistantParts: string[] = [];
     let rawAssistantPartsBytes = 0;
     let rawAssistantOverflow = false;
-    // Resets the accumulator so only the FINAL assistant message is validated.
-    // Called when a tool_result event fires — the next assistant text is the continuation.
-    const resetRawAssistantParts = (): void => {
-      rawAssistantParts.length = 0;
-      rawAssistantPartsBytes = 0;
-      rawAssistantOverflow = false;
-    };
 ```
 
 Then pass the callback in the `runHeadless()` call:
@@ -1038,7 +1017,6 @@ Then pass the callback in the `runHeadless()` call:
             rawAssistantPartsBytes += chunkBytes;
           }
         : undefined,
-      onToolResultSeen: resultSchemaObj !== undefined ? resetRawAssistantParts : undefined,
     });
 ```
 
@@ -1459,7 +1437,7 @@ These are fail-closed by default because they represent bootstrap-time execution
 | Code | Name | Meaning | Retry? |
 |------|------|---------|--------|
 | 0 | SUCCESS | Agent completed the task | — |
-| 1 | AGENT_FAILURE | Agent could not complete the task, or output failed schema validation | Yes, if idempotent |
+| 1 | AGENT_FAILURE | Agent could not complete the task. Also used for `--result-schema` validation failures. | **Schema failure:** do NOT retry — the agent completed all tool calls. Fix the prompt or schema. **Agent failure:** retry only if idempotent. Distinguish by checking `result.error`: schema failures start with `schema validation failed:`. |
 | 2 | PERMISSION_DENIED | A required tool was denied by the permission policy | No — add `--allow-tool` |
 | 3 | BUDGET_EXCEEDED | `--max-turns` or `--max-spend` was hit | Maybe — raise limits |
 | 4 | TIMEOUT | `--max-duration-ms` was exceeded | Only when all allowed tools are read-only and idempotent. A timeout does not guarantee no side effects occurred before the cut-off. Do NOT auto-retry if `Bash`, file-write, external API, or any MCP tool is allowed — retrying can duplicate deploys, mutations, or external actions. |
@@ -1514,6 +1492,8 @@ On failure:
 ```json
 {"kind":"result","sessionId":"ses_abc123","ok":false,"exitCode":1,"error":"schema validation failed: .titles is required"}
 ```
+
+When the `error` field starts with `schema validation failed:`, the agent **completed all tool calls** before the failure. Do not auto-retry — the agent's work is done, only the output format was wrong. Fix the prompt or schema and run again.
 
 ## Result Schema Validation
 

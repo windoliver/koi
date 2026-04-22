@@ -65,7 +65,7 @@ After `runHeadless()` returns and `shutdownRuntime()` completes:
    - If `rawAssistantOverflow === true` → `emitResult({ exitCode: 1, error: "schema validation failed: assistant output exceeded 1 MB limit" })`
    - Otherwise → call `validateResultSchema(rawAssistantParts.join(""), resultSchemaObj)`
    - (where `rawAssistantParts` was populated via the `onRawAssistantText` callback before redaction; accumulation is capped at **1 MB UTF-8 bytes** — any chunk that would cross the cap is rejected in full and `rawAssistantOverflow` is set to `true`)
-   - **Contract:** `--result-schema` validates the **final assistant message** (the last chunk of text after all tool calls complete) as a single JSON document. The prompt must instruct the model to output ONLY JSON in its final response, with no preamble or prose. Intermediate assistant text (e.g. tool-call narration) is discarded when a `tool_result` event fires. This is intentional — `--result-schema` is for structured-only output modes, not for extracting JSON embedded in prose.
+   - **Contract:** `--result-schema` validates the **entire concatenated assistant text** (all `assistant_text` events across all turns) as a single JSON document. The prompt must produce JSON-only output with no prose, preamble, or tool-call narration anywhere in the output. Any non-JSON text from any turn will cause validation to fail with exit 1. This is intentional — `--result-schema` is a strict gate for structured-only output modes.
    - On failure → `emitResult({ exitCode: 1, error: schemaResult.error })`
    - On success → normal `emitResult()`
 4. Otherwise → normal `emitResult()`
@@ -100,9 +100,7 @@ There are two emission paths in `run.ts`, both fire the callback before redactio
 - **Path A (`text_delta`)**: `opts.onRawAssistantText?.(event.delta)` then `emit({ kind: "assistant_text", text: redactEngineBanners(event.delta) })`
 - **Path B (`done.output.content` fallback)**: `opts.onRawAssistantText?.(fallback)` then `emit({ kind: "assistant_text", text: redactEngineBanners(fallback) })`
 
-A second optional callback `onToolResultSeen?: (() => void) | undefined` is called by `translateEvent` when a `tool_result` event fires. `commands/start.ts` uses this to **reset** `rawAssistantParts` so only the final assistant message (after all tool calls) is validated, not the entire session text stream.
-
-`commands/start.ts` wires both callbacks only when `resultSchemaObj !== undefined`. After the run, `rawAssistantParts.join("")` is the assembled **final assistant message** passed to `validateResultSchema`.
+`commands/start.ts` wires the callback only when `resultSchemaObj !== undefined`, accumulating ALL assistant text across the run into `rawAssistantParts: string[]`. After the run, `rawAssistantParts.join("")` is the **full assembled assistant output** passed to `validateResultSchema`.
 
 ---
 
