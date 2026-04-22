@@ -522,4 +522,37 @@ describe("scanMemoryDirectory", () => {
     // biome-ignore lint/style/noNonNullAssertion: length checked above
     expect(first!.fileSize).toBe(file.size);
   });
+
+  test("preserves confidence from frontmatter into scanned record", async () => {
+    const body = [
+      "---",
+      "name: extracted-heuristic",
+      "description: auto-inferred heuristic",
+      "type: feedback",
+      "confidence: 0.7",
+      "---",
+      "",
+      "prefer small focused functions",
+    ].join("\n");
+    const file: MockFile = {
+      path: "/memory/extracted-heuristic.md",
+      content: body,
+      size: body.length,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(1);
+    expect(result.memories[0]?.record.confidence).toBe(0.7);
+  });
+
+  test("confidence is absent in scanned record when not in frontmatter", async () => {
+    const file = makeMemoryFile("No Confidence", "feedback", "Some content", 0);
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(1);
+    expect(result.memories[0]?.record.confidence).toBeUndefined();
+  });
 });

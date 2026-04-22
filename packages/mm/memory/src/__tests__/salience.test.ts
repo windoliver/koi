@@ -1,4 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type {
+  FileListResult,
+  FileReadResult,
+  FileSystemBackend,
+  KoiError,
+  Result,
+} from "@koi/core";
 import {
   computeDecayScore,
   computeSalience,
@@ -6,6 +13,7 @@ import {
   scoreMemories,
 } from "../salience.js";
 import type { ScannedMemory } from "../scan.js";
+import { scanMemoryDirectory } from "../scan.js";
 
 // ---------------------------------------------------------------------------
 // computeDecayScore
@@ -186,5 +194,91 @@ describe("scoreMemories", () => {
     const scored = scoreMemories(memories, undefined, now);
     expect(scored[0]?.decayScore).toBeCloseTo(1.0, 5);
     expect(scored[0]?.typeRelevance).toBe(1.0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: scan → score (confidence survives the full read path)
+// ---------------------------------------------------------------------------
+
+function makeScanFs(
+  files: ReadonlyArray<{ readonly path: string; readonly content: string }>,
+): FileSystemBackend {
+  return {
+    name: "mock-fs",
+    read(path): Result<FileReadResult, KoiError> {
+      const file = files.find((f) => f.path === path);
+      if (!file) {
+        return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+      }
+      return { ok: true, value: { content: file.content, path, size: file.content.length } };
+    },
+    list(basePath): Result<FileListResult, KoiError> {
+      const entries = files
+        .filter((f) => f.path.startsWith(basePath) && f.path.endsWith(".md"))
+        .map((f) => ({
+          path: f.path,
+          kind: "file" as const,
+          size: f.content.length,
+          modifiedAt: Date.now(),
+        }));
+      return { ok: true, value: { entries, truncated: false } };
+    },
+    write() {
+      return { ok: false, error: { code: "INTERNAL" as const, message: "n/a", retryable: false } };
+    },
+    edit() {
+      return { ok: false, error: { code: "INTERNAL" as const, message: "n/a", retryable: false } };
+    },
+    search() {
+      return { ok: false, error: { code: "INTERNAL" as const, message: "n/a", retryable: false } };
+    },
+  };
+}
+
+describe("scan → score integration (confidence survives disk roundtrip)", () => {
+  test("heuristic feedback at confidence=0.7 scores below full-trust feedback after scan", async () => {
+    const dir = "/memory";
+    const fullTrust = [
+      "---",
+      "name: validated-correction",
+      "description: human-validated correction",
+      "type: feedback",
+      "---",
+      "",
+      "Always use import type for type-only imports",
+    ].join("\n");
+    const lowConf = [
+      "---",
+      "name: extracted-heuristic",
+      "description: auto-inferred heuristic",
+      "type: feedback",
+      "confidence: 0.7",
+      "---",
+      "",
+      "prefer small focused functions",
+    ].join("\n");
+
+    const fs = makeScanFs([
+      { path: `${dir}/validated.md`, content: fullTrust },
+      { path: `${dir}/heuristic.md`, content: lowConf },
+    ]);
+
+    const scanned = await scanMemoryDirectory(fs, { memoryDir: dir });
+    expect(scanned.memories.length).toBe(2);
+
+    const heuristic = scanned.memories.find((m) => m.record.name === "extracted-heuristic");
+    const validated = scanned.memories.find((m) => m.record.name === "validated-correction");
+
+    expect(heuristic?.record.confidence).toBe(0.7);
+    expect(validated?.record.confidence).toBeUndefined();
+
+    const scored = scoreMemories(scanned.memories, undefined, Date.now());
+    const validatedScore = scored.find((s) => s.memory.record.name === "validated-correction");
+    const heuristicScore = scored.find((s) => s.memory.record.name === "extracted-heuristic");
+
+    expect(validatedScore?.salienceScore).toBeCloseTo(1.2, 5); // 1.2 × 1.0
+    expect(heuristicScore?.salienceScore).toBeCloseTo(1.2 * 0.7, 5); // 1.2 × 0.7 = 0.84
+    expect(validatedScore?.salienceScore ?? 0).toBeGreaterThan(heuristicScore?.salienceScore ?? 0);
   });
 });
