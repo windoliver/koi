@@ -2,6 +2,10 @@
 
 `@koi/memory-fs` is an L2 package that gives any Koi agent persistent, file-based long-term memory. Facts are stored as JSON on disk, organized by entity, with automatic deduplication, contradiction detection, and exponential decay tiering. The agent decides what to remember via `memory_store` / `memory_recall` tool calls — nothing is auto-stored.
 
+## Recent updates
+
+**exactReplay check includes `confidence` (#1966)**: `storeRecord` now includes the `confidence` field in the exact-replay guard. Previously, a re-store of the same `(name, type, description, content)` with a different `confidence` value was silently skipped as a duplicate — the confidence change was lost. The fix ensures a write with a different confidence produces a new record (name-conflict path) or triggers an upsert (force path) rather than being swallowed. This also means that **frontmatter parsing is now fail-closed for blank `confidence:` fields**: a blank `confidence:` line in a `.md` file drops the whole record rather than defaulting to `undefined` (which would be treated as full-trust 1.0 by callers). Unknown frontmatter keys also drop the record — typos like `confdence:` silently granting full trust are no longer possible.
+
 ---
 
 ## Why It Exists

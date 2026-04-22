@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **Doc-wiring sync for integrated packages (#1966)**: refreshed L2 docs for `@koi/memory-fs`, `@koi/middleware-extraction`, and `@koi/middleware-memory-recall` to reflect the confidence trust model, fail-closed frontmatter parsing, and display rounding fix. No CLI surface changes.
+
 - **`koi tui` session picker peek panel (#1899)**: pressing Space on a highlighted session in the Ctrl+S session picker opens a peek panel showing the session name, message count, date, and full preview — without resuming it. Space again on the same row closes the panel; Up/Down navigation keeps the panel open and tracks the highlighted row. Esc closes the picker and clears peek state. The picker reduces its visible row count from 8 to 5 while the peek panel is active so the modal stays within a standard 24-row terminal. No CLI surface changes — this is purely a `@koi/tui` UX addition.
 - **`@koi/tui` — model-router spans now show routing decision (#2018)**: `/trajectory` view previously showed `[pass]` for all `middleware:model-router` spans because `summarizeDecision` had no handler for `router.*` keys. Now displays `→provider:model` (with ` fallback` suffix on secondary-target selection).
 
