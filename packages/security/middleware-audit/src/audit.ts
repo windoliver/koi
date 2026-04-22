@@ -32,7 +32,7 @@ import { createBoundedQueue } from "./queue.js";
 import type { SigningHandle } from "./signing.js";
 import { createEphemeralSigningHandle } from "./signing.js";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DEFAULT_MAX_ENTRY_SIZE = 10_000;
 const DEFAULT_MAX_QUEUE_DEPTH = 1000;
 
@@ -240,6 +240,7 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
           agentId: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           kind: "tool_call",
+          toolName: request.toolId,
           request: config.redactRequestBodies ? "[redacted]" : redactPayload(request),
           response: response !== undefined ? redactPayload(response) : undefined,
           error: error !== undefined ? redactPayload(serializeError(error)) : undefined,
