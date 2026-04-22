@@ -180,27 +180,6 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   // horizontal hint rows would overflow. (#1913)
   const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
 
-  // Width-aware tool ID display in narrow mode. Inner content width =
-  // modalWidth - paddingLeft(1) - paddingRight(1) = modalWidth - 2.
-  //
-  // displayToolIdInLabel: used in "Tool: <id>" — prefix "Tool: " = 6 chars.
-  //   budget = (modalWidth - 2) - 6 = modalWidth - 8
-  //
-  // displayToolIdInHint: used in "[a] Always allow <id> this session" —
-  //   prefix "[a] Always allow " = 17 chars, suffix " this session" = 13 chars.
-  //   budget = (modalWidth - 2) - 17 - 13 = modalWidth - 32
-  //
-  // Both floors are 4 so at least a few characters of the ID remain visible.
-  const displayToolIdInLabel = createMemo(() =>
-    isNarrow()
-      ? formatToolId(props.prompt.toolId, Math.max(modalWidth() - 8, 4))
-      : props.prompt.toolId
-  );
-  const displayToolIdInHint = createMemo(() =>
-    isNarrow()
-      ? formatToolId(props.prompt.toolId, Math.max(modalWidth() - 32, 4))
-      : props.prompt.toolId
-  );
 
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
@@ -256,9 +235,18 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         </box>
       </box>
 
-      {/* Tool info */}
+      {/* Tool info — on narrow terminals the toolId goes on its own line so
+          the full authorization target remains visible without truncation. */}
       <box flexDirection="column" marginTop={1}>
-        <text fg={COLORS.textSecondary}>{`Tool: `}<b>{displayToolIdInLabel()}</b></text>
+        <Show
+          when={isNarrow()}
+          fallback={
+            <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
+          }
+        >
+          <text fg={COLORS.textSecondary}>{"Tool:"}</text>
+          <text fg={COLORS.white}>{`  ${props.prompt.toolId}`}</text>
+        </Show>
       </box>
 
       {/* Args preview */}
@@ -281,7 +269,9 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
 
       {/* Key hints — stacked on narrow terminals so all actions remain visible.
           Wide: single row "[y] Allow once  [n] Deny  [a]...  [Esc]"
-          Narrow: one hint per line so each fits within the clamped box. */}
+          Narrow: one hint per line; the [a] session-scope copy breaks the
+          toolId onto its own line so the full authorization target is always
+          readable at the approval boundary (no truncation). */}
       <Show when={props.focused}>
         <Show
           when={!isNarrow()}
@@ -289,7 +279,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
             <box flexDirection="column" marginTop={1}>
               <text fg={COLORS.success}>{"[y] Allow once"}</text>
               <text fg={COLORS.danger}>{"[n] Deny"}</text>
-              <text fg={COLORS.blueAccent}>{`[a] Always allow ${displayToolIdInHint()} this session`}</text>
+              <text fg={COLORS.blueAccent}>{`[a] Allow this session:\n  ${props.prompt.toolId}`}</text>
               <Show when={permanentAvailable()}>
                 <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
               </Show>

@@ -117,7 +117,7 @@ describe("processPermissionKey", () => {
 });
 
 // ---------------------------------------------------------------------------
-// formatToolId — narrow-mode truncation (#1913)
+// formatToolId — generic truncation helper (not used in approval boundary)
 // ---------------------------------------------------------------------------
 
 describe("formatToolId", () => {
@@ -143,22 +143,6 @@ describe("formatToolId", () => {
     // slice(0, maxLen-1=9) + "…" = "billing__…" (9 chars of prefix + ellipsis = 10 total)
     expect(result).toBe("billing__…");
     expect(id.startsWith(result.slice(0, -1))).toBe(true);
-  });
-
-  test("40-col hint budget: [a] line fits within modal inner width", () => {
-    // modalWidth(40-col) = 36, inner width = 36-2 = 34.
-    // Fixed copy: "[a] Always allow " (17) + " this session" (13) = 30.
-    // toolId budget = 34 - 30 = 4. Line = 30 + 4 = 34 <= 34. ✓
-    const modalWidth40 = computePermissionPromptWidth(40); // 36
-    const innerWidth = modalWidth40 - 2; // 34
-    const fixedCopy = "[a] Always allow ".length + " this session".length; // 30
-    const budget = Math.max(modalWidth40 - 32, 4); // = Math.max(4, 4) = 4
-    const toolId = "crm__get_customer";
-    const displayed = formatToolId(toolId, budget);
-    const lineLen = "[a] Always allow ".length + displayed.length + " this session".length;
-    expect(lineLen).toBeLessThanOrEqual(innerWidth);
-    // Verify the budget constant matches the formula.
-    expect(budget).toBe(innerWidth - fixedCopy);
   });
 });
 
