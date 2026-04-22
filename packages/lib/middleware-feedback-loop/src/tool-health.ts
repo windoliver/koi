@@ -122,6 +122,8 @@ interface ToolState {
   // Per-tool flush suspension circuit breaker — isolated so one tool can't stop others
   consecutiveFlushFailures: number; // mutable
   flushSuspendedUntil: number; // mutable: epoch ms; 0 = not suspended
+  // Tracks the currently running flush so dispose() can await it
+  activeFlush: Promise<void> | undefined; // mutable
 }
 
 function makeToolState(ringSize: number): ToolState {
@@ -149,6 +151,7 @@ function makeToolState(ringSize: number): ToolState {
     },
     consecutiveFlushFailures: 0,
     flushSuspendedUntil: 0,
+    activeFlush: undefined,
   };
 }
 
@@ -295,7 +298,20 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   ): Promise<void> {
     if (state.flushState.flushing) return;
     state.flushState = { ...state.flushState, flushing: true };
+    // Register the in-progress flush so dispose() can await it even if it started
+    // on the hot path before dispose() was called.
+    const self = doFlushTool(toolId, state, bypassSuspension);
+    state.activeFlush = self.finally(() => {
+      state.activeFlush = undefined;
+    });
+    return state.activeFlush;
+  }
 
+  async function doFlushTool(
+    toolId: string,
+    state: ToolState,
+    bypassSuspension: boolean,
+  ): Promise<void> {
     const bId = resolveBrickId(toolId);
     if (bId === undefined) {
       // Keep dirty=true so deltas are preserved for the next flush attempt
@@ -728,10 +744,18 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     },
 
     async dispose(): Promise<void> {
-      // Flush all dirty tools; timeout rejects so stalled flushes surface as errors
+      // Collect and await ALL pending flushes: tools already flushing (activeFlush)
+      // and tools that are dirty but not yet flushing.
       const flushes: Promise<void>[] = [];
       for (const [toolId, state] of stateMap) {
-        if (state.flushState.dirty && !state.flushState.flushing) {
+        if (state.flushState.flushing && state.activeFlush !== undefined) {
+          // Already-running flush — await it directly (it already has its own timeout-race)
+          flushes.push(
+            state.activeFlush.catch((e: unknown) => {
+              onFlushError?.(toolId, e);
+            }),
+          );
+        } else if (state.flushState.dirty) {
           const timeoutError = new Error(`Flush timeout after ${flushTimeoutMs}ms`);
           const timeoutPromise = new Promise<void>((_, reject) => {
             setTimeout(() => reject(timeoutError), flushTimeoutMs);

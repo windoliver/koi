@@ -1,5 +1,5 @@
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
-import { KoiRuntimeError } from "@koi/errors";
+import { isRetryable, KoiRuntimeError, toKoiError } from "@koi/errors";
 import { runGates } from "./gate.js";
 import type { Gate, RepairStrategy, ValidationError, Validator } from "./types.js";
 import { runValidators } from "./validators.js";
@@ -33,6 +33,11 @@ export async function runWithRetry(
     try {
       response = await next(currentRequest);
     } catch (err) {
+      // Only retry explicitly transient/retryable transport failures. Non-retryable errors
+      // (auth failures, deterministic request-shape errors, policy blocks) are rethrown
+      // immediately so they are not replayed and do not risk duplicate side effects.
+      const koiErr = toKoiError(err);
+      if (!isRetryable(koiErr)) throw err;
       transportErrors++;
       if (transportErrors > options.transportMaxAttempts) throw err;
       // Emit onRetry so transport-error retries are observable alongside validation retries
