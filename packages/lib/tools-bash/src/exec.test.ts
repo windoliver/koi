@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import * as childProcessMod from "node:child_process";
 import type {
   SandboxAdapter,
   SandboxAdapterResult,
@@ -206,6 +207,11 @@ describe("execSandboxed — callback threading", () => {
 // ---------------------------------------------------------------------------
 // spawnBash — abort signal / process cleanup (regression for #1914)
 //
+// Investigation outcome: the production kill logic in exec.ts was already
+// correct — `detached: true` + `process.kill(-pid, "SIGTERM")` + SIGKILL
+// escalation. These tests are regression coverage that proves the existing
+// behavior is correct and will catch future breakage (not a runtime fix).
+//
 // Proof strategy: the stdout/stderr pipe has a write end held by every
 // process in the spawned group. drainStream blocks until ALL write ends
 // are closed. If any child survives the abort (orphan), spawnBash hangs
@@ -214,6 +220,9 @@ describe("execSandboxed — callback threading", () => {
 // For fd-redirecting children (those that close/redirect inherited fds),
 // a PID-based assertion after abort provides additional proof that the
 // process-group kill reached them even when pipe closure cannot.
+//
+// For the pre-abort case, a node:child_process.spawn spy provides an
+// executable assertion that no spawn syscall was issued.
 // ---------------------------------------------------------------------------
 
 // Polls `chunks` for `pattern` with a bounded timeout so tests cannot hang
@@ -242,6 +251,12 @@ function waitForPattern(
 }
 
 describe("spawnBash — abort signal kills child processes (no orphan)", () => {
+  // Restore any spies created within individual tests so they don't bleed
+  // into sibling tests that exercise the real node:child_process.spawn path.
+  afterEach(() => {
+    mock.restore();
+  });
+
   test("abort resolves spawnBash for a long-running command", async () => {
     // Readiness handshake: echo READY before the long sleep so we know
     // the process is actually running before we abort. If any process
@@ -363,11 +378,11 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
   }, 15_000);
 
   test("already-aborted signal throws AbortError without spawning any process", async () => {
-    // Proof that no spawn occurs: exec.ts line 271 calls `signal?.throwIfAborted()`
-    // synchronously, which throws BEFORE line 284's `spawnChild(...)` call. JavaScript's
-    // single-threaded event loop guarantees nothing else can run between those two lines.
-    // Therefore the AbortError throw is a complete, race-free proof that spawn was never
-    // entered — no external side-channel observable (filesystem, process table) is needed.
+    // Spy on node:child_process.spawn to assert it is never invoked.
+    // Both this test and exec.ts share the same module instance, so spyOn
+    // intercepts the spawn binding that exec.ts holds as `spawnChild`.
+    const spawnSpy = spyOn(childProcessMod, "spawn");
+
     const controller = new AbortController();
     controller.abort();
 
@@ -378,10 +393,13 @@ describe("spawnBash — abort signal kills child processes (no orphan)", () => {
       thrownError = e;
     }
 
-    // Must throw AbortError — callers (turn-runner) rely on this contract.
-    // This throw IS the no-spawn proof: see comment above.
+    // Must throw AbortError — callers (turn-runner) rely on this contract
     expect(thrownError).toBeDefined();
     expect((thrownError as { name?: string }).name).toBe("AbortError");
+
+    // Executable no-spawn proof: if spawnChild had been called before
+    // throwIfAborted(), the spy would have recorded it.
+    expect(spawnSpy).not.toHaveBeenCalled();
   });
 
   test("SIGKILL escalation terminates SIGTERM-immune processes", async () => {
