@@ -908,7 +908,8 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/spawn-tools | **S17** | Q102-Q109 (agent spawning — fully wired in TUI) |
 | @koi/tool-browser | **S18** | Q110-Q117 (wire `createBrowserProvider` into TUI first) |
 | @koi/lsp | **S19** | Q118-Q125 (wire `createLspComponentProvider` into TUI first) |
-| @koi/middleware-goal | **S21** | Q134-Q138 (`--goal` flag, already wired) |
+| @koi/middleware-task-anchor | **S21** | Q134-Q138 (always wired; task board reminders on idle turns) |
+| @koi/middleware-planning | **S21** | Q137 (always wired; `write_plan` tool) |
 | @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
@@ -1056,7 +1057,7 @@ bun run test --filter=@koi/runtime
 | spawn-agent, spawn-coordinator, spawn-fork | agent-runtime, spawn-tools | Spawn lifecycle: define → load → spawn → inherit permissions → complete |
 | spawn-inheritance, spawn-allowlist, spawn-manifest-ceiling | agent-runtime, spawn-tools | Tool narrowing, permission inheritance, manifest ceiling enforcement |
 | model-router | model-router | Failover chain; circuit-breaker trips; health probe recovery |
-| goal-tracking, goal-callback | middleware-goal, middleware-report | Goal injection; drift detection; completion callback fires |
+| task-planning, task-anchor, write-plan | middleware-task-anchor, middleware-planning, middleware-report | task_create decomposition; idle-turn re-injection; write_plan structured plan; run-report on quit |
 | otel-spans | middleware-otel | OpenTelemetry spans emitted; semantic conventions correct |
 | memory-recall-pipeline | memory (core) | Salience scoring; exponential decay; token budget; format with trust boundary |
 | memory-fs | memory-fs | File persistence; Jaccard dedup; MEMORY.md index rebuild; concurrent writes |

@@ -535,19 +535,22 @@ onSessionEnd("sess-A") → delete "sess-A"
 `@koi/middleware-intent-capsule` has `priority: 290`, placing it:
 
 ```
-priority: 400  audit-log          (logs every turn)
-priority: 340  task-anchor        (injects task-board reminders into context)
-priority: 290  intent-capsule     ← THIS (verifies mandate before model call)
-priority: 100  permissions        (enforces tool access control)
+priority: 100  permissions        (outermost — runs first; rejects unauthorized tools)
+priority: 290  intent-capsule     ← THIS (verifies mandate integrity)
+priority: 345  task-anchor        (injects task board; skipped if mandate is tampered)
+priority: 400  audit-log          (innermost — logs including model call details)
                ─────────────────────────────────────────────
                LLM / Model        (only reached if mandate is intact)
 ```
 
-**Why 290?** The capsule check must run before the model is invoked and before
-tool permissions are evaluated — a tampered mandate should halt unconditionally,
-not be subject to permission caching or tool filtering. Placing it after `task-anchor`
-(340) ensures task board injection happens regardless; the capsule only blocks if the
-underlying mandate has been tampered.
+Lower priority number = outer layer = runs first (see `KoiMiddleware.priority` jsdoc in
+`packages/kernel/core/src/middleware.ts`).
+
+**Why 290?** Slots between permissions (100) and task-anchor (345). Permissions gate
+runs first, then the capsule verifies mandate integrity. Because 290 < 345, intent-capsule
+runs **before** task-anchor — a tampered mandate blocks the turn before task-board injection
+fires, so no partial context leaks to the model. On valid turns, capsule passes and
+task-anchor injects normally.
 
 ---
 
