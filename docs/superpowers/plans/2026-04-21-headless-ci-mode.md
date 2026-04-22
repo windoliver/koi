@@ -851,20 +851,50 @@ describe("runHeadless — onRawAssistantText callback", () => {
     const CAP = 256;
     const parts: string[] = [];
     let totalBytes = 0;
+    let overflow = false;
     const onRaw = (text: string): void => {
+      if (overflow) return;
       const chunkBytes = Buffer.byteLength(text, "utf8");
-      if (totalBytes + chunkBytes <= CAP) {
-        parts.push(text);
-        totalBytes += chunkBytes;
+      if (totalBytes + chunkBytes > CAP) {
+        overflow = true;
+        return;
       }
+      parts.push(text);
+      totalBytes += chunkBytes;
     };
     // Each emoji = 4 UTF-8 bytes. 65 × 4 = 260 bytes, exceeds 256-byte cap.
     onRaw("🚀".repeat(65));
-    // The 260-byte chunk should be rejected entirely (pre-append guard).
+    // The 260-byte chunk should be rejected entirely (overflow = true, no partial prefix).
     expect(parts).toHaveLength(0);
-    // A 63-emoji chunk (252 bytes) fits.
-    onRaw("🚀".repeat(63));
-    expect(parts).toHaveLength(1);
+    expect(overflow).toBe(true);
+  });
+
+  test("overflow flag prevents valid JSON prefix from passing schema: truncated output fails", () => {
+    // A valid JSON prefix in early chunks must NOT validate successfully when a later
+    // chunk is dropped due to overflow.
+    const CAP = 20; // tiny cap for test
+    const parts: string[] = [];
+    let totalBytes = 0;
+    let overflow = false;
+    const onRaw = (text: string): void => {
+      if (overflow) return;
+      const chunkBytes = Buffer.byteLength(text, "utf8");
+      if (totalBytes + chunkBytes > CAP) {
+        overflow = true;
+        return;
+      }
+      parts.push(text);
+      totalBytes += chunkBytes;
+    };
+    // First chunk: valid JSON prefix that by itself passes the schema
+    onRaw('{"count":5}');      // 11 bytes — fits in 20-byte cap
+    // Second chunk: extra content — drops over cap
+    onRaw(",extra garbage");   // 14 bytes — exceeds remaining 9 bytes, sets overflow
+    expect(overflow).toBe(true);
+    // Even though parts.join("") = '{"count":5}' and passes JSON.parse,
+    // the caller must check rawAssistantOverflow first and fail without calling validateResultSchema.
+    const assembled = overflow ? undefined : parts.join("");
+    expect(assembled).toBeUndefined(); // overflow must short-circuit validation entirely
   });
 });
 ```
@@ -879,12 +909,13 @@ In `packages/meta/cli/src/commands/start.ts`, in the headless branch just before
     // Raw assistant text accumulator for --result-schema validation.
     // Populated via onRawAssistantText before redactEngineBanners() is applied,
     // so schema validation sees the model's actual output, not the sanitized version.
-    // Hard cap: 1 MB. If exceeded, validation will fail with a clear error rather
-    // than OOM. Schema validation is only meaningful for structured outputs that
-    // fit in memory; very large streaming outputs are not a supported use case.
+    // Hard cap: 1 MB. If any chunk is dropped (overflow), rawAssistantOverflow is
+    // set to true and post-run validation fails immediately without parsing.
+    // Schema validation is only meaningful for structured outputs that fit in memory.
     const RAW_PARTS_CAP_BYTES = 1 * 1024 * 1024; // 1 MB
     const rawAssistantParts: string[] = [];
     let rawAssistantPartsBytes = 0;
+    let rawAssistantOverflow = false;
 ```
 
 Then pass the callback in the `runHeadless()` call:
@@ -900,13 +931,15 @@ Then pass the callback in the `runHeadless()` call:
       externalSignal: controller.signal,
       onRawAssistantText: resultSchemaObj !== undefined
         ? (text) => {
-            // Count actual UTF-8 bytes, not JS UTF-16 code units, to honour the cap
-            // correctly for multibyte content (emoji, CJK, etc.).
+            if (rawAssistantOverflow) return; // already over cap
             const chunkBytes = Buffer.byteLength(text, "utf8");
-            if (rawAssistantPartsBytes + chunkBytes <= RAW_PARTS_CAP_BYTES) {
-              rawAssistantParts.push(text);
-              rawAssistantPartsBytes += chunkBytes;
+            if (rawAssistantPartsBytes + chunkBytes > RAW_PARTS_CAP_BYTES) {
+              // Mark overflow and reject this chunk — do NOT append a partial prefix.
+              rawAssistantOverflow = true;
+              return;
             }
+            rawAssistantParts.push(text);
+            rawAssistantPartsBytes += chunkBytes;
           }
         : undefined,
     });
@@ -1200,12 +1233,9 @@ Replace the `else { emitResult(); }` branch with:
         // --result-schema: validate the assembled assistant text against the schema.
         // Only runs when the agent succeeded (exit 0) and teardown was clean.
         // shutdownFailed=true takes precedence and is handled by the branch above.
-        const assembled = rawAssistantPartsBytes >= RAW_PARTS_CAP_BYTES
-          ? undefined
-          : rawAssistantParts.join("");
-        const schemaResult = assembled === undefined
-          ? { ok: false as const, error: `schema validation failed: assistant output exceeded 1 MB limit and could not be validated` }
-          : validateResultSchema(assembled, resultSchemaObj);
+        const schemaResult = rawAssistantOverflow
+          ? { ok: false as const, error: `schema validation failed: assistant output exceeded 1 MB limit; cannot validate truncated output` }
+          : validateResultSchema(rawAssistantParts.join(""), resultSchemaObj);
         if (!schemaResult.ok) {
           finalCode = HEADLESS_EXIT.AGENT_FAILURE;
           emitResult({ exitCode: HEADLESS_EXIT.AGENT_FAILURE, error: schemaResult.error });

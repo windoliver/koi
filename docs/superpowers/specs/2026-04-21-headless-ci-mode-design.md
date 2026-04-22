@@ -61,7 +61,10 @@ After `runHeadless()` returns and `shutdownRuntime()` completes:
 
 1. If `shutdownFailed` → emit INTERNAL, skip schema validation (teardown failure takes precedence)
 2. If `headlessCode !== SUCCESS` → emit original exit code, skip schema validation (agent already failed)
-3. If `resultSchemaObj !== undefined && headlessCode === SUCCESS` → call `validateResultSchema(rawAssistantParts.join(""), resultSchemaObj)` (where `rawAssistantParts` was populated via the `onRawAssistantText` callback before redaction)
+3. If `resultSchemaObj !== undefined && headlessCode === SUCCESS` → check `rawAssistantOverflow` first:
+   - If `rawAssistantOverflow === true` → `emitResult({ exitCode: 1, error: "schema validation failed: assistant output exceeded 1 MB limit" })`
+   - Otherwise → call `validateResultSchema(rawAssistantParts.join(""), resultSchemaObj)`
+   - (where `rawAssistantParts` was populated via the `onRawAssistantText` callback before redaction; accumulation is capped at **1 MB UTF-8 bytes** — any chunk that would cross the cap is rejected in full and `rawAssistantOverflow` is set to `true`)
    - On failure → `emitResult({ exitCode: 1, error: schemaResult.error })`
    - On success → normal `emitResult()`
 4. Otherwise → normal `emitResult()`
