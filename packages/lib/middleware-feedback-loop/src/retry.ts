@@ -9,6 +9,7 @@ export interface RetryOptions {
   readonly gates: readonly Gate[];
   readonly repairStrategy: RepairStrategy;
   readonly validationMaxAttempts: number;
+  /** Maximum total transport attempts including the first call (not a retry count). */
   readonly transportMaxAttempts: number;
   readonly onRetry?: ((attempt: number, errors: readonly ValidationError[]) => void) | undefined;
   readonly onGateFail?: ((gate: Gate, errors: readonly ValidationError[]) => void) | undefined;

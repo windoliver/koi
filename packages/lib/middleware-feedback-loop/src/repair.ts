@@ -39,18 +39,14 @@ export const defaultRepairStrategy: RepairStrategy = {
     },
   ): { readonly request: ModelRequest; readonly feedbackMessageId: string } {
     const feedback = buildFeedbackMessage(errors);
-    // Spread to avoid mutating the original array
-    const messages = [...currentRequest.messages];
-
     const slotIndex =
       ctx.feedbackMessageId !== undefined ? parseInt(ctx.feedbackMessageId, 10) : NaN;
-    const validIndex = !Number.isNaN(slotIndex) && slotIndex >= 0 && slotIndex < messages.length;
+    const validIndex =
+      !Number.isNaN(slotIndex) && slotIndex >= 0 && slotIndex < currentRequest.messages.length;
 
-    if (validIndex) {
-      messages[slotIndex] = feedback;
-    } else {
-      messages.push(feedback);
-    }
+    const messages = validIndex
+      ? currentRequest.messages.map((m, i) => (i === slotIndex ? feedback : m))
+      : [...currentRequest.messages, feedback];
 
     const newIndex = validIndex ? slotIndex : messages.length - 1;
     return {
