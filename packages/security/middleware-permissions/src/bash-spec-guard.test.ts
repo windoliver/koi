@@ -203,7 +203,7 @@ describe("evaluateSpecGuard — parse-unavailable fails closed", () => {
   test("over-length command → parse-unavailable → deny (fail-closed)", async () => {
     // Commands exceeding MAX_COMMAND_LENGTH return parse-unavailable(over-length).
     // The spec guard MUST deny — callers must fail closed per bash-ast contract.
-    const overLength = "echo " + "x".repeat(MAX_COMMAND_LENGTH);
+    const overLength = `echo ${"x".repeat(MAX_COMMAND_LENGTH)}`;
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: overLength,
