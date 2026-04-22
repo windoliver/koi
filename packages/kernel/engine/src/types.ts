@@ -398,6 +398,15 @@ export interface SpawnChildOptions {
    * wait for a slot instead of failing immediately at capacity.
    */
   readonly signal?: AbortSignal | undefined;
+  /**
+   * When true, the caller has already acquired a ledger slot.
+   * spawnChildAgent skips its own acquisition and relies on the caller's slot
+   * and the terminated-event release to balance the ledger.
+   *
+   * Use when the caller needs immediate rejection on capacity (non-blocking
+   * acquire) rather than backpressure queuing via acquireOrWait.
+   */
+  readonly slotPreAcquired?: boolean | undefined;
 
   // ---------------------------------------------------------------------------
   // Sub-agent constraints (hook agents, sandboxed spawns)

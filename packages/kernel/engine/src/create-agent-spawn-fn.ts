@@ -295,6 +295,30 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       return { ok: false, error: validation.error };
     }
 
+    // Acquire a slot before allocating any per-child resources.
+    // Enforces the max-concurrent-agents cap (Issue #1996).
+    const slotAcquired = await base.spawnLedger.acquire();
+    if (!slotAcquired) {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Spawn limit reached: max concurrent agents (${base.spawnLedger.capacity()}) already running. Retry when a slot is available.`,
+          retryable: true,
+        },
+      };
+    }
+    const releaseSlot = async (): Promise<void> => {
+      try {
+        await base.spawnLedger.release();
+      } catch (releaseErr) {
+        console.error(
+          `[agent-spawn] spawnLedger.release() failed for "${request.agentName}"`,
+          releaseErr,
+        );
+      }
+    };
+
     // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
     //      a) The parent manifest's spawn ceiling allows Spawn for children
@@ -335,6 +359,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     //     Without the appropriate sink the child runs but output is silently lost.
     //     Validated up front so rejected spawns cost zero per-child resources.
     if (policy.kind === "on_demand" && options.reportStore === undefined) {
+      await releaseSlot();
       return {
         ok: false,
         error: {
@@ -346,6 +371,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       };
     }
     if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
+      await releaseSlot();
       return {
         ok: false,
         error: {
@@ -395,6 +421,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         childMiddleware.push(...factoryResult.middleware);
         perChildUnwind = factoryResult.unwind;
       } catch (e: unknown) {
+        await releaseSlot();
         const message = e instanceof Error ? e.message : String(e);
         return {
           ok: false,
@@ -433,6 +460,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       manifest,
       adapter,
       signal: request.signal,
+      slotPreAcquired: true,
       ...(isFork ? { fork: true as const } : {}),
       ...(childProviders.length > 0 ? { providers: childProviders } : {}),
       ...(request.toolDenylist !== undefined ? { toolDenylist: request.toolDenylist } : {}),
@@ -589,6 +617,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           } finally {
             spawnResult.handle.terminate();
             await spawnResult.handle.waitForCompletion();
+            // Slot released via the terminated event in spawnChildAgent (slotPreAcquired=true).
             // dispose() can reject when manifest-middleware
             // cleanup (e.g. refcounted audit close, per-child
             // drain) surfaces accumulated failures. That failure
@@ -727,6 +756,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       await tryUnwindPerChild();
       throw e;
     }
+    // Slot released via the terminated event in spawnChildAgent (slotPreAcquired=true).
   };
 }
 
