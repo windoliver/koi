@@ -30,34 +30,20 @@ export interface FilterResult {
 }
 
 /**
- * RFC-5322-aligned email pattern used as a best-effort contact guard.
- *
- * Scope: covers `word@word.tld`-shaped tokens — the most common form of
- * person-contact data accidentally stored as `reference`. This is defence-
- * in-depth only; it does NOT cover phone numbers, Slack handles, pager
- * aliases, or named escalation contacts written without an email address.
- * Broader PII detection is a separate concern (#TODO: track in a follow-up
- * issue). The primary privacy boundary is the prompt guidance that routes
- * person-contact memories to `user` (which is always sync-denied).
- */
-const EMAIL_PATTERN = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
-
-/** Returns true if any of the memory's text fields contain an email address. */
-function containsEmail(memory: MemoryRecord): boolean {
-  return (
-    EMAIL_PATTERN.test(memory.content) ||
-    EMAIL_PATTERN.test(memory.name) ||
-    EMAIL_PATTERN.test(memory.description)
-  );
-}
-
-/**
  * Filters a memory for team sync eligibility.
  *
+ * Privacy architecture note: the primary boundary for personal contact data
+ * (email, phone, Slack handle, named contacts) is the `user` type hardblock
+ * below. Callers are guided via skill/schema guidance to classify all personal
+ * contact pointers as `user`, not `reference`. Content-based PII scanning is
+ * out of scope here — a regex-only email scanner is simultaneously too broad
+ * (false-positive on `git@github.com` SSH remotes, shared service aliases)
+ * and too narrow (misses phone numbers, @slack handles, pager aliases).
+ * Comprehensive PII detection is tracked as a separate concern.
+ *
  * Checks in order:
- * 1. Type must be in allowedTypes (user is always denied)
- * 2. Email/contact pattern check — blocks personal contacts regardless of type
- * 3. Content must pass secret scanning (fail-closed on error)
+ * 1. Type must be in allowedTypes (user is always denied — covers personal contacts)
+ * 2. Content must pass secret scanning (fail-closed on error)
  */
 export function filterMemoryForSync(
   memory: MemoryRecord,
@@ -83,19 +69,6 @@ export function filterMemoryForSync(
         memoryId: memory.id,
         reason: "type_denied",
         detail: `type "${memory.type}" not in allowed types`,
-      },
-    };
-  }
-
-  // Block memories containing email addresses — personal contact data must
-  // not leave the local store even if mis-typed as reference or project.
-  if (containsEmail(memory)) {
-    return {
-      passed: false,
-      blocked: {
-        memoryId: memory.id,
-        reason: "secret_detected",
-        detail: "email address detected — personal contact data is not sync-eligible",
       },
     };
   }

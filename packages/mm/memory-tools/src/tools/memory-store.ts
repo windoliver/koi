@@ -174,7 +174,7 @@ export function createMemoryStoreTool(
           description:
             "Memory category. Choose by content: " +
             "feedback = work/coding guidance, style rules, 'always/never do X' (not project); " +
-            "user = facts about the person's role, expertise, preferences, AND personal contacts/emails (private); " +
+            "user = facts about the person's role, expertise, preferences, AND all personal contacts (email, phone, Slack handle, named contacts — all private); " +
             "project = ongoing work, deadlines, decisions, milestones; " +
             "reference = pointers to external systems, tools, or URLs — 'X is tracked in Y', dashboard links (not person contacts).",
         },
