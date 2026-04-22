@@ -16,7 +16,7 @@ import type { ModelChunk } from "@koi/core/middleware";
 type ModelCallCtx = Parameters<NonNullable<KoiMiddleware["wrapModelCall"]>>[0];
 type ToolCallCtx = Parameters<NonNullable<KoiMiddleware["wrapToolCall"]>>[0];
 
-import { KoiRuntimeError } from "@koi/errors";
+import { isKoiError, isRetryable, KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig } from "./config.js";
 import { defaultRepairStrategy } from "./repair.js";
 import { runWithRetry } from "./retry.js";
@@ -194,6 +194,15 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
             }
           }
         } catch (err: unknown) {
+          // Apply the same retryability classification as runWithRetry: only skip retry when
+          // the error explicitly carries non-retryable KoiError metadata. Plain Error instances
+          // (network stack, provider client) are treated as retryable transport failures.
+          const koiErr = isKoiError(err)
+            ? err
+            : err instanceof Error && isKoiError(err.cause)
+              ? err.cause
+              : null;
+          if (koiErr !== null && !isRetryable(koiErr)) throw err;
           transportError = err;
         }
 
@@ -205,9 +214,15 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
         }
 
         if (finalResponse === undefined) {
-          // Stream ended without a done chunk — pass through whatever was buffered
-          yield* buffer;
-          return;
+          // Stream ended without a done chunk — treat as a transport/protocol error and fail
+          // closed. Yielding unvalidated buffered content would bypass all validators/gates,
+          // defeating the middleware's guarantees on exactly the degraded paths it hardens.
+          transportErrors++;
+          if (transportErrors > transportMaxAttempts) {
+            throw new Error("Stream ended without completion signal (no done chunk received)");
+          }
+          config.onRetry?.(validationAttempts + transportErrors, []);
+          continue;
         }
 
         // Run validators on the complete response
