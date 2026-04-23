@@ -120,8 +120,7 @@ export function createGovernanceController(
     read: () => turnCount,
     limit: resolved.iteration.maxTurns,
     retryable: false,
-    description:
-      "Maximum turns per session (reset per run when iteration_reset is fired between runs)",
+    description: "Maximum turns per session (reset per run when run_reset fires between submits)",
     check(): GovernanceCheck {
       if (turnCount >= resolved.iteration.maxTurns) {
         return failCheck(
@@ -156,7 +155,7 @@ export function createGovernanceController(
     limit: resolved.iteration.maxDurationMs,
     retryable: false,
     description:
-      "Maximum session duration in milliseconds (reset per run when iteration_reset is fired between runs)",
+      "Maximum session duration in milliseconds (reset per run when run_reset fires between submits)",
     check(): GovernanceCheck {
       const elapsed = Date.now() - startedAt;
       if (elapsed >= resolved.iteration.maxDurationMs) {
@@ -296,16 +295,18 @@ export function createGovernanceController(
       case "tool_success":
         totalCallsWindow.record(Date.now());
         break;
-      case "iteration_reset":
-        // #1742: reset per-iteration UX budgets (turn count, run duration)
+      case "run_reset":
+        // #1939: reset per-run UX budgets (turn count, run duration)
         // so each `runtime.run()` invocation gets a fresh model-call /
         // wall-clock budget. Token usage and accumulated cost are
         // INTENTIONALLY NOT reset — they back runtime-wide spend safety
-        // caps that operators rely on for runaway containment. Spawn
-        // counts and rolling error-rate windows are also runtime-scoped
-        // and unaffected. The split lets a TUI host give each user
-        // submit its own turn/duration budget while keeping a real
-        // total-spend ceiling for the entire process lifetime.
+        // caps. Spawn counts and rolling error-rate windows are also
+        // runtime-scoped and unaffected.
+        turnCount = 0;
+        startedAt = Date.now();
+        break;
+      case "iteration_reset":
+        // @deprecated alias for run_reset — remove in Task 7
         turnCount = 0;
         startedAt = Date.now();
         break;

@@ -631,7 +631,11 @@ describe("createInMemoryController", () => {
       await controller.record({ kind: "spawn", depth: 1 });
       await controller.record({ kind: "tool_error", toolName: "t" });
 
-      await controller.record({ kind: "session_reset" });
+      await controller.record({
+        kind: "session_reset",
+        source: "host",
+        boundaryId: "test:session:0",
+      });
 
       expect(controller.reading("turn_count")?.current).toBe(0);
       expect(controller.reading("error_rate")?.current).toBe(0);

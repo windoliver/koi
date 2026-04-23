@@ -263,7 +263,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
     read: () => state.turnCount,
     limit: turnCountLimit,
     retryable: false,
-    description: "Turns this iteration (reset by iteration_reset/session_reset)",
+    description: "Turns this run (reset by run_reset/session_reset)",
     check: (): GovernanceCheck =>
       enforced(turnCountLimit) && state.turnCount >= turnCountLimit
         ? fail(
@@ -295,7 +295,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
     read: () => now() - state.iterationStart,
     limit: durationMsLimit,
     retryable: false,
-    description: "Wall-clock ms this iteration (reset by iteration_reset/session_reset)",
+    description: "Wall-clock ms this run (reset by run_reset/session_reset)",
     check: (): GovernanceCheck => {
       if (!enforced(durationMsLimit)) return { ok: true };
       const elapsed = now() - state.iterationStart;
@@ -502,9 +502,14 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         state.toolOutcomes.push(true);
         if (state.toolOutcomes.length > errorRateWindow) state.toolOutcomes.shift();
         return;
-      case "iteration_reset":
-        // L0 contract: reset per-iteration UX budgets (turn_count, duration_ms).
+      case "run_reset":
+        // L0 contract: reset per-run UX budgets (turn_count, duration_ms).
         // Token usage, cost, spawn counts, and error-rate windows survive.
+        state.turnCount = 0;
+        state.iterationStart = now();
+        return;
+      case "iteration_reset":
+        // @deprecated alias for run_reset — remove in Task 7
         state.turnCount = 0;
         state.iterationStart = now();
         return;

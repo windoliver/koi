@@ -270,7 +270,11 @@ describe("createGovernanceController", () => {
     expect((await ctrl.check(GOVERNANCE_VARIABLES.ERROR_RATE)).ok).toBe(false);
 
     // Host-driven session boundary: TUI /clear → cycleSession → session_reset
-    ctrl.record({ kind: "session_reset" });
+    ctrl.record({
+      kind: "session_reset",
+      source: "host",
+      boundaryId: "test:session:0",
+    });
 
     // Per-session state cleared — turn count + error rate windows:
     expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(true);
