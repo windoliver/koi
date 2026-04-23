@@ -152,6 +152,43 @@ describe("PERMISSION_PROMPT_MIN_SAFE_HEIGHT", () => {
 });
 
 // ---------------------------------------------------------------------------
+// cannotReview gate — render + handler guard (width OR height unsafe = blocked)
+// ---------------------------------------------------------------------------
+
+describe("cannotReview gate logic (isTooNarrow || isTooShort)", () => {
+  // Inline the gate formula to verify the combined-state contract without
+  // needing a SolidJS render context. The component uses the same expression.
+  function cannotReview(terminalCols: number, terminalRows: number): boolean {
+    const width = computePermissionPromptWidth(terminalCols);
+    const isTooNarrow = width < PERMISSION_PROMPT_MIN_SAFE_WIDTH;
+    const isTooShort = terminalRows < PERMISSION_PROMPT_MIN_SAFE_HEIGHT;
+    return isTooNarrow || isTooShort;
+  }
+
+  test("width-safe but height-unsafe terminal triggers cannotReview", () => {
+    // 80-col terminal is wide enough (width=60 >= MIN_SAFE_WIDTH=20), but only
+    // 10 rows — too short (10 < MIN_SAFE_HEIGHT=14). Must block approval.
+    expect(cannotReview(80, 10)).toBe(true);
+    expect(cannotReview(80, PERMISSION_PROMPT_MIN_SAFE_HEIGHT - 1)).toBe(true);
+  });
+
+  test("height-safe but width-unsafe terminal triggers cannotReview", () => {
+    // 10-col terminal: width=6 < MIN_SAFE_WIDTH=20. Height is safe.
+    expect(cannotReview(10, 30)).toBe(true);
+  });
+
+  test("both-safe terminal does not trigger cannotReview", () => {
+    // 80-col, 20-row terminal: width=60 >= 20, rows=20 >= 14.
+    expect(cannotReview(80, 20)).toBe(false);
+    expect(cannotReview(80, PERMISSION_PROMPT_MIN_SAFE_HEIGHT)).toBe(false);
+  });
+
+  test("both-unsafe terminal triggers cannotReview", () => {
+    expect(cannotReview(10, 5)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // processPermissionKey
 // ---------------------------------------------------------------------------
 

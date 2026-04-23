@@ -211,17 +211,19 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
 
   // Below the minimum safe width or height the prompt cannot display enough
-  // context to make an informed decision. Approval keys are suppressed; only
-  // Escape/deny remains active so the user can fail closed. (#1913)
+  // context to make an informed decision. Approval keys are suppressed in both
+  // the keyboard handler AND the render path so approval affordances are never
+  // shown when they would be silently ignored. (#1913)
   const isTooNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_MIN_SAFE_WIDTH);
   const isTooShort = createMemo(() =>
     (props.terminalHeight ?? PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 1) < PERMISSION_PROMPT_MIN_SAFE_HEIGHT
   );
+  const cannotReview = createMemo(() => isTooNarrow() || isTooShort());
 
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
-    if (isTooNarrow() || isTooShort()) {
+    if (cannotReview()) {
       // Context is unreadable: suppress approval (y/a/!) but keep explicit
       // deny (n) and dismiss (Escape) so the user can fail closed immediately.
       const name = key.name.toLowerCase();
@@ -251,15 +253,15 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       width={modalWidth()}
       {...MODAL_POSITION}
     >
-      {/* Safety guard: when the terminal is too narrow to show meaningful
-          approval context, render a non-interactive message. Approval (y/a/!)
-          is suppressed; explicit deny (n) and dismiss (Esc) remain active so
-          the user can fail closed while resizing the terminal. */}
-      <Show when={isTooNarrow()}>
+      {/* Safety guard: when the terminal is too narrow OR too short to show
+          meaningful approval context, render a non-interactive message.
+          Approval (y/a/!) is suppressed in both the handler and the render
+          so users are never shown affordances that would be silently ignored. */}
+      <Show when={cannotReview()}>
         <text fg={COLORS.amber}>{"Resize\nto review"}</text>
         <text fg={COLORS.textMuted}>{"[n] Deny  [Esc]"}</text>
       </Show>
-      <Show when={!isTooNarrow()}>
+      <Show when={!cannotReview()}>
       {/* Title — stacks risk label below the heading on narrow terminals so
           "Permission Required [MEDIUM] (1 of 9)" (38+ chars) never clips. */}
       <box flexDirection={isNarrow() ? "column" : "row"} gap={isNarrow() ? 0 : 1}>
