@@ -93,9 +93,15 @@ function collectSkillNames(
   hasForkSupport: boolean,
 ): readonly string[] {
   const sorted = sortedSkills(agent);
-  if (progressive && !hasForkSupport) {
+  if (progressive) {
+    // Match the same filter as injectSkillsProgressive: only skills with non-empty
+    // descriptions (excludes MCP metadata-only) and excluding fork skills unless supported.
     return sorted
-      .filter((s) => !(s.content === "" && s.executionMode === "fork"))
+      .filter(
+        (s) =>
+          s.content !== "" ||
+          (s.description.length > 0 && (hasForkSupport || s.executionMode !== "fork")),
+      )
       .map((s) => s.name);
   }
   return sorted.map((s) => s.name);
@@ -197,10 +203,16 @@ function injectSkillsProgressive(
 ): ModelRequest {
   const sorted = sortedSkills(agent);
   // Runtime-backed progressive skills have content: "" (set by attachProgressive).
-  // Fork skills are only advertised when hasForkSupport is true (i.e. spawnFn is
-  // configured); otherwise they are excluded to avoid tool VALIDATION failures.
+  // They always have non-empty descriptions from SKILL.md frontmatter.
+  // MCP/external metadata-only components also have content: "" but intentionally
+  // have empty descriptions and must not appear in <available_skills> — advertising
+  // them triggers Skill() calls that return empty bodies, producing misleading UX.
+  // Fork skills are excluded unless hasForkSupport: true (spawnFn wired).
   const runtimeSkills = sorted.filter(
-    (s) => s.content === "" && (hasForkSupport || s.executionMode !== "fork"),
+    (s) =>
+      s.content === "" &&
+      s.description.length > 0 &&
+      (hasForkSupport || s.executionMode !== "fork"),
   );
   // Non-runtime skills (browser, memory, etc.) carry non-empty bodies.
   // Inject them via the legacy path so their guidance still reaches the model.
