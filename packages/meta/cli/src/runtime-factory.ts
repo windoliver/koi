@@ -87,8 +87,13 @@ import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
-import { createPermissionBackend } from "@koi/permissions";
+import {
+  createPermissionBackend,
+  mapSettingsToSourcedRules,
+  SOURCE_PRECEDENCE,
+} from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
+import { loadSettings } from "@koi/settings";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
 import {
@@ -1497,14 +1502,35 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       reason: "File is outside the workspace — approve to read",
     },
   ] as const;
+  // Load .koi/settings cascade and convert per-layer settings to SourcedRules.
+  // Errors in non-policy layers are logged but do not abort startup.
+  const settingsRules: SourcedRule[] = [];
+  if (config.permissionBackend === undefined) {
+    const { sources, errors: settingsErrors } = await loadSettings({ cwd });
+    for (const err of settingsErrors) {
+      console.warn(`[koi/${hostId}] settings validation warning: ${err.file}: ${err.message}`);
+    }
+    for (const source of SOURCE_PRECEDENCE) {
+      const layerSettings = sources[source];
+      if (layerSettings != null) {
+        settingsRules.push(...mapSettingsToSourcedRules(layerSettings, source));
+      }
+    }
+  }
+
   // Permission backend: caller may override (koi start passes an
   // auto-allow pattern backend). Default to the TUI's tiered default
   // mode so existing TUI behavior is preserved.
+  // Rules are sorted by SOURCE_PRECEDENCE so that policy-level TUI rules
+  // and system policy rules are evaluated before user/project/local overrides.
+  const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
   const permBackend =
     config.permissionBackend ??
     createPermissionBackend({
       mode: "default",
-      rules: tuiAllowRules,
+      rules: [...tuiAllowRules, ...settingsRules].sort(
+        (a, b) => precedenceIdx(a) - precedenceIdx(b),
+      ),
     });
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
