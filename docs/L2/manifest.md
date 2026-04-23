@@ -456,3 +456,56 @@ See `packages/meta/cli/src/__tests__/manifest-middleware.test.ts`:
 10. `trustedHost.disableExfiltrationGuard: true` → chain lacks exfiltration-guard, warning logged
 11. Terminal-capable runtime missing exfiltration-guard without opt-out → throws at boot
 12. Existing `security-defaults.test.ts` passes unchanged
+
+---
+
+## Manifest path discovery
+
+`koi start` and `koi tui` both support manifest auto-discovery via the shared
+`resolveManifestPath` helper (`packages/meta/cli/src/resolve-manifest-path.ts`).
+
+### Discovery order
+
+When `--manifest` is not passed, the helper walks up from `process.cwd()` to
+the git root (or filesystem root if not in a repo), checking these candidate
+names at each directory level in order:
+
+| Priority | File name |
+|----------|-----------|
+| 1 | `koi.yaml` |
+| 2 | `koi.manifest.yaml` |
+| 3 | `.koi/koi.yaml` |
+| 4 | `.koi/manifest.yaml` |
+
+First match wins. No merging across candidates.
+
+### Flag semantics
+
+| Invocation | Behavior |
+|-----------|----------|
+| `koi start` | Auto-discover; **error** if none found |
+| `koi tui` | Auto-discover; use built-in defaults if none found |
+| `koi start --manifest ./foo.yaml` | Use exactly that file; error if missing |
+| `koi tui --manifest ./foo.yaml` | Use exactly that file; error if missing |
+| `koi tui --no-manifest` | Skip discovery; run with built-in defaults |
+
+`--manifest` always overrides discovery — no silent fallback to discovery when
+an explicit path is given (even if the file is missing; that is an error).
+
+### Walk boundary
+
+The walk stops at the nearest `.git` directory above `cwd`. This mirrors how
+git itself finds the repository root: prevents manifests from leaking out of
+their project's boundary into parent workspaces.
+
+### Error messages
+
+When no manifest is found, the error includes the full list of searched paths:
+
+```
+no koi.yaml found in cwd or any parent — pass --manifest or create one with koi init
+  Searched:
+    /path/to/project/koi.yaml
+    /path/to/project/koi.manifest.yaml
+    ...
+```
