@@ -124,6 +124,18 @@ interface SimpleCommand {
   readonly redirects: readonly Redirect[];
   /** Original source span for UI display and logging. */
   readonly text: string;
+  /**
+   * Wrapper chain, outermost first. Present when one or more wrapper commands
+   * (`nohup`, `timeout`, `sudo`, `env`, `stdbuf`, `time`) were stripped to
+   * reach the effective command. Permission rules that want to deny
+   * `sudo`-wrapped commands can check this field even though `argv[0]` is
+   * the inner command.
+   *
+   * Examples:
+   *   `sudo rm -rf /tmp`        → argv: ["rm",…], wrappedBy: ["sudo"]
+   *   `timeout 5 nohup rm /x`  → argv: ["rm","/x"], wrappedBy: ["timeout","nohup"]
+   */
+  readonly wrappedBy?: readonly string[];
 }
 ```
 
@@ -317,6 +329,11 @@ L2 @koi/bash-ast
   │   ├── classify.ts           classifyBashCommand() — two-phase prefilter + walker + fallback
   │   ├── walker.ts             AST walker — allowlist-based, fail-closed on unknown nodes
   │   ├── matcher.ts            matchSimpleCommand() — pure argv matcher
+  │   ├── wrappers/             Wrapper-command unwrapping (nohup, timeout, sudo, env, stdbuf, time)
+  │   │   ├── registry.ts       applyWrappers() — iterative unwrap, builds wrappedBy chain
+  │   │   ├── parse-prefix.ts   Flag parser that stops at first positional (wrapper-safe)
+  │   │   ├── nohup.ts / timeout.ts / sudo.ts / env.ts / stdbuf.ts / time.ts
+  │   │   └── *.test.ts         Unit tests per wrapper + registry integration tests
   │   └── __tests__/            Unit + integration + fuzz tests
   └── vendor/
       └── tree-sitter-bash.wasm   Committed binary grammar asset (~1.3 MB)
@@ -377,9 +394,11 @@ obviously-malicious input in microseconds:
   with these args"* — not *"this reads X and writes Y"*. A follow-up issue
   will add hand-written specs for `cp, mv, rm, curl, wget, tar, scp, ssh,
   chmod` if needed.
-- **No wrapper-command specs.** Commands like `nohup`, `timeout`, `sudo`,
-  `env` are analyzed as themselves — not as their inner command. A follow-up
-  issue will add wrapper stripping.
+- **Wrapper-command stripping** — shipped in #1663. The walker now
+  unwraps `nohup`, `timeout`, `sudo`, `env`, `stdbuf`, `time` and exposes the
+  effective inner command as `argv[0]` with the wrapper chain in `wrappedBy`.
+  Unknown flags on a wrapper cause the wrapper to be treated as-is (fail-closed:
+  `argv[0]` remains the wrapper name, `wrappedBy` is absent).
 
 ## `too-complex` routing — sync fallback + async elicit
 

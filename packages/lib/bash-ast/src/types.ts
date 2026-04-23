@@ -60,6 +60,13 @@ export interface SimpleCommand {
   readonly redirects: readonly Redirect[];
   /** Original source span for UI display and logging. */
   readonly text: string;
+  /**
+   * Wrapper chain, outermost first. Present when one or more wrapper commands
+   * (`nohup`, `timeout`, `sudo`, `env`, `stdbuf`, `time`) were stripped to
+   * reach the effective command. Rules that want to deny `sudo`-wrapped
+   * commands can inspect this field even though `argv[0]` is the inner command.
+   */
+  readonly wrappedBy?: readonly string[];
 }
 
 /**
