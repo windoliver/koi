@@ -52,7 +52,16 @@ export type TooComplexCategory =
  * control flow results in `too-complex` at the analysis level.
  */
 export interface SimpleCommand {
-  /** argv[0] is the command name; argv[1..] are the resolved arguments. */
+  /**
+   * `argv[0]` is the **effective command name** — the innermost non-wrapper
+   * command after stripping any wrapper commands (`sudo`, `nohup`, `timeout`,
+   * `env`, `stdbuf`, `time`). `argv[1..]` are the resolved arguments passed
+   * to that command.
+   *
+   * Authorization consumers that need to know whether a wrapper was present
+   * MUST check `wrappedBy` (e.g. `cmd.wrappedBy?.includes("sudo")`) in
+   * addition to `argv[0]`. See `docs/L2/bash-ast.md` for the full contract.
+   */
   readonly argv: readonly string[];
   /** Leading `VAR=val` assignments applied to this command only. */
   readonly envVars: readonly { readonly name: string; readonly value: string }[];
@@ -60,6 +69,13 @@ export interface SimpleCommand {
   readonly redirects: readonly Redirect[];
   /** Original source span for UI display and logging. */
   readonly text: string;
+  /**
+   * Wrapper chain, outermost first. Present when one or more wrapper commands
+   * (`nohup`, `timeout`, `sudo`, `env`, `stdbuf`, `time`) were stripped to
+   * reach the effective command. Rules that want to deny `sudo`-wrapped
+   * commands can inspect this field even though `argv[0]` is the inner command.
+   */
+  readonly wrappedBy?: readonly string[];
 }
 
 /**
