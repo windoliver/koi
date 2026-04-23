@@ -35,7 +35,7 @@ export interface KoiSettings {
   readonly $schema?: string | undefined;
   readonly permissions?:
     | {
-        readonly defaultMode?: "default" | "bypass" | "plan" | "auto" | undefined;
+        readonly defaultMode?: "default" | "plan" | "auto" | undefined;
         /** Patterns like "Read(*)", "Bash(git *)", "*" — allow these tools. */
         readonly allow?: readonly string[] | undefined;
         /** Patterns — present approval prompt for these tools. */

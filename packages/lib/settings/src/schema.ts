@@ -25,12 +25,30 @@ const hookCommandSchema = z
 
 const hookEventSchema = z.array(hookCommandSchema).readonly();
 
+/** Validates a single permission string, catching the most common structural errors. */
+const permissionStringSchema = z
+  .string()
+  .min(1)
+  .superRefine((s, ctx) => {
+    if (s === "*") return;
+    const parenIdx = s.indexOf("(");
+    if (parenIdx === -1) return; // bare tool name or "Tool:glob" — structurally valid
+    if (!s.endsWith(")")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Missing closing ")" in permission string "${s}"`,
+      });
+    }
+  });
+
 const permissionsSchema = z
   .object({
-    defaultMode: z.enum(["default", "bypass", "plan", "auto"]).optional(),
-    allow: z.array(z.string().min(1)).optional(),
-    ask: z.array(z.string().min(1)).optional(),
-    deny: z.array(z.string().min(1)).optional(),
+    // "bypass" is excluded: settings cannot disable rule evaluation.
+    // Programmatic callers use createPermissionBackend({ mode: "bypass" }) directly.
+    defaultMode: z.enum(["default", "plan", "auto"]).optional(),
+    allow: z.array(permissionStringSchema).optional(),
+    ask: z.array(permissionStringSchema).optional(),
+    deny: z.array(permissionStringSchema).optional(),
     additionalDirectories: z.array(z.string().min(1)).optional(),
   })
   .readonly();

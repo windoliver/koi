@@ -1538,7 +1538,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // layers); a policy-layer error is re-thrown so the top-level handler can
   // exit with the fail-closed error code rather than produce a generic crash.
   const settingsRules: SourcedRule[] = [];
-  let settingsDefaultMode: "default" | "bypass" | "plan" | "auto" = "default";
+  let settingsDefaultMode: "default" | "plan" | "auto" = "default";
   // Tracks the mode explicitly set by the policy layer, so the custom-backend
   // path can fail startup rather than silently ignore a policy-mandated mode.
   let policyDefaultMode: "default" | "bypass" | "plan" | "auto" | undefined;
@@ -1560,18 +1560,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         settingsRules.push(...filtered);
       }
     }
-    // Compute effective defaultMode in precedence order. bypass is only honored
-    // from "policy" or "flag" layers — lower layers cannot disable enforcement.
+    // Compute effective defaultMode: highest-precedence layer that sets it wins.
+    // "bypass" is not a valid settings value (removed from schema) so it can
+    // never arrive here from loadSettings.
     for (const source of SOURCE_PRECEDENCE) {
       const layerMode = sources[source]?.permissions?.defaultMode;
       if (layerMode == null) continue;
-      if (layerMode === "bypass" && source !== "policy" && source !== "flag") {
-        console.warn(
-          `[koi/${hostId}] settings[${source}] permissions.defaultMode="bypass" ignored — ` +
-            `bypass requires the policy or flag layer.`,
-        );
-        continue;
-      }
       settingsDefaultMode = layerMode;
       break;
     }
