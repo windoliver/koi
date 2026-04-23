@@ -1129,4 +1129,5 @@ When the agent rotates between multiple tools all hitting the same soft-deny rul
 
 ## Changelog
 
+- **Build: `@koi/bash-ast` added to tsconfig project references** (#1827) — `bash-spec-guard.ts` already declared `@koi/bash-ast` in `package.json` but the tsconfig `references` array was missing the entry, causing DTS build failures after the file was merged from main. No behavioral change.
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
