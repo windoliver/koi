@@ -312,6 +312,47 @@ describe("createLocalAgentLifecycle", () => {
     expect(signalAborted).toBe(true);
   });
 
+  test("timeout fires onExit immediately on stuck agent (no second yield)", async () => {
+    // Key regression: agent yields once then hangs forever ignoring abort.
+    // onExit MUST fire at timeout, not after the pipe settles (which never happens).
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    let exitFiredAt: number | undefined;
+    const startedAt = Date.now();
+
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      timeout: 100,
+      onExit: (code) => {
+        exitCode = code;
+        exitFiredAt = Date.now() - startedAt;
+      },
+      run: async function* () {
+        yield "first";
+        // Stuck forever — no throw, no more yields, ignores abort
+        await new Promise<never>(() => {});
+      },
+    };
+    const task = await lifecycle.start(taskItemId("task_13"), output, config);
+    runningTasks.push(task);
+
+    // Wait just past the timeout — onExit must already have fired
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    runningTasks.pop();
+
+    expect(exitCode).toBe(1);
+    // Fired within ~50ms of the 100ms timeout (not waiting for pipe to settle)
+    expect(exitFiredAt).toBeDefined();
+    expect(exitFiredAt!).toBeLessThan(200);
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    expect(combined).toContain("[timed out]");
+    expect(combined).not.toContain("[exit code: 0]");
+  });
+
   test("non-cooperative agent: output stops after timeout even if iterator keeps yielding", async () => {
     const output = createOutputStream();
     let exitCode: number | undefined;

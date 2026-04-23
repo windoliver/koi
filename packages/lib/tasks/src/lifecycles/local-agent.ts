@@ -23,7 +23,8 @@ export interface LocalAgentConfig {
   /**
    * Called when the agent exits naturally (0) or fails/times-out (1).
    * NOT called on explicit cancel() — the runner already owns that transition.
-   * The runner uses this callback to transition the task on the board.
+   * Called at most once regardless of internal ordering. Timeout fires it
+   * immediately without waiting for the iterator to settle.
    */
   readonly onExit?: ((code: number) => void) | undefined;
   /**
@@ -35,7 +36,7 @@ export interface LocalAgentConfig {
   readonly run: (agentType: string, inputs: unknown, signal: AbortSignal) => AsyncIterable<string>;
   /**
    * Optional hard-kill path for non-cooperative agents (e.g. subprocesses).
-   * Called after STOP_DRAIN_TIMEOUT_MS elapses without pipe settlement.
+   * Called on timeout (immediately after abort) and on stop() drain expiry.
    * Use to force-kill external processes or workers that ignore the AbortSignal.
    */
   readonly hardKill?: (() => void) | undefined;
@@ -60,9 +61,7 @@ async function pipeAgentOutput(
   isHalted: () => boolean,
 ): Promise<void> {
   for await (const chunk of iterable) {
-    // Stop consuming once halted (explicit cancel OR timeout). The iterator may
-    // still be running internally — callers that need guaranteed termination
-    // should provide a hardKill callback.
+    // Stop consuming once halted (explicit cancel OR timeout).
     if (isHalted()) break;
     output.write(chunk);
   }
@@ -72,7 +71,7 @@ async function pipeAgentOutput(
 // Factory
 // ---------------------------------------------------------------------------
 
-/** Default max time (ms) stop() waits for the pipe to settle after aborting. */
+/** Default max time (ms) stop() waits before invoking hardKill. */
 const DEFAULT_DRAIN_TIMEOUT_MS = 2000;
 
 export interface LocalAgentLifecycleOptions {
@@ -96,16 +95,28 @@ export function createLocalAgentLifecycle(
     ): Promise<LocalAgentTask> => {
       const controller = new AbortController();
 
-      // let justified: both flags are set-once and never reset
+      // let justified: all three are set-once, never reset
       let stopped = false; // explicit cancel() — suppress all callbacks
-      let timedOut = false; // timeout fired — report as failure, not cancel
+      let timedOut = false; // timeout fired — result emitted immediately in timeout callback
+      let terminal = false; // guards exactly-once emission of onExit + terminal message
 
-      // let justified: set on schedule, cleared on natural completion or cancel
+      const emitTerminal = (code: number, message: string): void => {
+        if (terminal) return;
+        terminal = true;
+        output.write(message);
+        config.onExit?.(code);
+      };
+
+      // let justified: set on schedule, only cleared if cancel() fires first
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       if (config.timeout !== undefined) {
         timeoutId = setTimeout(() => {
           timedOut = true;
           controller.abort();
+          // Emit terminal state IMMEDIATELY — do not wait for the pipe to settle.
+          // If the agent is non-cooperative, the pipe may never settle.
+          emitTerminal(1, "\n[timed out]\n");
+          config.hardKill?.();
         }, config.timeout);
       }
 
@@ -113,30 +124,15 @@ export function createLocalAgentLifecycle(
 
       const pipe = pipeAgentOutput(iterable, output, () => stopped || timedOut)
         .then(() => {
-          if (stopped) return;
+          if (stopped || timedOut) return; // cancel or timeout already handled
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          // A compliant run() may exit cleanly on abort instead of throwing —
-          // timedOut still routes to failure, not success.
-          if (timedOut) {
-            output.write("\n[timed out]\n");
-            config.onExit?.(1);
-            return;
-          }
-          output.write("\n[exit code: 0]\n");
-          config.onExit?.(0);
+          emitTerminal(0, "\n[exit code: 0]\n");
         })
         .catch((err: unknown) => {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          // Explicit cancel wins — runner already owns this state transition.
-          if (stopped) return;
-          if (timedOut) {
-            output.write("\n[timed out]\n");
-            config.onExit?.(1);
-            return;
-          }
+          if (stopped || timedOut) return; // cancel or timeout already handled
           const message = err instanceof Error ? err.message : String(err);
-          output.write(`\n[error: ${message}]\n`);
-          config.onExit?.(1);
+          emitTerminal(1, `\n[error: ${message}]\n`);
         })
         .finally(() => {
           active.delete(taskId);
@@ -165,9 +161,6 @@ export function createLocalAgentLifecycle(
       const entry = active.get(state.taskId);
       if (entry === undefined) return;
 
-      // Race the pipe against a drain window. The loop exits immediately on
-      // stopped=true, so cooperative agents settle in microseconds. For
-      // non-cooperative agents, invoke hardKill after the window expires.
       const settled = await Promise.race([
         entry.pipe.then(() => true as const),
         new Promise<false>((resolve) => setTimeout(() => resolve(false), drainTimeoutMs)),
