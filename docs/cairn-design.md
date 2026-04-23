@@ -149,7 +149,7 @@ These are the load‑bearing invariants — everything else in this doc is conse
    └───────────────────────────────────────────────────────────────────────┘
                                     ▲
    ┌───────────────────────────────────────────────────────────────────────┐
-   │   5. Narrow typed contracts (5 interfaces, 15 pure functions)         │
+   │   5. Narrow typed contracts (6 interfaces, 15 pure functions)         │
    │   4. Local-first, cloud-optional                                      │  ← foundation
    │   3. Stand-alone (one Rust binary, zero creds)                        │
    │   2. Smallest viable backend; scale by adding layers                  │
@@ -163,7 +163,7 @@ Every higher-layer promise depends on a lower-layer promise. "Plugin architectur
 2. **Default to the smallest viable backend; scale by adding layers, not by swapping.** P0 default is a single SQLite file with FTS5 — zero external services. P1 upgrades the same vault to Nexus `sandbox` (adds Python sidecar + BM25S + `sqlite-vec` + embeddings) behind the same `MemoryStore` contract. P2 federates sandbox → Nexus `full` hub over HTTP. No code change in Cairn at any tier; the contract is still swappable for teams with an existing store, but Cairn does not "multi‑backend for multi‑backend's sake".
 3. **Stand‑alone.** A single Rust static binary (`brew install cairn` or `cargo install cairn`) on a fresh laptop with zero cloud credentials works end‑to‑end.
 4. **Local‑first, cloud‑optional.** The vault lives on disk. Cloud is opt‑in per sensor, per write path.
-5. **Narrow typed contracts.** Five real interfaces. Fifteen pure functions. Everything else is composition.
+5. **Narrow typed contracts.** Six real interfaces (five P0 + `AgentProvider` at P2). Fifteen pure functions. Everything else is composition.
 6. **Continuous learning off the request path.** A durable `WorkflowOrchestrator` runs Dream / Reflect / Promote / Consolidate / Propagate / Expire / Evaluate in the background. Default v0.1 implementation is `tokio` + a SQLite job table; Temporal is an optional adapter. Harness latency is untouched in either case.
 7. **Privacy by construction.** Presidio pre‑persist, per‑user salt, append‑only consent log, no implicit share.
 8. **The eight verbs are the contract; the CLI is the ground truth.** MCP, SDK, and the Cairn skill are all thin wrappers over the same eight Rust functions under `src/verbs/`. If a harness can run a subprocess, a bash command, or a JSON-RPC client, it speaks Cairn.
@@ -315,7 +315,7 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 
 | Data | P0 (SQLite only) | P1 (+ Nexus sandbox) | P2 (+ hub federation) |
 |------|-------------------|------------------------|-------------------------|
-| Record bodies (markdown + frontmatter) | `wiki/` + `raw/` (markdown files, authoritative) + `.cairn/cairn.db` records table (index + cache) | same markdown files; additionally projected to `nexus-data/cas/` for CAS addressing | same + hub's Postgres projection for shared-tier records |
+| Record bodies (markdown + frontmatter) | **`.cairn/cairn.db` records table is authoritative** (`body`, `frontmatter_json`, `body_hash` columns). The `wiki/` + `raw/` markdown tree is a **repairable projection** of the DB, regenerated on demand via `cairn export --markdown` or automatically by the `markdown_projector` background job on every WAL commit. A missing or stale markdown file never corrupts the vault; `cairn lint --fix-markdown` rebuilds the tree from DB. | same authority model; markdown tree additionally projected to `nexus-data/cas/` for CAS addressing | same + hub's Postgres projection for shared-tier records |
 | Full-text search | SQLite FTS5 on body column | **BM25S** via Nexus `search` brick; FTS5 still answers local queries | BM25S on sandbox + federated BM25 on hub; results merged |
 | Semantic search | **unavailable** — results stamped `semantic_degraded=true` | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick | local `sqlite-vec` + pgvector on hub; results merged |
 | WAL / locks / consent journal | `.cairn/cairn.db` tables | **unchanged — still `.cairn/cairn.db`** (never moves to Nexus) | **unchanged** — each node has its own control plane |
@@ -324,7 +324,9 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 
 ### Records-in-SQLite at P0 — what the FTS5-native layout looks like
 
-At P0, Cairn stores records as rows in `.cairn/cairn.db`. The markdown files under `wiki/` and `raw/` are the authoritative content; the SQLite rows are an indexed projection. Query latency stays under 5 ms for typical reads because it's one `SELECT` against one local SQLite file with WAL mode enabled.
+At P0, Cairn stores records as rows in `.cairn/cairn.db` — the **authoritative** source. The markdown files under `wiki/` and `raw/` are a **repairable projection** of the DB: a background job regenerates them on every WAL commit, and `cairn lint --fix-markdown` rebuilds the entire tree from DB when (a) files are deleted by the user, (b) files diverge from DB (e.g., after manual edits), or (c) on a fresh machine after import. This flip matters for crash semantics: SQLite's atomic commit covers all authoritative state; markdown divergence is never a correctness issue, only a UX annoyance that `lint --fix-markdown` resolves. Query latency stays under 5 ms for typical reads because it's one `SELECT` against one local SQLite file with WAL mode enabled.
+
+**For users who edit markdown directly** — treat Cairn like any projection-based system. Either (a) edit in the desktop GUI / CLI so changes route through the verbs, or (b) edit the markdown file, then run `cairn ingest --resync <path>` to re-extract the DB row. Out-of-band edits that bypass ingest are visible in the filesystem but not to `search` or `retrieve` until resynced. `lint` flags any drift between DB rows and their markdown projections.
 
 ```sql
 -- P0 records table (inside .cairn/cairn.db — no separate file, no separate process)
@@ -371,8 +373,8 @@ CREATE TABLE used                   (operation_id TEXT, nonce BLOB, issuer TEXT,
 CREATE TABLE issuer_seq             (issuer TEXT PK, high_water INT);
 CREATE TABLE outstanding_challenges (issuer TEXT, challenge BLOB, expires_at INT, PK(issuer, challenge));
 
--- Concurrency control (§5.6, §10.1)
-CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, lock_id TEXT, leased_until INT, PK(scope_kind, scope_key));
+-- Concurrency control (§5.6, §10.1) — epoch counter is the fencing primitive, not wall-clock
+CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, lock_id TEXT, epoch INT, last_heartbeat_at INT, reclaim_deadline INT, PK(scope_kind, scope_key));
 CREATE TABLE reader_fence (session_id TEXT PK, op_id TEXT, state TEXT);
 
 -- Audit
@@ -626,7 +628,7 @@ A single user rarely has one vault. Typical patterns: one `work` vault on a corp
     │   │   ├── cairn.db        ← the one SQLite file (records + WAL + consent)
     │   │   └── config.yaml
     │   ├── purpose.md
-    │   ├── wiki/               ← markdown tree, authoritative content
+    │   ├── wiki/               ← markdown projection (rebuildable from DB)
     │   ├── raw/
     │   └── sources/
     │   (+ nexus-data/ appears here only after P1 is enabled)
@@ -910,7 +912,7 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 
 ---
 
-## 4. Contracts — the Five That Matter [P0]
+## 4. Contracts — the Six That Matter (five P0 + AgentProvider at P2)
 
 ### 4.0 Overall architecture at a glance
 
@@ -1724,13 +1726,17 @@ REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated
 
 ```sql
 CREATE TABLE locks (
-  scope_kind   TEXT NOT NULL,      -- 'entity' | 'session'
-  scope_key    TEXT NOT NULL,      -- "(tenant, workspace, entity)" or "(tenant, workspace, session)"
-  mode         TEXT NOT NULL,      -- 'shared' | 'exclusive'
-  holder_count INTEGER NOT NULL,   -- number of shared holders (exclusive ⇒ 1)
-  lock_id      TEXT NOT NULL,      -- fencing token, renewed every heartbeat
-  leased_until INTEGER NOT NULL,   -- epoch ms
-  waiters      BLOB,               -- small queue of pending acquirers
+  scope_kind        TEXT NOT NULL,     -- 'entity' | 'session'
+  scope_key         TEXT NOT NULL,     -- "(tenant, workspace, entity)" or "(tenant, workspace, session)"
+  mode              TEXT NOT NULL,     -- 'shared' | 'exclusive'
+  holder_count      INTEGER NOT NULL,  -- number of shared holders (exclusive ⇒ 1)
+  lock_id           TEXT NOT NULL,     -- fencing token (ULID), renewed every heartbeat
+  epoch             INTEGER NOT NULL,  -- monotonic counter, bumped on every heartbeat AND every reclaim
+  last_heartbeat_at INTEGER,           -- wall-clock ms — LOG-ONLY, never read by the fencing path
+  reclaim_deadline  INTEGER NOT NULL,  -- monotonic local-clock deadline for reclaim eligibility
+                                       -- (populated from std::time::Instant + lease_duration_ms);
+                                       -- used ONLY to decide whether a new acquirer may bump the epoch
+  waiters           BLOB,              -- small queue of pending acquirers
   PRIMARY KEY (scope_kind, scope_key)
 );
 ```
@@ -1740,41 +1746,44 @@ Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and
 **Acquisition protocol (one SQLite transaction per lock):**
 
 ```
-BEGIN;
-  SELECT mode, holder_count, leased_until FROM locks
+BEGIN IMMEDIATE;
+  SELECT mode, holder_count, epoch, reclaim_deadline FROM locks
     WHERE scope_kind = ? AND scope_key = ?;
-  -- If missing: INSERT with this acquirer as sole holder.
-  -- If held in compatible mode + lease valid: UPDATE holder_count += 1, refresh lease.
-  -- If held in compatible mode + lease expired: reclaim (see crash recovery below).
+  -- If missing: INSERT with epoch = 1, this acquirer as sole holder, reclaim_deadline = now_monotonic() + lease_duration_ms.
+  -- If held in compatible mode + lease live (now_monotonic() < reclaim_deadline):
+  --     UPDATE holder_count += 1, refresh reclaim_deadline, keep epoch.
+  -- If held in compatible mode + lease expired (now_monotonic() ≥ reclaim_deadline):
+  --     RECLAIM — UPDATE SET epoch = epoch + 1, lock_id = :new_ulid, holder_count = 1,
+  --                         reclaim_deadline = now_monotonic() + lease_duration_ms.
+  --     The epoch bump is the fencing primitive; the old holder is now a zombie.
   -- If held in incompatible mode: return WAIT; caller enqueues in waiters and retries
-  --   with exponential backoff; no busy-loop.
+  --     with exponential backoff; no busy-loop.
 COMMIT;
 ```
 
-**Lease + fencing semantics — enforced on the Rust side before Nexus is called, and re‑asserted on every chunk transaction.** Every held lock carries a `lock_id` generated at acquisition. The Rust core checks `lock_id` freshness in the same local SQLite transaction that promotes the WAL op from `PREPARED` to about‑to‑apply; if the lease has expired or the `lock_id` differs from the current holder, the op is aborted locally and Nexus is never called.
+**Epoch, not wall-clock, is the fencing primitive.** The `epoch` column is a **monotonic integer counter stored in the `locks` row itself** — bumped on every heartbeat by the holder and on every reclaim by a new acquirer. The fencing CAS compares expected epoch against committed epoch; `reclaim_deadline` is consulted **only to decide whether a reclaim is eligible**, never to invalidate a live holder's writes. This matters because NTP jumps, DST changes, suspend/resume, and container clock drift cannot alter the epoch counter — the only thing that bumps it is a SQLite commit that went through the protocol.
 
-**Per‑chunk fencing for multi‑step and chunked operations.** For any op with more than one transaction (notably `forget_session` Phase A's `forget_chunk`‑sized writes, and any promote/expire with drain steps), each chunk's SQLite transaction opens with a CAS assertion against the lock table:
+**Lease + fencing semantics — enforced on the Rust side before Nexus is called, and re‑asserted on every chunk transaction.** Every held lock carries a `lock_id` and an `epoch`. The holder caches the `(lock_id, epoch)` pair it acquired. The Rust core re‑reads the row and asserts `committed.epoch == cached.epoch AND committed.lock_id == cached.lock_id` in the same local SQLite transaction that promotes the WAL op from `PREPARED` to about‑to‑apply; mismatch → abort locally, Nexus never called.
+
+**Per‑chunk fencing for multi‑step and chunked operations.** For any op with more than one transaction (notably `forget_session` Phase A's `forget_chunk`‑sized writes, and any promote/expire with drain steps), each chunk's SQLite transaction opens with the same CAS:
 
 ```sql
-BEGIN;
-  -- Lock validity CAS: must match AND lease must be live
-  SELECT lock_id, leased_until FROM locks
+BEGIN IMMEDIATE;
+  SELECT epoch, lock_id FROM locks
     WHERE scope_kind = ? AND scope_key = ?;
-  -- Abort the transaction if lock_id ≠ :my_lock_id OR leased_until < :now
-  -- (application-level check; sqlite errors out via RAISE if mismatched)
+  -- Abort if epoch ≠ :cached_epoch OR lock_id ≠ :cached_lock_id.
+  -- No wall-clock check here — the epoch is the single source of truth.
   -- ... chunk's mutation statements ...
 COMMIT;
 ```
 
-A stale worker whose lease expired cannot commit a chunk transaction — the CAS fails, the transaction rolls back, the worker self‑aborts. Heartbeats renew the lease every 10 s; a chunk takes at most `max_chunk_duration` (default 500 ms) so the lease margin is always ≥ 20×. If a worker detects a heartbeat failure (network partition, process stall), it stops issuing further chunks; the next acquirer sees the expired lease and reclaims. No two holders can produce durable mutations — the CAS gate is the single choke point.
+A zombie worker cannot commit a chunk: if a new acquirer already reclaimed the row, the epoch advanced, the CAS fails, the transaction rolls back, the zombie self‑aborts. Heartbeats renew the lease (bump `reclaim_deadline` and increment `epoch` on every heartbeat) every 10 s; a chunk takes at most `max_chunk_duration` (default 500 ms) so the heartbeat cadence keeps the holder's cached epoch valid across all its chunks. No two holders produce durable mutations — the epoch CAS is the single choke point.
 
-**Single lock‑authority clock — epoch counter, not wall clock.** `leased_until` is not wall‑clock ms — it is a **lease epoch counter** stored in the `locks` table (SQLite row‑level). Every heartbeat increments the issuer's per‑process `epoch` column; the CAS compares `:expected_epoch == locks.epoch`, not timestamps. The lock authority is the `locks` table in `.cairn/cairn.db` — the only clock that matters is the serial order of SQLite commits on that table. NTP jumps, DST changes, container clock drift, and suspend/resume events cannot trigger false reclaims or liveness stalls because the protocol does not read wall clocks. For operator‑facing dashboards a wall‑clock `last_heartbeat_at` is logged alongside the epoch — but never read by the fencing path.
+**`max_chunk_duration` is enforced by counting SQLite commits on the holder's own lock row**, not by wall‑clock. A concurrency test asserts the invariant "no chunk commits after a newer epoch has been published" across synthetic clock‑skew + NTP‑step schedules; this test is part of the §15 gate.
 
-`max_chunk_duration` is enforced by the worker counting SQLite commits on its own lock row, not by wall‑clock. A concurrency test asserts the invariant "no chunk commits after a newer epoch has been published" across synthetic clock‑skew + NTP‑step schedules; this test is part of the §15 gate.
+This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity.
 
-This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity, not just at the PREPARED→apply boundary.
-
-**Crash recovery.** A lock with `leased_until < now` is a "zombie" — a prior holder crashed without releasing. The next acquirer can reclaim by deleting the row (or decrementing `holder_count` in shared mode) and taking the lock with a new `lock_id`. Zombie reclaim rejects any in‑flight writes from the old holder by the fencing check above.
+**Crash recovery.** If the current holder crashes without releasing, `reclaim_deadline` (monotonic local-clock deadline, not wall-clock) eventually passes and the next acquirer bumps the epoch as part of reclaim. Any in‑flight writes from the old holder are rejected by the epoch CAS on their next chunk.
 
 **Why `forget_session` exclusive blocks child writes.** A write to a session child opens two SQLite transactions: one to acquire the entity lock and one to acquire the session lock in shared mode. If `forget_session` holds the session lock exclusive, the shared acquisition returns WAIT, and the child write blocks (with a configurable timeout — default 5 s, after which it fails with `SessionLockUnavailable`). The planner refuses to retry with a stale session lock — once `forget_session` commits, the session is gone and retries fail fast.
 
@@ -3728,18 +3737,23 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 | **SRE (Maintainer)** | observability, archival, compliance | `/health`, OpenTelemetry metrics per workflow (§15), tier‑migration + hydration dashboards, `consent.log` audit, forget‑me workflow, `cairn lint` CI gate |
 | **Agent Developer** | APIs for entity memory, search, summaries | Six contracts (§4 — five P0 + AgentProvider at P2), plugin architecture (§4.1), conformance tests (including AgentProvider tool-allowlist + scope + cost-budget checks), CLI + SDK bindings (§13), golden‑query regression harness (§15) |
 
-### Coverage summary
+### Coverage summary — priorities match §0 legend and §19 sequencing
 
-| Story | Priority | Covered | Sections |
-|-------|----------|---------|----------|
-| US1 turn sequence | P0 | v0.1 | §3, §5.1, §6.1, §8.1, §15 |
-| US2 session reload | P0 | v0.1 active / v0.2 cold rehydrate | §3, §5.6 (`upsert`), §10, §8.1 |
-| US3 user memories | P0 | v0.1 | §4.2, §6.1, §7.1, §6.3 |
-| US4 rolling summaries | P1 | v0.1 (rolling path); full in v0.2 | §10, §7, §6.1 |
-| US5 tool calls with turns | P1 | v0.1 | §6.1, §9.1, §5.2 |
-| US6 archive inactive sessions | P2 | v0.2 | §3.0, §10, §15 |
-| US7 search | P3 | v0.1 (keyword+semantic+hybrid); v0.2 cross‑tenant federation | §8, §5.1, §4.2, §6.3 |
-| US8 session delete | P3 | v0.1 `forget_record` / v0.2 `forget_session` | §14, §10, §5.6 |
+| Story | Sub-capability priority | Covered | Sections |
+|-------|-------------------------|---------|----------|
+| US1 turn sequence | **P0** | v0.1 | §3, §5.1, §6.1, §8.1, §15 |
+| US2 session reload — active | **P0** | v0.1 | §3, §5.6 (`upsert`), §8.1 |
+| US2 session reload — cold rehydrate | **P1** | v0.2 | §10 Expiration, §15 |
+| US3 user memories | **P0** | v0.1 | §4.2, §6.1, §7.1, §6.3 |
+| US4 rolling summaries (basic) | **P0** | v0.1 | §10 Consolidation, §7 |
+| US4 Reflection/REM/Deep tiers | **P1** | v0.2 | §10.1, §10.2 |
+| US5 tool calls with turns | **P0** | v0.1 | §6.1, §9.1, §5.2 |
+| US6 archive inactive sessions | **P1** | v0.2 | §3.0, §10 Expiration, §15 |
+| US7 search — keyword only (`semantic_degraded=true`) | **P0** | v0.1 | §8, §5.1 |
+| US7 search — semantic + hybrid | **P1** | v0.2 | §8, §3.0 |
+| US7 search — cross-tenant federation | **P2** | v0.3 | §8, §12.a |
+| US8 delete — record | **P0** | v0.1 `forget_record` | §14, §5.6 |
+| US8 delete — session fan-out | **P1** | v0.2 `forget_session` | §14, §10, §5.6 |
 
 **Coverage vs. sequencing (§19) — single source of truth:** The capability matrix below drives both this section and §19; a CI lint fails the build if §8, §18.c, and §19 disagree on what ships when.
 
