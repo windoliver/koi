@@ -1934,6 +1934,41 @@ describe("createKoi resetBudgetPerRun", () => {
       }),
     ).rejects.toThrow("ITERATION_GUARD_BRAND");
   });
+
+  test("cycleSession emits session_reset with source:host and deterministic boundaryId", async () => {
+    const { GOVERNANCE } = await import("@koi/core");
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recordedEvents: import("@koi/core").GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      recordedEvents.push(event);
+      return original(event);
+    };
+
+    await runtime.cycleSession?.();
+    await runtime.cycleSession?.();
+
+    const sessionResets = recordedEvents.filter((e) => e.kind === "session_reset");
+    expect(sessionResets.length).toBe(2);
+    const sr0 = sessionResets[0];
+    const sr1 = sessionResets[1];
+    if (sr0 === undefined || sr0.kind !== "session_reset")
+      throw new Error("expected session_reset[0]");
+    if (sr1 === undefined || sr1.kind !== "session_reset")
+      throw new Error("expected session_reset[1]");
+    expect(sr0.source).toBe("host");
+    expect(sr0.boundaryId).toMatch(/:session:0$/);
+    expect(sr1.boundaryId).toMatch(/:session:1$/);
+    expect(sr0.boundaryId).not.toBe(sr1.boundaryId);
+  });
 });
 
 // ---------------------------------------------------------------------------
