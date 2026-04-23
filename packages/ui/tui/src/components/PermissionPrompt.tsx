@@ -85,9 +85,10 @@ export const PERMISSION_PROMPT_MIN_SAFE_WIDTH = 20;
 
 /**
  * Absolute floor for `computeMinSafeHeight`: the minimum baseline for the
- * shortest possible prompt (no reason, no permanent, empty-object JSON on a
- * wide terminal). Derived:
- *   MODAL_POSITION.top(2) + border(2) + title(1) + tool(2) + args(3) + hints(6) = 16
+ * shortest possible prompt (short toolId, no reason, no permanent, "{}" JSON
+ * on a wide terminal). Derived:
+ *   MODAL_POSITION.top(1) + border(2) + title(1) + tool(2) + args(3) + hints(6) = 15
+ *   floored to 16 to account for rendering margin.
  * Exported for unit testing.
  */
 export const PERMISSION_PROMPT_MIN_SAFE_HEIGHT = 16;
@@ -99,13 +100,14 @@ export const PERMISSION_PROMPT_MIN_SAFE_HEIGHT = 16;
  *
  * Row budget:
  *   MODAL_POSITION.top + borders(2) + title(1 or 2 if narrow) +
- *   marginTop + tool(1 or 2 if narrow) +
+ *   marginTop + tool rows (wraps for long IDs) +
  *   marginTop + "Arguments:\n" + inputPreview lines +
  *   [if reason: marginTop + estimated lines] +
- *   marginTop + [y](1) + [n](1) + [a…\n  toolId](2) + [!]?(1) + [Esc](1) +
- *   border bottom (included in borders above)
+ *   marginTop + [y](1) + [n](1) + [a header](1) + [a toolId wrapped] + [!]?(1) + [Esc](1)
  *
- * Returns at least PERMISSION_PROMPT_MIN_SAFE_HEIGHT (floor for minimum content).
+ * toolId wrapping is included in both the Tool: section and the [a] hint so
+ * long MCP-style IDs (e.g. `crm__get_customer_with_full_details`) that span
+ * multiple rows are accounted for. Returns at least PERMISSION_PROMPT_MIN_SAFE_HEIGHT.
  * Exported for unit testing.
  */
 export function computeMinSafeHeight(
@@ -113,16 +115,29 @@ export function computeMinSafeHeight(
   inputPreviewStr: string,
   reason: string | undefined,
   permanentAvailable: boolean,
+  toolId: string,
 ): number {
   const width = computePermissionPromptWidth(terminalCols);
+  // Inner usable width: paddingLeft(1) + paddingRight(1) consumed by the box.
+  const innerWidth = Math.max(1, width - 2);
   const isNarrow = width < PERMISSION_PROMPT_NARROW_THRESHOLD;
 
   // top offset + border top + border bottom
   let rows = MODAL_POSITION.top + 2;
   // title row (risk label stacks below on narrow terminals)
   rows += isNarrow ? 2 : 1;
-  // marginTop(1) + tool (1 wide, 2 narrow: "Tool:" + "  id")
-  rows += 1 + (isNarrow ? 2 : 1);
+  // marginTop(1) + tool section
+  // Wide: "Tool: ${toolId}" — wraps at innerWidth cols.
+  // Narrow: "Tool:" (1) + "  ${toolId}" (wraps at innerWidth cols, 2-char indent).
+  if (isNarrow) {
+    // "  " + toolId wraps at innerWidth
+    const toolIdLines = Math.max(1, Math.ceil((2 + toolId.length) / innerWidth));
+    rows += 1 + 1 + toolIdLines; // marginTop + "Tool:" + indented toolId lines
+  } else {
+    // "Tool: " (6 chars) + toolId wraps at innerWidth
+    const toolLineLines = Math.max(1, Math.ceil((6 + toolId.length) / innerWidth));
+    rows += 1 + toolLineLines; // marginTop + tool line(s)
+  }
   // marginTop(1) + "Arguments:" header + JSON preview lines
   rows += 1 + 1 + inputPreviewStr.split("\n").length;
   // reason: marginTop(1) + estimated line count based on inner width
@@ -132,8 +147,11 @@ export function computeMinSafeHeight(
     const lineWidth = Math.max(1, width - 3);
     rows += 1 + Math.max(1, Math.ceil(normalized.length / lineWidth));
   }
-  // marginTop(1) + key hints: [y](1) + [n](1) + [a\n  toolId](2) + [!]?(1) + [Esc](1)
-  rows += 1 + 1 + 1 + 2 + (permanentAvailable ? 1 : 0) + 1;
+  // marginTop(1) + [y](1) + [n](1)
+  // + [a] hint: "[a] Allow this session:" header (1) + "  ${toolId}" wrapped lines
+  // + [!]?(1) + [Esc](1)
+  const aHintToolIdLines = Math.max(1, Math.ceil((2 + toolId.length) / innerWidth));
+  rows += 1 + 1 + 1 + 1 + aHintToolIdLines + (permanentAvailable ? 1 : 0) + 1;
 
   return Math.max(rows, PERMISSION_PROMPT_MIN_SAFE_HEIGHT);
 }
@@ -261,13 +279,14 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   // shown when they would be silently ignored. (#1913)
   const isTooNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_MIN_SAFE_WIDTH);
   // Dynamic height estimate accounts for multiline JSON, reason text, narrow
-  // layout, and permanent approval row — not just the minimum baseline. (#1913)
+  // layout, toolId wrapping in Tool: and [a] hint, and permanent row. (#1913)
   const minSafeHeight = createMemo(() =>
     computeMinSafeHeight(
       props.terminalWidth ?? PERMISSION_PROMPT_WIDTH,
       inputPreview(),
       props.prompt.reason,
       permanentAvailable(),
+      props.prompt.toolId,
     )
   );
   const isTooShort = createMemo(() =>
