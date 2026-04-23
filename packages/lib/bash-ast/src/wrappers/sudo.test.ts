@@ -57,4 +57,38 @@ describe("unwrapSudo", () => {
   test("returns null for non-sudo argv", () => {
     expect(unwrapSudo(["ls", "-la"])).toBeNull();
   });
+
+  // Non-execution sudo modes must NOT be unwrapped (fail-closed).
+  test("returns null for sudo -e (edit mode — file path, not command)", () => {
+    expect(unwrapSudo(["sudo", "-e", "/etc/passwd"])).toBeNull();
+  });
+
+  test("returns null for sudo --edit", () => {
+    expect(unwrapSudo(["sudo", "--edit", "/etc/sudoers"])).toBeNull();
+  });
+
+  test("returns null for sudo -l (list mode)", () => {
+    expect(unwrapSudo(["sudo", "-l"])).toBeNull();
+  });
+
+  test("returns null for sudo --list", () => {
+    expect(unwrapSudo(["sudo", "--list", "rm"])).toBeNull();
+  });
+
+  test("returns null for sudo -v (validate credentials)", () => {
+    expect(unwrapSudo(["sudo", "-v"])).toBeNull();
+  });
+
+  test("returns null for sudo --validate", () => {
+    expect(unwrapSudo(["sudo", "--validate"])).toBeNull();
+  });
+
+  // -U/--other-user is a list-mode option, NOT an execution flag — must NOT unwrap.
+  test("returns null for sudo -U alice rm (other-user — listing mode only)", () => {
+    expect(unwrapSudo(["sudo", "-U", "alice", "rm"])).toBeNull();
+  });
+
+  test("returns null for sudo --other-user=alice rm", () => {
+    expect(unwrapSudo(["sudo", "--other-user=alice", "rm"])).toBeNull();
+  });
 });
