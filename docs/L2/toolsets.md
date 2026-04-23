@@ -38,7 +38,7 @@ Merges multiple registries. Later entries win on name collision.
 
 | Name | Tools | Use case |
 |------|-------|----------|
-| `safe` | `web_search`, `web_fetch`, `memory_read`, `memory_write`, `memory_delete` | No shell, no file write — safe for untrusted channels |
+| `safe` | `web_search`, `web_fetch`, `memory_read` | Read-only web + memory — safe for untrusted channels (no writes, no deletes) |
 | `developer` | `*` wildcard — all tools pass through | Full access for coding agents |
 | `researcher` | `web_search`, `web_fetch`, `memory_read`, `memory_write`, `memory_delete`, `read_file`, `glob`, `grep` | Research without mutation |
 | `minimal` | `memory_read`, `memory_write`, `memory_delete`, `ask_user` | Conversation only |
@@ -48,35 +48,18 @@ than a literal tool name.
 
 ## Manifest Integration
 
-```yaml
-# Single toolset
-toolsets:
-  - developer
+> **Not yet wired.** `AgentManifest.toolsets` and `ManifestSpawnConfig.tools.toolset` schema fields
+> will be added once the assembler calls `resolveToolset` and enforces the resulting allowlist.
+> Callers can use `resolveToolset` + `toolAllowlist` on `SpawnRequest` directly today.
 
-# Composed
-toolsets:
-  - researcher
-  - memory
-tools:
-  - custom_tool
+```typescript
+// Programmatic usage until assembly wiring is complete
+const reg = createBuiltinRegistry();
+const result = resolveToolset("safe", reg);
+if (result.ok) {
+  await spawn({ ...req, toolAllowlist: result.value });
+}
 ```
-
-The assembler resolves each name in `toolsets`, unions the results, then merges
-the explicit `tools` list on top.
-
-## Spawn Narrowing
-
-In `ManifestSpawnConfig.tools`, set `toolset` instead of (or in addition to) `list`:
-
-```yaml
-spawn:
-  tools:
-    policy: allowlist
-    toolset: safe
-```
-
-The spawn engine resolves `toolset` to a flat list and uses it as the effective `list`.
-`toolset` and `list` are merged (union) when both are present.
 
 ## Cycle Detection
 

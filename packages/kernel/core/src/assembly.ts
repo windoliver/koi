@@ -198,11 +198,6 @@ export interface ManifestSpawnConfig {
     readonly policy?: "allowlist" | "denylist";
     /** Tool names to include (allowlist) or exclude (denylist). */
     readonly list?: readonly string[];
-    /**
-     * Named toolset to use as the effective list. Resolved by @koi/toolsets at assembly time.
-     * Merged (union) with `list` when both are present.
-     */
-    readonly toolset?: string;
   };
   /**
    * Env vars to exclude from child env by default.
@@ -222,12 +217,6 @@ export interface AgentManifest {
   readonly description?: string;
   readonly model: ModelConfig;
   readonly tools?: readonly ToolConfig[];
-  /**
-   * Named toolsets to load for this agent. Resolved by @koi/toolsets (L2) at assembly time.
-   * Tool names from all listed toolsets are unioned and merged with the explicit `tools` list.
-   * Use built-in presets ("safe", "developer", "researcher", "minimal") or custom toolset names.
-   */
-  readonly toolsets?: readonly string[];
   readonly channels?: readonly ChannelConfig[];
   readonly middleware?: readonly MiddlewareConfig[];
   readonly permissions?: PermissionConfig;

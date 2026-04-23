@@ -3,8 +3,9 @@ import type { ToolsetDefinition } from "@koi/core";
 export const BUILTIN_TOOLSETS: readonly ToolsetDefinition[] = [
   {
     name: "safe",
-    description: "No shell, no file write — safe for untrusted channels",
-    tools: ["web_search", "web_fetch", "memory_read", "memory_write", "memory_delete"],
+    description:
+      "Read-only web + memory — safe for untrusted channels (no shell, no writes, no deletes)",
+    tools: ["web_search", "web_fetch", "memory_read"],
     includes: [],
   },
   {

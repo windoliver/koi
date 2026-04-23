@@ -93,13 +93,13 @@ describe("createBuiltinRegistry", () => {
     expect(reg.has("minimal")).toBe(true);
   });
 
-  test("safe preset contains no bash or file-write tools", () => {
+  test("safe preset is read-only — no bash, writes, or deletes", () => {
     const reg = createBuiltinRegistry();
     const result = resolveToolset("safe", reg);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     for (const tool of result.value) {
-      expect(tool).not.toMatch(/bash|write_file|edit_file/);
+      expect(tool).not.toMatch(/bash|write|edit|delete/);
     }
   });
 
