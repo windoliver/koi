@@ -117,9 +117,9 @@ export interface CreateKoiOptions {
   /** Governance controller configuration. Defaults to DEFAULT_GOVERNANCE_CONFIG. */
   readonly governance?: Partial<GovernanceConfig>;
   /**
-   * When `true`, fire `iteration_reset` on the governance controller at the
+   * When `true`, fire `run_reset` on the governance controller at the
    * start of every `runtime.run()` invocation, giving each run a fresh
-   * per-iteration turn count and duration window. Token usage, cost, spawn
+   * per-run turn count and duration window. Token usage, cost, spawn
    * counts, and rolling error-rate windows are NOT reset — those continue to
    * accumulate across runs because they track runtime/session-scoped
    * resources. To reset everything, call `cycleSession()` (which fires

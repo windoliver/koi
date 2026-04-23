@@ -508,11 +508,6 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         state.turnCount = 0;
         state.iterationStart = now();
         return;
-      case "iteration_reset":
-        // @deprecated alias for run_reset — remove in Task 7
-        state.turnCount = 0;
-        state.iterationStart = now();
-        return;
       case "session_reset":
         // L0 contract: reset iteration counters AND rolling error-rate window so
         // a fresh conversation doesn't inherit tool-error history. Token usage,

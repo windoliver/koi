@@ -53,7 +53,7 @@ export function createGovernanceController(
   let turnCount = 0;
   let tokenUsage = 0;
   let spawnCount = 0;
-  // let justified: mutable run-start so duration_ms resets per run via iteration_reset
+  // let justified: mutable run-start so duration_ms resets per run via run_reset
   let startedAt = Date.now();
 
   // Cost tracking
@@ -137,7 +137,7 @@ export function createGovernanceController(
     read: () => tokenUsage,
     limit: resolved.iteration.maxTokens,
     retryable: false,
-    description: "Maximum cumulative tokens per runtime lifetime (not reset by iteration_reset)",
+    description: "Maximum cumulative tokens per runtime lifetime (not reset by run_reset)",
     check(): GovernanceCheck {
       if (tokenUsage >= resolved.iteration.maxTokens) {
         return failCheck(
@@ -200,8 +200,7 @@ export function createGovernanceController(
     read: () => accumulatedCostUsd,
     limit: costConfig.maxCostUsd,
     retryable: false,
-    description:
-      "Maximum cumulative cost in USD per runtime lifetime (not reset by iteration_reset)",
+    description: "Maximum cumulative cost in USD per runtime lifetime (not reset by run_reset)",
     check(): GovernanceCheck {
       // Skip check when cost tracking is disabled (maxCostUsd === 0)
       if (costConfig.maxCostUsd <= 0) return { ok: true };
@@ -302,11 +301,6 @@ export function createGovernanceController(
         // INTENTIONALLY NOT reset — they back runtime-wide spend safety
         // caps. Spawn counts and rolling error-rate windows are also
         // runtime-scoped and unaffected.
-        turnCount = 0;
-        startedAt = Date.now();
-        break;
-      case "iteration_reset":
-        // @deprecated alias for run_reset — remove in Task 7
         turnCount = 0;
         startedAt = Date.now();
         break;

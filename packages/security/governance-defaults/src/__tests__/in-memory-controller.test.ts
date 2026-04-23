@@ -592,7 +592,7 @@ describe("createInMemoryController", () => {
     });
   });
 
-  describe("iteration_reset semantics (L0 contract)", () => {
+  describe("run_reset semantics (L0 contract)", () => {
     let controller: ReturnType<typeof createInMemoryController>;
     beforeEach(() => {
       let t = 0;
@@ -613,7 +613,11 @@ describe("createInMemoryController", () => {
       await controller.record({ kind: "tool_error", toolName: "t" });
       await controller.record({ kind: "tool_error", toolName: "t" });
 
-      await controller.record({ kind: "iteration_reset" });
+      await controller.record({
+        kind: "run_reset",
+        source: "engine",
+        boundaryId: "sess:run:0",
+      });
 
       expect(controller.reading("turn_count")?.current).toBe(0);
       expect(controller.reading("token_usage")?.current).toBe(500);

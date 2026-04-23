@@ -122,8 +122,6 @@ export type GovernanceEvent =
       readonly reason?: string | undefined;
       readonly boundaryId: string;
     }
-  /** @deprecated Use "run_reset". Will be removed in next release. */
-  | { readonly kind: "iteration_reset" }
   /**
    * Emitted by `runtime.cycleSession()` at a host-driven conversation boundary
    * (TUI `/clear`, `session:new`). Resets iteration counters AND rolling error-rate
