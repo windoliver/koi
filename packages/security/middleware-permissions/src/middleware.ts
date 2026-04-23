@@ -581,12 +581,12 @@ export function createPermissionsMiddleware(
     serializeTurnContext,
   });
 
-  // Spec guard: active by default when resolveBashCommand is configured.
-  // Opt out by setting enableBashSpecGuard: false explicitly.
-  // Without resolveBashCommand the guard is a no-op anyway (no raw command to parse).
+  // Spec guard: must be explicitly enabled via enableBashSpecGuard: true.
+  // Existing integrations that provide resolveBashCommand retain prior prefix-only
+  // semantics until they opt in. Without resolveBashCommand the guard is a no-op.
   const specRegistry = createSpecRegistry();
   const specGuardEnabled =
-    config.resolveBashCommand !== undefined ? config.enableBashSpecGuard !== false : false;
+    config.resolveBashCommand !== undefined && config.enableBashSpecGuard === true;
   // Bypass backends signal that all checks should be skipped — the canary technique
   // cannot distinguish bypass from prefix/glob when all queries return allow.
   const specGuardBypass = config.backend.bypassAllSpecGuards === true;

@@ -258,15 +258,15 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         });
         if (specOutcome.kind === "spec-evaluated") {
           decision = specOutcome.decision;
-          // Spec-guard downgrades are specific to the enriched command identity.
-          // Re-bind query/trackingResource to the enriched resource so denial
-          // tracking, soft-deny caps, and escalation are scoped to the specific
-          // command, not the plain tool id that may have won the dual-key merge.
-          // Without this, repeated semantic denies on one command accumulate
-          // against plain "bash" and can auto-deny unrelated safe commands.
+          // Spec-guard downgrades are keyed to the exact argv, not the coarse
+          // prefix resource (e.g. `bash:rm`). Using the prefix would cause
+          // repeated semantic denies on one command (e.g. `rm /etc/*`) to
+          // accumulate against the prefix bucket and poison soft-deny caps /
+          // escalation for unrelated safe commands (`rm /tmp/file`).
           if (decision.effect !== "allow") {
-            query = enrichedQuery;
-            trackingResource = enrichedResource;
+            const exactResource = `${request.toolId}:${raw.trim()}`;
+            query = queryForTool(ctx, exactResource, request.metadata, resolvedPath);
+            trackingResource = exactResource;
           }
         }
       }
