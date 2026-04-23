@@ -84,6 +84,13 @@ export interface McpSetup {
    * so token refreshes are reflected without restarting the connection.
    */
   readonly authProviders: ReadonlyMap<string, OAuthAuthProvider>;
+  /**
+   * Live MCP connection objects keyed by server name. Used by
+   * triggerMcpServerAuth to force-reconnect the specific connection after
+   * a successful nav:mcp-auth flow, ensuring the connection transitions
+   * out of auth-needed without requiring a full restart.
+   */
+  readonly connections: ReadonlyMap<string, import("@koi/mcp").McpConnection>;
 }
 
 /** Absolute path of `~/.koi/hooks.json` — the single user-tier hook source. */
@@ -256,6 +263,7 @@ export async function loadUserMcpSetup(
         .map((s) => s.name),
     ),
     authProviders,
+    connections: connectionsByName,
   };
 }
 
@@ -312,6 +320,7 @@ export function buildPluginMcpSetup(
       pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined).map((s) => s.name),
     ),
     authProviders,
+    connections: connectionsByName,
   };
 }
 

@@ -2289,6 +2289,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
       | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
       | undefined;
+    const mcpConnections = stackContribution.exports.mcpConnections as
+      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
+      | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
     // and the onViolation callback need a LIVE session id (rotates on
@@ -3182,6 +3185,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         const authed = await provider.startAuthFlow();
         if (authed) {
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
+          // Force-reconnect the live connection so it transitions out of
+          // auth-needed and picks up the fresh tokens before the caller
+          // queries getMcpStatus(). Best-effort: a failed reconnect is not
+          // fatal — the connection will retry on the next tool call.
+          await mcpConnections
+            ?.get(serverName)
+            ?.connect()
+            .catch(() => {});
         }
         return authed;
       },
