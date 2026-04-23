@@ -8,13 +8,16 @@ describe("mergeSettings", () => {
   });
 
   test("single layer returns that layer unchanged", () => {
-    const layer: KoiSettings = { theme: "dark" };
-    expect(mergeSettings([layer])).toEqual({ theme: "dark" });
+    const layer: KoiSettings = { permissions: { defaultMode: "auto" } };
+    expect(mergeSettings([layer])).toEqual({ permissions: { defaultMode: "auto" } });
   });
 
   test("scalars: later layer wins", () => {
-    const result = mergeSettings([{ theme: "dark" }, { theme: "light" }]);
-    expect(result.theme).toBe("light");
+    const result = mergeSettings([
+      { permissions: { defaultMode: "default" } },
+      { permissions: { defaultMode: "auto" } },
+    ]);
+    expect(result.permissions?.defaultMode).toBe("auto");
   });
 
   test("arrays: concatenated and deduplicated", () => {
@@ -29,13 +32,6 @@ describe("mergeSettings", () => {
     const b: KoiSettings = { permissions: { deny: ["WebFetch(*)"] } };
     const result = mergeSettings([a, b]);
     expect(result.permissions?.deny).toEqual(["Bash(rm *)", "WebFetch(*)"]);
-  });
-
-  test("objects: env deep-merged, later key wins", () => {
-    const a: KoiSettings = { env: { LOG: "info", PORT: "3000" } };
-    const b: KoiSettings = { env: { LOG: "debug", HOST: "localhost" } };
-    const result = mergeSettings([a, b]);
-    expect(result.env).toEqual({ LOG: "debug", PORT: "3000", HOST: "localhost" });
   });
 
   test("policy tightening: policy deny removes from merged allow", () => {
@@ -97,13 +93,8 @@ describe("mergeSettings", () => {
     expect(result.permissions?.allow).toContain("Bash");
   });
 
-  test("policy scalar overrides merged scalar", () => {
-    const result = mergeSettings([{ theme: "dark" }], { theme: "light" });
-    expect(result.theme).toBe("light");
-  });
-
   test("missing layer (undefined) is skipped", () => {
-    const result = mergeSettings([undefined, { theme: "dark" }, undefined]);
-    expect(result.theme).toBe("dark");
+    const result = mergeSettings([undefined, { permissions: { defaultMode: "auto" } }, undefined]);
+    expect(result.permissions?.defaultMode).toBe("auto");
   });
 });

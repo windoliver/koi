@@ -5,12 +5,11 @@ import type { KoiSettings } from "./types.js";
  * an optional policy layer applied as a final enforcement pass.
  *
  * Merge rules:
- *   - Scalars: last layer wins
- *   - Arrays (allow/ask/deny/disabledMcpServers/additionalDirectories): concat + dedup
- *   - Objects (env, hooks): deep-merge by key; last layer's value for a key wins
+ *   - Scalars (defaultMode): last layer wins
+ *   - Arrays (allow/ask/deny): concat + dedup
  *
  * Policy pass: policy.deny removes matching patterns from merged allow/ask,
- * then prepends them to deny. Policy scalars/objects override unconditionally.
+ * then prepends them to deny. Policy scalars override unconditionally.
  */
 export function mergeSettings(
   layers: readonly (KoiSettings | null | undefined)[],
@@ -38,13 +37,6 @@ function mergePair(base: KoiSettings, override: KoiSettings): KoiSettings {
   return {
     $schema: override.$schema ?? base.$schema,
     permissions: mergePermissions(base.permissions, override.permissions),
-    env: mergeObjects(base.env, override.env),
-    hooks: mergeHooks(base.hooks, override.hooks),
-    apiBaseUrl: override.apiBaseUrl ?? base.apiBaseUrl,
-    theme: override.theme ?? base.theme,
-    enableAllProjectMcpServers:
-      override.enableAllProjectMcpServers ?? base.enableAllProjectMcpServers,
-    disabledMcpServers: mergeArrays(base.disabledMcpServers, override.disabledMcpServers),
   };
 }
 
@@ -58,34 +50,7 @@ function mergePermissions(
     allow: mergeArrays(base?.allow, override?.allow),
     ask: mergeArrays(base?.ask, override?.ask),
     deny: mergeArrays(base?.deny, override?.deny),
-    additionalDirectories: mergeArrays(
-      base?.additionalDirectories,
-      override?.additionalDirectories,
-    ),
   };
-}
-
-function mergeObjects(
-  base: Readonly<Record<string, string>> | undefined,
-  override: Readonly<Record<string, string>> | undefined,
-): Readonly<Record<string, string>> | undefined {
-  if (base == null && override == null) return undefined;
-  return { ...base, ...override };
-}
-
-const HOOK_EVENTS = ["PreToolUse", "PostToolUse", "SessionStart", "SessionEnd", "Stop"] as const;
-
-function mergeHooks(
-  base: KoiSettings["hooks"],
-  override: KoiSettings["hooks"],
-): KoiSettings["hooks"] {
-  if (base == null && override == null) return undefined;
-  const result: Record<string, unknown> = {};
-  for (const ev of HOOK_EVENTS) {
-    const merged = mergeArrays(base?.[ev], override?.[ev]);
-    if (merged !== undefined) result[ev] = merged;
-  }
-  return Object.keys(result).length > 0 ? (result as KoiSettings["hooks"]) : undefined;
 }
 
 function mergeArrays<T>(
@@ -137,7 +102,7 @@ function isDenied(candidate: string, denyPatterns: readonly string[]): boolean {
 /**
  * Post-merge policy enforcement pass.
  * Policy deny patterns are removed from merged allow/ask and prepended to deny.
- * Policy scalars/objects override unconditionally.
+ * Policy scalars override unconditionally.
  */
 function applyPolicy(merged: KoiSettings, policy: KoiSettings): KoiSettings {
   const policyDeny = policy.permissions?.deny ?? [];
@@ -162,22 +127,11 @@ function applyPolicy(merged: KoiSettings, policy: KoiSettings): KoiSettings {
         allow: hadAllow ? mergedAllow : undefined,
         ask: hadAsk ? mergedAsk : undefined,
         deny: hadDeny ? mergedDeny : undefined,
-        additionalDirectories: mergeArrays(
-          merged.permissions?.additionalDirectories,
-          policy.permissions?.additionalDirectories,
-        ),
       }
     : undefined;
 
   return {
     $schema: merged.$schema,
     permissions,
-    env: mergeObjects(merged.env, policy.env),
-    hooks: mergeHooks(merged.hooks, policy.hooks),
-    apiBaseUrl: policy.apiBaseUrl ?? merged.apiBaseUrl,
-    theme: policy.theme ?? merged.theme,
-    enableAllProjectMcpServers:
-      policy.enableAllProjectMcpServers ?? merged.enableAllProjectMcpServers,
-    disabledMcpServers: mergeArrays(merged.disabledMcpServers, policy.disabledMcpServers),
   };
 }

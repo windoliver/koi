@@ -92,7 +92,9 @@ function readSettingsFile(
     raw = readFileSync(filePath, "utf-8");
   } catch (e: unknown) {
     if (isENOENT(e)) {
-      if (isFatal) {
+      // Policy ENOENT = not installed — silent, return null.
+      // Flag ENOENT = operator pointed to a missing file — fatal.
+      if (isFatal && layer !== "policy") {
         throw new Error(`${layerLabel} "${filePath}" not found`, { cause: e });
       }
       return null;

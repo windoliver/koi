@@ -31,27 +31,27 @@ describe("loadSettings", () => {
 
   test("loads a single user settings file", async () => {
     const koiDir = join(tmpDir, ".koi");
-    writeJson(koiDir, "settings.json", { theme: "dark" });
+    writeJson(koiDir, "settings.json", { permissions: { defaultMode: "auto" } });
     const result = await loadSettings({
       cwd: join(tmpDir, "project"),
       homeDir: tmpDir,
       layers: ["user"],
     });
-    expect(result.settings.theme).toBe("dark");
+    expect(result.settings.permissions?.defaultMode).toBe("auto");
     expect(result.errors).toHaveLength(0);
   });
 
   test("project overrides user (scalar last-wins)", async () => {
     const homeKoi = join(tmpDir, ".koi");
     const projKoi = join(tmpDir, "project", ".koi");
-    writeJson(homeKoi, "settings.json", { theme: "dark" });
-    writeJson(projKoi, "settings.json", { theme: "light" });
+    writeJson(homeKoi, "settings.json", { permissions: { defaultMode: "default" } });
+    writeJson(projKoi, "settings.json", { permissions: { defaultMode: "auto" } });
     const result = await loadSettings({
       cwd: join(tmpDir, "project"),
       homeDir: tmpDir,
       layers: ["user", "project"],
     });
-    expect(result.settings.theme).toBe("light");
+    expect(result.settings.permissions?.defaultMode).toBe("auto");
   });
 
   test("allow arrays are concatenated across layers", async () => {
@@ -87,7 +87,7 @@ describe("loadSettings", () => {
 
   test("schema-invalid field in non-policy layer is skipped with ValidationError", async () => {
     const koiDir = join(tmpDir, ".koi");
-    writeJson(koiDir, "settings.json", { theme: "neon" });
+    writeJson(koiDir, "settings.json", { permissions: { defaultMode: "invalid_mode" } });
     const result = await loadSettings({
       cwd: tmpDir,
       homeDir: tmpDir,
@@ -108,25 +108,50 @@ describe("loadSettings", () => {
 
   test("flag layer uses provided flagPath", async () => {
     const flagPath = join(tmpDir, "custom.json");
-    writeFileSync(flagPath, JSON.stringify({ theme: "light" }));
+    writeFileSync(flagPath, JSON.stringify({ permissions: { deny: ["Bash(rm *)"] } }));
     const result = await loadSettings({
       cwd: tmpDir,
       homeDir: tmpDir,
       flagPath,
       layers: ["flag"],
     });
-    expect(result.settings.theme).toBe("light");
+    expect(result.settings.permissions?.deny).toEqual(["Bash(rm *)"]);
+  });
+
+  test("flag layer failure is fatal when flagPath explicitly provided", async () => {
+    const flagPath = join(tmpDir, "nonexistent.json");
+    await expect(
+      loadSettings({
+        cwd: tmpDir,
+        homeDir: tmpDir,
+        flagPath,
+        layers: ["flag"],
+      }),
+    ).rejects.toThrow(/not found/);
+  });
+
+  test("empty policy file throws (fail-closed)", async () => {
+    const policyPath = join(tmpDir, "policy.json");
+    writeFileSync(policyPath, "   ");
+    await expect(
+      loadSettings({
+        cwd: tmpDir,
+        homeDir: tmpDir,
+        layers: ["policy"],
+        policyPath,
+      }),
+    ).rejects.toThrow(/empty/);
   });
 
   test("sources record contains per-layer snapshots", async () => {
     const koiDir = join(tmpDir, ".koi");
-    writeJson(koiDir, "settings.json", { theme: "dark" });
+    writeJson(koiDir, "settings.json", { permissions: { defaultMode: "auto" } });
     const result = await loadSettings({
       cwd: tmpDir,
       homeDir: tmpDir,
       layers: ["project"],
     });
-    expect(result.sources.project).toEqual({ theme: "dark" });
+    expect(result.sources.project).toEqual({ permissions: { defaultMode: "auto" } });
     expect(result.sources.user).toBeNull();
   });
 
@@ -145,7 +170,7 @@ describe("loadSettings", () => {
 
   test("policy schema-invalid file throws (fail-closed)", async () => {
     const policyPath = join(tmpDir, "policy-schema.json");
-    writeFileSync(policyPath, JSON.stringify({ theme: "neon" })); // invalid enum value
+    writeFileSync(policyPath, JSON.stringify({ permissions: { defaultMode: "plan" } }));
     await expect(
       loadSettings({
         cwd: tmpDir,

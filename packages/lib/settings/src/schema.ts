@@ -4,6 +4,10 @@
  * Provides:
  * - `validateKoiSettings` for validation with Result<T, KoiError> return
  * - `getSettingsJsonSchema` for JSON Schema export (IDE autocompletion)
+ *
+ * Only fields that are actively consumed by the runtime are included.
+ * Fields are added here when their enforcement path is wired in; until
+ * then, silently accepting them creates a false sense of enforcement.
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -14,16 +18,6 @@ import type { KoiSettings } from "./types.js";
 // ---------------------------------------------------------------------------
 // Shared sub-schemas
 // ---------------------------------------------------------------------------
-
-const hookCommandSchema = z
-  .object({
-    type: z.literal("command"),
-    command: z.string().min(1),
-    timeoutMs: z.number().int().positive().optional(),
-  })
-  .readonly();
-
-const hookEventSchema = z.array(hookCommandSchema).readonly();
 
 /**
  * Valid tool name: starts with a letter, followed by letters/digits/underscores.
@@ -67,23 +61,14 @@ const permissionStringSchema = z
 
 const permissionsSchema = z
   .object({
-    // "bypass" is excluded: settings cannot disable rule evaluation.
-    // Programmatic callers use createPermissionBackend({ mode: "bypass" }) directly.
-    defaultMode: z.enum(["default", "plan", "auto"]).optional(),
+    // "bypass" excluded: settings cannot disable rule evaluation.
+    // "plan" excluded: plan mode hard-denies all "invoke" actions, which would
+    //   brick the TUI. Wire plan-mode action vocabulary before accepting this.
+    // Programmatic callers use createPermissionBackend({ mode }) directly.
+    defaultMode: z.enum(["default", "auto"]).optional(),
     allow: z.array(permissionStringSchema).optional(),
     ask: z.array(permissionStringSchema).optional(),
     deny: z.array(permissionStringSchema).optional(),
-    additionalDirectories: z.array(z.string().min(1)).optional(),
-  })
-  .readonly();
-
-const hooksSchema = z
-  .object({
-    PreToolUse: hookEventSchema.optional(),
-    PostToolUse: hookEventSchema.optional(),
-    SessionStart: hookEventSchema.optional(),
-    SessionEnd: hookEventSchema.optional(),
-    Stop: hookEventSchema.optional(),
   })
   .readonly();
 
@@ -95,12 +80,6 @@ const koiSettingsSchema: z.ZodType<KoiSettings> = z
   .object({
     $schema: z.string().optional(),
     permissions: permissionsSchema.optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    hooks: hooksSchema.optional(),
-    apiBaseUrl: z.string().url().optional(),
-    theme: z.enum(["dark", "light", "system"]).optional(),
-    enableAllProjectMcpServers: z.boolean().optional(),
-    disabledMcpServers: z.array(z.string().min(1)).optional(),
   })
   .strip()
   .readonly();

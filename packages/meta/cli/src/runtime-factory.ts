@@ -1513,7 +1513,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // layers); a policy-layer error is re-thrown so the top-level handler can
   // exit with the fail-closed error code rather than produce a generic crash.
   const settingsRules: SourcedRule[] = [];
-  let settingsDefaultMode: "default" | "plan" | "auto" = "default";
+  let settingsDefaultMode: "default" | "auto" = "default";
   // Tracks the mode explicitly set by the policy layer, so the custom-backend
   // path can fail startup rather than silently ignore a policy-mandated mode.
   let policyDefaultMode: "default" | "plan" | "auto" | undefined;

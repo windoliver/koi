@@ -10,20 +10,11 @@ describe("validateKoiSettings", () => {
   test("full valid settings passes", () => {
     const result = validateKoiSettings({
       permissions: {
-        defaultMode: "plan",
+        defaultMode: "auto",
         allow: ["Read(*)", "Glob(*)"],
         deny: ["Bash(rm -rf*)"],
         ask: ["Bash(git push*)"],
-        additionalDirectories: ["/tmp/workspace"],
       },
-      env: { KOI_LOG_LEVEL: "debug" },
-      hooks: {
-        PreToolUse: [{ type: "command", command: "./hooks/audit.sh" }],
-      },
-      apiBaseUrl: "https://openrouter.ai/api/v1",
-      theme: "dark",
-      enableAllProjectMcpServers: false,
-      disabledMcpServers: ["risky-server"],
     });
     expect(result.ok).toBe(true);
   });
@@ -33,36 +24,41 @@ describe("validateKoiSettings", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("invalid theme produces error", () => {
-    const result = validateKoiSettings({ theme: "neon" });
+  test("plan defaultMode is rejected (not yet wired)", () => {
+    const result = validateKoiSettings({ permissions: { defaultMode: "plan" } });
     expect(result.ok).toBe(false);
   });
 
-  test("non-string env value produces error", () => {
-    const result = validateKoiSettings({ env: { KEY: 42 } });
+  test("bypass defaultMode is rejected", () => {
+    const result = validateKoiSettings({ permissions: { defaultMode: "bypass" } });
     expect(result.ok).toBe(false);
   });
 
-  test("hook command missing type produces error", () => {
-    const result = validateKoiSettings({
-      hooks: { PreToolUse: [{ command: "./script.sh" }] },
-    });
+  test("bare glob metacharacter in permission string produces error", () => {
+    const result = validateKoiSettings({ permissions: { allow: ["Read**"] } });
     expect(result.ok).toBe(false);
   });
 
-  test("hook with invalid type produces error", () => {
-    const result = validateKoiSettings({
-      hooks: { PreToolUse: [{ type: "http", command: "./script.sh" }] },
-    });
+  test("missing closing paren in permission string produces error", () => {
+    const result = validateKoiSettings({ permissions: { allow: ["Bash(git push"] } });
     expect(result.ok).toBe(false);
+  });
+
+  test("bare tool name is valid", () => {
+    const result = validateKoiSettings({ permissions: { allow: ["Read"] } });
+    expect(result.ok).toBe(true);
+  });
+
+  test("wildcard-only string is valid", () => {
+    const result = validateKoiSettings({ permissions: { allow: ["*"] } });
+    expect(result.ok).toBe(true);
   });
 
   test("unknown top-level keys are stripped (not rejected)", () => {
-    const result = validateKoiSettings({ unknownKey: true, theme: "dark" });
+    const result = validateKoiSettings({ unknownKey: true, permissions: { defaultMode: "auto" } });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect((result.value as Record<string, unknown>).unknownKey).toBeUndefined();
-      expect(result.value.theme).toBe("dark");
     }
   });
 });
