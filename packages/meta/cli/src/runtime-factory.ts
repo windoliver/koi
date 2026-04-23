@@ -649,6 +649,12 @@ export interface KoiRuntimeConfig {
   /** Working directory for file tools (Glob, fs_read, Bash). Defaults to process.cwd(). */
   readonly cwd?: string | undefined;
   /**
+   * Absolute path to a settings file loaded as the `flag` layer — highest priority
+   * below `policy`. Enables per-invocation overrides via `--settings <path>`.
+   * When omitted the flag layer is empty (no per-invocation override).
+   */
+  readonly settingsFlagPath?: string | undefined;
+  /**
    * System prompt injected via createSystemPromptMiddleware.
    * Tells the model it has tools and should use them.
    * When omitted, no system prompt middleware is installed.
@@ -1204,7 +1210,14 @@ export class PolicyLoadError extends Error {
 }
 
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
-  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+  const {
+    modelAdapter,
+    modelName,
+    approvalHandler,
+    cwd = process.cwd(),
+    settingsFlagPath,
+    skillsRuntime,
+  } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
   // the agentName in trajectory metadata, and the [koi/X] log prefix.
   // Pulled up from below so preset stack activation (which runs early so
@@ -1530,14 +1543,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // path can fail startup rather than silently ignore a policy-mandated mode.
   let policyDefaultMode: "default" | "bypass" | "plan" | "auto" | undefined;
   try {
-    const { sources, errors: settingsErrors } = await loadSettings({ cwd });
+    const { sources, errors: settingsErrors } = await loadSettings({
+      cwd,
+      ...(settingsFlagPath !== undefined ? { flagPath: settingsFlagPath } : {}),
+    });
     for (const err of settingsErrors) {
       console.warn(`[koi/${hostId}] settings validation warning: ${err.file}: ${err.message}`);
     }
     for (const source of SOURCE_PRECEDENCE) {
       const layerSettings = sources[source];
       if (layerSettings != null) {
-        settingsRules.push(...mapSettingsToSourcedRules(layerSettings, source));
+        const rules = mapSettingsToSourcedRules(layerSettings, source);
+        // Policy layer is tightening-only: allow entries are dropped to prevent
+        // policy from re-opening tools that lower-precedence layers deny.
+        const filtered = source === "policy" ? rules.filter((r) => r.effect !== "allow") : rules;
+        settingsRules.push(...filtered);
       }
     }
     // Compute effective defaultMode in precedence order. bypass is only honored

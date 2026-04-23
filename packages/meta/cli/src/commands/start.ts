@@ -725,6 +725,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         ? createHeadlessApprovalHandler(flags.allowTools)
         : autoApproveHandler,
       cwd: process.cwd(),
+      ...(flags.settingsFlagPath !== undefined ? { settingsFlagPath: flags.settingsFlagPath } : {}),
       engineId: "koi-cli",
       hostId: "koi-cli",
       permissionBackend: createPatternPermissionBackend({

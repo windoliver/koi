@@ -98,6 +98,12 @@ export interface StartFlags extends BaseFlags {
   readonly headless: boolean;
   /** Whitelist of tool names to auto-allow in headless mode. Empty = deny all asks. */
   readonly allowTools: readonly string[];
+  /**
+   * Path to a settings file loaded as the `flag` layer — highest priority below
+   * admin policy. Enables per-invocation permission overrides without editing
+   * project settings. When omitted the flag layer is empty.
+   */
+  readonly settingsFlagPath: string | undefined;
   /** Hard timeout in ms. undefined = no timeout. Headless-only. */
   readonly maxDurationMs: number | undefined;
   /** Path to a JSON Schema file. Validates agent text output. Headless-only. */
@@ -135,6 +141,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     readonly "max-turns": string | undefined;
     readonly "max-spawn-depth": string | undefined;
     readonly "policy-file": string | undefined;
+    readonly settings: string | undefined;
     readonly "alert-threshold": string[] | undefined;
     readonly "no-governance": boolean | undefined;
     readonly help: boolean | undefined;
@@ -166,6 +173,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
         "max-turns": { type: "string" },
         "max-spawn-depth": { type: "string" },
         "policy-file": { type: "string" },
+        settings: { type: "string" },
         "alert-threshold": { type: "string", multiple: true },
         "no-governance": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
@@ -355,6 +363,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     allowRemoteFs: values["allow-remote-fs"] ?? false,
     headless,
     allowTools,
+    settingsFlagPath: values.settings,
     maxDurationMs,
     resultSchema: values["result-schema"],
     governance,

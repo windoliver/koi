@@ -82,7 +82,14 @@ function readSettingsFile(
     raw = readFileSync(filePath, "utf-8");
   } catch (e: unknown) {
     if (isENOENT(e)) return null;
-    throw e;
+    // Policy layer read failures propagate so callers can exit fail-closed.
+    // For optional layers (user/project/local/flag), treat read errors like
+    // schema errors: collect and skip, so a bad file permissions on ~/.koi/settings.json
+    // does not prevent startup.
+    if (layer === "policy") throw e;
+    const message = e instanceof Error ? e.message : String(e);
+    errors.push({ file: filePath, path: "", message: `Failed to read file: ${message}` });
+    return null;
   }
 
   if (raw.trim() === "") return {};
