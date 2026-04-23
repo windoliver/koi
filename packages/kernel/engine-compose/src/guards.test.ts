@@ -3078,3 +3078,87 @@ describe("hasIterationGuardBrand", () => {
     expect(hasIterationGuardBrand(guard)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// resetForRun regression (#1917) — stale-duration bug
+// ---------------------------------------------------------------------------
+
+describe("resetForRun regression (#1917)", () => {
+  test("turns reset to zero after resetForRun", async () => {
+    const guard = createIterationGuard({ maxTurns: 2 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+
+    // Consume one turn
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Reset for next run
+    guard.resetForRun();
+
+    // Second run: should not throw after 1 turn (budget is fresh)
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  test("second run does not inherit stale duration from first run", async () => {
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 80 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+
+    // Use the first run budget
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Sleep past the budget (80ms)
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Reset — anchors new startedAt to "now"
+    guard.resetForRun();
+
+    // Second run should NOT throw immediately (fresh 80ms budget)
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  test("lastActivityMs resets to runStartedAt after resetForRun", async () => {
+    const guard = createIterationGuard({ maxTurns: 100, maxInactivityMs: 50 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+
+    // First call
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Wait past the inactivity budget
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Reset — anchors lastActivityMs to now
+    guard.resetForRun();
+
+    // After reset, inactivity timer is anchored to reset time — not stale
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  test("resetForRun with explicit runStartedAt timestamp", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 100 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+
+    // First call
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Wait 80ms
+    await new Promise((r) => setTimeout(r, 80));
+
+    // Reset with explicit future timestamp (ahead by 500ms)
+    const futureTime = Date.now() + 500;
+    guard.resetForRun(futureTime);
+
+    // Call immediately — should not timeout because startedAt is 500ms in the future
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+});
