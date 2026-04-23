@@ -204,7 +204,7 @@ describe("createLocalAgentLifecycle", () => {
         yield "before";
         // Simulate slow abort acknowledgement
         await new Promise<void>((resolve) => {
-          signal.addEventListener("abort", resolve);
+          signal.addEventListener("abort", () => resolve());
           setTimeout(resolve, 60_000);
         });
         // This yield should be suppressed by the isStopped() guard
@@ -270,7 +270,7 @@ describe("createLocalAgentLifecycle", () => {
       run: async function* (_agentType, _inputs, signal) {
         yield "partial";
         await new Promise<void>((resolve) => {
-          signal.addEventListener("abort", resolve);
+          signal.addEventListener("abort", () => resolve());
           setTimeout(resolve, 60_000);
         });
         // Returns normally (no throw) after seeing abort — must still be timed out
@@ -312,13 +312,13 @@ describe("createLocalAgentLifecycle", () => {
     expect(signalAborted).toBe(true);
   });
 
-  test("timeout fires onExit immediately on stuck agent (no second yield)", async () => {
+  test("timeout fires onExit after drain attempt on stuck agent (no second yield)", async () => {
     // Key regression: agent yields once then hangs forever ignoring abort.
-    // onExit MUST fire at timeout, not after the pipe settles (which never happens).
+    // onExit fires after the drain window (timeout + drainTimeoutMs), not
+    // at the timeout boundary, so cleanup is attempted before marking terminal.
+    const shortDrainLifecycle2 = createLocalAgentLifecycle({ drainTimeoutMs: 50 });
     const output = createOutputStream();
     let exitCode: number | undefined;
-    let exitFiredAt: number | undefined;
-    const startedAt = Date.now();
 
     const config: LocalAgentConfig = {
       agentType: "worker",
@@ -326,7 +326,6 @@ describe("createLocalAgentLifecycle", () => {
       timeout: 100,
       onExit: (code) => {
         exitCode = code;
-        exitFiredAt = Date.now() - startedAt;
       },
       run: async function* () {
         yield "first";
@@ -334,18 +333,14 @@ describe("createLocalAgentLifecycle", () => {
         await new Promise<never>(() => {});
       },
     };
-    const task = await lifecycle.start(taskItemId("task_13"), output, config);
+    const task = await shortDrainLifecycle2.start(taskItemId("task_13"), output, config);
     runningTasks.push(task);
 
-    // Wait just past the timeout — onExit must already have fired
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Wait past timeout (100ms) + drain (50ms) + slack
+    await new Promise((resolve) => setTimeout(resolve, 300));
     runningTasks.pop();
 
     expect(exitCode).toBe(1);
-    // Fired within ~50ms of the 100ms timeout (not waiting for pipe to settle)
-    expect(exitFiredAt).toBeDefined();
-    // biome-ignore lint/style/noNonNullAssertion: guarded by toBeDefined() assertion above
-    expect(exitFiredAt!).toBeLessThan(200);
     const combined = output
       .read(0)
       .map((c) => c.content)
@@ -427,6 +422,36 @@ describe("createLocalAgentLifecycle", () => {
     expect(hardKillCalled).toBe(true);
   });
 
+  test("throwing onExit during timeout does not crash the lifecycle", async () => {
+    const shortDrainLifecycle = createLocalAgentLifecycle({ drainTimeoutMs: 50 });
+    const output = createOutputStream();
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      timeout: 100,
+      onExit: () => {
+        throw new Error("onExit threw");
+      },
+      run: async function* () {
+        yield "start";
+        await new Promise<never>(() => {}); // stuck
+      },
+    };
+    const task = await shortDrainLifecycle.start(taskItemId("task_14b"), output, config);
+    runningTasks.push(task);
+
+    // Should not throw despite onExit throwing
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    runningTasks.pop();
+
+    // Terminal message still written despite onExit failure
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    expect(combined).toContain("[timed out]");
+  });
+
   test("throwing hardKill does not escape stop() or timeout", async () => {
     const shortDrainLifecycle = createLocalAgentLifecycle({ drainTimeoutMs: 80 });
     const output = createOutputStream();
@@ -454,6 +479,7 @@ describe("createLocalAgentLifecycle", () => {
   });
 
   test("throwing hardKill on timeout does not escape the timeout callback", async () => {
+    const shortDrainLifecycle = createLocalAgentLifecycle({ drainTimeoutMs: 50 });
     const output = createOutputStream();
     let exitCode: number | undefined;
     const config: LocalAgentConfig = {
@@ -471,7 +497,7 @@ describe("createLocalAgentLifecycle", () => {
         await new Promise<never>(() => {});
       },
     };
-    const task = await lifecycle.start(taskItemId("task_16"), output, config);
+    const task = await shortDrainLifecycle.start(taskItemId("task_16"), output, config);
     runningTasks.push(task);
 
     // Should not throw despite hardKill throwing in the timeout callback

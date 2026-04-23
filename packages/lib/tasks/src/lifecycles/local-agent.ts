@@ -23,8 +23,8 @@ export interface LocalAgentConfig {
   /**
    * Called when the agent exits naturally (0) or fails/times-out (1).
    * NOT called on explicit cancel() — the runner already owns that transition.
-   * Called at most once regardless of internal ordering. Timeout fires it
-   * immediately without waiting for the iterator to settle.
+   * Called at most once. Exceptions are swallowed — they must not escape the
+   * lifecycle's terminal transition.
    */
   readonly onExit?: ((code: number) => void) | undefined;
   /**
@@ -36,8 +36,9 @@ export interface LocalAgentConfig {
   readonly run: (agentType: string, inputs: unknown, signal: AbortSignal) => AsyncIterable<string>;
   /**
    * Optional hard-kill path for non-cooperative agents (e.g. subprocesses).
-   * Called on timeout (immediately after abort) and on stop() drain expiry.
+   * Called after DRAIN_TIMEOUT_MS elapses without pipe settlement.
    * Use to force-kill external processes or workers that ignore the AbortSignal.
+   * Exceptions are swallowed — they must not escape cleanup paths.
    */
   readonly hardKill?: (() => void) | undefined;
 }
@@ -68,14 +69,41 @@ async function pipeAgentOutput(
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function safeHardKill(fn: (() => void) | undefined): void {
+  if (fn === undefined) return;
+  try {
+    fn();
+  } catch {
+    // Consumer-provided kills can throw on already-exited processes — swallow.
+  }
+}
+
+async function drainOrKill(
+  pipe: Promise<void>,
+  drainTimeoutMs: number,
+  hardKill: (() => void) | undefined,
+): Promise<void> {
+  const settled = await Promise.race([
+    pipe.then(() => true as const),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), drainTimeoutMs)),
+  ]);
+  if (!settled) {
+    safeHardKill(hardKill);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-/** Default max time (ms) stop() waits before invoking hardKill. */
+/** Default max time (ms) drain window waits before invoking hardKill. */
 const DEFAULT_DRAIN_TIMEOUT_MS = 2000;
 
 export interface LocalAgentLifecycleOptions {
-  /** Max ms stop() waits before invoking hardKill. Default: 2000. */
+  /** Max ms the drain window waits before invoking hardKill. Default: 2000. */
   readonly drainTimeoutMs?: number | undefined;
 }
 
@@ -97,33 +125,38 @@ export function createLocalAgentLifecycle(
 
       // let justified: all three are set-once, never reset
       let stopped = false; // explicit cancel() — suppress all callbacks
-      let timedOut = false; // timeout fired — result emitted immediately in timeout callback
-      let terminal = false; // guards exactly-once emission of onExit + terminal message
+      let timedOut = false; // timeout fired — result emitted after drain attempt
+      let terminal = false; // exactly-once guard for onExit + terminal message
 
       const emitTerminal = (code: number, message: string): void => {
         if (terminal) return;
         terminal = true;
         output.write(message);
-        config.onExit?.(code);
+        try {
+          config.onExit?.(code);
+        } catch {
+          // Consumer onExit must not crash the lifecycle's terminal path.
+        }
       };
 
-      // let justified: set on schedule, only cleared if cancel() fires first
+      // Deferred pipe reference so the timeout handler can await it.
+      // let justified: assigned immediately after pipe is created below.
+      let pipeRef: Promise<void> | undefined;
+
+      // let justified: set on schedule, cleared if cancel() fires first
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       if (config.timeout !== undefined) {
         timeoutId = setTimeout(() => {
           timedOut = true;
           controller.abort();
-          // Emit terminal state IMMEDIATELY — do not wait for the pipe to settle.
-          // If the agent is non-cooperative, the pipe may never settle.
-          emitTerminal(1, "\n[timed out]\n");
-          if (config.hardKill !== undefined) {
-            try {
-              config.hardKill();
-            } catch {
-              // hardKill failures (e.g. already-exited process) must not escape
-              // the timeout path and must not overwrite the terminal transition.
+          // Bounded drain before marking terminal — attempt cleanup first so
+          // the task is not declared dead while the agent is still running.
+          void (async () => {
+            if (pipeRef !== undefined) {
+              await drainOrKill(pipeRef, drainTimeoutMs, config.hardKill);
             }
-          }
+            emitTerminal(1, "\n[timed out]\n");
+          })();
         }, config.timeout);
       }
 
@@ -131,13 +164,13 @@ export function createLocalAgentLifecycle(
 
       const pipe = pipeAgentOutput(iterable, output, () => stopped || timedOut)
         .then(() => {
-          if (stopped || timedOut) return; // cancel or timeout already handled
+          if (stopped || timedOut) return; // cancel or timeout handles terminal
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           emitTerminal(0, "\n[exit code: 0]\n");
         })
         .catch((err: unknown) => {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          if (stopped || timedOut) return; // cancel or timeout already handled
+          if (stopped || timedOut) return; // cancel or timeout handles terminal
           const message = err instanceof Error ? err.message : String(err);
           emitTerminal(1, `\n[error: ${message}]\n`);
         })
@@ -145,6 +178,7 @@ export function createLocalAgentLifecycle(
           active.delete(taskId);
         });
 
+      pipeRef = pipe;
       active.set(taskId, { pipe, hardKill: config.hardKill });
 
       const cancel = (): void => {
@@ -167,19 +201,7 @@ export function createLocalAgentLifecycle(
       state.cancel(); // sets stopped=true, aborts controller
       const entry = active.get(state.taskId);
       if (entry === undefined) return;
-
-      const settled = await Promise.race([
-        entry.pipe.then(() => true as const),
-        new Promise<false>((resolve) => setTimeout(() => resolve(false), drainTimeoutMs)),
-      ]);
-
-      if (!settled && entry.hardKill !== undefined) {
-        try {
-          entry.hardKill();
-        } catch {
-          // hardKill failures (e.g. already-exited process) must not escape stop().
-        }
-      }
+      await drainOrKill(entry.pipe, drainTimeoutMs, entry.hardKill);
     },
   };
 }
