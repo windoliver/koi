@@ -588,6 +588,7 @@ export type {
 export { GOVERNANCE_VARIABLES, governanceContributorToken } from "./governance.js";
 // governance backend — pluggable rule-based policy evaluation contract
 export type {
+  AskId,
   ComplianceRecord,
   ComplianceRecorder,
   ConstraintChecker,
@@ -605,8 +606,10 @@ export type {
   ViolationStore,
 } from "./governance-backend.js";
 export {
+  askId,
   DEFAULT_VIOLATION_QUERY_LIMIT,
   GOVERNANCE_ALLOW,
+  isAskVerdict,
   VIOLATION_SEVERITY_ORDER,
 } from "./governance-backend.js";
 // handoff — types
