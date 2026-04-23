@@ -65,8 +65,8 @@ declare function createApprovalStore(config: ApprovalStoreConfig): ApprovalStore
  *    \`Write(path)\`, \`Read(path)\`, and \`Network(host)\` rules against the
  *    spec's \`writes\`, \`reads\`, and \`network[].host\` fields.
  *    Only runs when \`backendSupportsDualKey: true\` — requires a backend that
- *    marks fall-through denies with \`IS_DEFAULT_DENY\` so unmatched resources
- *    are not mistaken for explicit deny/ask rules.
+ *    marks fall-through decisions so unmatched resources are not mistaken for
+ *    explicit deny/ask rules.
  */
 
 type SpecGuardOutcome = {

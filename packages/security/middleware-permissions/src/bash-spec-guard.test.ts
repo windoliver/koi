@@ -256,7 +256,7 @@ describe("evaluateSpecGuard — complex commands ratchet allow → ask", () => {
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "cat /etc/passwd | grep root",
-      currentDecision: { effect: "ask" },
+      currentDecision: { effect: "ask", reason: "pending approval" },
       resolveQuery: async (_q) => hardDeny("should not be called"),
       baseQuery,
       registry,
@@ -281,6 +281,7 @@ describe("evaluateSpecGuard — parse-unavailable fails closed", () => {
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
     expect(result.decision.effect).toBe("deny");
+    if (result.decision.effect !== "deny") return;
     expect(result.decision.reason).toContain("over-length");
   });
 });
@@ -432,6 +433,34 @@ describe("evaluateSpecGuard — public default-deny field detection (#1919 regre
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("allow");
+  });
+
+  test("IS_DEFAULT_ASK symbol (createPermissionBackend fall-through) skips Write rule", async () => {
+    // Regression: createPermissionBackend stamps unmatched ask decisions with IS_DEFAULT_ASK.
+    // The spec guard must treat these as fall-throughs, not explicit ask rules.
+    const IS_DEFAULT_ASK = Symbol.for("@koi/permissions/default-fallthrough-ask");
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "rm /tmp/safe",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        if (q.action === "write") {
+          return {
+            effect: "ask",
+            reason: "No matching permission rule",
+            [IS_DEFAULT_ASK]: true,
+          } as PermissionDecision & Record<symbol, boolean>;
+        }
+        return allowDecision;
+      },
+      baseQuery,
+      registry,
+      backendSupportsDualKey: true,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    // IS_DEFAULT_ASK fall-through must NOT downgrade an allow decision
     expect(result.decision.effect).toBe("allow");
   });
 });

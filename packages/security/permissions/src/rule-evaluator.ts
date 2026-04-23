@@ -7,6 +7,19 @@ import type { PermissionDecision, PermissionQuery } from "@koi/core";
 import type { CompiledRule } from "./rule-types.js";
 
 /**
+ * Cross-package symbol marking fall-through `ask` decisions (no rule matched).
+ *
+ * Uses Symbol.for so that both @koi/permissions (which stamps decisions) and
+ * @koi/middleware-permissions (which detects them in the spec guard) share the
+ * same symbol without a direct import — avoiding the L2→L2 layer violation.
+ *
+ * Dual-key backends that set `supportsDefaultDenyMarker: true` MUST stamp
+ * unmatched ask decisions with this symbol so semantic rule evaluation can
+ * skip them (fall-throughs ≠ explicit policy opinions).
+ */
+export const IS_DEFAULT_ASK: symbol = Symbol.for("@koi/permissions/default-fallthrough-ask");
+
+/**
  * Test whether a resource path matches a compiled glob regex.
  */
 function matchResource(compiled: RegExp, resource: string): boolean {
@@ -259,5 +272,13 @@ export function evaluateRules(
     }
   }
 
-  return { effect: "ask", reason: "No matching permission rule" };
+  // No rule matched — stamp with IS_DEFAULT_ASK so marker-aware consumers
+  // (e.g. the bash spec guard) can distinguish this fall-through from an
+  // explicit ask rule and skip it during semantic evaluation.
+  const fallthrough: PermissionDecision & Record<symbol, boolean> = {
+    effect: "ask",
+    reason: "No matching permission rule",
+    [IS_DEFAULT_ASK]: true,
+  };
+  return fallthrough;
 }

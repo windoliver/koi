@@ -126,19 +126,11 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     // Stateless — nothing to clean up.
   }
 
-  // This backend does NOT set `supportsDefaultDenyMarker`: while its
-  // fall-through isn't a deny (it's `ask`), the dual-key merge in
-  // `@koi/middleware-permissions` treats any `ask` as an explicit
-  // opinion — so an unmatched enriched `ask` would override a matched
-  // plain `allow`, regressing existing plain-tool policies into fresh
-  // prompts. Dual-key participation requires distinguishing matched
-  // rules from fall-through on BOTH deny and ask sides, which this
-  // backend does not yet do.
-  //
-  // Deployments that enable `resolveBashCommand` with this backend
-  // must either opt into `allowLegacyBackendBashFallback: true`
-  // (single-key mode; prefix rules not enforced), or use
-  // `createPatternPermissionBackend` from `@koi/middleware-permissions`
-  // which is marker-aware.
-  return { check, checkBatch, dispose };
+  // This backend is now marker-aware: evaluateRules() stamps fall-through ask
+  // decisions with IS_DEFAULT_ASK (Symbol.for("@koi/permissions/default-fallthrough-ask"))
+  // so consumers in @koi/middleware-permissions can distinguish them from explicit
+  // ask rules during dual-key semantic evaluation. Setting supportsDefaultDenyMarker: true
+  // enables backendSupportsDualKey in the bash spec guard, activating Write/Read/Network
+  // semantic rule enforcement for the default CLI/TUI permission path.
+  return { check, checkBatch, dispose, supportsDefaultDenyMarker: true as const };
 }

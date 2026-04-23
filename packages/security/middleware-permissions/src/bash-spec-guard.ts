@@ -11,8 +11,8 @@
  *    `Write(path)`, `Read(path)`, and `Network(host)` rules against the
  *    spec's `writes`, `reads`, and `network[].host` fields.
  *    Only runs when `backendSupportsDualKey: true` — requires a backend that
- *    marks fall-through denies with `IS_DEFAULT_DENY` so unmatched resources
- *    are not mistaken for explicit deny/ask rules.
+ *    marks fall-through decisions so unmatched resources are not mistaken for
+ *    explicit deny/ask rules.
  */
 
 import {
@@ -26,15 +26,31 @@ import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-b
 import { IS_DEFAULT_DENY } from "./classifier.js";
 
 /**
- * Detect fall-through denies from both the internal IS_DEFAULT_DENY symbol
- * (set by createPatternPermissionBackend) and the public `default: true` /
- * `defaultDeny: true` fields that custom backends may set per the
- * PermissionBackend contract docs.
+ * Symbol used by @koi/permissions/rule-evaluator to mark fall-through ask
+ * decisions (no rule matched). Defined via Symbol.for() so it can be shared
+ * with @koi/middleware-permissions without a cross-L2 import.
  */
-function isDefaultDenyLike(decision: PermissionDecision): boolean {
-  if (decision.effect !== "deny") return false;
+const IS_DEFAULT_ASK: symbol = Symbol.for("@koi/permissions/default-fallthrough-ask");
+
+/**
+ * Detect fall-through decisions from backends that support marker-aware
+ * dual-key evaluation. A fall-through means no explicit policy rule matched —
+ * not a real opinion — so semantic rule evaluation should skip it.
+ *
+ * Detects:
+ *   - IS_DEFAULT_DENY symbol (createPatternPermissionBackend fall-through denies)
+ *   - IS_DEFAULT_ASK symbol (createPermissionBackend fall-through asks via rule-evaluator)
+ *   - public `default: true` / `defaultDeny: true` fields (custom backend convention)
+ */
+function isFallThrough(decision: PermissionDecision): boolean {
   const d = decision as Record<string | symbol, unknown>;
-  return d[IS_DEFAULT_DENY] === true || d.default === true || d.defaultDeny === true;
+  if (decision.effect === "deny") {
+    return d[IS_DEFAULT_DENY] === true || d.default === true || d.defaultDeny === true;
+  }
+  if (decision.effect === "ask") {
+    return d[IS_DEFAULT_ASK] === true;
+  }
+  return false;
 }
 
 export type SpecGuardOutcome =
@@ -77,10 +93,9 @@ function stricter(a: PermissionDecision, b: PermissionDecision): PermissionDecis
 /**
  * Evaluate semantic Write/Read/Network rules for a command's effects.
  *
- * Only called when `backendSupportsDualKey: true`. Decisions marked with
- * `IS_DEFAULT_DENY` are fall-throughs (no matching rule) and are skipped
- * so that the absence of a Write/Read/Network rule does not downgrade an
- * existing `allow` decision.
+ * Only called when `backendSupportsDualKey: true`. Fall-through decisions
+ * (detected via `isFallThrough`) are skipped so that the absence of a
+ * Write/Read/Network rule does not downgrade an existing `allow` decision.
  */
 async function evaluateSemanticRules(
   semantics: CommandSemantics,
@@ -92,14 +107,14 @@ async function evaluateSemanticRules(
 
   for (const path of semantics.writes) {
     const d = await resolveQuery({ ...baseQuery, resource: path, action: "write" });
-    if (isDefaultDenyLike(d)) continue; // fall-through, no explicit Write rule
+    if (isFallThrough(d)) continue; // fall-through, no explicit Write rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
 
   for (const path of semantics.reads) {
     const d = await resolveQuery({ ...baseQuery, resource: path, action: "read" });
-    if (isDefaultDenyLike(d)) continue; // fall-through, no explicit Read rule
+    if (isFallThrough(d)) continue; // fall-through, no explicit Read rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
@@ -109,7 +124,7 @@ async function evaluateSemanticRules(
     // net.host may include port (URL.host) — strip it for the host-wide check.
     const hostname = extractHostname(net.host);
     const dByHostname = await resolveQuery({ ...baseQuery, resource: hostname, action: "network" });
-    if (!isDefaultDenyLike(dByHostname)) {
+    if (!isFallThrough(dByHostname)) {
       result = stricter(result, dByHostname);
       if (result.effect === "deny") return result;
     }
@@ -119,7 +134,7 @@ async function evaluateSemanticRules(
     // (no port in net.host) to avoid a duplicate backend call.
     if (net.host !== hostname) {
       const dByHost = await resolveQuery({ ...baseQuery, resource: net.host, action: "network" });
-      if (!isDefaultDenyLike(dByHost)) {
+      if (!isFallThrough(dByHost)) {
         result = stricter(result, dByHost);
         if (result.effect === "deny") return result;
       }
@@ -172,8 +187,8 @@ async function hasExplicitExactArgvRule(
  *
  * For `complete`/`partial` specs with semantics: evaluates `Write(path)`,
  * `Read(path)`, and `Network(host)` rules. Only enforced when
- * `backendSupportsDualKey: true` — requires a backend that marks
- * fall-through denies so unmatched resources don't downgrade allowed commands.
+ * `backendSupportsDualKey: true` — requires a backend that marks fall-through
+ * decisions so unmatched resources don't downgrade allowed commands.
  *
  * For `too-complex`/`parse-unavailable` AST results: if the current
  * decision is `allow`, downgrades to `ask` (fail-closed: semantic analysis

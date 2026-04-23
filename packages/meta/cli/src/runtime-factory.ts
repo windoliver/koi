@@ -1522,11 +1522,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // so non-bash tools and malformed inputs fall through to the
   // plain tool id.
   //
-  // `allowLegacyBackendBashFallback: true` opts into single-key
-  // evaluation for the TUI's default `createPermissionBackend`,
-  // which is not marker-aware (see docs/L2/permissions.md). The
-  // pattern backend used by `koi start` advertises the marker and
-  // gets full dual-key enrichment automatically.
+  // createPermissionBackend now sets supportsDefaultDenyMarker: true and stamps
+  // fall-through ask decisions with IS_DEFAULT_ASK, enabling full dual-key semantic
+  // enforcement. allowLegacyBackendBashFallback is no longer needed here.
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
@@ -1537,15 +1535,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       toolId.toLowerCase() === "bash" && typeof input.command === "string"
         ? input.command
         : undefined,
-    // Activate the bash spec guard so refused/partial specs trigger the
-    // exact-argv guard and complex shell forms ratchet allow→ask regardless
-    // of whether the backend is marker-aware. Semantic Write/Read/Network rules
-    // additionally fire for marker-aware backends (e.g. `koi start`'s
-    // createPatternPermissionBackend), but NOT for the TUI default backend
-    // (createPermissionBackend), which uses ask-on-no-match and is not
-    // marker-aware — hence allowLegacyBackendBashFallback: true below.
     enableBashSpecGuard: true,
-    allowLegacyBackendBashFallback: true,
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
