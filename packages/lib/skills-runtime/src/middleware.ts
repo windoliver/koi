@@ -48,6 +48,15 @@ export interface SkillInjectorConfig {
    * Default: false (inject full bodies, legacy behavior).
    */
   readonly progressive?: boolean;
+  /**
+   * When true: include `executionMode: "fork"` skills in the `<available_skills>`
+   * XML block. Set this when the agent has a `spawnFn` wired and fork skills are
+   * therefore executable via the `Skill` tool.
+   *
+   * Default: false — fork skills are excluded from the XML block to prevent
+   * NOT_FOUND/VALIDATION errors when no `spawnFn` is configured.
+   */
+  readonly hasForkSupport?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,20 +83,6 @@ function sortedSkills(agent: Agent): readonly SkillComponent[] {
 }
 
 /**
- * Queries the agent ECS for all attached SkillComponent entries and returns
- * their content joined with a separator. Returns undefined when no skills
- * are attached (callers should passthrough without modification).
- */
-function collectSkillContent(agent: Agent): string | undefined {
-  const sorted = sortedSkills(agent);
-  if (sorted.length === 0) return undefined;
-  // Filter empty content (e.g., MCP-derived metadata-only skills)
-  const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
-  if (bodies.length === 0) return undefined;
-  return bodies.join(SEPARATOR);
-}
-
-/**
  * Collects skill names from the agent ECS for capability description.
  */
 function collectSkillNames(agent: Agent): readonly string[] {
@@ -102,14 +97,15 @@ function collectSkillNames(agent: Agent): readonly string[] {
  * non-progressive middleware configuration.
  * Returns the original request unchanged when no skills are attached.
  */
-function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
+function injectSkills(agent: Agent, request: ModelRequest, hasForkSupport: boolean): ModelRequest {
   const sorted = sortedSkills(agent);
   if (sorted.length === 0) return request;
 
   const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
-  // Fork skills are excluded from XML advertising — they need spawnFn which
-  // cannot be verified here; they would fail with VALIDATION if invoked.
-  const metadataSkills = sorted.filter((s) => s.content === "" && s.executionMode !== "fork");
+  // Fork skills are excluded from XML advertising unless hasForkSupport is true.
+  const metadataSkills = sorted.filter(
+    (s) => s.content === "" && (hasForkSupport || s.executionMode !== "fork"),
+  );
 
   if (bodies.length === 0 && metadataSkills.length === 0) return request;
 
@@ -179,12 +175,18 @@ function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObje
  * to systemPrompt. Contains name + description for each skill (no bodies).
  * If no skills are attached, returns the original request unchanged.
  */
-function injectSkillsProgressive(agent: Agent, request: ModelRequest): ModelRequest {
+function injectSkillsProgressive(
+  agent: Agent,
+  request: ModelRequest,
+  hasForkSupport: boolean,
+): ModelRequest {
   const sorted = sortedSkills(agent);
   // Runtime-backed progressive skills have content: "" (set by attachProgressive).
-  // Fork skills are excluded — they require spawnFn which the middleware cannot
-  // verify; advertising them risks NOT_FOUND/VALIDATION errors on invocation.
-  const runtimeSkills = sorted.filter((s) => s.content === "" && s.executionMode !== "fork");
+  // Fork skills are only advertised when hasForkSupport is true (i.e. spawnFn is
+  // configured); otherwise they are excluded to avoid tool VALIDATION failures.
+  const runtimeSkills = sorted.filter(
+    (s) => s.content === "" && (hasForkSupport || s.executionMode !== "fork"),
+  );
   // Non-runtime skills (browser, memory, etc.) carry non-empty bodies.
   // Inject them via the legacy path so their guidance still reaches the model.
   const otherBodies = sorted.map((s) => s.content).filter((c) => c !== "");
@@ -218,7 +220,7 @@ function injectSkillsProgressive(agent: Agent, request: ModelRequest): ModelRequ
  * the agent entity).
  */
 export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiMiddleware {
-  const { agent: agentOrFn, progressive = false } = config;
+  const { agent: agentOrFn, progressive = false, hasForkSupport = false } = config;
 
   return {
     name: "skill-injector",
@@ -232,8 +234,8 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
     ): Promise<ModelResponse> {
       const agent = resolveAgent(agentOrFn);
       const injected = progressive
-        ? injectSkillsProgressive(agent, request)
-        : injectSkills(agent, request);
+        ? injectSkillsProgressive(agent, request, hasForkSupport)
+        : injectSkills(agent, request, hasForkSupport);
       if (injected !== request) {
         ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
       }
@@ -247,8 +249,8 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
     ): AsyncIterable<ModelChunk> {
       const agent = resolveAgent(agentOrFn);
       const injected = progressive
-        ? injectSkillsProgressive(agent, request)
-        : injectSkills(agent, request);
+        ? injectSkillsProgressive(agent, request, hasForkSupport)
+        : injectSkills(agent, request, hasForkSupport);
       if (injected !== request) {
         ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
       }
