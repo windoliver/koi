@@ -253,7 +253,7 @@ sensors:
   slack: { enabled: false, scope: [] }
 store:
   kind: nexus-sandbox         # nexus-sandbox | nexus-full | postgres | custom:<name>
-  path: .cairn/nexus.db       # sandbox profile database (Nexus-owned; Rust speaks HTTP+MCP)
+  path: <vault>/nexus.db      # canonical location — Nexus-owned memory store (§3 Durability topology)
 llm:
   provider: openai-compatible
   base_url: https://…
@@ -723,7 +723,11 @@ Benefits: plans are idempotent (re‑apply = no‑op), reviewable, replayable fo
 
 Every mutation — single upsert, promotion, session delete fan‑out, skill evolution rollout — runs through a two‑phase WAL protocol. Durability (US2), atomic delete (US8), and concurrent‑writer safety (§10.1) all rest on this section.
 
-**WAL record schema (JSON, append‑only at `.cairn/wal/<op>.log`):**
+**WAL record schema — rows in the `wal_ops` table (single source of truth, inside `.cairn/cairn.db`):**
+
+There are no per‑op log files. Earlier drafts referenced `.cairn/wal/<op>.log` — that has been removed. Every op is a row in `wal_ops` with a JSONB payload; per‑step completion markers are rows in a child `wal_steps` table, both inside the same SQLite database so every state transition is a single local transaction. A crash leaves the DB consistent (SQLite journaling handles torn writes); boot recovery reads only from `wal_ops` + `wal_steps` — no file scan, no divergence possible.
+
+The JSON payload stored in `wal_ops.envelope`:
 
 ```json
 {
@@ -793,7 +797,24 @@ BEGIN;
 COMMIT;
 ```
 
-**Lease + fencing semantics — enforced on the Rust side before Nexus is called.** Every held lock carries a `lock_id` generated at acquisition. The Rust core checks `lock_id` freshness in the same local SQLite transaction that promotes the WAL op from `PREPARED` to about‑to‑apply; if the lease has expired or the `lock_id` differs from the current holder, the op is aborted locally and Nexus is never called. Nexus does not replicate the lock table. This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`): a holder that crashed and lost its lease cannot keep writing once the lease expired, because the apply path goes through the Rust‑side fencing check before any HTTP call to Nexus.
+**Lease + fencing semantics — enforced on the Rust side before Nexus is called, and re‑asserted on every chunk transaction.** Every held lock carries a `lock_id` generated at acquisition. The Rust core checks `lock_id` freshness in the same local SQLite transaction that promotes the WAL op from `PREPARED` to about‑to‑apply; if the lease has expired or the `lock_id` differs from the current holder, the op is aborted locally and Nexus is never called.
+
+**Per‑chunk fencing for multi‑step and chunked operations.** For any op with more than one transaction (notably `forget_session` Phase A's `forget_chunk`‑sized writes, and any promote/expire with drain steps), each chunk's SQLite transaction opens with a CAS assertion against the lock table:
+
+```sql
+BEGIN;
+  -- Lock validity CAS: must match AND lease must be live
+  SELECT lock_id, leased_until FROM locks
+    WHERE scope_kind = ? AND scope_key = ?;
+  -- Abort the transaction if lock_id ≠ :my_lock_id OR leased_until < :now
+  -- (application-level check; sqlite errors out via RAISE if mismatched)
+  -- ... chunk's mutation statements ...
+COMMIT;
+```
+
+A stale worker whose lease expired cannot commit a chunk transaction — the CAS fails, the transaction rolls back, the worker self‑aborts. Heartbeats renew the lease every 10 s; a chunk takes at most `max_chunk_duration` (default 500 ms) so the lease margin is always ≥ 20×. If a worker detects a heartbeat failure (network partition, process stall), it stops issuing further chunks; the next acquirer sees the expired lease and reclaims. No two holders can produce durable mutations — the CAS gate is the single choke point.
+
+This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity, not just at the PREPARED→apply boundary.
 
 **Crash recovery.** A lock with `leased_until < now` is a "zombie" — a prior holder crashed without releasing. The next acquirer can reclaim by deleting the row (or decrementing `holder_count` in shared mode) and taking the lock with a new `lock_id`. Zombie reclaim rejects any in‑flight writes from the old holder by the fencing check above.
 
@@ -848,7 +869,7 @@ A dedicated CI concurrency test runs 1000 random schedules of concurrent child w
 
 **Boot‑time recovery.** On every `cairn daemon start`:
 
-1. Scan `.cairn/wal/*.log` and rebuild an in‑memory map of ops by `operation_id` with their latest marker (`ISSUED | PREPARED | step:N:done | COMMITTED | ABORTED`).
+1. Read `wal_ops` + `wal_steps` from `.cairn/cairn.db`; rebuild an in‑memory map of ops by `operation_id` with their latest marker (`ISSUED | PREPARED | step:N:done | COMMITTED | ABORTED`). No file scan — the DB is the sole source of truth.
 2. Build a dependency DAG from the `dependencies` field of every un‑terminal op; topologically sort. Ops whose deps aren't terminal wait.
 3. **TTL applies to new external requests, not to WAL recovery.** The `expires_at` field rejects fresh `ingest/forget/promote` calls past the cutoff; **recovery of an already‑PREPARED op runs regardless of TTL** — once PREPARED, the operation is durably committed to either finish or abort with full compensation.
 4. For each op in dependency‑safe order, resume at `step:(last_done + 1)` using its operation‑specific step graph; already‑applied idempotent steps are no‑ops via the idempotency key.
@@ -1060,7 +1081,7 @@ Sessions carry metadata (`channel`, `priority`, `tags`), emit a `session_ended` 
 
 ### 9.1 Sensors — two families, all opt‑in per‑sensor
 
-**No UI required.** Every sensor enables via config (`.cairn/config.toml`) or CLI flag (`cairn sensor enable <name>`). Sensors run as background daemons under `cairn daemon start` — works on headless servers, SSH sessions, and CI runners. The desktop GUI (§13) is purely optional: it exposes the same toggles but is never required to turn a sensor on or off.
+**No UI required.** Every sensor enables via config (`.cairn/config.yaml`) or CLI flag (`cairn sensor enable <name>`). Sensors run as background daemons under `cairn daemon start` — works on headless servers, SSH sessions, and CI runners. The desktop GUI (§13) is purely optional: it exposes the same toggles but is never required to turn a sensor on or off.
 
 **Local sensors** — run on the same machine as Cairn, emit events into the pipeline as they happen:
 
@@ -1276,12 +1297,19 @@ Memory without evolution stagnates. `EvolutionWorkflow` takes existing artifacts
 
 ### 11.3 Constraint gates (all must pass before promotion)
 
+Every artifact promoted via `EvolutionWorkflow` or created via Skillify (§11.b) goes through the **same single promotion predicate**: all nine gates must pass. No alternate path to `live`.
+
 1. **Test suite** — any behavioral test the artifact has (golden queries, contract tests, replay cassettes) must pass 100%.
 2. **Size limits** — skills ≤ 15 KB, tool descriptions ≤ 500 chars, hot‑memory prefix ≤ 25 KB / 200 lines.
 3. **Semantic preservation** — the variant must score ≥ baseline on a similarity check against the original artifact's declared purpose (prevents drift).
 4. **Caching compatibility** — no mid‑turn mutations; variants only swap in at `SessionStart` boundaries.
 5. **Confidence non‑regression** — the evolved artifact's measured outcome confidence must not decrease across the eval dataset.
 6. **Review gate** — `.cairn/config.yaml` declares `autonomous | human_review`; `human_review` writes a PR‑style diff to `.cairn/evolution/<artifact>.diff` and waits for approval.
+7. **Held‑out adversarial dataset** — in addition to the main eval set, the artifact must pass a frozen held‑out set of cases that stress its failure modes. The held‑out set is never seen during authoring and is rotated each quarter.
+8. **Canary rollout with rollback** — the artifact is first enabled for a small percentage of traffic (default 5 %); the canary must match or beat baseline on key SLOs for `canary_window` (default 24 h) before full rollout. Any regression automatically rolls back via the WAL op's compensating steps.
+9. **Shared‑tier gate** — if the artifact touches a shared‑tier surface (team / org / public), a fresh `ConsentReceipt` signed by a principal with promotion capability for that tier is required at promote time (re‑verified at apply time per §4.2).
+
+CI enforces all nine via `cairn promote --check` before any `wal_ops.state` can flip to `COMMITTED` for a promotion op.
 
 ### 11.4 Eval dataset sources
 
@@ -1373,7 +1401,7 @@ User: "great! so we should actually remember this — skillify it"
   [2. Generate deterministic script from tool‑call sequence]
   [3. Author unit tests from observed inputs/outputs]
   [4. Wire resolver trigger + eval]
-  [5. Run all gates 6-9 from §11.3 + 10 Skillify steps]
+  [5. Run the full §11.3 promotion predicate (gates 1-9) + 10-step Skillify checklist]
   [6. On pass: PromotionWorkflow marks skill live]
 ```
 
@@ -1394,7 +1422,7 @@ User: "great! so we should actually remember this — skillify it"
 
 - `EvolutionWorkflow` mutates *existing* skills within §11.3 constraint gates.
 - Skillify *creates* new skills from observed failures (or successes promoted by `skillify`).
-- Both go through the same canary rollout, held‑out adversarial datasets, and shared‑tier gate in §11.3 — skillified skills are not exempt.
+- Both go through the same single §11.3 promotion predicate (gates 1–9: tests, size, semantic preservation, caching compat, confidence non‑regression, review gate, held‑out adversarial, canary rollout, shared‑tier gate) — skillified skills are not exempt.
 - `check-resolvable` + DRY audit are `ReflectionWorkflow` jobs (§10); they feed the lint report every `DeepDream` cadence.
 
 **Prior art acknowledged.** Hermes Agent's `skill_manage` tool shows the right half of this loop: the agent itself authors skills after completing tasks. Cairn takes that further by requiring the ten artifacts and the audits before a skill is considered durable; creation without tests produces silent rot, and the audits are the difference between "a directory full of markdown" and "a substrate the agent can rely on."
@@ -1676,7 +1704,7 @@ Adapters that fail any of these cannot be registered.
 | ConsentReceipt verification badge | no | yes | yes | no |
 | `cairn recall` inline | no | yes (palette command) | yes (command bar) | via CLI |
 
-**Projection policy is configurable.** `cairn.toml` has a `[projection]` block controlling what lands in frontmatter vs. sidecar vs. plugin‑only — tight projection for minimal editors, rich projection for full‑featured ones. Keeps the `.md` files readable in any tool while giving power users the full backend surface when they install the plugin.
+**Projection policy is configurable.** `.cairn/config.yaml` has a `projection` block controlling what lands in frontmatter vs. sidecar vs. plugin‑only — tight projection for minimal editors, rich projection for full‑featured ones. Keeps the `.md` files readable in any tool while giving power users the full backend surface when they install the plugin.
 
 ### 13.5.d `FrontendAdapter` contract — one interface, many frontends
 
@@ -1798,7 +1826,9 @@ Every new contract, new taxonomy, new workflow, or new adapter ships with an eva
 - **Multi‑session coherence.** Long‑horizon tests spanning 5 / 10 / 50 sessions verify recall, conflict resolution, staleness handling.
 - **Orphan / conflict / staleness metrics.** Surfaced by `EvaluationWorkflow`; regressions fail CI.
 - **Latency SLO.** p95 turn latency with hot‑assembly + write < 50 ms; p99 < 100 ms.
-- **Privacy SLO.** `forget-me` on a 1M‑record vault completes in < 1 s.
+- **Privacy SLOs (two‑phase, per §5.6 delete):**
+  - **Reader‑invisible latency:** a 1 M‑record `forget-me` call returns with Phase A committed (tombstones + reader_fence closed) in **< 1 s p95**. After this point `search` / `retrieve` can never surface the targeted records.
+  - **Physical purge completion:** the async Phase B children complete (embeddings zeroed, index regions purged) in **< 30 s p95** for 1 M records. `PURGE_PENDING` flagged in `lint` with operator alert if a child exhausts retries — readers are still shielded by the fence, but compliance requires attention.
 - **Replay.** Cassette‑based replay of real harness turns — no LLM, no network — validates every middleware, hook, and workflow.
 
 ---
@@ -1905,7 +1935,7 @@ Nothing in these migrations requires the legacy system to change. Cairn runs as 
 1. **Adoption.** Three independent harnesses speak Cairn MCP in v0.1; ten by v1.0.
 2. **Standalone proof.** `bunx cairn` on a fresh laptop, no network, works end‑to‑end.
 3. **Latency.** p95 harness turn with Cairn MCP hot‑assembly < 50 ms.
-4. **Privacy.** `forget-me` on a 1M‑record vault in < 1 s; append‑only consent log survives GDPR review.
+4. **Privacy.** `forget-me` on a 1M‑record vault: reader‑invisible within 1 s p95 (Phase A tombstones + fence closed), physical purge within 30 s p95 (Phase B); append‑only consent log survives GDPR review.
 5. **Evaluation.** Golden queries + multi‑session coherence + orphan / conflict / staleness metrics all regression‑tested in CI.
 6. **Local‑first.** Zero code changes to move from embedded → local → cloud; only `.cairn/config.yaml`.
 7. **Maintenance is a command.** Weekly `cairn lint` + continuous Temporal workflows keep the vault healthy without manual cleanup.
@@ -2001,13 +2031,14 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 ### P1 stories
 
 **US4 — Rolling summaries of long threads (agent).**
-- `ConsolidationWorkflow` (§10) runs the rolling summary pass on a cadence declared in `.cairn/config.toml`:
-  ```toml
-  [consolidation.rolling_summary]
-  every_n_turns = 10        # cadence — configurable per agent
-  window_size_turns = 50    # how much history each summary covers
-  emit_kind = "reasoning"   # what kind the summary becomes
-  fields = ["entities", "intent", "outcome"]
+- `ConsolidationWorkflow` (§10) runs the rolling summary pass on a cadence declared in `.cairn/config.yaml`:
+  ```yaml
+  consolidation:
+    rolling_summary:
+      every_n_turns: 10      # cadence — configurable per agent
+      window_size_turns: 50  # how much history each summary covers
+      emit_kind: reasoning   # what kind the summary becomes
+      fields: [entities, intent, outcome]
   ```
   Triggered on every `PostToolUse`/`Stop` hook that crosses the `every_n_turns` boundary. Default 10 turns matches the story's acceptance criterion.
 - Each summary is a `reasoning` record with `entities_extracted[]`, `user_intent`, `outcome_status`, back‑links to the source turns.
