@@ -166,9 +166,9 @@ Nexus is the platform; **Cairn is the memory layer** that does not exist in Nexu
 - **Durability topology (two SQLite files, one ownership line):**
   - **`nexus.db`** — owned by the Nexus Python sidecar. Holds records, vectors, FTS, metadata. Cairn reaches it only over HTTP + MCP.
   - **`.cairn/cairn.db`** — owned by the Rust core, opened directly from the Cairn process. Small (typically < 50 MB). Holds three tables: `wal_ops` (§5.6 state machine rows), `used` + `issuer_seq` + `outstanding_challenges` (§4.2 replay ledger), `consent_journal` (audit rows before async materialization to `.cairn/consent.log`). These are **local control‑plane state** the Rust core must access natively for single‑host atomicity. They are never shared with Nexus.
-  - **Atomicity model.** Cairn uses a durable‑messaging pattern, not a distributed transaction: (1) Rust core commits a local SQLite transaction in `cairn.db` that atomically writes the WAL `PREPARE` row + replay consumption + consent journal row; (2) Rust calls the Nexus HTTP apply endpoint, keyed by `operation_id`, which performs its own single local SQLite transaction inside `nexus.db`; (3) on success the Rust core marks `wal_ops.state = 'COMMITTED'` in another short transaction. Crash between (1) and (2) ⇒ recovery re‑calls Nexus with the same `operation_id` (idempotent). Crash between (2) and (3) ⇒ recovery observes Nexus has already applied, then promotes the row to `COMMITTED`. Nexus's own durability is guaranteed by its internal SQLite transaction; Cairn's guarantee is that every PREPARED row is either COMMITTED or ABORTED after bounded recovery.
+  - **Atomicity model.** Cairn uses a durable‑messaging pattern, not a distributed transaction: (1) Rust core commits a local SQLite transaction in `cairn.db` that atomically writes the WAL `PREPARE` row + replay consumption. **No `consent_journal` row is written at PREPARE time** — consent is linearized with the state transition, not with PREPARE. (2) Rust calls the Nexus HTTP apply endpoint, keyed by `operation_id`, which performs its own single local SQLite transaction inside `nexus.db`. (3) On success, the Rust core commits a second short local transaction that atomically marks `wal_ops.state = 'COMMITTED'` **and** writes the `consent_journal` row. This ordering means `consent_journal` only records operations that are reader‑visible (or, for deletes, operations that made data reader‑invisible); a crash between (1) and (2) leaves no consent entry. Crash between (1) and (2) ⇒ recovery re‑calls Nexus with the same `operation_id` (idempotent). Crash between (2) and (3) ⇒ recovery observes Nexus has already applied, then runs step (3) to both promote `COMMITTED` and append the `consent_journal` row in one transaction. Nexus's own durability is guaranteed by its internal SQLite transaction; Cairn's guarantee is that every PREPARED row is either COMMITTED or ABORTED after bounded recovery, and every `consent_journal` row corresponds to a reader‑visible state transition.
   - **No cross‑process two‑phase commit required.** The idempotency key is the linearization primitive; SQLite provides atomicity inside each process. This is strictly weaker than distributed 2PC, and we call it out rather than pretending otherwise.
-  - There is no `.cairn/vault.db` — any lingering reference is an error; a single example in the Appendix Glossary is corrected there.
+  - Canonical on‑disk paths: `<vault>/nexus.db` (Nexus memory store) and `.cairn/cairn.db` (Cairn control plane: `wal_ops`, `used`, `issuer_seq`, `outstanding_challenges`, `consent_journal`, `locks`, `reader_fence`). Any other `.cairn/*.db` path in this doc is a typo against these two.
 - **Federation, not re‑platforming, scales.** A sandbox on a laptop can federate `search` queries to a remote Nexus `full` hub (PostgreSQL + Dragonfly + Zoekt + txtai). Hub unreachable → graceful BM25S fallback, never a boot failure.
 - **Process boundary.** Nexus is Python; Cairn core is Rust. They communicate over HTTP + MCP. `cairn-nexus-supervisor` spawns Nexus, tails logs, health‑checks, restarts.
 
@@ -252,8 +252,8 @@ sensors:
   screen: { enabled: false }
   slack: { enabled: false, scope: [] }
 store:
-  kind: sqlite                # sqlite | postgres
-  path: .cairn/vault.db
+  kind: nexus-sandbox         # nexus-sandbox | nexus-full | postgres | custom:<name>
+  path: .cairn/nexus.db       # sandbox profile database (Nexus-owned; Rust speaks HTTP+MCP)
 llm:
   provider: openai-compatible
   base_url: https://…
@@ -447,7 +447,7 @@ Every signature Cairn checks (actor chain, `ConsentReceipt`, WAL op, discovery r
 
 `sequence` and `server_challenge` are **inside the signed payload** — an attacker cannot rewrite them without invalidating the signature. Callers without a reliable local counter (e.g., stateless retries) must use `server_challenge` mode: call `cairn handshake` to get a fresh server‑minted nonce, bake it into the signed envelope, and the server consumes it atomically with the rest of the replay check.
 
-**Atomic replay + ordering check.** All replay and ordering state lives in **one SQLite file** (`.cairn/receipts/replay.db`) with `(operation_id, nonce)` as the unique consumption key and `issuer_seq` as a per‑issuer high‑water mark table. SQLite does **not** support `SELECT ... FOR UPDATE`; the algorithm below uses only executable SQLite 3.35+ semantics (`INSERT ... ON CONFLICT`, `UPDATE ... WHERE ... RETURNING`) and avoids global write serialization.
+**Atomic replay + ordering check.** All replay and ordering state lives in **one SQLite file** — `.cairn/cairn.db` (see §3 "Durability topology") — under the `used`, `issuer_seq`, and `outstanding_challenges` tables. SQLite does **not** support `SELECT ... FOR UPDATE`; the algorithm below uses only executable SQLite 3.35+ semantics (`INSERT ... ON CONFLICT`, `UPDATE ... WHERE ... RETURNING`) and avoids global write serialization.
 
 ```
 # Hot-path order — signature verify BEFORE any disk write
@@ -478,7 +478,7 @@ The two statements run inside one short `BEGIN` transaction — no `FOR UPDATE`,
 
 **Throughput budget.** Replay checks measured on SQLite 3.45 + NVMe at 10 k QPS single issuer (p99 < 3 ms disk commit) and 30 k QPS aggregated across 50 issuers. Bloom filter absorbs > 99 % of replays without entering the transaction. The same bounds hold on HDD but with p99 ~ 20 ms; deployments with > 10 k QPS single‑issuer workloads switch to the `cairn.admin.v1` extension's sharded replay DB (one file per tenant).
 
-**Signature‑first rejection.** Signature verification runs **before** any disk write in `replay.db`. An attacker replaying a valid signature hits step 5's unique constraint; an attacker sending junk never reaches step 5 because signature check rejects first. This prevents ledger pollution by unauthenticated traffic.
+**Signature‑first rejection.** Signature verification runs **before** any disk write to `.cairn/cairn.db`. An attacker replaying a valid signature hits step 5's unique constraint; an attacker sending junk never reaches step 5 because signature check rejects first. This prevents ledger pollution by unauthenticated traffic.
 
 **Replay consumption is coupled to WAL `PREPARE`, not independent.** The replay ledger (`used`, `issuer_seq`, `outstanding_challenges`) and the WAL op log (`wal_ops`, `consent_journal`) all live in the same SQLite file — `.cairn/cairn.db` — owned directly by the Rust core (see "Durability topology" in §3). Nexus has its own `nexus.db` for memory state; the two files are coordinated via idempotency keys (§5.6), not via a distributed transaction. The transaction below is a single local SQLite commit that atomically couples replay consumption with the WAL `PREPARE` row:
 
@@ -793,7 +793,7 @@ BEGIN;
 COMMIT;
 ```
 
-**Lease + fencing semantics.** Every held lock carries a `lock_id` generated at acquisition; every write the holder emits includes `lock_id` in its WAL op. When Nexus receives a mutation keyed by `operation_id`, it verifies `lock_id` is still current against the `locks` table (done inside the same transaction as the apply) and rejects stale writes. This is the Martin Kleppmann / Chubby fencing pattern — a holder that crashed and lost its lease cannot keep writing once the lease expired, even if its TCP connection is still open.
+**Lease + fencing semantics — enforced on the Rust side before Nexus is called.** Every held lock carries a `lock_id` generated at acquisition. The Rust core checks `lock_id` freshness in the same local SQLite transaction that promotes the WAL op from `PREPARED` to about‑to‑apply; if the lease has expired or the `lock_id` differs from the current holder, the op is aborted locally and Nexus is never called. Nexus does not replicate the lock table. This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`): a holder that crashed and lost its lease cannot keep writing once the lease expired, because the apply path goes through the Rust‑side fencing check before any HTTP call to Nexus.
 
 **Crash recovery.** A lock with `leased_until < now` is a "zombie" — a prior holder crashed without releasing. The next acquirer can reclaim by deleting the row (or decrementing `holder_count` in shared mode) and taking the lock with a new `lock_id`. Zombie reclaim rejects any in‑flight writes from the old holder by the fencing check above.
 
@@ -817,7 +817,16 @@ Rules:
 - Shared × exclusive on the same session lock is NOT compatible — while `forget_session` holds exclusive, every incoming write that names that session blocks until Phase A commits. This is what closes the "child inserted after snapshot but before fence close" race: a fresh insert can't acquire the shared session lock, so no child lands between the snapshot and the fence close.
 - Exclusive × exclusive on the same session lock is serialized by acquisition order; two concurrent forgets on the same session yield one winner and one retry.
 
-Deadlock avoidance: locks are always acquired in `(session, entity)` lexicographic order; cross‑session mutations are refused by the planner so no cycle is emittable.
+**Deadlock‑free acquisition (single ordering function).** There is exactly one ordering function used by every op — child writes, promotes, expires, `forget_record`, and `forget_session` all acquire locks via `acquire_locks_in_order(op)`:
+
+1. Collect the lock set: session lock (if `session_id` in scope) + all entity locks the op will touch.
+2. Sort by lexicographic `(scope_kind_rank, scope_key)` where `scope_kind_rank` is `0` for session, `1` for entity. Session locks are always acquired before entity locks; entity locks are acquired in sorted key order.
+3. For each lock in order: acquire with mode determined by the op's lock table row (see compatibility matrix above). Block / wait / timeout per op's policy.
+4. If any lock returns WAIT, release all previously‑acquired locks and enter the waiter queue with the full lock set as a batch; re‑attempt atomically when the conflicting holder releases — no partial‑hold deadlock window.
+
+Because every op uses the same ordering function and always releases on WAIT before re‑acquiring, there is no AB‑BA cycle possible. Cross‑session mutations are refused by the planner (keeps session locks independent — a write that targets two sessions must split into two ops, each acquiring its own session lock independently).
+
+A dedicated CI concurrency test runs 1000 random schedules of concurrent child writes + `forget_session` + `promote` on the same session; the invariants "no deadlock," "no child write visible after `forget_session` commit," and "every op either commits or cleanly aborts" must hold for every schedule. The test lives in §15 Evaluation and gates every release.
 
 **Concurrency invariant test (CI).** A dedicated test runs many random writers against a session while `forget_session` runs concurrently; the invariant "no record with `session_id = X` is reader‑visible after `forget_session(X)` commits" must hold across all schedules — enforced as a permanent regression test in the eval harness (§15).
 
@@ -1328,6 +1337,68 @@ This is what makes skills *compound* — `strategy_success` stays strategy‑sco
 
 Switching tiers is a change in `.cairn/config.yaml`. The vault on disk, the MCP surface, the CLI, the hooks — all unchanged.
 
+## 11.b Skillify — turning every failure into a permanent skill with tests
+
+The Evolution Workflow (§11) can mutate prompts and tool descriptions, but most failures don't need a model change — they need a **procedural fix** that makes the bug structurally impossible to recur. Skillify is the loop that promotes a one‑off failure into a tested, durable skill.
+
+**The core move: split latent vs. deterministic work.** An agent that does timezone math in its head, grep by LLM reasoning, or API calls for data it already has on disk is doing deterministic work in latent space. The fix is not a better prompt — it is a **deterministic script** the agent is *forced* to call, plus a `skill_*.md` contract that tells the agent when the script replaces judgment. The agent itself writes the script; the skill then constrains the agent to use it.
+
+**The 10‑step checklist (enforced by `cairn lint --skill`):**
+
+Every promotion from failure to durable skill must complete all ten before `EvolutionWorkflow` marks it `live`:
+
+| # | Artifact | Purpose |
+|---|----------|---------|
+| 1 | `skill_*.md` | The contract: name, triggers, rules, decision tree. Latent‑space procedure the model follows. |
+| 2 | Deterministic script (`scripts/<skill>.*`) | The code the skill forces the agent to call. Zero LLM, bounded runtime. Agent authors the first draft from the failure trace. |
+| 3 | Unit tests | Pure‑function coverage of the deterministic script. Fixture‑driven. |
+| 4 | Integration tests | Same script against real endpoints / real data; catches fixture‑too‑clean bugs. |
+| 5 | LLM evals | Rubric‑based checks — did the agent call the script, or try to reason its way around it? Caught by `LLM‑as‑judge` cases in the eval harness. |
+| 6 | Resolver trigger | Entry in the `skills` catalog (Nexus `catalog` brick, §4.2) routing intent → skill. |
+| 7 | Resolver eval | For a set of labelled intents, does the Classifier actually pick the right skill? Two failure modes tested: false negative (skill doesn't fire) and false positive (wrong skill fires). |
+| 8 | `check-resolvable` + DRY audit | Walks resolver → skill → script and flags (a) skills not reachable from any trigger and (b) overlapping triggers. |
+| 9 | E2E smoke test | Full pipeline: prompt → resolver → skill → script → expected output. Runs in CI. |
+| 10 | Filing rules | Where records the skill writes should land (`wiki/entities/…`, `wiki/summaries/…`, etc.). Validated by `lint` against the vault schema. |
+
+A skill that fails any of the ten is stuck at `candidate` status and cannot be promoted; `EvolutionWorkflow` surfaces the gap in the next lint report.
+
+**"Skillify" as a one‑word promotion.** In daily use, the user drops a single directive — `skillify this` — after a successful ad‑hoc procedure. The harness captures the conversation, extracts the decision tree, generates all ten artifacts, and runs them through the normal evolution constraint gates (§11.3) before going live. No manual spec writing, no ticket — the working prototype becomes durable infrastructure in one message.
+
+```
+User: "great! so we should actually remember this — skillify it"
+
+       │
+       ▼
+  [1. Extract skill spec from conversation trace]
+  [2. Generate deterministic script from tool‑call sequence]
+  [3. Author unit tests from observed inputs/outputs]
+  [4. Wire resolver trigger + eval]
+  [5. Run all gates 6-9 from §11.3 + 10 Skillify steps]
+  [6. On pass: PromotionWorkflow marks skill live]
+```
+
+**Cross‑skill hygiene (the audits that keep skills honest):**
+
+| Audit | What it catches | How it runs |
+|-------|-----------------|-------------|
+| `check-resolvable` | "Dark" skills with no resolver trigger; scripts referenced by a skill whose file is missing; overlapping triggers that route ambiguously | `cairn lint --resolver`; runs weekly + on every skill change |
+| DRY audit | Two skills that do sort‑of the same thing in the same domain — the "calendar-check vs calendar-recall vs google-calendar" pattern | Parses every skill's `lane` declaration in frontmatter; fails on overlap within a domain |
+| Unreachable‑tool audit | Scripts with no callers (skill was deleted but script stayed) | Compares `scripts/` tree against every skill's `uses:` list |
+| Filing‑rules audit | Skills that write records to the wrong sub‑tree (`wiki/entities/` vs `wiki/summaries/`) | `PostToolUse` hook validates each write against the skill's `files_to:` declaration |
+
+**SkillPacks — portable bundles.** A `SkillPack` is a directory of related skills + scripts + tests + resolver entries that can be installed as a unit. `cairn skillpack install <pack>` pulls the pack, runs the full ten‑step CI against it, and registers triggers with the local resolver. Unistalling is a clean revert (resolver entries removed, skills moved to `archive/`, nothing dangling). Packs are **versioned** and **signed** (same envelope as §4.2 + §13.5.d plugin manifest) so supply‑chain attacks on a pack fail at install time.
+
+**Why this is more than "agent memory + eval harness":** most frameworks give you testing tools without a workflow. Skillify is the workflow: every failure gets a test; every test runs daily; the agent's judgment improves permanently. The loop converges because deterministic scripts bounded the latent space, and latent space authored the deterministic scripts. Skills become the structural memory that prevents the same class of mistake from happening twice.
+
+**Relationship to §11 Self‑Evolution:**
+
+- `EvolutionWorkflow` mutates *existing* skills within §11.3 constraint gates.
+- Skillify *creates* new skills from observed failures (or successes promoted by `skillify`).
+- Both go through the same canary rollout, held‑out adversarial datasets, and shared‑tier gate in §11.3 — skillified skills are not exempt.
+- `check-resolvable` + DRY audit are `ReflectionWorkflow` jobs (§10); they feed the lint report every `DeepDream` cadence.
+
+**Prior art acknowledged.** Hermes Agent's `skill_manage` tool shows the right half of this loop: the agent itself authors skills after completing tasks. Cairn takes that further by requiring the ten artifacts and the audits before a skill is considered durable; creation without tests produces silent rot, and the audits are the difference between "a directory full of markdown" and "a substrate the agent can rely on."
+
 ---
 
 ## 12.a Distribution Model — Beyond Single‑User
@@ -1532,6 +1603,8 @@ Frontend edits can only mutate user‑content fields. Policy‑sensitive fields 
    - `manifest_signature` verifies over the full YAML. Any field change (including capabilities) requires **re‑attestation** — the user is prompted again whenever the publisher pushes a new manifest or the binary hash changes.
    At runtime, the plugin signs each handshake challenge with its manifest‑bound key. `binary_hash` verification uses an **attestation‑epoch model**, not a per‑handshake recompute — but every handshake still verifies against the current epoch, closing the TOCTOU window:
    - Each plugin session carries an **attestation epoch** — a monotonic counter that increments on every verified attestation. The current epoch + expected `binary_hash` are held in memory and sealed behind a short‑lived file‑descriptor to the plugin binary, opened at attestation time and used for every subsequent read to defeat rename/swap attacks.
+   - On platforms that support it (Linux ≥ 5.4 with fs‑verity, macOS App Store binaries with code signatures, Windows Authenticode), Cairn verifies the platform attestation first — filesystem‑level integrity is the strongest bind. Where fs‑verity is not available, the epoch is bound to `(device, inode, mtime, size, sha256)` so a replace via different mount / namespace / bind‑mount breaks the inode match and the epoch is invalidated.
+   - **Active re‑measurement on every handshake.** Even with the sealed fd, the daemon re‑stats the plugin file on every handshake (microsecond cost) and compares `(device, inode, mtime, size)` against the epoch's bound tuple. Any mismatch → suspend minting, force re‑attestation. Full `binary_hash` recompute runs on every watcher event plus a periodic tick (default 60 s) — a defense‑in‑depth second layer for environments where the watcher is unreliable (containers without `fanotify`, network filesystems, etc.).
    - Every handshake must present the current epoch; a handshake that presents a stale epoch is rejected. This binds each handshake to a specific, still‑verified plugin binary without recomputing the hash per request.
    - The daemon establishes an OS file‑watcher (`fsevents` on macOS, `inotify` on Linux, `ReadDirectoryChangesW` on Windows) on the plugin binary. Any `modify / rename / replace` / watcher‑overflow / missed‑event signal → **immediate suspension of intent minting for that plugin**, the epoch is invalidated, and pending requests queued on the plugin return `PluginSuspended`. Re‑attestation must complete before minting resumes.
    - **Fail‑closed on watcher uncertainty.** Watcher overflows, missed events, or watcher restart are treated the same as detected changes: revoke the epoch, force re‑attestation. We would rather disrupt a plugin session than mint intents on a plugin whose integrity we can't currently assert.
