@@ -152,13 +152,26 @@ function generateAvailableSkillsBlock(skills: readonly SkillComponent[]): string
  * Build the decision payload for skill injection.
  * Captures skill names, per-skill content length, and a preview of
  * the final systemPrompt so the trajectory shows what was actually injected.
+ * When progressive mode excludes fork skills (hasForkSupport: false), their
+ * names appear in `excludedForkSkills` so operators can detect misconfiguration
+ * without needing to diff before/after skill lists.
  */
-function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObject {
+function buildDecision(
+  agent: Agent,
+  systemPrompt: string | undefined,
+  progressive: boolean,
+  hasForkSupport: boolean,
+): JsonObject {
   const sorted = sortedSkills(agent);
+  const excludedForkSkills =
+    progressive && !hasForkSupport
+      ? sorted.filter((s) => s.content === "" && s.executionMode === "fork").map((s) => s.name)
+      : [];
   return {
     injected: sorted.length > 0,
     skillCount: sorted.length,
     skills: sorted.map((s) => ({ name: s.name, contentLength: s.content.length })),
+    ...(excludedForkSkills.length > 0 ? { excludedForkSkills } : {}),
     ...(systemPrompt !== undefined
       ? {
           systemPrompt:
@@ -237,7 +250,9 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
         ? injectSkillsProgressive(agent, request, hasForkSupport)
         : injectSkills(agent, request, hasForkSupport);
       if (injected !== request) {
-        ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+        ctx.reportDecision?.(
+          buildDecision(agent, injected.systemPrompt, progressive, hasForkSupport),
+        );
       }
       return next(injected);
     },
@@ -252,7 +267,9 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
         ? injectSkillsProgressive(agent, request, hasForkSupport)
         : injectSkills(agent, request, hasForkSupport);
       if (injected !== request) {
-        ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+        ctx.reportDecision?.(
+          buildDecision(agent, injected.systemPrompt, progressive, hasForkSupport),
+        );
       }
       yield* next(injected);
     },
