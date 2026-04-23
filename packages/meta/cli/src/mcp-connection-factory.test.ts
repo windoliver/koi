@@ -81,12 +81,18 @@ function makeDeps(overrides?: { provider?: OAuthAuthProvider }): MockDeps {
 
 function toDeps(mocks: MockDeps): OAuthAwareMcpConnectionDeps {
   return {
-    createConnection:
-      mocks.createConnection as unknown as OAuthAwareMcpConnectionDeps["createConnection"],
-    createAuthProvider:
-      mocks.createAuthProvider as unknown as OAuthAwareMcpConnectionDeps["createAuthProvider"],
-    createStorage: mocks.createStorage as unknown as OAuthAwareMcpConnectionDeps["createStorage"],
-    createRuntime: mocks.createRuntime as unknown as OAuthAwareMcpConnectionDeps["createRuntime"],
+    createConnection: mocks.createConnection as unknown as NonNullable<
+      OAuthAwareMcpConnectionDeps["createConnection"]
+    >,
+    createAuthProvider: mocks.createAuthProvider as unknown as NonNullable<
+      OAuthAwareMcpConnectionDeps["createAuthProvider"]
+    >,
+    createStorage: mocks.createStorage as unknown as NonNullable<
+      OAuthAwareMcpConnectionDeps["createStorage"]
+    >,
+    createRuntime: mocks.createRuntime as unknown as NonNullable<
+      OAuthAwareMcpConnectionDeps["createRuntime"]
+    >,
   };
 }
 
@@ -174,7 +180,7 @@ describe("createOAuthAwareMcpConnection", () => {
       oauthChannel: OAuthChannel,
       provider?: OAuthAuthProvider,
     ): (() => Promise<boolean>) | undefined {
-      const localMocks = makeDeps({ provider });
+      const localMocks = makeDeps(provider !== undefined ? { provider } : undefined);
       const server = makeHttpOauthServer();
       createOAuthAwareMcpConnection(server, undefined, oauthChannel, toDeps(localMocks));
       const callArgs = localMocks.createConnection.mock.calls[0] as [
