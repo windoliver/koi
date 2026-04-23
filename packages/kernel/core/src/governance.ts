@@ -106,30 +106,57 @@ export type GovernanceEvent =
   | { readonly kind: "tool_error"; readonly toolName: string }
   | { readonly kind: "tool_success"; readonly toolName: string }
   /**
-   * Reset per-iteration UX budgets — turn count and duration start —
-   * to give each `runtime.run()` invocation a fresh model-call window
-   * and wall-clock window. Token usage, accumulated cost, spawn counts
-   * and rolling error-rate windows are intentionally NOT reset because
-   * they back runtime-wide safety/spend tracking that operators rely on
-   * for runaway containment. The split lets interactive hosts (TUI)
-   * give each user submit its own turn/duration budget while preserving
-   * cumulative total-spend ceilings for the whole runtime lifetime.
-   * Fired by `@koi/engine` at the start of each `run()` when the host
-   * opts in via `CreateKoiOptions.resetIterationBudgetPerRun` (#1742).
-   * Hosts can also fire it manually.
+   * Emitted at the start of each `runtime.run()` when `resetBudgetPerRun: true`.
+   * Resets per-run UX budgets — turn count and duration — so each `run()` call
+   * gets a fresh model-call and wall-clock window. Token usage, cost, spawn counts,
+   * and rolling error-rate windows are intentionally NOT reset (they back runtime-wide
+   * spend/safety caps). The split lets interactive hosts give each user submit its own
+   * turn/duration budget while keeping cumulative spend ceilings for the runtime lifetime.
+   *
+   * `source`     — who triggered the reset: "engine" (automatic), "host" (manual)
+   * `boundaryId` — deterministic `${sessionId}:run:${runIndex}`, stable across replays
    */
+  | {
+      readonly kind: "run_reset";
+      readonly source: "host" | "engine";
+      readonly reason?: string | undefined;
+      readonly boundaryId: string;
+    }
+  /** @deprecated Use "run_reset". Will be removed in next release. */
   | { readonly kind: "iteration_reset" }
   /**
-   * Reset per-session state — the rolling error-rate windows and the
-   * iteration counters cleared by `iteration_reset`. Fired by
-   * `@koi/engine` from `cycleSession()` so a host-driven conversation
-   * boundary (TUI `/clear`, `session:new`) doesn't carry tool-error
-   * history forward into the next conversation. Token usage, cost,
-   * and spawn counts remain CUMULATIVE across the runtime lifetime
-   * because they back process-level spend ceilings, not per-session
-   * limits. (#1742)
+   * Emitted by `runtime.cycleSession()` at a host-driven conversation boundary
+   * (TUI `/clear`, `session:new`). Resets iteration counters AND rolling error-rate
+   * windows so a fresh conversation doesn't inherit tool-error history. Token usage,
+   * cost, and spawn counts remain CUMULATIVE across the runtime lifetime.
+   *
+   * `source`     — "host" (cycleSession() call), "engine" (internal restart)
+   * `boundaryId` — deterministic `${sessionId}:session:${sessionCycleIndex}`
    */
-  | { readonly kind: "session_reset" };
+  | {
+      readonly kind: "session_reset";
+      readonly source: "host" | "engine";
+      readonly reason?: string | undefined;
+      readonly boundaryId: string;
+    };
+
+/**
+ * Canonical boundary → governance event mapping.
+ * This contract applies when `resetBudgetPerRun: true` is set on CreateKoiOptions.
+ * When `resetBudgetPerRun: false` (default), no `run_reset` fires at run_start —
+ * budgets accumulate across runs for the session lifetime.
+ * Consumers: do not assume `run_reset` is always present. Use `session_reset` if
+ * you only need to know when a new conversation starts.
+ */
+export const RESET_BOUNDARIES: {
+  readonly turn_end: "no governance event — turn counters are per-run, not per-turn";
+  readonly run_start: "run_reset (only when resetBudgetPerRun: true)";
+  readonly session_cycle: "session_reset";
+} = {
+  turn_end: "no governance event — turn counters are per-run, not per-turn",
+  run_start: "run_reset (only when resetBudgetPerRun: true)",
+  session_cycle: "session_reset",
+} as const;
 
 // ---------------------------------------------------------------------------
 // GovernanceController — runtime interface (replaces GovernanceComponent)
