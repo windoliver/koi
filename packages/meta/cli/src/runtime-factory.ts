@@ -88,9 +88,11 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
-import type { SourcedRule } from "@koi/permissions";
+import type { CompiledRule, SourcedRule } from "@koi/permissions";
 import {
+  compileGlob,
   createPermissionBackend,
+  evaluateRules,
   mapSettingsToSourcedRules,
   SOURCE_PRECEDENCE,
   widenCommandScopedRulesForTui,
@@ -1557,19 +1559,31 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   //     receives plain tool ids), then add built-in TUI allows as fallback.
   let permBackend: PermissionBackend;
   if (config.permissionBackend !== undefined) {
-    const policyRules = sortRules(settingsRules.filter((r) => r.source === "policy"));
     const inner = config.permissionBackend;
-    if (policyRules.length > 0) {
-      const policyEnforcer = createPermissionBackend({ mode: "bypass", rules: policyRules });
+    const allSettingsRules = sortRules(settingsRules);
+    if (allSettingsRules.length > 0) {
+      // Compile rules once at construction — never recompile per-query.
+      const compiledRules: readonly CompiledRule[] = allSettingsRules.map((r) => ({
+        ...r,
+        compiled: compileGlob(r.pattern),
+      }));
       const wrappedCheck = async (query: PermissionQuery): Promise<PermissionDecision> => {
-        const pd = await policyEnforcer.check(query);
-        if (pd.effect !== "allow") return pd;
-        return inner.check(query);
+        const decision = evaluateRules(query, compiledRules);
+        // Sentinel "No matching permission rule" means settings have no opinion.
+        // Delegate to the inner marker-aware backend (e.g. createPatternPermissionBackend).
+        if (decision.effect === "ask" && decision.reason === "No matching permission rule") {
+          return inner.check(query);
+        }
+        return decision;
       };
-      permBackend =
-        inner.dispose != null
-          ? { check: wrappedCheck, dispose: inner.dispose }
-          : { check: wrappedCheck };
+      // Preserve the marker-aware capability flag so koi start retains dual-key evaluation.
+      permBackend = {
+        check: wrappedCheck,
+        ...(inner.dispose != null ? { dispose: inner.dispose } : {}),
+        ...(inner.supportsDefaultDenyMarker === true
+          ? { supportsDefaultDenyMarker: true as const }
+          : {}),
+      };
     } else {
       permBackend = inner;
     }
