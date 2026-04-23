@@ -3497,18 +3497,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // model sees the file directly without needing to call Glob/fs_read.
         const resolved = resolveAtReferences(text, process.cwd());
 
-        // Explicitly reject binary @-references with a user-visible notice.
-        // The model receives no content or note for them — sending a text
-        // placeholder ("Binary file: foo.pdf") would let users believe the
-        // model has the file when it doesn't, which is worse than no action.
-        // Multimodal block support is deferred until adapters support it end-to-end.
+        // Hard-fail on binary @-references: block the message so the request
+        // cannot proceed as if the reference was honored. Silently dropping a
+        // referenced PDF/image would let the model answer without the evidence
+        // the user intended to supply — that is worse than no action.
+        // Multimodal block support is deferred until all adapters support it.
         if (resolved.binaryInjections.length > 0) {
           for (const b of resolved.binaryInjections) {
             store.dispatch({
-              kind: "add_info",
-              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. Reference was not included.`,
+              kind: "add_error",
+              code: "BINARY_AT_REF_UNSUPPORTED",
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment is not yet supported. Remove the reference or use a text-based format.`,
             });
           }
+          activeController = null;
+          return;
         }
 
         const modelText =

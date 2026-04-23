@@ -162,6 +162,16 @@ export function detectFromBytes(bytes: Uint8Array): DetectedType | null {
     return { mimeType: "application/xml", extension: "xml", confidence: "strong" };
   }
 
+  // UTF-16 LE BOM (0xFF 0xFE) — also UTF-32 LE when followed by 0x00 0x00,
+  // but text/plain is correct for both since we treat them as text.
+  if (matchBytes(bytes, 0, [0xff, 0xfe])) {
+    return { mimeType: "text/plain", extension: "txt", confidence: "weak" };
+  }
+  // UTF-16 BE BOM (0xFE 0xFF)
+  if (matchBytes(bytes, 0, [0xfe, 0xff])) {
+    return { mimeType: "text/plain", extension: "txt", confidence: "weak" };
+  }
+
   // Plain text heuristic (weak — no magic signature)
   if (isLikelyText(bytes)) {
     return { mimeType: "text/plain", extension: "txt", confidence: "weak" };

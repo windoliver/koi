@@ -172,6 +172,20 @@ describe("detectFromBytes — weak / null", () => {
     expect(r?.confidence).toBe("weak");
   });
 
+  test("detects UTF-16 LE BOM (0xFF 0xFE) as text/plain", () => {
+    // UTF-16 LE BOM followed by "he" encoded as UTF-16
+    const r = detectFromBytes(new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x65, 0x00]));
+    expect(r?.mimeType).toBe("text/plain");
+    expect(r?.confidence).toBe("weak");
+  });
+
+  test("detects UTF-16 BE BOM (0xFE 0xFF) as text/plain", () => {
+    // UTF-16 BE BOM followed by "he" encoded as UTF-16 BE
+    const r = detectFromBytes(new Uint8Array([0xfe, 0xff, 0x00, 0x68, 0x00, 0x65]));
+    expect(r?.mimeType).toBe("text/plain");
+    expect(r?.confidence).toBe("weak");
+  });
+
   test("returns null for empty buffer", () => {
     const r = detectFromBytes(new Uint8Array(0));
     expect(r).toBeNull();
