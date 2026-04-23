@@ -169,8 +169,10 @@ describe("parseOtelResourceAttributes", () => {
     expect(parseOtelResourceAttributes("foo=a%3Db")).toEqual({ foo: "a=b" });
   });
 
-  test("skips empty segments from trailing/double commas", () => {
-    expect(parseOtelResourceAttributes("a=1,,b=2,")).toEqual({ a: "1", b: "2" });
+  test("returns undefined for trailing or double commas (matches OTel JS EnvDetector fail-closed behavior)", () => {
+    // OTel JS EnvDetector does NOT skip empty segments — it throws on any non key=value pair.
+    expect(parseOtelResourceAttributes("a=1,,b=2")).toBeUndefined();
+    expect(parseOtelResourceAttributes("a=1,b=2,")).toBeUndefined();
   });
 
   test("decodes percent-encoded keys", () => {

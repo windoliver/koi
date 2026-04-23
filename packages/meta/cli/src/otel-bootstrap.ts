@@ -120,10 +120,9 @@ const OTEL_MAX_ATTR_LENGTH = 255;
  * Faithfully mirrors the OTel JS EnvDetector grammar from
  * @opentelemetry/resources@2.6.1:
  *   - Comma-separated key=value pairs; "," and "=" MUST be percent-encoded.
- *   - Each pair must contain exactly one unencoded "=".
+ *   - Each pair must contain exactly one unencoded "=" (trailing/double commas fail closed).
  *   - Both keys and values are percent-decoded.
  *   - Keys and decoded values must be ≤ 255 characters.
- *   - Empty segments (trailing/double commas) are skipped.
  *   - Empty values are allowed per spec.
  *
  * Returns `undefined` on any error (empty/missing key, wrong "=" count,
@@ -136,7 +135,6 @@ export function parseOtelResourceAttributes(raw: string): Record<string, string>
   const result: Record<string, string> = {};
   for (const pair of raw.split(",")) {
     const trimmed = pair.trim();
-    if (trimmed.length === 0) continue; // empty segment from trailing/double comma — skip
     const parts = trimmed.split("=");
     if (parts.length !== 2) return undefined; // missing "=" or unencoded "=" in value → malformed
     const rawKey = parts[0].trim();
