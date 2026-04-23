@@ -677,6 +677,12 @@ export interface KoiRuntimeConfig {
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
   /**
+   * Optional OAuthChannel for MCP server OAuth flows.
+   * When provided, wired into every MCP connection so auth_required /
+   * auth_complete events render inline as chat messages.
+   */
+  readonly mcpOAuthChannel?: import("@koi/core").OAuthChannel | undefined;
+  /**
    * Persistent approval store for cross-session "always" grants.
    * When provided, durable approvals survive process restart.
    */
@@ -1413,6 +1419,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+    ...(config.mcpOAuthChannel !== undefined ? { mcpOAuthChannel: config.mcpOAuthChannel } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
     approvalHandler,
     agentId: precomputedAgentId,

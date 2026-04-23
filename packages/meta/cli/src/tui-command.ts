@@ -98,6 +98,7 @@ import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
 import { createGovernanceBridge, type GovernanceBridge } from "./governance-bridge.js";
 import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
+import { createOAuthChannel } from "./oauth-channel.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { loadPolicyFile } from "./policy-file.js";
 import { resolveManifestPath } from "./resolve-manifest-path.js";
@@ -1586,9 +1587,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Keep a reference so teardown can call .dispose() — cancels pending
   // auth_progress watchdog timers and gates late channel.send() callbacks,
   // preventing stale auth notifications from running after shutdown.
+  // let: populated once nexus transport resolves (MCP flows reuse same instance)
+  let tuiOAuthChannel: import("@koi/core").OAuthChannel | undefined;
   let tuiAuthNotificationHandler: ReturnType<typeof createAuthNotificationHandler> | undefined;
   if (manifestFilesystemConfig !== undefined) {
-    tuiAuthNotificationHandler = createAuthNotificationHandler(tuiChannelForAuth);
+    // let: populated once nexus transport resolves (HTTP transports have submitAuthCode)
+    let nexusSubmitAuthCode: ((url: string, correlationId?: string) => void) | undefined;
+    tuiOAuthChannel = createOAuthChannel({
+      channel: tuiChannelForAuth,
+      onSubmit: (url, correlationId) => nexusSubmitAuthCode?.(url, correlationId),
+    });
+    tuiAuthNotificationHandler = createAuthNotificationHandler(tuiOAuthChannel, tuiChannelForAuth);
     const fsResolved = await resolveFileSystemAsync(
       manifestFilesystemConfig,
       process.cwd(),
@@ -1603,6 +1612,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Wire inbound OAuth interceptor when a local-bridge transport is available.
     if (fsResolved.transport !== undefined) {
       const transport = fsResolved.transport;
+      nexusSubmitAuthCode = (url, id) => transport.submitAuthCode(url, id);
       // Subscribe extra: track correlationId from auth_required (mode: "remote").
       transport.subscribe((n) => {
         if (n.method === "auth_required" && n.params.mode === "remote") {
@@ -1920,6 +1930,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Loop mode is a self-correcting execution, not a conversation.
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
     skillsRuntime: skillRuntime,
+    ...(tuiOAuthChannel !== undefined ? { mcpOAuthChannel: tuiOAuthChannel } : {}),
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
       ? { maxSpendUsd: governance.maxSpendUsd }
@@ -4491,11 +4502,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         case "nav:mcp-auth":
           // Triggered by pressing Enter on a needs-auth server in /mcp view.
-          // args = server name. Runs `koi mcp auth <name>` inline.
+          // args = server name. Surfaces auth prompt inline via OAuthChannel.
           void (async (): Promise<void> => {
             const rawName = args.trim();
             if (rawName === "") return;
-            // Strip source prefix. Plugin-backed servers can't auth here.
             if (rawName.startsWith("plugin:")) {
               store.dispatch({
                 kind: "add_error",
@@ -4507,113 +4517,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               return;
             }
             const serverName = rawName.startsWith("user:") ? rawName.slice(5) : rawName;
-            // Per-server guard — prevent overlapping OAuth flows from
-            // double-pressing Enter (callback port conflict, timeout race).
             if (mcpAuthInFlight.has(serverName)) return;
             mcpAuthInFlight.add(serverName);
             try {
-              const { loadMcpJsonFile } = await import("@koi/mcp");
-              const { join } = await import("node:path");
-              const { homedir } = await import("node:os");
-              const { createSecureStorage } = await import("@koi/secure-storage");
-              const { createCliOAuthRuntime } = await import("./commands/mcp-oauth-runtime.js");
-              const { createOAuthAuthProvider } = await import("@koi/mcp");
-
-              // Find the server config — same precedence as runtime
-              const authProjectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
-              const authConfigs: Awaited<ReturnType<typeof loadMcpJsonFile>>[] = [];
-              if (authProjectResult.ok) {
-                authConfigs.push(authProjectResult);
-              } else if (authProjectResult.error.code === "NOT_FOUND") {
-                const authHomeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
-                if (authHomeResult.ok) authConfigs.push(authHomeResult);
-              }
-              let authMatched = false;
-              for (const r of authConfigs) {
-                if (!r.ok) continue;
-                const server = r.value.servers.find((s) => s.name === serverName);
-                if (server === undefined || server.kind !== "http" || server.oauth === undefined)
-                  continue;
-                authMatched = true;
-
-                const storage = createSecureStorage();
-                const runtime = createCliOAuthRuntime();
-                const provider = createOAuthAuthProvider({
-                  serverName: server.name,
-                  serverUrl: server.url,
-                  oauthConfig: server.oauth,
-                  runtime,
-                  storage,
-                });
-
-                const success = await provider.startAuthFlow();
-                if (success) {
-                  // Refresh /mcp view with updated Keychain state
-                  const { computeServerKey: computeKey } = await import("@koi/mcp");
-                  const freshStorage = createSecureStorage();
-                  const refreshed: import("@koi/tui").McpServerInfo[] = await Promise.all(
-                    r.value.servers.map(async (s2) => {
-                      const hasOAuth2 = s2.kind === "http" && s2.oauth !== undefined;
-                      if (!hasOAuth2) {
-                        return {
-                          name: s2.name,
-                          status: "connected" as const,
-                          toolCount: 0,
-                          detail: `${s2.kind} transport`,
-                        };
-                      }
-                      const key2 = computeKey(s2.name, s2.kind === "http" ? s2.url : "");
-                      const raw2 = await freshStorage.get(key2);
-                      // The server we just authed shows "auth-pending-restart"
-                      // because the live runtime still has the pseudo-tool only
-                      // — tools won't load until the next TUI launch.
-                      if (s2.name === serverName && raw2 !== undefined) {
-                        return {
-                          name: s2.name,
-                          status: "auth-pending-restart" as const,
-                          toolCount: 0,
-                          detail: "Tokens stored. Restart the TUI to load tools.",
-                        };
-                      }
-                      return {
-                        name: s2.name,
-                        status: (raw2 !== undefined ? "connected" : "needs-auth") as
-                          | "connected"
-                          | "needs-auth",
-                        toolCount: 0,
-                        detail: raw2 !== undefined ? "Authenticated" : undefined,
-                      };
-                    }),
-                  );
-                  store.dispatch({ kind: "set_mcp_status", servers: refreshed });
-                } else {
-                  store.dispatch({
-                    kind: "add_error",
-                    code: "MCP_AUTH",
-                    message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
-                  });
-                }
-                break;
-              }
-              if (!authMatched) {
-                // Server is listed in /mcp (e.g. plugin-provided) but we
-                // don't have a file-config entry to auth against. Fail
-                // loudly instead of silently doing nothing.
-                store.dispatch({
-                  kind: "add_error",
-                  code: "MCP_AUTH",
-                  message:
-                    `Cannot authenticate "${serverName}" from this view — ` +
-                    `server is not in .mcp.json (likely plugin-provided). ` +
-                    `Plugin-backed OAuth must be completed through the plugin's own flow.`,
+              if (tuiOAuthChannel !== undefined) {
+                // Surface the auth prompt inline — the connection's onAuthNeeded
+                // will run startAuthFlow() automatically on the next tool call.
+                await tuiOAuthChannel.onAuthRequired({
+                  provider: serverName,
+                  message: `${serverName} requires authorization`,
+                  mode: "local",
                 });
               }
-            } catch (e: unknown) {
-              store.dispatch({
-                kind: "add_error",
-                code: "MCP_AUTH",
-                message: `Auth error: ${e instanceof Error ? e.message : String(e)}`,
-              });
             } finally {
               mcpAuthInFlight.delete(serverName);
             }

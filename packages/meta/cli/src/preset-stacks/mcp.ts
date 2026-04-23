@@ -21,6 +21,7 @@
  *     alongside the execution stack's bgController abort.
  */
 
+import type { OAuthChannel } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
@@ -30,6 +31,8 @@ import { buildPluginMcpSetup, loadUserMcpSetup } from "../shared-wiring.js";
 export const SKILLS_RUNTIME_MCP_HOST_KEY = "skillsRuntime";
 /** Key under `ctx.host` for the plugin-provided MCP server list. */
 export const PLUGIN_MCP_SERVERS_HOST_KEY = "pluginMcpServers";
+/** Key under `ctx.host` for the MCP OAuth channel (optional). */
+export const OAUTH_CHANNEL_MCP_HOST_KEY = "mcpOAuthChannel";
 
 export const mcpStack: PresetStack = {
   id: "mcp",
@@ -39,9 +42,10 @@ export const mcpStack: PresetStack = {
     const skillsRuntime = ctx.host?.[SKILLS_RUNTIME_MCP_HOST_KEY] as SkillsRuntime | undefined;
     const pluginMcpServers =
       (ctx.host?.[PLUGIN_MCP_SERVERS_HOST_KEY] as readonly McpServerConfig[] | undefined) ?? [];
+    const oauthChannel = ctx.host?.[OAUTH_CHANNEL_MCP_HOST_KEY] as OAuthChannel | undefined;
 
-    const userMcpSetup = await loadUserMcpSetup(ctx.cwd, skillsRuntime);
-    const pluginMcpSetup = buildPluginMcpSetup(pluginMcpServers);
+    const userMcpSetup = await loadUserMcpSetup(ctx.cwd, skillsRuntime, oauthChannel);
+    const pluginMcpSetup = buildPluginMcpSetup(pluginMcpServers, oauthChannel);
 
     return {
       middleware: [],
