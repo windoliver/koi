@@ -159,6 +159,19 @@ describe("detectFromBytes — weak / null", () => {
     expect(r).toBeNull();
   });
 
+  test("returns null for high-bit non-UTF-8 bytes (e.g. encrypted/random data)", () => {
+    // 0x80 alone is an invalid UTF-8 continuation byte — not text
+    const r = detectFromBytes(new Uint8Array([0x80, 0x90, 0x81, 0xc0, 0xff, 0xfe, 0xed]));
+    expect(r).toBeNull();
+  });
+
+  test("returns text/plain for valid UTF-8 with multi-byte sequences", () => {
+    // "héllo" encoded as UTF-8 — should still be classified as text
+    const r = detectFromBytes(new Uint8Array([0x68, 0xc3, 0xa9, 0x6c, 0x6c, 0x6f]));
+    expect(r?.mimeType).toBe("text/plain");
+    expect(r?.confidence).toBe("weak");
+  });
+
   test("returns null for empty buffer", () => {
     const r = detectFromBytes(new Uint8Array(0));
     expect(r).toBeNull();

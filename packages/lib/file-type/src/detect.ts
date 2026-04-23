@@ -60,16 +60,22 @@ function matchBytes(buf: Uint8Array, offset: number, pattern: readonly number[])
 }
 
 function isLikelyText(buf: Uint8Array): boolean {
-  // Sample the first 512 bytes. If all are printable UTF-8 or common
-  // control chars (tab, LF, CR), treat as text.
   const limit = Math.min(buf.length, 512);
+  // Quick reject: ASCII control chars indicate binary.
   for (let i = 0; i < limit; i++) {
     const b = buf[i];
     if (b === undefined) break;
     if (b === 0x09 || b === 0x0a || b === 0x0d) continue; // tab, LF, CR
-    if (b < 0x20 || b === 0x7f) return false; // control chars
+    if (b < 0x20 || b === 0x7f) return false;
   }
-  return true;
+  // Validate UTF-8 — rejects high-bit binary data (encrypted, compressed,
+  // proprietary formats) that passes the ASCII-only control-char check.
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(buf.subarray(0, limit));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -3499,9 +3499,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // is deferred until all model adapters support non-text ContentBlocks.
         const resolved = resolveAtReferences(text, process.cwd());
 
-        // Append a plain-text note for each binary @-reference so the model
-        // knows the file exists and its detected MIME type, without sending
-        // binary data through the (currently text-only) request mapper.
+        // Notify the user for each binary @-reference that couldn't be sent.
+        // The model still receives a text note so it knows the file exists;
+        // the user gets an explicit info banner so there's no silent data loss.
+        if (resolved.binaryInjections.length > 0) {
+          for (const b of resolved.binaryInjections) {
+            store.dispatch({
+              kind: "add_info",
+              message: `@${b.filePath} (${b.mimeType}) — binary file detected; multimodal attachment not yet supported. The model will see the filename and type but not the file contents.`,
+            });
+          }
+        }
+
         const binaryNote =
           resolved.binaryInjections.length > 0
             ? "\n\n" +
