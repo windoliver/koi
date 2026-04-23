@@ -417,11 +417,49 @@ attestation_chain: [sig1, sig2, sig3]  # countersignatures from each actor
 
 The payoff: "memory process" is not a hardcoded pipeline — it is a **catalog entry + an agent identity + a workflow run**. Operators can ship new pipelines (a new classifier, a new consolidator) as catalog entries without restarting Cairn, and every per‑record provenance trail ties back to the exact pipeline version that produced it. This is how Cairn supports multiple agents collaborating on one vault without devolving into "last writer wins."
 
+**Signed payload schema — anti‑replay and key rotation:**
+
+Every signature Cairn checks (actor chain, `ConsentReceipt`, WAL op, discovery record, share_link) uses this canonical envelope. Missing or expired fields → reject at the Filter stage (§5.2) before any side effect runs.
+
+```json
+{
+  "operation_id": "01HQZ...",     // ULID, must not repeat for this key within `expires_at`
+  "nonce": "base64:16B",          // fresh per message; Cairn keeps a rolling 24h bloom filter
+  "target_hash": "sha256:...",    // bound to the record/plan/receipt this signature authorizes
+  "scope": { "tenant": "...", "workspace": "...", "entity": "...", "tier": "private|..." },
+  "issuer": "agt:claude-code:opus-4-7:reviewer:v1",
+  "issued_at": "2026-04-22T14:02:11Z",
+  "expires_at": "2026-04-22T14:07:11Z",   // default 5 min; promotion receipts default 24 h
+  "key_version": 3,               // matches the current rev of the issuer's keypair
+  "chain_parents": ["op:01HQ...","op:01HR..."],   // operations this one depends on
+  "signature": "ed25519:..."      // over the canonical JSON of all fields above
+}
+```
+
+**One‑time consumption ledger.** `operation_id` + `nonce` tuples are recorded in `.cairn/receipts/used.db` (SQLite, WAL‑backed). A second message with the same tuple within the TTL window is rejected as a replay — compared *before* the signature verifies so the cheap check wins. The bloom filter catches >99 % of replays without a disk hit; confirmed hits go to the exact ledger.
+
+**Key rotation + revocation.**
+
+- Each identity owns a **key ring** (current + up to two predecessors); frontmatter references `key_version` so records signed by an older version still verify until TTL expires.
+- Rotating = minting a new key, signing it with the current key, publishing to the Nexus `discovery` brick, incrementing `key_version`.
+- Revoking = publishing a signed revocation to `discovery` with `effective_at`; every later operation whose `issued_at > effective_at` fails closed. Earlier operations remain valid unless their `operation_id` appears on a **per‑key revocation list** (for stolen‑key incidents — the operator can blanket‑revoke every op in a time window).
+- Revocation publication is itself countersigned by a `HumanIdentity` with the `IdentityAdmin` capability, so a compromised agent key can't revoke its way out of audit.
+
+**TOFU is disallowed for shared‑tier writes.** Trust‑on‑first‑use holds only inside the `private` tier. Every `session | project | team | org | public` promotion (§11.3) requires:
+
+1. An `IdentityProvider` plugin resolution for the principal (enterprise OIDC, hardware key, or explicit `cairn identity approve`).
+2. A fresh `ConsentReceipt` with valid `nonce`, `operation_id`, `expires_at`, `chain_parents`, matching `target_hash`.
+3. A `key_version` that is current (no revoked keys).
+
+The shared‑tier gate (§11.3) re‑verifies the receipt at apply time — a receipt good at plan time but expired by apply time fails closed, even if the FlushPlan was already signed off.
+
+**Chain verification at read time.** `search` / `retrieve` walk the `actor_chain` and validate each hop's signature + key_version + revocation status. Records with a broken chain are flagged `trust: "unverified"` in the response and filtered out of shared‑tier reads by default (a caller can opt in with `allow_unverified: true` for forensic work only).
+
 **What identity does *not* do:**
 
 - It is not authentication for the MCP surface (that's harness‑level — CC's settings, Codex's config, etc.). It is the *attribution* layer underneath.
 - It is not a global namespace — identities are per‑Cairn‑deployment. Cross‑deployment federation uses the `share_link` / signed `ConsentReceipt` flow (§12.a, §14), not a shared identity service.
-- It does not require a CA or PKI. Trust‑on‑first‑use is the default; enterprise deployments can wire their own identity provider via a `IdentityProvider` plugin (not counted among the five core contracts because it is optional).
+- It does not require a public CA, but it **does** require an `IdentityProvider` for any shared‑tier write — the default local provider serves `private` only. Enterprise deployments wire SSO/OIDC/hardware key attestation through the same plugin point.
 
 ---
 
@@ -555,7 +593,7 @@ Agent ──interactions──► [Capture] ──raw events──► [Extract] 
 | **Tool‑squash** | compact verbose tool outputs before they become memories: dedup repeated lines, truncate with `[…skipped N lines…]`, strip ANSI, extract structured fields when the tool declares a schema | `squash` |
 | **Extract** | LLM‑backed distillation of experiences, facts, preferences, skills — OR zero‑LLM regex fallback | `extract` |
 | **Filter (Memorize?)** | decide `yes` (proceed) or `no` (discard). Discard reasons are first‑class and logged: `volatile`, `tool_lookup`, `competing_source`, `low_salience`, `pii_blocked`, `policy_blocked`, `duplicate`. Also handles PII redaction (Presidio) and prompt‑injection fencing before the yes branch | `shouldMemorize` + `redact` + `fence` |
-| **Classify & Scope** | kind (17) × class (4) × visibility (6) × scope → keyspace; emits `ADD / UPDATE / DELETE / NOOP` decision | `classifyAndScope` |
+| **Classify & Scope** | kind (19) × class (4) × visibility (6) × scope → keyspace; emits `ADD / UPDATE / DELETE / NOOP` decision. Kind cardinality is generated from the single IDL (§13.5) — a CI check fails on drift across sections, examples, and validators | `classifyAndScope` |
 | **Memory Store upsert** | persist with provenance; write index + cache entries | `MemoryStore.upsert` (contract) |
 
 Capture → Memory Store is **always on‑path** and bounded — p95 < 50 ms including hot‑memory re‑assembly on high‑salience writes.
@@ -595,6 +633,86 @@ Every write path run produces a **FlushPlan** before any bytes hit the `MemorySt
 | `human_review` | Plan written to `.cairn/flush/<ts>.plan.json` + human diff; apply waits for `cairn flush apply <id>` |
 
 Benefits: plans are idempotent (re‑apply = no‑op), reviewable, replayable for eval, and the primary audit artifact for *every* memory mutation. Same pattern as OpenClaw's flush‑plan.
+
+### 5.6 Write‑Ahead Operations + Crash‑Safe Apply
+
+Every mutation — single upsert, promotion, session delete fan‑out, skill evolution rollout — runs through a two‑phase WAL protocol. Durability (US2), atomic delete (US8), and concurrent‑writer safety (§10.1) all rest on this section.
+
+**WAL record schema (JSON, append‑only at `.cairn/wal/<op>.log`):**
+
+```json
+{
+  "operation_id": "01HQZ...",            // ULID, monotonic, client‑provided idempotency key
+  "kind": "upsert | delete | promote | expire | forget_session | forget_record | evolve",
+  "issued_at": "2026-04-22T14:02:11.417Z",
+  "issuer": "agt:claude-code:opus-4-7:reviewer:v1",
+  "principal": "hmn:tafeng:v1",          // present when required by policy tier (§6.3)
+  "target_hash": "sha256:abc...",        // deterministic hash of (target_id, plan_body)
+  "scope": { "tenant": "t1", "workspace": "default", "entity": "record:xyz" },
+  "plan_ref": ".cairn/flush/<ts>.plan.json",   // full FlushPlan already serialized
+  "dependencies": ["01HQ..."],           // WAL ops this one must apply after
+  "expires_at": "2026-04-22T14:07:11Z",  // 5‑min receipt TTL; replays past this are rejected
+  "signature": "ed25519:...",            // issuer‑signed over all fields above
+  "countersignatures": [ { "role": "principal", "sig": "ed25519:..." } ]
+}
+```
+
+**Lifecycle — one WAL op as a finite‑state machine:**
+
+```
+ISSUED ──acquire locks──► PREPARED ──fan‑out to store + index + consent.log──► COMMITTED
+   │                          │                                                     │
+   │  validation fail         │  any side‑effect fails                               │
+   │  / lock conflict         │                                                      │
+   ▼                          ▼                                                      ▼
+REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated)   DURABLE
+```
+
+| Transition | Requires | What happens |
+|------------|----------|--------------|
+| `ISSUED → PREPARED` | signature valid, idempotency key unused, principal/issuer policy ok, locks acquired (see below) | writes `PREPARE <op>` marker at end of WAL; locks held under `(scope, entity_id)` |
+| `PREPARED → COMMITTED` | all fan‑out side effects succeeded (store upsert, vector upsert, FTS upsert, edge upsert, `consent.log` append) | writes `COMMIT <op>` marker; releases locks |
+| `PREPARED → ABORTED` | any side effect failed OR supervisor crashed | compensating ops run (delete partial rows, remove vectors); writes `ABORT <op>` marker; releases locks |
+| `ISSUED → REJECTED` | signature invalid / idempotency key reused / policy deny | writes `REJECT <op>` + reason; no locks ever taken |
+
+**Idempotency.** `operation_id` is the idempotency key — second `PREPARE` with the same id returns the first commit's outcome without re‑doing side effects. Third‑party writers collide safely on retries; broken networks can't double‑apply.
+
+**Lock granularity.** A single‑writer advisory lock per `(tenant, workspace, entity_id)` — held through PREPARE → COMMIT/ABORT. Promotions hold a lock on the target tier key too (e.g., `wiki/entities/alice.md`) so parallel promoters can't conflict. Session‑delete takes a scope‑level lock `(tenant, workspace, session:<id>)` that fans out to every child record under it — no partial delete possible. Deadlock avoidance: locks are always acquired in `(tenant, workspace, entity)` lexicographic order; cycle would need a cross‑entity mutation, which the planner refuses to emit.
+
+**Fan‑out order (deterministic for replay):**
+
+1. `MemoryStore.upsert_primary(record)` — SQLite row, canonical truth
+2. `MemoryStore.upsert_vector(embedding)` — sqlite‑vec
+3. `MemoryStore.upsert_fts(terms)` — BM25 index
+4. `MemoryStore.upsert_edges(graph)` — link tables
+5. `consent.log.append(entry)` — append‑only audit, last step so audit only fires on real success
+
+If step N fails, steps 1..N‑1 are compensated in reverse order. If the process dies between steps, boot‑time recovery (below) re‑applies from the `PREPARE` marker deterministically.
+
+**Retry policy.** Each side‑effect step has an exponential backoff (max 3 attempts, 100 ms/400 ms/1600 ms). After final failure the op is ABORTED — compensations run and a `retryable: false` error surfaces to the caller. No infinite retry loops.
+
+**Boot‑time recovery.** On every `cairn daemon start`:
+
+1. Scan `.cairn/wal/*.log` newest → oldest for uncommitted `PREPARE` markers.
+2. For each, check the `plan_ref` for determinism, then **re‑run fan‑out from the first incomplete step**, using the same idempotency key so already‑applied steps are no‑ops.
+3. If any step fails recovery → mark `ABORTED`, run compensations, flag in the next `lint` report.
+4. Successful recovery writes a `RECOVERED <op>` marker next to the original `COMMIT`.
+
+**Concurrent‑writer safety (§10.1 ordering).** WAL deps + locks implement the single‑writer constraint: `ConsolidationWorkflow > LightSleep > REMSleep > DeepDream`. A lower‑priority op that hits a locked entity queues its WAL entry with `dependencies: [<higher‑priority‑op>]` and retries after the lock releases — no priority inversion, no write loss.
+
+**What the WAL is *not*:** it is not a replication log for federation (that's a separate `change_feed` stream layered on top), and it is not a distributed consensus log (single machine; federation's hub zone runs its own Nexus replication underneath). It is a local crash‑safety + idempotency + atomicity primitive.
+
+**Backed by.** Sandbox profile stores WAL on the same SQLite file (WAL journaling mode — `PRAGMA journal_mode=WAL;` — composed with Cairn's higher‑level op log). Hub profile delegates underlying durability to PostgreSQL WAL; Cairn's op log layers on top for the app‑level idempotency + compensation semantics SQLite/PostgreSQL WAL don't provide.
+
+**Where this is used:**
+
+| Consumer | WAL guarantee it relies on |
+|----------|-----------------------------|
+| US2 session reload | every turn committed durably; replay of an interrupted write resurrects the turn without gaps |
+| US8 session delete | all child records vanish atomically; no search hit survives `forget --session` |
+| US6 archive | move‑to‑cold is one op with its own idempotency key; interrupted archive doesn't leave half‑cold records |
+| §10.1 single‑writer ordering | dependencies field enforces deterministic precedence under contention |
+| §11.3 evolution rollout | canary → full rollout is one multi‑step op; rollback uses the WAL's compensating ops |
 
 ---
 
@@ -703,21 +821,66 @@ Three sections, refreshed on `DreamWorkflow` runs:
 
 Each field is derived from `user_*.md` + `feedback_*.md` + `entity_*.md` + `strategy_*_*.md` records. A `UserProfileSynthesizer` pure function produces the frontmatter + markdown body; `HotMemoryAssembler` includes the profile summary in the top of the hot prefix. The profile has its own evidence gates — a `current_issue` is only listed after it appears in two turns on different days.
 
-## 8. MCP Surface — Seven Verbs
+## 8. MCP Surface — Versioned Verb Set
 
-| Verb | What it does |
-|------|--------------|
-| `ingest` | push an observation (text / image / video / tool call / screen frame / web clip) |
-| `search` | BM25 + ANN + graph hybrid across scope |
-| `retrieve` | get a specific memory by id (and related edges) |
-| `summarize` | multi‑memory rollup; optional `persist: true` files the synthesis as a new `reference` or `strategy_success` memory with provenance |
-| `assemble_hot` | return the always‑loaded prefix for this agent/session |
-| `capture_trace` | persist a reasoning trajectory for later ACE distillation |
-| `lint` | health check — contradictions, orphans, stale claims, missing concept pages, data gaps; returns a structured report and optionally writes `lint-report.md` |
+**Contract version.** `cairn.mcp.v1` — the entire verb set below is frozen under this name; a breaking change yields `cairn.mcp.v2` and both versions run side by side during deprecation. The contract version, verb list, and per‑verb schema are generated from the single IDL (§13.5); wire‑compat tests fail CI on drift. Clients declare the version they implement via capability negotiation at handshake; Cairn refuses unknown verbs rather than silently dropping them.
+
+### 8.0 Core verbs (always present in `cairn.mcp.v1`)
+
+| # | Verb | What it does | Auth requirement |
+|---|------|--------------|-------------------|
+| 1 | `ingest` | push an observation (text / image / video / tool call / screen frame / web clip) | signed actor chain; rate‑limited per‑agent (§4.2) |
+| 2 | `search` | BM25 + ANN + graph hybrid across scope | rebac‑gated; results filtered per visibility tier |
+| 3 | `retrieve` | get a specific memory by id (and related edges) | rebac‑gated; unverified chain → `trust: "unverified"` flag unless `allow_unverified: true` |
+| 4 | `summarize` | multi‑memory rollup; optional `persist: true` files the synthesis as a new `reference` or `strategy_success` memory with provenance | rebac‑gated on sources; `persist` requires write capability |
+| 5 | `assemble_hot` | return the always‑loaded prefix for this agent/session | rebac‑gated on sources |
+| 6 | `capture_trace` | persist a reasoning trajectory for later ACE distillation | signed actor chain |
+| 7 | `lint` | health check — contradictions, orphans, stale claims, missing concept pages, data gaps; returns a structured report and optionally writes `lint-report.md` | read‑only; `write_report: true` requires write capability |
+| 8 | `forget` | delete record, session, or scoped set; `mode: "record" \| "session" \| "scope"`; zeroes embeddings, drops indexes, writes `consent.log`. Transactional under §5.6 WAL. | signed principal (human) with `Forget` capability for the target tier |
+
+`forget` is the single delete surface — the CLI `cairn forget …` is a thin wrapper calling this verb. There is no undocumented delete path.
 
 **Citations mode.** Every read verb (`search`, `retrieve`, `summarize`, `assemble_hot`) accepts a `citations: "on" | "compact" | "off"` flag, resolved from `.cairn/config.yaml` by default. `on` appends `Source: <path#line>` to each recalled snippet; `compact` appends only a single citation per record; `off` returns content without paths. Turn compact or off in harnesses whose UI shouldn't expose file paths to end users.
 
-MCP is the **only** public entry point. Everything else — CLI commands, hooks, library calls — routes through the same seven verbs internally.
+### 8.0.a Extension namespaces (opt‑in, capability‑gated)
+
+Optional verbs live in named extensions registered at startup and advertised via capability negotiation. Clients that don't request an extension never see its verbs; Cairn rejects calls to extensions the caller didn't opt into.
+
+| Extension | Adds verbs | Enabled by | Auth requirement |
+|-----------|-----------|------------|-------------------|
+| `cairn.aggregate.v1` | `agent_summary` · `agent_search` · `agent_insights` (§10.0) | `.cairn/config.yaml` → `agent.enable_aggregate: true` | rebac‑gated, results are anonymized aggregates only |
+| `cairn.admin.v1` | `snapshot` · `restore` · `replay_wal` | operator role | hardware‑key countersigned principal |
+| `cairn.federation.v1` | `propose_share` · `accept_share` · `revoke_share` | enterprise deployments only | signed `ShareLinkGrant` |
+
+Extensions extend the surface; they do not reinterpret core verbs. A verb ID belongs to exactly one namespace for the life of the contract version.
+
+### 8.0.b Every verb declares the same envelope
+
+All verbs — core and extension — share a single request/response envelope so policy enforcement and auth are uniform:
+
+```json
+// Request
+{
+  "contract": "cairn.mcp.v1",
+  "verb": "forget",
+  "signed_intent": { /* signed payload envelope §4.2 */ },
+  "args": { "mode": "session", "session_id": "..." }
+}
+
+// Response
+{
+  "contract": "cairn.mcp.v1",
+  "verb": "forget",
+  "operation_id": "01HQZ...",       // matches the WAL op
+  "status": "committed | aborted | rejected",
+  "data": { ... },
+  "policy_trace": [ { "gate": "forget_capability", "result": "pass" }, ... ]
+}
+```
+
+`policy_trace` is always present on mutating verbs so auditors see which gates ran and how they decided — not just the final outcome.
+
+MCP is the **only** public entry point. Everything else — CLI commands, hooks, library calls — routes through the core or extension verbs internally. A CLI like `cairn forget --session <id>` is syntactic sugar over `verb: "forget", args: {...}`.
 
 ---
 
@@ -1179,8 +1342,23 @@ Cairn's backend carries state plain markdown can't express: Nexus `version` tupl
 **Sync direction (backend is authoritative):**
 
 - Backend → frontend: Cairn writes frontmatter and sidecar files on every `Apply`. File‑watcher daemon keeps them fresh when workflows mutate state out‑of‑band (Dream pass, Promotion, Evolution).
-- Frontend → backend: editor saves to `.md` → file‑watcher sensor reads frontmatter `version` → Cairn runs optimistic version check against current backend version → accept + bump version, or reject + write conflict marker + surface in next `lint`.
-- Never in‑place mutation of Nexus state from the frontend; all edits funnel through the write path (§5.2) so ACL, filter, and consent gates fire.
+- Frontend → backend: editor saves to `.md` → file‑watcher sensor reads frontmatter `version` → Cairn runs optimistic version check **plus** field‑level mutability rules (below) **plus** the signed‑intent envelope (§8.0.b) → accept + bump version, or reject + write conflict marker + surface in next `lint`.
+- Never in‑place mutation of Nexus state from the frontend; all edits funnel through the write path (§5.2) so ACL, filter, and consent gates fire. A frontend adapter that tries to bypass this path fails the conformance tests (below) and is refused at load.
+
+**Field‑level mutability — backend enforces, not the frontend:**
+
+Frontend edits can only mutate user‑content fields. Policy‑sensitive fields are **read‑only from any frontend**; attempts to change them are silently reset to the backend value and flagged in `lint`.
+
+| Field class | Example fields | Frontend can change? |
+|-------------|----------------|-----------------------|
+| User content | body, `tags`, wikilinks | yes |
+| Metadata (informational) | `last_read_at`, local sort key | yes |
+| Classification | `kind`, `confidence`, `evidence_vector` | no — recomputed by Classifier / Ranker |
+| Identity / provenance | `actor_chain`, `signature`, `key_version`, `operation_id` | no — backend‑only, any change rejects the whole edit |
+| Visibility / consent | `consent_tier`, `consent_receipt_ref`, `visibility`, `share_grants` | no — changes must come through the `promote` or `forget` verbs with a fresh signed `ConsentReceipt` |
+| Version / audit | `version`, `promoted_at`, `produced_by` | no — backend owned |
+
+**Adapters are untrusted.** The `FrontendAdapter` trait deliberately does not sign edits — plugins are library code running alongside untrusted editors (Obsidian community plugin, VS Code extension). The authoritative check happens on the backend when the reconcile call arrives: signed‑intent envelope present? signer holds the required capability? target_hash matches the server's current state? field diff stays within mutable columns? Anything less than all four → reject.
 
 **Feature‑parity matrix (what each frontend can show):**
 
@@ -1214,9 +1392,17 @@ pub trait FrontendAdapter: Send + Sync {
     /// (markdown file + frontmatter, sidecar files, WebSocket frames, ...).
     fn project(&self, id: &MemoryId, state: &BackendState) -> Result<Projection>;
 
-    /// Reverse direction — translate a frontend edit back into a backend delta.
-    /// Runs optimistic version check; returns Conflict on divergence.
-    fn reconcile(&self, edit: FrontendEdit) -> Result<BackendDelta, ReconcileError>;
+    /// Reverse direction — translate a frontend edit into a reconcile request.
+    /// The adapter is UNTRUSTED library code; it cannot apply the edit directly.
+    /// It must produce a `ReconcileRequest` carrying the caller's `IdentityContext`
+    /// + signed intent envelope (§8.0.b); the backend then re-verifies, applies
+    /// field-level mutability rules (§13.5.c), runs optimistic version check,
+    /// and either commits or returns one of the typed rejection reasons below.
+    fn reconcile(
+        &self,
+        ctx: IdentityContext,          // who is asking (tenant, principal, agent)
+        edit: FrontendEdit,            // raw diff observed on disk / from plugin
+    ) -> Result<ReconcileRequest, AdapterError>;
 
     /// Optional live channel for frontends that support it (plugin, desktop GUI).
     fn subscribe(&self, events: EventStream) -> Option<Subscription> { None }
@@ -1226,11 +1412,38 @@ pub trait FrontendAdapter: Send + Sync {
 }
 
 pub struct FrontendCapabilities {
-    pub frontmatter: bool,      // supports YAML frontmatter rendering
-    pub sidecar_files: bool,    // can open adjacent .md files
-    pub live_plugin: bool,      // localhost HTTP/WS plugin installed
-    pub graph_view: bool,       // can render a graph / DAG natively
-    pub max_frontmatter_fields: usize,  // some editors choke on large YAML
+    pub frontmatter: bool,
+    pub sidecar_files: bool,
+    pub live_plugin: bool,
+    pub graph_view: bool,
+    pub max_frontmatter_fields: usize,
+}
+
+pub struct IdentityContext {
+    pub tenant: TenantId,
+    pub principal: HumanIdentity,      // resolved by IdentityProvider plugin
+    pub agent: Option<AgentIdentity>,  // present if the edit originated in an agent tool
+    pub signed_intent: SignedIntent,   // §8.0.b envelope: operation_id, nonce,
+                                       //  target_hash, scope, expires_at, signature
+}
+
+pub struct ReconcileRequest {
+    pub target_id: MemoryId,
+    pub expected_version: u64,         // optimistic version (mismatch → Conflict)
+    pub field_diff: FieldDiff,         // only mutable columns per §13.5.c table;
+                                       //  policy-sensitive diffs rejected before
+                                       //  they reach the MemoryStore
+    pub ctx: IdentityContext,
+}
+
+pub enum ReconcileError {
+    Conflict { current_version: u64 },
+    UnsignedIntent,
+    ExpiredIntent,
+    ReplayDetected,
+    PolicyDenied { gate: String, reason: String },
+    ImmutableFieldChanged { field: String },
+    InsufficientCapability { required: Capability },
 }
 ```
 
