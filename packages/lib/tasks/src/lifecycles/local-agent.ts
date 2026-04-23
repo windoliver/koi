@@ -116,7 +116,14 @@ export function createLocalAgentLifecycle(
           // Emit terminal state IMMEDIATELY — do not wait for the pipe to settle.
           // If the agent is non-cooperative, the pipe may never settle.
           emitTerminal(1, "\n[timed out]\n");
-          config.hardKill?.();
+          if (config.hardKill !== undefined) {
+            try {
+              config.hardKill();
+            } catch {
+              // hardKill failures (e.g. already-exited process) must not escape
+              // the timeout path and must not overwrite the terminal transition.
+            }
+          }
         }, config.timeout);
       }
 
@@ -167,7 +174,11 @@ export function createLocalAgentLifecycle(
       ]);
 
       if (!settled && entry.hardKill !== undefined) {
-        entry.hardKill();
+        try {
+          entry.hardKill();
+        } catch {
+          // hardKill failures (e.g. already-exited process) must not escape stop().
+        }
       }
     },
   };

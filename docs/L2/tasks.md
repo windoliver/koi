@@ -310,7 +310,7 @@ type system but not yet runnable (e.g., `dream`, `local_agent`).
 | Kind | Lifecycle |
 |------|-----------|
 | `local_shell` | Real — `createLocalShellLifecycle()` |
-| `local_agent` | Real — `createLocalAgentLifecycle()` (#1657) |
+| `local_agent` | Opt-in — `createLocalAgentLifecycle()` (#1657); stub in defaults (requires consumer-provided `run` callback) |
 | `remote_agent` | Stub — rejects on start |
 | `in_process_teammate` | Stub — rejects on start |
 | `dream` | Stub — rejects on start |

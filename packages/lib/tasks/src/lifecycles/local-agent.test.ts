@@ -427,6 +427,61 @@ describe("createLocalAgentLifecycle", () => {
     expect(hardKillCalled).toBe(true);
   });
 
+  test("throwing hardKill does not escape stop() or timeout", async () => {
+    const shortDrainLifecycle = createLocalAgentLifecycle({ drainTimeoutMs: 80 });
+    const output = createOutputStream();
+    let stuckResolve!: () => void;
+    const stuckLatch = new Promise<void>((r) => {
+      stuckResolve = r;
+    });
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      hardKill: () => {
+        stuckResolve();
+        throw new Error("hardKill threw");
+      },
+      run: async function* () {
+        yield "start";
+        await stuckLatch;
+      },
+    };
+    const task = await shortDrainLifecycle.start(taskItemId("task_15"), output, config);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // stop() must not throw even if hardKill throws
+    await expect(shortDrainLifecycle.stop(task)).resolves.toBeUndefined();
+  });
+
+  test("throwing hardKill on timeout does not escape the timeout callback", async () => {
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      timeout: 100,
+      onExit: (code) => {
+        exitCode = code;
+      },
+      hardKill: () => {
+        throw new Error("hardKill threw on timeout");
+      },
+      run: async function* () {
+        yield "start";
+        await new Promise<never>(() => {});
+      },
+    };
+    const task = await lifecycle.start(taskItemId("task_16"), output, config);
+    runningTasks.push(task);
+
+    // Should not throw despite hardKill throwing in the timeout callback
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    runningTasks.pop();
+
+    // onExit still fires correctly despite hardKill failure
+    expect(exitCode).toBe(1);
+  });
+
   test("inputs are forwarded to run callback", async () => {
     const output = createOutputStream();
     let capturedAgentType: string | undefined;
