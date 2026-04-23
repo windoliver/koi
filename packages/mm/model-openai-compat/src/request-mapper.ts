@@ -431,14 +431,14 @@ export function buildRequestBody(
   if (config.compat.supportsReasoning) {
     const td = config.compat.thinkingDisplay;
     if (td === "hidden") {
-      if (config.compat.supportsPromptCaching) {
-        // OpenRouter-specific: exclude reasoning tokens from the response.
+      if (config.compat.supportsReasoningExclude) {
+        // Provider supports the exclude shape (OpenRouter) — suppress reasoning tokens.
         body.reasoning = { exclude: true };
       }
       // else: fail closed — caller requested hidden reasoning; don't request
       // reasoning at all on endpoints that lack the exclude shape.
     } else if (td === "summarized") {
-      if (config.compat.supportsPromptCaching && effectiveModel.startsWith("anthropic/")) {
+      if (config.compat.supportsThinkingType && effectiveModel.startsWith("anthropic/")) {
         body.thinking = { type: "summarized" };
       }
       body.reasoning = { effort: config.compat.defaultReasoningEffort };

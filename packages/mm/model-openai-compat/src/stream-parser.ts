@@ -414,12 +414,11 @@ function flushBufferedItems(
   const chunks: ModelChunk[] = [];
   for (const item of bufferedItems) {
     if (item.kind === "text") {
+      // Text was already streamed live during feed(); push to richContent only
+      // so the final model response reflects correct arrival order.
       acc.richContent.push({ kind: "text", text: item.text });
-      // Deferred text that was suppressed during feed() — emit now in arrival order
-      chunks.push({ kind: "text_delta", delta: item.text });
     } else if (item.kind === "thinking") {
       acc.richContent.push({ kind: "thinking", text: item.text });
-      chunks.push({ kind: "thinking_delta", delta: item.text });
     } else {
       const slot = bufferedSlots[item.slotIdx];
       if (slot === undefined) continue;
@@ -542,13 +541,8 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
 
   if (delta.content !== undefined && delta.content !== null && delta.content.length > 0) {
     const r = processTextDelta(delta.content, ctx.state, ctx.acc, () => resetState(ctx));
+    output.push(...r.chunks);
     ctx.state = r.newState;
-    // In buffered mode after a tool call has been seen, suppress live text_delta —
-    // the segment is already recorded in currentTextSegment and will be emitted in
-    // arrival order from flushBufferedItems when finish() is called.
-    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
-      output.push(...r.chunks);
-    }
   }
 
   // Check multiple reasoning field names — providers use different fields:
@@ -557,10 +551,8 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
   const reasoningContent = findReasoningContent(delta);
   if (reasoningContent !== undefined) {
     const r = processThinkingDelta(reasoningContent, ctx.state, ctx.acc, () => resetState(ctx));
+    output.push(...r.chunks);
     ctx.state = r.newState;
-    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
-      output.push(...r.chunks);
-    }
   }
 
   if (delta.tool_calls !== undefined) {

@@ -829,7 +829,7 @@ describe("buildRequestBody — thinkingDisplay", () => {
       compat: { supportsReasoning: true, thinkingDisplay: "hidden" },
     });
     const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
-    // supportsPromptCaching=false → fail closed: don't request reasoning at all
+    // supportsReasoningExclude=false → fail closed: don't request reasoning at all
     expect(body.reasoning).toBeUndefined();
     expect(body.thinking).toBeUndefined();
   });
@@ -842,8 +842,41 @@ describe("buildRequestBody — thinkingDisplay", () => {
       compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
     });
     const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
-    // supportsPromptCaching=false → thinking.type must not be sent
+    // supportsThinkingType=false → thinking.type must not be sent
     expect(body.reasoning).toEqual({ effort: "medium" });
     expect(body.thinking).toBeUndefined();
+  });
+
+  test("custom proxy with explicit supportsReasoningExclude=true can use hidden mode", () => {
+    // A non-OpenRouter proxy that explicitly opts in to the exclude shape should
+    // get reasoning: { exclude: true } — the capability flag, not the URL, governs.
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      compat: {
+        supportsReasoning: true,
+        thinkingDisplay: "hidden",
+        supportsReasoningExclude: true,
+      },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ exclude: true });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test("custom proxy with explicit supportsThinkingType=true can use summarized mode", () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      model: "anthropic/claude-sonnet-4",
+      compat: {
+        supportsReasoning: true,
+        thinkingDisplay: "summarized",
+        supportsThinkingType: true,
+      },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.thinking).toEqual({ type: "summarized" });
+    expect(body.reasoning).toEqual({ effort: "medium" });
   });
 });

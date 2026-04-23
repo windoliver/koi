@@ -707,6 +707,39 @@ describe("adapter: buffered tool streaming retry suppression", () => {
     }
   });
 
+  test("truncated buffered stream with partial JSON args yields retryable transport error", async () => {
+    // Stream sends tool name + partial JSON args, then dies. The partial args fail
+    // JSON parsing at finish() time, but since the stream was truncated (not the
+    // provider sending bad data), the error should be a retryable EXTERNAL error —
+    // not a non-retryable VALIDATION error that hides the transport failure.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"bpj","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"my_fn","arguments":"{\\"a\\":"}}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends with partial JSON — no finish_reason, no [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      // Truncation is a retryable transport failure, not a validation error
+      expect(error.code).toBe("EXTERNAL");
+      expect(error.retryable).toBe(true);
+      expect(error.message).toContain("truncation");
+    }
+  });
+
   test("truncated buffered stream with partial fragment (no name yet) yields retryable error", async () => {
     // Provider sent a tool_calls delta with only an index and id but no function name yet,
     // then the stream died. No complete tool call was dispatched, so retry must be allowed.

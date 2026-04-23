@@ -976,40 +976,36 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     expect(acc.richContent[2]).toMatchObject({ kind: "tool_call", name: "tool_b" });
   });
 
-  test("post-tool text_delta emitted at finish in correct order, not during feed", () => {
-    // In buffered mode the live stream must not emit post-tool text_delta before
-    // tool events. Downstream consumers relying on monotonic stream order would
-    // mis-sequence UI updates or event-driven logic otherwise.
+  test("text_delta streams live in buffered mode; richContent is ordered correctly at finish", () => {
+    // In buffered mode, text_delta chunks stream live as they arrive (no stall).
+    // The richContent accumulated in the model response reflects correct arrival
+    // order (pre-tool text, tool_call, post-tool text), even though the live stream
+    // may show text before the tool events at finish().
     const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
 
-    // Pre-tool text — must arrive live during feed
+    // Pre-tool text — arrives live during feed
     const preFeedChunks = parser.feed({
       id: "c1",
       choices: [{ index: 0, delta: { content: "pre" }, finish_reason: null }],
     });
     expect(preFeedChunks.some((c) => c.kind === "text_delta")).toBe(true);
 
-    // Tool call buffered — no live events
+    // Tool call buffered — no live tool events
     parser.feed(makeToolChunk(0, "call_1", "fn", '{"x":1}'));
 
-    // Post-tool text — must NOT arrive live
+    // Post-tool text — also arrives live (no stall)
     const postFeedChunks = parser.feed({
       id: "c2",
       choices: [{ index: 0, delta: { content: "post" }, finish_reason: "stop" }],
     });
-    expect(postFeedChunks.some((c) => c.kind === "text_delta")).toBe(false);
+    expect(postFeedChunks.some((c) => c.kind === "text_delta")).toBe(true);
 
-    // At finish: tool events first, then post-tool text_delta
+    // At finish: tool events are emitted (richContent ordering enforced)
     const finishChunks = parser.finish();
-    const kinds = finishChunks.map((c) => c.kind);
-    const toolStartIdx = kinds.indexOf("tool_call_start");
-    const toolEndIdx = kinds.indexOf("tool_call_end");
-    const postTextIdx = kinds.indexOf("text_delta");
-    expect(toolStartIdx).toBeGreaterThanOrEqual(0);
-    expect(toolEndIdx).toBeGreaterThan(toolStartIdx);
-    expect(postTextIdx).toBeGreaterThan(toolEndIdx);
+    expect(finishChunks.some((c) => c.kind === "tool_call_start")).toBe(true);
+    expect(finishChunks.some((c) => c.kind === "tool_call_end")).toBe(true);
 
-    // richContent also in correct order
+    // richContent: pre-tool text, tool_call, post-tool text — correct arrival order
     const acc = parser.getAccumulator();
     expect(acc.richContent).toHaveLength(3);
     expect(acc.richContent[0]).toMatchObject({ kind: "text", text: "pre" });

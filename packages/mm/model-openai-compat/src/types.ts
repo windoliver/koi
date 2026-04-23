@@ -55,6 +55,18 @@ export interface ProviderCompat {
   readonly supportsToolStreaming?: boolean | undefined;
   /** How thinking/reasoning blocks should be displayed. Default: "full". */
   readonly thinkingDisplay?: "full" | "summarized" | "hidden" | undefined;
+  /**
+   * Whether the provider supports `reasoning: { exclude: true }` to suppress
+   * reasoning tokens from the response. OpenRouter-specific extension.
+   * Default: false.
+   */
+  readonly supportsReasoningExclude?: boolean | undefined;
+  /**
+   * Whether the provider supports `thinking: { type: "..." }` request field.
+   * OpenRouter+Anthropic-specific extension for summarized thinking.
+   * Default: false.
+   */
+  readonly supportsThinkingType?: boolean | undefined;
 }
 
 /** Fully resolved compat with all fields set. */
@@ -72,6 +84,10 @@ export interface ResolvedCompat {
   readonly defaultReasoningEffort: "low" | "medium" | "high";
   readonly supportsToolStreaming: boolean;
   readonly thinkingDisplay: "full" | "summarized" | "hidden";
+  /** Whether `reasoning: { exclude: true }` is supported (OpenRouter-specific). */
+  readonly supportsReasoningExclude: boolean;
+  /** Whether `thinking: { type: "..." }` is supported (OpenRouter+Anthropic-specific). */
+  readonly supportsThinkingType: boolean;
 }
 
 const _DEFAULT_COMPAT: ResolvedCompat = {
@@ -88,6 +104,8 @@ const _DEFAULT_COMPAT: ResolvedCompat = {
   defaultReasoningEffort: "medium",
   supportsToolStreaming: true,
   thinkingDisplay: "full",
+  supportsReasoningExclude: false,
+  supportsThinkingType: false,
 };
 
 /**
@@ -129,6 +147,9 @@ function detectCompat(baseUrl: string): ResolvedCompat {
     defaultReasoningEffort: "medium",
     supportsToolStreaming: true,
     thinkingDisplay: "full",
+    // OpenRouter-specific reasoning wire shapes — separate from prompt caching
+    supportsReasoningExclude: isOpenRouter,
+    supportsThinkingType: isOpenRouter,
   };
 }
 
@@ -164,6 +185,9 @@ export function resolveCompat(
     supportsToolStreaming:
       overrides.supportsToolStreaming ?? withModelOverrides.supportsToolStreaming,
     thinkingDisplay: overrides.thinkingDisplay ?? withModelOverrides.thinkingDisplay,
+    supportsReasoningExclude:
+      overrides.supportsReasoningExclude ?? withModelOverrides.supportsReasoningExclude,
+    supportsThinkingType: overrides.supportsThinkingType ?? withModelOverrides.supportsThinkingType,
   };
 }
 

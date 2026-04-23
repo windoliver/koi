@@ -429,10 +429,10 @@ async function* streamOnce(
       let hadCompleteToolCall = false;
       for (const chunk of parser.finish()) {
         if (chunk.kind === "tool_call_end") hadCompleteToolCall = true;
-        if (chunk.kind === "error") {
-          yield chunk;
-          return;
-        }
+        // Skip validation errors from finish() — on a truncated stream, parse
+        // failures are symptoms of truncation, not provider data bugs. The
+        // transport error below is the authoritative failure signal.
+        if (chunk.kind === "error") continue;
         yield chunk;
       }
       // Retryable unless at least one complete tool call was dispatched — retrying
@@ -474,10 +474,8 @@ async function* streamOnce(
     let hadCompleteToolCall = false;
     for (const chunk of parser.finish()) {
       if (chunk.kind === "tool_call_end") hadCompleteToolCall = true;
-      if (chunk.kind === "error") {
-        yield chunk;
-        return;
-      }
+      // Skip validation errors — transport failure is the authoritative signal
+      if (chunk.kind === "error") continue;
       yield chunk;
     }
 
