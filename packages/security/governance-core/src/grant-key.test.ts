@@ -35,4 +35,16 @@ describe("computeGrantKey", () => {
     const b = computeGrantKey("tool_call", { x: null });
     expect(a).toBe(b);
   });
+
+  it("sorts keys in objects nested inside arrays", () => {
+    const a = computeGrantKey("tool_call", { items: [{ b: 2, a: 1 }] });
+    const b = computeGrantKey("tool_call", { items: [{ a: 1, b: 2 }] });
+    expect(a).toBe(b);
+  });
+
+  it("treats undefined properties as absent", () => {
+    const a = computeGrantKey("tool_call", { x: 1, y: undefined as unknown as never });
+    const b = computeGrantKey("tool_call", { x: 1 });
+    expect(a).toBe(b);
+  });
 });

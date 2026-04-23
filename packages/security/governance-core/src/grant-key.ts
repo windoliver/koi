@@ -10,6 +10,8 @@ import type { PolicyRequestKind } from "@koi/core/governance-backend";
  *   - Object keys are sorted recursively.
  *   - Arrays preserve order (semantically meaningful).
  *   - `undefined` values are dropped (JSON semantics).
+ *   - Values with a `toJSON()` method (e.g., `Date`) are serialized via
+ *     that method before canonicalization (standard JSON.stringify behavior).
  */
 export function computeGrantKey(kind: PolicyRequestKind, payload: JsonObject): string {
   const canonical = canonicalJsonStringify({ kind, payload });
