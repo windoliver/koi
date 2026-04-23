@@ -77,15 +77,29 @@ export function buildResource(mode: "tui" | "headless"): Resource {
     attrs["service.name"] = serviceName;
   }
 
+  // Guard service.name — empty override from variable substitution would make
+  // spans ungroupable in any collector. Fall back to the Koi default.
+  if (attrs["service.name"] !== undefined && attrs["service.name"].length === 0) {
+    process.stderr.write(
+      '[koi] OTel: "service.name" was set to an empty string — ignoring override, keeping default "koi".\n',
+    );
+    attrs["service.name"] = "koi";
+  }
+
   return defaultResource().merge(resourceFromAttributes(attrs));
 }
 
 /**
  * Parse OTEL_RESOURCE_ATTRIBUTES into a key→value map.
  *
- * Returns `undefined` if any pair is malformed or any value fails
- * percent-decoding — fail-closed so operators get a clean error rather than
- * partially-wrong resource metadata on their spans.
+ * Follows OTel spec: comma-separated key=value pairs, values split on the
+ * first "=" only (so "foo=a=b" → key "foo", value "a=b"), empty values
+ * are accepted (spec-compliant), empty segments from trailing/double commas
+ * are skipped.
+ *
+ * Returns `undefined` if any pair has a missing/empty key, missing "=", or
+ * a percent-decode failure — fail-closed so operators see a clean warning
+ * rather than partially-wrong resource metadata.
  *
  * Exported for unit testing — not part of the public CLI API.
  */
@@ -93,20 +107,17 @@ export function parseOtelResourceAttributes(raw: string): Record<string, string>
   const result: Record<string, string> = {};
   for (const pair of raw.split(",")) {
     const trimmed = pair.trim();
-    if (trimmed.length === 0) continue; // skip empty segments from trailing commas
+    if (trimmed.length === 0) continue; // empty segment from trailing/double comma — skip
     const eq = trimmed.indexOf("=");
-    if (eq <= 0) return undefined; // no "=" or "=" is first char → malformed
+    if (eq < 0) return undefined; // no "=" at all → malformed
     const key = trimmed.slice(0, eq).trim();
     if (key.length === 0) return undefined; // empty key → malformed
     const rawValue = trimmed.slice(eq + 1);
-    let value: string;
     try {
-      value = decodeURIComponent(rawValue);
+      result[key] = decodeURIComponent(rawValue); // empty value is allowed per spec
     } catch {
       return undefined; // percent-decode failure → malformed
     }
-    if (value.length === 0) return undefined; // empty value → malformed (prevents erasing defaults)
-    result[key] = value;
   }
   return result;
 }

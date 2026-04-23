@@ -149,8 +149,12 @@ describe("parseOtelResourceAttributes", () => {
     expect(parseOtelResourceAttributes("key=%GG")).toBeUndefined();
   });
 
-  test("returns undefined for empty value", () => {
-    expect(parseOtelResourceAttributes("service.name=")).toBeUndefined();
+  test("allows empty values (spec-compliant: optional attributes may be empty)", () => {
+    expect(parseOtelResourceAttributes("optional.tag=")).toEqual({ "optional.tag": "" });
+  });
+
+  test("accepts foo=a=b (splits on first = only per OTel spec)", () => {
+    expect(parseOtelResourceAttributes("foo=a=b")).toEqual({ foo: "a=b" });
   });
 
   test("skips empty segments from trailing/double commas", () => {
@@ -158,8 +162,8 @@ describe("parseOtelResourceAttributes", () => {
   });
 });
 
-describe("buildResource empty-value protection", () => {
-  test("service.name= in OTEL_RESOURCE_ATTRIBUTES does not blank out default", () => {
+describe("buildResource service.name protection", () => {
+  test("service.name= in OTEL_RESOURCE_ATTRIBUTES falls back to default with warning", () => {
     const stderrWrites: string[] = [];
     const origWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = (chunk: string | Uint8Array) => {
@@ -170,9 +174,18 @@ describe("buildResource empty-value protection", () => {
     const resource = buildResource("headless");
     process.stderr.write = origWrite;
 
-    // Default must be preserved — empty override must be rejected
+    // service.name must never be empty — fall back to "koi" with a warning
     expect(resource.attributes["service.name"]).toBe("koi");
-    expect(stderrWrites.some((w) => w.includes("malformed"))).toBe(true);
+    expect(stderrWrites.some((w) => w.includes("service.name"))).toBe(true);
+  });
+
+  test("non-service-name empty values are allowed (spec-compliant)", () => {
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "optional.tag=,region=us-east-1";
+    const resource = buildResource("headless");
+    expect(resource.attributes["optional.tag"]).toBe("");
+    expect(resource.attributes.region).toBe("us-east-1");
+    // service.name default must still be intact
+    expect(resource.attributes["service.name"]).toBe("koi");
   });
 });
 
