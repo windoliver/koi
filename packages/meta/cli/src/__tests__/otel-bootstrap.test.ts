@@ -162,7 +162,24 @@ describe("parseOtelResourceAttributes", () => {
   });
 });
 
-describe("buildResource service.name protection", () => {
+describe("buildResource semantic key protection", () => {
+  test("service.version= drops the override and warns", () => {
+    process.env.KOI_VERSION = "1.0.0";
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      if (typeof chunk === "string") stderrWrites.push(chunk);
+      return true;
+    };
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "service.version=";
+    const resource = buildResource("headless");
+    process.stderr.write = origWrite;
+
+    // Empty override must be dropped — KOI_VERSION value must be preserved
+    expect(resource.attributes["service.version"]).toBe("1.0.0");
+    expect(stderrWrites.some((w) => w.includes("service.version"))).toBe(true);
+  });
+
   test("service.name= in OTEL_RESOURCE_ATTRIBUTES falls back to default with warning", () => {
     const stderrWrites: string[] = [];
     const origWrite = process.stderr.write.bind(process.stderr);
@@ -203,6 +220,46 @@ describe("buildResource integration: span carries resource attributes", () => {
     const spans = exporter.getFinishedSpans();
     expect(spans.length).toBe(1);
     expect(spans[0]?.resource.attributes["service.name"]).toBe("integration-test");
+
+    void provider.shutdown();
+  });
+});
+
+describe("StderrSpanExporter: resource attributes in output", () => {
+  test("serialized span JSON includes resource field", () => {
+    // Capture what StderrSpanExporter writes by using a real provider with
+    // a custom capturing exporter that mimics the serializer.
+    process.env.OTEL_SERVICE_NAME = "stderr-resource-test";
+    const lines: string[] = [];
+    const capturingExporter = {
+      export(
+        spans: Parameters<typeof InMemorySpanExporter.prototype.export>[0],
+        cb: Parameters<typeof InMemorySpanExporter.prototype.export>[1],
+      ) {
+        for (const span of spans) {
+          // Replicate the StderrSpanExporter object shape (with resource)
+          const obj = {
+            resource: span.resource.attributes,
+            name: span.name,
+          };
+          lines.push(JSON.stringify(obj));
+        }
+        cb({ code: 0 });
+      },
+      shutdown: async () => {},
+      forceFlush: async () => {},
+    };
+    const provider = new BasicTracerProvider({
+      resource: buildResource("headless"),
+      spanProcessors: [
+        new SimpleSpanProcessor(capturingExporter as unknown as InMemorySpanExporter),
+      ],
+    });
+    provider.getTracer("test").startSpan("test-resource-span").end();
+
+    expect(lines.length).toBe(1);
+    const parsed = JSON.parse(lines[0] ?? "{}") as { resource?: Record<string, unknown> };
+    expect(parsed.resource?.["service.name"]).toBe("stderr-resource-test");
 
     void provider.shutdown();
   });

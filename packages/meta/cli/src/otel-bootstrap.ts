@@ -51,6 +51,10 @@ export function buildResource(mode: "tui" | "headless"): Resource {
     attrs["service.version"] = koiVersion;
   }
 
+  // Snapshot Koi-computed defaults before applying operator overrides.
+  // Used to restore identity keys if an override resolves to empty.
+  const koiSnapshot = { ...attrs };
+
   // OTEL_RESOURCE_ATTRIBUTES — comma-separated key=value pairs, values may be
   // percent-encoded per OTel spec. Overwrites any matching default above.
   //
@@ -77,13 +81,29 @@ export function buildResource(mode: "tui" | "headless"): Resource {
     attrs["service.name"] = serviceName;
   }
 
-  // Guard service.name — empty override from variable substitution would make
-  // spans ungroupable in any collector. Fall back to the Koi default.
-  if (attrs["service.name"] !== undefined && attrs["service.name"].length === 0) {
-    process.stderr.write(
-      '[koi] OTel: "service.name" was set to an empty string — ignoring override, keeping default "koi".\n',
-    );
-    attrs["service.name"] = "koi";
+  // Guard Koi-owned semantic keys against empty overrides.
+  // Templated env vars that resolve to empty would silently collapse telemetry
+  // identity (service, version, mode) into unlabeled buckets.
+  // Restore from the pre-override snapshot; delete if Koi had no value either.
+  const guardKeys = [
+    "service.name",
+    "service.version",
+    "koi.mode",
+    "process.runtime.name",
+    "process.runtime.version",
+  ] as const;
+  for (const key of guardKeys) {
+    if (attrs[key] !== undefined && attrs[key].length === 0) {
+      process.stderr.write(
+        `[koi] OTel: "${key}" was set to an empty string — ignoring override.\n`,
+      );
+      const koiValue = koiSnapshot[key];
+      if (koiValue !== undefined) {
+        attrs[key] = koiValue;
+      } else {
+        delete attrs[key];
+      }
+    }
   }
 
   return defaultResource().merge(resourceFromAttributes(attrs));
@@ -287,6 +307,7 @@ class StderrSpanExporter implements SpanExporter {
   export(spans: readonly ReadableSpan[], resultCallback: (result: { code: number }) => void): void {
     for (const span of spans) {
       const obj = {
+        resource: span.resource.attributes,
         traceId: span.spanContext().traceId,
         spanId: span.spanContext().spanId,
         parentSpanId: span.parentSpanContext?.spanId,
