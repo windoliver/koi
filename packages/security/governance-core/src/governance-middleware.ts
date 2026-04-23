@@ -310,6 +310,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     // Inflight coalescing by askId.
     let pending = inflightAsks.get(verdict.askId);
+    const isCreator = pending === undefined;
     if (pending === undefined) {
       const approvalReq: ApprovalRequest = {
         toolId: `governance:${kind}`,
@@ -360,7 +361,12 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
         return;
       case "always-allow":
         ensureSessionGrantSet(sId).add(grantKey);
-        if (decision.scope === "always" && onApprovalPersist !== undefined) {
+        // Only the coalescing creator fires the persistence side-effect.
+        // Coalesced callers await the same decision but must not double-write,
+        // since `onApprovalPersist` backends are not documented as idempotent.
+        // The grant set add above is idempotent, so all callers still
+        // benefit from the session-scoped fast-path on subsequent gates.
+        if (isCreator && decision.scope === "always" && onApprovalPersist !== undefined) {
           onApprovalPersist({
             kind,
             agentId: toAgentId(ctx.session.agentId),
@@ -394,6 +400,25 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
             },
           },
         );
+      default: {
+        // Exhaustiveness guard — fail closed on unknown decision kinds.
+        // If `ApprovalDecision` gains a new variant, this assignment
+        // breaks the build and forces explicit handling rather than
+        // silently falling through at a governance checkpoint.
+        const exhaustive: never = decision;
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `Unknown approval decision: ${JSON.stringify(exhaustive)}`,
+          {
+            context: {
+              agentId: ctx.session.agentId,
+              sessionId: sId,
+              kind,
+              askId: verdict.askId,
+            },
+          },
+        );
+      }
     }
   }
 
