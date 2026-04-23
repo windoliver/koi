@@ -172,6 +172,20 @@ describe("parseOtelResourceAttributes", () => {
   test("skips empty segments from trailing/double commas", () => {
     expect(parseOtelResourceAttributes("a=1,,b=2,")).toEqual({ a: "1", b: "2" });
   });
+
+  test("decodes percent-encoded keys", () => {
+    expect(parseOtelResourceAttributes("my%20key=value")).toEqual({ "my key": "value" });
+  });
+
+  test("returns undefined for key exceeding 255 characters", () => {
+    const longKey = "k".repeat(256);
+    expect(parseOtelResourceAttributes(`${longKey}=value`)).toBeUndefined();
+  });
+
+  test("returns undefined for value exceeding 255 characters", () => {
+    const longValue = "v".repeat(256);
+    expect(parseOtelResourceAttributes(`key=${longValue}`)).toBeUndefined();
+  });
 });
 
 describe("buildResource semantic key protection", () => {
@@ -253,29 +267,36 @@ describe("buildResource integration: span carries resource attributes", () => {
   });
 });
 
-describe("StderrSpanExporter: resource in output is limited to Koi-owned keys", () => {
-  test("includes Koi identity keys but excludes arbitrary OTEL_RESOURCE_ATTRIBUTES values", () => {
-    // Operator supplies a sensitive-looking value alongside Koi-owned keys.
-    // The exporter must only emit the known-safe Koi keys, not the arbitrary one.
+describe("StderrSpanExporter: operator OTEL_RESOURCE_ATTRIBUTES appear in serialized output", () => {
+  test("all resource attributes are serialized — operator-supplied attrs visible in headless output", () => {
+    // Operators set OTEL_RESOURCE_ATTRIBUTES to route and filter spans in their
+    // logging pipeline. The default headless exporter must include them so the
+    // feature works without an OTLP collector.
     process.env.OTEL_SERVICE_NAME = "stderr-resource-test";
-    process.env.OTEL_RESOURCE_ATTRIBUTES = "internal.token=secret123,deployment.environment=prod";
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment=prod,region=us-east-1";
 
-    const exporter = new InMemorySpanExporter();
     const provider = new BasicTracerProvider({
       resource: buildResource("headless"),
-      spanProcessors: [new SimpleSpanProcessor(exporter)],
+      spanProcessors: [new SimpleSpanProcessor(new InMemorySpanExporter())],
     });
-    provider.getTracer("test").startSpan("test-resource-span").end();
-    const spans = exporter.getFinishedSpans();
+    const inMemExporter = new InMemorySpanExporter();
+    const inMemProvider = new BasicTracerProvider({
+      resource: buildResource("headless"),
+      spanProcessors: [new SimpleSpanProcessor(inMemExporter)],
+    });
+    inMemProvider.getTracer("test").startSpan("test-resource-span").end();
+    const spans = inMemExporter.getFinishedSpans();
+    void inMemProvider.shutdown();
     void provider.shutdown();
+
     expect(spans.length).toBe(1);
     const resourceAttrs = spans[0]?.resource.attributes ?? {};
     // Koi identity keys must be present
     expect(resourceAttrs["service.name"]).toBe("stderr-resource-test");
     expect(resourceAttrs["koi.mode"]).toBe("headless");
-    // Operator keys are in the resource but must NOT appear in StderrSpanExporter output.
-    // (We verify they exist in the resource itself to confirm they were applied.)
-    expect(resourceAttrs["internal.token"]).toBe("secret123");
+    // Operator-supplied keys must also be in the resource so StderrSpanExporter
+    // can serialize them when it writes span.resource.attributes directly.
     expect(resourceAttrs["deployment.environment"]).toBe("prod");
+    expect(resourceAttrs.region).toBe("us-east-1");
   });
 });

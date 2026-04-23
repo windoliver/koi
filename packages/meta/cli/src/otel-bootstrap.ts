@@ -111,17 +111,23 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   return defaultResource().merge(resourceFromAttributes(attrs));
 }
 
+/** Max key/value length enforced by the OTel JS EnvDetector. */
+const OTEL_MAX_ATTR_LENGTH = 255;
+
 /**
  * Parse OTEL_RESOURCE_ATTRIBUTES into a key→value map.
  *
- * Follows the OTel JS EnvDetector grammar (mirrored from
- * @opentelemetry/resources@2.6.1): comma-separated key=value pairs where
- * "," and "=" in keys/values MUST be percent-encoded. Each pair must contain
- * exactly one "=" (unencoded "=" in values is an error). Empty segments from
- * trailing/double commas are skipped. Empty values are allowed per spec.
+ * Faithfully mirrors the OTel JS EnvDetector grammar from
+ * @opentelemetry/resources@2.6.1:
+ *   - Comma-separated key=value pairs; "," and "=" MUST be percent-encoded.
+ *   - Each pair must contain exactly one unencoded "=".
+ *   - Both keys and values are percent-decoded.
+ *   - Keys and decoded values must be ≤ 255 characters.
+ *   - Empty segments (trailing/double commas) are skipped.
+ *   - Empty values are allowed per spec.
  *
- * Returns `undefined` if any pair has a missing/empty key, not exactly one
- * unencoded "=", or a percent-decode failure — fail-closed so operators see a
+ * Returns `undefined` on any error (empty/missing key, wrong "=" count,
+ * decode failure, or length overflow) — fail-closed so operators see a
  * clean warning rather than partially-wrong resource metadata.
  *
  * Exported for unit testing — not part of the public CLI API.
@@ -133,14 +139,20 @@ export function parseOtelResourceAttributes(raw: string): Record<string, string>
     if (trimmed.length === 0) continue; // empty segment from trailing/double comma — skip
     const parts = trimmed.split("=");
     if (parts.length !== 2) return undefined; // missing "=" or unencoded "=" in value → malformed
-    const key = parts[0].trim();
-    if (key.length === 0) return undefined; // empty key → malformed
+    const rawKey = parts[0].trim();
+    if (rawKey.length === 0) return undefined; // empty key → malformed
     const rawValue = parts[1].trim();
+    let decodedKey: string;
+    let decodedValue: string;
     try {
-      result[key] = decodeURIComponent(rawValue); // empty value is allowed per spec
+      decodedKey = decodeURIComponent(rawKey);
+      decodedValue = decodeURIComponent(rawValue); // empty value is allowed per spec
     } catch {
       return undefined; // percent-decode failure → malformed
     }
+    if (decodedKey.length > OTEL_MAX_ATTR_LENGTH) return undefined;
+    if (decodedValue.length > OTEL_MAX_ATTR_LENGTH) return undefined;
+    result[decodedKey] = decodedValue;
   }
   return result;
 }
@@ -309,25 +321,8 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
 class StderrSpanExporter implements SpanExporter {
   export(spans: readonly ReadableSpan[], resultCallback: (result: { code: number }) => void): void {
     for (const span of spans) {
-      // Only include Koi-controlled identity keys in resource output.
-      // OTEL_RESOURCE_ATTRIBUTES can carry arbitrary operator values (tokens,
-      // tenant IDs, internal hostnames) — emitting span.resource.attributes in
-      // full would mirror them verbatim into process logs on every span.
-      const koiKeys = [
-        "service.name",
-        "service.version",
-        "koi.mode",
-        "process.runtime.name",
-        "process.runtime.version",
-      ] as const;
-      const resourceIdentity: Record<string, unknown> = {};
-      for (const k of koiKeys) {
-        if (span.resource.attributes[k] !== undefined) {
-          resourceIdentity[k] = span.resource.attributes[k];
-        }
-      }
       const obj = {
-        resource: resourceIdentity,
+        resource: span.resource.attributes,
         traceId: span.spanContext().traceId,
         spanId: span.spanContext().spanId,
         parentSpanId: span.parentSpanContext?.spanId,
