@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PATH_BYPASS_CASES, SAFE_CASES } from "./bypass-cases.js";
 import { validatePath } from "./path-validator.js";
 
@@ -128,6 +131,51 @@ describe("validatePath", () => {
         expect(result.ok).toBe(!shouldBlock);
       });
     }
+  });
+
+  describe("symlink containment (realpath canonicalization)", () => {
+    test("BUG regression: blocks write to non-existent leaf beyond symlink pointing outside base", () => {
+      // Regression for symlink-bypass bug: when realpathSync threw ENOENT on a
+      // non-existent leaf, the fallback used string-only resolve() which did
+      // NOT follow symlinks — allowing workspace/evil/new-file to land in /etc.
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-symlink-"));
+      try {
+        const ws = join(base, "workspace");
+        mkdirSync(ws);
+        symlinkSync("/etc", join(ws, "evil"));
+        const result = validatePath(join(ws, "evil/brand-new-file"), ws);
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.category).toBe("path-traversal");
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    test("BUG regression: allows creating a new file under a base dir whose path contains a symlink prefix (macOS /tmp → /private/tmp)", () => {
+      // Regression: on macOS, /tmp is a symlink to /private/tmp. canonicalBase
+      // went through realpathSync but canonicalPath fell back to string-only
+      // resolve(), so they had different prefixes and every create-new-file
+      // under /tmp/<base> was blocked as a false positive.
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-tmpsym-"));
+      try {
+        const ws = join(base, "workspace");
+        mkdirSync(ws);
+        const result = validatePath(join(ws, "new-file.txt"), ws);
+        expect(result.ok).toBe(true);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    test("allows non-existent leaf under base with no symlink tricks", () => {
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-new-"));
+      try {
+        const result = validatePath(join(base, "deep/nested/new.txt"), base);
+        expect(result.ok).toBe(true);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("ClassificationResult shape", () => {

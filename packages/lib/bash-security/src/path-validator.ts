@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { matchPatterns } from "./match.js";
 import type { ClassificationResult, ThreatPattern } from "./types.js";
 
@@ -43,6 +43,33 @@ const PATH_TRAVERSAL_PATTERNS: readonly ThreatPattern[] = [
 const NON_PRINTABLE = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 /**
+ * Canonicalize a path by realpath'ing the longest existing prefix, then
+ * appending the non-existent remainder verbatim.
+ *
+ * Why: `realpathSync` throws ENOENT when any path component is missing. A
+ * naive fallback to `resolve()` does NOT follow symlinks, which lets an
+ * attacker plant a symlink inside the workspace pointing outside and then
+ * write to a non-existent leaf under it. Walking up to the longest existing
+ * prefix guarantees the symlink resolution even when the leaf doesn't exist.
+ */
+function canonicalizeExisting(p: string): string {
+  const absolute = resolve(p);
+  const suffix: string[] = [];
+  let cursor = absolute;
+  while (true) {
+    try {
+      const real = realpathSync(cursor);
+      return suffix.length === 0 ? real : join(real, ...suffix);
+    } catch {
+      const parent = dirname(cursor);
+      if (parent === cursor) return absolute;
+      suffix.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+/**
  * Validate a filesystem path string against traversal sequences, encoding
  * bypasses, null bytes, and non-printable characters.
  *
@@ -69,25 +96,12 @@ export function validatePath(path: string, baseDir?: string): ClassificationResu
   }
 
   // 3. Symlink-safe canonicalization and base-directory containment check.
-  //    path.resolve() is a pure string operation — it does NOT follow symlinks,
-  //    so a symlink under the workspace root pointing outside passes the prefix
-  //    check.  realpathSync() resolves the actual filesystem target.
-  //    Fall back to string-based resolve when a path does not yet exist
-  //    (e.g. a new directory about to be created) so we do not over-block.
+  //    Both sides go through the same walk — realpath the longest existing
+  //    prefix, append the non-existent remainder — so string comparison is
+  //    apples-to-apples even for leaves that don't exist yet.
   if (baseDir !== undefined) {
-    let canonicalBase: string;
-    let canonicalPath: string;
-    try {
-      canonicalBase = realpathSync(baseDir);
-    } catch {
-      canonicalBase = resolve(baseDir);
-    }
-    try {
-      canonicalPath = realpathSync(resolve(baseDir, path));
-    } catch {
-      canonicalPath = resolve(baseDir, path);
-    }
-    // Must be exactly the base or a descendant (with trailing slash to prevent prefix collision)
+    const canonicalBase = canonicalizeExisting(baseDir);
+    const canonicalPath = canonicalizeExisting(resolve(baseDir, path));
     const isContained =
       canonicalPath === canonicalBase || canonicalPath.startsWith(`${canonicalBase}/`);
     if (!isContained) {

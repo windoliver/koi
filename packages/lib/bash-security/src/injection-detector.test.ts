@@ -105,6 +105,29 @@ describe("detectInjection", () => {
     test("subshell grouping", () => {
       expect(detectInjection("(cd /tmp && ls)").ok).toBe(true);
     });
+
+    test("BUG regression: package name containing 'source' must not match source-command pattern", () => {
+      // `\bsource\b` matched `source-map`, `source-code-pro`, etc. because
+      // hyphen is a word boundary. Tighten to require command position.
+      expect(detectInjection("bun add source-map").ok).toBe(true);
+      expect(detectInjection("npm install source-map-support").ok).toBe(true);
+      expect(detectInjection("grep --source foo file").ok).toBe(true);
+    });
+
+    test("still blocks source at command position", () => {
+      expect(detectInjection("source /tmp/evil.sh").ok).toBe(false);
+      expect(detectInjection("echo ok; source /tmp/evil.sh").ok).toBe(false);
+      expect(detectInjection("  source /tmp/evil.sh").ok).toBe(false);
+    });
+  });
+
+  describe("unicode obfuscation normalization", () => {
+    test("BUG regression: fullwidth Latin bypasses regex unless normalized", () => {
+      // "ｒｍ" is fullwidth r + fullwidth m. Without NFKC normalization,
+      // \brm\b and friends never match — attacker smuggles dangerous commands
+      // by using fullwidth forms the shell still executes.
+      expect(detectInjection("ｅｖａｌ $(whoami)").ok).toBe(false);
+    });
   });
 
   describe("bypass case coverage", () => {

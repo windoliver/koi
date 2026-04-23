@@ -165,10 +165,25 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
     reason: "rsync to a remote path can copy workspace data off-machine",
   },
   {
-    // ssh with a remote host — can execute commands or open tunnels
-    regex: /\bssh\b/,
+    // ssh with a remote host — can execute commands or open tunnels.
+    // Lookbehind excludes path components (`.ssh/`, `/ssh/`) and word chars;
+    // lookahead excludes hyphen-suffixed local tools (`ssh-keygen`, `ssh-add`,
+    // `ssh-copy-id`) and word chars.
+    regex: /(?<![\w./-])ssh(?![-\w])/,
     category: "data-exfiltration",
     reason: "ssh can execute remote commands or tunnel data out-of-band",
+  },
+  {
+    // lftp — an enhanced FTP/SFTP/HTTP client, common exfil tool
+    regex: /\blftp\b/,
+    category: "data-exfiltration",
+    reason: "lftp can transfer files to remote FTP/SFTP/HTTP endpoints",
+  },
+  {
+    // tftp — trivial FTP, often used in firmware/staging exfil
+    regex: /\btftp\b/,
+    category: "data-exfiltration",
+    reason: "tftp can transfer files to remote TFTP endpoints",
   },
   {
     // curl file upload: -T / --upload-file
@@ -201,16 +216,22 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
  * workspace-scoped destructive ops are intentionally NOT caught here — the
  * user's approval remains the authority for workspace-scoped operations.
  */
+/**
+ * System-path target alternation shared by rm/chmod destructive patterns.
+ * Linux, macOS, and common top-level directories. `/tmp` is intentionally
+ * omitted so workspace-scoped operations stay allowed.
+ */
+const SYSTEM_PATH_TARGETS =
+  "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s)|\\$(?:\\{HOME\\}|HOME\\b)";
+
 const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
   {
     // rm with both -r and -f (any order, any flag grouping) targeting bare root,
     // a system top-level dir, `~`, or `$HOME`. Catches `rm -rf /`, `rm -Rf /etc`,
-    // `rm -fr /var`, `rm --recursive --force ~`.
-    // Matches `/`, `/*`, or `/<system_dir>` at a word boundary; whitespace or
-    // end-of-string terminates the target. Workspace-scoped paths like
-    // `/tmp/foo` intentionally do not match (they hit `/tmp` which is not listed).
-    regex:
-      /\brm\b[^\n#]*\s(?:--recursive\s+--force|--force\s+--recursive|-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)[^\n#]*?\s(?:\/(?:$|\s|\*|etc\b|usr\b|bin\b|boot\b|dev\b|lib(?:32|64)?\b|sbin\b|var\b|opt\b|root\b|srv\b|home\b)|~(?:$|\s)|\$HOME\b)/,
+    // `rm -fr /var`, `rm --recursive --force ~`, `rm -rf /Users/x`.
+    regex: new RegExp(
+      `\\brm\\b[^\\n#]*\\s(?:--recursive\\s+--force|--force\\s+--recursive|-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)[^\\n#]*?\\s(?:${SYSTEM_PATH_TARGETS})`,
+    ),
     category: "destructive",
     reason: "rm -rf targeting the root, a system directory, or the home directory is unrecoverable",
   },
@@ -233,10 +254,10 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
     reason: "fork bomb exhausts process slots and wedges the host",
   },
   {
-    // chmod -R 777 on root, a system dir, `~`, or `$HOME`. Mirrors the rm -rf
-    // target set — catastrophic permission change across the system.
-    regex:
-      /\bchmod\b[^\n#]*\s-[a-zA-Z]*R[a-zA-Z]*\s+[0-7]*777[0-7]*\s+(?:\/(?:$|\s|\*|etc\b|usr\b|bin\b|boot\b|dev\b|lib(?:32|64)?\b|sbin\b|var\b|opt\b|root\b|srv\b|home\b)|~(?:$|\s)|\$HOME\b)/,
+    // chmod -R 777 on a system path. Mirrors the rm -rf target set.
+    regex: new RegExp(
+      `\\bchmod\\b[^\\n#]*\\s-[a-zA-Z]*R[a-zA-Z]*\\s+[0-7]*777[0-7]*\\s+(?:${SYSTEM_PATH_TARGETS})`,
+    ),
     category: "destructive",
     reason: "chmod -R 777 on the root or a system directory is a catastrophic permission change",
   },
@@ -252,7 +273,66 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
     category: "destructive",
     reason: "init 0/6 halts or reboots the host",
   },
+  {
+    // git reset --hard — discards uncommitted work, unrecoverable
+    regex: /\bgit\b[^\n#]*\breset\b[^\n#]*--hard\b/,
+    category: "destructive",
+    reason: "git reset --hard discards uncommitted changes without confirmation",
+  },
+  {
+    // git push with --force / -f / --force-with-lease — rewrites remote history
+    regex: /\bgit\b[^\n#]*\bpush\b[^\n#]*(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b)/,
+    category: "destructive",
+    reason: "git push --force rewrites remote history and can erase teammates' work",
+  },
+  {
+    // git clean -f / -fd — deletes untracked files
+    regex: /\bgit\b[^\n#]*\bclean\b[^\n#]*\s-[a-zA-Z]*f/,
+    category: "destructive",
+    reason: "git clean -f permanently deletes untracked files",
+  },
+  {
+    // git branch -D — force-delete a branch, losing commits unique to it
+    regex: /\bgit\b[^\n#]*\bbranch\b[^\n#]*\s-[a-zA-Z]*D\b/,
+    category: "destructive",
+    reason: "git branch -D force-deletes a branch and can lose unmerged commits",
+  },
+  {
+    // git checkout -f / --force — discards local changes
+    regex: /\bgit\b[^\n#]*\bcheckout\b[^\n#]*(?:--force\b|\s-[a-zA-Z]*f\b)/,
+    category: "destructive",
+    reason: "git checkout -f discards uncommitted changes in the working tree",
+  },
+  {
+    // find -exec rm / -execdir rm — destructive chain that bypasses rm's -rf system-path guard
+    regex: /\bfind\b[^\n#]*-exec(?:dir)?\b[^\n#]*\brm\b/,
+    category: "destructive",
+    reason: "find -exec rm deletes matched files without per-file confirmation",
+  },
+  {
+    // find -delete — in-tree destructive deletion
+    regex: /\bfind\b[^\n#]*-delete\b/,
+    category: "destructive",
+    reason: "find -delete removes matched files in-place",
+  },
+  {
+    // xargs ... rm — delete-everything-from-stdin chain
+    regex: /\bxargs\b[^\n#]*\brm\b/,
+    category: "destructive",
+    reason: "xargs rm deletes files fed from stdin with no confirmation",
+  },
 ] as const;
+
+/**
+ * Extended persistence patterns — SSH directory writes via expansion forms
+ * that the literal `authorized_keys` substring check misses.
+ */
+const SSH_DIR_WRITE: ThreatPattern = {
+  // redirect / tee / cp / mv / install writing to ~/.ssh, $HOME/.ssh, ${HOME}/.ssh
+  regex: /(?:>+\s*|\b(?:tee|cp|mv|install)\b[^\n#]*\s)(?:~|\$HOME|\$\{HOME\})\/\.ssh\//,
+  category: "persistence",
+  reason: "Writing into ~/.ssh establishes persistent SSH access",
+};
 
 /** All classifier patterns ordered by threat severity (destructive first). */
 const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
@@ -260,6 +340,7 @@ const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
   ...REVERSE_SHELL_PATTERNS,
   ...PRIVILEGE_PATTERNS,
   ...PERSISTENCE_PATTERNS,
+  SSH_DIR_WRITE,
   ...RECON_PATTERNS,
   ...EXFILTRATION_PATTERNS,
 ] as const;
