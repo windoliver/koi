@@ -201,43 +201,43 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
     }
 
     try {
-      // Stat check: reject files exceeding 10x the cap to avoid reading
-      // multi-GB files into memory. Files between 1x-10x cap are read and
-      // truncated; files over 10x are skipped entirely.
       const MAX_READ_BYTES = MAX_FILE_BYTES * 10;
       const stat = statSync(validatedPath);
-      if (stat.size > MAX_READ_BYTES && ref.lineStart === undefined) continue;
 
-      // Sniff the first 4 KB to decide text vs. binary before reading the whole file.
-      // Line-range references (@file#L1-5) are text-only — skip binary detection.
-      if (ref.lineStart === undefined) {
-        const HEAD_SIZE = 4096;
-        const head = new Uint8Array(Math.min(stat.size, HEAD_SIZE));
-        const fd = openSync(validatedPath, "r");
-        try {
-          readSync(fd, head, 0, head.length, 0);
-        } finally {
-          closeSync(fd);
-        }
-        const detected = detectFromPath(ref.filePath, head);
-        const isText =
-          detected.mimeType === "text/plain" ||
-          detected.mimeType.startsWith("text/") ||
-          detected.mimeType === "application/json" ||
-          detected.mimeType === "application/xml" ||
-          detected.mimeType === "application/yaml" ||
-          detected.mimeType === "application/toml";
-        if (!isText) {
-          const base64 = readFileSync(validatedPath).toString("base64");
-          binaryInjections.push({
-            filePath: ref.filePath,
-            base64,
-            mimeType: detected.mimeType,
-            strongDetection: detected.confidence === "strong",
-          });
-          continue;
-        }
+      // Sniff the first 4 KB ALWAYS — binary detection runs before line-range
+      // handling so that @video.mp4#L1 can never fall through to a UTF-8 read.
+      const HEAD_SIZE = 4096;
+      const head = new Uint8Array(Math.min(stat.size, HEAD_SIZE));
+      const fd = openSync(validatedPath, "r");
+      try {
+        readSync(fd, head, 0, head.length, 0);
+      } finally {
+        closeSync(fd);
       }
+      const detected = detectFromPath(ref.filePath, head);
+      const isText =
+        detected.mimeType === "text/plain" ||
+        detected.mimeType.startsWith("text/") ||
+        detected.mimeType === "application/json" ||
+        detected.mimeType === "application/xml" ||
+        detected.mimeType === "application/yaml" ||
+        detected.mimeType === "application/toml";
+
+      if (!isText) {
+        // Binary file: line ranges are meaningless. Enforce size cap regardless.
+        if (stat.size > MAX_READ_BYTES) continue;
+        const base64 = readFileSync(validatedPath).toString("base64");
+        binaryInjections.push({
+          filePath: ref.filePath,
+          base64,
+          mimeType: detected.mimeType,
+          strongDetection: detected.confidence === "strong",
+        });
+        continue;
+      }
+
+      // Text file: apply the size cap only for full-file reads.
+      if (stat.size > MAX_READ_BYTES && ref.lineStart === undefined) continue;
 
       const raw = readFileSync(validatedPath, { encoding: "utf8" });
       let content: string;

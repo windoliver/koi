@@ -60,6 +60,14 @@ const TEXT_BYTES = new Uint8Array(
   Array.from("hello world\nthis is plain text\n", (c) => c.charCodeAt(0)),
 );
 const BINARY_BLOB = new Uint8Array([0x00, 0x01, 0x02, 0xfe, 0xff, 0x80, 0x90]);
+const XML_PLIST_BYTES = new Uint8Array(
+  Array.from("<?xml version='1.0'?>\n<!DOCTYPE plist>\n<plist version='1.0'><dict/>", (c) =>
+    c.charCodeAt(0),
+  ),
+);
+const XML_RSS_BYTES = new Uint8Array(
+  Array.from("<?xml version='1.0'?><rss version='2.0'>", (c) => c.charCodeAt(0)),
+);
 
 // ---------------------------------------------------------------------------
 // detectFromBytes — strong magic matches
@@ -154,6 +162,30 @@ describe("detectFromBytes — weak / null", () => {
   test("returns null for empty buffer", () => {
     const r = detectFromBytes(new Uint8Array(0));
     expect(r).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SVG vs generic XML disambiguation
+// ---------------------------------------------------------------------------
+
+describe("detectFromBytes — XML vs SVG", () => {
+  test("plist XML does NOT return image/svg+xml", () => {
+    const r = detectFromBytes(XML_PLIST_BYTES);
+    expect(r?.mimeType).not.toBe("image/svg+xml");
+    expect(r?.mimeType).toBe("application/xml");
+  });
+
+  test("RSS XML does NOT return image/svg+xml", () => {
+    const r = detectFromBytes(XML_RSS_BYTES);
+    expect(r?.mimeType).not.toBe("image/svg+xml");
+    expect(r?.mimeType).toBe("application/xml");
+  });
+
+  test("<?xml + <svg root still detects as SVG", () => {
+    const r = detectFromBytes(SVG_XML_BYTES);
+    expect(r?.mimeType).toBe("image/svg+xml");
+    expect(r?.confidence).toBe("strong");
   });
 });
 

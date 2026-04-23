@@ -3495,46 +3495,41 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // #10: resolve @-mention file references before sending to the engine.
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
-        // Binary files (images, PDFs) are sent as FileBlock/ImageBlock content blocks.
+        // Binary files are noted in the text prompt; multimodal block sending
+        // is deferred until all model adapters support non-text ContentBlocks.
         const resolved = resolveAtReferences(text, process.cwd());
-        const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
 
-        // Build binary content blocks from @-referenced binary files.
-        const binaryBlocks: import("@koi/core").ContentBlock[] = resolved.binaryInjections.map(
-          (b) => {
-            const dataUri = `data:${b.mimeType};base64,${b.base64}`;
-            if (b.mimeType.startsWith("image/")) {
-              return { kind: "image" as const, url: dataUri, alt: b.filePath };
-            }
-            return { kind: "file" as const, url: dataUri, mimeType: b.mimeType, name: b.filePath };
-          },
-        );
+        // Append a plain-text note for each binary @-reference so the model
+        // knows the file exists and its detected MIME type, without sending
+        // binary data through the (currently text-only) request mapper.
+        const binaryNote =
+          resolved.binaryInjections.length > 0
+            ? "\n\n" +
+              resolved.binaryInjections
+                .map(
+                  (b) =>
+                    `[Binary file: ${b.filePath} (${b.mimeType}) — multimodal attach not yet supported]`,
+                )
+                .join("\n")
+            : "";
+
+        const baseText =
+          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+        const modelText = baseText + binaryNote;
+
+        // No display blocks for binary @-references: showing an image thumbnail
+        // that the model never received would create a misleading transcript.
+        // The text note in modelText is the only user-visible signal.
 
         let stream: AsyncIterable<EngineEvent>;
         try {
-          // When binary files are attached, use kind:"messages" so content blocks
-          // are included alongside the text. Otherwise use the cheaper kind:"text".
-          const hasBinary = binaryBlocks.length > 0;
           stream = isLoopMode
             ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
-            : hasBinary
-              ? handle.runtime.run({
-                  kind: "messages",
-                  messages: [
-                    {
-                      content: [{ kind: "text" as const, text: modelText }, ...binaryBlocks],
-                      senderId: "user",
-                      timestamp: Date.now(),
-                    },
-                  ],
-                  signal: controller.signal,
-                })
-              : handle.runtime.run({
-                  kind: "text",
-                  text: modelText,
-                  signal: controller.signal,
-                });
+            : handle.runtime.run({
+                kind: "text",
+                text: modelText,
+                signal: controller.signal,
+              });
         } catch (err) {
           store.dispatch({
             kind: "add_error",
@@ -3548,7 +3543,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         store.dispatch({
           kind: "add_user_message",
           id: `user-${Date.now()}`,
-          blocks: [{ kind: "text", text }, ...imageBlocks, ...binaryBlocks],
+          blocks: [{ kind: "text", text }, ...imageBlocks],
         });
         // Snapshot cumulative metrics BEFORE the drain — must copy values since
         // store.getState() returns a SolidJS reactive proxy (reads reflect live state).

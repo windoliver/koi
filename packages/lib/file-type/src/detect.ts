@@ -134,16 +134,26 @@ export function detectFromBytes(bytes: Uint8Array): DetectedType | null {
     }
   }
 
-  // SVG: leading <?xml or <svg (after optional whitespace / BOM)
-  // Decode the first 64 bytes as latin-1 (safe for ASCII detection)
-  const headLen = Math.min(bytes.length, 64);
+  // SVG / XML: scan up to 256 bytes as latin-1 for ASCII tag detection.
+  // We MUST see an actual <svg root element before returning image/svg+xml —
+  // a bare <?xml declaration also appears in plist, RSS, Maven POM, etc.
+  const headLen = Math.min(bytes.length, 256);
   let headStr = "";
   for (let i = 0; i < headLen; i++) {
     headStr += String.fromCharCode(bytes[i] ?? 0);
   }
   const trimmed = headStr.trimStart();
-  if (trimmed.startsWith("<?xml") || trimmed.startsWith("<svg")) {
+  if (trimmed.startsWith("<svg")) {
     return { mimeType: "image/svg+xml", extension: "svg", confidence: "strong" };
+  }
+  if (trimmed.startsWith("<?xml")) {
+    // Scan past the XML declaration to find the root element name.
+    const afterDecl = trimmed.slice(trimmed.indexOf("?>") + 2).trimStart();
+    const rootMatch = afterDecl.match(/<([\w:]+)/);
+    if (rootMatch?.[1]?.toLowerCase() === "svg") {
+      return { mimeType: "image/svg+xml", extension: "svg", confidence: "strong" };
+    }
+    return { mimeType: "application/xml", extension: "xml", confidence: "strong" };
   }
 
   // Plain text heuristic (weak — no magic signature)
