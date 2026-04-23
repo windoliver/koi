@@ -96,11 +96,27 @@ function collectSkillNames(agent: Agent): readonly string[] {
 
 /**
  * Returns a new ModelRequest with skill content prepended to systemPrompt.
- * If no skills are attached, returns the original request unchanged.
+ * Non-empty-content skills are injected as full bodies. Empty-content skills
+ * (set by progressive provider) are advertised via an XML block so they are
+ * not silently dropped when the progressive provider is paired with a
+ * non-progressive middleware configuration.
+ * Returns the original request unchanged when no skills are attached.
  */
 function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
-  const content = collectSkillContent(agent);
-  if (content === undefined) return request;
+  const sorted = sortedSkills(agent);
+  if (sorted.length === 0) return request;
+
+  const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
+  // Fork skills are excluded from XML advertising — they need spawnFn which
+  // cannot be verified here; they would fail with VALIDATION if invoked.
+  const metadataSkills = sorted.filter((s) => s.content === "" && s.executionMode !== "fork");
+
+  if (bodies.length === 0 && metadataSkills.length === 0) return request;
+
+  const parts: string[] = [];
+  if (bodies.length > 0) parts.push(bodies.join(SEPARATOR));
+  if (metadataSkills.length > 0) parts.push(generateAvailableSkillsBlock(metadataSkills));
+  const content = parts.join("\n\n");
 
   const existing = request.systemPrompt;
   const systemPrompt =
@@ -166,8 +182,9 @@ function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObje
 function injectSkillsProgressive(agent: Agent, request: ModelRequest): ModelRequest {
   const sorted = sortedSkills(agent);
   // Runtime-backed progressive skills have content: "" (set by attachProgressive).
-  // Advertise them as an XML block so the model knows to invoke the Skill tool.
-  const runtimeSkills = sorted.filter((s) => s.content === "");
+  // Fork skills are excluded — they require spawnFn which the middleware cannot
+  // verify; advertising them risks NOT_FOUND/VALIDATION errors on invocation.
+  const runtimeSkills = sorted.filter((s) => s.content === "" && s.executionMode !== "fork");
   // Non-runtime skills (browser, memory, etc.) carry non-empty bodies.
   // Inject them via the legacy path so their guidance still reaches the model.
   const otherBodies = sorted.map((s) => s.content).filter((c) => c !== "");
