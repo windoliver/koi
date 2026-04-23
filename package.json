@@ -56,5 +56,8 @@
   },
   "trustedDependencies": [
     "esbuild"
-  ]
+  ],
+  "patchedDependencies": {
+    "web-tree-sitter@0.26.8": "patches/web-tree-sitter@0.26.8.patch"
+  }
 }
