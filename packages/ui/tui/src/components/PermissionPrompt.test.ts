@@ -119,7 +119,9 @@ describe("PERMISSION_PROMPT_MIN_SAFE_WIDTH", () => {
 // ---------------------------------------------------------------------------
 
 describe("PERMISSION_PROMPT_MIN_SAFE_HEIGHT", () => {
-  test("constant is a positive integer above the modal top offset", () => {
+  test("constant covers the full row budget: top(2) + modal(14) = 16", () => {
+    // MODAL_POSITION.top=2 + border(2) + title(1) + tool(2) + args(3) + hints(6) = 16 minimum.
+    expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT).toBe(16);
     expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT).toBeGreaterThan(4);
   });
 

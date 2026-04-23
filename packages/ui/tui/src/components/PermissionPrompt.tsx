@@ -85,13 +85,24 @@ export const PERMISSION_PROMPT_MIN_SAFE_WIDTH = 20;
 
 /**
  * Minimum terminal row count at which the prompt can display enough vertical
- * approval context to be safely interactive. The modal top offset is row 2;
- * the minimum readable prompt body (title + tool + args + 2 key hints) is
- * ~10 rows. Below this threshold approval keys y/a/! are suppressed so users
+ * approval context to be safely interactive.
+ *
+ * Budget breakdown (all rows needed from the top of the terminal):
+ *   MODAL_POSITION.top = 2 rows offset
+ *   border top = 1
+ *   title row = 1
+ *   marginTop(1) + tool row = 2
+ *   marginTop(1) + "Arguments:\n{}" = 3 (minimum 2-line JSON + margin)
+ *   marginTop(1) + [y]+[n]+[a…\n  id]+[Esc] = 6 (stacked hints)
+ *   border bottom = 1
+ *   ─────────────────────────────────────────────────────────────────
+ *   Total = 2 + 14 = 16
+ *
+ * Below this threshold approval keys y/a/! are suppressed so users
  * cannot grant access when the prompt is vertically clipped off-screen.
  * Exported for unit testing.
  */
-export const PERMISSION_PROMPT_MIN_SAFE_HEIGHT = 14;
+export const PERMISSION_PROMPT_MIN_SAFE_HEIGHT = 16;
 
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
