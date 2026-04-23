@@ -134,4 +134,32 @@ describe("settings cascade → permission enforcement", () => {
     });
     expect(decision.effect).toBe("deny");
   });
+
+  test("settings policy deny precedes built-in TUI policy allow (admin policy wins)", async () => {
+    // Simulate a built-in TUI allow rule (source: "policy", like TUI_ALLOW_RULES entries)
+    const tuiAllowRule = {
+      pattern: "Glob**",
+      action: "invoke",
+      effect: "allow" as const,
+      source: "policy" as const,
+    };
+    // Admin policy settings deny for the same tool
+    const policySettingsRules = mapSettingsToSourcedRules(
+      { permissions: { deny: ["Glob"] } },
+      "policy",
+    );
+
+    // Runtime ordering: settings policy rules first, then TUI built-ins
+    const backend = createPermissionBackend({
+      mode: "default",
+      rules: [...policySettingsRules, tuiAllowRule],
+    });
+
+    const decision = await backend.check({
+      resource: "Glob",
+      action: "invoke",
+      principal: "agent",
+    });
+    expect(decision.effect).toBe("deny");
+  });
 });
