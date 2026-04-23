@@ -13,7 +13,7 @@
 
 ## 1. Thesis
 
-**Cairn** is a stand‑alone, harness‑agnostic agent memory framework. It gives any agent loop — local or cloud, open‑source or proprietary — a shared substrate for per‑turn extraction, nightly consolidation, trajectory→playbook learning, hot‑memory prefix injection, typed taxonomy, consent‑gated propagation, and a privacy‑first local default. Its external contract is a tiny MCP surface (seven verbs). Its default backend is **Nexus `sandbox` profile** — a Python sidecar that brings SQLite + BM25S + `sqlite-vec` semantic search in a single `nexus.db` file with zero external services; scale happens through federation to a Nexus `full` hub, not through swapping adapters. The `MemoryStore` contract is still swappable if a team already runs a different store. It is lightweight enough to `bunx cairn` on a laptop and industrial enough to run behind an enterprise gateway — **same interfaces, same Nexus, different topology**.
+**Cairn** is a stand‑alone, harness‑agnostic agent memory framework. It gives any agent loop — local or cloud, open‑source or proprietary — a shared substrate for per‑turn extraction, nightly consolidation, trajectory→playbook learning, hot‑memory prefix injection, typed taxonomy, consent‑gated propagation, and a privacy‑first local default. Its external contract is a tiny MCP surface — **eight core verbs** (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) plus opt‑in extension namespaces for aggregates / admin / federation (§8). Its default backend is **Nexus `sandbox` profile** — a Python sidecar that brings SQLite + BM25S + `sqlite-vec` semantic search in a single `nexus.db` file with zero external services; scale happens through federation to a Nexus `full` hub, not through swapping adapters. The `MemoryStore` contract is still swappable if a team already runs a different store. It is lightweight enough to `bunx cairn` on a laptop and industrial enough to run behind an enterprise gateway — **same interfaces, same Nexus, different topology**.
 
 ---
 
@@ -144,7 +144,7 @@ Nexus is the platform; **Cairn is the memory layer** that does not exist in Nexu
 | `catalog` | schema extraction for structured sources (CSV/Parquet/JSON) — feeds `entity_*.md` and `fact_*.md` records automatically |
 | `share_link` | `PropagationWorkflow` generates consent‑gated share links for `private → team → org` promotion, with expiry + revocation |
 | `workspace` | per‑project or per‑user Cairn vaults isolated as separate Nexus workspaces |
-| `mcp` | Cairn's seven verbs register as MCP tools on the Nexus MCP surface; harnesses talk to either side interchangeably |
+| `mcp` | Cairn's eight core verbs register as MCP tools on the Nexus MCP surface; harnesses talk to either side interchangeably |
 | `workflows` | optional durable job queue for teams that prefer Nexus‑native orchestration over Cairn's `tokio` default or Temporal |
 | `discovery` | dynamic skill + playbook registration — `EvolutionWorkflow` publishes evolved skills through Nexus discovery |
 
@@ -188,7 +188,7 @@ Everything above is the **default** vault shape. Users and teams reshape it thro
 - Three‑layer separation — sources immutable, records+wiki LLM‑owned, schema co‑evolved.
 - Provenance is mandatory on every record.
 - `consent.log` is append‑only.
-- The MCP surface is seven verbs — the public contract.
+- The MCP surface is eight core verbs (plus opt‑in extension namespaces) — the public contract (§8).
 - Capture → Store is always on‑path; Consolidate onward is off‑path.
 - Discard is never silent — every `no` from Filter writes a reason to `metrics.jsonl`.
 
@@ -322,7 +322,7 @@ Everything in Cairn is a pure function over data, except these five interfaces.
 | 2 | `LLMProvider` | one function — `complete(prompt, schema?) → text \| json` | OpenAI‑compatible (local Ollama, any cloud) |
 | 3 | `WorkflowOrchestrator` | durable scheduling + execution for background loops | **Rust‑native default**: `tokio` + a SQLite‑backed job table (durable, crash‑safe, single binary, zero services). **Optional Temporal adapter**: `temporalio-sdk` + `temporalio-client` (both published on crates.io, currently prerelease) when GA; a TypeScript Temporal worker sidecar as the safe path today |
 | 4 | `SensorIngress` | push raw observations into the pipeline | hook sensors, IDE, clipboard, screen (opt‑in), web clip |
-| 5 | `MCPServer` | harness‑facing tools | stdio + SSE; seven verbs (§8) |
+| 5 | `MCPServer` | harness‑facing tools | stdio + SSE; eight core verbs + opt‑in extensions (§8) |
 
 Everything else — Extractor, Filter, Classifier, Scope, Matcher, Ranker, Consolidator, Promoter, Expirer, SkillEmitter, HotMemoryAssembler, TraceCapturer, TraceLearner, UserSensor, UserSignalDetector, PropagationPolicy, OrphanDetector, ConflictDAG, StalenessScanner — is a **pure function** with a typed signature. Cairn ships a default implementation for each; users override by pointing `.cairn/config.yaml` at a different function exported from any registered plugin.
 
@@ -355,7 +355,7 @@ Cairn is plugin‑first end to end. "Plugin" means exactly one thing: a crate or
 | Hot‑memory recipe | Ordered list of function names in `.cairn/config.yaml` → swap / extend without forking |
 | Propagation policy | `PropagationPolicy` trait — default consent flow, enterprise deployments wire SSO + DLP |
 
-**What stays non‑pluggable (the contract surface itself):** the MCP verb set (seven verbs), the vault layout invariants (§3.1), the append‑only `consent.log`, and the record frontmatter schema. Those are *the* contract — everything else is replaceable.
+**What stays non‑pluggable (the contract surface itself):** the MCP verb set (eight core verbs + the extension registration protocol), the vault layout invariants (§3.1), the append‑only `consent.log`, and the record frontmatter schema. Those are *the* contract — everything else is replaceable.
 
 **How to verify this principle at any commit:**
 ```
@@ -436,7 +436,14 @@ Every signature Cairn checks (actor chain, `ConsentReceipt`, WAL op, discovery r
 }
 ```
 
-**One‑time consumption ledger.** `operation_id` + `nonce` tuples are recorded in `.cairn/receipts/used.db` (SQLite, WAL‑backed). A second message with the same tuple within the TTL window is rejected as a replay — compared *before* the signature verifies so the cheap check wins. The bloom filter catches >99 % of replays without a disk hit; confirmed hits go to the exact ledger.
+**One‑time consumption ledger.** `operation_id` + `nonce` tuples are recorded in `.cairn/receipts/used.db` (SQLite, WAL‑backed). A replay attempt on the same tuple within the TTL window is rejected, but the ledger is only written **after** the signature and scope checks pass — an unauthenticated attacker can't pollute the ledger by replaying junk. The in‑memory bloom filter guards the hot path: a bloom hit triggers a full ledger read to confirm the hit (with a disk‑hit budget of p99 < 2 ms).
+
+**Server‑side freshness.** Signer‑supplied timestamps are treated as untrusted hints — the server enforces the real freshness window:
+
+- `issued_at` must be within `±2 min` of the server's monotonic clock. Outside that window → `ExpiredIntent`. This bounds backdating (an attacker with a stolen key can't synthesize receipts dated before revocation took effect).
+- `expires_at` must be `≤ issued_at + max_ttl` (default 5 min, 24 h for promotion receipts) — clients can't extend their own TTLs.
+- Each issuer carries a **monotonic sequence number** (stored per `issuer` in `.cairn/receipts/issuer_seq.db`). Every accepted message must have a strictly higher sequence than the previous accepted message from the same issuer (or include a server‑issued nonce challenge from a fresh `cairn handshake`). Sequence gaps are tolerated; reversals are not. This prevents replaying old messages even within the freshness window.
+- Post‑revocation: even a technically valid signature from a revoked key is rejected before any ledger write, bounded by the `effective_at` revocation timestamp.
 
 **Key rotation + revocation.**
 
@@ -679,26 +686,32 @@ REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated
 
 **Lock granularity.** A single‑writer advisory lock per `(tenant, workspace, entity_id)` — held through PREPARE → COMMIT/ABORT. Promotions hold a lock on the target tier key too (e.g., `wiki/entities/alice.md`) so parallel promoters can't conflict. Session‑delete takes a scope‑level lock `(tenant, workspace, session:<id>)` that fans out to every child record under it — no partial delete possible. Deadlock avoidance: locks are always acquired in `(tenant, workspace, entity)` lexicographic order; cycle would need a cross‑entity mutation, which the planner refuses to emit.
 
-**Fan‑out order (deterministic for replay):**
+**Fan‑out order per operation kind (operation‑specific step graphs).** Each `kind` has its own deterministic step list and its own compensation rules — never "delete steps to roll back a delete." Steps marked `[idem]` are idempotent re‑runs of the same arguments; `[tombstone]` marks inserts a redoable mark that recovery reads; `[snapshot]` copies state into the WAL entry before mutation so rollback restores it exactly.
 
-1. `MemoryStore.upsert_primary(record)` — SQLite row, canonical truth
-2. `MemoryStore.upsert_vector(embedding)` — sqlite‑vec
-3. `MemoryStore.upsert_fts(terms)` — BM25 index
-4. `MemoryStore.upsert_edges(graph)` — link tables
-5. `consent.log.append(entry)` — append‑only audit, last step so audit only fires on real success
+| Op | Forward steps (in order) | Per‑step compensation |
+|----|---------------------------|------------------------|
+| `upsert` | 1. `primary.upsert` [idem] → 2. `vector.upsert` [idem] → 3. `fts.upsert` [idem] → 4. `edges.upsert` [idem] → 5. `consent.log.append` | on abort: delete partial rows/vectors written after the last known clean state recorded in `[snapshot]`; consent log is not compensated (append‑only — abort marker is itself appended) |
+| `delete` / `forget_record` / `forget_session` | 1. `snapshot.stage` [snapshot] — serialize full record + all index entries into WAL entry → 2. `primary.mark_tombstone` — set `deleted_at`, drop from active views → 3. `vector.drain` — wait for vector index to fully exclude the row (index generation bump + re‑merge fence) → 4. `fts.drain` — wait for FTS to drop the terms (checkpoint fsync) → 5. `edges.drain` — drop adjacency entries → 6. `primary.purge` — overwrite blob + zero the vector storage region → 7. `consent.log.append(delete)` | on abort **before** step 6: restore the original record + indexes from the `[snapshot]` stage. On abort **at or after** step 6: the operation is NOT rolled back — step 6 is the point of no return; instead recovery marks `ABORT_AFTER_PURGE` and fails closed, surfacing a compliance alert in `lint`. Drain steps (3–5) have explicit completion criteria; COMMIT cannot be written until every drain acknowledges. |
+| `promote` | 1. `snapshot.stage` → 2. `policy.verify_receipt` → 3. `primary.update_tier` → 4. `rebac.add_relation` → 5. `consent.log.append(promote)` | on abort before step 3: no‑op. After step 3: reverse tier update using `[snapshot]`; revoke rebac relation added in step 4. Consent entry for the promote remains with its abort marker. |
+| `expire` | 1. `snapshot.stage` → 2. `primary.mark_expired` → 3. `vector.drain` → 4. `fts.drain` → 5. `edges.drain` → 6. `consent.log.append(expire)` | identical rollback rules as `delete`, but step 6 is `mark_expired` not `purge` — expiration can be reversed by future writes (un‑expire via `upsert` of a later version) until a subsequent `forget` hits point of no return. |
+| `evolve` | per‑candidate steps from §11.3 canary rollout; each candidate is its own child op with its own WAL entry and its own compensation | parent op records `child_op_ids`; parent COMMIT requires all children COMMITTED; any child ABORT triggers parent ABORT which compensates all earlier children via their own rollback steps |
 
-If step N fails, steps 1..N‑1 are compensated in reverse order. If the process dies between steps, boot‑time recovery (below) re‑applies from the `PREPARE` marker deterministically.
+**Drain completion criteria (deletes / expirations only):** a step is "drained" when the corresponding index emits a checkpoint whose sequence number is past the tombstone sequence number. Until drained, `search` / `retrieve` run an auxiliary tombstone filter so stale results never surface. The drain fence is what makes delete atomicity observable — the moment COMMIT is written, every reader query is guaranteed to miss the record.
 
-**Retry policy.** Each side‑effect step has an exponential backoff (max 3 attempts, 100 ms/400 ms/1600 ms). After final failure the op is ABORTED — compensations run and a `retryable: false` error surfaces to the caller. No infinite retry loops.
+**Retry policy.** Each idempotent step has exponential backoff (max 3 attempts, 100 ms/400 ms/1600 ms). Non‑idempotent / non‑redoable steps (primary.purge, snapshot.stage) run at most once. After final failure the op is ABORTED and compensations run; `retryable: false` surfaces to the caller.
 
 **Boot‑time recovery.** On every `cairn daemon start`:
 
-1. Scan `.cairn/wal/*.log` newest → oldest for uncommitted `PREPARE` markers.
-2. For each, check the `plan_ref` for determinism, then **re‑run fan‑out from the first incomplete step**, using the same idempotency key so already‑applied steps are no‑ops.
-3. If any step fails recovery → mark `ABORTED`, run compensations, flag in the next `lint` report.
-4. Successful recovery writes a `RECOVERED <op>` marker next to the original `COMMIT`.
+1. Scan `.cairn/wal/*.log` and rebuild an in‑memory map of ops by `operation_id` with their latest marker (`ISSUED | PREPARED | step:N:done | COMMITTED | ABORTED`).
+2. Build a dependency DAG from the `dependencies` field of every un‑terminal op; topologically sort. Ops whose deps aren't terminal wait.
+3. **TTL applies to new external requests, not to WAL recovery.** The `expires_at` field rejects fresh `ingest/forget/promote` calls past the cutoff; **recovery of an already‑PREPARED op runs regardless of TTL** — once PREPARED, the operation is durably committed to either finish or abort with full compensation.
+4. For each op in dependency‑safe order, resume at `step:(last_done + 1)` using its operation‑specific step graph; already‑applied idempotent steps are no‑ops via the idempotency key.
+5. If a non‑idempotent step had crossed its point of no return (e.g., `primary.purge` was partially executed), write `ABORT_AFTER_PURGE` marker, surface a compliance alert, never attempt to restore.
+6. Successful recovery writes `RECOVERED <op>` next to `COMMIT`; failed recovery writes `ABORTED <op>` with reason and runs compensations (subject to point‑of‑no‑return above).
 
-**Concurrent‑writer safety (§10.1 ordering).** WAL deps + locks implement the single‑writer constraint: `ConsolidationWorkflow > LightSleep > REMSleep > DeepDream`. A lower‑priority op that hits a locked entity queues its WAL entry with `dependencies: [<higher‑priority‑op>]` and retries after the lock releases — no priority inversion, no write loss.
+Persisting per‑step completion markers (`step:N:done`) is what makes step 3 above safe: recovery never "replays the fan‑out" blindly — it resumes from the exact last known good step and honors operation‑specific rollback rules.
+
+**Concurrent‑writer safety (§10.1 ordering).** WAL deps + locks implement the single‑writer constraint: `ConsolidationWorkflow > LightSleep > REMSleep > DeepDream`. A lower‑priority op that hits a locked entity queues its WAL entry with `dependencies: [<higher‑priority‑op>]` and waits via the dependency DAG — no priority inversion, no write loss. Recovery replay walks the same DAG, so crash recovery respects the same precedence.
 
 **What the WAL is *not*:** it is not a replication log for federation (that's a separate `change_feed` stream layered on top), and it is not a distributed consensus log (single machine; federation's hub zone runs its own Nexus replication underneath). It is a local crash‑safety + idempotency + atomicity primitive.
 
@@ -886,7 +899,7 @@ MCP is the **only** public entry point. Everything else — CLI commands, hooks,
 
 ## 8.1 Session Lifecycle — Auto‑Discovery + Auto‑Create
 
-The seven MCP verbs accept an optional `session_id`. When absent, Cairn applies this policy:
+All eight core MCP verbs accept an optional `session_id`. When absent, Cairn applies this policy:
 
 1. **Find** the user's most recent active session for this `agent_id` (within a configurable idle window, default 24 h).
 2. **If found** — reuse it; append turns to it.
@@ -1047,7 +1060,7 @@ When a single `agent_id` serves many users, each user's private memory stays pri
 
 - **Toggle per agent**: `.cairn/config.yaml` → `agent.enable_aggregate: true`.
 - **What's aggregated**: `common_topics`, `common_issues` (with `frequency` + `typical_resolution`), `usage_patterns.top_categories`. Built by an `AggregateSynthesizer` pure function from public‑artifact records across users, never from private working memory.
-- **Three aggregate read verbs** exposed alongside the seven core verbs when the toggle is on:
+- **Three aggregate read verbs** exposed as the `cairn.aggregate.v1` extension (§8.0.a) when the toggle is on, alongside the eight core verbs:
   - `agent_summary()` → current aggregate snapshot
   - `agent_search(query)` → cross‑user semantic search (anonymized)
   - `agent_insights(query)` → natural‑language Q&A across all users
@@ -1232,7 +1245,7 @@ Cairn is local‑*first* but distributed‑*ready* — scaling from laptop to or
 - **Rust core** owns everything hot‑path: `MemoryStore` I/O, embedding, ANN, squash, hot‑memory assembly, and the Temporal worker. Ships as a single static binary that Electron spawns as a sidecar. Exposes MCP over stdio to the renderer.
 - **Electron shell** gives a consistent Chromium runtime across macOS / Windows / Linux — rendering parity matters for the graph view and the editor, and the same webview is already the target of every reference editor (Obsidian, VS Code, Notion, Linear). No surprise WebKit / WebView2 divergence.
 - **TipTap (ProseMirror)** for memory editing — wikilink autocomplete, slash commands, inline frontmatter, collaborative‑ready even though Cairn is single‑user by default. Markdown in / markdown out through TipTap's markdown extensions.
-- **IPC boundary** is MCP. The Rust core speaks the same seven verbs to the Electron renderer as it does to any external harness. One transport, one schema. The GUI is not a special client.
+- **IPC boundary** is MCP. The Rust core speaks the same eight core verbs (plus declared extensions) to the Electron renderer as it does to any external harness. One transport, one schema. The GUI is not a special client.
 - **Bundle shape.** Rust core ~15–25 MB static binary; Electron + renderer ~140 MB. Cost is accepted in exchange for runtime consistency and ecosystem fit.
 
 An **alternative slim skin** stays available for users who want a small download or air‑gap with minimal surface: Tauri 2 shell over the same Rust core, swap TipTap for Milkdown. Same vault, same MCP. Decision recorded in `.cairn/config.yaml` under `ui.shell = electron | tauri`.
@@ -1359,6 +1372,53 @@ Frontend edits can only mutate user‑content fields. Policy‑sensitive fields 
 | Version / audit | `version`, `promoted_at`, `produced_by` | no — backend owned |
 
 **Adapters are untrusted.** The `FrontendAdapter` trait deliberately does not sign edits — plugins are library code running alongside untrusted editors (Obsidian community plugin, VS Code extension). The authoritative check happens on the backend when the reconcile call arrives: signed‑intent envelope present? signer holds the required capability? target_hash matches the server's current state? field diff stays within mutable columns? Anything less than all four → reject.
+
+**Signed‑intent minting flow for file‑originated edits.** Raw markdown editors (vim, nano, plain VS Code without plugin, Obsidian with no companion plugin) cannot produce signatures themselves. The `cairn daemon` process — which runs on the same machine as the editor under the same OS user and holds the user's identity keypair in the platform keychain — mints the intent on the editor's behalf, bound to local filesystem evidence:
+
+```
+  editor saves file.md  ───►  file‑watcher sensor (part of daemon, §9.1)
+                                  │
+                                  ▼
+                         read file_hash = sha256(new content)
+                         read fs_metadata = (inode, mtime, ctime, os_uid, fs_path)
+                         read prior_version = frontmatter.version (if present)
+                                  │
+                                  ▼
+                         DaemonIntentMinter                          ◄── policy: os_uid
+                         — issues SignedIntent{                          must match the
+                             operation_id: ULID                          logged‑in user;
+                             target_hash: hash(target_id, file_hash),    fs_path must live
+                             scope: { tenant, workspace, record_id },    under the vault
+                             bound_to: { file_hash, fs_path, os_uid },   root.
+                             expires_at: now + 60s,                      Failing any check
+                             signature: ed25519 over all fields          → quarantine
+                           }                                              (below).
+                                  │
+                                  ▼
+                         reconcile(ctx=IdentityContext{
+                             principal = human bound to os_uid,
+                             signed_intent = <the minted intent>,
+                             ...
+                         }, edit=field_diff)
+```
+
+The minted intent is **short‑lived** (60 s default), **single‑use** (consumed by the replay ledger §4.2 on apply), and **bound** to the exact file hash the editor produced — a process that tampers with the file between save and reconcile invalidates the intent because `target_hash` changes.
+
+**Quarantine for unsigned or invalid file‑originated edits.** If the file‑watcher sees a `.md` mutation but cannot mint a valid intent (wrong OS user, file outside vault, daemon not running, keychain locked), it **does not apply the edit**. Instead:
+
+1. The edit is copied into `.cairn/quarantine/<timestamp>-<record_id>.md` with a sibling `.rejected` file explaining why.
+2. The original vault file is rolled back to the last backend‑known content (via the most recent snapshot from §5.6).
+3. The next `lint` report surfaces the quarantine; the user resolves via `cairn quarantine accept <id>` (which *does* require an interactive `cairn identity approve` fresh signature) or `cairn quarantine discard <id>`.
+
+**Conformance tests (every FrontendAdapter must pass):**
+
+1. Reject edits that mutate immutable fields (§13.5.c table) — even through the daemon‑minted flow.
+2. Reject reused `operation_id` / `nonce` within TTL.
+3. Reject edits whose `file_hash` no longer matches at apply time (tamper‑in‑flight).
+4. Quarantine and roll back edits from an OS user the daemon does not recognize.
+5. Honor optimistic version check — on mismatch, produce a conflict marker without touching backend state.
+
+Adapters that fail any of these cannot be registered.
 
 **Feature‑parity matrix (what each frontend can show):**
 
@@ -1631,7 +1691,7 @@ Users don't have to commit to the full stack on day one. Cairn is designed to be
 | "remember: never do Y" | `rule_*.md` (invariant) |
 | "correction: it's actually Z" | `feedback_*.md` (correction) |
 | "this is how we did it — it worked" | `strategy_success_*.md` + candidate `playbook_*.md` |
-| "forget that I mentioned W" | adds an expiration marker to the matching record; `ExpirationWorkflow` removes on next pass (audit trail preserved in `consent.log`) |
+| "forget that I mentioned W" | routes to the `forget` verb (§8.0 core verb 8) with `mode: "record"`, targeting the matching record(s). Same signed‑intent envelope (§8.0.b), same §5.6 WAL `delete` state machine, same irreversible semantics. This is the only erase path — there is no parallel "expiration marker" flow for user‑requested deletes. |
 
 **Migration in.** `cairn import` ingests existing memory exports from ChatGPT, Claude's built‑in Memory page, Notion databases, Obsidian vaults, or plain markdown folders. Each import becomes `sources/` entries with provenance intact.
 
@@ -1754,33 +1814,33 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 
 | Story | Priority | Covered | Sections |
 |-------|----------|---------|----------|
-| US1 turn sequence | P0 | yes | §3, §5.1, §6.1, §8.1, §15 |
-| US2 session reload | P0 | yes | §3, §5.6, §10, §8.1 |
-| US3 user memories | P0 | yes | §4.2, §6.1, §7.1, §6.3 |
-| US4 rolling summaries | P1 | yes (config + cadence added above) | §10, §7, §6.1 |
-| US5 tool calls with turns | P1 | yes | §6.1, §9.1, §5.2 |
-| US6 archive inactive sessions | P2 | yes (tier model + budget added above) | §3.0, §10, §15 |
-| US7 search | P3 | yes | §8, §5.1, §4.2, §6.3 |
-| US8 session delete | P3 | yes (session‑scoped forget added above) | §14, §10, §5.6 |
+| US1 turn sequence | P0 | v0.1 | §3, §5.1, §6.1, §8.1, §15 |
+| US2 session reload | P0 | v0.1 active / v0.2 cold rehydrate | §3, §5.6 (`upsert`), §10, §8.1 |
+| US3 user memories | P0 | v0.1 | §4.2, §6.1, §7.1, §6.3 |
+| US4 rolling summaries | P1 | v0.1 (rolling path); full in v0.2 | §10, §7, §6.1 |
+| US5 tool calls with turns | P1 | v0.1 | §6.1, §9.1, §5.2 |
+| US6 archive inactive sessions | P2 | v0.2 | §3.0, §10, §15 |
+| US7 search | P3 | v0.2 | §8, §5.1, §4.2, §6.3 |
+| US8 session delete | P3 | v0.1 `forget_record` / v0.2 `forget_session` | §14, §10, §5.6 |
 
-Every P0 and P1 story is covered in v0.1 of the sequencing plan (§19). P2 and P3 stories land in v0.2 and v0.3 as observability and propagation capabilities come online.
+**Coverage vs. sequencing (§19):** P0 stories (US1–US3), US4's `ConsolidationWorkflow` rolling‑summary pass, and US5 all land in v0.1. US6 (archive + cold‑storage rehydration) and US7 (search) land in v0.2 when SRE observability + extended orchestration come online. US8 (session delete) requires the full §5.6 WAL delete state machine — its core path (record‑level forget) ships in v0.1; session‑wide fan‑out with drain fences ships in v0.2. §19 reflects this split explicitly.
 
 ## 19. Sequencing
 
-**v0.1 — Minimum substrate.**
-Headless only. Nexus local backend. Seven MCP verbs. `DreamWorkflow` + `ExpirationWorkflow` + `EvaluationWorkflow`. Five hooks. Vault on disk. `cairn bootstrap`. One reference consumer wired end‑to‑end.
+**v0.1 — Minimum substrate.** Covers US1, US2 (active‑session reload only), US3, US4 (rolling summary), US5, and US8 record‑level delete.
+Headless only. Nexus local backend. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope. `DreamWorkflow` + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`. One reference consumer wired end‑to‑end.
 
-**v0.2 — Continuous learning.**
-Add `ReflectionWorkflow`, `ConsolidationWorkflow`, `SkillEmitter`. Second consumer wired. Tauri GUI alpha.
+**v0.2 — Continuous learning + SRE surface.** Covers US6, US7, US8 session‑wide delete, and full US4 reflection layer.
+Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha.
 
 **v0.3 — Propagation + collective.**
-Add `PromotionWorkflow`, `PropagationWorkflow`, consent‑gated team/org share. Full sensor suite.
+Add `PromotionWorkflow`, `PropagationWorkflow`, consent‑gated team/org share, `cairn.federation.v1` extension. Full sensor suite. `evolve` WAL state machine with canary rollout.
 
 **v0.4 — Evaluation and polish.**
 Multi‑session coherence benchmarks. Replay cassettes. Documentation freeze. Beta distribution channels.
 
 **v1.0 — Production.**
-SLAs hit. Three harnesses shipped. Desktop GUI on three OSes. Semver commitment on MCP surface.
+SLAs hit. Three harnesses shipped. Desktop GUI on three OSes. Semver commitment on MCP surface (`cairn.mcp.v1` frozen).
 
 ---
 
