@@ -390,6 +390,8 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
+        // Clear stale tokens before attempting reauth so startAuthFlow starts clean.
+        await Promise.resolve(onUnauthorized?.()).catch(() => {});
         if (onAuthNeeded !== undefined) {
           const authed = await onAuthNeeded();
           if (authed) {
@@ -409,8 +411,6 @@ export function createMcpConnection(
             }
           }
         }
-        // Notify host to clear stale tokens and prompt for re-auth
-        void Promise.resolve(onUnauthorized?.()).catch(() => {});
         return { ok: false, error: koiError };
       }
       if (stateMachine.canTransitionTo("error")) {
@@ -450,6 +450,8 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
+        // Clear stale tokens before attempting reauth so startAuthFlow starts clean.
+        await Promise.resolve(onUnauthorized?.()).catch(() => {});
         if (onAuthNeeded !== undefined) {
           const authed = await onAuthNeeded();
           if (authed) {
@@ -467,8 +469,6 @@ export function createMcpConnection(
             }
           }
         }
-        // Notify host to clear stale tokens and prompt for re-auth
-        void Promise.resolve(onUnauthorized?.()).catch(() => {});
         return { ok: false, error: koiError };
       }
       if (stateMachine.canTransitionTo("error")) {
