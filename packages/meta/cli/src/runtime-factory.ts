@@ -1745,7 +1745,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | import("@koi/tools-bash").BashToolHandle
     | undefined;
   const sandboxActive = (earlyContribution.exports.sandboxActive as boolean | undefined) ?? false;
-  const _tuiAgentId = precomputedAgentId;
 
   // --- Core providers (search + fs + web + bash) via shared-wiring ---
   // The shared `buildCoreProviders` helper wires the exact same base set
