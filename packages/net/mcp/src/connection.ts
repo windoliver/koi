@@ -128,8 +128,26 @@ export function createMcpConnection(
   let transport: KoiMcpTransport | undefined;
   // Shared reconnection promise — prevents thundering herd
   let reconnecting: Promise<Result<void, KoiError>> | undefined;
+  // Singleflight for auth flow — prevents concurrent onAuthNeeded calls
+  let authInFlight: Promise<boolean> | undefined;
   // Tool change listeners
   const toolChangeListeners = new Set<() => void>();
+
+  // -------------------------------------------------------------------------
+  // Auth flow (singleflight — deduplicates concurrent onAuthNeeded calls)
+  // -------------------------------------------------------------------------
+
+  const runAuthFlow = (): Promise<boolean> => {
+    if (authInFlight !== undefined) return authInFlight;
+    authInFlight = (async (): Promise<boolean> => {
+      await Promise.resolve(onUnauthorized?.()).catch(() => {});
+      if (onAuthNeeded === undefined) return false;
+      return onAuthNeeded().catch(() => false);
+    })().finally(() => {
+      authInFlight = undefined;
+    });
+    return authInFlight;
+  };
 
   // -------------------------------------------------------------------------
   // Connect
@@ -272,6 +290,10 @@ export function createMcpConnection(
             challenge: { type: "bearer" },
           });
         }
+        const authed = await runAuthFlow();
+        if (authed) {
+          return connect();
+        }
         return { ok: false, error: koiError };
       }
 
@@ -299,9 +321,16 @@ export function createMcpConnection(
       return { ok: false, error: notConnectedError(config.name) };
     }
 
-    // auth-needed → try connecting directly (no reconnect backoff).
+    // auth-needed → if auth flow is in progress, await it; then reconnect.
     // The auth-needed state only allows "connecting" or "closed" transitions.
     if (stateMachine.current.kind === "auth-needed") {
+      if (authInFlight !== undefined) {
+        await authInFlight;
+        // If the in-flight auth handler already called connect(), client is set
+        if (client !== undefined) {
+          return { ok: true, value: undefined };
+        }
+      }
       return connect();
     }
 
@@ -390,24 +419,20 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
-        // Clear stale tokens before attempting reauth so startAuthFlow starts clean.
-        await Promise.resolve(onUnauthorized?.()).catch(() => {});
-        if (onAuthNeeded !== undefined) {
-          const authed = await onAuthNeeded().catch(() => false);
-          if (authed) {
-            const reconnResult = await connect();
-            if (reconnResult.ok && client !== undefined) {
-              try {
-                const retryResponse = await client.listTools();
-                const tools: readonly McpToolInfo[] = retryResponse.tools.map((t) => ({
-                  name: t.name,
-                  description: t.description ?? "",
-                  inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
-                }));
-                return { ok: true, value: tools };
-              } catch (_err: unknown) {
-                // Retry failed — fall through to return the original auth error
-              }
+        const authed = await runAuthFlow();
+        if (authed) {
+          const reconnResult = await connect();
+          if (reconnResult.ok && client !== undefined) {
+            try {
+              const retryResponse = await client.listTools();
+              const tools: readonly McpToolInfo[] = retryResponse.tools.map((t) => ({
+                name: t.name,
+                description: t.description ?? "",
+                inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
+              }));
+              return { ok: true, value: tools };
+            } catch (_err: unknown) {
+              // Retry failed — fall through to return the original auth error
             }
           }
         }
@@ -450,22 +475,18 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
-        // Clear stale tokens before attempting reauth so startAuthFlow starts clean.
-        await Promise.resolve(onUnauthorized?.()).catch(() => {});
-        if (onAuthNeeded !== undefined) {
-          const authed = await onAuthNeeded().catch(() => false);
-          if (authed) {
-            const reconnResult = await connect();
-            if (reconnResult.ok && client !== undefined) {
-              try {
-                const retryResult = await client.callTool({
-                  name,
-                  arguments: args as Record<string, unknown>,
-                });
-                return parseCallToolResult(retryResult, name, config.name);
-              } catch (_err: unknown) {
-                // Retry failed — fall through to return the original auth error
-              }
+        const authed = await runAuthFlow();
+        if (authed) {
+          const reconnResult = await connect();
+          if (reconnResult.ok && client !== undefined) {
+            try {
+              const retryResult = await client.callTool({
+                name,
+                arguments: args as Record<string, unknown>,
+              });
+              return parseCallToolResult(retryResult, name, config.name);
+            } catch (_err: unknown) {
+              // Retry failed — fall through to return the original auth error
             }
           }
         }
