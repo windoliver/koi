@@ -3514,10 +3514,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           return;
         }
 
+        // Fall back to the original text (not resolved.cleanText) when no refs
+        // were materialized. cleanText strips every @token even for files that
+        // didn't resolve (nonexistent, oversized, blocked). Sending raw text
+        // lets the model see the @-reference and attempt its own resolution.
+        // Binary refs are already handled above by hard-fail early return.
         const modelText =
-          resolved.injections.length > 0
-            ? formatAtReferencesForModel(resolved)
-            : resolved.cleanText;
+          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
 
         let stream: AsyncIterable<EngineEvent>;
         try {
