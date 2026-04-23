@@ -439,6 +439,15 @@ export function createMcpConnection(
   // -------------------------------------------------------------------------
 
   const callTool = async (name: string, args: JsonObject): Promise<Result<unknown, KoiError>> => {
+    // If a prior passive discovery (listTools/connect) put the connection in
+    // auth-needed, run the interactive OAuth flow now before ensureConnected()
+    // attempts a plain reconnect that would just return AUTH_REQUIRED again.
+    if (stateMachine.current.kind === "auth-needed" && authInFlight === undefined) {
+      const authed = await runAuthFlow();
+      if (authed) {
+        await connect();
+      }
+    }
     const connResult = await ensureConnected();
     if (!connResult.ok) return connResult;
     if (client === undefined) {
@@ -472,8 +481,10 @@ export function createMcpConnection(
                 arguments: args as Record<string, unknown>,
               });
               return parseCallToolResult(retryResult, name, config.name);
-            } catch (_err: unknown) {
-              // Retry failed — fall through to return the original auth error
+            } catch (retryErr: unknown) {
+              // Surface the actual post-auth error so callers can distinguish
+              // auth failure from execution failures (timeout, revoked scope, etc.)
+              return { ok: false, error: mapMcpError(retryErr, { serverName: config.name }) };
             }
           }
         }

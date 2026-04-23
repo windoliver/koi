@@ -759,3 +759,81 @@ describe("auth-needed state machine — reconnect transition", () => {
     }
   });
 });
+
+describe("callTool interactive auth after passive discovery 401", () => {
+  test("callTool runs onAuthNeeded when connection is already in auth-needed from prior listTools 401", async () => {
+    // Regression: listTools 401 → auth-needed (passive, no onAuthNeeded).
+    // Subsequent callTool must detect auth-needed state and run onAuthNeeded
+    // rather than letting ensureConnected() hit a plain connect() returning 401.
+    let connectCallCount = 0;
+    let listCallCount = 0;
+    const mockClient = {
+      connect: mock(async (_transport: unknown) => {
+        connectCallCount++;
+      }),
+      close: mock(async () => {}),
+      listTools: mock(async () => {
+        listCallCount++;
+        if (listCallCount === 1) throw new Error("401 Unauthorized");
+        return { tools: [] as { name: string }[] };
+      }),
+      callTool: mock(async (_params: { name: string; arguments: Record<string, unknown> }) => {
+        return { content: [{ type: "text", text: "ok" }] };
+      }),
+    };
+    const mockTransport = createMockTransport();
+    const onAuthNeeded = mock(async () => true);
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => mockClient) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onAuthNeeded,
+    });
+
+    await conn.connect();
+    // listTools → 401 → auth-needed (passive, no onAuthNeeded)
+    const listResult = await conn.listTools();
+    expect(listResult.ok).toBe(false);
+    expect(conn.state.kind).toBe("auth-needed");
+    expect(onAuthNeeded).not.toHaveBeenCalled();
+
+    // callTool should detect auth-needed, run onAuthNeeded, reconnect, then call
+    const callResult = await conn.callTool("echo", {});
+    expect(onAuthNeeded).toHaveBeenCalledTimes(1);
+    expect(callResult.ok).toBe(true);
+    expect(connectCallCount).toBe(2); // initial + reconnect after auth
+  });
+
+  test("callTool surfaces post-auth retry errors rather than original AUTH_REQUIRED", async () => {
+    // Regression: after OAuth succeeds, if the retry callTool fails for a different
+    // reason (server error, revoked scope, etc.), the actual error must be returned —
+    // not the original AUTH_REQUIRED that triggered the auth flow.
+    let callCount = 0;
+    const mockClient = {
+      connect: mock(async (_transport: unknown) => {}),
+      close: mock(async () => {}),
+      listTools: mock(async () => ({ tools: [] as { name: string }[] })),
+      callTool: mock(async (_params: { name: string; arguments: Record<string, unknown> }) => {
+        callCount++;
+        if (callCount === 1) throw new Error("401 Unauthorized");
+        throw new Error("503 Service Unavailable");
+      }),
+    };
+    const mockTransport = createMockTransport();
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => mockClient) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onAuthNeeded: mock(async () => true),
+    });
+
+    await conn.connect();
+    const result = await conn.callTool("echo", {});
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Must be the actual retry error, NOT AUTH_REQUIRED from the first call
+      expect(result.error.code).not.toBe("AUTH_REQUIRED");
+    }
+  });
+});
