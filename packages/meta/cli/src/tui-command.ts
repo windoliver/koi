@@ -66,7 +66,11 @@ import {
 } from "@koi/model-router";
 import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
-import { createSkillsRuntime } from "@koi/skills-runtime";
+import {
+  createSkillInjectorMiddleware,
+  createSkillProvider,
+  createSkillsRuntime,
+} from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { createBrowserProvider, createMockDriver } from "@koi/tool-browser";
 import type {
@@ -1302,24 +1306,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 3. Assemble runtime (A1-A: delegate to createKoiRuntime)
   // ---------------------------------------------------------------------------
 
-  // --- Load skills before runtime creation (same as koi start on main) ---
-  // Skills prepend project/user workflow rules to the system prompt.
+  // --- Skills: progressive mode ---
+  // Phase 1: provider attaches skill components (metadata only, no bodies).
+  // Phase 2: middleware injects <available_skills> XML per model call.
+  // The Skill tool loads full bodies on-demand from the same runtime.
+  // Startup I/O matches the old eager path (loadAll() still runs for
+  // blocked-skill visibility); benefit is per-call token reduction.
   const skillRuntime = createSkillsRuntime();
-  const skillContent = await (async (): Promise<string> => {
-    const outer = await skillRuntime.loadAll();
-    if (!outer.ok) return "";
-    const parts: string[] = [];
-    for (const [, result] of outer.value) {
-      if (result.ok) parts.push(result.value.body);
-    }
-    return parts.sort().join("\n\n---\n\n");
-  })();
+  const skillProvider = createSkillProvider(skillRuntime, { progressive: true });
+  // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
+  const skillAgentRef: { current: import("@koi/core").Agent | undefined } = { current: undefined };
+  const skillInjectorMw = createSkillInjectorMiddleware({
+    agent: (): import("@koi/core").Agent => {
+      if (skillAgentRef.current === undefined) throw new Error("skill agent ref not yet wired");
+      return skillAgentRef.current;
+    },
+    progressive: true,
+  });
   // Manifest instructions replace DEFAULT_SYSTEM_PROMPT when supplied —
-  // mirrors `koi start --manifest` behavior. Skills still prepend
-  // because they're filesystem-discovered, not part of the manifest.
+  // mirrors `koi start --manifest` behavior. Skills are injected by
+  // skillInjectorMw, not concatenated into systemPrompt.
   const baseSystemPrompt = manifestInstructions ?? DEFAULT_SYSTEM_PROMPT;
-  const systemPrompt =
-    skillContent.length > 0 ? `${skillContent}\n\n${baseSystemPrompt}` : baseSystemPrompt;
+  const systemPrompt = baseSystemPrompt;
 
   // Loop mode (--until-pass): each user turn becomes a runUntilPass
   // invocation that iterates the agent against the verifier until
@@ -1738,47 +1746,45 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // sub-agents. Workflows that delegate browser work to a child agent
     // will lose those tools after the spawn. This is a known scope
     // restriction of the mock dev/test path, not a bug in production.
-    ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
-      ? {
-          extraProviders: [
-            ...artifactExtraProviders,
-            ...(process.env.KOI_BROWSER_MOCK === "1"
-              ? [
-                  createBrowserProvider({
-                    backend: createMockDriver(),
-                    // Mock driver never opens a real connection, so SSRF
-                    // protection only needs to block IP literals and known
-                    // metadata hostnames — no DNS resolution required.
-                    // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
-                    // so mDNS/RFC6762 names are still rejected by design.
-                    isUrlAllowed: (url) => {
-                      try {
-                        const { protocol, hostname } = new URL(url);
-                        if (protocol !== "http:" && protocol !== "https:") return false;
-                        // Strip IPv6 brackets then lower-case + strip trailing DNS root
-                        // dot so `localhost.` / `metadata.google.internal.` can't
-                        // bypass suffix/host checks (same canonicalization as isSafeUrl).
-                        const h = hostname
-                          .replace(/^\[|\]$/g, "")
-                          .toLowerCase()
-                          .replace(/\.$/, "");
-                        if (isBlockedIp(h)) return false;
-                        if (BLOCKED_HOSTS.includes(h)) return false;
-                        // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
-                        // "local" matches ".local" — endsWith alone misses these.
-                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
-                          return false;
-                        return true;
-                      } catch {
-                        return false;
-                      }
-                    },
-                  }),
-                ]
-              : []),
-          ],
-        }
-      : {}),
+    extraMiddleware: [skillInjectorMw],
+    extraProviders: [
+      skillProvider,
+      ...artifactExtraProviders,
+      ...(process.env.KOI_BROWSER_MOCK === "1"
+        ? [
+            createBrowserProvider({
+              backend: createMockDriver(),
+              // Mock driver never opens a real connection, so SSRF
+              // protection only needs to block IP literals and known
+              // metadata hostnames — no DNS resolution required.
+              // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
+              // so mDNS/RFC6762 names are still rejected by design.
+              isUrlAllowed: (url) => {
+                try {
+                  const { protocol, hostname } = new URL(url);
+                  if (protocol !== "http:" && protocol !== "https:") return false;
+                  // Strip IPv6 brackets then lower-case + strip trailing DNS root
+                  // dot so `localhost.` / `metadata.google.internal.` can't
+                  // bypass suffix/host checks (same canonicalization as isSafeUrl).
+                  const h = hostname
+                    .replace(/^\[|\]$/g, "")
+                    .toLowerCase()
+                    .replace(/\.$/, "");
+                  if (isBlockedIp(h)) return false;
+                  if (BLOCKED_HOSTS.includes(h)) return false;
+                  // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
+                  // "local" matches ".local" — endsWith alone misses these.
+                  if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
+                    return false;
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            }),
+          ]
+        : []),
+    ],
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -1886,6 +1892,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       return;
     }
     runtimeHandle = handle;
+    // Resolve lazy skill agent ref so the injector middleware can query
+    // skill components on every subsequent model call.
+    skillAgentRef.current = handle.runtime.agent;
     // Wire governance bridge when the agent has a GovernanceController
     // component attached. In default sessions (no --max-spend or equivalent
     // future flag), component() returns undefined and the bridge stays unset,

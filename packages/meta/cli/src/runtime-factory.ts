@@ -793,6 +793,13 @@ export interface KoiRuntimeConfig {
    * tools backed by a host-owned ArtifactStore). Order preserved.
    */
   readonly extraProviders?: readonly ComponentProvider[] | undefined;
+  /**
+   * Host-provided middleware appended to the `presetExtras` slot (phase
+   * "resolve", after stack middleware). Used to wire host-owned middleware
+   * that doesn't fit a preset stack (e.g. skill-injector in progressive mode).
+   * Order preserved.
+   */
+  readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -2545,6 +2552,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...stackContribution.middleware,
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
+        ...(config.extraMiddleware ?? []),
       ],
       manifestMiddleware: zoneBMiddleware,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
