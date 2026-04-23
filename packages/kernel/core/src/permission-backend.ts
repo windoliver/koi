@@ -63,17 +63,4 @@ export interface PermissionBackend {
    * enforced — only plain-tool rules apply.
    */
   readonly supportsDefaultDenyMarker?: boolean;
-
-  /**
-   * Signals that this backend is an unconditional bypass (all-allow) backend.
-   * When `true`, `@koi/middleware-permissions` skips the bash spec guard
-   * entirely — including exact-argv enforcement and semantic Write/Read/Network
-   * rule checks — because a bypass backend has no policy rules to enforce.
-   *
-   * Use ONLY for development/testing bypass backends, not for backends that
-   * happen to grant broad access via `allow: *` policy rules. A policy
-   * wildcard must still be subject to exact-argv downgrade to prevent broad
-   * prefix rules from silently authorizing refused/partial command forms.
-   */
-  readonly bypassAllSpecGuards?: boolean;
 }

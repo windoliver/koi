@@ -480,22 +480,22 @@ describe("evaluateSpecGuard — public default-deny field detection (#1919 regre
 });
 
 describe("evaluateSpecGuard — canary-based exact-argv detection (#1919 regression)", () => {
-  test("all-allow backend (prefix/glob or bypass) + refused spec → downgraded to ask by evaluateSpecGuard", async () => {
-    // evaluateSpecGuard itself downgrades all-allow backends (including bypass mode) because
-    // the canary also returns allow — indistinguishable from a broad prefix/glob rule.
-    // Bypass backends are short-circuited UPSTREAM in wrapToolCall via specGuardBypass before
-    // evaluateSpecGuard is ever called, so this downgrade is never reached for real bypass backends.
+  test("all-allow backend without IS_EXACT_MATCH + refused spec → downgraded to ask", async () => {
+    // A backend that returns plain { effect: "allow" } for everything (no IS_EXACT_MATCH marker)
+    // is treated as a prefix/glob rule because the canary suffix also allows. The real
+    // createPermissionBackend({ mode: "bypass" }) stamps IS_EXACT_MATCH on all allows so the
+    // spec guard trusts them directly without a canary probe — this test covers the unmarked case.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "ssh prod-host", // refused spec (no verifiedBaseName match)
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision, // all-allow: exact + canary both allow
+      resolveQuery: async (_q) => allowDecision, // plain allow: no IS_EXACT_MATCH marker
       baseQuery,
       registry,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
-    // All-allow backend: canary also allows → canary cannot distinguish → downgrade to ask
+    // No IS_EXACT_MATCH → falls to canary → canary also allows (unmarked) → downgrade to ask
     expect(result.decision.effect).toBe("ask");
     expect(result.specKind).toBe("refused");
   });

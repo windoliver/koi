@@ -10,7 +10,7 @@ import type { PermissionBackend, PermissionDecision, PermissionQuery } from "@ko
 
 import type { PlanModeOptions } from "./mode-resolver.js";
 import { resolveMode } from "./mode-resolver.js";
-import { compileGlob } from "./rule-evaluator.js";
+import { compileGlob, IS_EXACT_MATCH } from "./rule-evaluator.js";
 import type { CompiledRule, PermissionConfig, SourcedRule } from "./rule-types.js";
 import {
   PLAN_ALLOWED_ACTIONS,
@@ -126,12 +126,29 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     // Stateless — nothing to clean up.
   }
 
-  // Bypass backends have no policy rules — they allow everything unconditionally.
-  // Mark them with bypassAllSpecGuards so the bash spec guard skips exact-argv
-  // and semantic rule enforcement entirely (the canary technique cannot distinguish
-  // bypass from prefix/glob when all queries return allow).
+  // Bypass backends allow everything unconditionally. Stamp all allows with
+  // IS_EXACT_MATCH so hasExplicitExactArgvRule short-circuits the canary probe
+  // and treats every command as explicitly allowed — without needing a separate
+  // bypass flag that any backend could self-assert to escape spec-guard enforcement.
+  // Also set supportsDefaultDenyMarker so construction succeeds when resolveBashCommand
+  // is configured (bypass mode is inherently marker-aware: no fall-through denies exist).
   if (mode === "bypass") {
-    return { check, checkBatch, dispose, bypassAllSpecGuards: true as const };
+    const bypassAllow: PermissionDecision & Record<symbol, boolean> = Object.freeze({
+      effect: "allow",
+      [IS_EXACT_MATCH]: true,
+    } as PermissionDecision & Record<symbol, boolean>);
+    function bypassCheck(_query: PermissionQuery): PermissionDecision {
+      return bypassAllow;
+    }
+    function bypassCheckBatch(queries: readonly PermissionQuery[]): readonly PermissionDecision[] {
+      return queries.map(() => bypassAllow);
+    }
+    return {
+      check: bypassCheck,
+      checkBatch: bypassCheckBatch,
+      dispose,
+      supportsDefaultDenyMarker: true as const,
+    };
   }
 
   // Non-bypass backends are marker-aware: evaluateRules() stamps fall-through ask

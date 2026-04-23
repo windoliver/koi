@@ -72,8 +72,6 @@ export interface WrapToolCallDeps {
   readonly specRegistry: ReadonlyMap<string, CommandSpec>;
   /** Whether bash-ast spec-aware enforcement is enabled. */
   readonly specGuardEnabled: boolean;
-  /** When true, the backend is a bypass backend — skip spec guard entirely. */
-  readonly specGuardBypass: boolean;
 }
 
 export function createWrapToolCall(deps: WrapToolCallDeps): {
@@ -99,7 +97,6 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     handleAskDecision,
     specRegistry,
     specGuardEnabled,
-    specGuardBypass,
   } = deps;
 
   async function wrapToolCall(
@@ -244,7 +241,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     // Bash spec guard: evaluate Write/Read/Network rules + exact-argv enforcement.
     // Runs after the dangerous-command ratchet so that any further downgrade
     // (deny/ask) from semantic rules is respected on top of prefix policy.
-    if (specGuardEnabled && !specGuardBypass && decision.effect !== "deny") {
+    if (specGuardEnabled && decision.effect !== "deny") {
       const raw = config.resolveBashCommand?.(request.toolId, request.input);
       if (raw !== undefined && raw.trim().length > 0) {
         const specOutcome = await evaluateSpecGuard({
@@ -268,7 +265,15 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
             // command name, not the full argv, so repeated probes of the same
             // protected path/host with different argv variants still accumulate
             // against the same budget — closing the argv-churn evasion window.
-            const cmdName = raw.trim().split(/\s+/)[0] ?? raw.trim();
+            // Skip leading env var assignments (e.g. `FOO=1 ssh ...`) so the
+            // tracking key is `bash:ssh`, not `bash:FOO=1`.
+            const rawWords = raw.trim().split(/\s+/);
+            let cmdStart = 0;
+            for (const word of rawWords) {
+              if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(word)) cmdStart++;
+              else break;
+            }
+            const cmdName = rawWords[cmdStart] ?? raw.trim();
             trackingResource = `${request.toolId}:${cmdName}`;
           }
         }
