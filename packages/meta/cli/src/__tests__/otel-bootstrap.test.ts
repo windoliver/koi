@@ -204,6 +204,12 @@ describe("parseOtelResourceAttributes", () => {
     expect(parseOtelResourceAttributes("my%20key=value")).toEqual({ "my key": "value" });
   });
 
+  test("returns undefined for percent-encoded whitespace-only key (%20=value)", () => {
+    // %20 decodes to " " which is an empty/whitespace decoded key — must fail closed.
+    expect(parseOtelResourceAttributes("%20=value")).toBeUndefined();
+    expect(parseOtelResourceAttributes("%09=value")).toBeUndefined(); // tab
+  });
+
   test("returns undefined for key exceeding 255 characters", () => {
     const longKey = "k".repeat(256);
     expect(parseOtelResourceAttributes(`${longKey}=value`)).toBeUndefined();

@@ -174,6 +174,7 @@ export function parseOtelResourceAttributes(raw: string): Record<string, string>
     } catch {
       return undefined; // percent-decode failure → malformed
     }
+    if (decodedKey.trim().length === 0) return undefined; // decoded key is empty/whitespace → malformed
     if (decodedKey.length > OTEL_MAX_ATTR_LENGTH) return undefined;
     if (decodedValue.length > OTEL_MAX_ATTR_LENGTH) return undefined;
     result[decodedKey] = decodedValue;
