@@ -3497,33 +3497,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // model sees the file directly without needing to call Glob/fs_read.
         const resolved = resolveAtReferences(text, process.cwd());
 
-        // Warn per binary @-reference and continue with remaining context.
-        // Aborting the whole turn would block text refs and the user's question.
-        // Binary refs are already stripped from resolved.cleanText, so the model
-        // receives only the text it can actually process.
-        // Multimodal block support is deferred until all adapters support it.
+        // Warn for each binary @-reference. Do NOT strip the @-token from the
+        // model prompt: keeping the original text lets the model recover via tools
+        // (fs_read, glob) since multimodal block attachment is not yet wired.
+        // Only text injections produce cleanText-based output.
         if (resolved.binaryInjections.length > 0) {
           for (const b of resolved.binaryInjections) {
             store.dispatch({
               kind: "add_info",
-              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. Reference skipped.`,
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. The model will see the reference and may use tools to read it.`,
             });
           }
         }
 
-        // Use cleanText when at least one ref was resolved or explicitly warned
-        // (binary). The @-tokens for those refs are already stripped from cleanText
-        // and the user was notified. When no refs resolved at all (file missing,
-        // oversized, blocked), fall back to the original text so the model sees
-        // the @-reference and can attempt its own file resolution via tools.
-        const hasAnyHandled =
-          resolved.injections.length > 0 || resolved.binaryInjections.length > 0;
+        // Use formatAtReferencesForModel (cleanText + injected content) only when
+        // text refs were actually resolved. Otherwise send the original text so
+        // the model sees @-references and can attempt its own resolution via tools.
         const modelText =
-          resolved.injections.length > 0
-            ? formatAtReferencesForModel(resolved)
-            : hasAnyHandled
-              ? resolved.cleanText
-              : text;
+          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
 
         let stream: AsyncIterable<EngineEvent>;
         try {

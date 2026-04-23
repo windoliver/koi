@@ -6,7 +6,7 @@
  */
 
 import type { BrowserConsoleLevel, JsonObject } from "@koi/core";
-import { detectFromBytes } from "@koi/file-type";
+import { detectFromBytes, detectFromPath } from "@koi/file-type";
 
 interface ValidationError {
   readonly error: string;
@@ -252,22 +252,20 @@ export function parseUploadFiles(
         err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
       };
     }
-    // MIME priority for uploads:
-    //  1. Strong magic-byte detection — always authoritative (prevents mislabeling
-    //     arbitrary bytes as image/png to bypass accept filters / MIME validators)
-    //  2. Caller-supplied mimeType — trusted when sniffing is inconclusive;
-    //     preserves correct MIME for docx/xlsx (ZIP container) and other formats
-    //     the sniffer cannot distinguish at the byte level
-    //  3. application/octet-stream — safe default when no other evidence exists
-    // Extension-based guesses are intentionally excluded: the filename is caller-
-    // controlled, so extension-derived MIME is equally spoofable.
+    // Upload MIME priority:
+    //  1. Strong magic-byte detection — always authoritative; prevents mislabeling
+    //     arbitrary bytes as image/png to bypass accept filters/MIME validators
+    //  2. Extension-based detection via detectFromPath — derives MIME from the
+    //     caller-supplied filename; equally caller-controlled, but at least
+    //     grounded in the file's stated type rather than an arbitrary string.
+    //     Provides useful MIME for text/csv, application/json, etc.
+    //  3. application/octet-stream — safe final default
+    // The caller-supplied `mimeType` field is intentionally not used: it is
+    // an opaque string with no validation against content or filename.
     const bytes = new Uint8Array(Buffer.from(content, "base64"));
     const detected = detectFromBytes(bytes);
-    const resolvedMime = (() => {
-      if (detected?.confidence === "strong") return detected.mimeType;
-      if (typeof mimeType === "string") return mimeType;
-      return "application/octet-stream";
-    })();
+    const resolvedMime =
+      detected?.confidence === "strong" ? detected.mimeType : detectFromPath(name, bytes).mimeType;
     files.push({ content, name, mimeType: resolvedMime });
   }
   return { ok: true, value: files };

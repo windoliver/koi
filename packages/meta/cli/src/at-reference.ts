@@ -232,7 +232,8 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
           detectedByBytes.mimeType === "application/json" ||
           detectedByBytes.mimeType === "application/xml" ||
           detectedByBytes.mimeType === "application/yaml" ||
-          detectedByBytes.mimeType === "application/toml");
+          detectedByBytes.mimeType === "application/toml" ||
+          detectedByBytes.mimeType === "image/svg+xml"); // SVG is XML text
 
       if (!isText) {
         // Binary file: line ranges are meaningless. Enforce size cap regardless.
