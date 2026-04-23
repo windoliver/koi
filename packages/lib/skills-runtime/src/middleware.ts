@@ -84,9 +84,21 @@ function sortedSkills(agent: Agent): readonly SkillComponent[] {
 
 /**
  * Collects skill names from the agent ECS for capability description.
+ * In progressive mode with hasForkSupport: false, excludes fork skills to
+ * match the set actually advertised in <available_skills>.
  */
-function collectSkillNames(agent: Agent): readonly string[] {
-  return sortedSkills(agent).map((s) => s.name);
+function collectSkillNames(
+  agent: Agent,
+  progressive: boolean,
+  hasForkSupport: boolean,
+): readonly string[] {
+  const sorted = sortedSkills(agent);
+  if (progressive && !hasForkSupport) {
+    return sorted
+      .filter((s) => !(s.content === "" && s.executionMode === "fork"))
+      .map((s) => s.name);
+  }
+  return sorted.map((s) => s.name);
 }
 
 /**
@@ -265,7 +277,7 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      const names = collectSkillNames(resolveAgent(agentOrFn));
+      const names = collectSkillNames(resolveAgent(agentOrFn), progressive, hasForkSupport);
       if (names.length === 0) return undefined;
       return {
         label: "skills",

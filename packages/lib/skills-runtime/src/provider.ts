@@ -120,6 +120,7 @@ export function skillDefinitionToComponent(skill: SkillDefinition): SkillCompone
     name: skill.name,
     description: skill.description,
     content: skill.body,
+    ...(skill.allowedTools !== undefined ? { tags: skill.allowedTools } : {}),
     ...(skill.requires !== undefined ? { requires: skill.requires as BrickRequires } : {}),
     ...(skill.executionMode !== undefined ? { executionMode: skill.executionMode } : {}),
   };
