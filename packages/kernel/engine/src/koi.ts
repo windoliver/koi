@@ -146,12 +146,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const debugInstrumentation: DebugInstrumentation | undefined =
     options.debug?.enabled === true ? createDebugInstrumentation(options.debug) : undefined;
 
-  // Runtime guard for JS/JSON-configured callers using the renamed option.
-  // TypeScript callers get a compile error; untyped hosts would silently lose reset behavior.
+  // Fail-fast for JS/JSON-configured callers using the renamed option.
+  // TypeScript callers get a compile error; untyped hosts would silently lose reset behavior
+  // and the stale-duration bug would reappear with no warning at the right moment.
   if ("resetIterationBudgetPerRun" in options) {
-    console.warn(
+    throw KoiRuntimeError.from(
+      "VALIDATION",
       "[koi] createKoi: option `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
-        "Per-run guard reset is currently DISABLED. Replace the key to restore reset behavior.",
+        "Replace the key — continuing with reset DISABLED would silently reintroduce the stale-duration bug.",
     );
   }
 
@@ -680,14 +682,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       boundaryId: string,
     ): Promise<void> {
       // Validate all guards first — throw before mutating any state.
+      // Two cases caught here (construction gate catches static middleware;
+      // this defends against dynamic/forged guards added after construction):
+      //   (a) Branded guard missing resetForRun()
+      //   (b) Unbranded canonical-name "koi:iteration-guard" (pre-#1917 legacy)
       for (const mw of guards) {
         if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
-          // Construction gate should have caught this — but throw defensively.
           throw KoiRuntimeError.from(
             "VALIDATION",
             `[koi] Middleware carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
               `All branded iteration guards must implement IterationGuardHandle. ` +
               `Guard: ${mw.name ?? "(unnamed)"}`,
+          );
+        }
+        if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            `[koi] Dynamic/forged middleware "koi:iteration-guard" does not implement resetForRun(). ` +
+              `This is a legacy pre-#1917 guard. Remove it or upgrade @koi/engine-compose.`,
           );
         }
       }
@@ -703,11 +715,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
     }
 
-    /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place. */
+    /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place.
+     *
+     * `consumeReset` must be `true` only at the deliberate run-start recomposition
+     * (cooperating-adapter path, after the full forge + dynamic snapshot is ready).
+     * Mid-run forge-refresh and dynamic-middleware recompositions pass `false` so they
+     * cannot prematurely consume the pending run-start reset before dynamic middleware
+     * has been sampled — which would leave guards unreset for the actual run.
+     */
     async function applyRecomposition(
       forgedMw: readonly KoiMiddleware[] | undefined,
       dynamicMw: readonly KoiMiddleware[] | undefined,
       terminals: TerminalHandlers,
+      consumeReset: boolean = false,
     ): Promise<void> {
       const { sorted, provenanceHints } = resolveActiveMiddleware(
         allMiddleware,
@@ -717,7 +737,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // #1939: reset all branded iteration guards after building the final middleware
       // snapshot (includes forge + dynamic guards). runIndex incremented here so
       // boundaryId is stable and deterministic.
-      if (resetGuardsCurrentRun !== undefined) {
+      // Only execute when explicitly asked (consumeReset=true) to prevent forge-refresh
+      // or dynamic-mw recompositions from consuming the pending reset prematurely.
+      if (consumeReset && resetGuardsCurrentRun !== undefined) {
         runIndex++;
         const boundaryId = `${factorySessionId}:run:${runIndex - 1}`;
         const govCtl = agent.component<GovernanceController>(GOVERNANCE);
@@ -1104,7 +1126,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (resetGuardsCurrentRun !== undefined) {
           const runStartDynamic = options.dynamicMiddleware?.() ?? [];
           previousDynamicMw = runStartDynamic;
-          await applyRecomposition(previousForgedMw ?? undefined, runStartDynamic, cachedTerminals);
+          await applyRecomposition(
+            previousForgedMw ?? undefined,
+            runStartDynamic,
+            cachedTerminals,
+            true,
+          );
           // applyRecomposition clears resetGuardsCurrentRun; nothing more needed here.
         }
 
