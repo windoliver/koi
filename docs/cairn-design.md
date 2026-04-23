@@ -2091,9 +2091,57 @@ Effect‑ts coding agent with **no persistent memory layer**. "Memory" = `AGENTS
 - **Runtime**: OpenCode keeps its Effect runtime, session DB, compaction state machine, and `PRUNE_PROTECTED_TOOLS` intact. Register `cairn mcp` as an MCP server; OpenCode's `PreCompact` hook routes the structured summary into Cairn as typed records; `SessionStart` pulls the hot prefix from Cairn via `assemble_hot`.
 - **Cairn wins**: adds the cross‑session persistent memory OpenCode lacks without disturbing the compaction flow. Skills become portable (OpenCode's `PRUNE_PROTECTED_TOOLS = ["skill"]` maps to `pinned: true` in Cairn). Structured summary template is preserved via Cairn's `project` + `rule` + `strategy_success` kinds.
 
+### Koi v1 (this repo, `archive/v1/`) — forge · context‑arena · ACE
+
+Cairn is designed to replace the three memory‑adjacent meta‑packages in Koi v1 with one coherent substrate. Each v1 surface maps to a Cairn section; the behaviors are preserved, the implementation collapses.
+
+| Koi v1 surface | Purpose in v1 | Cairn equivalent | Notes |
+|----------------|---------------|-------------------|-------|
+| `@koi/forge` | Self‑extension: agent composition, verification, integrity attestation, policy enforcement | §11 `EvolutionWorkflow` + §11.b Skillify + §4.2 actor_chain + §14 ConsentReceipt | `configured-koi`, `forge-bootstrap`, `forge-middleware-stack` become a thin wiring layer above Cairn's 5 contracts; policy lives in §4.2 scope tuples + rebac |
+| `@koi/context-arena` | Compose personality + bootstrap + conversation + memory into the model context with budget allocation | §7 `HotMemoryAssembler` + §5.5 FlushPlan + §7.1 `AutoUserProfile` | ContextArenaPreset (conservative / balanced / aggressive) maps to `hot_memory.budget_profile` in `.cairn/config.yaml` |
+| `@koi/middleware-ace` + `@koi/ace-types` | Trajectory capture → reflection → curation → playbook generation | `capture_trace` verb (§8) + §6.1 `trace` / `reasoning` / `strategy_success` / `strategy_failure` / `playbook` MemoryKinds + §10 `ReflectionWorkflow` / `ConsolidationWorkflow` / `PromotionWorkflow` | v1's `TrajectoryEntry` → a `trace` record; `Playbook` / `StructuredPlaybook` → a `playbook` record; `Reflector` / `Curator` / `Generator` → three durable workflows |
+| `@koi/memory-fs` | Filesystem‑backed memory store | §3 vault layout + Nexus `sandbox` profile as default `MemoryStore` | v1's fs‑only store becomes one adapter among many; same markdown on disk, now with BM25 + vector + graph for free |
+| `@koi/middleware-hot-memory` | Hot‑memory prefix injection | §7 `HotMemoryAssembler` | direct 1:1 |
+| `@koi/middleware-compactor` | Rolling compaction of long threads | §10 `ConsolidationWorkflow` (rolling‑summary pass) | US4 rolling summary maps to this; cadence configurable per agent |
+| `@koi/middleware-context-editing` | Prune tool results to stay under budget | §5.2 Tool‑squash stage + §5.5 FlushPlan | squash rules + plan‑then‑apply |
+| `@koi/middleware-user-model` | Classify user intent, maintain user profile | §7.1 `AutoUserProfile` + `UserSignalDetector` (pure fn) + `user` / `feedback` / `user_signal` MemoryKinds | same classification, typed records instead of in‑middleware state |
+| `@koi/middleware-conversation` | Thread + turn persistence | §8.1 Session lifecycle + §18.c US1 turn schema | `session_id` + `turn_id` monotonic, same shape |
+| `@koi/middleware-collective-memory` | Shared memory across agents/users | §10.0 Cross‑user aggregate + §12.a distribution (share_link, federation) | anonymized aggregates via `cairn.aggregate.v1` extension |
+| `@koi/snapshot-chain-store` + `@koi/snapshot-store-sqlite` | Append‑only event chain for audit | §5.6 `wal_ops` + §14 `consent_journal` + append‑only `consent.log` | WAL + consent journal subsume the chain‑store; Nexus `versioning` brick adds undo |
+| `@koi/skill-stack` | Skill definition + discovery + loading | §11.b Skillify + Nexus `catalog` brick (§4.2) + resolver (Classifier pure fn) | v1 skills become first‑class records with `lane` + 10‑step checklist |
+| `@koi/tool-squash` | Squash verbose tool outputs | §5.2 Tool‑squash stage | direct 1:1 |
+| `@koi/transcript` / `@koi/session-store` / `@koi/session-state` | Session state + transcript persistence | §3 `raw/trace_*.md` + §8.1 session lifecycle + §5.6 WAL durability | one substrate, not three packages |
+
+**How Koi uses Cairn after the cutover:**
+
+```
+Koi harness (Rust agent loop + middleware stack)
+      │
+      │  MCP (8 core verbs)
+      ▼
+Cairn Rust static binary (cairn mcp)
+      │
+      ├─► .cairn/cairn.db      (WAL, replay, locks, consent journal)
+      │
+      └─► <vault>/nexus.db     (records, vectors, FTS, edges)  via HTTP+MCP to Nexus sandbox sidecar
+```
+
+No Koi‑side code writes to disk directly; every mutation goes through Cairn's 8 MCP verbs. The v1 meta‑packages above are either (a) replaced by a Cairn L2 plugin, (b) collapsed into the core pipeline, or (c) deleted because Cairn handles the concern end‑to‑end.
+
+**What Koi still owns after cutover:** the agent loop itself (model calls, tool dispatch, middleware chain composition), harness‑specific I/O (CLI, channels, hooks), and whatever it layers on top of Cairn (Koi‑specific workflows, UI, integrations). Memory is no longer Koi's problem.
+
+**Migration path (v1 → Cairn):**
+
+1. Install `cairn` Rust binary; `cairn init` a vault in the Koi workspace.
+2. Run `cairn import --from koi-v1 archive/v1/` — walks `@koi/memory-fs`, ACE trajectory stores, snapshot chains, session stores, and skill directories; writes typed records into the new vault with provenance links.
+3. Flip Koi's runtime config: `memory.provider: cairn-mcp` (was `memory-fs` / `@koi/memory-fs`). Middleware stack drops `compactor`, `context-editing`, `ace`, `hot-memory`, `user-model`, `conversation` — the thin layer on top of Cairn replaces all of them.
+4. Delete the corresponding v1 meta‑packages or move them to `archive/legacy/` for audit.
+
+This matches the v0.1 reference‑consumer plan (§19): Claude Code is the anchor harness in v0.1; Koi's own harness lands in v0.2 as the second consumer once the capability matrix reaches the full P1 surface.
+
 ### Common pattern
 
-All four migrations share the same three steps:
+All four (plus Koi v1) migrations share the same three steps:
 
 1. **Import once** — `cairn import --from <system>` produces a Cairn vault with provenance links back to the source system's files.
 2. **Dual‑run briefly** — both the legacy memory and Cairn stay active; reads prefer Cairn; writes fan to both. Lets you validate parity on real turns.
