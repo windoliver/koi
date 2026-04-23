@@ -542,7 +542,9 @@ describe("McpConnection onAuthNeeded pause-and-retry", () => {
     expect(mockClient._callToolCallCount).toBe(1);
   });
 
-  test("listTools — onAuthNeeded returns true → reconnects and retries → returns tools", async () => {
+  test("listTools — 401 transitions to auth-needed and returns AUTH_REQUIRED without interactive auth", async () => {
+    // listTools is passive (discovery/status) — 401 must NOT launch the OAuth flow.
+    // Interactive auth is reserved for explicit callTool invocations.
     const mockClient = createUnauthorizedOnFirstCallClient({
       tools: [{ name: "my-tool", description: "A tool", inputSchema: { type: "object" } }],
     });
@@ -558,12 +560,12 @@ describe("McpConnection onAuthNeeded pause-and-retry", () => {
     await conn.connect();
     const result = await conn.listTools();
 
-    expect(onAuthNeeded).toHaveBeenCalledTimes(1);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value).toHaveLength(1);
-      expect(result.value[0]?.name).toBe("my-tool");
+    expect(onAuthNeeded).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("AUTH_REQUIRED");
     }
+    expect(conn.state.kind).toBe("auth-needed");
   });
 
   test("callTool — onAuthNeeded returns true but reconnect fails → returns original auth error", async () => {
@@ -692,23 +694,24 @@ describe("MCP OAuth inline flow — full path", () => {
 });
 
 describe("auth-needed state machine — reconnect transition", () => {
-  test("connect() succeeds from auth-needed state (state machine allows auth-needed→connecting)", async () => {
-    // Regression: after inline OAuth, the connection is in auth-needed and must
-    // be able to reconnect via connect() without requiring an intermediate state.
-    // This validates the ensureConnected() path at line 304 in connection.ts.
+  test("callTool — onAuthNeeded returns true → reconnects and retries (state machine allows auth-needed→connecting)", async () => {
+    // Regression: after callTool receives 401 and onAuthNeeded returns true,
+    // connect() is called to reconnect from auth-needed. This validates:
+    //   1. State machine allows auth-needed→connecting transition
+    //   2. Successful reconnect retries the original tool call
     let connectCallCount = 0;
-    let listCallCount = 0;
+    let callCount = 0;
     const mockClient = {
       connect: mock(async (_transport: unknown) => {
         connectCallCount++;
       }),
       close: mock(async () => {}),
-      listTools: mock(async () => {
-        listCallCount++;
-        if (listCallCount === 1) throw new Error("401 Unauthorized");
-        return { tools: [] as { name: string }[] };
+      listTools: mock(async () => ({ tools: [] as { name: string }[] })),
+      callTool: mock(async (_params: { name: string; arguments: Record<string, unknown> }) => {
+        callCount++;
+        if (callCount === 1) throw new Error("401 Unauthorized");
+        return { content: [] };
       }),
-      callTool: mock(async () => ({ content: [] })),
     };
     const mockTransport = createMockTransport();
 
@@ -719,8 +722,8 @@ describe("auth-needed state machine — reconnect transition", () => {
     });
 
     await conn.connect();
-    // First listTools → 401 → auth-needed → onAuthNeeded → connect() → retry
-    const result = await conn.listTools();
+    // callTool → 401 → auth-needed → onAuthNeeded → connect() → retry
+    const result = await conn.callTool("echo", {});
 
     // Connection successfully reconnected and retried from auth-needed state
     expect(result.ok).toBe(true);
@@ -728,16 +731,16 @@ describe("auth-needed state machine — reconnect transition", () => {
     expect(connectCallCount).toBe(2);
   });
 
-  test("onAuthNeeded rejection is caught — returns AUTH_REQUIRED result, does not throw", async () => {
+  test("onAuthNeeded rejection is caught — callTool returns AUTH_REQUIRED, does not throw", async () => {
+    // onAuthNeeded runs during callTool 401. A rejection must be caught and
+    // converted to `false` so the error stays within the Result boundary.
     const mockTransport = createMockTransport();
 
     const conn = createMcpConnection(makeConfig(), undefined, {
       createClient: (() => ({
         connect: mock(async (_transport: unknown) => {}),
         close: mock(async () => {}),
-        listTools: mock(async () => {
-          throw new Error("401 Unauthorized");
-        }),
+        listTools: mock(async () => ({ tools: [] as { name: string }[] })),
         callTool: mock(async () => {
           throw new Error("401 Unauthorized");
         }),
@@ -749,10 +752,10 @@ describe("auth-needed state machine — reconnect transition", () => {
     });
 
     await conn.connect();
-    const listResult = await conn.listTools();
-    expect(listResult.ok).toBe(false);
-    if (!listResult.ok) {
-      expect(listResult.error.code).toBe("AUTH_REQUIRED");
+    const callResult = await conn.callTool("echo", {});
+    expect(callResult.ok).toBe(false);
+    if (!callResult.ok) {
+      expect(callResult.error.code).toBe("AUTH_REQUIRED");
     }
   });
 });

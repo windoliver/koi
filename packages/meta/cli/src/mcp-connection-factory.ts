@@ -65,14 +65,20 @@ export function createOAuthAwareMcpConnection(
     const onAuthNeeded =
       oauthChannel !== undefined
         ? async (): Promise<boolean> => {
-            await oauthChannel.onAuthRequired({
-              provider: server.name,
-              message: `${server.name} requires authorization`,
-              mode: "local",
-            });
+            // Notify best-effort — renderer failure must not prevent auth from starting.
+            await Promise.resolve(
+              oauthChannel.onAuthRequired({
+                provider: server.name,
+                message: `${server.name} requires authorization`,
+                mode: "local",
+              }),
+            ).catch(() => {});
             const authed = await provider.startAuthFlow();
+            // Notify best-effort — auth is already done regardless.
             if (authed) {
-              await oauthChannel.onAuthComplete({ provider: server.name });
+              await Promise.resolve(oauthChannel.onAuthComplete({ provider: server.name })).catch(
+                () => {},
+              );
             }
             return authed;
           }

@@ -282,17 +282,15 @@ export function createMcpConnection(
 
       const koiError = mapMcpError(error, { serverName: config.name });
 
-      // Check for auth challenge (401 only, not 403 scope denials)
+      // Check for auth challenge (401 only, not 403 scope denials).
+      // connect() is passive — transition to auth-needed and surface the error;
+      // interactive auth is reserved for explicit callTool invocations.
       if (koiError.code === "AUTH_REQUIRED") {
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
             kind: "auth-needed",
             challenge: { type: "bearer" },
           });
-        }
-        const authed = await runAuthFlow();
-        if (authed) {
-          return connect();
         }
         return { ok: false, error: koiError };
       }
@@ -414,29 +412,14 @@ export function createMcpConnection(
       const koiError = mapMcpError(error, { serverName: config.name });
       // 401 mid-session → auth-needed. 403 (insufficient scope, ACL denial)
       // stays as a normal error — don't clear valid credentials.
+      // listTools() is passive (discovery/status) — transition state and
+      // surface AUTH_REQUIRED; interactive auth is reserved for callTool.
       if (koiError.code === "AUTH_REQUIRED") {
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
             kind: "auth-needed",
             challenge: { type: "oauth" },
           });
-        }
-        const authed = await runAuthFlow();
-        if (authed) {
-          const reconnResult = await connect();
-          if (reconnResult.ok && client !== undefined) {
-            try {
-              const retryResponse = await client.listTools();
-              const tools: readonly McpToolInfo[] = retryResponse.tools.map((t) => ({
-                name: t.name,
-                description: t.description ?? "",
-                inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
-              }));
-              return { ok: true, value: tools };
-            } catch (_err: unknown) {
-              // Retry failed — fall through to return the original auth error
-            }
-          }
         }
         return { ok: false, error: koiError };
       }
