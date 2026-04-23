@@ -47,14 +47,16 @@ Every capability in Cairn is tagged P0 / P1 / P2 / P3. Readers skimming for "wha
 
 **The contract surface is stable at P0.** MCP verb set, vault layout invariants, record schema, WAL state machines — all defined at P0 and never broken by higher tiers. What changes between tiers is which **backends, workers, and workflows** are active; the wire format, file format, and audit trail never change.
 
-**Rule of thumb:** if a feature requires a network call, a Python sidecar, or a cloud credential, it is at least P1. **P0 is pure Rust + pure SQLite + markdown — nothing else.**
+**Rule of thumb:** if a feature requires a **Python sidecar or a cloud credential**, it is at least P1. **P0 is pure Rust + pure SQLite + markdown + an `LLMProvider` of the operator's choice.** An `LLMProvider` at P0 can be any local model (Ollama, llama.cpp, vLLM) or any OpenAI-compatible endpoint — the operator configures it at `cairn init` time. **No LLM call leaves the laptop unless the operator configured a cloud endpoint.**
+
+**P0 degrades cleanly when no LLM is configured** — `LLMExtractor` and `LLMDreamWorker` report `llm_unavailable` at startup; the `RegexExtractor` fallback chain still captures hook events + "tell it directly" triggers; rolling-summary `ConsolidationWorkflow` skips with a `consolidation_deferred` status in `lint-report.md`. The vault keeps accepting writes; only LLM-backed enrichment pauses. This is intentional: P0 guarantees the substrate works on a fresh offline laptop; LLM-backed extraction is an optional enrichment, not a structural dependency.
 
 | Concept | P0 position | P1+ upgrade path |
 |---------|-------------|-------------------|
 | Storage | single SQLite file with built‑in FTS5 | Nexus sandbox (adds BM25S + sqlite‑vec + litellm embeddings) → Nexus full hub (Postgres + pgvector via federation) |
 | Search | keyword via FTS5; `semantic_degraded=true` on every hit | semantic via sqlite‑vec (P1); hybrid (P1); cross‑tenant federation (P2) |
-| Extract | regex rules + LLM call via `LLMProvider` | `AgentExtractorWorker` with tool loop (P2, §5.2.a) |
-| Dream | `LLMDreamWorker` (one prompted call per stage) | `HybridDreamWorker` prune+summary (P1); `AgentDreamWorker` tool loop (P2, §10.2) |
+| Extract | `RegexExtractor` always on (zero-LLM); `LLMExtractor` runs iff an `LLMProvider` is configured — gracefully skipped otherwise | `AgentExtractorWorker` with tool loop (P2, §5.2.a) |
+| Dream | `LLMDreamWorker` runs iff an `LLMProvider` is configured; rolling summaries pause cleanly when not | `HybridDreamWorker` prune+summary (P1); `AgentDreamWorker` tool loop (P2, §10.2) |
 | Identity | single‑actor `author` key — Ed25519 keypair in platform keychain | full `actor_chain` delegation + countersignatures (P2) |
 | Visibility | `private` + `session` tiers only | + `project`/`team`/`org`/`public` via PropagationWorkflow (P2) |
 | Orchestrator | `tokio` + SQLite job table | Temporal adapter (P1 opt‑in); DBOS / Inngest / Hatchet (P2) |
@@ -433,7 +435,7 @@ Nexus is a Python sidecar composed of independent bricks. At P1 Cairn activates 
 
 - **Backup at P0:** copy `.cairn/cairn.db` + the `wiki/` + `raw/` + `sources/` tree. One SQLite file; one markdown tree; done.
 - **Backup at P1:** copy `.cairn/cairn.db` + the markdown tree + the `nexus-data/` directory. Use `cairn snapshot` which sequences them with a filesystem snapshot for consistency.
-- **Semantic search is opt-in.** At P0 it's unavailable (keyword-only via FTS5, every result stamped `semantic_degraded=true`). At P1 semantic becomes available if the user supplies an embedding API key (`OPENAI_API_KEY` or any `litellm` provider). Without a key at P1, sandbox still does semantic via local embedding models; BM25 is the fallback either way.
+- **Semantic search availability — one rule.** Semantic and hybrid search modes require an `embedding_provider` to be configured in `.cairn/config.yaml`. An embedding provider can be either (a) a local model bundled with Nexus sandbox (e.g., `all-MiniLM-L6-v2` via `litellm`'s local adapter — no API key, no network) or (b) a cloud embedding API (OpenAI, Cohere, Voyage, any `litellm`-compatible provider). When an embedding provider is configured and reachable, `search mode: semantic | hybrid` returns enriched results and the `semantic_degraded=true` stamp is dropped. When no provider is configured or the provider is unreachable, all results are stamped `semantic_degraded=true` and BM25 (sandbox) or FTS5 (P0 fallback) answers the query. At **P0** no embedding provider is defined, so semantic search is permanently unavailable. At **P1** the default sandbox config bundles the local embedding adapter, so semantic is available out-of-the-box; swapping to a cloud provider is a config line.
 - **Process boundary at P1+:** Nexus is Python, Cairn core is Rust. They communicate over HTTP + MCP. `cairn-nexus-supervisor` spawns Nexus, tails logs, health-checks, restarts. A crashed Nexus never blocks Cairn — queries degrade to P0 behavior until Nexus recovers.
 - **Federation, not re-platforming, scales at P2.** A sandbox on a laptop can federate `search` queries to a remote Nexus `full` hub (PostgreSQL + pgvector + Dragonfly). Hub unreachable → graceful fallback to local sandbox or (further) local FTS5; never a boot failure.
 
@@ -978,7 +980,7 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 └───────────────────────────────────────┘
 ```
 
-**Read this top-down.** Harnesses call one of four surfaces (CLI / MCP / SDK / skill — all wrapping the same eight Rust functions in `src/verbs/`). Core dispatches through pure-function pipelines using the five contracts. Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: **at P0 only the one SQLite file + the markdown tree**; at P1 Nexus sandbox adds `nexus-data/` alongside; at P2 federation adds a remote hub.
+**Read this top-down.** Harnesses call one of four surfaces (CLI / MCP / SDK / skill — all wrapping the same eight Rust functions in `src/verbs/`). Core dispatches through pure-function pipelines using the six contracts (five P0 + AgentProvider at P2). Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: **at P0 only the one SQLite file + the markdown tree**; at P1 Nexus sandbox adds `nexus-data/` alongside; at P2 federation adds a remote hub.
 
 **Everything you'd plug in has a single socket.** Adding Postgres‑backed storage? Implement `MemoryStore`. Adding a Temporal Cloud workflow runner? Implement `WorkflowOrchestrator`. Adding Typora support? Implement `FrontendAdapter` (§13.5.d). No core changes, no forks.
 
@@ -1655,7 +1657,7 @@ Consolidation also fans into `ReflectionWorkflow`, `PropagationWorkflow`, and `E
 
 - Read path and write path share **no mutable state**; the agent can query while writes are in flight.
 - Capture → Store is always on‑path and bounded; everything from Consolidate onward is off‑path.
-- Every stage is a pure function that takes `MemoryRecord[]` (or a `Query`) and returns `MemoryRecord[]` (+ side effects through one of the five contracts).
+- Every stage is a pure function that takes `MemoryRecord[]` (or a `Query`) and returns `MemoryRecord[]` (+ side effects through one of the six contracts: `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer`, or `AgentProvider` when Agent-mode workers are configured).
 - Any stage can fail without losing data; the `WorkflowOrchestrator` (default tokio + SQLite; Temporal optional in v0.2+) replays from the last persisted step.
 - Discard is **never silent** — every `no` from Filter writes a row to `.cairn/metrics.jsonl` with the reason code.
 
@@ -2957,7 +2959,8 @@ cairn snapshot                   weekly archive into .cairn/snapshots/YYYY-MM-DD
 
 | Concern | Language | Reason |
 |---------|----------|--------|
-| MemoryStore client (calls into Nexus sandbox sidecar over HTTP / MCP) | Rust | hot path; connection pooling; retry; circuit breaker. The store **itself** lives in the Nexus sidecar (Python) |
+| **P0 MemoryStore** — records + FTS5 + WAL + replay + consent in `.cairn/cairn.db` via `rusqlite` | Rust (direct, in-process) | hot path; one local SQLite file; zero network; sub-ms queries |
+| **P1 MemoryStore extensions** — semantic/hybrid search + CAS projection via the Nexus sandbox sidecar | Rust client over HTTP / MCP; Nexus sandbox itself is Python | P1 adds the sidecar **additively** alongside the unchanged `.cairn/cairn.db`; Rust does connection pooling, retry, circuit breaker; Python owns the sandbox indexes |
 | Squash, rank, scope resolve, classify | Rust | pure functions over bytes; benefits from no runtime |
 | Durable job runner (default) | Rust | `tokio` + SQLite‑backed job table; crash‑safe; single binary, no external service |
 | Temporal worker (optional cloud) | Rust *or* TypeScript | Rust via `temporalio-sdk` / `temporalio-client` (prerelease, on crates.io) when users accept prerelease; TS sidecar with the GA Temporal TS SDK when they don't |
@@ -3723,7 +3726,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 |---------|--------------|--------------------------------|
 | **Agent (Service Account)** | fast R/W for chat context | MCP verbs (§8), sub‑5 ms retrieve from local SQLite, hot‑memory prefix always < 25 KB (§7) |
 | **SRE (Maintainer)** | observability, archival, compliance | `/health`, OpenTelemetry metrics per workflow (§15), tier‑migration + hydration dashboards, `consent.log` audit, forget‑me workflow, `cairn lint` CI gate |
-| **Agent Developer** | APIs for entity memory, search, summaries | Five contracts (§4), plugin architecture (§4.1), conformance tests, CLI + SDK bindings (§13), golden‑query regression harness (§15) |
+| **Agent Developer** | APIs for entity memory, search, summaries | Six contracts (§4 — five P0 + AgentProvider at P2), plugin architecture (§4.1), conformance tests (including AgentProvider tool-allowlist + scope + cost-budget checks), CLI + SDK bindings (§13), golden‑query regression harness (§15) |
 
 ### Coverage summary
 
@@ -3869,7 +3872,7 @@ Headless only. **Pure SQLite backend** — `.cairn/cairn.db` with built‑in FTS
 
 **Reference consumer for v0.1: Claude Code.** Chosen because (a) it is the first harness with a stable hook surface in shipping form, (b) Cairn's five hooks map 1:1 to CC's native events, (c) the primary maintainer already uses CC daily so dogfood signal is immediate, and (d) the CC MCP registration format is a documented reference every other harness (Codex, Gemini) can adapt. Codex integration ships in v0.2 as the second consumer.
 
-v0.1 acceptance ⇒ all §18.c P0 + P1 stories pass their golden‑query suites against Claude Code, and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime.
+v0.1 acceptance ⇒ all **P0 stories** in §18.c pass their golden‑query suites against Claude Code (US1–US3, US4 rolling-summary path, US5, US7 keyword-only with `semantic_degraded=true`, US8 record-level forget), and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime. **P1 stories (US6 cold rehydration, US7 semantic/hybrid, US8 session fan-out) ship in v0.2** — they are not v0.1 acceptance criteria.
 
 **v0.2 — Continuous learning + SRE surface + semantic search (all P1).** Covers US6, US7 semantic, US8 session‑wide delete, and full US4 reflection layer.
 **Backend upgrade: Nexus `sandbox` profile becomes the default** — Python sidecar adds BM25S + `sqlite-vec` + `litellm` embeddings; existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside). `search` supports `mode: "keyword" | "semantic" | "hybrid"`; `semantic_degraded=true` drops from results. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha. Optional Temporal adapter for orchestrator.
@@ -3975,7 +3978,7 @@ async fn turn(session_id: SessionId, user_msg: &str) -> Result<AgentMsg> {
 | Desktop GUI | raw `wiki/` markdown + any editor is already enough |
 | Rich visibility tiers beyond `private` + `session` | the vault never leaves one laptop |
 
-**Everything in the table above is a progressive enhancement.** v0.1 ships with `private` + `session` only, single‑actor `author` identity, one hook surface, one orchestrator (local `tokio`), one MCP wire format (`cairn.mcp.v1`), and one set of five workflows. That is enough to pass all P0 + P1 user stories. Every later version adds one capability on top; nothing retroactively changes the v0.1 wire format.
+**Everything in the table above is a progressive enhancement.** v0.1 ships with `private` + `session` only, single‑actor `author` identity, one hook surface, one orchestrator (local `tokio`), one MCP wire format (`cairn.mcp.v1`), and one set of five workflows. That is enough to pass **all P0 user stories** (US1–US3, US4 rolling-summary, US5, US7 keyword-only, US8 record-level forget). **P1 user stories** (US6 cold rehydration, US7 semantic/hybrid, US8 session fan-out) land in v0.2 when Nexus sandbox is activated. Every later version adds one capability on top; nothing retroactively changes the v0.1 wire format.
 
 ### First principles check (§1.b)
 
