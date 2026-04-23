@@ -646,13 +646,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
      * governance event. Falls back to no governance record when govCtl is absent.
      * Throws KoiRuntimeError if a branded guard lacks resetForRun() — the
      * construction-time gate (above) should have already caught this.
+     *
+     * Async so that governance controllers with async record() implementations
+     * are properly awaited; guard/governance state cannot diverge on failure.
+     * run_reset is only emitted if every participating iteration guard was
+     * actually reset — a legacy unbranded guard suppresses the emit.
      */
-    function resetRunBoundary(
+    async function resetRunBoundary(
       guards: ReadonlySet<KoiMiddleware> | readonly KoiMiddleware[],
       governance: GovernanceController,
       runStartedAt: number,
       boundaryId: string,
-    ): void {
+    ): Promise<void> {
+      // let: tracks whether all relevant guards were reset
+      let allReset = true;
       for (const mw of guards) {
         if (isIterationGuardHandle(mw)) {
           mw.resetForRun(runStartedAt);
@@ -665,23 +672,27 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               `Guard: ${mw.name ?? "(unnamed)"}`,
           );
         } else if (mw.name === "koi:iteration-guard") {
-          // Legacy guard (pre-#1917, no brand): warn so operators notice the
-          // version-skew rather than getting silent stale timeouts.
+          // Legacy guard (pre-#1917, no brand): warn and suppress run_reset so
+          // governance cannot claim a reset happened when guard state was not cleared.
           console.warn(
-            "[koi] resetBudgetPerRun: found iteration guard without resetForRun(). " +
+            "[koi] resetBudgetPerRun: found legacy iteration guard without resetForRun(). " +
+              "run_reset will not be emitted for this run. " +
               "Upgrade @koi/engine-compose to get per-run budget reset.",
           );
+          allReset = false;
         }
       }
-      void governance.record({ kind: "run_reset", source: "engine", boundaryId });
+      if (allReset) {
+        await governance.record({ kind: "run_reset", source: "engine", boundaryId });
+      }
     }
 
     /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place. */
-    function applyRecomposition(
+    async function applyRecomposition(
       forgedMw: readonly KoiMiddleware[] | undefined,
       dynamicMw: readonly KoiMiddleware[] | undefined,
       terminals: TerminalHandlers,
-    ): void {
+    ): Promise<void> {
       const { sorted, provenanceHints } = resolveActiveMiddleware(
         allMiddleware,
         forgedMw ?? undefined,
@@ -695,7 +706,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         const boundaryId = `${factorySessionId}:run:${runIndex - 1}`;
         const govCtl = agent.component<GovernanceController>(GOVERNANCE);
         if (govCtl !== undefined) {
-          resetRunBoundary(sorted, govCtl, sessionStartedAt, boundaryId);
+          await resetRunBoundary(sorted, govCtl, sessionStartedAt, boundaryId);
         } else {
           for (const mw of sorted) {
             if (isIterationGuardHandle(mw)) mw.resetForRun(sessionStartedAt);
@@ -758,7 +769,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (mySeq === forgeRefreshLastCommittedSeq && forgedMw !== previousForgedMw) {
           middlewareRecomposed = true;
           previousForgedMw = forgedMw;
-          applyRecomposition(forgedMw, previousDynamicMw ?? undefined, terminals);
+          await applyRecomposition(forgedMw, previousDynamicMw ?? undefined, terminals);
         }
       }
 
@@ -850,7 +861,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           const boundaryId = `${factorySessionId}:run:${runIndex - 1}`;
           const govCtl = agent.component<GovernanceController>(GOVERNANCE);
           if (govCtl !== undefined) {
-            resetRunBoundary(allMiddleware, govCtl, sessionStartedAt, boundaryId);
+            await resetRunBoundary(allMiddleware, govCtl, sessionStartedAt, boundaryId);
           } else {
             for (const g of allMiddleware) {
               if (isIterationGuardHandle(g)) g.resetForRun(sessionStartedAt);
@@ -1077,7 +1088,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (resetGuardsCurrentRun !== undefined) {
           const runStartDynamic = options.dynamicMiddleware?.() ?? [];
           previousDynamicMw = runStartDynamic;
-          applyRecomposition(previousForgedMw ?? undefined, runStartDynamic, cachedTerminals);
+          await applyRecomposition(previousForgedMw ?? undefined, runStartDynamic, cachedTerminals);
           // applyRecomposition clears resetGuardsCurrentRun; nothing more needed here.
         }
 
@@ -1425,7 +1436,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             const dynamicMw = options.dynamicMiddleware();
             if (dynamicMw !== previousDynamicMw) {
               previousDynamicMw = dynamicMw;
-              applyRecomposition(
+              await applyRecomposition(
                 previousForgedMw ?? undefined,
                 dynamicMw ?? undefined,
                 cachedTerminals,
