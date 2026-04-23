@@ -8,16 +8,16 @@ describe("mergeSettings", () => {
   });
 
   test("single layer returns that layer unchanged", () => {
-    const layer: KoiSettings = { permissions: { defaultMode: "auto" } };
-    expect(mergeSettings([layer])).toEqual({ permissions: { defaultMode: "auto" } });
+    const layer: KoiSettings = { permissions: { defaultMode: "default" } };
+    expect(mergeSettings([layer])).toEqual({ permissions: { defaultMode: "default" } });
   });
 
   test("scalars: later layer wins", () => {
     const result = mergeSettings([
+      { permissions: { allow: ["fs_read(*)"] } },
       { permissions: { defaultMode: "default" } },
-      { permissions: { defaultMode: "auto" } },
     ]);
-    expect(result.permissions?.defaultMode).toBe("auto");
+    expect(result.permissions?.defaultMode).toBe("default");
   });
 
   test("arrays: concatenated and deduplicated", () => {
@@ -94,7 +94,11 @@ describe("mergeSettings", () => {
   });
 
   test("missing layer (undefined) is skipped", () => {
-    const result = mergeSettings([undefined, { permissions: { defaultMode: "auto" } }, undefined]);
-    expect(result.permissions?.defaultMode).toBe("auto");
+    const result = mergeSettings([
+      undefined,
+      { permissions: { defaultMode: "default" } },
+      undefined,
+    ]);
+    expect(result.permissions?.defaultMode).toBe("default");
   });
 });

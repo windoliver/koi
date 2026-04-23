@@ -28,7 +28,8 @@ export interface KoiSettings {
     | {
         // "bypass" excluded: settings cannot disable rule evaluation.
         // "plan" excluded: hard-denies all invoke actions, wiring pending.
-        readonly defaultMode?: "default" | "auto" | undefined;
+        // "auto" excluded: classifier (#1236) not yet wired.
+        readonly defaultMode?: "default" | undefined;
         /** Patterns like "Read(*)", "Bash(git *)", "*" — allow these tools. */
         readonly allow?: readonly string[] | undefined;
         /** Patterns — present approval prompt for these tools. */

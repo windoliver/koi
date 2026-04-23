@@ -68,8 +68,10 @@ const permissionsFields = {
   // "bypass" excluded: settings cannot disable rule evaluation.
   // "plan" excluded: plan mode hard-denies all "invoke" actions, which would
   //   brick the TUI. Wire plan-mode action vocabulary before accepting this.
+  // "auto" excluded: classifier that promotes no-match from ask→allow is not
+  //   yet wired (#1236). Accepting it now creates a false sense of auto-approval.
   // Programmatic callers use createPermissionBackend({ mode }) directly.
-  defaultMode: z.enum(["default", "auto"]).optional(),
+  defaultMode: z.enum(["default"]).optional(),
   allow: z.array(permissionStringSchema).optional(),
   ask: z.array(permissionStringSchema).optional(),
   deny: z.array(permissionStringSchema).optional(),

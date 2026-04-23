@@ -10,8 +10,8 @@ describe("validateKoiSettings", () => {
   test("full valid settings passes", () => {
     const result = validateKoiSettings({
       permissions: {
-        defaultMode: "auto",
-        allow: ["Read(*)", "Glob(*)"],
+        defaultMode: "default",
+        allow: ["fs_read(*)", "Glob(*)"],
         deny: ["Bash(rm -rf*)"],
         ask: ["Bash(git push*)"],
       },
@@ -31,6 +31,11 @@ describe("validateKoiSettings", () => {
 
   test("bypass defaultMode is rejected", () => {
     const result = validateKoiSettings({ permissions: { defaultMode: "bypass" } });
+    expect(result.ok).toBe(false);
+  });
+
+  test("auto defaultMode is rejected (classifier not yet wired)", () => {
+    const result = validateKoiSettings({ permissions: { defaultMode: "auto" } });
     expect(result.ok).toBe(false);
   });
 
@@ -55,7 +60,10 @@ describe("validateKoiSettings", () => {
   });
 
   test("unknown top-level keys are stripped (not rejected)", () => {
-    const result = validateKoiSettings({ unknownKey: true, permissions: { defaultMode: "auto" } });
+    const result = validateKoiSettings({
+      unknownKey: true,
+      permissions: { defaultMode: "default" },
+    });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect((result.value as Record<string, unknown>).unknownKey).toBeUndefined();

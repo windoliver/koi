@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { resolveSettingsPaths } from "./paths.js";
 
 describe("resolveSettingsPaths", () => {
@@ -40,8 +39,11 @@ describe("resolveSettingsPaths", () => {
     expect(paths.policy).toMatch(/policy\.json$/);
   });
 
-  test("uses process.cwd() when cwd not provided", () => {
+  test("uses process.cwd() (walked to project root) when cwd not provided", () => {
     const paths = resolveSettingsPaths({ homeDir: "/home/user" });
-    expect(paths.project).toBe(join(process.cwd(), ".koi", "settings.json"));
+    // findProjectRoot walks up from process.cwd() to the nearest git root,
+    // so the resolved path ends with .koi/settings.json but may differ from
+    // process.cwd() when the test runs inside a monorepo subdirectory.
+    expect(paths.project).toMatch(/\.koi[/\\]settings\.json$/);
   });
 });

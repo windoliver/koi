@@ -31,27 +31,27 @@ describe("loadSettings", () => {
 
   test("loads a single user settings file", async () => {
     const koiDir = join(tmpDir, ".koi");
-    writeJson(koiDir, "settings.json", { permissions: { defaultMode: "auto" } });
+    writeJson(koiDir, "settings.json", { permissions: { defaultMode: "default" } });
     const result = await loadSettings({
       cwd: join(tmpDir, "project"),
       homeDir: tmpDir,
       layers: ["user"],
     });
-    expect(result.settings.permissions?.defaultMode).toBe("auto");
+    expect(result.settings.permissions?.defaultMode).toBe("default");
     expect(result.errors).toHaveLength(0);
   });
 
   test("project overrides user (scalar last-wins)", async () => {
     const homeKoi = join(tmpDir, ".koi");
     const projKoi = join(tmpDir, "project", ".koi");
-    writeJson(homeKoi, "settings.json", { permissions: { defaultMode: "default" } });
-    writeJson(projKoi, "settings.json", { permissions: { defaultMode: "auto" } });
+    writeJson(homeKoi, "settings.json", { permissions: { allow: ["fs_read(*)"] } });
+    writeJson(projKoi, "settings.json", { permissions: { defaultMode: "default" } });
     const result = await loadSettings({
       cwd: join(tmpDir, "project"),
       homeDir: tmpDir,
       layers: ["user", "project"],
     });
-    expect(result.settings.permissions?.defaultMode).toBe("auto");
+    expect(result.settings.permissions?.defaultMode).toBe("default");
   });
 
   test("allow arrays are concatenated across layers", async () => {
@@ -145,13 +145,13 @@ describe("loadSettings", () => {
 
   test("sources record contains per-layer snapshots", async () => {
     const koiDir = join(tmpDir, ".koi");
-    writeJson(koiDir, "settings.json", { permissions: { defaultMode: "auto" } });
+    writeJson(koiDir, "settings.json", { permissions: { defaultMode: "default" } });
     const result = await loadSettings({
       cwd: tmpDir,
       homeDir: tmpDir,
       layers: ["project"],
     });
-    expect(result.sources.project).toEqual({ permissions: { defaultMode: "auto" } });
+    expect(result.sources.project).toEqual({ permissions: { defaultMode: "default" } });
     expect(result.sources.user).toBeNull();
   });
 

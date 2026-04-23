@@ -1513,10 +1513,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // layers); a policy-layer error is re-thrown so the top-level handler can
   // exit with the fail-closed error code rather than produce a generic crash.
   const settingsRules: SourcedRule[] = [];
-  let settingsDefaultMode: "default" | "auto" = "default";
-  // Tracks the mode explicitly set by the policy layer, so the custom-backend
-  // path can fail startup rather than silently ignore a policy-mandated mode.
-  let policyDefaultMode: "default" | "plan" | "auto" | undefined;
+  const settingsDefaultMode = "default" as const;
   try {
     const { sources, errors: settingsErrors } = await loadSettings({
       cwd,
@@ -1535,16 +1532,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         settingsRules.push(...filtered);
       }
     }
-    // Compute effective defaultMode: highest-precedence layer that sets it wins.
-    // "bypass" is not a valid settings value (removed from schema) so it can
-    // never arrive here from loadSettings.
-    for (const source of SOURCE_PRECEDENCE) {
-      const layerMode = sources[source]?.permissions?.defaultMode;
-      if (layerMode == null) continue;
-      settingsDefaultMode = layerMode;
-      break;
-    }
-    policyDefaultMode = sources.policy?.permissions?.defaultMode;
   } catch (err) {
     // Policy or explicit --settings file is malformed or unreadable — rethrow
     // so the caller can exit with code 2 (fail-closed).
@@ -1577,23 +1564,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // Allow rules would bypass the caller's explicit whitelist (e.g. --allow-tool);
     // only deny/ask rules are applied so operators stay in control.
     const restrictingRules = sortRules(settingsRules.filter((r) => r.effect !== "allow"));
-    // Policy defaultMode is authoritative: fail startup rather than silently ignore it.
-    // A policy that requests plan/ask/bypass mode cannot be composed into an external
-    // marker-aware backend — operators must use deny/ask rules on this path.
-    if (policyDefaultMode != null && policyDefaultMode !== "default") {
-      throw new PolicyLoadError(
-        `[koi/${hostId}] fatal: policy settings permissions.defaultMode="${policyDefaultMode}" ` +
-          `is incompatible with a custom permission backend (koi start). ` +
-          `Use deny or ask rules to restrict permissions instead.`,
-      );
-    }
-    if (settingsDefaultMode !== "default") {
-      console.warn(
-        `[koi/${hostId}] settings permissions.defaultMode="${settingsDefaultMode}" is ignored ` +
-          `when a custom permission backend is active (koi start). ` +
-          `Use deny or ask rules to restrict permissions on this path.`,
-      );
-    }
     if (restrictingRules.length > 0) {
       // Compile rules once at construction — never recompile per-query.
       const compiledRules: readonly CompiledRule[] = restrictingRules.map((r) => ({

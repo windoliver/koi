@@ -46,10 +46,10 @@ Only the `permissions` field is currently enforced by the runtime. Other fields 
 {
   "$schema": "https://koi.dev/schemas/settings-v1.json",
   "permissions": {
-    "defaultMode": "default",  // "default" | "auto"
-    "allow": ["Read(*)", "Glob(*)"],
+    "defaultMode": "default",
+    "allow": ["fs_read(*)", "Glob(*)"],
     "ask":   ["Bash(git push*)"],
-    "deny":  ["Bash(rm -rf*)", "WebFetch(*)"]
+    "deny":  ["Bash(rm -rf*)", "web_fetch(*)"]
   }
 }
 ```
@@ -59,21 +59,41 @@ Only the `permissions` field is currently enforced by the runtime. Other fields 
 | Value | Behavior |
 |-------|---------|
 | `"default"` | Rules evaluated; unmatched tool calls prompt for approval |
-| `"auto"` | Rules evaluated; unmatched tool calls auto-approved |
 
 ### Permission pattern format
 
-`"ToolName(actionGlob)"` — matches the tool named `ToolName` when the action matches `actionGlob`.
+`"toolId(actionGlob)"` — matches the tool with runtime ID `toolId` when the action matches `actionGlob`.
+
+**Tool IDs must match the runtime tool identifier**, not a friendly display name. Common tool IDs:
+
+| Tool ID | Description |
+|---------|-------------|
+| `fs_read` | Read files |
+| `fs_write` | Write/create files |
+| `fs_edit` | Edit existing files |
+| `Bash` | Run shell commands |
+| `Glob` | Glob file patterns |
+| `Grep` | Search file contents |
+| `web_fetch` | Fetch URLs |
 
 | Pattern | Matches |
 |---------|---------|
-| `"Read(*)"` | `Read` tool, any action |
-| `"Bash(git *)"` | `Bash` tool, any action starting with `git ` |
-| `"Bash(rm -rf*)"` | `Bash` tool, action starting with `rm -rf` |
-| `"WebFetch"` | `WebFetch` tool, any action (bare name = `*`) |
+| `"fs_read(*)"` | `fs_read` tool, any path |
+| `"Bash(git *)"` | `Bash` tool, any command starting with `git ` |
+| `"Bash(rm -rf*)"` | `Bash` tool, command starting with `rm -rf` |
+| `"web_fetch"` | `web_fetch` tool, any URL (bare name = `*`) |
 | `"*"` | Any tool, any action |
 
-Tool names must be plain identifiers (letters, digits, underscores starting with a letter). Bare glob metacharacters like `Read**` or `Bash:**` are rejected by the validator.
+Tool IDs must be plain identifiers (letters, digits, underscores starting with a letter). Bare glob metacharacters like `fs_read**` or `Bash:**` are rejected by the validator.
+
+#### TUI mode limitation: command-scoped `allow` rules
+
+In TUI mode (`koi tui`), the backend receives only plain tool IDs — not enriched `"Bash:git push"` resource keys. As a result:
+
+- Command-scoped `deny`/`ask` rules (e.g. `"Bash(rm -rf*)"`) are **widened to tool-level** (the whole tool is blocked/gated) — fail-closed.
+- Command-scoped `allow` rules (e.g. `"Bash(git log*)"`) are **stripped entirely** — widening a specific allow to the whole tool would over-permit.
+
+A warning is logged at startup when any command-scoped rules are encountered in TUI mode. Use `koi start` (marker-aware backend) for precise command-scoped enforcement.
 
 ### Policy-layer strictness
 

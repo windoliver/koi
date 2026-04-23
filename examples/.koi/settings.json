@@ -4,9 +4,8 @@
   "permissions": {
     "defaultMode": "default",
     "allow": [
-      "Read(*)",
+      "fs_read(*)",
       "Glob(*)",
-      "Bash(git status)",
       "Bash(git log*)",
       "Bash(git diff*)"
     ],
@@ -16,7 +15,8 @@
     ],
     "deny": [
       "Bash(rm -rf*)",
-      "Bash(sudo *)"
+      "Bash(sudo *)",
+      "web_fetch(*)"
     ]
   }
 }
