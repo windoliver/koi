@@ -162,4 +162,27 @@ describe("settings cascade → permission enforcement", () => {
       expect(decision.effect).toBe("deny");
     }
   });
+
+  test("command-scoped deny widened to tool-level in TUI single-key mode (fail-closed)", async () => {
+    // Simulates createKoiRuntime's transformation for legacy backend:
+    // "Bash(rm -rf*)" → deny pattern "Bash:rm -rf*" → widened to "Bash**"
+    const rawRules = mapSettingsToSourcedRules(
+      { permissions: { deny: ["Bash(rm -rf*)"] } },
+      "local",
+    );
+    const widenedRules = rawRules.flatMap((r) => {
+      if (!r.pattern.includes(":")) return [r];
+      const toolName = r.pattern.slice(0, r.pattern.indexOf(":"));
+      if (r.effect === "allow") return [];
+      return [{ ...r, pattern: `${toolName}**` }];
+    });
+
+    const backend = createPermissionBackend({ mode: "default", rules: widenedRules });
+    const decision = await backend.check({
+      resource: "Bash",
+      action: "invoke",
+      principal: "agent",
+    });
+    expect(decision.effect).toBe("deny");
+  });
 });

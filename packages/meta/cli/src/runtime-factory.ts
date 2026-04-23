@@ -1524,17 +1524,33 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     if (cascadedSettings.permissions?.defaultMode != null) {
       settingsDefaultMode = cascadedSettings.permissions.defaultMode;
     }
-    // Command-scoped rules (pattern contains ":") require a marker-aware backend.
-    // The default TUI backend uses single-key mode (allowLegacyBackendBashFallback),
-    // so enriched-resource patterns are never evaluated. Warn operators whose settings
-    // include command-scoped rules so they know to use `koi start` (pattern backend).
-    const commandScopedCount = settingsRules.filter((r) => r.pattern.includes(":")).length;
-    if (commandScopedCount > 0) {
+    // Command-scoped rules (pattern contains ":") require a marker-aware backend for
+    // precise enforcement. The default TUI backend uses single-key mode and only receives
+    // plain tool ids — it never evaluates "ToolName:command" patterns.
+    //
+    // For deny/ask rules: widen to tool-level (fail-closed).
+    //   "Bash:rm -rf*" deny → "Bash**" deny  (blocks all Bash, not just rm -rf)
+    // For allow rules: strip entirely.
+    //   "Bash:git *" allow → removed  (widening to all-Bash allow would over-permit)
+    //
+    // Use `koi start` (createPatternPermissionBackend) for precise command-scoped rules.
+    const hasCommandScoped = settingsRules.some((r) => r.pattern.includes(":"));
+    if (hasCommandScoped) {
       console.warn(
-        `[koi/${hostId}] ${String(commandScopedCount)} command-scoped settings rule(s) (e.g. Bash(rm -rf*)) ` +
-          `require a marker-aware backend and will not be enforced in TUI mode. ` +
-          `Use \`koi start\` or set permissionBackend to createPatternPermissionBackend.`,
+        `[koi/${hostId}] command-scoped settings rules are widened to tool-level in TUI mode ` +
+          `(deny/ask become tool-wide; allow rules are stripped). ` +
+          `Use \`koi start\` for precise command-scoped enforcement.`,
       );
+      for (let i = settingsRules.length - 1; i >= 0; i--) {
+        const rule = settingsRules[i];
+        if (rule == null || !rule.pattern.includes(":")) continue;
+        const toolName = rule.pattern.slice(0, rule.pattern.indexOf(":"));
+        if (rule.effect === "allow") {
+          settingsRules.splice(i, 1); // strip: widening an allow would over-permit
+        } else {
+          settingsRules[i] = { ...rule, pattern: `${toolName}**` }; // widen to tool-level
+        }
+      }
     }
   }
 
