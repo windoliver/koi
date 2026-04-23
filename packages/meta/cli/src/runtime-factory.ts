@@ -2067,6 +2067,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 perChildManifestMiddlewareFactory,
             }
           : {}),
+        ...(earlyContribution.exports.getTaskBoard !== undefined
+          ? { [LATE_PHASE_HOST_KEYS.getTaskBoard]: earlyContribution.exports.getTaskBoard }
+          : {}),
+        ...(earlyContribution.exports.getStore !== undefined
+          ? { [LATE_PHASE_HOST_KEYS.getStore]: earlyContribution.exports.getStore }
+          : {}),
       },
     };
     const lateContribution = await activateStacks(lateContext, {
