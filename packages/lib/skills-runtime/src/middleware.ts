@@ -91,29 +91,19 @@ function collectSkillNames(agent: Agent): readonly string[] {
 
 /**
  * Returns a new ModelRequest with skill content prepended to systemPrompt.
- * Non-empty-content skills are injected as full bodies. Empty-content skills
- * (set by progressive provider) are advertised via an XML block so they are
- * not silently dropped when the progressive provider is paired with a
- * non-progressive middleware configuration.
- * Returns the original request unchanged when no skills are attached.
+ * Only injects skills with non-empty content (full bodies). Empty-content skills
+ * (MCP metadata-only or progressive-mode components) are silently ignored here —
+ * the progressive path handles those via an <available_skills> XML block.
+ * Returns the original request unchanged when no non-empty skills are attached.
  */
-function injectSkills(agent: Agent, request: ModelRequest, hasForkSupport: boolean): ModelRequest {
+function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
   const sorted = sortedSkills(agent);
   if (sorted.length === 0) return request;
 
   const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
-  // Fork skills are excluded from XML advertising unless hasForkSupport is true.
-  const metadataSkills = sorted.filter(
-    (s) => s.content === "" && (hasForkSupport || s.executionMode !== "fork"),
-  );
+  if (bodies.length === 0) return request;
 
-  if (bodies.length === 0 && metadataSkills.length === 0) return request;
-
-  const parts: string[] = [];
-  if (bodies.length > 0) parts.push(bodies.join(SEPARATOR));
-  if (metadataSkills.length > 0) parts.push(generateAvailableSkillsBlock(metadataSkills));
-  const content = parts.join("\n\n");
-
+  const content = bodies.join(SEPARATOR);
   const existing = request.systemPrompt;
   const systemPrompt =
     existing !== undefined && existing.length > 0 ? `${content}\n\n${existing}` : content;
@@ -248,7 +238,7 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       const agent = resolveAgent(agentOrFn);
       const injected = progressive
         ? injectSkillsProgressive(agent, request, hasForkSupport)
-        : injectSkills(agent, request, hasForkSupport);
+        : injectSkills(agent, request);
       if (injected !== request) {
         ctx.reportDecision?.(
           buildDecision(agent, injected.systemPrompt, progressive, hasForkSupport),
@@ -265,7 +255,7 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       const agent = resolveAgent(agentOrFn);
       const injected = progressive
         ? injectSkillsProgressive(agent, request, hasForkSupport)
-        : injectSkills(agent, request, hasForkSupport);
+        : injectSkills(agent, request);
       if (injected !== request) {
         ctx.reportDecision?.(
           buildDecision(agent, injected.systemPrompt, progressive, hasForkSupport),
