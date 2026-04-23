@@ -1792,10 +1792,10 @@ describe("createKoi duration fix", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createKoi — resetIterationBudgetPerRun (issue #1917)
+// createKoi — resetBudgetPerRun (issue #1939)
 // ---------------------------------------------------------------------------
 
-describe("createKoi resetIterationBudgetPerRun", () => {
+describe("createKoi resetBudgetPerRun", () => {
   test("second run() does not fail with stale duration accumulator", async () => {
     // Regression for #1917: the iteration guard's startedAt/lastActivityMs
     // accumulated across run() calls. With a tight maxDurationMs, the second
@@ -1826,7 +1826,7 @@ describe("createKoi resetIterationBudgetPerRun", () => {
       manifest: testManifest(),
       adapter,
       middleware: [guard],
-      resetIterationBudgetPerRun: true,
+      resetBudgetPerRun: true,
       loopDetection: false,
     });
 
@@ -1864,7 +1864,7 @@ describe("createKoi resetIterationBudgetPerRun", () => {
       manifest: testManifest(),
       adapter,
       middleware: [legacyGuard],
-      resetIterationBudgetPerRun: true,
+      resetBudgetPerRun: true,
       loopDetection: false,
     });
 
@@ -1872,7 +1872,7 @@ describe("createKoi resetIterationBudgetPerRun", () => {
 
     // Engine must have warned about the unresettable legacy guard.
     const warnCalls = warnSpy.mock.calls.filter(
-      (args) => typeof args[0] === "string" && args[0].includes("resetIterationBudgetPerRun"),
+      (args) => typeof args[0] === "string" && args[0].includes("resetBudgetPerRun"),
     );
     expect(warnCalls.length).toBeGreaterThan(0);
     warnSpy.mockRestore();

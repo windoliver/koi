@@ -656,7 +656,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             // Warn once; legacyGuardFoundDuringReset blocks iteration_reset record.
             legacyGuardFoundDuringReset = true;
             console.warn(
-              "[koi] resetIterationBudgetPerRun: found iteration guard without resetForRun(). " +
+              "[koi] resetBudgetPerRun: found iteration guard without resetForRun(). " +
                 "Upgrade @koi/engine-compose to get per-run budget reset.",
             );
           }
@@ -797,7 +797,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
 
       // #1742: per-run iteration budget reset. Opt-in via
-      // `options.resetIterationBudgetPerRun` so cumulative session-level
+      // `options.resetBudgetPerRun` so cumulative session-level
       // budget enforcement remains the default for batch/headless hosts.
       // Interactive hosts (TUI) opt in to give each user submit a fresh
       // turn/token/cost/duration budget. Spawn counts and rolling
@@ -809,7 +809,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // into the next run's reset phase.
       resetGuardsCurrentRun = undefined;
 
-      if (options.resetIterationBudgetPerRun === true) {
+      if (options.resetBudgetPerRun === true) {
         resetGuardsCurrentRun = new Set();
         if (!adapter.terminals) {
           // Non-cooperating adapters skip the if (adapter.terminals) path below,
@@ -825,7 +825,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               // so governance stays consistent with the guard (both remain stale).
               legacyGuardFoundDuringReset = true;
               console.warn(
-                "[koi] resetIterationBudgetPerRun: found iteration guard without resetForRun(). " +
+                "[koi] resetBudgetPerRun: found iteration guard without resetForRun(). " +
                   "Upgrade @koi/engine-compose to get per-run budget reset.",
               );
             }

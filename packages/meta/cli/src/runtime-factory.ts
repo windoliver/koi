@@ -607,7 +607,7 @@ export interface KoiRuntimeConfig {
    *   retries interactively.
    * - `false` → disables detection entirely. `koi tui` opts in
    *   because its per-submit iteration budget reset
-   *   (`resetIterationBudgetPerRun: true` below, combined with the
+   *   (`resetBudgetPerRun: true` below, combined with the
    *   governance caps) already bounds spirals and false positives
    *   are expensive inside an interactive session.
    * - `Partial<LoopDetectionConfig>` → custom thresholds for hosts
@@ -2830,7 +2830,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // and we don't have a model-aware pricing source wired in. When
       // a host wires real token pricing, also set `cost.maxCostUsd` here
       // for a stricter dollar-denominated cap.
-      resetIterationBudgetPerRun: true,
+      resetBudgetPerRun: true,
       // The iteration guard (wired by the default guard extension) and
       // the governance controller are separate enforcement paths. Both
       // must see the same resolved duration or the tighter of the two

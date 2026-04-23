@@ -161,7 +161,7 @@ function createTimeoutRace(
  * Returned by `createIterationGuard`. Extends `KoiMiddleware` with a
  * `resetForRun()` method that resets the per-run iteration budget (turns,
  * wall-clock timer, inactivity timer). Called by the engine when
- * `resetIterationBudgetPerRun: true` is set, alongside the matching
+ * `resetBudgetPerRun: true` is set, alongside the matching
  * governance `iteration_reset`. Not wired automatically — callers must invoke
  * it to keep guard and governance state in sync.
  */

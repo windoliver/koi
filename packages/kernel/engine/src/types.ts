@@ -131,7 +131,16 @@ export interface CreateKoiOptions {
    * user submit is logically a fresh request) opt in by setting `true`.
    * #1742.
    */
-  readonly resetIterationBudgetPerRun?: boolean;
+  /**
+   * When `true`, fire `run_reset` on the governance controller at the start of
+   * each `run()` call and reset all `IterationGuardHandle` guards so each user
+   * submit gets a fresh turn/duration budget. Token usage, accumulated cost, and
+   * spawn counts are never reset (they back runtime-wide spend ceilings).
+   *
+   * Requires all iteration guards to implement `resetForRun()`. `createKoi()`
+   * throws at construction time if a branded guard is missing `resetForRun()`.
+   */
+  readonly resetBudgetPerRun?: boolean;
   /** Optional approval handler for HITL permission gating. */
   readonly approvalHandler?: ApprovalHandler;
   /** Optional live forge runtime — enables forged tools/middleware without agent re-assembly. */
