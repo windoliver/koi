@@ -14,6 +14,8 @@ export type {
 // Persistent approval store
 export type { ApprovalGrant, ApprovalStore, ApprovalStoreConfig } from "./approval-store.js";
 export { createApprovalStore } from "./approval-store.js";
+// Bash spec guard
+export type { SpecGuardOutcome } from "./bash-spec-guard.js";
 // Classifier (pattern backend)
 export type { PatternBackendConfig, PermissionRules } from "./classifier.js";
 export {
@@ -44,7 +46,6 @@ export {
 // Denial tracking
 export type { DenialRecord, DenialSource, DenialTracker } from "./denial-tracker.js";
 export { createDenialTracker } from "./denial-tracker.js";
-
 // Middleware factory
 export type { PermissionsMiddlewareHandle } from "./middleware.js";
 export { createPermissionsMiddleware } from "./middleware.js";

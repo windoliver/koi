@@ -232,6 +232,28 @@ export interface PermissionsMiddlewareConfig {
    * turn boundary via `onBeforeTurn`. Default: 3. #1650.
    */
   readonly softDenyPerTurnCap?: number;
+  /**
+   * Enable bash-ast spec-aware enforcement. Must be explicitly set to `true`
+   * to activate — defaults to disabled to preserve existing bash-allow policy
+   * behavior on upgrade.
+   *
+   * When `true`, the guard enforces two additional properties at execution time:
+   *
+   * - **Exact-argv guard**: commands with `partial` or `refused` specs (e.g.
+   *   `ssh`, `rm -r`) downgrade broad-prefix `allow` to `ask` unless an
+   *   exact-argv rule explicitly allows the full command string. Prevents
+   *   broad `allow: bash:*` from silently authorizing dangerous forms.
+   *
+   * - **Semantic rules** (requires `backendSupportsDualKey`): evaluates
+   *   `Write(path)`, `Read(path)`, and `Network(host)` rules from `@koi/permissions`
+   *   against the command's actual filesystem/network effects.
+   *
+   * - **Complex-form ratchet**: commands the AST cannot analyze (`too-complex`,
+   *   pipelines, over-length) downgrade `allow` to `ask`.
+   *
+   * Set to `false` or leave unset for legacy prefix-only enforcement.
+   */
+  readonly enableBashSpecGuard?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +448,11 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
     typeof config.allowLegacyBackendBashFallback !== "boolean"
   ) {
     return fail("config.allowLegacyBackendBashFallback must be a boolean");
+  }
+
+  // enableBashSpecGuard — boolean if set (security feature: fail-closed on bad types)
+  if (config.enableBashSpecGuard !== undefined && typeof config.enableBashSpecGuard !== "boolean") {
+    return fail("config.enableBashSpecGuard must be a boolean");
   }
 
   // Cross-field invariant: `resolveBashCommand` requires a marker-aware

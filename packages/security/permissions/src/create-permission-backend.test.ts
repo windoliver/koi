@@ -85,7 +85,10 @@ describe("createPermissionBackend", () => {
       action: "delete",
       resource: "/etc/passwd",
     };
-    expect(await backend.check(query)).toEqual({ effect: "allow" });
+    const result = await backend.check(query);
+    expect(result.effect).toBe("allow");
+    // Bypass backend stamps IS_EXACT_MATCH so hasExplicitExactArgvRule short-circuits
+    // the canary probe — verified by checking the effect only, not shape-equality.
   });
 
   test("throws on invalid mode at construction time", () => {
