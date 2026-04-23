@@ -163,7 +163,7 @@ Every higher-layer promise depends on a lower-layer promise. "Plugin architectur
 2. **Default to the smallest viable backend; scale by adding layers, not by swapping.** P0 default is a single SQLite file with FTS5 — zero external services. P1 upgrades the same vault to Nexus `sandbox` (adds Python sidecar + BM25S + `sqlite-vec` + embeddings) behind the same `MemoryStore` contract. P2 federates sandbox → Nexus `full` hub over HTTP. No code change in Cairn at any tier; the contract is still swappable for teams with an existing store, but Cairn does not "multi‑backend for multi‑backend's sake".
 3. **Stand‑alone.** A single Rust static binary (`brew install cairn` or `cargo install cairn`) on a fresh laptop with zero cloud credentials works end‑to‑end.
 4. **Local‑first, cloud‑optional.** The vault lives on disk. Cloud is opt‑in per sensor, per write path.
-5. **Narrow typed contracts.** Seven real interfaces (five P0 + `AgentProvider` at P2 + `FrontendAdapter` at P3). Fifteen pure functions. Everything else is composition.
+5. **Narrow typed contracts.** Seven real interfaces (five P0 + `FrontendAdapter` at P1 + `AgentProvider` at P2). Fifteen pure functions. Everything else is composition.
 6. **Continuous learning off the request path.** A durable `WorkflowOrchestrator` runs Dream / Reflect / Promote / Consolidate / Propagate / Expire / Evaluate in the background. Default v0.1 implementation is `tokio` + a SQLite job table; Temporal is an optional adapter. Harness latency is untouched in either case.
 7. **Privacy by construction.** Presidio pre‑persist, per‑user salt, append‑only consent log, no implicit share.
 8. **The eight verbs are the contract; the CLI is the ground truth.** MCP, SDK, and the Cairn skill are all thin wrappers over the same eight Rust functions under `src/verbs/`. If a harness can run a subprocess, a bash command, or a JSON-RPC client, it speaks Cairn.
@@ -331,32 +331,49 @@ At P0, Cairn stores records as rows in `.cairn/cairn.db` — the **authoritative
 **For users who edit markdown directly** — treat Cairn like any projection-based system. Either (a) edit in the desktop GUI / CLI so changes route through the verbs, or (b) edit the markdown file, then run `cairn ingest --resync <path>` to re-extract the DB row. Out-of-band edits that bypass ingest are visible in the filesystem but not to `search` or `retrieve` until resynced. `lint` flags any drift between DB rows and their markdown projections.
 
 ```sql
--- P0 records table (inside .cairn/cairn.db — no separate file, no separate process)
+-- P0 records table (inside .cairn/cairn.db — no separate file, no separate process).
+-- Versioned COW model matching §5.6 WAL: a record is a sequence of (target_id, version)
+-- rows. Exactly one row per target_id is "active" at any moment; upsert stages version=N+1
+-- as inactive, then the pointer-swap step in §5.6 flips active inside the same transaction.
 CREATE TABLE records (
-  record_id   TEXT PRIMARY KEY,         -- ULID
-  path        TEXT NOT NULL UNIQUE,     -- e.g., wiki/entities/people/alice.md
+  record_id   TEXT PRIMARY KEY,         -- per-version ULID (unique key into wal / edges / fts)
+  target_id   TEXT NOT NULL,            -- stable logical identity — every version of the same record shares this
+  version     INTEGER NOT NULL,         -- monotonic per target_id; version 1 is first create
+  path        TEXT NOT NULL,            -- e.g., wiki/entities/people/alice.md — not unique across versions
   kind        TEXT NOT NULL,            -- one of 19 MemoryKinds
   class       TEXT NOT NULL,            -- episodic | semantic | procedural | graph
   visibility  TEXT NOT NULL,            -- private | session | project | team | org | public
   scope       TEXT NOT NULL,            -- JSON tuple (tenant, workspace, ...)
   actor_chain TEXT NOT NULL,            -- JSON array of signed actors
-  body_hash   TEXT NOT NULL,            -- sha256 of the file body
+  body        TEXT NOT NULL,            -- authoritative body for this version (markdown)
+  body_hash   TEXT NOT NULL,            -- sha256 of body
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
-  active      INTEGER NOT NULL DEFAULT 1  -- WAL COW pointer-swap (§5.6)
+  active      INTEGER NOT NULL DEFAULT 0,  -- 1 for the currently-visible version, 0 for staged or superseded
+  tombstoned  INTEGER NOT NULL DEFAULT 0   -- set by forget_record Phase A on the active version only
 );
-CREATE INDEX records_kind_idx       ON records(kind);
-CREATE INDEX records_visibility_idx ON records(visibility);
-CREATE INDEX records_scope_idx      ON records(scope);
 
--- SQLite FTS5 virtual table — the P0 keyword search surface
+-- Exactly one active row per target_id at any moment (enforced by partial unique index).
+CREATE UNIQUE INDEX records_active_target_idx
+  ON records(target_id) WHERE active = 1;
+-- Path lookup + freshness filter: every materialized query joins on active = 1 AND tombstoned = 0.
+CREATE        INDEX records_path_idx       ON records(path)       WHERE active = 1 AND tombstoned = 0;
+CREATE        INDEX records_kind_idx       ON records(kind)       WHERE active = 1 AND tombstoned = 0;
+CREATE        INDEX records_visibility_idx ON records(visibility) WHERE active = 1 AND tombstoned = 0;
+CREATE        INDEX records_scope_idx      ON records(scope)      WHERE active = 1 AND tombstoned = 0;
+
+-- SQLite FTS5 virtual table — the P0 keyword search surface. Keyed by per-version record_id;
+-- readers filter FTS hits against records WHERE active = 1 AND tombstoned = 0 (§5.1 read path).
 CREATE VIRTUAL TABLE records_fts USING fts5(
   record_id UNINDEXED,
+  target_id UNINDEXED,
+  version   UNINDEXED,
   body,                                 -- the markdown body, indexed
   tokenize='porter unicode61'
 );
 
--- Graph edges (links, backlinks, requires/provides, entity relationships)
+-- Graph edges (links, backlinks, requires/provides, entity relationships). Keyed by per-version
+-- record_id so a pointer-swap atomically replaces the edge set along with the body.
 CREATE TABLE edges (
   src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, weight REAL,
   PRIMARY KEY (src, dst, kind)
@@ -379,7 +396,7 @@ CREATE TABLE outstanding_challenges (issuer TEXT, challenge BLOB, expires_at INT
 -- per-holder rows with boot_id + BOOTTIME-ns deadlines make leases durable across daemon restarts.
 CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, epoch INT, waiters BLOB, last_heartbeat_at INT, PK(scope_kind, scope_key));
 CREATE TABLE lock_holders (scope_kind TEXT, scope_key TEXT, holder_id TEXT, acquired_epoch INT, boot_id TEXT, reclaim_deadline INT, PK(scope_kind, scope_key, holder_id));
-CREATE TABLE reader_fence (session_id TEXT PK, op_id TEXT, state TEXT);
+CREATE TABLE reader_fence (scope_kind TEXT NOT NULL, scope_key TEXT NOT NULL, op_id TEXT NOT NULL, state TEXT NOT NULL, opened_at INT NOT NULL, PRIMARY KEY (scope_kind, scope_key));
 
 -- Audit
 CREATE TABLE consent_journal (row_id INTEGER PK AUTOINCREMENT, op_id TEXT, actor TEXT, kind TEXT, payload JSONB, committed_at INT);
@@ -919,7 +936,7 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 
 ---
 
-## 4. Contracts — the Seven That Matter (five P0 + AgentProvider P2 + FrontendAdapter P3)
+## 4. Contracts — the Seven That Matter (five P0 + FrontendAdapter P1 + AgentProvider P2)
 
 ### 4.0 Overall architecture at a glance
 
@@ -942,10 +959,12 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 │   WorkflowOrchestrator[P0]┼──────────► Expire · Assemble · Learn · Propagate   │
 │   SensorIngress      [P0] │            Redact · Fence · Lint                   │
 │   MCPServer          [P0]◄┘                                                    │
+│   FrontendAdapter    [P1]     (opt-in — required when any editor / plugin /    │
+│                               GUI edit surface is registered; enables safe     │
+│                               reverse-edits via signed ReconcileRequest        │
+│                               §13.5.c/d. Headless vaults do not need it.)      │
 │   AgentProvider      [P2]     (opt-in — only active when an Agent-mode         │
 │                               ExtractorWorker or DreamWorker is configured)    │
-│   FrontendAdapter    [P3]     (opt-in — only active when at least one frontend │
-│                               adapter is registered; §13.5.d contract)         │
 │                                                                                │
 │   Identity layer:  HumanIdentity · AgentIdentity · SensorIdentity              │
 │                    Ed25519 keys · actor_chain on every record · ConsentReceipt │
@@ -991,7 +1010,7 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 └───────────────────────────────────────┘
 ```
 
-**Read this top-down.** Harnesses call one of four surfaces (CLI / MCP / SDK / skill — all wrapping the same eight Rust functions in `src/verbs/`). Core dispatches through pure-function pipelines using the seven contracts (five P0 + AgentProvider P2 + FrontendAdapter P3). Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: **at P0 only the one SQLite file + the markdown tree**; at P1 Nexus sandbox adds `nexus-data/` alongside; at P2 federation adds a remote hub; at P3 frontend adapters project the DB into IDE/plugin surfaces.
+**Read this top-down.** Harnesses call one of four surfaces (CLI / MCP / SDK / skill — all wrapping the same eight Rust functions in `src/verbs/`). Core dispatches through pure-function pipelines using the seven contracts (five P0 + FrontendAdapter P1 + AgentProvider P2). Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: **at P0 only the one SQLite file + the markdown tree**; at P1 Nexus sandbox adds `nexus-data/` alongside AND frontend adapters (Tauri/Electron GUI alpha, Obsidian / VS Code / Logseq plugins) project the DB into editor surfaces via the safe reverse-edit path (§13.5.c/d); at P2 federation adds a remote hub and `AgentProvider` activates for agent-mode workers.
 
 **Everything you'd plug in has a single socket.** Adding Postgres‑backed storage? Implement `MemoryStore`. Adding a Temporal Cloud workflow runner? Implement `WorkflowOrchestrator`. Adding Typora support? Implement `FrontendAdapter` (§13.5.d). No core changes, no forks.
 
@@ -1005,7 +1024,7 @@ Everything in Cairn is a pure function over data, except these seven interfaces.
 | 4 | `SensorIngress` | P0 | push raw observations into the pipeline | hook sensors (P0); IDE, clipboard, screen (opt‑in), web clip (P1); Slack/email/GitHub (P2) |
 | 5 | `MCPServer` | P0 | harness‑facing tools | stdio + SSE; eight core verbs + opt‑in extensions (§8) |
 | 6 | `AgentProvider` | **P2** | spawn a constrained sub‑agent for `AgentExtractor` (§5.2.a) / `AgentDreamWorker` (§10.2) / any future agent‑mode worker | **Default**: Cairn ships a minimal loop (`cairn-agent-core` crate) that takes an `AgentIdentity`, a tool allowlist, and a `cost_budget`; runs with `LLMProvider` for the model and `cairn` CLI subprocess calls for read-only tools (`search`, `retrieve`, `lint --dry`). **Optional adapters**: wire in `pi-mono`, a custom in-harness loop, or any external agent runtime by implementing `AgentProvider::spawn(identity, scope, budget) → AgentHandle`. Not required at P0 or P1 — the extractor chain and dream worker default to `llm` / `hybrid` modes which use `LLMProvider` directly. Kicks in only when a deployment opts into `agent` mode for one of those workers. |
-| 7 | `FrontendAdapter` | **P3** | project `.cairn/cairn.db` state into whatever an editor / plugin / desktop GUI consumes (markdown + frontmatter, sidecar files, live events), and translate reverse edits back into signed `ReconcileRequest` envelopes (§13.5.d) | **None at P0/P1/P2** — headless vaults need zero frontend adapters. Optional at P3+: `cairn-frontend-obsidian`, `cairn-frontend-vscode`, `cairn-frontend-logseq`, `cairn-frontend-desktop`. All adapters are untrusted library code: they cannot apply edits directly; they emit `ReconcileRequest` with an `IdentityContext` + signed intent envelope that the backend re-verifies, subjects to field-level mutability rules (§13.5.c), runs optimistic version checks on, and either commits or rejects. Multiple adapters can run against the same backend simultaneously. |
+| 7 | `FrontendAdapter` | **P1** | project `.cairn/cairn.db` state into whatever an editor / plugin / desktop GUI consumes (markdown + frontmatter, sidecar files, live events), and translate reverse edits back into signed `ReconcileRequest` envelopes (§13.5.d) | **None at P0** — headless vaults need zero frontend adapters; out-of-band markdown edits are re-ingested via `cairn ingest --resync <path>`. **Available at P1**: `cairn-frontend-obsidian`, `cairn-frontend-vscode`, `cairn-frontend-logseq`, and `cairn-frontend-desktop` (Tauri/Electron GUI alpha) — all ship with v0.2 to satisfy the §13 "P1 GUI alpha" promise. All adapters are untrusted library code: they cannot apply edits directly; they emit `ReconcileRequest` with an `IdentityContext` + signed intent envelope that the backend re-verifies, subjects to field-level mutability rules (§13.5.c), runs optimistic version checks on, and either commits or rejects. Multiple adapters can run against the same backend simultaneously. v0.3 promotes selected adapters to GA (see §13). |
 
 Everything else — Extractor, Filter, Classifier, Scope, Matcher, Ranker, Consolidator, Promoter, Expirer, SkillEmitter, HotMemoryAssembler, TraceCapturer, TraceLearner, UserSensor, UserSignalDetector, PropagationPolicy, OrphanDetector, ConflictDAG, StalenessScanner — is a **pure function** with a typed signature. Cairn ships a default implementation for each; users override by pointing `.cairn/config.yaml` at a different function exported from any registered plugin.
 
@@ -1016,7 +1035,7 @@ Cairn is plugin‑first end to end. "Plugin" means exactly one thing: a crate or
 **Registry rules:**
 
 - **L0 core (`cairn-core`) has zero implementation dependencies.** It defines traits + types + pure functions, nothing that talks to a network, filesystem, LLM, or workflow engine. L0 compiles with zero runtime deps.
-- **Every contract in §4 is a trait.** Seven total: `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer` (all P0), plus `AgentProvider` (P2 opt-in — only active when an Agent-mode `ExtractorWorker` or `DreamWorker` is configured), plus `FrontendAdapter` (P3 opt-in — only active when at least one frontend adapter is registered; §13.5.d). Implementations live in separate crates / packages; plugin registration, capability tiering, and conformance tests are identical across all seven contracts — `FrontendAdapter` is not a special case.
+- **Every contract in §4 is a trait.** Seven total: `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer` (all P0), plus `FrontendAdapter` (P1 opt-in — required when any editor / plugin / GUI surface is registered; §13.5.d; conformance tests ship with v0.2), plus `AgentProvider` (P2 opt-in — only active when an Agent-mode `ExtractorWorker` or `DreamWorker` is configured). Implementations live in separate crates / packages; plugin registration, capability tiering, and conformance tests are identical across all seven contracts — `FrontendAdapter` is not a special case.
 - **Every pure function in the pipeline is a trait + default impl.** `Extractor`, `Classifier`, `Ranker`, `HotMemoryAssembler`, etc. Override any one by naming a different function in `.cairn/config.yaml` under `pipeline.<stage>.function`.
 - **Registration is explicit, not magic.** Plugins call `cairn_core::register_plugin!(<trait>, <impl>, <name>)` in their entry point. The host assembles the active set from config at startup. No classpath scanning, no auto‑discovery surprises.
 - **Config selects the active implementation.** `.cairn/config.yaml` → `store.kind: sqlite | nexus-sandbox | nexus-full | qdrant | custom:<name>`; `llm.provider: openai-compatible | ollama | bedrock | custom:<name>`; `agent_provider.kind: cairn-core | pi-mono | custom:<name>` (only loaded when an Agent-mode worker is selected); same pattern for every contract.
@@ -1951,7 +1970,8 @@ A dedicated CI concurrency test runs 1000 random schedules of concurrent child w
 | Op | Forward steps (in order) | Per‑step compensation |
 |----|---------------------------|------------------------|
 | `upsert` | 1. `snapshot.stage` [snapshot] — if the target already exists, capture its pre‑image (primary row + all index entries) into the WAL entry; for a pure insert, stage a sentinel "absent" marker → 2. `primary.upsert_cow` [idem] — copy‑on‑write; new version lives at `(target_id, version=N+1)` with `active: false`; the old `active: true` row at version N is untouched → 3. `vector.upsert(version=N+1)` [idem] → 4. `fts.upsert(version=N+1)` [idem] → 5. `edges.upsert(version=N+1)` [idem] → 6. `primary.activate` — single SQLite transaction: `UPDATE rows SET active = (version = N+1) WHERE target_id = :id; INSERT INTO consent_journal (…) VALUES (…);` The row‑pointer swap and the consent journal row commit atomically in the same DB transaction. This is the linearization point for readers. → 7. `consent_log_materializer` — background writer tails the `consent_journal` table and appends each row to `.cairn/consent.log` using crash‑safe `fsync(file)` + monotonic rowid as the last‑appended cursor; the file is a faithful **async materialization** of the DB journal, not the source of truth. If the daemon dies mid‑append, the next start replays from the last‑appended cursor — no duplicates, no gaps. | on abort **before step 6**: drop the `(version=N+1, active=false)` row + its indexes; old version `N` (active=true) is never touched; compensation is a pure delete of staged rows. On abort **at step 6**: the SQLite transaction itself rolls back; no partial state. After step 6: the consent row is durable in the DB; if step 7 lags or crashes, the file is caught up at next materializer tick — recovery invariant is "DB journal rows are the truth; `.cairn/consent.log` is eventually consistent with the journal." |
-| `delete` / `forget_record` / `forget_session` | **Phase A — fast logical tombstone commit (sets the reader‑visible outcome, chunked to keep SQLite write windows short):** 1. `snapshot.stage` [snapshot] — serialize full record + all index entries per child into the WAL entry (streamed; for a session with N children, the stage is itself chunked at `forget_chunk = 1024` records per SQLite write so total transaction size is bounded) → 2. `session.fence.open` — insert a row into the `reader_fence` table with `(session_id, op_id, state='tombstoning')`; every subsequent read plan joins on this table and filters out any row whose `session_id` has an open fence, whether or not its own tombstone mark has landed yet → 3. `primary.mark_tombstone` — in `forget_chunk`‑sized transactions, mark each child record tombstoned; on the last chunk only, close the fence inside the same transaction by flipping `reader_fence` to `state='closed'` and appending to `consent_journal`. From this transaction onward, readers neither see the session's children directly nor fall through the fence. **Phase B — asynchronous physical purge GC (separate idempotent WAL child op per record):** 4. `vector.drain` → 5. `fts.drain` → 6. `edges.drain` → 7. `primary.purge` — each runs as its own child op; all retriable; none can re‑introduce content because the reader fence is already closed at Phase A end. | on abort **before the fence‑close chunk of step 3**: drop all tombstones written in earlier chunks, delete the `reader_fence` row; readers revert to seeing the session. On abort **after the fence‑close chunk**: Phase A is durable; Phase B children are retried idempotently. If a Phase B child exhausts retries, that record is flagged `PURGE_PENDING` in `lint` with operator escalation — readers still don't see it because the fence is closed. Bound Phase A duration by `forget_chunk` (default 1024) × per‑row write cost; backpressure signal exposed to callers as `estimated_phase_a_ms`. |
+| `forget_record` (single-record delete, v0.1) | **Phase A — record-scoped tombstone commit, no session fence:** 1. `snapshot.stage` [snapshot] — capture the target record's pre-image (primary row + all index entries) into the WAL entry → 2. `primary.mark_tombstone` — in one SQLite transaction: `UPDATE records SET tombstoned = 1 WHERE record_id = :id AND active = 1`, insert into `consent_journal`. Sibling turns in the same session are **not** affected — only this `record_id` disappears from reader queries, which now filter `WHERE active = 1 AND tombstoned = 0`. **Phase B — physical purge (child ops):** 3. `vector.drain` → 4. `fts.drain` → 5. `edges.drain` → 6. `primary.purge` — each retriable; none reintroduces content because the tombstone is already reader-visible. | on abort **before step 2**: no state change. On abort **at step 2**: SQLite txn rolls back, no partial state. After step 2: Phase A is durable; Phase B retried idempotently; `PURGE_PENDING` flagged in `lint` on final retry failure. No `reader_fence` is ever opened for `forget_record`, so session siblings remain visible throughout the delete. |
+| `forget_session` (whole-session fan-out, v0.2) | **Phase A — session-scoped fan-out with fence:** 1. `snapshot.stage` [snapshot] — serialize full record + all index entries per child into the WAL entry (streamed; for a session with N children, the stage is itself chunked at `forget_chunk = 1024` records per SQLite write so total transaction size is bounded) → 2. `session.fence.open` — insert a row into the `reader_fence` table with `(scope_kind='session', scope_key=session_id, op_id, state='tombstoning')`; **the fence only shields readers scanning this specific session_id** — every read plan joins on `reader_fence` filtered by `scope_kind/scope_key`, so record-level forgets on other scopes are not affected → 3. `primary.mark_tombstone` — in `forget_chunk`-sized transactions, set `tombstoned = 1` on each child; on the last chunk only, close the fence inside the same transaction by flipping `reader_fence` to `state='closed'` and appending to `consent_journal`. From this transaction onward, readers neither see the session's children directly nor fall through the fence. **Phase B — physical purge (child ops per record):** 4. `vector.drain` → 5. `fts.drain` → 6. `edges.drain` → 7. `primary.purge` — each retriable; none reintroduces content because the reader fence is closed at Phase A end. | on abort **before the fence-close chunk of step 3**: drop all tombstones written in earlier chunks, delete the `reader_fence` row; readers revert to seeing the session. On abort **after the fence-close chunk**: Phase A is durable; Phase B retried idempotently; `PURGE_PENDING` flagged in `lint` on final retry failure. Bound Phase A duration by `forget_chunk` (default 1024) × per-row write cost; backpressure exposed via `estimated_phase_a_ms`. |
 | `promote` | 1. `snapshot.stage` → 2. `policy.verify_receipt` → 3. `primary.update_tier` → 4. `rebac.add_relation` → 5. `consent_journal.append(promote)` — commits atomically with steps 3 + 4 in one SQLite transaction; the async materializer tails the journal into `.cairn/consent.log` | on abort before step 3: no‑op. After step 3: reverse tier update using `[snapshot]`; revoke rebac relation added in step 4. The consent journal row commits with the state change — any abort marker is a subsequent journal row. |
 | `expire` | 1. `snapshot.stage` → 2. `primary.mark_expired` → 3. `vector.drain` → 4. `fts.drain` → 5. `edges.drain` → 6. `consent_journal.append(expire)` — atomic with step 2 in one SQLite transaction | identical rollback rules as `delete` Phase A, but step 2 is `mark_expired` not `mark_tombstone` — expiration can be reversed by future writes (un‑expire via `upsert` of a later version) until a subsequent `forget` runs. |
 | `evolve` | per‑candidate steps from §11.3 canary rollout; each candidate is its own child op with its own WAL entry and its own compensation | parent op records `child_op_ids`; parent COMMIT requires all children COMMITTED; any child ABORT triggers parent ABORT which compensates all earlier children via their own rollback steps |
@@ -2306,7 +2326,52 @@ Cairn exposes one set of eight verbs through four surfaces. **The CLI is the gro
 
 `cairn mcp` is **not a separate process or service**. It is a subcommand that reads MCP frames on stdio, dispatches to `src/verbs/*`, writes responses. If a harness can spawn a subprocess and pipe it JSON-RPC, MCP works. If a harness can only run bash commands, the skill works. Either way the same 8 Rust functions produce the same 8 outputs.
 
-### 8.0.a The Cairn skill — what gets installed when you say "cairn skill install"
+### 8.0.a Handshake — capability discovery prelude (not one of the eight verbs) [P0]
+
+The eight verbs are frozen public entry points for **mutations and queries**. Capability discovery and server-challenge issuance live in a separate **protocol prelude** called `handshake` — it runs before any verb is dispatched and is not counted in the verb set, exactly the way MCP's `initialize` sits outside the tool list.
+
+| Surface | Shape |
+|---------|-------|
+| **MCP** | MCP's built-in `initialize` request (required by the MCP spec). Cairn returns `handshake.capabilities` + `handshake.challenge` (for the anti-replay flow in §4.2) alongside the standard `protocolVersion` + `serverInfo` fields. Clients MUST issue `initialize` before any `tools/call`; a Cairn server refuses verb dispatches from a connection that has not completed initialize. |
+| **CLI** | `cairn status --json` — emits the exact same `{contract, capabilities, challenge, server_info}` document that MCP `initialize` returns. Deterministic, unauthenticated, safe to call from scripts. The skill recipe in §18.d requires a call to `cairn status --json` as its first step so the agent knows which search / forget modes are legal before attempting them. |
+| **SDK** | `cairn::handshake() -> HandshakeResponse` — same data; library crate mirror. |
+| **Skill** | `cairn status --json \| jq '.capabilities'` — one bash line; documented in SKILL.md. |
+
+The handshake response is a single document emitted from the single IDL (§13.5):
+
+```jsonc
+{
+  "contract": "cairn.mcp.v1",
+  "server_info": { "version": "0.1.0", "build": "…", "started_at": "…" },
+  "capabilities": [
+    "cairn.mcp.v1.search.keyword",
+    // advertised ONLY on v0.2+ runtimes with Nexus sandbox + embedding key:
+    // "cairn.mcp.v1.search.semantic",
+    // "cairn.mcp.v1.search.hybrid",
+    "cairn.mcp.v1.forget.record",
+    // advertised ONLY on v0.2+ runtimes:
+    // "cairn.mcp.v1.forget.session",
+    // advertised ONLY on v0.3+ runtimes:
+    // "cairn.mcp.v1.forget.scope",
+    "cairn.mcp.v1.retrieve.record",
+    "cairn.mcp.v1.retrieve.session",
+    "cairn.mcp.v1.retrieve.turn",
+    "cairn.mcp.v1.retrieve.folder",
+    "cairn.mcp.v1.retrieve.scope"
+  ],
+  "extensions": [],                   // e.g., "cairn.aggregate.v1", "cairn.admin.v1", "cairn.federation.v1"
+  "challenge": {                      // server-generated nonce for §4.2 anti-replay
+    "nonce": "…base64…",
+    "expires_at": 1735000000000
+  }
+}
+```
+
+**CI wire-compat** (§15) asserts three invariants: (a) the capability list the server advertises matches the verbs/modes it will actually execute (no over-advertising, no silent support), (b) every verb call that corresponds to an un-advertised capability returns `CapabilityUnavailable` rather than succeeding or falling back, and (c) the CLI `cairn status --json` output is byte-identical (after sorting arrays) to the MCP `initialize` response.
+
+The rest of §8 and §18.c/§19 reference this one surface when they say "clients inspect `handshake.capabilities`" — there is no second capability surface elsewhere in the design.
+
+### 8.0.a-bis The Cairn skill — what gets installed when you say "cairn skill install"
 
 A SKILL.md file teaches any bash-capable agent how to use Cairn without MCP. This is the pattern Garry Tan's gbrain and Anthropic's Claude Code Skills use: a fat markdown doc + deterministic commands + LLM reads the doc and calls the commands via the harness's native `bash` tool.
 
@@ -3392,7 +3457,7 @@ pub enum ReconcileError {
 
 - **New frontend = new adapter, zero core changes.** Someone wants Typora support? Write `@cairn/frontend-typora`, publish, install. Nothing inside `cairn-core` moves.
 - **Capability‑driven projection.** Adapter declares what it can render; Cairn's projection policy reads `capabilities()` and picks the richest subset. A minimal editor gets frontmatter; a full plugin gets live events.
-- **Contract parity with the rest of the kernel.** `FrontendAdapter` is contract 7 of 7 in §4, sitting next to `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer`, and `AgentProvider`. Same registration, same capability tiering (§4.1), same fail‑closed default. Priority **P3** — opt-in, only active when at least one adapter is registered; not required by headless vaults.
+- **Contract parity with the rest of the kernel.** `FrontendAdapter` is contract 7 of 7 in §4, sitting next to `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer`, and `AgentProvider`. Same registration, same capability tiering (§4.1), same fail‑closed default. Priority **P1** — opt-in, activates the moment any editor / plugin / GUI adapter is registered. Headless P0 vaults run without it and re-ingest out-of-band markdown edits via `cairn ingest --resync <path>`; P1 adapters (`cairn-frontend-obsidian`, `cairn-frontend-vscode`, `cairn-frontend-logseq`, `cairn-frontend-desktop`) ship with the v0.2 GUI alpha promise (§13).
 - **Multiple adapters can run at once.** User runs `@cairn/frontend-obsidian` on their laptop and `@cairn/frontend-vscode` on their work machine against the same backend. Cairn fans projections to every registered adapter.
 - **Testable in isolation.** Each adapter has its own test suite; core ships a conformance harness (same pattern as `MemoryStore` conformance tests) — every adapter must pass the same round‑trip + conflict‑resolution cases.
 
@@ -3901,7 +3966,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 |---------|--------------|--------------------------------|
 | **Agent (Service Account)** | fast R/W for chat context | MCP verbs (§8), sub‑5 ms retrieve from local SQLite, hot‑memory prefix always < 25 KB (§7) |
 | **SRE (Maintainer)** | observability, archival, compliance | `/health`, OpenTelemetry metrics per workflow (§15), tier‑migration + hydration dashboards, `consent.log` audit, forget‑me workflow, `cairn lint` CI gate |
-| **Agent Developer** | APIs for entity memory, search, summaries | Seven contracts (§4 — five P0 + AgentProvider P2 + FrontendAdapter P3), plugin architecture (§4.1), conformance tests (including AgentProvider tool-allowlist + scope + cost-budget checks and FrontendAdapter round-trip + conflict-resolution checks), CLI + SDK bindings (§13), golden‑query regression harness (§15) |
+| **Agent Developer** | APIs for entity memory, search, summaries | Seven contracts (§4 — five P0 + FrontendAdapter P1 + AgentProvider P2), plugin architecture (§4.1), conformance tests (including FrontendAdapter round-trip + conflict-resolution checks at v0.2 and AgentProvider tool-allowlist + scope + cost-budget checks at v0.3), CLI + SDK bindings (§13), golden‑query regression harness (§15) |
 
 ### Coverage summary — priorities match §0 legend and §19 sequencing
 
