@@ -221,18 +221,7 @@ describe("gate() — ask verdict", () => {
 
   // --- Task 12: timeout ---
 
-  // TODO(gov-11): Re-enable once governance-middleware.ts:329 is fixed.
-  // The test exercises correct behavior (TIMEOUT is thrown when the handler
-  // never resolves), and the two assertions pass. It fails only because
-  // `pending.finally(() => inflightAsks.delete(verdict.askId))` at line 329
-  // of `handleAskVerdict` returns a promise whose rejection is never caught.
-  // When `pending` rejects with `ApprovalTimeoutError`, that dangling finally
-  // chain produces an unhandled promise rejection which Bun's test runner
-  // reports as a test failure. The fix is a one-liner in production:
-  //   pending.finally(() => inflightAsks.delete(verdict.askId)).catch(() => {});
-  // Task 7 is closed per the gov-11 plan, so this test is skipped until a
-  // follow-up PR lands that change.
-  it.skip("throws TIMEOUT when handler does not resolve within approvalTimeoutMs", async () => {
+  it("throws TIMEOUT when handler does not resolve within approvalTimeoutMs", async () => {
     const handler = mock<ApprovalHandler>(() => new Promise(() => {}));
     const mw = createGovernanceMiddleware(
       makeConfig({ verdict: askVerdict(), approvalTimeoutMs: 20 }),

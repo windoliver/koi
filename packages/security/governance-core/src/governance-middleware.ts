@@ -326,7 +326,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
         ensureSessionAbort(sId).signal,
       );
       inflightAsks.set(verdict.askId, pending);
-      pending.finally(() => inflightAsks.delete(verdict.askId));
+      pending.finally(() => inflightAsks.delete(verdict.askId)).catch(() => {});
     }
 
     let decision: ApprovalDecision;
