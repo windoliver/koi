@@ -15,6 +15,52 @@
 
 **Cairn** is a stand‑alone, harness‑agnostic agent memory framework. It gives any agent loop — local or cloud, open‑source or proprietary — a shared substrate for per‑turn extraction, nightly consolidation, trajectory→playbook learning, hot‑memory prefix injection, typed taxonomy, consent‑gated propagation, and a privacy‑first local default. Its external contract is a tiny MCP surface — **eight core verbs** (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) plus opt‑in extension namespaces for aggregates / admin / federation (§8). Its default backend is **Nexus `sandbox` profile** — a Python sidecar that brings SQLite + BM25S + `sqlite-vec` semantic search in a single `nexus.db` file with zero external services; scale happens through federation to a Nexus `full` hub, not through swapping adapters. The `MemoryStore` contract is still swappable if a team already runs a different store. It is lightweight enough to `bunx cairn` on a laptop and industrial enough to run behind an enterprise gateway — **same interfaces, same Nexus, different topology**.
 
+### 1.a What the end user actually does (KISS)
+
+The rest of this doc is architecture. From the user's seat, Cairn is five things:
+
+```
+1. Install once          bunx cairn init                       (30 seconds)
+
+2. Ignore it              — memory just happens on every turn —
+                         (no commands, no schema, no config required)
+
+3. Steer in chat          "remember that I prefer X"           → user memory
+                         "forget what I said about Y"          → forget verb
+                         "what do you know about Z"            → search + retrieve
+                         "skillify this"                       → skill promoted
+
+4. Inspect any editor    open <vault>/raw/ in Obsidian / VS Code / vim
+                         records are .md files with YAML frontmatter
+                         grep works · git works · diff works
+
+5. Extend if you want    edit .cairn/config.yaml
+                         swap storage · LLM · orchestrator · sensors · frontend
+                         (never a code fork)
+```
+
+That's the whole user surface. Everything under this is optional:
+
+| If you want… | Do… | Otherwise… |
+|--------------|-----|------------|
+| A desktop GUI | Install Cairn Electron app | Use your existing markdown editor |
+| Team sharing | `cairn init --template team` + set up hub | Stay on single‑user laptop vault |
+| Source sensors (Slack, email, GitHub) | Enable in config | Just use hook + IDE sensors |
+| Custom classifier / ranker / hot‑memory recipe | Write a plugin | Take the defaults |
+| Temporal instead of tokio | Set `orchestrator: temporal` (v0.2+) | Run on the built‑in tokio scheduler |
+
+### 1.b First principles (why it stays small as it grows)
+
+1. **Memory is markdown files on disk.** Not a proprietary database. Any editor can read them; `grep` finds them; `git` diffs them.
+2. **One contract, one door.** MCP is the only public entry point (eight core verbs + opt‑in extensions). CLI, hooks, library calls — all route through the same verbs.
+3. **Schema is YAML frontmatter.** No migrations. Add or disable `MemoryKind`s in `.cairn/config.yaml`; the pipeline follows.
+4. **Plugins, not forks.** Every non‑trivial component is behind a typed contract; swapping is a config line. The default plugins and third‑party plugins use the same registration path.
+5. **Local‑first, cloud‑optional.** `bunx cairn` works on a fresh laptop with zero credentials. Cloud is opt‑in per sensor and per write path.
+6. **Failures become skills.** Skillify (§11.b) turns any observed failure into a tested, durable skill. The agent gets better from use, not from retraining.
+7. **No hidden state.** Every mutation goes through the WAL (§5.6); every promotion goes through the nine‑gate predicate (§11.3); every consent decision lands in the append‑only journal (§14).
+
+These are the load‑bearing invariants — everything else in this doc is consequence.
+
 ---
 
 ## 2. Design Principles (non‑negotiable)
