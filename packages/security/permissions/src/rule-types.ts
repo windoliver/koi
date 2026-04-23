@@ -35,9 +35,9 @@ export interface PermissionRule {
 
 /**
  * Where a rule was loaded from. Determines precedence:
- * policy > project > local > user (policy = highest priority).
+ * policy > flag > project > local > user (policy = highest priority).
  */
-export type RuleSource = "policy" | "project" | "local" | "user";
+export type RuleSource = "policy" | "flag" | "project" | "local" | "user";
 
 /** A rule tagged with its origin source for precedence sorting. */
 export interface SourcedRule extends PermissionRule {
@@ -82,6 +82,7 @@ export interface PermissionConfig {
 /** Source precedence order — index 0 is highest priority. */
 export const SOURCE_PRECEDENCE: readonly RuleSource[] = [
   "policy",
+  "flag",
   "project",
   "local",
   "user",
