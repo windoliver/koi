@@ -560,4 +560,30 @@ describe("createLocalAgentLifecycle", () => {
     expect(capturedAgentType).toBe("researcher");
     expect(capturedInputs).toEqual({ topic: "ai" });
   });
+
+  test("synchronous run() throw emits [error:] marker and fires onExit(1)", async () => {
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      onExit: (code) => {
+        exitCode = code;
+      },
+      run: () => {
+        throw new Error("setup failed");
+      },
+    };
+
+    // start() must resolve (not reject) and return a usable task
+    const task = await lifecycle.start(taskItemId("task_18"), output, config);
+    expect(task.kind).toBe("local_agent");
+
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    expect(combined).toContain("[error: setup failed]");
+    expect(exitCode).toBe(1);
+  });
 });

@@ -182,7 +182,30 @@ export function createLocalAgentLifecycle(
         }, config.timeout);
       }
 
-      const iterable = config.run(config.agentType, config.inputs, controller.signal);
+      let iterable: AsyncIterable<string>;
+      try {
+        iterable = config.run(config.agentType, config.inputs, controller.signal);
+      } catch (err: unknown) {
+        // run() threw synchronously before returning an iterable — emit the same
+        // terminal failure path used for async errors so consumers see consistent
+        // error semantics regardless of when the failure occurred.
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+        const message = err instanceof Error ? err.message : String(err);
+        output.write(`\n[error: ${message}]\n`);
+        try {
+          config.onExit?.(1);
+        } catch {
+          // swallow — same contract as async onExit failures
+        }
+        return {
+          kind: "local_agent",
+          taskId,
+          agentType: config.agentType,
+          cancel: () => {}, // no-op: nothing was started
+          output,
+          startedAt: Date.now(),
+        };
+      }
 
       const pipe = pipeAgentOutput(iterable, output, () => stopped || timedOut)
         .then(() => {
