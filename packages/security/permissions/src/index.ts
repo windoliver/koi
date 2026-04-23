@@ -28,3 +28,4 @@ export {
   PLAN_SAFE_VOCABULARY,
   SOURCE_PRECEDENCE,
 } from "./rule-types.js";
+export { mapSettingsToSourcedRules } from "./settings-bridge.js";
