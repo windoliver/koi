@@ -319,7 +319,7 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 |------|-------------------|------------------------|-------------------------|
 | Record bodies (markdown + frontmatter) | **`.cairn/cairn.db` records table is authoritative** (`body`, `frontmatter_json`, `body_hash` columns). The `wiki/` + `raw/` markdown tree is a **repairable projection** of the DB, regenerated on demand via `cairn export --markdown` or automatically by the `markdown_projector` background job on every WAL commit. A missing or stale markdown file never corrupts the vault; `cairn lint --fix-markdown` rebuilds the tree from DB. | **same authority** — `.cairn/cairn.db` still owns record bodies. Nexus only mirrors them into CAS (`nexus-data/cas/`) as a derived content-addressed projection for the search brick to read; `cairn reindex --from-db` rebuilds Nexus's CAS mirror from the authoritative DB. | **same authority** — each vault's `.cairn/cairn.db` still owns record bodies. Hub Postgres holds a derived projection for shared-tier federation queries; on federation divergence, `cairn reindex --push-to-hub` replays from each vault's DB. |
 | Full-text search | SQLite FTS5 on body column (authoritative keyword index) | **BM25S** via Nexus `search` brick, **derived from DB**; FTS5 remains authoritative for keyword mode and answers local queries | BM25S on sandbox + federated BM25 on hub; results merged. All tiers derivable from each vault's DB. |
-| Semantic search | **unavailable** — `mode: "semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (no silent fallback; clients check `handshake.capabilities`) | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick; vectors keyed by `record_id` and rebuilt from DB on reindex. Advertises `cairn.mcp.v1.search.semantic`. | local `sqlite-vec` + pgvector on hub; results merged |
+| Semantic search | **unavailable** — `mode: "semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (no silent fallback; clients check `status.capabilities`) | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick; vectors keyed by `record_id` and rebuilt from DB on reindex. Advertises `cairn.mcp.v1.search.semantic`. | local `sqlite-vec` + pgvector on hub; results merged |
 | WAL / locks / consent journal | `.cairn/cairn.db` tables (authoritative linearization point for every tier) | **unchanged — still `.cairn/cairn.db`** (never moves to Nexus). All Nexus side-effects are keyed by `operation_id` and replayable from the WAL. | **unchanged** — each node has its own local control plane; hub never holds WAL state |
 | Raft / consensus | none (single-writer SQLite) | `nexus-data/root/raft/raft.redb` (Nexus-internal, only for Nexus's own sandbox peers — **not** for Cairn's WAL linearization) | hub-side only for cross-tenant coordination; still does not own record state |
 | Secrets / embeddings / raw PII | never persisted — stripped at Filter stage | same | same |
@@ -336,7 +336,9 @@ At P0, Cairn stores records as rows in `.cairn/cairn.db` — the **authoritative
 -- rows. Exactly one row per target_id is "active" at any moment; upsert stages version=N+1
 -- as inactive, then the pointer-swap step in §5.6 flips active inside the same transaction.
 CREATE TABLE records (
-  record_id   TEXT PRIMARY KEY,         -- per-version ULID (unique key into wal / edges / fts)
+  record_id   TEXT PRIMARY KEY,         -- DETERMINISTIC per-version id: record_id = BLAKE3(target_id || '#' || version);
+                                        -- recovery re-runs of primary.upsert_cow produce the same record_id, so
+                                        -- ON CONFLICT(record_id) DO NOTHING makes step 2 idempotent without a write.
   target_id   TEXT NOT NULL,            -- stable logical identity — every version of the same record shares this
   version     INTEGER NOT NULL,         -- monotonic per target_id; version 1 is first create
   path        TEXT NOT NULL,            -- e.g., wiki/entities/people/alice.md — not unique across versions
@@ -350,7 +352,9 @@ CREATE TABLE records (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
   active      INTEGER NOT NULL DEFAULT 0,  -- 1 for the currently-visible version, 0 for staged or superseded
-  tombstoned  INTEGER NOT NULL DEFAULT 0   -- set by forget_record Phase A on the active version only
+  tombstoned  INTEGER NOT NULL DEFAULT 0,  -- set by forget_record / forget_session on EVERY version of the target
+                                           -- (not just active) so superseded versions cannot resurrect content
+  UNIQUE (target_id, version)           -- second idempotency key: a retry cannot stage version N+1 twice
 );
 
 -- Exactly one active row per target_id at any moment (enforced by partial unique index).
@@ -362,18 +366,30 @@ CREATE        INDEX records_kind_idx       ON records(kind)       WHERE active =
 CREATE        INDEX records_visibility_idx ON records(visibility) WHERE active = 1 AND tombstoned = 0;
 CREATE        INDEX records_scope_idx      ON records(scope)      WHERE active = 1 AND tombstoned = 0;
 
--- SQLite FTS5 virtual table — the P0 keyword search surface. Keyed by per-version record_id;
--- readers filter FTS hits against records WHERE active = 1 AND tombstoned = 0 (§5.1 read path).
+-- SQLite FTS5 virtual table — the P0 keyword search surface. Uses external-content mode so
+-- its rowid is the records.rowid, which gives structural idempotency: an FTS5 retry against
+-- the same records row overwrites the index entry in place rather than producing a duplicate.
+-- Readers filter FTS hits against records WHERE active = 1 AND tombstoned = 0 (§5.1 read path).
 CREATE VIRTUAL TABLE records_fts USING fts5(
-  record_id UNINDEXED,
-  target_id UNINDEXED,
-  version   UNINDEXED,
   body,                                 -- the markdown body, indexed
+  content='records',
+  content_rowid='rowid',
   tokenize='porter unicode61'
 );
+-- Keep the FTS index in sync with records; these triggers also make fts upsert idempotent on retry.
+CREATE TRIGGER records_fts_ai AFTER INSERT ON records BEGIN
+  INSERT INTO records_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
+CREATE TRIGGER records_fts_ad AFTER DELETE ON records BEGIN
+  INSERT INTO records_fts(records_fts, rowid, body) VALUES ('delete', old.rowid, old.body);
+END;
+CREATE TRIGGER records_fts_au AFTER UPDATE ON records BEGIN
+  INSERT INTO records_fts(records_fts, rowid, body) VALUES ('delete', old.rowid, old.body);
+  INSERT INTO records_fts(rowid, body) VALUES (new.rowid, new.body);
+END;
 
 -- Graph edges (links, backlinks, requires/provides, entity relationships). Keyed by per-version
--- record_id so a pointer-swap atomically replaces the edge set along with the body.
+-- deterministic record_id so a pointer-swap atomically replaces the edge set along with the body.
 CREATE TABLE edges (
   src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, weight REAL,
   PRIMARY KEY (src, dst, kind)
@@ -459,8 +475,12 @@ Nexus is a Python sidecar composed of independent bricks. At P1 Cairn activates 
 
 ### Operational notes
 
-- **Backup at P0:** copy `.cairn/cairn.db` + the `wiki/` + `raw/` + `sources/` tree. One SQLite file; one markdown tree; done.
-- **Backup at P1:** copy `.cairn/cairn.db` + the markdown tree + the `nexus-data/` directory. Use `cairn snapshot` which sequences them with a filesystem snapshot for consistency.
+- **Backup at P0:** use `cairn snapshot --backup <path>` (never a raw `cp`), which (a) writes a consistent SQLite online backup of `.cairn/cairn.db` via the `sqlite3_backup_*` API, (b) copies the markdown projections in `wiki/` + `raw/`, (c) emits a fresh **backup registry entry** at `.cairn/backups/<backup_id>.json` recording the `{backup_id, created_at, target_ids_included: [...]}`. The registry is what makes forget-me privacy invariants extend across backups (see below). `sources/` is immutable input; see "Forget-me across backups and sources" below for the ingested-content purge path.
+- **Backup at P1:** `cairn snapshot --backup <path>` additionally copies `nexus-data/` (derived projections rebuild from the DB on restore — the backup stays consistent with the authoritative SQLite file).
+- **Forget-me across backups and sources (privacy invariant).** `forget_record` / `forget_session` Phase B's audit-grep invariant (§5.6) is **not** satisfied by a simple purge of the live vault — any backup or `sources/` file that contained the forgotten content is a resurrection path. Cairn handles both:
+  - **Backups.** Every `cairn snapshot --backup` writes a backup registry entry; `forget` Phase B step `backup.replay_tombstones` scans the registry and for each listed backup runs a post-hoc `cairn snapshot --rewrite <backup_id> --drop-targets <target_id_list>` pass that produces a new redacted backup file and invalidates the old one (cryptographically shredded and listed in `.cairn/backups/shredded.log`). Restoring a backup **always** applies tombstone replay from the current consent log before reads are served — the restored vault picks up every `forget` committed since the backup was taken. Both mechanisms together ensure no backup restore can surface a forgotten target.
+  - **`sources/` re-ingestion.** `sources/` holds the raw inputs (emails, transcripts, PDFs) as immutable provenance. If a forgotten `target_id` was derived from a source file, the source file is **not** deleted (it is outside Cairn's authority — the user or upstream system owns it), but the **link from the source to any Cairn memory is severed** and a `source_forget` entry is added to `consent_journal`. Any future re-ingestion that tries to re-derive memories from that source checks the `consent_journal` and skips any previously-forgotten targets (dedup by content-hash). Users who require stricter guarantees set `source.redact_on_forget: true` in `.cairn/config.yaml`, which deletes the source file contents (preserving only its hash + metadata) on `forget`. The default is `false` because sources are often shared with other tooling.
+  - **Test.** §15 privacy suite adds a backup-restore-after-forget regression: take backup B, ingest content C, forget C, restore B, assert C never becomes reader-visible.
 - **Semantic search availability — one rule.** Semantic and hybrid search modes require an `embedding_provider` to be configured in `.cairn/config.yaml`. An embedding provider can be either (a) a local model bundled with Nexus sandbox (e.g., `all-MiniLM-L6-v2` via `litellm`'s local adapter — no API key, no network) or (b) a cloud embedding API (OpenAI, Cohere, Voyage, any `litellm`-compatible provider). When an embedding provider is configured and reachable, `search mode: semantic | hybrid` returns enriched results and the `semantic_degraded=true` stamp is dropped. When no provider is configured or the provider is unreachable, all results are stamped `semantic_degraded=true` and BM25 (sandbox) or FTS5 (P0 fallback) answers the query. At **P0** no embedding provider is defined, so semantic search is permanently unavailable. At **P1** the default sandbox config bundles the local embedding adapter, so semantic is available out-of-the-box; swapping to a cloud provider is a config line.
 - **Process boundary at P1+:** Nexus is Python, Cairn core is Rust. They communicate over HTTP + MCP. `cairn-nexus-supervisor` spawns Nexus, tails logs, health-checks, restarts. A crashed Nexus never blocks Cairn — queries degrade to P0 behavior until Nexus recovers.
 - **Federation, not re-platforming, scales at P2.** A sandbox on a laptop can federate `search` queries to a remote Nexus `full` hub (PostgreSQL + pgvector + Dragonfly). Hub unreachable → graceful fallback to local sandbox or (further) local FTS5; never a boot failure.
@@ -901,7 +921,7 @@ summary_max_tokens: 300                  # cap for _summary.md regeneration
 | filter queries by project / entity / topic without moving files | **a scope** (in the record's frontmatter) |
 | control who can read the records | **a visibility tier** (§6.3) |
 | control what kinds can be written here | **a `_policy.yaml` in the folder** |
-| share a group of records as a unit | **a folder + `cairn share`** |
+| share a group of records as a unit | **a folder + `cairn.federation.v1` extension `propose_share` with `subject.path_prefix`** (§8.0.a; v0.3+) |
 
 Folders, scopes, and tiers are orthogonal — the same record can live in `wiki/entities/people/alice.md`, have scope `(team: infra, project: koi)`, and visibility `team`. Each axis does one thing.
 
@@ -1277,7 +1297,7 @@ BEGIN;
 COMMIT;
 ```
 
-Challenge‑mode clients call `cairn handshake` first to receive a fresh `server_challenge` stored in `outstanding_challenges`; each challenge is single‑use with a 60 s TTL. If v0.1 chooses not to ship challenge mode, the `server_challenge` field simply fails validation and only sequence mode is supported — the capability is advertised in `handshake.capabilities`.
+Challenge‑mode clients call `cairn handshake` first to receive a fresh `server_challenge` stored in `outstanding_challenges`; each challenge is single‑use with a 60 s TTL. If v0.1 chooses not to ship challenge mode, the `server_challenge` field simply fails validation and only sequence mode is supported — the capability is advertised in `status.capabilities`.
 
 **Server‑side freshness.** Signer‑supplied timestamps are treated as untrusted hints — the server enforces the real freshness window:
 
@@ -2032,13 +2052,15 @@ Most agent memory systems model a session as a flat append‑only log. Cairn mod
 
 **Primitives (§8 forget/retrieve/search already know about session_id; add three session‑mode verbs):**
 
-| CLI | MCP | What it does |
-|-----|-----|---------------|
-| `cairn session tree <root>` | `retrieve(scope:"session_tree", root:<id>)` | walk the ancestry + siblings of a session; returns a typed tree |
-| `cairn session fork <sid> --at <turn_id>` | `ingest(op:"fork_session", from:<sid>, at:<turn_id>)` | create child session `s'` whose history is the prefix `s[0..turn_id]`; future writes go to `s'` |
-| `cairn session clone <sid>` | `ingest(op:"clone_session", from:<sid>)` | hard copy at the latest turn — new `session_id`, new identity chain hop, isolated writes (for experiments you don't want to leak back) |
-| `cairn session switch <sid>` | — | change the "active" session pointer for a (user, agent) pair without altering history |
-| `cairn session merge <src> <dst>` | `ingest(op:"merge_session", src:<s2>, into:<s1>, strategy:"summary"\|"all")` | fold a fork's outcome back into the trunk as a `reasoning` summary record or a full turn splice |
+All five CLI commands dispatch to the `cairn.sessiontree.v1` extension (§8.0.a); none overloads a core verb. Clients discover availability via `status.extensions` (§8.0.a) — a v0.1 or v0.2 runtime does not advertise `cairn.sessiontree.v1`, so the CLI surfaces `CapabilityUnavailable` and refuses dispatch.
+
+| CLI | MCP (extension verb in `cairn.sessiontree.v1`) | What it does |
+|-----|------------------------------------------------|---------------|
+| `cairn session tree <root>` | `{verb:"session_tree", args:{root}}` | walk the ancestry + siblings of a session; returns a typed tree |
+| `cairn session fork <sid> --at <turn_id>` | `{verb:"fork_session", args:{from, at}}` | create child session `s'` whose history is the prefix `s[0..turn_id]`; future writes go to `s'` |
+| `cairn session clone <sid>` | `{verb:"clone_session", args:{from}}` | hard copy at the latest turn — new `session_id`, new identity chain hop, isolated writes (for experiments you don't want to leak back) |
+| `cairn session switch <sid>` | `{verb:"switch_session", args:{to}}` | change the "active" session pointer for a (user, agent) pair without altering history |
+| `cairn session merge <src> <dst>` | `{verb:"merge_session", args:{src, into, strategy}}` | fold a fork's outcome back into the trunk as a `reasoning` summary record or a full turn splice |
 
 **Storage model.** Forks are cheap because they are copy‑on‑write pointers: child inherits parent's `wal_ops` references up to the fork point; new writes go under the child's `session_id` only. The Nexus `versioning` brick (§3.0) handles the underlying CoW semantics; `snapshot` handles the immutable checkpoint needed at fork time. Clones are a full copy (different `session_id` owner), priced to encourage forks as the default.
 
@@ -2383,7 +2405,7 @@ The `handshake` response (fresh per call):
 (c) `cairn status --json` output is byte-identical (after sorting arrays) to the MCP `initialize` response **within the same daemon incarnation**. Restarts mint a new `incarnation` ULID; the byte-identity test scopes to a single run.
 (d) Two back-to-back `handshake` calls return **different** nonces (they are fresh per call).
 
-The rest of §8 and §18.c/§19 reference `status.capabilities` when they say "clients inspect `handshake.capabilities`" (legacy name retained as an alias in prose) — there is one capability surface (`status`) and one challenge surface (`handshake`), and nothing else.
+There is exactly one capability surface (`status`) and one challenge surface (`handshake`). §8 / §18.c / §19 / §1.b / §4 all reference `status.capabilities` consistently; no alias, no second name.
 
 ### 8.0.a-bis The Cairn skill — what gets installed when you say "cairn skill install"
 
@@ -2399,14 +2421,14 @@ A SKILL.md file teaches any bash-capable agent how to use Cairn without MCP. Thi
 
 Concrete payoff: a harness with no MCP plugin (or one where the user prefers not to install servers) can still use Cairn fully by loading the skill.
 
-**Contract version.** `cairn.mcp.v1` — the entire verb set below is frozen under this name; a breaking change yields `cairn.mcp.v2` and both versions run side by side during deprecation. The contract version, verb list, and per‑verb schema are generated from the single IDL (§13.5); wire‑compat tests fail CI on drift. Clients declare the version they implement via capability negotiation at handshake; Cairn refuses unknown verbs rather than silently dropping them. The same IDL generates the CLI clap definitions and SDK trait signatures — single source of truth across all four surfaces.
+**Contract version.** `cairn.mcp.v1` — the entire verb set below is frozen under this name; a breaking change yields `cairn.mcp.v2` and both versions run side by side during deprecation. The contract version, verb list, and per‑verb schema are generated from the single IDL (§13.5); wire‑compat tests fail CI on drift. Clients declare the version they implement via the **status prelude** (§8.0.a) — they read `status.contract` + `status.capabilities` before any verb call. Cairn refuses unknown verbs rather than silently dropping them. The same IDL generates the CLI clap definitions and SDK trait signatures — single source of truth across all four surfaces.
 
 ### 8.0 Core verbs (always present in `cairn.mcp.v1`)
 
 | # | Verb | What it does | Auth requirement |
 |---|------|--------------|-------------------|
 | 1 | `ingest` | push an observation (text / image / video / tool call / screen frame / web clip) | signed actor chain; rate‑limited per‑agent (§4.2) |
-| 2 | `search` | hit records across scope. **Mode is capability-gated**: `mode: "keyword"` (SQLite FTS5) is the only always-present mode in `cairn.mcp.v1`; `mode: "semantic"` and `mode: "hybrid"` require the `cairn.mcp.v1.search.semantic` / `.hybrid` capabilities, advertised only by v0.2+ runtimes (Nexus sandbox enabled — BM25S + `sqlite-vec` ANN + graph). A v0.1 runtime handed `mode: "semantic"` rejects with `CapabilityUnavailable` rather than silently degrading. Clients inspect `handshake.capabilities` before issuing semantic/hybrid calls. | rebac‑gated; results filtered per visibility tier |
+| 2 | `search` | hit records across scope. **Mode is capability-gated**: `mode: "keyword"` (SQLite FTS5) is the only always-present mode in `cairn.mcp.v1`; `mode: "semantic"` and `mode: "hybrid"` require the `cairn.mcp.v1.search.semantic` / `.hybrid` capabilities, advertised only by v0.2+ runtimes (Nexus sandbox enabled — BM25S + `sqlite-vec` ANN + graph). A v0.1 runtime handed `mode: "semantic"` rejects with `CapabilityUnavailable` rather than silently degrading. Clients inspect `status.capabilities` before issuing semantic/hybrid calls. | rebac‑gated; results filtered per visibility tier |
 | 3 | `retrieve` | get a specific memory by id, a full session, a single turn within a session, a folder subtree, or a scope — variant selected via `RetrieveArgs` (§8.0.c). Turn retrieval is its own first-class variant `target: "turn"` keyed by `{session_id, turn_id, include}` (turn IDs are monotonic per session — §18.c US1 — so the `turn` shape requires `session_id` as the disambiguator, never a bare id). `RetrieveArgs` is an exhaustive discriminated union generated from the single IDL; the CLI, MCP wire schema, and Rust SDK enum are all emitted from the same source (§13.5) | rebac‑gated; unverified chain → `trust: "unverified"` flag unless `allow_unverified: true` |
 | 4 | `summarize` | multi‑memory rollup; optional `persist: true` files the synthesis as a new `reference` or `strategy_success` memory with provenance | rebac‑gated on sources; `persist` requires write capability |
 | 5 | `assemble_hot` | return the always‑loaded prefix for this agent/session | rebac‑gated on sources |
@@ -2414,7 +2436,7 @@ Concrete payoff: a harness with no MCP plugin (or one where the user prefers not
 | 7 | `lint` | health check — contradictions, orphans, stale claims, missing concept pages, data gaps; returns a structured report and optionally writes `lint-report.md` | read‑only; `write_report: true` requires write capability |
 | 8 | `forget` | delete record, session, or scoped set. `mode` is capability‑gated: `record` is always present in `cairn.mcp.v1`; `session` requires the `cairn.mcp.v1.forget.session` capability (advertised in v0.2+ runtimes only); `scope` requires `cairn.mcp.v1.forget.scope` (v0.3+). A runtime that does not advertise a capability must reject calls with that `mode` rather than silently succeeding. Transactional under §5.6 WAL. | signed principal (human) with `Forget` capability for the target tier |
 
-`forget` is the single delete surface — the CLI `cairn forget …` is a thin wrapper calling this verb. There is no undocumented delete path. Clients must inspect `handshake.capabilities` to discover which `mode` values this runtime supports; CI wire‑compat tests fail if a v0.1 runtime advertises a mode it cannot execute.
+`forget` is the single delete surface — the CLI `cairn forget …` is a thin wrapper calling this verb. There is no undocumented delete path. Clients must inspect `status.capabilities` to discover which `mode` values this runtime supports; CI wire‑compat tests fail if a v0.1 runtime advertises a mode it cannot execute.
 
 **Citations mode.** Every read verb (`search`, `retrieve`, `summarize`, `assemble_hot`) accepts a `citations: "on" | "compact" | "off"` flag, resolved from `.cairn/config.yaml` by default. `on` appends `Source: <path#line>` to each recalled snippet; `compact` appends only a single citation per record; `off` returns content without paths. Turn compact or off in harnesses whose UI shouldn't expose file paths to end users.
 
@@ -2422,13 +2444,14 @@ Concrete payoff: a harness with no MCP plugin (or one where the user prefers not
 
 Optional verbs live in named extensions registered at startup and advertised via capability negotiation. Clients that don't request an extension never see its verbs; Cairn rejects calls to extensions the caller didn't opt into.
 
-| Extension | Adds verbs | Enabled by | Auth requirement |
-|-----------|-----------|------------|-------------------|
-| `cairn.aggregate.v1` | `agent_summary` · `agent_search` · `agent_insights` (§10.0) | `.cairn/config.yaml` → `agent.enable_aggregate: true` | rebac‑gated, results are anonymized aggregates only |
-| `cairn.admin.v1` | `snapshot` · `restore` · `replay_wal` | operator role | hardware‑key countersigned principal |
-| `cairn.federation.v1` | `propose_share` · `accept_share` · `revoke_share` | enterprise deployments only | signed `ShareLinkGrant` |
+| Extension | Adds verbs | Ships in | Enabled by | Auth requirement |
+|-----------|-----------|----------|------------|-------------------|
+| `cairn.aggregate.v1` | `agent_summary` · `agent_search` · `agent_insights` (§10.0) | v0.2 | `.cairn/config.yaml` → `agent.enable_aggregate: true` | rebac‑gated, results are anonymized aggregates only |
+| `cairn.admin.v1` | `snapshot` · `restore` · `replay_wal` | v0.1 | operator role | hardware‑key countersigned principal |
+| `cairn.federation.v1` | `propose_share` · `accept_share` · `revoke_share` (accept `subject.path_prefix` for folder-scoped shares, §3.4) | v0.3 | enterprise deployments only | signed `ShareLinkGrant` |
+| `cairn.sessiontree.v1` | `session_tree` · `fork_session` · `clone_session` · `switch_session` · `merge_session` (§5.7 — first-class extension verbs, **not** overloads of core `ingest` / `retrieve`) | v0.3 | `.cairn/config.yaml` → `session.enable_tree: true`; requires Nexus `versioning` brick (P2) | signed actor chain; `fork_session` / `clone_session` / `merge_session` require write capability on both source and target sessions |
 
-Extensions extend the surface; they do not reinterpret core verbs. A verb ID belongs to exactly one namespace for the life of the contract version.
+Extensions extend the surface; they do not reinterpret core verbs. A verb ID belongs to exactly one namespace for the life of the contract version. Clients discover enabled extensions via `status.extensions` (§8.0.a).
 
 ### 8.0.b Every verb declares the same envelope
 
@@ -3960,7 +3983,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 ### P3 stories
 
 **US7 — Search across prior conversations and memories (SRE + Developer).** *Version‑scoped; matches the sequencing matrix, not a single "P3" box.*
-- **v0.1 (keyword only, capability-gated rejection — no silent fallback).** `search(mode: "keyword")` runs SQLite **FTS5** over the local `.cairn/cairn.db` — no Python, no embedding key, no network. `mode: "semantic"` or `"hybrid"` is **rejected with `CapabilityUnavailable`** on v0.1 runtimes, per the §8.0 verb 2 capability gate — clients must inspect `handshake.capabilities` for `cairn.mcp.v1.search.semantic` / `.hybrid` before issuing those modes. There is no silent FTS5 fallback; fail-closed is the only behavior. A wire-compat CI test (§15) asserts that a v0.1 runtime rejects unadvertised search modes. (The `semantic_degraded` flag still exists on read responses but is only set when a v0.2+ runtime has a *transient* embedding-provider outage, not as a v0.1 degraded mode.)
+- **v0.1 (keyword only, capability-gated rejection — no silent fallback).** `search(mode: "keyword")` runs SQLite **FTS5** over the local `.cairn/cairn.db` — no Python, no embedding key, no network. `mode: "semantic"` or `"hybrid"` is **rejected with `CapabilityUnavailable`** on v0.1 runtimes, per the §8.0 verb 2 capability gate — clients must inspect `status.capabilities` for `cairn.mcp.v1.search.semantic` / `.hybrid` before issuing those modes. There is no silent FTS5 fallback; fail-closed is the only behavior. A wire-compat CI test (§15) asserts that a v0.1 runtime rejects unadvertised search modes. (The `semantic_degraded` flag still exists on read responses but is only set when a v0.2+ runtime has a *transient* embedding-provider outage, not as a v0.1 degraded mode.)
 - **v0.2 (semantic + hybrid via Nexus sandbox).** `cairn-store-nexus` (§13) is enabled; `mode: "semantic"` now uses `sqlite-vec` ANN with `litellm` embeddings (OpenAI / local Ollama / Cohere) inside the Nexus `sandbox` sidecar, and `mode: "hybrid"` blends **BM25S** keyword scores with semantic scores via Nexus's `search` brick. `semantic_degraded` flips to `false`.
 - **v0.3 (cross‑tenant federation, true P3).** `search(federation: "on")` fans out to other Cairn vaults the caller has been granted `ShareLinkGrant` for; results merge across vaults with per‑source provenance. Requires the `cairn.federation.v1` extension namespace (§8.0.a).
 - Results shape (all versions): every hit returns `{record_id, snippet, timestamp, session_id, score, actor_chain, vault_id?}` so SRE audits and developer reuse both have full provenance.
@@ -3969,7 +3992,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 
 **US8 — Delete a specific session and memories (Customer + SRE).**
 - **Record‑level delete ships in v0.1.** `cairn forget --record <id>` — or the MCP verb `forget` with `mode: "record"` — runs the full §5.6 `delete` Phase A (logical tombstone + index drains committed atomically) plus Phase B physical purge. Irretrievable: `search` and `retrieve` return `not_found` as soon as Phase A commits.
-- **Session‑level delete ships in v0.2.** `cairn forget --session <id>` (MCP `forget` with `mode: "session"`) is advertised only by v0.2+ runtimes via `handshake.capabilities` (see §8 verb 8 row). v0.1 clients receive `CapabilityUnavailable` if they attempt a session mode. Session delete adds the chunked fan‑out, `reader_fence` closure in the last chunk's transaction, and exclusive session lock (§5.6 delete row + lock compatibility matrix).
+- **Session‑level delete ships in v0.2.** `cairn forget --session <id>` (MCP `forget` with `mode: "session"`) is advertised only by v0.2+ runtimes via `status.capabilities` (see §8 verb 8 row). v0.1 clients receive `CapabilityUnavailable` if they attempt a session mode. Session delete adds the chunked fan‑out, `reader_fence` closure in the last chunk's transaction, and exclusive session lock (§5.6 delete row + lock compatibility matrix).
 - Immutable audit (both modes): every delete writes an entry to the `consent_journal` table inside `.cairn/cairn.db` atomically with the state change; the `consent_log_materializer` then appends it to `.cairn/consent.log` asynchronously. The deletion itself is auditable forever; the *content* deleted is unrecoverable after Phase B purge.
 - Record vs. session delete semantics are identical per child; the only difference is the transaction boundary (one record vs. a chunked fan‑out under exclusive session lock).
 - Sections: §14 Privacy and Consent, §10 Workflows (forget‑me fan‑out), §5.6 WAL.
@@ -4010,7 +4033,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 | `forget` modes | `record` (US8 core) | + `session` fan‑out with drain fences | + `scope` mode |
 | `ConsolidationWorkflow` | rolling‑summary pass only (US4 core) | + Reflection/REM/Deep tiers | + EvolutionWorkflow mutations |
 | SRE observability (OTel dashboards, tier‑migration metrics, rehydration gates) | basic lint + health | full SRE surface | unchanged |
-| Extension namespaces | none required for P0/P1 | `cairn.aggregate.v1` | + `cairn.federation.v1` |
+| Extension namespaces | `cairn.admin.v1` (operator verbs) | + `cairn.aggregate.v1` (anonymized agent insights) | + `cairn.federation.v1` (share / accept / revoke — folder-scoped via `subject.path_prefix`) + `cairn.sessiontree.v1` (fork / clone / switch / merge — §5.7) |
 
 **Therefore:** P0 (US1–US3), US4 rolling‑summary, US5, US7 basic search, and US8 record‑level forget all land in v0.1. US6 cold‑rehydration, US8 session fan‑out, and the full reflection/evolution surface land in v0.2.
 
