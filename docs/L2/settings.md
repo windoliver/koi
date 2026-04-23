@@ -43,7 +43,7 @@ Policy can only **tighten** (never loosen): a policy `deny` always wins, a polic
 {
   "$schema": "https://koi.dev/schemas/settings-v1.json",
   "permissions": {
-    "defaultMode": "ask",
+    "defaultMode": "default",
     "allow": ["Read(*)", "Glob(*)"],
     "ask":   ["Bash(git push*)"],
     "deny":  ["Bash(rm -rf*)", "WebFetch(*)"],

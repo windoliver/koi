@@ -57,15 +57,17 @@ describe("settings cascade → permission enforcement", () => {
     expect(rules).toHaveLength(1);
     const rule = rules[0];
     expect(rule?.effect).toBe("deny");
-    expect(rule?.pattern).toBe("Bash");
+    // Bare "Bash" → pattern "Bash**" matches plain "Bash" and enriched "Bash:command"
+    expect(rule?.pattern).toBe("Bash**");
+    expect(rule?.action).toBe("invoke");
     expect(rule?.source).toBe("local");
 
     const backend = createPermissionBackend({ mode: "default", rules });
 
-    // rule.action is "*" (bare "Bash" → action wildcard), so any action matches
+    // Middleware always sends action:"invoke"; resource is the tool id (plain or enriched)
     const query: PermissionQuery = {
       resource: "Bash",
-      action: "rm -rf /tmp/test",
+      action: "invoke",
       principal: "agent",
     };
     const decision = await backend.check(query);
@@ -80,7 +82,7 @@ describe("settings cascade → permission enforcement", () => {
     const backend = createPermissionBackend({ mode: "default", rules });
     const decision = await backend.check({
       resource: "Read",
-      action: "src/index.ts",
+      action: "invoke",
       principal: "agent",
     });
     expect(decision.effect).toBe("allow");
@@ -96,13 +98,17 @@ describe("settings cascade → permission enforcement", () => {
       "project",
     );
 
+    // Rules must be sorted by SOURCE_PRECEDENCE (highest priority first).
+    // project > user, so project rules are evaluated before user rules.
     const backend = createPermissionBackend({
       mode: "default",
-      rules: [...userRules, ...projectRules],
+      rules: [...projectRules, ...userRules],
     });
+
+    // Enriched resource for "git status" on Bash: "Bash:git status"
     const decision = await backend.check({
-      resource: "Bash",
-      action: "git status",
+      resource: "Bash:git status",
+      action: "invoke",
       principal: "agent",
     });
     expect(decision.effect).toBe("deny");

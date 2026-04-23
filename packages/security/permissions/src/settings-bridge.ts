@@ -2,31 +2,47 @@ import type { KoiSettings } from "@koi/settings";
 import type { RuleEffect, RuleSource, SourcedRule } from "./rule-types.js";
 
 /**
- * Parse a settings permission string like "Bash(git push*)" into
- * pattern + action components.
+ * Parse a settings permission string into a SourcedRule pattern+action pair.
  *
- * Format: "ToolName(actionGlob)" or bare "ToolName" or "*"
- *   "Read(*)"        → { pattern: "Read",    action: "*"       }
- *   "Bash(git push*)"→ { pattern: "Bash",    action: "git push*" }
- *   "WebFetch"       → { pattern: "WebFetch",action: "*"       }
- *   "*"              → { pattern: "*",        action: "*"       }
+ * Settings strings use the format "ToolName(commandGlob)" where the command
+ * glob refers to the tool's enriched resource key (e.g. "Bash:git push").
+ * The permission backend always receives action:"invoke" from the middleware,
+ * so command-scoped constraints are encoded in the pattern field.
+ *
+ *   "Read(*)"         → { pattern: "Read**",        action: "invoke" }
+ *   "Bash(git push*)" → { pattern: "Bash:git push*", action: "invoke" }
+ *   "Bash(rm -rf*)"   → { pattern: "Bash:rm -rf*",  action: "invoke" }
+ *   "WebFetch"        → { pattern: "WebFetch**",     action: "invoke" }
+ *   "*"               → { pattern: "**",             action: "invoke" }
  */
 function parsePermissionString(s: string): { readonly pattern: string; readonly action: string } {
+  if (s === "*") {
+    return { pattern: "**", action: "invoke" };
+  }
   const parenIdx = s.indexOf("(");
   if (parenIdx === -1) {
-    return { pattern: s, action: "*" };
+    // Bare tool name: match plain resource "ToolName" and enriched "ToolName:anything"
+    return { pattern: `${s}**`, action: "invoke" };
   }
-  const pattern = s.slice(0, parenIdx);
-  const action = s.slice(parenIdx + 1, s.endsWith(")") ? s.length - 1 : s.length);
-  return { pattern, action };
+  const toolName = s.slice(0, parenIdx);
+  const argGlob = s.slice(parenIdx + 1, s.endsWith(")") ? s.length - 1 : s.length);
+  if (argGlob === "*") {
+    // "ToolName(*)" — any invocation of that tool
+    return { pattern: `${toolName}**`, action: "invoke" };
+  }
+  // "ToolName(commandGlob)" — encode command constraint in the resource pattern.
+  // Middleware enriches tool resources as "ToolName:commandPrefix", so the
+  // pattern "ToolName:commandGlob" matches those enriched resource keys.
+  return { pattern: `${toolName}:${argGlob}`, action: "invoke" };
 }
 
 /**
  * Convert `KoiSettings.permissions` string arrays into `SourcedRule[]`
  * for use with `createPermissionBackend`.
  *
- * Rules are emitted in order: allow, ask, deny — within each effect bucket,
- * order matches the settings array.
+ * Rules are emitted in order: deny, ask, allow — most restrictive first.
+ * This ensures that within a single settings layer, deny rules shadow
+ * broader allows when the evaluator uses first-match-wins semantics.
  */
 export function mapSettingsToSourcedRules(
   settings: KoiSettings,
@@ -35,13 +51,15 @@ export function mapSettingsToSourcedRules(
   const perms = settings.permissions;
   if (perms == null) return [];
 
+  // Deny-first ordering: deny > ask > allow within a layer.
+  // Prevents a broad allow from silently shadowing a narrower deny.
   const buckets: ReadonlyArray<{
     readonly strings: readonly string[] | undefined;
     readonly effect: RuleEffect;
   }> = [
-    { strings: perms.allow, effect: "allow" },
-    { strings: perms.ask, effect: "ask" },
     { strings: perms.deny, effect: "deny" },
+    { strings: perms.ask, effect: "ask" },
+    { strings: perms.allow, effect: "allow" },
   ];
 
   const rules: SourcedRule[] = [];
