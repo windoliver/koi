@@ -152,9 +152,12 @@ export function parseOtelResourceAttributes(raw: string): Record<string, string>
     const trimmed = pair.trim();
     const parts = trimmed.split("=");
     if (parts.length !== 2) return undefined; // missing "=" or unencoded "=" in value → malformed
-    const rawKey = parts[0].trim();
+    const part0 = parts[0];
+    const part1 = parts[1];
+    if (part0 === undefined || part1 === undefined) return undefined; // unreachable, satisfies noUncheckedIndexedAccess
+    const rawKey = part0.trim();
     if (rawKey.length === 0) return undefined; // empty key → malformed
-    const rawValue = parts[1].trim();
+    const rawValue = part1.trim();
     let decodedKey: string;
     let decodedValue: string;
     try {
