@@ -24,7 +24,7 @@
 3. **Stand‑alone.** `bunx cairn` on a fresh laptop with zero cloud credentials works end‑to‑end.
 4. **Local‑first, cloud‑optional.** The vault lives on disk. Cloud is opt‑in per sensor, per write path.
 5. **Narrow typed contracts.** Five real interfaces. Fifteen pure functions. Everything else is composition.
-6. **Continuous learning off the request path.** Temporal runs Dream / Reflect / Promote / Consolidate / Propagate / Expire / Evaluate in the background. Harness latency is untouched.
+6. **Continuous learning off the request path.** A durable `WorkflowOrchestrator` runs Dream / Reflect / Promote / Consolidate / Propagate / Expire / Evaluate in the background. Default v0.1 implementation is `tokio` + a SQLite job table; Temporal is an optional adapter. Harness latency is untouched in either case.
 7. **Privacy by construction.** Presidio pre‑persist, per‑user salt, append‑only consent log, no implicit share.
 8. **MCP is the contract.** If a harness speaks MCP it speaks Cairn.
 9. **Procedural code owns the environment. The agent owns content.** Deterministic hooks + workflows do classification, validation, indexing, and lifecycle. Content decisions (what to write, where to file, what to link) stay with the agent.
@@ -267,8 +267,9 @@ A new vault inherits the default config. Teams fork a config as a shareable temp
                 ┌───────────────────────────────────────────────┐
                 │   HARNESSES  (CC · Codex · Gemini · custom)   │
                 └─────────────────────┬─────────────────────────┘
-                                      │  MCP (7 verbs: ingest · search · retrieve
-                                      │       · summarize · assemble_hot · capture_trace · lint)
+                                      │  MCP (8 core verbs: ingest · search · retrieve · summarize
+                                      │       · assemble_hot · capture_trace · lint · forget
+                                      │       + opt-in extensions §8.0.a)
                                       ▼
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                          CAIRN CORE  (L0, Rust, zero runtime deps)             │
@@ -472,6 +473,42 @@ The two statements run inside one short `BEGIN` transaction — no `FOR UPDATE`,
 **Throughput budget.** Replay checks measured on SQLite 3.45 + NVMe at 10 k QPS single issuer (p99 < 3 ms disk commit) and 30 k QPS aggregated across 50 issuers. Bloom filter absorbs > 99 % of replays without entering the transaction. The same bounds hold on HDD but with p99 ~ 20 ms; deployments with > 10 k QPS single‑issuer workloads switch to the `cairn.admin.v1` extension's sharded replay DB (one file per tenant).
 
 **Signature‑first rejection.** Signature verification runs **before** any disk write in `replay.db`. An attacker replaying a valid signature hits step 5's unique constraint; an attacker sending junk never reaches step 5 because signature check rejects first. This prevents ledger pollution by unauthenticated traffic.
+
+**Replay consumption is coupled to WAL `PREPARE`, not independent.** `replay.db` and the WAL op log (§5.6) **must be the same SQLite database file** — `.cairn/cairn.db` holds `used`, `issuer_seq`, and `wal_ops` tables in one durability domain. The transaction above is extended so step 5's atomic body includes the WAL `PREPARE` marker row:
+
+```
+BEGIN;
+  INSERT OR ROLLBACK INTO used (…) RETURNING rowid;            -- replay consume
+  UPDATE OR ROLLBACK issuer_seq SET high_water = :seq …;       -- sequence CAS
+  INSERT INTO wal_ops (operation_id, state, plan_ref, …)       -- WAL PREPARE
+    VALUES (:op, 'PREPARED', :plan, …)
+    ON CONFLICT (operation_id) DO NOTHING;
+COMMIT;
+```
+
+Either all three rows land or none. There is no window where replay is consumed but no operation is prepared. A retry with the same `operation_id` after an earlier crash finds the `wal_ops` row already in `PREPARED` or a terminal state and resumes from the per‑op step marker (§5.6 recovery) — the replay row's unique constraint is a no‑op because the first retry's row is already durable.
+
+**First‑seen issuer bootstrap + challenge mode.** `issuer_seq` rows are created atomically via UPSERT rather than requiring prior registration; `server_challenge` mode has its own explicit transaction:
+
+```
+-- Bootstrap / CAS path (used when envelope carries `sequence`)
+INSERT INTO issuer_seq (issuer, high_water)
+  VALUES (:issuer, :seq)
+  ON CONFLICT (issuer) DO UPDATE SET high_water = :seq
+    WHERE issuer_seq.high_water < :seq
+  RETURNING high_water;
+-- Empty RETURNING ⇒ sequence was not strictly greater ⇒ reject.
+
+-- Challenge mode (used when `sequence` is absent; envelope carries `server_challenge`)
+BEGIN;
+  DELETE FROM outstanding_challenges
+    WHERE issuer = :issuer AND challenge = :server_challenge
+    RETURNING rowid;                        -- must return a row; empty ⇒ reject
+  -- replay consume + WAL PREPARE exactly as above, with high_water CAS skipped
+COMMIT;
+```
+
+Challenge‑mode clients call `cairn handshake` first to receive a fresh `server_challenge` stored in `outstanding_challenges`; each challenge is single‑use with a 60 s TTL. If v0.1 chooses not to ship challenge mode, the `server_challenge` field simply fails validation and only sequence mode is supported — the capability is advertised in `handshake.capabilities`.
 
 **Server‑side freshness.** Signer‑supplied timestamps are treated as untrusted hints — the server enforces the real freshness window:
 
@@ -719,7 +756,25 @@ REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated
 
 **Idempotency.** `operation_id` is the idempotency key — second `PREPARE` with the same id returns the first commit's outcome without re‑doing side effects. Third‑party writers collide safely on retries; broken networks can't double‑apply.
 
-**Lock granularity.** A single‑writer advisory lock per `(tenant, workspace, entity_id)` — held through PREPARE → COMMIT/ABORT. Promotions hold a lock on the target tier key too (e.g., `wiki/entities/alice.md`) so parallel promoters can't conflict. Session‑delete takes a scope‑level lock `(tenant, workspace, session:<id>)` that fans out to every child record under it — no partial delete possible. Deadlock avoidance: locks are always acquired in `(tenant, workspace, entity)` lexicographic order; cycle would need a cross‑entity mutation, which the planner refuses to emit.
+**Lock granularity and compatibility matrix.** Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and session locks `(tenant, workspace, session:<id>)`. Every write acquires an entity lock; a write that carries a `session_id` in its scope **also** acquires the session lock in **shared** mode. `forget_session` acquires the session lock in **exclusive** mode for the full Phase A (§5.6 delete row).
+
+| Op (wants)                 | Entity lock       | Session lock        |
+|----------------------------|-------------------|----------------------|
+| `upsert` / `ingest` / `capture_trace` (has session_id) | exclusive on entity | **shared** on session |
+| `upsert` / `ingest` (no session) | exclusive on entity | — |
+| `forget_record`            | exclusive on entity | shared on session (if record carries one) |
+| `forget_session`           | exclusive on every matching entity | **exclusive** on session |
+| `promote` / `expire`       | exclusive on entity | shared on session (if applicable) |
+| `search` / `retrieve`      | none              | none (readers use version + reader_fence filters) |
+
+Rules:
+- Shared × shared on the same session lock is compatible (many concurrent writes to the same session).
+- Shared × exclusive on the same session lock is NOT compatible — while `forget_session` holds exclusive, every incoming write that names that session blocks until Phase A commits. This is what closes the "child inserted after snapshot but before fence close" race: a fresh insert can't acquire the shared session lock, so no child lands between the snapshot and the fence close.
+- Exclusive × exclusive on the same session lock is serialized by acquisition order; two concurrent forgets on the same session yield one winner and one retry.
+
+Deadlock avoidance: locks are always acquired in `(session, entity)` lexicographic order; cross‑session mutations are refused by the planner so no cycle is emittable.
+
+**Concurrency invariant test (CI).** A dedicated test runs many random writers against a session while `forget_session` runs concurrently; the invariant "no record with `session_id = X` is reader‑visible after `forget_session(X)` commits" must hold across all schedules — enforced as a permanent regression test in the eval harness (§15).
 
 **Fan‑out order per operation kind (operation‑specific step graphs).** Each `kind` has its own deterministic step list and its own compensation rules — never "delete steps to roll back a delete." Steps marked `[idem]` are idempotent re‑runs of the same arguments; `[tombstone]` marks inserts a redoable mark that recovery reads; `[snapshot]` copies state into the WAL entry before mutation so rollback restores it exactly.
 
@@ -1002,7 +1057,17 @@ Hooks are plain scripts executed via `bunx cairn hook <name>`. A single Cairn bi
 
 ---
 
-## 10. Continuous Learning — Eight Temporal Workflows
+## 10. Continuous Learning — Eight Durable Workflows
+
+**Orchestrator truth table (by version).** Every durability and replay claim in this section applies to whichever `WorkflowOrchestrator` plugin the deployment has selected. Both default and optional adapters satisfy the same `WorkflowOrchestrator` contract (§4, §4.1); swapping is a config change.
+
+| Version | Default orchestrator | Optional adapters | Guarantees covered |
+|---------|-----------------------|-------------------|---------------------|
+| v0.1 | `tokio` + SQLite job table (in‑process, single binary, zero services) | none exposed yet | crash‑safe resume, exponential retry, single‑writer queue per key, step‑level idempotency via `operation_id` |
+| v0.2 | `tokio` + SQLite (unchanged default) | TypeScript Temporal worker sidecar (official TS SDK, GA) via HTTP/gRPC kick | same as v0.1 plus cross‑process replay, Temporal UI for observability, long‑lived timer workflows |
+| v0.3+ | `tokio` + SQLite (unchanged default) | Rust Temporal worker using `temporalio-sdk` + `temporalio-client` if GA, else TS sidecar | same plus multi‑node failover; Temporal becomes preferred path when Rust SDK ships GA |
+
+This section's prose describes workflow *behavior* (Dream, Reflection, Consolidation, etc.) that the orchestrator schedules — it does not rely on Temporal‑specific features. "Temporal" in prose below is shorthand for "the durable `WorkflowOrchestrator`", which at v0.1 is the tokio+SQLite default.
 
 ### 10.0 One memory's lifecycle — from capture to cold
 
@@ -1420,7 +1485,11 @@ Frontend edits can only mutate user‑content fields. Policy‑sensitive fields 
    - `binary_hash` (sha256 over every plugin file) matches the installed binary.
    - `capabilities_requested` is a strict subset of what this user's policy allows.
    - `manifest_signature` verifies over the full YAML. Any field change (including capabilities) requires **re‑attestation** — the user is prompted again whenever the publisher pushes a new manifest or the binary hash changes.
-   At runtime, the plugin signs each handshake challenge with its manifest‑bound key; the daemon checks `binary_hash` on every handshake (recomputed from the running plugin file) and revokes the plugin session if the file changed. Per‑plugin minting is audit‑logged to `consent.log`; operators can run `cairn plugin revoke <id>` for immediate revocation.
+   At runtime, the plugin signs each handshake challenge with its manifest‑bound key. `binary_hash` verification is **event‑driven**, not per‑handshake:
+   - The daemon establishes an OS file‑watcher (`fsevents` on macOS, `inotify` on Linux, `ReadDirectoryChangesW` on Windows) on the plugin binary at handshake start. If the watcher reports `modify / rename / replace`, the daemon recomputes `binary_hash` against the new file and revokes the plugin session if it diverges from the manifest.
+   - A full recomputation runs at most once per plugin session (on attach) and on any watcher‑reported change event; handshakes themselves do not recompute. Handshake cadence is capped at 1 Hz per plugin (configurable) with prior‑attestation caching — a hot‑reload or update flow takes the atomic upgrade protocol path (below), not a revoke‑then‑reattest cycle.
+   - **Atomic upgrade protocol.** When a manifest or binary is updated, the old plugin session continues serving queued requests for up to `upgrade_grace` (default 5 s) while the daemon re‑verifies the new manifest + new `binary_hash` + prompts the user for re‑attestation if capabilities changed. On approval, the new session takes over atomically; on rejection, the old session is revoked and the new binary is quarantined. No request is dropped; no revoke‑thrash loop is possible.
+   Per‑plugin intent minting is audit‑logged to `consent.log`; operators can run `cairn plugin revoke <id>` for immediate revocation.
 3. The Cairn desktop GUI which runs inside its own trust boundary — tokens minted there carry a `gui_trusted: true` claim and can only mint intents for edits that originated through the GUI's own event bus, not from arbitrary filesystem writes.
 
 A file write on its own — even from the correct OS user — **never** produces a valid intent. The file‑watcher pairs every detected edit with the active EditorSessionToken from the associated editor process (looked up by filesystem lock / VS Code integration channel / Obsidian IPC). If no token is attached, the edit is **quarantined by default** (below); the user must either attach a session (via `cairn editor attach <pid>`) or discard the edit.
@@ -1703,7 +1772,7 @@ Nothing in these migrations requires the legacy system to change. Cairn runs as 
 ## 17. Non‑Goals (what Cairn will never be)
 
 - Not a harness. No agent loop, no tool execution, no opinionated LLM adapter beyond `LLMProvider`.
-- Not a scheduler. Temporal is the scheduler.
+- Not a scheduler of last resort. Cairn runs a `WorkflowOrchestrator` (the default v0.1 implementation is `tokio` + a SQLite job table, crash‑safe, single binary, zero external services); Temporal is an optional swap‑in adapter for deployments that already operate it. Durability + idempotency guarantees apply to both; see §10 for the per‑version orchestrator truth table.
 - Not a vector DB. Nexus `sandbox` profile (SQLite + `sqlite-vec` + `litellm` embeddings) provides the default vector path via its `search` brick.
 - Not a UI framework. The desktop GUI is optional and purposely small.
 - Not an IAM engine. `MemoryVisibility` is a tag; enterprise IAM lives elsewhere.
