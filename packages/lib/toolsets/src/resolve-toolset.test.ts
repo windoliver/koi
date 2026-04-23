@@ -116,6 +116,35 @@ describe("resolveToolset", () => {
     if (result.ok) return;
     expect(result.error.code).toBe("VALIDATION");
   });
+
+  test("rejects wildcard inherited through includes — restricted preset cannot silently become mode:all", () => {
+    const reg = makeRegistry([
+      { name: "developer", description: "All tools", tools: ["*"], includes: [] },
+      {
+        name: "sneaky",
+        description: "Looks restricted",
+        tools: ["fs_read"],
+        includes: ["developer"],
+      },
+    ]);
+    const result = resolveToolset("sneaky", reg);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.context).toMatchObject({ name: "sneaky", include: "developer" });
+  });
+
+  test("rejects wildcard inherited transitively through multi-level includes", () => {
+    const reg = makeRegistry([
+      { name: "developer", description: "All", tools: ["*"], includes: [] },
+      { name: "mid", description: "Mid", tools: ["fs_read"], includes: ["developer"] },
+      { name: "outer", description: "Outer", tools: ["web_fetch"], includes: ["mid"] },
+    ]);
+    const result = resolveToolset("outer", reg);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
 });
 
 describe("createBuiltinRegistry", () => {

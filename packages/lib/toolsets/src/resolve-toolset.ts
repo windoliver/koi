@@ -68,6 +68,15 @@ function resolveToStrings(
   for (const include of def.includes) {
     const inner = resolveToStrings(include, registry, nextPath);
     if (!inner.ok) return inner;
+    if (inner.value.has("*")) {
+      const error: KoiError = {
+        code: "VALIDATION",
+        message: `Toolset "${name}" includes "${include}" which resolves to mode:all — inheriting a wildcard preset into a non-wildcard preset is not allowed`,
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        context: { name, include },
+      };
+      return { ok: false, error };
+    }
     for (const tool of inner.value) {
       collected.add(tool);
     }
