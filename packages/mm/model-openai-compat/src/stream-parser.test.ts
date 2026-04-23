@@ -823,7 +823,7 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     };
   }
 
-  test("tool_call_start emitted during feed as heartbeat; delta/end deferred to finish", () => {
+  test("no tool chunks emitted during feed; full sequence emitted at finish", () => {
     const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
 
     const duringFeed = [
@@ -832,20 +832,33 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
       ...parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls")),
     ];
 
-    // Heartbeat: tool_call_start fires immediately when name is first known
-    expect(duringFeed.filter((c) => c.kind === "tool_call_start")).toHaveLength(1);
-    // Arg deltas and end are still buffered until finish()
-    expect(
-      duringFeed.filter((c) => c.kind === "tool_call_delta" || c.kind === "tool_call_end"),
-    ).toHaveLength(0);
+    const toolKinds = new Set(["tool_call_start", "tool_call_delta", "tool_call_end"]);
+    expect(duringFeed.filter((c) => toolKinds.has(c.kind))).toHaveLength(0);
 
     const atFinish = parser.finish();
-    // start already sent — must NOT be duplicated at finish
-    expect(atFinish.filter((c) => c.kind === "tool_call_start")).toHaveLength(0);
+    expect(atFinish.filter((c) => c.kind === "tool_call_start")).toHaveLength(1);
     expect(atFinish.filter((c) => c.kind === "tool_call_end")).toHaveLength(1);
     const deltas = atFinish.filter((c) => c.kind === "tool_call_delta");
     expect(deltas).toHaveLength(1);
     expect(deltas[0]).toMatchObject({ kind: "tool_call_delta", delta: '{"x":1}' });
+  });
+
+  test("index reuse with new id — both calls preserved at finish", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // First call at index 0
+    parser.feed(makeToolChunk(0, "call_first", "tool_a", '{"a":1}'));
+    parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls"));
+    // Second call reusing index 0 with a new id
+    parser.feed(makeToolChunk(0, "call_second", "tool_b", '{"b":2}'));
+    parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls"));
+
+    const chunks = parser.finish();
+    const starts = chunks.filter((c) => c.kind === "tool_call_start");
+    expect(starts).toHaveLength(2);
+    expect(starts[0]).toMatchObject({ kind: "tool_call_start", toolName: "tool_a" });
+    expect(starts[1]).toMatchObject({ kind: "tool_call_start", toolName: "tool_b" });
+    expect(chunks.filter((c) => c.kind === "tool_call_end")).toHaveLength(2);
   });
 
   test("finish delta contains full accumulated args from all mid-stream chunks", () => {
@@ -891,20 +904,14 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     expect(deltas).toHaveLength(1);
   });
 
-  test("empty args buffer — start heartbeat during feed, end emitted at finish, no delta", () => {
+  test("empty args buffer — finish emits start+end, no delta", () => {
     const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
 
-    const duringFeed = [
-      ...parser.feed(makeToolChunk(0, "call_4", "noop", "")),
-      ...parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls")),
-    ];
-
-    // Heartbeat: tool_call_start fires during feed
-    expect(duringFeed.filter((c) => c.kind === "tool_call_start")).toHaveLength(1);
+    parser.feed(makeToolChunk(0, "call_4", "noop", ""));
+    parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls"));
 
     const chunks = parser.finish();
-    // Not duplicated at finish; no args → no delta; end is emitted
-    expect(chunks.filter((c) => c.kind === "tool_call_start")).toHaveLength(0);
+    expect(chunks.filter((c) => c.kind === "tool_call_start")).toHaveLength(1);
     expect(chunks.filter((c) => c.kind === "tool_call_delta")).toHaveLength(0);
     expect(chunks.filter((c) => c.kind === "tool_call_end")).toHaveLength(1);
   });

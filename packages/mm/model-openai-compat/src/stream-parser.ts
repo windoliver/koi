@@ -343,51 +343,38 @@ function closeActiveToolCalls(
 
 function accumulateToolCallDelta(
   tc: ChatCompletionChunkToolCall,
-  activeToolCalls: Map<
-    number,
-    { id: string; name: string; argBuffer: string; startEmitted: boolean }
-  >,
-): readonly ModelChunk[] {
+  activeToolCalls: Map<number, { id: string; name: string; argBuffer: string }>,
+  completedToolCalls: Array<{ id: string; name: string; argBuffer: string }>,
+): void {
   const idx = tc.index;
-  const chunks: ModelChunk[] = [];
+  const existing = activeToolCalls.get(idx);
+  if (existing !== undefined && tc.id !== undefined && existing.id !== tc.id) {
+    // Provider is reusing the index for a new call — preserve the displaced call
+    completedToolCalls.push(existing);
+    activeToolCalls.delete(idx);
+  }
   // let is justified: starts undefined, gets assigned from map or newly created
   let active = activeToolCalls.get(idx);
-  if (active === undefined || (tc.id !== undefined && active.id !== tc.id)) {
-    const callId = tc.id ?? `call_${idx}`;
-    const name = tc.function?.name ?? "";
-    active = { id: callId, name, argBuffer: "", startEmitted: false };
+  if (active === undefined) {
+    active = { id: tc.id ?? `call_${idx}`, name: tc.function?.name ?? "", argBuffer: "" };
     activeToolCalls.set(idx, active);
-    if (name.length > 0) {
-      chunks.push({ kind: "tool_call_start", toolName: name, callId: toolCallId(callId) });
-      active.startEmitted = true;
-    }
   }
   if (tc.function?.name !== undefined && active.name.length === 0) {
     active.name = tc.function.name;
-    if (!active.startEmitted) {
-      chunks.push({
-        kind: "tool_call_start",
-        toolName: active.name,
-        callId: toolCallId(active.id),
-      });
-      active.startEmitted = true;
-    }
   }
   if (tc.function?.arguments !== undefined) {
     active.argBuffer += tc.function.arguments;
   }
-  return chunks;
 }
 
 function flushBufferedToolCalls(
-  activeToolCalls: Map<
-    number,
-    { id: string; name: string; argBuffer: string; startEmitted: boolean }
-  >,
+  activeToolCalls: Map<number, { id: string; name: string; argBuffer: string }>,
+  completedToolCalls: Array<{ id: string; name: string; argBuffer: string }>,
   acc: MutableAccumulator,
 ): readonly ModelChunk[] {
   const chunks: ModelChunk[] = [];
-  for (const [, active] of activeToolCalls) {
+  const allCalls = [...completedToolCalls, ...[...activeToolCalls.values()]];
+  for (const active of allCalls) {
     if (active.name === "") {
       chunks.push(
         { kind: "tool_call_start", toolName: "", callId: toolCallId(active.id) },
@@ -407,13 +394,11 @@ function flushBufferedToolCalls(
         name: active.name,
         arguments: result.args,
       });
-      if (!active.startEmitted) {
-        chunks.push({
-          kind: "tool_call_start",
-          toolName: active.name,
-          callId: toolCallId(active.id),
-        });
-      }
+      chunks.push({
+        kind: "tool_call_start",
+        toolName: active.name,
+        callId: toolCallId(active.id),
+      });
       if (active.argBuffer.length > 0) {
         chunks.push({
           kind: "tool_call_delta",
@@ -423,21 +408,18 @@ function flushBufferedToolCalls(
       }
       chunks.push({ kind: "tool_call_end", callId: toolCallId(active.id) });
     } else {
-      if (!active.startEmitted) {
-        chunks.push({
-          kind: "tool_call_start",
-          toolName: active.name,
-          callId: toolCallId(active.id),
-        });
-      }
-      chunks.push({
-        kind: "error",
-        message: `Invalid tool call arguments for "${active.name}": ${result.raw}`,
-        code: "VALIDATION",
-      });
+      chunks.push(
+        { kind: "tool_call_start", toolName: active.name, callId: toolCallId(active.id) },
+        {
+          kind: "error",
+          message: `Invalid tool call arguments for "${active.name}": ${result.raw}`,
+          code: "VALIDATION",
+        },
+      );
     }
   }
   activeToolCalls.clear();
+  completedToolCalls.length = 0;
   return chunks;
 }
 
@@ -448,10 +430,9 @@ function flushBufferedToolCalls(
 interface ParserContext {
   state: ParserState;
   acc: MutableAccumulator;
-  activeToolCalls: Map<
-    number,
-    { id: string; name: string; argBuffer: string; startEmitted: boolean }
-  >;
+  activeToolCalls: Map<number, { id: string; name: string; argBuffer: string }>;
+  /** Calls displaced by index reuse — flushed alongside activeToolCalls at finish(). */
+  completedToolCalls: Array<{ id: string; name: string; argBuffer: string }>;
   readonly bufferToolCalls: boolean;
 }
 
@@ -511,7 +492,7 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
     }
     if (ctx.bufferToolCalls) {
       for (const tc of delta.tool_calls) {
-        output.push(...accumulateToolCallDelta(tc, ctx.activeToolCalls));
+        accumulateToolCallDelta(tc, ctx.activeToolCalls, ctx.completedToolCalls);
       }
     } else {
       for (const tc of delta.tool_calls) {
@@ -530,7 +511,7 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
 function finishParsing(ctx: ParserContext): readonly ModelChunk[] {
   flushCurrentSegment(ctx);
   const output = ctx.bufferToolCalls
-    ? [...flushBufferedToolCalls(ctx.activeToolCalls, ctx.acc)]
+    ? [...flushBufferedToolCalls(ctx.activeToolCalls, ctx.completedToolCalls, ctx.acc)]
     : [...closeActiveToolCalls(ctx.activeToolCalls, ctx.acc)];
   ctx.state = { kind: "idle" };
   return output;
@@ -563,6 +544,7 @@ export function createStreamParser(
       receivedUsage: false,
     },
     activeToolCalls: new Map(),
+    completedToolCalls: [],
     bufferToolCalls: !(options?.supportsToolStreaming ?? true),
   };
 
