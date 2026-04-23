@@ -147,7 +147,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     // use only the plain tool id. Safe — avoids hard-denying via
     // unmarked fall-through. Construction emitted a warning so
     // operators know enrichment isn't enforced.
-    const resource = enrichedResource;
+    let resource = enrichedResource;
     let trackingResource = enrichedResource;
     let query = enrichedQuery;
     let decision: PermissionDecision;
@@ -267,6 +267,9 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
             const exactResource = `${request.toolId}:${raw.trim()}`;
             query = queryForTool(ctx, exactResource, request.metadata, resolvedPath);
             trackingResource = exactResource;
+            // Propagate exact argv to audit/report/approval so logs reflect
+            // what was actually enforced, not the coarse prefix resource.
+            resource = exactResource;
           }
         }
       }

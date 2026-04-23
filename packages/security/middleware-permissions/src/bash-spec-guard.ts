@@ -24,6 +24,7 @@ import {
 } from "@koi/bash-ast";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
 import { IS_DEFAULT_DENY } from "./classifier.js";
+import { failClosedDeny } from "./middleware-internals.js";
 
 /**
  * Symbol used by @koi/permissions/rule-evaluator to mark fall-through ask
@@ -225,9 +226,10 @@ export async function evaluateSpecGuard(opts: {
     await initializeBashAst();
   } catch (e: unknown) {
     const reason = e instanceof Error ? e.message : String(e);
+    // Infrastructure failure — tag as fail-closed so escalation excludes it.
     return {
       kind: "spec-evaluated",
-      decision: { effect: "deny", reason: `bash-ast init failed: ${reason}` },
+      decision: failClosedDeny(`bash-ast init failed: ${reason}`),
       specKind: "refused",
     };
   }
@@ -237,12 +239,10 @@ export async function evaluateSpecGuard(opts: {
     // bash-ast contract: callers MUST fail closed on parse-unavailable.
     // timeout/panic/over-length/not-initialized are all infrastructure failures
     // that prevent semantic analysis — deny to prevent bypass via parser DoS.
+    // Tagged fail-closed so transient parser failures don't feed escalation.
     return {
       kind: "spec-evaluated",
-      decision: {
-        effect: "deny",
-        reason: `bash-ast unavailable (${analysis.cause}): fail-closed policy`,
-      },
+      decision: failClosedDeny(`bash-ast unavailable (${analysis.cause}): fail-closed policy`),
       specKind: "refused",
     };
   }

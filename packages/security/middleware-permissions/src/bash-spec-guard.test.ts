@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { createSpecRegistry, initializeBashAst, MAX_COMMAND_LENGTH } from "@koi/bash-ast";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
 import { evaluateSpecGuard } from "./bash-spec-guard.js";
+import { IS_FAIL_CLOSED } from "./middleware-internals.js";
 
 const allowDecision: PermissionDecision = { effect: "allow" };
 const hardDeny = (reason: string): PermissionDecision => ({
@@ -287,6 +288,8 @@ describe("evaluateSpecGuard — parse-unavailable fails closed", () => {
     expect(result.decision.effect).toBe("deny");
     if (result.decision.effect !== "deny") return;
     expect(result.decision.reason).toContain("over-length");
+    // Infrastructure failure — must be tagged fail-closed so escalation excludes it.
+    expect((result.decision as Record<symbol, unknown>)[IS_FAIL_CLOSED]).toBe(true);
   });
 });
 
