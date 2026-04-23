@@ -420,7 +420,16 @@ async function* streamOnce(
       }
     }
 
-    if (hadError) return;
+    if (hadError) {
+      // Flush buffered complete tool calls before returning. In buffered mode,
+      // calls are held until finish(); a later malformed SSE event must not
+      // silently discard already-buffered complete calls. Skip errors from
+      // finish() — the hadError signal is already authoritative.
+      for (const chunk of parser.finish()) {
+        if (chunk.kind !== "error") yield chunk;
+      }
+      return;
+    }
 
     const acc = parser.getAccumulator();
     if (!acc.receivedFinishReason) {

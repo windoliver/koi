@@ -422,10 +422,17 @@ function flushBufferedItems(
     } else {
       const slot = bufferedSlots[item.slotIdx];
       if (slot === undefined) continue;
-      // Truly empty slot (only index/id arrived, no function field) — silently
-      // drop rather than emit a confusing validation error. This happens when
-      // the stream is truncated before the provider sends any function data.
-      if (slot.name === "" && slot.argBuffer === "") continue;
+      // Truly empty slot: only an index/id fragment arrived with no function
+      // data at all. Surface a validation error so normal-success callers can
+      // propagate it; truncation paths already suppress errors via `continue`.
+      if (slot.name === "" && slot.argBuffer === "") {
+        chunks.push({
+          kind: "error",
+          message: `Tool call "${slot.id}" arrived with no function name or arguments — provider sent an incomplete tool_calls fragment`,
+          code: "VALIDATION",
+        });
+        continue;
+      }
       if (slot.name === "") {
         chunks.push(
           { kind: "tool_call_start", toolName: "", callId: toolCallId(slot.id) },

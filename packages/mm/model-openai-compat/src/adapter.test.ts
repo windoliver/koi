@@ -770,6 +770,71 @@ describe("adapter: buffered tool streaming retry suppression", () => {
     }
   });
 
+  test("complete buffered tool call followed by malformed SSE still emits tool call", async () => {
+    // A complete tool call is buffered, then a malformed SSE event arrives.
+    // The hadError path must flush complete buffered calls before returning —
+    // previously, the entire buffered state was silently discarded.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"bcf","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ok","function":{"name":"do_x","arguments":"{\\"n\\":1}"}}]},"finish_reason":null}]}`,
+        ``,
+        `data: {malformed_json_here`,
+        ``,
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const kinds = chunks.map((c) => c.kind);
+    // Tool call must appear before (or without) the error — it was complete
+    expect(kinds).toContain("tool_call_start");
+    expect(kinds).toContain("tool_call_end");
+    expect(kinds).toContain("error");
+    const startIdx = kinds.indexOf("tool_call_start");
+    const endIdx = kinds.indexOf("tool_call_end");
+    expect(endIdx).toBeGreaterThan(startIdx);
+  });
+
+  test("id-only buffered tool call with normal finish_reason surfaces validation error", async () => {
+    // Provider sends finish_reason: "tool_calls" but the only delta had just an
+    // index/id with no function name or args — the normal success path should
+    // surface a validation error rather than silently dropping the call.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"vid","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_empty"}]},"finish_reason":null}]}`,
+        ``,
+        `data: {"id":"vid","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+        ``,
+        `data: [DONE]`,
+        ``,
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      expect(error.code).toBe("VALIDATION");
+    }
+  });
+
   test("truncated buffered stream flushes complete tool calls before the error", async () => {
     // Stream sends a complete tool call (all args received) but no finish_reason.
     // The adapter must emit the tool call lifecycle events before the truncation error
