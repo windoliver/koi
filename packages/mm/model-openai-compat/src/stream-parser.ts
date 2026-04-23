@@ -347,8 +347,9 @@ function accumulateToolCallDelta(
     number,
     { id: string; name: string; argBuffer: string; startEmitted: boolean }
   >,
-): void {
+): readonly ModelChunk[] {
   const idx = tc.index;
+  const chunks: ModelChunk[] = [];
   // let is justified: starts undefined, gets assigned from map or newly created
   let active = activeToolCalls.get(idx);
   if (active === undefined || (tc.id !== undefined && active.id !== tc.id)) {
@@ -356,13 +357,26 @@ function accumulateToolCallDelta(
     const name = tc.function?.name ?? "";
     active = { id: callId, name, argBuffer: "", startEmitted: false };
     activeToolCalls.set(idx, active);
+    if (name.length > 0) {
+      chunks.push({ kind: "tool_call_start", toolName: name, callId: toolCallId(callId) });
+      active.startEmitted = true;
+    }
   }
   if (tc.function?.name !== undefined && active.name.length === 0) {
     active.name = tc.function.name;
+    if (!active.startEmitted) {
+      chunks.push({
+        kind: "tool_call_start",
+        toolName: active.name,
+        callId: toolCallId(active.id),
+      });
+      active.startEmitted = true;
+    }
   }
   if (tc.function?.arguments !== undefined) {
     active.argBuffer += tc.function.arguments;
   }
+  return chunks;
 }
 
 function flushBufferedToolCalls(
@@ -393,11 +407,13 @@ function flushBufferedToolCalls(
         name: active.name,
         arguments: result.args,
       });
-      chunks.push({
-        kind: "tool_call_start",
-        toolName: active.name,
-        callId: toolCallId(active.id),
-      });
+      if (!active.startEmitted) {
+        chunks.push({
+          kind: "tool_call_start",
+          toolName: active.name,
+          callId: toolCallId(active.id),
+        });
+      }
       if (active.argBuffer.length > 0) {
         chunks.push({
           kind: "tool_call_delta",
@@ -407,14 +423,18 @@ function flushBufferedToolCalls(
       }
       chunks.push({ kind: "tool_call_end", callId: toolCallId(active.id) });
     } else {
-      chunks.push(
-        { kind: "tool_call_start", toolName: active.name, callId: toolCallId(active.id) },
-        {
-          kind: "error",
-          message: `Invalid tool call arguments for "${active.name}": ${result.raw}`,
-          code: "VALIDATION",
-        },
-      );
+      if (!active.startEmitted) {
+        chunks.push({
+          kind: "tool_call_start",
+          toolName: active.name,
+          callId: toolCallId(active.id),
+        });
+      }
+      chunks.push({
+        kind: "error",
+        message: `Invalid tool call arguments for "${active.name}": ${result.raw}`,
+        code: "VALIDATION",
+      });
     }
   }
   activeToolCalls.clear();
@@ -491,7 +511,7 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
     }
     if (ctx.bufferToolCalls) {
       for (const tc of delta.tool_calls) {
-        accumulateToolCallDelta(tc, ctx.activeToolCalls);
+        output.push(...accumulateToolCallDelta(tc, ctx.activeToolCalls));
       }
     } else {
       for (const tc of delta.tool_calls) {

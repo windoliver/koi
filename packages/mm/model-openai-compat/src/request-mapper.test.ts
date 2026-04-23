@@ -821,4 +821,29 @@ describe("buildRequestBody — thinkingDisplay", () => {
     expect(body.reasoning).toBeUndefined();
     expect(body.thinking).toBeUndefined();
   });
+
+  test('thinkingDisplay "hidden" on non-OpenRouter endpoint falls back to plain effort', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      compat: { supportsReasoning: true, thinkingDisplay: "hidden" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    // supportsPromptCaching=false → exclude:true must not be sent
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test('thinkingDisplay "summarized" on non-OpenRouter endpoint omits thinking field', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      model: "anthropic/claude-sonnet-4",
+      compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    // supportsPromptCaching=false → thinking.type must not be sent
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toBeUndefined();
+  });
 });
