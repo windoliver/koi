@@ -628,6 +628,15 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       alertTracker.cleanup(ctx.sessionId);
+
+      // gov-11: abort pending asks and drop session grants.
+      const abort = sessionAborts.get(ctx.sessionId);
+      if (abort !== undefined) {
+        abort.abort();
+        sessionAborts.delete(ctx.sessionId);
+      }
+      sessionGrants.delete(ctx.sessionId);
+
       // Do NOT auto-clear the degraded latch here: session_reset preserves
       // cumulative cost/token/spawn counters across the boundary, so if
       // prior accounting failed those runtime-wide counters stay stale.

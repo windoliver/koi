@@ -273,4 +273,60 @@ describe("gate() — ask verdict", () => {
 
     expect(handler).toHaveBeenCalledTimes(1);
   });
+
+  // --- Task 14: onSessionEnd cleanup ---
+
+  it("onSessionEnd drops session grants", async () => {
+    let currentVerdict: GovernanceVerdict = askVerdict("a1");
+    const handler = mock<ApprovalHandler>(
+      async () => ({ kind: "always-allow", scope: "session" }) as ApprovalDecision,
+    );
+    const mw = createGovernanceMiddleware({
+      backend: { evaluator: { evaluate: () => currentVerdict } },
+      controller: {
+        checkAll: async () => ({ ok: true }) as never,
+        record: async () => undefined,
+        snapshot: () => ({}) as never,
+      },
+      cost: { calculate: () => 0 },
+    } as unknown as GovernanceMiddlewareConfig);
+    const ctx = makeCtx({ requestApproval: handler });
+    const next = async () => ({ content: "x" }) as never;
+
+    if (mw.wrapModelCall === undefined) throw new Error("expected wrapModelCall");
+    await mw.wrapModelCall(ctx, modelReq(), next); // handler called once, grant set
+    await mw.wrapModelCall(ctx, modelReq(), next); // fast-path, no handler
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    if (mw.onSessionEnd === undefined) throw new Error("expected onSessionEnd");
+    await mw.onSessionEnd(ctx.session);
+
+    // New ask with a new askId so inflight-coalesce doesn't mask behavior
+    currentVerdict = askVerdict("a2");
+    await mw.wrapModelCall(ctx, modelReq(), next); // must re-ask after session end
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it("onSessionEnd aborts a pending ask with PERMISSION", async () => {
+    const handler = mock<ApprovalHandler>(() => new Promise(() => {}));
+    const mw = createGovernanceMiddleware(makeConfig({ verdict: askVerdict("pending-1") }));
+    const ctx = makeCtx({ requestApproval: handler });
+    const next = async () => ({ content: "x" }) as never;
+
+    if (mw.wrapModelCall === undefined) throw new Error("expected wrapModelCall");
+    const pending = mw.wrapModelCall(ctx, modelReq(), next);
+
+    // End the session while the ask is in-flight.
+    setTimeout(() => {
+      if (mw.onSessionEnd !== undefined) void mw.onSessionEnd(ctx.session);
+    }, 5);
+
+    try {
+      await pending;
+      throw new Error("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      expect((e as KoiRuntimeError).code).toBe("PERMISSION");
+    }
+  });
 });
