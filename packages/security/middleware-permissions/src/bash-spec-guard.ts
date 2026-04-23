@@ -45,6 +45,26 @@ export type SpecGuardOutcome =
       readonly specKind: "complete" | "partial" | "refused";
     };
 
+/**
+ * Extract the bare hostname from a `URL.host` value (which may include port).
+ *
+ * `URL.host` includes port for non-default ports (e.g. "example.com:8443").
+ * For IPv6 addresses the host is already bracketed (e.g. "[::1]" or "[::1]:8443").
+ * We strip the trailing `:port` so that `Network("example.com")` rules match
+ * regardless of what port the command targets.
+ */
+function extractHostname(host: string): string {
+  if (!host.includes(":")) return host; // no port, already a hostname
+  if (host.startsWith("[")) {
+    // IPv6: "[::1]" or "[::1]:8443" — port follows the closing bracket
+    const close = host.indexOf("]");
+    return close !== -1 ? host.slice(0, close + 1) : host;
+  }
+  // Regular hostname with port: everything before the last colon
+  const lastColon = host.lastIndexOf(":");
+  return lastColon !== -1 ? host.slice(0, lastColon) : host;
+}
+
 /** Return the stricter of two decisions: deny > ask > allow. */
 function stricter(a: PermissionDecision, b: PermissionDecision): PermissionDecision {
   if (a.effect === "deny") return a;
@@ -85,11 +105,25 @@ async function evaluateSemanticRules(
   }
 
   for (const net of semantics.network) {
-    // Use net.host (parsed URL.host) for Network rule matching, NOT net.target
-    const d = await resolveQuery({ ...baseQuery, resource: net.host, action: "network" });
-    if (isDefaultDenyLike(d)) continue; // fall-through, no explicit Network rule
-    result = stricter(result, d);
-    if (result.effect === "deny") return result;
+    // Query by hostname first so `Network("example.com")` blocks all ports.
+    // net.host may include port (URL.host) — strip it for the host-wide check.
+    const hostname = extractHostname(net.host);
+    const dByHostname = await resolveQuery({ ...baseQuery, resource: hostname, action: "network" });
+    if (!isDefaultDenyLike(dByHostname)) {
+      result = stricter(result, dByHostname);
+      if (result.effect === "deny") return result;
+    }
+
+    // Also query host:port when port is present, for port-specific rules like
+    // `Network("example.com:8443")`. Skip if host and hostname are the same
+    // (no port in net.host) to avoid a duplicate backend call.
+    if (net.host !== hostname) {
+      const dByHost = await resolveQuery({ ...baseQuery, resource: net.host, action: "network" });
+      if (!isDefaultDenyLike(dByHost)) {
+        result = stricter(result, dByHost);
+        if (result.effect === "deny") return result;
+      }
+    }
   }
 
   return result;

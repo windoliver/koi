@@ -152,7 +152,30 @@ describe("evaluateSpecGuard — complete spec evaluates semantic rules (backendS
     expect(result.decision.effect).toBe("deny");
   });
 
-  test("curl https://example.com:8443/path → host is example.com:8443", async () => {
+  test("curl https://example.com:8443/path → host-only rule example.com still matches (port bypass fix)", async () => {
+    // A rule for "example.com" must block all ports including :8443 (#1919).
+    // The guard now queries both "example.com" (hostname) AND "example.com:8443"
+    // (host:port) so host-wide denies cannot be bypassed by adding a port.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "curl https://example.com:8443/path",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        // Only match on the bare hostname — simulates Network("example.com") deny
+        if (q.action === "network" && q.resource === "example.com") return hardDeny("denied");
+        return allowDecision;
+      },
+      baseQuery,
+      registry,
+      backendSupportsDualKey: true,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("deny");
+  });
+
+  test("curl https://example.com:8443/path → port-specific rule example.com:8443 also matches", async () => {
+    // Port-specific rules like Network("example.com:8443") must also work.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "curl https://example.com:8443/path",
