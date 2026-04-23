@@ -17,7 +17,7 @@ import type {
   SkillComponent,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, skillToken } from "@koi/core";
-import type { SkillDefinition, SkillMetadata, SkillsRuntime } from "./types.js";
+import type { SkillDefinition, SkillsRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -43,8 +43,10 @@ export interface SkillProviderConfig {
  *   with full body in content.
  *
  * Progressive mode (progressive: true):
- *   Calls runtime.discover(), creates SkillComponents with content: "" so
- *   the injector middleware renders an <available_skills> XML summary block.
+ *   Calls runtime.loadAll() for full failure visibility (blocked/VALIDATION skills
+ *   appear in AttachResult.skipped), then attaches successful skills with content: ""
+ *   and runtimeBacked: true. Bodies are loaded on demand via the Skill tool.
+ *   The middleware injects an <available_skills> XML summary block per model call.
  *
  * Compatible with Nexus in the future: swap the runtime implementation,
  * keep the same provider.
@@ -88,25 +90,24 @@ async function attachEager(runtime: SkillsRuntime): Promise<AttachResult> {
 }
 
 async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> {
-  // Use discover() only — no body loading at attach time.
-  // Known limitations vs. eager attach (both require a SkillsRuntime API change to fix):
-  //   1. Blocked/permission-denied skills are not surfaced in AttachResult.skipped;
-  //      discover() intentionally excludes them, so they silently disappear.
-  //   2. Skills whose frontmatter discover() degrades to fallback metadata can still be
-  //      advertised in <available_skills> even if runtime.load() would return VALIDATION;
-  //      the failure is deferred to first invocation. Using loadAll() would restore full
-  //      validation parity but defeats the prompt-size optimization (bodies loaded up front).
-  const discoverResult = await runtime.discover();
+  // Call loadAll() for full blocked/VALIDATION visibility (same skipped contract as eager).
+  // Bodies are loaded but discarded — successful skills are attached with content: "" so
+  // the middleware injects a compact <available_skills> block instead of full bodies.
+  const allResult = await runtime.loadAll();
   const components = new Map<string, unknown>();
   const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
 
-  if (!discoverResult.ok) {
-    skipped.push({ name: "__discover__", reason: discoverResult.error.message });
+  if (!allResult.ok) {
+    skipped.push({ name: "__discover__", reason: allResult.error.message });
     return { components: components as ReadonlyMap<string, unknown>, skipped };
   }
 
-  for (const [name, metadata] of discoverResult.value) {
-    components.set(skillToken(name), skillMetadataToComponent(metadata));
+  for (const [name, result] of allResult.value) {
+    if (!result.ok) {
+      skipped.push({ name, reason: result.error.message });
+      continue;
+    }
+    components.set(skillToken(name), skillDefinitionToProgressiveComponent(result.value));
   }
 
   return { components: components as ReadonlyMap<string, unknown>, skipped };
@@ -132,16 +133,19 @@ export function skillDefinitionToComponent(skill: SkillDefinition): SkillCompone
 }
 
 /**
- * Converts SkillMetadata to a SkillComponent with empty content.
- * Used in progressive mode — body is loaded on demand via the Skill tool.
+ * Converts a loaded SkillDefinition to a progressive SkillComponent.
+ * Body is discarded (content: ""); runtimeBacked: true marks this as a
+ * runtime-backed progressive skill so the middleware knows it belongs in
+ * <available_skills> rather than being silently excluded like MCP stubs.
  */
-function skillMetadataToComponent(metadata: SkillMetadata): SkillComponent {
+function skillDefinitionToProgressiveComponent(skill: SkillDefinition): SkillComponent {
   return {
-    name: metadata.name,
-    description: metadata.description,
+    name: skill.name,
+    description: skill.description,
     content: "",
-    ...(metadata.allowedTools !== undefined ? { tags: metadata.allowedTools } : {}),
-    ...(metadata.requires !== undefined ? { requires: metadata.requires as BrickRequires } : {}),
-    ...(metadata.executionMode !== undefined ? { executionMode: metadata.executionMode } : {}),
+    runtimeBacked: true,
+    ...(skill.allowedTools !== undefined ? { tags: skill.allowedTools } : {}),
+    ...(skill.requires !== undefined ? { requires: skill.requires as BrickRequires } : {}),
+    ...(skill.executionMode !== undefined ? { executionMode: skill.executionMode } : {}),
   };
 }

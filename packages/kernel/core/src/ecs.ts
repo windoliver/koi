@@ -341,6 +341,14 @@ export interface SkillMetadata {
 export interface SkillComponent extends SkillMetadata {
   readonly content: string;
   readonly requires?: BrickRequires;
+  /**
+   * True when this component was attached by the skills-runtime progressive
+   * provider (content: "" with body deferred to on-demand load via Skill tool).
+   * Distinguishes runtime-backed progressive skills from other empty-content
+   * components (e.g. MCP metadata-only stubs) that must not appear in
+   * the <available_skills> XML block.
+   */
+  readonly runtimeBacked?: boolean;
 }
 
 /**

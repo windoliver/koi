@@ -38,6 +38,14 @@ function skill(name: string, content: string): [SubsystemToken<SkillComponent>, 
   return [token, { name, description: `${name} skill`, content }];
 }
 
+function progressiveSkill(
+  name: string,
+  opts?: Partial<SkillComponent>,
+): [SubsystemToken<SkillComponent>, SkillComponent] {
+  const token = `skill:${name}` as SubsystemToken<SkillComponent>;
+  return [token, { name, description: `${name} skill`, content: "", runtimeBacked: true, ...opts }];
+}
+
 function mockTurnContext(): TurnContext {
   return {
     session: {
@@ -239,8 +247,8 @@ describe("createSkillInjectorMiddleware", () => {
 
 describe("createSkillInjectorMiddleware — progressive mode", () => {
   test("injects <available_skills> XML block when skills have empty content", async () => {
-    // In progressive mode, provider sets content: "" on all components
-    const skills = new Map([skill("commit", ""), skill("review", "")]);
+    // In progressive mode, provider sets content: "" and runtimeBacked: true
+    const skills = new Map([progressiveSkill("commit"), progressiveSkill("review")]);
     const agent = mockAgent(skills);
     const mw = createSkillInjectorMiddleware({ agent, progressive: true });
     const { wrapModelCall } = assertHooks(mw);
@@ -264,7 +272,7 @@ describe("createSkillInjectorMiddleware — progressive mode", () => {
   });
 
   test("progressive XML block is sorted alphabetically for cache stability", async () => {
-    const skills = new Map([skill("zebra", ""), skill("alpha", "")]);
+    const skills = new Map([progressiveSkill("zebra"), progressiveSkill("alpha")]);
     const agent = mockAgent(skills);
     const mw = createSkillInjectorMiddleware({ agent, progressive: true });
     const { wrapModelCall } = assertHooks(mw);
@@ -287,7 +295,7 @@ describe("createSkillInjectorMiddleware — progressive mode", () => {
       Array.from({ length: 10 }, (_, i) => skill(`skill-${String(i)}`, bigBody)),
     );
     const progressiveSkills = new Map(
-      Array.from({ length: 10 }, (_, i) => skill(`skill-${String(i)}`, "")),
+      Array.from({ length: 10 }, (_, i) => progressiveSkill(`skill-${String(i)}`)),
     );
 
     const eagerAgent = mockAgent(eagerSkills);
@@ -336,7 +344,7 @@ describe("createSkillInjectorMiddleware — progressive mode", () => {
   });
 
   test("progressive XML block prepended before existing systemPrompt", async () => {
-    const skills = new Map([skill("commit", "")]);
+    const skills = new Map([progressiveSkill("commit")]);
     const agent = mockAgent(skills);
     const mw = createSkillInjectorMiddleware({ agent, progressive: true });
     const { wrapModelCall } = assertHooks(mw);
