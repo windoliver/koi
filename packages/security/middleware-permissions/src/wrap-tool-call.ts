@@ -262,19 +262,12 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
             query = queryForTool(ctx, exactResource, request.metadata, resolvedPath);
             resource = exactResource;
             // Enforcement bookkeeping (soft-deny caps, escalation) uses the
-            // command name, not the full argv, so repeated probes of the same
-            // protected path/host with different argv variants still accumulate
-            // against the same budget — closing the argv-churn evasion window.
-            // Skip leading env var assignments (e.g. `FOO=1 ssh ...`) so the
-            // tracking key is `bash:ssh`, not `bash:FOO=1`.
-            const rawWords = raw.trim().split(/\s+/);
-            let cmdStart = 0;
-            for (const word of rawWords) {
-              if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(word)) cmdStart++;
-              else break;
-            }
-            const cmdName = rawWords[cmdStart] ?? raw.trim();
-            trackingResource = `${request.toolId}:${cmdName}`;
+            // prefix-level enrichedResource (e.g. `bash:ssh`) rather than exact argv
+            // or fragile whitespace-split command names. enrichedResource is already
+            // produced by bash-classifier which handles env assignments, quoted args,
+            // and other shell syntax correctly — reuse it here to aggregate all argv
+            // variants of the same command under one denial bucket.
+            trackingResource = enrichedResource;
           }
         }
       }

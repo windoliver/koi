@@ -689,6 +689,16 @@ export function createPermissionsMiddleware(
       for (const key of filterCapRecordedKeys) {
         if (key.startsWith(`${sid}\0`)) filterCapRecordedKeys.delete(key);
       }
+      // Evict in-flight approval dedup entries so a resolved approval from the
+      // dead session cannot re-populate cache or coalesce onto later sessions.
+      // Mirrors clearSessionApprovals() — both paths must stay in sync.
+      const inflightKeys = inflightKeysBySession.get(sid);
+      if (inflightKeys !== undefined) {
+        for (const key of inflightKeys) {
+          inflightApprovals.delete(key);
+        }
+        inflightKeysBySession.delete(sid);
+      }
     },
 
     async wrapModelCall(
