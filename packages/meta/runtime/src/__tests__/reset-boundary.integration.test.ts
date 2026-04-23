@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type {
+  AgentManifest,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -45,19 +46,12 @@ function mockNonCoopAdapter(): EngineAdapter {
   };
 }
 
-function buildManifest(): {
-  readonly kind: "agent";
-  readonly id: string;
-  readonly name: string;
-  readonly description: string;
-  readonly model: { readonly provider: string; readonly id: string };
-} {
+function buildManifest(): AgentManifest {
   return {
-    kind: "agent" as const,
-    id: "test-agent",
-    name: "Test",
+    name: "Test Agent",
+    version: "0.1.0",
     description: "Integration test agent",
-    model: { provider: "test", id: "test-model" },
+    model: { name: "test-model" },
   };
 }
 
@@ -139,7 +133,7 @@ describe("reset-boundary — non-cooperating adapter", () => {
     const events = await collectEvents(runtime.run({ kind: "text", text: "second" }));
     const done = events.find((e) => e.kind === "done");
     expect(done).toBeDefined();
-    expect(events.find((e) => e.kind === "error")).toBeUndefined();
+    if (done?.kind === "done") expect(done.output.stopReason).toBe("completed");
   });
 
   test("session_reset fires on cycleSession with source:host and deterministic boundaryId", async () => {
@@ -192,8 +186,9 @@ describe("reset-boundary — guard reset prevents stale-state trip", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "second" }));
-    expect(events.find((e) => e.kind === "error")).toBeUndefined();
-    expect(events.find((e) => e.kind === "done")).toBeDefined();
+    const done2 = events.find((e) => e.kind === "done");
+    expect(done2).toBeDefined();
+    if (done2?.kind === "done") expect(done2.output.stopReason).toBe("completed");
 
     // run_reset should have fired for both runs
     const resets = recorded.filter((e) => e.kind === "run_reset");
