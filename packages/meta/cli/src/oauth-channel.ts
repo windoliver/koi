@@ -31,20 +31,30 @@ export function createOAuthChannel(options: {
   const { channel, onSubmit } = options;
 
   return {
-    onAuthRequired(n: AuthRequiredNotification): void {
+    async onAuthRequired(n: AuthRequiredNotification): Promise<void> {
       const text = buildAuthRequiredText(n);
-      void channel.send({ content: [{ kind: "text", text }] }).catch((_err: unknown) => {
+      try {
+        await channel.send({ content: [{ kind: "text", text }] });
+      } catch (_err: unknown) {
+        // eslint-disable-next-line no-console
         console.error(
           `[oauth-channel] Failed to send auth_required message for provider: ${n.provider}`,
+          _err,
         );
-      });
+      }
     },
 
-    onAuthComplete(n: AuthCompleteNotification): void {
+    async onAuthComplete(n: AuthCompleteNotification): Promise<void> {
       const text = `${n.provider} authorization complete. Continuing...`;
-      void channel.send({ content: [{ kind: "text", text }] }).catch((_err: unknown) => {
-        // Swallow silently — auth already succeeded, UI glitch is non-critical
-      });
+      try {
+        await channel.send({ content: [{ kind: "text", text }] });
+      } catch (_err: unknown) {
+        // auth_complete delivery failure is non-blocking — auth already succeeded.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[oauth-channel] auth_complete delivery failed for ${n.provider}: ${String(_err)}`,
+        );
+      }
     },
 
     submitAuthCode(redirectUrl: string, correlationId?: string | undefined): void {

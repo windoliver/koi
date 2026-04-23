@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import type { ChannelAdapter } from "@koi/core";
 import { createOAuthChannel } from "./oauth-channel.js";
 
@@ -47,7 +47,6 @@ describe("createOAuthChannel", () => {
         message: "Authorize Google Drive to continue",
         mode: "local",
       });
-      await new Promise<void>((r) => setTimeout(r, 0));
 
       expect(sent).toHaveLength(1);
       const text = sent[0]?.content[0]?.text ?? "";
@@ -67,7 +66,6 @@ describe("createOAuthChannel", () => {
         message: "Authorization required",
         mode: "local",
       });
-      await new Promise<void>((r) => setTimeout(r, 0));
 
       expect(sent).toHaveLength(1);
       const text = sent[0]?.content[0]?.text ?? "";
@@ -89,7 +87,6 @@ describe("createOAuthChannel", () => {
         mode: "remote",
         instructions: "Paste the redirect URL back here",
       });
-      await new Promise<void>((r) => setTimeout(r, 0));
 
       expect(sent).toHaveLength(1);
       const text = sent[0]?.content[0]?.text ?? "";
@@ -108,32 +105,33 @@ describe("createOAuthChannel", () => {
         message: "Authorize Dropbox",
         mode: "remote",
       });
-      await new Promise<void>((r) => setTimeout(r, 0));
 
       expect(sent).toHaveLength(1);
       const text = sent[0]?.content[0]?.text ?? "";
       expect(text).not.toContain("_");
     });
 
-    test("channel.send() error is swallowed — does not throw", async () => {
+    test("channel.send() error is swallowed and logged to console.error", async () => {
       const { channel } = makeChannel(async () => {
         throw new Error("send failed");
       });
+      const consoleSpy = spyOn(console, "error").mockImplementation(() => {});
       const oauthChannel = createOAuthChannel({
         channel: channel as unknown as ChannelAdapter,
       });
 
-      expect(() =>
-        oauthChannel.onAuthRequired({
-          provider: "google-drive",
-          authUrl: "https://accounts.google.com/auth",
-          message: "Authorize",
-          mode: "local",
-        }),
-      ).not.toThrow();
-      await new Promise<void>((r) => setTimeout(r, 10));
-      // send was called — error was swallowed
+      await oauthChannel.onAuthRequired({
+        provider: "google-drive",
+        authUrl: "https://accounts.google.com/auth",
+        message: "Authorize",
+        mode: "local",
+      });
+
       expect(channel.send).toHaveBeenCalledTimes(1);
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
+      const logArg = consoleSpy.mock.calls[0]?.[0] as string;
+      expect(logArg).toContain("google-drive");
+      consoleSpy.mockRestore();
     });
   });
 
@@ -145,7 +143,6 @@ describe("createOAuthChannel", () => {
       });
 
       await oauthChannel.onAuthComplete({ provider: "google-drive" });
-      await new Promise<void>((r) => setTimeout(r, 0));
 
       expect(sent).toHaveLength(1);
       const text = sent[0]?.content[0]?.text ?? "";
@@ -154,17 +151,22 @@ describe("createOAuthChannel", () => {
       expect(text).toContain("Continuing...");
     });
 
-    test("channel.send() error is swallowed silently — does not throw", async () => {
+    test("channel.send() error is swallowed and logged to console.warn", async () => {
       const { channel } = makeChannel(async () => {
         throw new Error("send failed");
       });
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
       const oauthChannel = createOAuthChannel({
         channel: channel as unknown as ChannelAdapter,
       });
 
-      expect(() => oauthChannel.onAuthComplete({ provider: "google-drive" })).not.toThrow();
-      await new Promise<void>((r) => setTimeout(r, 10));
+      await oauthChannel.onAuthComplete({ provider: "google-drive" });
+
       expect(channel.send).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const logArg = warnSpy.mock.calls[0]?.[0] as string;
+      expect(logArg).toContain("google-drive");
+      warnSpy.mockRestore();
     });
   });
 
