@@ -1507,31 +1507,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // `coreSlots.hook` instead.
 
   // --- @koi/permissions + @koi/middleware-permissions ---
-  // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
-  // See TUI_ALLOW_RULES (above) for allowlist reasoning. The
-  // write_plan rule is appended only when planning is opted in so
-  // hosts that do not install @koi/middleware-planning cannot have
-  // a third-party same-named tool silently approved.
-  const tuiAllowRules: readonly SourcedRule[] = [
-    ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true
-      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
-      : []),
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "allow",
-      source: "policy",
-      context: { path: `${cwd}/**` },
-    },
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "ask",
-      source: "policy",
-      reason: "File is outside the workspace — approve to read",
-    },
-  ] as const;
   // Always load settings — policy-layer rules must be enforced on every startup
   // path, including koi start which supplies its own custom backend.
   // Non-policy parse/schema errors are logged and skipped (fail-open for user
@@ -1655,9 +1630,45 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           `Use \`koi start\` for precise command-scoped enforcement.`,
       );
     }
+    // Rule ordering: policy settings → non-policy restrict → built-in allows →
+    // fs_read workspace guard → non-policy allows.
+    //
+    // Non-policy deny/ask rules come before built-in TUI allows so that
+    // user/project/local/flag deny rules fire first. Non-policy allow rules come
+    // AFTER the out-of-workspace fs_read guard so that a broad "allow all" rule
+    // in project settings cannot bypass the workspace boundary prompt.
+    const policySettingsRules = sortRules(widenedRules.filter((r) => r.source === "policy"));
+    const subPolicyRestrictRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect !== "allow"),
+    );
+    const subPolicyAllowRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect === "allow"),
+    );
     permBackend = createPermissionBackend({
       mode: settingsDefaultMode,
-      rules: [...sortRules(widenedRules), ...tuiAllowRules],
+      rules: [
+        ...policySettingsRules,
+        ...subPolicyRestrictRules,
+        ...TUI_ALLOW_RULES,
+        ...(config.planningEnabled === true
+          ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+          : []),
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "allow",
+          source: "policy",
+          context: { path: `${cwd}/**` },
+        },
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "ask",
+          source: "policy",
+          reason: "File is outside the workspace — approve to read",
+        },
+        ...subPolicyAllowRules,
+      ],
     });
   }
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
