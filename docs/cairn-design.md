@@ -1722,68 +1722,114 @@ REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated
 
 **Idempotency.** `operation_id` is the idempotency key — second `PREPARE` with the same id returns the first commit's outcome without re‑doing side effects. Third‑party writers collide safely on retries; broken networks can't double‑apply.
 
-**Lock granularity and compatibility matrix — implemented as a lock table, not advisory.** SQLite does not provide cross‑process row‑level advisory locks, so Cairn implements lock acquisition as ordinary inserts/updates in a `locks` table inside `.cairn/cairn.db`, protected by the SQLite write serialization. Every lock is a row; every lock has a **fencing token** (`lock_id` = ULID) and a **lease TTL** (default 30 s, heartbeat every 10 s). The lock table:
+**Lock granularity and compatibility matrix — implemented as a lock table, not advisory.** SQLite does not provide cross‑process row‑level advisory locks, so Cairn implements lock acquisition as ordinary inserts/updates inside `.cairn/cairn.db`, protected by the SQLite write serialization. The lock state is **split across two tables** so shared holders can be fenced individually without invalidating their peers:
 
 ```sql
+-- Per-scope row: one row per (scope_kind, scope_key). The row tracks the
+-- mode of the currently-held lock and the generation counter used to
+-- invalidate ALL holders at once (mode conversion, abandoned-lease reclaim).
 CREATE TABLE locks (
   scope_kind        TEXT NOT NULL,     -- 'entity' | 'session'
   scope_key         TEXT NOT NULL,     -- "(tenant, workspace, entity)" or "(tenant, workspace, session)"
-  mode              TEXT NOT NULL,     -- 'shared' | 'exclusive'
-  holder_count      INTEGER NOT NULL,  -- number of shared holders (exclusive ⇒ 1)
-  lock_id           TEXT NOT NULL,     -- fencing token (ULID), renewed every heartbeat
-  epoch             INTEGER NOT NULL,  -- monotonic counter, bumped on every heartbeat AND every reclaim
-  last_heartbeat_at INTEGER,           -- wall-clock ms — LOG-ONLY, never read by the fencing path
-  reclaim_deadline  INTEGER NOT NULL,  -- monotonic local-clock deadline for reclaim eligibility
-                                       -- (populated from std::time::Instant + lease_duration_ms);
-                                       -- used ONLY to decide whether a new acquirer may bump the epoch
+  mode              TEXT NOT NULL,     -- 'shared' | 'exclusive' | 'free' (= no holders)
+  holder_count      INTEGER NOT NULL,  -- number of live holders (exclusive ⇒ at most 1; free ⇒ 0)
+  epoch             INTEGER NOT NULL,  -- monotonic counter; bumped ONLY on reclaim or mode conversion,
+                                       -- NEVER on heartbeat. Invalidates ALL holders as a group.
   waiters           BLOB,              -- small queue of pending acquirers
+  last_heartbeat_at INTEGER,           -- wall-clock ms — LOG-ONLY, never read by fencing path
   PRIMARY KEY (scope_kind, scope_key)
+);
+
+-- Per-holder row: one row per live holder. Holder-level liveness is tracked
+-- here so one shared holder's heartbeat never touches another holder's row.
+CREATE TABLE lock_holders (
+  scope_kind        TEXT NOT NULL,
+  scope_key         TEXT NOT NULL,
+  holder_id         TEXT NOT NULL,     -- per-holder fencing token (ULID), stable for this holder's lifetime
+  acquired_epoch    INTEGER NOT NULL,  -- value of locks.epoch when this holder acquired; frozen for life
+  reclaim_deadline  INTEGER NOT NULL,  -- monotonic local-clock deadline for THIS holder
+                                       -- (std::time::Instant + lease_duration_ms); refreshed by heartbeat
+  PRIMARY KEY (scope_kind, scope_key, holder_id),
+  FOREIGN KEY (scope_kind, scope_key) REFERENCES locks(scope_kind, scope_key)
 );
 ```
 
 Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and session locks `(tenant, workspace, session:<id>)`. Every write acquires an entity lock in exclusive mode; a write that carries a `session_id` in its scope **also** acquires the session lock in **shared** mode. `forget_session` acquires the session lock in **exclusive** mode for the full Phase A (§5.6 delete row).
 
-**Acquisition protocol (one SQLite transaction per lock):**
-
-```
-BEGIN IMMEDIATE;
-  SELECT mode, holder_count, epoch, reclaim_deadline FROM locks
-    WHERE scope_kind = ? AND scope_key = ?;
-  -- If missing: INSERT with epoch = 1, this acquirer as sole holder, reclaim_deadline = now_monotonic() + lease_duration_ms.
-  -- If held in compatible mode + lease live (now_monotonic() < reclaim_deadline):
-  --     UPDATE holder_count += 1, refresh reclaim_deadline, keep epoch.
-  -- If held in compatible mode + lease expired (now_monotonic() ≥ reclaim_deadline):
-  --     RECLAIM — UPDATE SET epoch = epoch + 1, lock_id = :new_ulid, holder_count = 1,
-  --                         reclaim_deadline = now_monotonic() + lease_duration_ms.
-  --     The epoch bump is the fencing primitive; the old holder is now a zombie.
-  -- If held in incompatible mode: return WAIT; caller enqueues in waiters and retries
-  --     with exponential backoff; no busy-loop.
-COMMIT;
-```
-
-**Epoch, not wall-clock, is the fencing primitive.** The `epoch` column is a **monotonic integer counter stored in the `locks` row itself** — bumped on every heartbeat by the holder and on every reclaim by a new acquirer. The fencing CAS compares expected epoch against committed epoch; `reclaim_deadline` is consulted **only to decide whether a reclaim is eligible**, never to invalidate a live holder's writes. This matters because NTP jumps, DST changes, suspend/resume, and container clock drift cannot alter the epoch counter — the only thing that bumps it is a SQLite commit that went through the protocol.
-
-**Lease + fencing semantics — enforced on the Rust side before Nexus is called, and re‑asserted on every chunk transaction.** Every held lock carries a `lock_id` and an `epoch`. The holder caches the `(lock_id, epoch)` pair it acquired. The Rust core re‑reads the row and asserts `committed.epoch == cached.epoch AND committed.lock_id == cached.lock_id` in the same local SQLite transaction that promotes the WAL op from `PREPARED` to about‑to‑apply; mismatch → abort locally, Nexus never called.
-
-**Per‑chunk fencing for multi‑step and chunked operations.** For any op with more than one transaction (notably `forget_session` Phase A's `forget_chunk`‑sized writes, and any promote/expire with drain steps), each chunk's SQLite transaction opens with the same CAS:
+**Acquisition protocol (one SQLite transaction per lock).** The transaction garbage-collects expired `lock_holders` rows before deciding mode compatibility, so a shared lock whose only remaining live holders are zombies is correctly seen as `free`:
 
 ```sql
 BEGIN IMMEDIATE;
-  SELECT epoch, lock_id FROM locks
+  -- 1) Garbage-collect dead holders (their reclaim_deadline already passed).
+  DELETE FROM lock_holders
+    WHERE scope_kind = ? AND scope_key = ? AND reclaim_deadline < :now_monotonic;
+
+  -- 2) Recompute live-holder count.
+  SELECT mode, epoch, COUNT(h.holder_id) AS live
+    FROM locks l
+    LEFT JOIN lock_holders h USING (scope_kind, scope_key)
+    WHERE l.scope_kind = ? AND l.scope_key = ?
+    GROUP BY l.scope_kind, l.scope_key;
+
+  -- 3) Decide.
+  -- a) No row yet: INSERT locks(epoch=1, mode=:wanted, holder_count=1);
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=1, reclaim_deadline=:now+lease).
+  -- b) live=0 (all holders GC'd OR natural release): treat as free.
+  --    UPDATE locks SET epoch = epoch + 1, mode = :wanted, holder_count = 1;   -- epoch bump = reclaim
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=new_epoch, reclaim_deadline=:now+lease).
+  -- c) live>0 AND mode == :wanted AND :wanted == 'shared': compatible, no reclaim.
+  --    UPDATE locks SET holder_count = live + 1;                               -- epoch UNCHANGED
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=current_epoch, reclaim_deadline=:now+lease).
+  -- d) live>0 AND mode != :wanted (incompatible): return WAIT;
+  --    caller enqueues in waiters and retries with exponential backoff.
+COMMIT;
+```
+
+**Epoch bumps ONLY on reclaim or mode conversion — never on heartbeat.** This is the fix that makes shared locks coherent: when ten readers hold the session lock in shared mode and one heartbeats, the heartbeat touches only that reader's `lock_holders` row, never the parent `locks.epoch`. The other nine readers' cached `(holder_id, acquired_epoch)` pair stays valid. Epoch advances exactly when a new acquirer must invalidate the whole group (all holders are zombies, or an exclusive acquirer is taking over after all shared holders dropped) — which is precisely when invalidating "ALL holders" is the correct behavior. NTP jumps, DST changes, suspend/resume, and container clock drift cannot alter the epoch counter — the only thing that bumps it is a SQLite commit that went through this protocol.
+
+**Heartbeat protocol (holder-scoped, never touches `locks.epoch`).**
+
+```sql
+BEGIN IMMEDIATE;
+  UPDATE lock_holders
+    SET reclaim_deadline = :now_monotonic + :lease_duration_ms
+    WHERE scope_kind = ? AND scope_key = ? AND holder_id = :my_holder_id
+      AND reclaim_deadline >= :now_monotonic;  -- refuse to revive a zombie
+  -- If 0 rows updated: this holder has already been GC'd; stop heartbeating,
+  -- abort any in-flight work (the epoch CAS below will reject it anyway).
+  UPDATE locks
+    SET last_heartbeat_at = :now_wall_clock    -- LOG-ONLY; not read by any fencing path
     WHERE scope_kind = ? AND scope_key = ?;
-  -- Abort if epoch ≠ :cached_epoch OR lock_id ≠ :cached_lock_id.
-  -- No wall-clock check here — the epoch is the single source of truth.
+COMMIT;
+```
+
+**Per‑holder fencing — each holder caches its own `(holder_id, acquired_epoch)`.** The Rust core caches this pair at acquisition and re‑asserts it on every chunk:
+
+```sql
+BEGIN IMMEDIATE;
+  -- Fencing CAS: both the group epoch and THIS holder's liveness must still be valid.
+  SELECT
+    (SELECT epoch FROM locks
+        WHERE scope_kind = ? AND scope_key = ?) AS current_epoch,
+    EXISTS (SELECT 1 FROM lock_holders
+        WHERE scope_kind = ? AND scope_key = ? AND holder_id = :cached_holder_id
+          AND acquired_epoch = :cached_acquired_epoch
+          AND reclaim_deadline >= :now_monotonic) AS still_live;
+  -- Abort if current_epoch != :cached_acquired_epoch OR still_live = 0.
+  -- This rejects: (a) the group was reclaimed (epoch advanced), OR
+  -- (b) this specific holder was GC'd (heartbeat missed), OR
+  -- (c) someone else stole this holder_id (would need same acquired_epoch — impossible).
   -- ... chunk's mutation statements ...
 COMMIT;
 ```
 
-A zombie worker cannot commit a chunk: if a new acquirer already reclaimed the row, the epoch advanced, the CAS fails, the transaction rolls back, the zombie self‑aborts. Heartbeats renew the lease (bump `reclaim_deadline` and increment `epoch` on every heartbeat) every 10 s; a chunk takes at most `max_chunk_duration` (default 500 ms) so the heartbeat cadence keeps the holder's cached epoch valid across all its chunks. No two holders produce durable mutations — the epoch CAS is the single choke point.
+A zombie worker cannot commit a chunk: if a new acquirer already reclaimed the row, the epoch advanced, the CAS fails, the transaction rolls back, the zombie self‑aborts. If only this specific holder got GC'd (its own heartbeat missed while peers are still alive), the `still_live` predicate fails while `current_epoch` stays put — the zombie aborts without disturbing its peers. Heartbeats fire every 10 s and extend only the caller's own `reclaim_deadline`; a chunk takes at most `max_chunk_duration` (default 500 ms) so the heartbeat cadence keeps this holder's row alive across all its chunks. No two holders produce durable mutations — the per‑holder CAS is the single choke point.
 
-**`max_chunk_duration` is enforced by counting SQLite commits on the holder's own lock row**, not by wall‑clock. A concurrency test asserts the invariant "no chunk commits after a newer epoch has been published" across synthetic clock‑skew + NTP‑step schedules; this test is part of the §15 gate.
+**`max_chunk_duration` is enforced by counting SQLite commits on the holder's own lock row**, not by wall‑clock. A concurrency test asserts the invariant "no chunk commits after a newer epoch has been published OR after this holder's own row was GC'd" across synthetic clock‑skew + NTP‑step schedules; this test is part of the §15 gate.
 
-This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity.
+This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity, extended with per-holder tokens so shared locks scale without a spurious-invalidation tax.
 
-**Crash recovery.** If the current holder crashes without releasing, `reclaim_deadline` (monotonic local-clock deadline, not wall-clock) eventually passes and the next acquirer bumps the epoch as part of reclaim. Any in‑flight writes from the old holder are rejected by the epoch CAS on their next chunk.
+**Crash recovery.** If the current holder crashes without releasing, its own `reclaim_deadline` passes; the next acquirer's protocol Step 1 (GC) deletes the zombie's row, Step 3 either reclaims (bumping `epoch` only if live count drops to 0 or mode conversion is needed) or silently absorbs the slot. Any in‑flight writes from the crashed holder are rejected by the per-holder CAS — the `still_live` predicate fails the instant its `lock_holders` row is deleted.
 
 **Why `forget_session` exclusive blocks child writes.** A write to a session child opens two SQLite transactions: one to acquire the entity lock and one to acquire the session lock in shared mode. If `forget_session` holds the session lock exclusive, the shared acquisition returns WAIT, and the child write blocks (with a configurable timeout — default 5 s, after which it fails with `SessionLockUnavailable`). The planner refuses to retry with a stale session lock — once `forget_session` commits, the session is gone and retries fail fast.
 
@@ -2158,7 +2204,7 @@ Cairn exposes one set of eight verbs through four surfaces. **The CLI is the gro
 |------|-----|-----|------------|
 | 1 | `cairn ingest --kind user --body "..."` | `{verb:"ingest", args:{kind,body,...}}` | `cairn::ingest(IngestArgs {...})` |
 | 2 | `cairn search "query" [--mode semantic]` | `{verb:"search", args:{...}}` | `cairn::search(SearchArgs {...})` |
-| 3 | `cairn retrieve <record-id>` | `{verb:"retrieve", args:{id}}` | `cairn::retrieve(&id)` |
+| 3 | `cairn retrieve <record-id>`<br>`cairn retrieve --session <id> [--limit K --order desc --rehydrate]`<br>`cairn retrieve --folder <path>`<br>`cairn retrieve --scope <expr>` | `{verb:"retrieve", args: RetrieveArgs}` (discriminated union — see §8.0.c) | `cairn::retrieve(RetrieveArgs::{Record,Session,Folder,Scope}{…})` |
 | 4 | `cairn summarize <record-ids...> [--persist]` | `{verb:"summarize", args:{...}}` | `cairn::summarize(SumArgs {...})` |
 | 5 | `cairn assemble_hot [--session <id>]` | `{verb:"assemble_hot", args:{...}}` | `cairn::assemble_hot(...)` |
 | 6 | `cairn capture_trace --from <file>` | `{verb:"capture_trace", args:{...}}` | `cairn::capture_trace(...)` |
@@ -2250,6 +2296,38 @@ All verbs — core and extension — share a single request/response envelope so
 `policy_trace` is always present on mutating verbs so auditors see which gates ran and how they decided — not just the final outcome.
 
 The **eight verbs** are the only public entry points — four surfaces, same verbs, same signed envelope, same policy trace. A CLI invocation like `cairn forget --session <id>` dispatches to the same Rust function as the MCP frame `{verb: "forget", args: {mode: "session", session_id: "..."}}`; neither is "syntactic sugar" over the other — both are thin shells around `src/verbs/forget.rs`. Hooks, library calls, and skill invocations route through the same layer.
+
+### 8.0.c `RetrieveArgs` — discriminated union [P0]
+
+`retrieve` serves four distinct read shapes (record by id, full session, folder tree, arbitrary scope filter). Rather than overload a single `{id}` shape, the verb's `args` is a tagged union keyed on `target`. Unknown `target` values are rejected at the wire layer, never silently ignored.
+
+```jsonc
+// args: RetrieveArgs — exactly one variant per call
+{ "target": "record",  "id": "01HQZ..." }
+{ "target": "session", "session_id": "01HQY...", "limit": 100, "order": "desc", "rehydrate": false, "include": ["tool_calls"] }
+{ "target": "folder",  "path": "people/<user_id>", "depth": 2 }
+{ "target": "scope",   "scope": { "user": "...", "agent": "...", "kind": ["user","feedback"] } }
+```
+
+| Variant | CLI form | What it returns | Auth gate |
+|---------|----------|-----------------|-----------|
+| `record` | `cairn retrieve <id>` | one `MemoryRecord` + its edges | rebac on the record |
+| `session` | `cairn retrieve --session <id> [--limit K --order asc\|desc --rehydrate]` | ordered turn stream; `rehydrate: true` unpacks cold snapshots (US2, §18.c) | rebac on session + every included turn |
+| `folder` | `cairn retrieve --folder <path> [--depth N]` | `_index.md` + `_summary.md` + child index (§3.4) | rebac on folder |
+| `scope` | `cairn retrieve --scope '{"user":"u","agent":"a"}'` | all records matching the filter (paginated) | rebac applied per-row at MemoryStore layer |
+
+**Rust SDK mirror** — `RetrieveArgs` is the exact same Rust enum emitted by the single IDL (§13.5):
+
+```rust
+pub enum RetrieveArgs {
+    Record  { id: RecordId },
+    Session { session_id: SessionId, limit: Option<u32>, order: Order, rehydrate: bool, include: Vec<IncludeField> },
+    Folder  { path: VaultPath, depth: Option<u8> },
+    Scope   { scope: ScopeFilter },
+}
+```
+
+`cairn retrieve` (CLI) parses positional vs. flag forms into exactly one variant and errors if the caller mixes them (e.g., `--session X --folder Y` is `InvalidArgs` — not "last wins"). SKILL.md documents the four forms as four separate bash recipes so LLM agents never guess the shape.
 
 ---
 
@@ -3372,8 +3450,9 @@ cairn/
 │   ├── cairn-core             Rust — L0 types, pure functions, MCP server
 │   ├── cairn-jobs             Rust — default orchestrator (`tokio` + SQLite job table)
 │   ├── cairn-jobs-temporal    Rust — optional Temporal adapter via `temporalio-sdk` / `temporalio-client` (prerelease)
-│   ├── cairn-store-nexus      Rust — MemoryStore HTTP/MCP client into a Nexus `sandbox` sidecar (default)
-│   ├── cairn-nexus-supervisor Rust — spawns + health‑checks + restarts the Python Nexus sidecar
+│   ├── cairn-store-sqlite     Rust — MemoryStore on pure SQLite + FTS5 + filesystem (default P0; zero deps, no network, no Python)
+│   ├── cairn-store-nexus      Rust — MemoryStore HTTP/MCP client into a Nexus `sandbox` sidecar (opt‑in P1; unlocks BM25S + sqlite-vec hybrid)
+│   ├── cairn-nexus-supervisor Rust — spawns + health‑checks + restarts the Python Nexus sidecar (P1 opt‑in, pulled in by `cairn-store-nexus`)
 │   ├── cairn-llm-openai       Rust — OpenAI‑compatible LLMProvider
 │   ├── cairn-sensors-local    Rust — hook, IDE, terminal, clipboard, screen, neuroskill
 │   └── cairn-sensors-source   Rust — Slack, email, calendar, GitHub, document, transcript, web, RSS
@@ -3716,11 +3795,13 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 
 ### P3 stories
 
-**US7 — Search across prior conversations and memories (SRE + Developer).**
-- MCP `search` verb (§8) supports both keyword (BM25S via Nexus `search` brick) and semantic (`sqlite-vec` ANN via `litellm` embeddings) — mode selected by `search(mode: "keyword" | "semantic" | "hybrid")`.
-- Results: every hit returns `{record_id, snippet, timestamp, session_id, score, actor_chain}` so SRE audits and developer reuse both have full provenance.
-- RBAC: `rebac` brick (§4.2) enforces tenant + role + visibility at query time; results the caller can't read are dropped at the MemoryStore layer, never surfaced. Caller sees the filter count (`results_hidden: N`) without seeing the hidden records themselves.
-- Sections: §8 MCP Surface, §5.1 Read path, §4.2 Identity + rebac, §6.3 Visibility.
+**US7 — Search across prior conversations and memories (SRE + Developer).** *Version‑scoped; matches the sequencing matrix, not a single "P3" box.*
+- **v0.1 (keyword only).** `search(mode: "keyword")` runs SQLite **FTS5** over the local `.cairn/cairn.db` — no Python, no embedding key, no network. `mode: "semantic"` or `"hybrid"` is accepted but returns `semantic_degraded: true` and falls back to FTS5, so callers always get a deterministic result set.
+- **v0.2 (semantic + hybrid via Nexus sandbox).** `cairn-store-nexus` (§13) is enabled; `mode: "semantic"` now uses `sqlite-vec` ANN with `litellm` embeddings (OpenAI / local Ollama / Cohere) inside the Nexus `sandbox` sidecar, and `mode: "hybrid"` blends **BM25S** keyword scores with semantic scores via Nexus's `search` brick. `semantic_degraded` flips to `false`.
+- **v0.3 (cross‑tenant federation, true P3).** `search(federation: "on")` fans out to other Cairn vaults the caller has been granted `ShareLinkGrant` for; results merge across vaults with per‑source provenance. Requires the `cairn.federation.v1` extension namespace (§8.0.a).
+- Results shape (all versions): every hit returns `{record_id, snippet, timestamp, session_id, score, actor_chain, vault_id?}` so SRE audits and developer reuse both have full provenance.
+- RBAC: `rebac` brick (§4.2) enforces tenant + role + visibility at query time on every tier; results the caller can't read are dropped at the MemoryStore layer, never surfaced. Caller sees the filter count (`results_hidden: N`) without seeing the hidden records themselves.
+- Sections: §8 MCP Surface, §5.1 Read path, §4.2 Identity + rebac, §6.3 Visibility, §13 `cairn-store-sqlite` (P0) / `cairn-store-nexus` (P1).
 
 **US8 — Delete a specific session and memories (Customer + SRE).**
 - **Record‑level delete ships in v0.1.** `cairn forget --record <id>` — or the MCP verb `forget` with `mode: "record"` — runs the full §5.6 `delete` Phase A (logical tombstone + index drains committed atomically) plus Phase B physical purge. Irretrievable: `search` and `retrieve` return `not_found` as soon as Phase A commits.
