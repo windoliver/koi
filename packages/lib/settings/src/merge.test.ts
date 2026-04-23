@@ -61,6 +61,42 @@ describe("mergeSettings", () => {
     expect(result.permissions?.ask).not.toContain("Bash(git push*)");
   });
 
+  test("policy tightening: Tool(*) deny subsumes bare Tool allow entry", () => {
+    const merged: KoiSettings = {
+      permissions: { allow: ["Bash"] },
+    };
+    const policy: KoiSettings = {
+      permissions: { deny: ["Bash(*)"] },
+    };
+    const result = mergeSettings([merged], policy);
+    expect(result.permissions?.allow).not.toContain("Bash");
+    expect(result.permissions?.deny).toContain("Bash(*)");
+  });
+
+  test("policy tightening: bare Tool deny subsumes command-scoped allow entry", () => {
+    const merged: KoiSettings = {
+      permissions: { allow: ["Bash(git *)"] },
+    };
+    const policy: KoiSettings = {
+      permissions: { deny: ["Bash"] },
+    };
+    const result = mergeSettings([merged], policy);
+    expect(result.permissions?.allow).not.toContain("Bash(git *)");
+    expect(result.permissions?.deny).toContain("Bash");
+  });
+
+  test("policy tightening: command-scoped deny does NOT subsume bare Tool allow", () => {
+    const merged: KoiSettings = {
+      permissions: { allow: ["Bash"] },
+    };
+    const policy: KoiSettings = {
+      permissions: { deny: ["Bash(rm -rf*)"] },
+    };
+    const result = mergeSettings([merged], policy);
+    // Bare "Bash" is a broader entry; a narrow command-scoped deny doesn't remove it
+    expect(result.permissions?.allow).toContain("Bash");
+  });
+
   test("policy scalar overrides merged scalar", () => {
     const result = mergeSettings([{ theme: "dark" }], { theme: "light" });
     expect(result.theme).toBe("light");

@@ -97,18 +97,36 @@ function mergeArrays<T>(
   return [...new Set(combined)];
 }
 
+function parsePermEntry(s: string): { readonly tool: string; readonly arg: string | null } {
+  const parenIdx = s.indexOf("(");
+  if (parenIdx === -1) return { tool: s, arg: null };
+  const tool = s.slice(0, parenIdx);
+  const arg = s.slice(parenIdx + 1, s.endsWith(")") ? s.length - 1 : s.length);
+  return { tool, arg };
+}
+
 /**
  * Returns true when a tool-pattern string `candidate` is subsumed by `denyPattern`.
  *
- * Tool patterns have the form `ToolName(argGlob)` or `*`.
- * A deny pattern `Bash(*)` should suppress any `Bash(...)` allow/ask entry.
- * We use a simple glob match: convert the deny pattern's `*` to `.*` and test.
+ * Semantic rules:
+ *   `*`            subsumes everything
+ *   `Tool`         subsumes `Tool`, `Tool(argGlob)` — bare deny covers all invocations
+ *   `Tool(*)`      subsumes `Tool`, `Tool(argGlob)` — wildcard arg covers all invocations
+ *   `Tool(argGlob)` subsumes `Tool(argGlob2)` when argGlob glob-matches argGlob2
+ *   `Tool(argGlob)` does NOT subsume bare `Tool` — command-scoped deny is narrower
  */
 function isSubsumedByDenyPattern(candidate: string, denyPattern: string): boolean {
   if (denyPattern === "*") return true;
-  // Escape all regex-special chars except *, then replace * with .*
-  const regexSrc = denyPattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp(`^${regexSrc}$`).test(candidate);
+  const deny = parsePermEntry(denyPattern);
+  const cand = parsePermEntry(candidate);
+  if (deny.tool !== cand.tool) return false;
+  // Bare deny or Tool(*) covers all invocations of that tool
+  if (deny.arg === null || deny.arg === "*") return true;
+  // Command-scoped deny does not subsume a bare tool entry
+  if (cand.arg === null) return false;
+  // Both command-scoped: glob-match the arg portions only
+  const regexSrc = deny.arg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${regexSrc}$`).test(cand.arg);
 }
 
 /** Returns true if any deny pattern subsumes the candidate. */

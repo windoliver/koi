@@ -1565,10 +1565,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   //
   // Placing TUI built-ins LAST ensures any settings deny (even project/local/user layers)
   // can override a built-in default allow for the same tool.
+  const EFFECT_ORDER: Readonly<Record<string, number>> = { deny: 0, ask: 1, allow: 2 };
   const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
-  const sortedSettingsRules = [...settingsRules].sort(
-    (a, b) => precedenceIdx(a) - precedenceIdx(b),
-  );
+  const sortedSettingsRules = [...settingsRules].sort((a, b) => {
+    const srcDiff = precedenceIdx(a) - precedenceIdx(b);
+    if (srcDiff !== 0) return srcDiff;
+    return (EFFECT_ORDER[a.effect] ?? 3) - (EFFECT_ORDER[b.effect] ?? 3);
+  });
   const permBackend =
     config.permissionBackend ??
     createPermissionBackend({

@@ -77,6 +77,9 @@ export interface SettingsLoadOptions {
   /**
    * Override the platform policy path. Used in tests to supply a custom
    * policy file without root access to /etc/koi/ or /Library/...
+   *
+   * @internal Do not pass user-controlled or untrusted values here.
+   * Production callers must never receive this from user input.
    */
   readonly policyPath?: string | undefined;
 }
