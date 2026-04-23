@@ -1084,12 +1084,13 @@ export {
 } from "./spawn.js";
 // supervision — Erlang/OTP-style hierarchical fault recovery
 export type {
+  ChildIsolation,
   ChildSpec,
   RestartType,
   SupervisionConfig,
   SupervisionStrategy,
 } from "./supervision.js";
-export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
+export { DEFAULT_CHILD_ISOLATION, DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // system signal — operational/system events for the proactive intelligence layer
 export type {
   CompositionSchedulerEvent,
@@ -1170,6 +1171,8 @@ export type {
   ToolHealthSnapshot,
   ToolHealthState,
 } from "./tool-health-types.js";
+// toolset — named composable tool presets (resolution logic in @koi/toolsets L2)
+export type { ToolsetDefinition, ToolsetRegistry, ToolsetResolution } from "./toolset.js";
 // transcript — append-only message log for crash recovery
 export type {
   CompactResult,
@@ -1194,6 +1197,7 @@ export type {
   UserSignal,
   UserSnapshot,
 } from "./user-model.js";
+export { validateSupervisionConfig } from "./validate-supervision.js";
 // validation utilities — runtime type guards and validators
 export {
   isModelChunk,
@@ -1240,6 +1244,17 @@ export type {
   WebhookPayload,
   WebhookSummary,
 } from "./webhook.js";
+// worker-ipc — Bun IPC envelope between parent supervisor and subprocess child
+export type {
+  WorkerIpcEngineEventMessage,
+  WorkerIpcHeartbeatMessage,
+  WorkerIpcMessage,
+  WorkerIpcMessageKind,
+  WorkerIpcMessageMessage,
+  WorkerIpcResultMessage,
+  WorkerIpcTerminateMessage,
+} from "./worker-ipc.js";
+export { validateWorkerIpcMessage } from "./worker-ipc.js";
 // workspace — workspace isolation contract types
 export type {
   CleanupPolicy,

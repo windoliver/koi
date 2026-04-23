@@ -1,0 +1,12 @@
+diff --git a/package.json b/package.json
+index 2c4dbcf45a3b3c972fd14f18a9321b134c72b350..44e6b22e79d5c11095ae4746ebba4378092702d1 100644
+--- a/package.json
++++ b/package.json
+@@ -31,6 +31,7 @@
+       }
+     },
+     "./web-tree-sitter.wasm": "./web-tree-sitter.wasm",
++    "./tree-sitter.wasm": "./web-tree-sitter.wasm",
+     "./debug": {
+       "import": {
+         "types": "./web-tree-sitter.d.ts",

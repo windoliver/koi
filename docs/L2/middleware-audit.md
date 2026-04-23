@@ -51,12 +51,13 @@ This middleware captures all six categories of auditable events at the sole inte
 | `session_end` | `onSessionEnd` | Awaits queue flush before returning |
 | `permission_decision` | `onPermissionDecision` | Query + decision (allow/deny/ask) |
 | `config_change` | `onConfigChange` | Key + oldValue + newValue |
+| `compliance_event` | via `ComplianceRecorder` from `@koi/governance-defaults` | Recorded when governance fires a violation. The sink sees a normal `AuditEntry` — consumers filter on `kind === "compliance_event"`. |
 
 ---
 
 ## Tamper Evidence
 
-Every entry carries `schema_version: 2` (bumped from 1 when `toolName` was added to `tool_call` entries).
+Every entry carries `schema_version: 2`. The bump from 1 covers two shape changes that v1 readers would mishandle: the `toolName` field promoted to top-level on `tool_call` entries, and the new `compliance_event` variant in the `kind` union. Per the L0 contract ("increment when the shape changes. Readers gate on this field"), producers advertise v2 explicitly so v1 readers exhaustively switching on `kind` can reject the new variant.
 
 When signing is enabled, two additional fields are added:
 

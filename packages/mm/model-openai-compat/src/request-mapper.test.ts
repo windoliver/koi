@@ -6,9 +6,9 @@ import { describe, expect, test } from "bun:test";
 import type { InboundMessage, ModelRequest } from "@koi/core";
 import { buildRequestBody, mapMessages } from "./request-mapper.js";
 import type { ResolvedCompat, ResolvedConfig } from "./types.js";
-import { DEFAULT_CAPABILITIES, resolveCompat } from "./types.js";
+import { DEFAULT_CAPABILITIES, resolveCompat, resolveConfig } from "./types.js";
 
-const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1");
+const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model");
 
 const CONFIG: ResolvedConfig = {
   apiKey: "test-key",
@@ -16,6 +16,7 @@ const CONFIG: ResolvedConfig = {
   model: "test-model",
   capabilities: DEFAULT_CAPABILITIES,
   compat: DEFAULT_COMPAT,
+  rawCompat: undefined,
   headers: {},
   provider: "openai-compat",
   trustTranscriptMetadata: true,
@@ -492,7 +493,7 @@ describe("mapMessages", () => {
   // ---------------------------------------------------------------------------
 
   test("converts thinking metadata to text when requiresThinkingAsText", () => {
-    const thinkingCompat = resolveCompat("https://openrouter.ai/api/v1", {
+    const thinkingCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model", {
       requiresThinkingAsText: true,
     });
     const msg: InboundMessage = {
@@ -512,7 +513,7 @@ describe("mapMessages", () => {
   // ---------------------------------------------------------------------------
 
   test("inserts bridge assistant message when requiresAssistantAfterToolResult", () => {
-    const bridgeCompat = resolveCompat("https://openrouter.ai/api/v1", {
+    const bridgeCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model", {
       requiresAssistantAfterToolResult: true,
     });
     const messages: readonly InboundMessage[] = [
@@ -720,7 +721,7 @@ describe("buildRequestBody", () => {
       ...CONFIG,
       baseUrl: "https://my-custom-proxy.example.com/v1",
       model: "anthropic/claude-sonnet-4",
-      compat: resolveCompat("https://my-custom-proxy.example.com/v1"),
+      compat: resolveCompat("https://my-custom-proxy.example.com/v1", "anthropic/claude-sonnet-4"),
     };
     const request: ModelRequest = {
       messages: [makeMessage("hi")],
@@ -739,7 +740,7 @@ describe("buildRequestBody", () => {
       ...CONFIG,
       baseUrl: "https://openrouter.ai/api/v1",
       model: "anthropic/claude-sonnet-4",
-      compat: resolveCompat("https://openrouter.ai/api/v1"),
+      compat: resolveCompat("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4"),
     };
     const request: ModelRequest = {
       messages: [makeMessage("hi")],
@@ -751,5 +752,131 @@ describe("buildRequestBody", () => {
     expect(Array.isArray(messages[0]?.content)).toBe(true);
     const blocks = messages[0]?.content as Array<{ type: string; cache_control?: unknown }>;
     expect(blocks[0]?.cache_control).toEqual({ type: "ephemeral" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRequestBody — thinkingDisplay
+// ---------------------------------------------------------------------------
+
+describe("buildRequestBody — thinkingDisplay", () => {
+  const baseConfig = {
+    apiKey: "test-key",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "anthropic/claude-sonnet-4",
+  } as const;
+
+  const baseRequest: ModelRequest = {
+    messages: [],
+  };
+
+  test('thinkingDisplay "full" emits reasoning: { effort: "medium" }', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      compat: { supportsReasoning: true, thinkingDisplay: "full" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test('thinkingDisplay "hidden" emits reasoning: { exclude: true }', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      compat: { supportsReasoning: true, thinkingDisplay: "hidden" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ exclude: true });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test('thinkingDisplay "summarized" on anthropic model emits thinking: { type: "summarized" } + reasoning: { effort }', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      model: "anthropic/claude-sonnet-4",
+      compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toEqual({ type: "summarized" });
+  });
+
+  test('thinkingDisplay "summarized" on non-anthropic model omits thinking field', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      model: "openai/gpt-4o",
+      compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test("thinkingDisplay is ignored when supportsReasoning is false", () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      compat: { supportsReasoning: false, thinkingDisplay: "hidden" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toBeUndefined();
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test('thinkingDisplay "hidden" on non-OpenRouter endpoint falls back to plain effort', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      compat: { supportsReasoning: true, thinkingDisplay: "hidden" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    // supportsReasoningExclude=false → fail closed: don't request reasoning at all
+    expect(body.reasoning).toBeUndefined();
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test('thinkingDisplay "summarized" on non-OpenRouter endpoint omits thinking field', () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      model: "anthropic/claude-sonnet-4",
+      compat: { supportsReasoning: true, thinkingDisplay: "summarized" },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    // supportsThinkingType=false → thinking.type must not be sent
+    expect(body.reasoning).toEqual({ effort: "medium" });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test("custom proxy with explicit supportsReasoningExclude=true can use hidden mode", () => {
+    // A non-OpenRouter proxy that explicitly opts in to the exclude shape should
+    // get reasoning: { exclude: true } — the capability flag, not the URL, governs.
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      compat: {
+        supportsReasoning: true,
+        thinkingDisplay: "hidden",
+        supportsReasoningExclude: true,
+      },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ exclude: true });
+    expect(body.thinking).toBeUndefined();
+  });
+
+  test("custom proxy with explicit supportsThinkingType=true can use summarized mode", () => {
+    const config = resolveConfig({
+      ...baseConfig,
+      baseUrl: "https://custom.endpoint.example.com/v1",
+      model: "anthropic/claude-sonnet-4",
+      compat: {
+        supportsReasoning: true,
+        thinkingDisplay: "summarized",
+        supportsThinkingType: true,
+      },
+    });
+    const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
+    expect(body.thinking).toEqual({ type: "summarized" });
+    expect(body.reasoning).toEqual({ effort: "medium" });
   });
 });

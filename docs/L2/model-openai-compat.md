@@ -41,6 +41,44 @@ thinking (e.g., Claude via OpenRouter) return reasoning tokens as
 `supportsReasoning` defaults to `false` — callers must opt in explicitly.
 OpenRouter silently ignores the field for non-reasoning models.
 
+### Compat Resolution Order
+
+Provider compat is resolved in three layers, each narrowing the previous:
+
+```
+_DEFAULT_COMPAT
+  ← merge  detectCompat(baseUrl)                (URL heuristics, e.g. OpenRouter / Groq)
+  ← merge  MODEL_COMPAT_RULES first-match(model) (per-model quirks, regex-keyed)
+  ← merge  config.compat                        (caller override, highest priority)
+```
+
+Each layer uses `??` merge — a field absent in the override falls through to the layer below.
+
+### Per-Model Capability Flags
+
+Two flags extend `ResolvedCompat` with model-specific defaults:
+
+| Flag | Type | Default | Purpose |
+|------|------|---------|---------|
+| `supportsToolStreaming` | `boolean` | `true` | When `false`, tool-call deltas are buffered and emitted in one burst after the final stream chunk instead of progressively. Use for provider×model combos that emit malformed or partial `tool_calls` mid-stream. Post-tool text and thinking are also buffered and replayed as `text_delta`/`thinking_delta` chunks at `finish()` time so downstream consumers see a consistent stream ordering. |
+| `thinkingDisplay` | `"full" \| "summarized" \| "hidden"` | `"full"` | Controls how reasoning output is requested. `"full"` = current behavior (`reasoning: { effort }`); `"summarized"` = request thinking summaries (`thinking: { type: "summarized" }` + `reasoning: { effort }`, Anthropic via OpenRouter); `"hidden"` = exclude reasoning from response (requires `supportsReasoningExclude`). Only applied when `supportsReasoning` is true. |
+| `supportsReasoningExclude` | `boolean` | `false` | Whether the provider supports `reasoning: { exclude: true }` to suppress reasoning tokens from the response. OpenRouter supports this; direct Anthropic API does not. Only used when `thinkingDisplay === "hidden"`. |
+| `supportsThinkingType` | `boolean` | `false` | Whether the provider supports `thinking: { type: "summarized" }` as a top-level request field (OpenRouter + Anthropic routing only). Only used when `thinkingDisplay === "summarized"` and the model ID starts with `"anthropic/"`. |
+
+### Per-Model Override Table
+
+`model-compat.ts` exports `MODEL_COMPAT_RULES: readonly ModelCompatRule[]`. Each rule has a `match: RegExp` and `overrides: Partial<ResolvedCompat>`. First match wins. Ships empty — add rules as real-world failures surface, with a regression cassette per entry.
+
+Example (not shipped — illustrative):
+
+```typescript
+{ match: /copilot.*haiku/i, overrides: { supportsToolStreaming: false } },
+```
+
+### Tool Call Buffering (`supportsToolStreaming: false`)
+
+When `supportsToolStreaming` is `false`, `createStreamParser` buffers tool-call deltas silently during the stream and emits the complete sequence — `tool_call_start` → `tool_call_delta` (full args in one chunk) → `tool_call_end` — only after `finish()` is called. The downstream `EngineEvent` contract is identical; only the timing changes.
+
 ## Streaming
 
 `AsyncIterable<ModelChunk>` via `async function*`. Natural backpressure from
@@ -92,3 +130,5 @@ include conversation messages (which change every turn by definition).
 > **Maintenance note (PR #1506):** Replaced `!` non-null assertions in `request-mapper.ts` with proper null checks in bounds-checked loops, following the project `noNonNullAssertion` rule. No functional changes.
 
 > **Maintenance note (PR #1560):** Added missing `@koi/hash` project reference to `tsconfig.json`. Required after PR #1554 added `@koi/hash` as a dependency but omitted the TypeScript project reference. No functional changes.
+
+> **Per-model compat overrides + streaming fixes (PR #2032):** Added `supportsReasoningExclude` and `supportsThinkingType` to `ResolvedCompat`. `applyModelCompatRules` resets `lastIndex` before each `RegExp.test()` call to guard against stateful `/g` flags. SSE errors are now deferred via `pendingErrors` and flushed only after `parser.finish()` so buffered tool calls are always emitted before terminal errors. Post-tool `text_delta`/`thinking_delta` in buffered mode are suppressed during `feed()` and replayed as chunks from `flushBufferedItems()` at finish time, ensuring consistent ordering for both streaming and `complete()` callers. Empty-slot tool calls (no name, no args) now surface a `VALIDATION` error instead of silently skipping.

@@ -273,6 +273,10 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/file-type": {
+      "name": "@koi/file-type",
+      "version": "0.0.0",
+    },
     "packages/lib/fs-local": {
       "name": "@koi/fs-local",
       "version": "0.0.0",
@@ -581,6 +585,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/file-type": "workspace:*",
       },
     },
     "packages/lib/tool-exec": {
@@ -633,6 +638,13 @@
         "@koi/url-safety": "workspace:*",
       },
     },
+    "packages/lib/toolsets": {
+      "name": "@koi/toolsets",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/url-safety": {
       "name": "@koi/url-safety",
       "version": "0.0.0",
@@ -676,6 +688,7 @@
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/file-type": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/governance-core": "workspace:*",
@@ -730,9 +743,11 @@
         "@koi/tools-web": "workspace:*",
         "@koi/tui": "workspace:*",
         "@koi/url-safety": "workspace:*",
+        "@koi/violation-store-sqlite": "workspace:*",
         "@koi/watch-patterns": "workspace:*",
         "@opentelemetry/api": "1.9.1",
         "@opentelemetry/exporter-trace-otlp-http": "0.214.0",
+        "@opentelemetry/resources": "2.6.1",
         "@opentelemetry/sdk-trace-base": "2.6.1",
         "@opentui/core": "0.1.96",
         "@opentui/solid": "0.1.96",
@@ -783,6 +798,7 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/file-type": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
@@ -839,8 +855,10 @@
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
+        "@koi/toolsets": "workspace:*",
         "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
+        "@koi/violation-store-sqlite": "workspace:*",
         "@koi/watch-patterns": "workspace:*",
         "zod": "4.3.6",
       },
@@ -960,6 +978,10 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-reconcile": "workspace:*",
+      },
     },
     "packages/net/mcp": {
       "name": "@koi/mcp",
@@ -1046,6 +1068,7 @@
       "name": "@koi/middleware-permissions",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/bash-ast": "workspace:*",
         "@koi/bash-classifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
@@ -1077,11 +1100,20 @@
         "oxc-parser": "0.114.0",
       },
     },
+    "packages/security/violation-store-sqlite": {
+      "name": "@koi/violation-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/ui/tui": {
       "name": "@koi/tui",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/file-type": "workspace:*",
         "@opentui/core": "0.1.96",
         "@opentui/solid": "0.1.96",
         "solid-js": "1.9.11",
@@ -1091,6 +1123,9 @@
   "trustedDependencies": [
     "esbuild",
   ],
+  "patchedDependencies": {
+    "web-tree-sitter@0.26.8": "patches/web-tree-sitter@0.26.8.patch",
+  },
   "packages": {
     "@ampproject/remapping": ["@ampproject/remapping@2.3.0", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw=="],
 
@@ -1490,6 +1525,8 @@
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 
+    "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
+
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
@@ -1624,11 +1661,15 @@
 
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
 
+    "@koi/toolsets": ["@koi/toolsets@workspace:packages/lib/toolsets"],
+
     "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
 
     "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
+
+    "@koi/violation-store-sqlite": ["@koi/violation-store-sqlite@workspace:packages/security/violation-store-sqlite"],
 
     "@koi/watch-patterns": ["@koi/watch-patterns@workspace:packages/lib/watch-patterns"],
 

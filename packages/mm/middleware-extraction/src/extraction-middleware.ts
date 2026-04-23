@@ -186,6 +186,7 @@ export function createExtractionMiddleware(config: ExtractionMiddlewareConfig): 
         await config.memory.store(candidate.content, {
           type: candidate.memoryType,
           category: candidate.category,
+          confidence: candidate.confidence,
           ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
         });
         stored = true;

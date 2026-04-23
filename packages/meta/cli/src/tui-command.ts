@@ -113,6 +113,10 @@ import {
   SIGUSR1_EXIT_CODE,
   SIGUSR1_SUPPORTED,
 } from "./tui-sigusr1.js";
+import {
+  type ManifestSupervisionHandle,
+  wireManifestSupervision,
+} from "./wire-manifest-supervision.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1061,6 +1065,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestFilesystemConfig: import("@koi/core").FileSystemConfig | undefined;
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
+  let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
   if (flags.manifest !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
@@ -1075,6 +1080,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
     manifestGovernance = manifestResult.value.governance;
+    manifestSupervision = manifestResult.value.supervision;
 
     if (manifestResult.value.filesystem !== undefined) {
       // Store the full config for async resolution before runtime assembly.
@@ -1429,6 +1435,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  // Manifest-declared supervision (#1866). Populated only when the loaded
+  // koi.yaml carries a `supervision:` block. Disposed in reverse-construction
+  // order in the teardown chain below.
+  let supervisionHandle: ManifestSupervisionHandle | undefined;
   // Declared ahead of interim teardown so a SIGUSR1 arriving during boot
   // can safely inspect it without tripping a TDZ error. Assigned below,
   // once the advisory lock has been acquired.
@@ -1522,6 +1532,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // start dying before we begin the async dispose chain.
         try {
           runtimeHandle?.shutdownBackgroundTasks();
+        } catch {}
+        try {
+          await supervisionHandle?.dispose();
         } catch {}
         try {
           if (runtimeHandle !== null) {
@@ -1858,7 +1871,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         console.warn("[koi:tui] onSpawnEvent dispatch failed — spawn UI may be stale", e);
       }
     },
-  }).then((handle) => {
+  }).then(async (handle) => {
     // If an interim SIGUSR1 teardown started while createKoiRuntime was
     // in flight (#1906 R10), the teardown couldn't dispose `handle`
     // because it wasn't assigned yet. Dispose it here directly and do
@@ -1903,6 +1916,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           ...(handle.governanceAlertThresholds !== undefined
             ? { alertThresholds: handle.governanceAlertThresholds }
             : {}),
+          ...(handle.violationStore !== undefined ? { violationStore: handle.violationStore } : {}),
           // Static capability mirror — matches the createGovernanceMiddleware's
           // describeCapabilities() output. Hardcoded here to avoid plumbing the
           // middleware instance back from runtime-factory just for one string.
@@ -1918,11 +1932,59 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         for (const alert of recent) {
           store.dispatch({ kind: "add_governance_alert", alert });
         }
+        // Seed up to 10 most-recent persisted violations for the current
+        // session so /governance's "Recent violations" panel is populated
+        // on restart / resume. Load is async (SQLite) — fire-and-forget
+        // so startup isn't blocked on history backfill.
+        void governanceBridge
+          .loadRecentViolations(10)
+          .then((violations) => {
+            // Synthesize UI-shape fields: id is per-entry counter, ts
+            // is load-time (the ViolationStore row timestamp is not
+            // exposed in the Violation shape — it would need an L0
+            // widening to surface). Order is preserved from the DB.
+            for (const v of violations) {
+              store.dispatch({
+                kind: "add_governance_violation",
+                violation: {
+                  id: `backfill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  ts: Date.now(),
+                  variable: v.rule,
+                  reason: v.message,
+                },
+              });
+            }
+          })
+          .catch((err: unknown) => {
+            console.warn("[tui-command] violation backfill failed:", err);
+          });
         // Initial snapshot push so the view has data before the first turn.
         governanceBridge.pollSnapshot();
       }
     } catch (err: unknown) {
       console.warn("[tui-command] governance bridge init failed:", err);
+    }
+    // Manifest-driven supervision wiring (#1866). When the loaded manifest
+    // declares `supervision:`, activate the subsystem here so the declared
+    // children appear in the runtime's AgentRegistry and in the /agents
+    // view. The returned handle is retained so shutdown can dispose it in
+    // reverse construction order (see the SIGINT / system:quit chain
+    // below). The helper is safe to call with `undefined` supervision —
+    // it's skipped at the call site.
+    if (manifestSupervision !== undefined) {
+      try {
+        const supHandle = await wireManifestSupervision({
+          runtime: handle.runtime,
+          supervisorManifestName: flags.manifest ?? "supervisor",
+          supervision: manifestSupervision,
+          onChange: (children) => {
+            store.dispatch({ kind: "set_supervised_children", children });
+          },
+        });
+        supervisionHandle = supHandle;
+      } catch (err: unknown) {
+        console.warn("[tui-command] supervision wiring failed:", err);
+      }
     }
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
@@ -2196,6 +2258,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       const FORCE_HARD_EXIT_MS = 15_000;
       const forceDispose = async (): Promise<void> => {
         const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
+        try {
+          await supervisionHandle?.dispose();
+        } catch {
+          // Best-effort — must not block force-quit.
+        }
         try {
           await runtimeHandle?.runtime.dispose();
         } catch (disposeErr: unknown) {
@@ -2855,6 +2922,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       if (hadLiveTasks) {
         await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
       }
+      // Dispose manifest-declared supervision before the runtime itself so
+      // the reconcile runner/process tree can observe a live registry during
+      // their own teardown.
+      try {
+        await supervisionHandle?.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] supervision dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
       // #1742 loop-2 round 10: dispose now fails closed on settle
       // timeout. Catch the throw so the rest of shutdown (approval
       // store close, process.exit) still runs. The hard-exit timer
@@ -3417,8 +3496,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
         const resolved = resolveAtReferences(text, process.cwd());
-        const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+
+        // Warn for each binary @-reference. Do NOT strip the @-token from the
+        // model prompt: keeping the original text lets the model recover via tools
+        // (fs_read, glob) since multimodal block attachment is not yet wired.
+        // Only text injections produce cleanText-based output.
+        if (resolved.binaryInjections.length > 0) {
+          for (const b of resolved.binaryInjections) {
+            store.dispatch({
+              kind: "add_info",
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. The model will see the reference and may use tools to read it.`,
+            });
+          }
+        }
+
+        // Use formatAtReferencesForModel (cleanText + injected content) only when
+        // text refs were actually resolved. Otherwise send the original text so
+        // the model sees @-references and can attempt its own resolution via tools.
+        // When BOTH text and binary refs are present, formatAtReferencesForModel
+        // uses cleanText which strips ALL @-tokens — append a note so the model
+        // knows binary refs exist and can access them via tools.
+        let modelText: string;
+        if (resolved.injections.length > 0) {
+          modelText = formatAtReferencesForModel(resolved);
+          if (resolved.binaryInjections.length > 0) {
+            const binaryRefs = resolved.binaryInjections
+              .map((b) => (b.filePath.includes(" ") ? `@"${b.filePath}"` : `@${b.filePath}`))
+              .join(", ");
+            modelText += `\n\n[Binary files referenced but not attached — use tools to access: ${binaryRefs}]`;
+          }
+        } else {
+          modelText = text;
+        }
 
         let stream: AsyncIterable<EngineEvent>;
         try {

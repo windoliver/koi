@@ -1138,6 +1138,40 @@ describe("reduce — set_view", () => {
 });
 
 // ---------------------------------------------------------------------------
+// set_supervised_children (#1866)
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_supervised_children", () => {
+  test("replaces supervisedChildren with the new snapshot", () => {
+    const state = createInitialState();
+    const children = [
+      {
+        agentId: "worker-a-1",
+        childSpecName: "worker-a",
+        parentId: "supervisor",
+        phase: "running" as const,
+      },
+    ];
+    const next = reduce(state, { kind: "set_supervised_children", children });
+    expect(next.supervisedChildren).toEqual(children);
+  });
+
+  test("same reference returns same state (reference-equality shortcut)", () => {
+    const children = [
+      {
+        agentId: "a1",
+        childSpecName: "a",
+        parentId: "p",
+        phase: "running" as const,
+      },
+    ];
+    const state = { ...createInitialState(), supervisedChildren: children };
+    const next = reduce(state, { kind: "set_supervised_children", children });
+    expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // set_modal
 // ---------------------------------------------------------------------------
 

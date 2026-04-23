@@ -13,6 +13,9 @@ import type {
   GovernanceSnapshot,
   RuleDescriptor,
   SensorReading,
+  SessionId,
+  Violation,
+  ViolationStore,
 } from "@koi/core";
 import { createAlertTracker } from "@koi/governance-core";
 import type { CapabilityFragmentLite, GovernanceAlert, TuiStore } from "@koi/tui";
@@ -47,6 +50,9 @@ export interface GovernanceBridgeConfig {
    * undefined → `DEFAULT_ALERT_THRESHOLDS`.
    */
   readonly alertThresholds?: readonly number[] | undefined;
+  /** Optional persistent store used by `loadRecentViolations`. Absence =>
+   *  `loadRecentViolations` returns []. */
+  readonly violationStore?: ViolationStore | undefined;
 }
 
 export interface GovernanceBridge {
@@ -58,6 +64,11 @@ export interface GovernanceBridge {
   readonly pollSnapshot: () => void;
   /** Load up to N most recent persisted alerts from disk. */
   readonly loadRecentAlerts: (n: number) => readonly GovernanceAlert[];
+  /** Load up to N most recent persisted violations for the current session.
+   *  Returns [] when no ViolationStore is configured. Errors are swallowed
+   *  (logged via console.warn) so a transient DB issue cannot block the
+   *  governance view. */
+  readonly loadRecentViolations: (n: number) => Promise<readonly Violation[]>;
   /** Update session id (call on session reset). Cleans up alert dedup for old session. */
   readonly setSession: (sessionId: string) => void;
   /** Reset alert dedup for current session — re-crossings will re-fire toasts. */
@@ -160,6 +171,21 @@ export function createGovernanceBridge(config: GovernanceBridgeConfig): Governan
         return slice.map((l) => JSON.parse(l) as GovernanceAlert);
       } catch (err: unknown) {
         console.warn("[governance-bridge] alert load failed:", err);
+        return [];
+      }
+    },
+
+    async loadRecentViolations(n: number): Promise<readonly Violation[]> {
+      if (config.violationStore === undefined) return [];
+      try {
+        const page = await config.violationStore.getViolations({
+          // sessionId is `string` locally; ViolationFilter expects branded SessionId.
+          sessionId: sessionId as SessionId,
+          limit: n,
+        });
+        return page.items;
+      } catch (err: unknown) {
+        console.warn("[governance-bridge] loadRecentViolations failed:", err);
         return [];
       }
     },

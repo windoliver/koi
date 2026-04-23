@@ -48,6 +48,7 @@ exports[`createInitialState initial state shape 1`] = `
   "showThinking": true,
   "siblingInfo": null,
   "slashQuery": null,
+  "supervisedChildren": [],
   "toasts": [],
   "tokenRate": null,
   "toolsExpanded": false,

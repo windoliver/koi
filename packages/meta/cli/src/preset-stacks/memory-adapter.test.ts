@@ -253,6 +253,114 @@ describe("memory-adapter E2E", () => {
     expect(recall.formatted).not.toContain("original value");
   });
 
+  test("force-update persists confidence from new input (legacy → low-confidence)", async () => {
+    // Simulate legacy extracted record: stored without confidence (undefined)
+    await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd11223344",
+        description: "feedback: heuristic — keep functions small",
+        type: "feedback",
+        content: "keep functions small",
+      },
+      { force: false },
+    );
+
+    // Re-extraction provides confidence 0.7 via force update
+    const result = await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd11223344",
+        description: "feedback: heuristic — keep functions small",
+        type: "feedback",
+        content: "keep functions small",
+        confidence: 0.7,
+      },
+      { force: true },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.action).toBe("updated");
+    if (result.value.action !== "updated") return;
+    expect(result.value.record.confidence).toBe(0.7);
+  });
+
+  test("Jaccard conflict exposes existing.confidence for promotion (exact content match path)", async () => {
+    // Store a heuristic-inferred record at confidence=0.7 with an extraction-generated name
+    await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd11223344",
+        description: "feedback: heuristic — keep functions small",
+        type: "feedback",
+        content: "keep functions small to improve readability",
+        confidence: 0.7,
+      },
+      { force: false },
+    );
+
+    // Different-named record with identical content → Jaccard dedup fires; exposes existing.confidence
+    const second = await backend.storeWithDedup(
+      {
+        name: "extracted-bbccddee22334455",
+        description: "feedback: gotcha — keep functions small",
+        type: "feedback",
+        content: "keep functions small to improve readability",
+        confidence: 1.0,
+      },
+      { force: true },
+    );
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.action).toBe("conflict");
+    if (second.value.action !== "conflict") return;
+    // existing.confidence must be exposed so caller can check and promote
+    expect(second.value.existing.confidence).toBe(0.7);
+
+    // update() promotes confidence AND migrates description to reflect new category
+    const promoted = await backend.update(second.value.existing.id, {
+      confidence: 1.0,
+      description: "feedback: gotcha — keep functions small",
+    });
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) return;
+    expect(promoted.value.confidence).toBe(1.0);
+    expect(promoted.value.description).toBe("feedback: gotcha — keep functions small");
+  });
+
+  test("confidence promotion skipped when incoming confidence is omitted", async () => {
+    // Guard: an extraction that doesn't carry confidence must NOT silently promote a
+    // low-trust record to 1.0. Missing confidence = "no change", not "full trust".
+    await backend.storeWithDedup(
+      {
+        name: "extracted-aabbccdd99887766",
+        description: "feedback: heuristic — prefer pure functions",
+        type: "feedback",
+        content: "prefer pure functions wherever possible",
+        confidence: 0.7,
+      },
+      { force: false },
+    );
+
+    // Re-extraction without confidence field — should NOT promote
+    const second = await backend.storeWithDedup(
+      {
+        name: "extracted-bbccddee88776655",
+        description: "feedback: gotcha — prefer pure functions",
+        type: "feedback",
+        content: "prefer pure functions wherever possible",
+        // confidence intentionally omitted — mixed-version or marker-free caller
+      },
+      { force: true },
+    );
+
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.action).toBe("conflict");
+    if (second.value.action !== "conflict") return;
+    // Existing confidence must still be 0.7 — no promotion happened
+    expect(second.value.existing.confidence).toBe(0.7);
+  });
+
   test("adapter search filters by keyword", async () => {
     await backend.storeWithDedup(
       { name: "alpha", description: "first", type: "user", content: "apples are red" },

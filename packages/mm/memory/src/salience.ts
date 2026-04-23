@@ -120,7 +120,8 @@ export function scoreMemories(
   const scored = memories.map((memory): ScoredMemory => {
     const decayScore = computeDecayScore(memory.record.updatedAt, timestamp, halfLifeDays);
     const typeRelevance = computeTypeRelevance(memory.record.type, config?.typeWeights);
-    const salienceScore = computeSalience(decayScore, typeRelevance, floor);
+    const confidence = memory.record.confidence ?? 1.0;
+    const salienceScore = computeSalience(decayScore, typeRelevance * confidence, floor);
     return { memory, salienceScore, decayScore, typeRelevance };
   });
 

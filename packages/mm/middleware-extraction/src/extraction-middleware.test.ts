@@ -19,12 +19,14 @@ function createMockMemory(): MemoryComponent & {
     content: string;
     category?: string | undefined;
     type?: string | undefined;
+    confidence?: number | undefined;
   }>;
 } {
   const stored: Array<{
     content: string;
     category?: string | undefined;
     type?: string | undefined;
+    confidence?: number | undefined;
   }> = [];
   return {
     stored,
@@ -32,7 +34,12 @@ function createMockMemory(): MemoryComponent & {
       return [];
     },
     async store(content: string, options?: Parameters<MemoryComponent["store"]>[1]) {
-      stored.push({ content, category: options?.category, type: options?.type });
+      stored.push({
+        content,
+        category: options?.category,
+        type: options?.type,
+        confidence: options?.confidence,
+      });
     },
   };
 }
@@ -369,6 +376,74 @@ describe("createExtractionMiddleware", () => {
       // Session A ends — should trigger LLM call (A has an output)
       await mw.onSessionEnd?.(sessA);
       expect(modelCall).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("confidence propagation (issue #1966)", () => {
+    test("regex marker confidence (1.0) flows through to store options", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () => toolResponse("[LEARNING:gotcha] Always check null"));
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(1.0);
+    });
+
+    test("heuristic confidence (0.7) flows through to store options", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () => toolResponse("avoid: using var in strict mode"));
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(0.7);
+    });
+
+    test("[LEARNING:heuristic] marker gets confidence=1.0 (explicit opt-in, not auto-inferred)", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse("[LEARNING:heuristic] prefer small focused functions"),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(1.0);
+    });
+
+    test("[LEARNING:pattern] marker gets confidence=1.0 (explicit opt-in, not auto-inferred)", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse("[LEARNING:pattern] always wrap async calls in try-catch"),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(1.0);
+    });
+
+    test("[LEARNING:correction] marker gets confidence=1.0 (human-validated)", async () => {
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse("[LEARNING:correction] use import type not import for type-only imports"),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored[0]?.confidence).toBe(1.0);
     });
   });
 
@@ -837,5 +912,188 @@ describe("createExtractionMiddleware", () => {
       expect(memory.stored).toHaveLength(1);
       expect(memory.stored[0]?.content).toBe("Use builder pattern");
     });
+  });
+
+  describe("regression fixtures — S14 Q97 and Q98 (issue #1966)", () => {
+    // Exact reproduction scenarios from the issue. These are the inputs that
+    // triggered all three bugs: wrong type, category-as-description, JSON artifact.
+
+    test("S14 Q97: marker extraction from structured spawn output — clean content and correct type", async () => {
+      // Spawn tool returns JSON where a child agent echoed the LEARNING marker
+      // inside the result field. Before the fix: type=feedback (hardcoded for all),
+      // content="Always validate input at boundaries\"}" (JSON artifact).
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse(
+          JSON.stringify({
+            result: "[LEARNING:pattern] Always validate input at boundaries",
+            status: "done",
+          }),
+        ),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(1);
+      const stored = memory.stored[0];
+      expect(stored?.content).toBe("Always validate input at boundaries");
+      expect(stored?.category).toBe("pattern");
+      expect(stored?.type).toBe("feedback");
+    });
+
+    test("S14 Q98: heuristic marker extraction from structured spawn output — clean content and correct type", async () => {
+      // Spawn tool returns JSON where a child agent echoed the LEARNING marker
+      // inside the output field. Before the fix: type=feedback (hardcoded for all),
+      // content="connection pooling improves throughput\"}" (JSON artifact).
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse(
+          JSON.stringify({
+            output: "[LEARNING:heuristic] connection pooling improves throughput",
+            status: "done",
+          }),
+        ),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(1);
+      const stored = memory.stored[0];
+      expect(stored?.content).toBe("connection pooling improves throughput");
+      expect(stored?.category).toBe("heuristic");
+      expect(stored?.type).toBe("feedback");
+    });
+
+    test("S14 Q98b: heuristic regex extraction from structured spawn output — keyword text without marker", async () => {
+      // Covers the extractHeuristics path (no [LEARNING:...] marker): a spawn tool
+      // returns JSON where the trusted `output` field contains heuristic keyword text.
+      // This ensures a regression in JSON pre-processing would also break heuristic
+      // extraction, not only marker extraction.
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const next = mock(async () =>
+        toolResponse(
+          JSON.stringify({
+            output: "learned that connection pooling improves throughput",
+            status: "done",
+          }),
+        ),
+      );
+      await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(1);
+      const stored = memory.stored[0];
+      expect(stored?.content).toBe("connection pooling improves throughput");
+      expect(stored?.category).toBe("heuristic");
+      expect(stored?.type).toBe("feedback");
+    });
+  });
+
+  describe("category mapping invariant — all 6 categories through adapter boundary (issue #1966)", () => {
+    // Single invariant: every CollectiveMemoryCategory maps to the correct MemoryType
+    // end-to-end through the full middleware pipeline (raw tool output → store call).
+    // Catches regressions where the adapter or persistCandidates re-introduces a
+    // hardcoded default (e.g. type: "feedback" for all) after mapCategoryToMemoryType runs.
+    //
+    // Explicit [LEARNING:...] markers are deliberate opt-ins and always get confidence=1.0.
+    // Heuristic regex extraction (no marker) gets confidence=0.7 (auto-inferred).
+    // Both paths map heuristic/pattern to type=feedback (weight 1.2).
+    // The category field lets downstream consumers distinguish auto-inferred from
+    // marker-authored feedback without relying on confidence alone.
+
+    const cases: ReadonlyArray<{
+      readonly marker: string;
+      readonly category: string;
+      readonly expectedType: string;
+      readonly expectedStored: boolean;
+    }> = [
+      { marker: "gotcha", category: "gotcha", expectedType: "feedback", expectedStored: true },
+      {
+        marker: "correction",
+        category: "correction",
+        expectedType: "feedback",
+        expectedStored: true,
+      },
+      {
+        marker: "heuristic",
+        category: "heuristic",
+        expectedType: "feedback",
+        expectedStored: true,
+      },
+      { marker: "pattern", category: "pattern", expectedType: "feedback", expectedStored: true },
+      { marker: "preference", category: "preference", expectedType: "user", expectedStored: false },
+      { marker: "context", category: "context", expectedType: "project", expectedStored: true },
+    ];
+
+    test("auto-extracted heuristic/pattern remain distinguishable from validated gotcha/correction via category field", async () => {
+      // type=feedback is shared across all four categories. The category field is
+      // the persisted boundary: downstream consumers (sync filters, future salience
+      // paths) can filter auto-extracted entries (heuristic/pattern) from
+      // human-validated ones (gotcha/correction) using this field.
+      const memory = createMockMemory();
+      const mw = createExtractionMiddleware({ memory });
+      await mw.onSessionStart?.(createSessionCtx());
+
+      const outputs = [
+        "[LEARNING:gotcha] null pointer crash",
+        "[LEARNING:correction] API returns 204 not 200",
+        "[LEARNING:heuristic] connection pooling improves throughput",
+        "[LEARNING:pattern] always validate at boundaries",
+      ];
+      for (const output of outputs) {
+        const next = mock(async () => toolResponse(output));
+        await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+      }
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(memory.stored).toHaveLength(4);
+      const byCategory = Object.fromEntries(memory.stored.map((s) => [s.category, s.type]));
+      // All four are feedback type
+      expect(byCategory.gotcha).toBe("feedback");
+      expect(byCategory.correction).toBe("feedback");
+      expect(byCategory.heuristic).toBe("feedback");
+      expect(byCategory.pattern).toBe("feedback");
+      // But category field distinguishes validated from auto-extracted
+      const validated = memory.stored.filter(
+        (s) => s.category === "gotcha" || s.category === "correction",
+      );
+      const autoExtracted = memory.stored.filter(
+        (s) => s.category === "heuristic" || s.category === "pattern",
+      );
+      expect(validated).toHaveLength(2);
+      expect(autoExtracted).toHaveLength(2);
+    });
+
+    for (const { marker, category, expectedType, expectedStored } of cases) {
+      test(`[LEARNING:${marker}] → type=${expectedType}, stored=${expectedStored}`, async () => {
+        const memory = createMockMemory();
+        const mw = createExtractionMiddleware({ memory });
+        await mw.onSessionStart?.(createSessionCtx());
+
+        const content = `test learning for category ${marker}`;
+        const next = mock(async () => toolResponse(`[LEARNING:${marker}] ${content}`));
+        await mw.wrapToolCall?.(createTurnCtx(), spawnToolRequest(), next);
+        await new Promise((r) => setTimeout(r, 10));
+
+        if (expectedStored) {
+          expect(memory.stored).toHaveLength(1);
+          expect(memory.stored[0]?.category).toBe(category);
+          expect(memory.stored[0]?.type).toBe(expectedType);
+          expect(memory.stored[0]?.content).toBe(content);
+        } else {
+          // preference → user type, skipped by persistCandidates (no namespace-isolated store)
+          expect(memory.stored).toHaveLength(0);
+        }
+      });
+    }
   });
 });

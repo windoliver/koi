@@ -421,4 +421,38 @@ describe("validatePermissionsConfig", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  test("rejects enableBashSpecGuard: string (fail-closed misconfiguration path)", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      enableBashSpecGuard: "true" as unknown as boolean,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("enableBashSpecGuard");
+  });
+
+  test("rejects enableBashSpecGuard: 1 (truthy non-boolean)", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      enableBashSpecGuard: 1 as unknown as boolean,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("enableBashSpecGuard");
+  });
+
+  test("accepts enableBashSpecGuard: true", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      enableBashSpecGuard: true,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts enableBashSpecGuard: false", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      enableBashSpecGuard: false,
+    });
+    expect(result.ok).toBe(true);
+  });
 });

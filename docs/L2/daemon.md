@@ -428,7 +428,7 @@ Default registry directory: `$KOI_STATE_DIR/daemon/sessions`; falls back to
 
 - Event buffer is bounded at 1000 events with FIFO eviction; `supervisor.health().metrics.eventDropCount` surfaces eviction count.
 - **Only subprocess backend ships in this package.** `in-process`, `tmux`, and `remote` backends are reserved kinds but not implemented — future peer L2 packages (e.g. `@koi/daemon-backend-tmux`).
-- **No direct integration with `SupervisionReconciler` yet.** That integration (wiring the supervisor's `start` into the reconciler's `SpawnFn`) is deferred to a follow-up issue.
+- **Subprocess integration with `SupervisionReconciler` is deferred to #1866 (3b-5c).** 3b-5a activates the reconciler for in-process children (see `docs/L2/supervision-activation.md`); 3b-5c wires a daemon-backed `SpawnChildFn` adapter.
 - **No subscriber-abandonment cleanup.** If a `watchAll` consumer abandons its iterator, the closed-over waker leaks until the next publish.
 
 ---

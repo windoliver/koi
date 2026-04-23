@@ -876,3 +876,43 @@ describe("createKoiRuntime — trustedHost enforcement", () => {
 
 // #1848: `KoiRuntimeConfig.goals` removed. TypeScript enforces this at
 // compile time; no runtime test needed.
+
+// ---------------------------------------------------------------------------
+// Task 13 / #1393: governance audit wiring — integration test
+//
+// Verifies that when both `auditSqlitePath` and `violationSqlitePath` are
+// provided, the assembled `governanceBackend` exposes non-undefined
+// `.compliance` and `.violations` sub-interfaces. This is a pure wiring
+// check — no model calls, no verdict synthesis (that is Task 14's territory).
+// ---------------------------------------------------------------------------
+
+describe("runtime-factory — governance audit wiring (#1393)", () => {
+  test("auditSqlitePath + violationSqlitePath wire compliance and violations onto governanceBackend", async () => {
+    const { tmpdir } = await import("node:os");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const dir = mkdtempSync(join(tmpdir(), "rf-gov-audit-"));
+    const auditPath = join(dir, "audit.db");
+    const violationsPath = join(dir, "violations.db");
+
+    let handle: Awaited<ReturnType<typeof createKoiRuntime>> | null = null;
+    try {
+      handle = await createKoiRuntime({
+        ...makeConfig(),
+        auditSqlitePath: auditPath,
+        violationSqlitePath: violationsPath,
+      });
+
+      // Compliance recorder is populated when auditSqlitePath is set.
+      expect(handle.governanceBackend?.compliance).toBeDefined();
+      // Violation store is populated when violationSqlitePath is set.
+      expect(handle.governanceBackend?.violations).toBeDefined();
+    } finally {
+      if (handle !== null) {
+        await handle.runtime.dispose();
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

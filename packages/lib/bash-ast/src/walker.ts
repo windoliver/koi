@@ -20,6 +20,7 @@
 
 import type { Node } from "web-tree-sitter";
 import type { Redirect, SimpleCommand, TooComplexCategory } from "./types.js";
+import { applyWrappers } from "./wrappers/registry.js";
 
 /** Walker result — flat discriminated union. `ok` carries an empty list for
  * programs with no commands (whitespace, comments, lone separators). */
@@ -125,7 +126,7 @@ function walkContainer(node: Node): WalkResult {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
     const result = walkStatement(child);
     if (result.kind === "too-complex") return result;
-    commands.push(...result.commands);
+    for (const c of result.commands) commands.push(applyWrappers(c));
   }
   return { kind: "ok", commands };
 }

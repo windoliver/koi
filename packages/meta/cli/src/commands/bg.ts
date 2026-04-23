@@ -33,7 +33,7 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
 
   switch (flags.subcommand) {
     case "ps":
-      return runPs(registry, flags.json);
+      return runPs(registry, flags.json, flags.all);
     case "logs":
       return runLogs(registry, flags.workerId, flags.follow);
     case "kill":
@@ -81,6 +81,7 @@ function formatDuration(ms: number): string {
 async function runPs(
   registry: ReturnType<typeof createFileSessionRegistry>,
   json: boolean,
+  all: boolean,
 ): Promise<ExitCode> {
   // Use describeList() so filesystem faults (EACCES, broken mount) surface
   // as an explicit failure rather than silently printing "No background
@@ -94,7 +95,18 @@ async function runPs(
     }
     return ExitCode.FAILURE;
   }
-  const records = res.value;
+  // Default view hides terminal entries older than the 24h retention window
+  // (D7). `--all` bypasses the filter so operators can still inspect stale
+  // post-mortems until the daemon's opportunistic sweep removes them.
+  const TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - TERMINAL_RETENTION_MS;
+  const records = all
+    ? res.value
+    : res.value.filter((r) => {
+        const ended = r.endedAt;
+        if (ended === undefined || !Number.isFinite(ended)) return true;
+        return ended >= cutoff;
+      });
   if (json) {
     process.stdout.write(`${JSON.stringify({ ok: true, data: records })}\n`);
     return ExitCode.OK;
