@@ -186,7 +186,7 @@ export function createAuthNotificationHandler(
       progressState.delete(n.params.provider);
       bumpEpoch(n.params.provider);
       const { provider } = n.params;
-      void Promise.resolve(oauthChannel.onAuthComplete({ provider })).catch(() => {
+      void Promise.resolve(oauthChannel.onAuthComplete({ provider })).catch((_err: unknown) => {
         // Completion notice — decorative; operation will succeed regardless
       });
     }
