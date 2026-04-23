@@ -285,12 +285,7 @@ Cairn is plugin‑first end to end. "Plugin" means exactly one thing: a crate or
 - **Registration is explicit, not magic.** Plugins call `cairn_core::register_plugin!(<trait>, <impl>, <name>)` in their entry point. The host assembles the active set from config at startup. No classpath scanning, no auto‑discovery surprises.
 - **Config selects the active implementation.** `.cairn/config.yaml` → `store.kind: nexus | qdrant | opensearch | custom:<name>`; `llm.provider: openai-compatible | ollama | bedrock | custom:<name>`; same pattern for every contract.
 - **Contracts are versioned.** Each trait declares a `CONTRACT_VERSION`. Plugins declare the range they support. Startup fails closed if versions diverge — never a silent run with a mismatched contract.
-- **Capability tiers are mandatory, not advisory.** Each contract declares three tiers — `core` / `scope` / `lifecycle`. A plugin *must* implement `core` to load; `scope` is required to serve any non‑`private` visibility tier; `lifecycle` (versioning + snapshots) is required to participate in `PromotionWorkflow` and `EvolutionWorkflow`. Missing `scope` → Cairn refuses reads above `private` and logs the denial. Missing `lifecycle` → promotion and evolution are disabled for that deployment. Capabilities fail closed, never silently.
-- **Capability contracts for `MemoryStore`** (examples):
-  - `core`: typed CRUD, BM25 FTS, upsert, atomic confidence counters
-  - `scope`: path‑prefix ACL, visibility filtering, per‑user salt, forget‑me
-  - `lifecycle`: version history, point‑in‑time snapshot, undo, cross‑version diff
-- **Non‑Nexus adapters must pass the same conformance suite.** `cairn plugins verify` runs the per‑contract test pack against whichever adapter is active; a Qdrant / OpenSearch / Postgres / custom store doesn't advertise `scope` or `lifecycle` until the pack passes. No "plugin parity" claim is taken on faith.
+- **Capability declaration.** Each plugin publishes a capability manifest (supports streaming? multi‑vault? async? transactions?). Cairn's pipeline queries capabilities before dispatching — features gracefully degrade (e.g., if the store doesn't support graph edges, `wiki/entities/` still works but backlinks fall back to text search).
 - **Plugins can compose.** A `MemoryStore` plugin may wrap another — e.g., `cairn-store-caching` wraps any inner store with an LRU cache. Same pattern for middleware over any contract.
 
 **What this buys:**
@@ -373,7 +368,7 @@ Agent ──interactions──► [Capture] ──raw events──► [Extract] 
 | **Tool‑squash** | compact verbose tool outputs before they become memories: dedup repeated lines, truncate with `[…skipped N lines…]`, strip ANSI, extract structured fields when the tool declares a schema | `squash` |
 | **Extract** | LLM‑backed distillation of experiences, facts, preferences, skills — OR zero‑LLM regex fallback | `extract` |
 | **Filter (Memorize?)** | decide `yes` (proceed) or `no` (discard). Discard reasons are first‑class and logged: `volatile`, `tool_lookup`, `competing_source`, `low_salience`, `pii_blocked`, `policy_blocked`, `duplicate`. Also handles PII redaction (Presidio) and prompt‑injection fencing before the yes branch | `shouldMemorize` + `redact` + `fence` |
-| **Classify & Scope** | kind (19) × class (4) × visibility (6) × scope → keyspace; emits `ADD / UPDATE / DELETE / NOOP` decision | `classifyAndScope` |
+| **Classify & Scope** | kind (17) × class (4) × visibility (6) × scope → keyspace; emits `ADD / UPDATE / DELETE / NOOP` decision | `classifyAndScope` |
 | **Memory Store upsert** | persist with provenance; write index + cache entries | `MemoryStore.upsert` (contract) |
 
 Capture → Memory Store is **always on‑path** and bounded — p95 < 50 ms including hot‑memory re‑assembly on high‑salience writes.
@@ -413,19 +408,6 @@ Every write path run produces a **FlushPlan** before any bytes hit the `MemorySt
 | `human_review` | Plan written to `.cairn/flush/<ts>.plan.json` + human diff; apply waits for `cairn flush apply <id>` |
 
 Benefits: plans are idempotent (re‑apply = no‑op), reviewable, replayable for eval, and the primary audit artifact for *every* memory mutation. Same pattern as OpenClaw's flush‑plan.
-
-### 5.6 Write‑Ahead Operations + Crash‑Safe Apply
-
-Cairn's write path crosses a process boundary (Rust core → Nexus Python sidecar) and fans into three stores (filesystem, FTS index, job queue). An apply that dies mid‑flight must **not** leave those three out of sync. Cairn uses a two‑phase protocol with a write‑ahead log:
-
-1. **Acquire.** Apply generates a monotonic `operation_id` (ULID). Writes a WAL entry to `.cairn/wal/<op>.json` containing the full `FlushPlan` + target stores + expected post‑state hash. WAL entry is `fsync`'d before any side effect.
-2. **Fan‑out.** Each target store receives the operation with the same `operation_id`. Stores record "prepared" status; they must be idempotent on replay of the same `operation_id`.
-3. **Commit / Abort.** Once every store returns success, the WAL entry is marked `committed` and removed. Any store returning failure triggers abort — all stores receive a compensating operation keyed by `operation_id`.
-4. **Recovery on boot.** Startup scans `.cairn/wal/` for uncommitted entries. Each is re‑applied (not re‑planned) against each target store; stores recognize the `operation_id` and either complete the apply or confirm it already landed. Recovery is bounded, idempotent, and blocks non‑WAL writes until drained.
-
-**Result:** a sidecar crash, host kill, or network partition cannot leave markdown + FTS + job state divergent. The WAL is small (plans, not bytes) and pruned on successful commit.
-
-**Sidecar supervision.** `cairn-nexus-supervisor` treats Nexus as a managed child: start → handshake (confirm contract version + capability manifest) → health‑check loop → restart on crash with exponential backoff → replay any uncommitted WAL entries before serving traffic. A sidecar that fails handshake three times exits with a machine‑readable error; the host does *not* start in degraded mode silently.
 
 ---
 
@@ -483,16 +465,6 @@ Confidence is a single scalar; **Evidence** is the multi‑factor vector that dr
 
   Promotion, expiration, and LightSleep/REMSleep/DeepDream scheduling all read the evidence vector, not just confidence. Same pattern as OpenClaw's deep‑dreaming gates.
 
-- **Retrievability ≠ correctness.** The four evidence factors above measure *usefulness to the agent*, not *truth*. A frequently‑wrong memory can self‑reinforce ("I keep retrieving it, so it must be right"). Cairn guards against that by requiring **independent truth signals** on every cross‑tier promotion, never retrieval popularity alone. Three signals, all required for `private → team` and above:
-
-  | Truth signal | How it's computed |
-  |--------------|-------------------|
-  | **Source authority** | derived from `provenance.origin` — a `fact` sourced from an authoritative external document (RFC, merged CL, published doc) outranks one extracted from a transient sensor frame; scoring is deterministic per source type |
-  | **Contradiction check** | `ConflictDAG` scan — any open contradiction against the candidate blocks promotion; the candidate must either reconcile or declare itself the new authority with justification |
-  | **External validation** | at least one passing eval item in the golden‑query set that exercises this record; for `strategy_*`, a passing canary run on a held‑out adversarial dataset (§15) |
-
-  Promotion to `team` requires all three. Promotion to `org` / `public` additionally requires human review (§10).
-
 ### 6.5 Provenance (mandatory on every record)
 
 `{source_sensor, created_at, llm_id_if_any, originating_agent_id, source_hash, consent_ref}` — always present. Never optional.
@@ -507,9 +479,7 @@ Not all memory is text. Cairn's `ingest` verb already accepts non‑text payload
 - **Record stores the caption, not the bytes.** A `sensor_observation` record for a video clip stores: timecode range, auto‑caption, extracted entities, scene summary, and a URI reference to the raw clip in `sources/`. Retrieval matches on the text surface; playback opens the raw clip.
 - **Temporal index.** Multi‑modal records share a `time_range: {start, end}` field; a dedicated `TemporalIndex` plugin (implements the `MemoryStore` cross‑cutting trait) answers queries like *"what happened between 14:00 and 16:00 on camera 4?"* across any modality.
 - **Cross‑modal correlation.** A `Consolidator` variant joins records with overlapping `time_range` + shared `entities` into a single composite record under `wiki/synthesis/`. Use case: a transcript segment + the screen capture at the same timestamp + the commit that followed → one synthesis page.
-- **Embedding model per modality.** `LLMProvider` is extended with a `multimodal_embed(blob, kind) → vector` capability; providers declare which modalities they support. Cairn routes by modality.
-- **Degradation is never silent.** Unsupported modality → caption‑only indexing, with **explicit `modality_degraded: ["video", "audio"]` metadata** on every query response that would have involved the missing modality. Harnesses surface this the same way they surface `semantic_degraded=true` — the agent always knows when it's reasoning over an incomplete result set.
-- **Gated cross‑modal synthesis.** The `Consolidator` that joins multi‑modal records into `wiki/synthesis/` **refuses to run** when required modality embeddings are unavailable — rather than producing a cross‑modal synthesis that silently omits the missing axis. Operator opts in explicitly via `consolidation.allow_partial_multimodal: true` to permit text‑only synthesis when embeddings are missing.
+- **Embedding model per modality.** `LLMProvider` is extended with a `multimodal_embed(blob, kind) → vector` capability; providers declare which modalities they support. Cairn routes by modality; unsupported modalities fall back to caption‑only indexing.
 - **Cost control.** Dense video frame embedding is disabled by default; enable per source (`sources/<id>/config.yaml: dense_embed: true`) so a specific camera / channel can opt in without blanket cost.
 
 ## 7. Hot Memory — the Always‑Loaded Prefix
@@ -675,13 +645,6 @@ When a single `agent_id` serves many users, each user's private memory stays pri
 
 Each tier is a FlushPlan producer (§5.5) — the plan is serialized before apply, so a deep‑dream run is reviewable and replayable.
 
-**Ordering + single‑writer per entity.** Light, REM, Deep, and on‑write `ConsolidationWorkflow` can produce overlapping plans targeting the same records. Cairn serializes with an explicit precedence:
-
-1. **Single‑writer lock per `(scope, entity_id)`** — only one workflow applies to a given entity at a time. Locks are leased in `MemoryStore` with timeout; a crashed holder's lease expires and another workflow retries.
-2. **Optimistic version checks** — every `FlushPlan` carries the expected `version` for each record it touches; apply fails if the store's version has advanced (another writer won). The losing workflow recomputes against the new state.
-3. **Deterministic precedence when planning overlaps**: `ConsolidationWorkflow` (on‑write, small) > `LightSleep` (hygiene) > `REMSleep` (consolidation) > `DeepDream` (promotion). Higher‑precedence plans apply first; lower‑precedence plans re‑plan against committed state.
-4. **Promotions never oscillate.** A record that was promoted `episodic → procedural` is protected from immediate demotion for one full `DeepDream` cycle; demotion requires fresh contradicting evidence, not just a stale signal.
-
 ---
 
 ## 11. Self‑Evolution — the Evolution Workflow
@@ -728,10 +691,7 @@ Memory without evolution stagnates. `EvolutionWorkflow` takes existing artifacts
 3. **Semantic preservation** — the variant must score ≥ baseline on a similarity check against the original artifact's declared purpose (prevents drift).
 4. **Caching compatibility** — no mid‑turn mutations; variants only swap in at `SessionStart` boundaries.
 5. **Confidence non‑regression** — the evolved artifact's measured outcome confidence must not decrease across the eval dataset.
-6. **Held‑out adversarial dataset** — separate from §11.4 eval sources; curated by humans, never generated by the agent under eval; variants failing the held‑out set are rejected even if they pass all synthetic evals. Prevents self‑confirming overfitting to model‑generated scenarios.
-7. **Canary rollout with rollback** — variants reaching `autonomous` promotion first serve N% of traffic (configurable, default 10%) for a configurable window (default 24 h); regression beyond threshold on the rollout metrics triggers automatic rollback to the prior artifact.
-8. **Shared‑tier gate** — any evolved artifact crossing into `team`, `org`, or `public` tier — or any mutation to prompts / tool descriptions that affect shared tiers — **always** goes through human review, regardless of the `autonomous` flag.
-9. **Review gate** — `.cairn/config.yaml` declares `autonomous | human_review`; `human_review` writes a PR‑style diff to `.cairn/evolution/<artifact>.diff` and waits for approval.
+6. **Review gate** — `.cairn/config.yaml` declares `autonomous | human_review`; `human_review` writes a PR‑style diff to `.cairn/evolution/<artifact>.diff` and waits for approval.
 
 ### 11.4 Eval dataset sources
 
@@ -903,15 +863,6 @@ cairn snapshot                   weekly archive into .cairn/snapshots/YYYY-MM-DD
 
 The Rust core is **a single binary** shipped with both the CLI and the GUI; TypeScript packages on the harness side talk to it via MCP. A harness never links against the Rust core — it always crosses the MCP boundary.
 
-**Single IDL source of truth.** The seven MCP verbs, the `MemoryRecord` schema, the plugin contract traits, the `FlushPlan`, the `ConsentReceipt`, and the `WAL` entry format are defined in **one** protobuf + JSON‑schema bundle under `schemas/`. Rust, TypeScript, and any other language binding are **codegen** from that bundle — never hand‑authored. CI fails on any drift.
-
-**Wire‑compat tests in CI.** For every PR:
-- Schema diffs are checked for backwards compatibility (adding fields is fine; removing or re‑typing fails the gate).
-- Rust core ↔ TS shell round‑trips every message type with property‑based tests.
-- Rust core ↔ Rust Temporal worker and Rust core ↔ TS Temporal worker both run the same worker contract test pack.
-
-**One production worker default.** The Rust Temporal worker (`temporalio-sdk`) is the *reference* implementation — production tiers are expected to run it. The TS Temporal worker is a parity option while the Rust SDK is prerelease; it must pass the same contract tests. Users don't operate both simultaneously. `.cairn/config.yaml → workflows.worker = rust | typescript` picks one at deploy time.
-
 ### 13.6 Non‑goals for UI
 
 - Not an Obsidian clone; not a Notion clone.
@@ -926,22 +877,7 @@ The Rust core is **a single binary** shipped with both the CLI and the GUI; Type
 - **Per‑sensor opt‑in.** Screen, clipboard, web clip, terminal — each requires explicit enable with a consent prompt.
 - **Pre‑persist redaction.** PII detection and masking before a record hits disk; secrets never reach the vault.
 - **Per‑user salt.** Pseudonymized keys; forget‑me is a hash‑set drop, not a scan.
-- **Append‑only `consent.log`** per vault — every share / promote / propagate writes a line. Never edited. Never deleted. **Local‑only** by design — the log stays where the action happened.
-- **Portable Consent Receipts travel with the record.** Because `consent.log` is local, cross‑node propagation carries a self‑contained proof artifact on the record envelope itself. A `ConsentReceipt` is a signed object attached to every non‑`private` record:
-
-  | Field | Contents |
-  |-------|----------|
-  | `subject` | `{userId, recordId, contentHash}` — binds the receipt to exact bytes |
-  | `tier_transition` | e.g. `private→team`, `team→org` |
-  | `policy_version` | hash of the `PropagationPolicy` in force at grant time |
-  | `actor` | the user who granted (public key fingerprint) |
-  | `granted_at` | timestamp (ISO 8601 UTC) |
-  | `expires_at` | optional; matches `share_link` grant expiry |
-  | `signature` | Ed25519 signature over all fields, by the actor's key |
-
-  Receipts are **verified at read time** on every non‑private tier — a receiving node refuses to serve a record whose receipt fails verification (wrong signature, expired, policy drift). Receipts replicate as part of the record; consent provenance is portable even though the local audit log is not.
-
-- **Revocation** — an Ed25519‑signed `ConsentRevocation` object (same subject, later timestamp) lands in the replicated stream; subsequent reads fail closed within one propagation cycle.
+- **Append‑only `consent.log`.** Every share / promote / propagate writes a line. Never edited. Never deleted.
 - **Exportable.** The vault *is* the export; `cairn export` is a `tar` of markdown.
 - **Deny by default.** On any policy or ReBAC check failure — deny.
 - **Propagation requires user assent.** Agents can *request* promotion; only users *grant* it.
