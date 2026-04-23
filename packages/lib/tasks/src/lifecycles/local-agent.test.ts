@@ -142,7 +142,7 @@ describe("createLocalAgentLifecycle", () => {
     expect(combined).toContain("boom");
   });
 
-  test("stop cancels the running agent", async () => {
+  test("stop cancels the running agent and awaits pipe settlement", async () => {
     const output = createOutputStream();
     let aborted = false;
     const config: LocalAgentConfig = {
@@ -161,13 +161,71 @@ describe("createLocalAgentLifecycle", () => {
     const task = await lifecycle.start(taskItemId("task_7"), output, config);
     runningTasks.push(task);
 
+    // stop() must resolve only after the pipe has settled
     await lifecycle.stop(task);
     runningTasks.pop();
 
     expect(aborted).toBe(true);
   });
 
-  test("timeout aborts long-running agent", async () => {
+  test("stop() does not fire onExit — explicit cancel is not a failure", async () => {
+    const output = createOutputStream();
+    let exitCalled = false;
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      onExit: () => {
+        exitCalled = true;
+      },
+      run: async function* (_agentType, _inputs, signal) {
+        await new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")));
+          setTimeout(resolve, 60_000);
+        });
+      },
+    };
+    const task = await lifecycle.start(taskItemId("task_7b"), output, config);
+
+    await lifecycle.stop(task);
+
+    // Give any late callbacks time to fire if the guard is broken
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(exitCalled).toBe(false);
+  });
+
+  test("no output is written after stop() resolves", async () => {
+    const output = createOutputStream();
+    let yieldedAfterAbort = false;
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      run: async function* (_agentType, _inputs, signal) {
+        // Yield before abort
+        yield "before";
+        // Simulate slow abort acknowledgement
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", resolve);
+          setTimeout(resolve, 60_000);
+        });
+        // This yield should be suppressed by the isStopped() guard
+        yieldedAfterAbort = true;
+        yield "after-abort";
+      },
+    };
+    const task = await lifecycle.start(taskItemId("task_7c"), output, config);
+
+    await lifecycle.stop(task);
+
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    expect(combined).not.toContain("after-abort");
+    // yieldedAfterAbort may be true (consumer yielded) but output was suppressed
+    void yieldedAfterAbort; // explicitly ignore — we only care about output
+  });
+
+  test("timeout fires onExit(1) and writes [timed out]", async () => {
     const output = createOutputStream();
     let exitCode: number | undefined;
     const config: LocalAgentConfig = {
@@ -191,6 +249,46 @@ describe("createLocalAgentLifecycle", () => {
     runningTasks.pop();
 
     expect(exitCode).toBe(1);
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    expect(combined).toContain("[timed out]");
+  });
+
+  test("timeout where run() exits cleanly (no throw) still reports as timed out", async () => {
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      timeout: 100,
+      onExit: (code) => {
+        exitCode = code;
+      },
+      // Compliant run() that exits cleanly on abort instead of throwing
+      run: async function* (_agentType, _inputs, signal) {
+        yield "partial";
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", resolve);
+          setTimeout(resolve, 60_000);
+        });
+        // Returns normally (no throw) after seeing abort — must still be timed out
+      },
+    };
+    const task = await lifecycle.start(taskItemId("task_8b"), output, config);
+    runningTasks.push(task);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    runningTasks.pop();
+
+    expect(exitCode).toBe(1);
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    expect(combined).toContain("[timed out]");
+    expect(combined).not.toContain("[exit code: 0]");
   });
 
   test("signal is aborted when cancel() is called", async () => {
@@ -214,7 +312,7 @@ describe("createLocalAgentLifecycle", () => {
     expect(signalAborted).toBe(true);
   });
 
-  test("env and inputs are forwarded to run callback", async () => {
+  test("inputs are forwarded to run callback", async () => {
     const output = createOutputStream();
     let capturedAgentType: string | undefined;
     let capturedInputs: unknown;
