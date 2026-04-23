@@ -788,7 +788,7 @@ describe("text-only stream", () => {
 
 describe("createStreamParser — supportsToolStreaming: false (buffered mode)", () => {
   function makeAcc(): AccumulatedResponse {
-    return createEmptyAccumulator();
+    return createEmptyAccumulator("test-model");
   }
 
   function makeToolChunk(
@@ -798,13 +798,24 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     args: string,
     finishReason: string | null = null,
   ): ChatCompletionChunk {
+    const functionObj: { arguments: string; name?: string } = { arguments: args };
+    if (name !== undefined) {
+      functionObj.name = name;
+    }
+    const toolCall: { index: number; id?: string; function: typeof functionObj } = {
+      index: idx,
+      function: functionObj,
+    };
+    if (id !== undefined) {
+      toolCall.id = id;
+    }
     return {
       id: "chunk-1",
       choices: [
         {
           index: 0,
           delta: {
-            tool_calls: [{ index: idx, id, function: { name, arguments: args } }],
+            tool_calls: [toolCall],
           },
           finish_reason: finishReason,
         },

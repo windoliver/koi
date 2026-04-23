@@ -767,10 +767,6 @@ describe("buildRequestBody — thinkingDisplay", () => {
 
   const baseRequest: ModelRequest = {
     messages: [],
-    systemPrompt: undefined,
-    model: undefined,
-    maxTokens: undefined,
-    temperature: undefined,
   };
 
   test('thinkingDisplay "full" emits reasoning: { effort: "medium" }', () => {
