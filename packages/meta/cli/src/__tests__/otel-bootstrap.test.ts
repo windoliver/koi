@@ -134,6 +134,14 @@ describe("buildResource", () => {
     const resource = buildResource("headless");
     expect(resource.attributes["service.name"]).toBe("koi");
   });
+
+  test("whitespace-only KOI_VERSION is ignored — service.version omitted", () => {
+    // CI template vars that resolve to spaces (e.g. "   ") must not produce a
+    // blank service.version bucket — omit it rather than restore a bad value.
+    process.env.KOI_VERSION = "   ";
+    const resource = buildResource("headless");
+    expect(resource.attributes["service.version"]).toBeUndefined();
+  });
 });
 
 describe("parseOtelResourceAttributes", () => {

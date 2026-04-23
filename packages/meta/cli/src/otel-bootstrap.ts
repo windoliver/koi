@@ -56,7 +56,10 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   // Only emit service.version when KOI_VERSION is explicitly set by the build.
   // Defaulting to a fake "dev" string collapses all unversioned builds into one
   // bucket and makes rollout/rollback triage by version misleading.
-  const koiVersion = process.env.KOI_VERSION;
+  // Trim KOI_VERSION before storing so whitespace-only build injections (e.g.
+  // from CI template vars that resolve to spaces) don't pass the length guard
+  // and then get restored from koiSnapshot in the guard loop below.
+  const koiVersion = process.env.KOI_VERSION?.trim();
   if (koiVersion !== undefined && koiVersion.length > 0) {
     attrs["service.version"] = koiVersion;
   }
