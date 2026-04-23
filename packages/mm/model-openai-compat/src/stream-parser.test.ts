@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ModelChunk } from "@koi/core";
+import type { AccumulatedResponse } from "./response-mapper.js";
 import { createEmptyAccumulator } from "./response-mapper.js";
 import { createStreamParser, parseSSELines, sanitizeUnicode } from "./stream-parser.js";
 import type { ChatCompletionChunk } from "./types.js";
@@ -778,5 +779,255 @@ describe("text-only stream", () => {
     expect(finalAcc.textContent).toBe("Hello world");
     expect(finalAcc.responseId).toBe("gen-1");
     expect(finalAcc.stopReason).toBe("stop");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createStreamParser — supportsToolStreaming: false (buffered mode)
+// ---------------------------------------------------------------------------
+
+describe("createStreamParser — supportsToolStreaming: false (buffered mode)", () => {
+  function makeAcc(): AccumulatedResponse {
+    return createEmptyAccumulator("test-model");
+  }
+
+  function makeToolChunk(
+    idx: number,
+    id: string | undefined,
+    name: string | undefined,
+    args: string,
+    finishReason: string | null = null,
+  ): ChatCompletionChunk {
+    const functionObj: { arguments: string; name?: string } = { arguments: args };
+    if (name !== undefined) {
+      functionObj.name = name;
+    }
+    const toolCall: { index: number; id?: string; function: typeof functionObj } = {
+      index: idx,
+      function: functionObj,
+    };
+    if (id !== undefined) {
+      toolCall.id = id;
+    }
+    return {
+      id: "chunk-1",
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [toolCall],
+          },
+          finish_reason: finishReason,
+        },
+      ],
+    };
+  }
+
+  test("no tool chunks emitted during feed; full sequence emitted at finish", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    const duringFeed = [
+      ...parser.feed(makeToolChunk(0, "call_abc", "my_tool", "")),
+      ...parser.feed(makeToolChunk(0, undefined, undefined, '{"x":1}')),
+      ...parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls")),
+    ];
+
+    const toolKinds = new Set(["tool_call_start", "tool_call_delta", "tool_call_end"]);
+    expect(duringFeed.filter((c) => toolKinds.has(c.kind))).toHaveLength(0);
+
+    const atFinish = parser.finish();
+    expect(atFinish.filter((c) => c.kind === "tool_call_start")).toHaveLength(1);
+    expect(atFinish.filter((c) => c.kind === "tool_call_end")).toHaveLength(1);
+    const deltas = atFinish.filter((c) => c.kind === "tool_call_delta");
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]).toMatchObject({ kind: "tool_call_delta", delta: '{"x":1}' });
+  });
+
+  test("index reuse with new id — both calls preserved at finish", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // First call at index 0
+    parser.feed(makeToolChunk(0, "call_first", "tool_a", '{"a":1}'));
+    parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls"));
+    // Second call reusing index 0 with a new id
+    parser.feed(makeToolChunk(0, "call_second", "tool_b", '{"b":2}'));
+    parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls"));
+
+    const chunks = parser.finish();
+    const starts = chunks.filter((c) => c.kind === "tool_call_start");
+    expect(starts).toHaveLength(2);
+    expect(starts[0]).toMatchObject({ kind: "tool_call_start", toolName: "tool_a" });
+    expect(starts[1]).toMatchObject({ kind: "tool_call_start", toolName: "tool_b" });
+    expect(chunks.filter((c) => c.kind === "tool_call_end")).toHaveLength(2);
+  });
+
+  test("finish delta contains full accumulated args from all mid-stream chunks", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    parser.feed(makeToolChunk(0, "call_1", "tool_a", ""));
+    parser.feed(makeToolChunk(0, undefined, undefined, '{"a":'));
+    parser.feed(makeToolChunk(0, undefined, undefined, '"hello"'));
+    parser.feed(makeToolChunk(0, undefined, undefined, "}", "tool_calls"));
+
+    const chunks = parser.finish();
+    const delta = chunks.find((c) => c.kind === "tool_call_delta");
+    expect(delta).toMatchObject({ kind: "tool_call_delta", delta: '{"a":"hello"}' });
+  });
+
+  test("accumulator has parsed tool call after finish", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    parser.feed(makeToolChunk(0, "call_2", "add", ""));
+    parser.feed(makeToolChunk(0, undefined, undefined, '{"a":1,"b":2}', "tool_calls"));
+    parser.finish();
+
+    const acc = parser.getAccumulator();
+    expect(acc.richContent).toHaveLength(1);
+    expect(acc.richContent[0]).toMatchObject({
+      kind: "tool_call",
+      name: "add",
+      arguments: { a: 1, b: 2 },
+    });
+  });
+
+  test("default (no options) still emits deltas progressively during feed", () => {
+    const parser = createStreamParser(makeAcc());
+
+    const feedChunks = [
+      ...parser.feed(makeToolChunk(0, "call_3", "my_fn", "")),
+      ...parser.feed(makeToolChunk(0, undefined, undefined, '{"z":9}', "tool_calls")),
+    ];
+
+    const starts = feedChunks.filter((c) => c.kind === "tool_call_start");
+    const deltas = feedChunks.filter((c) => c.kind === "tool_call_delta");
+    expect(starts).toHaveLength(1);
+    expect(deltas).toHaveLength(1);
+  });
+
+  test("empty args buffer — finish emits start+end, no delta", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    parser.feed(makeToolChunk(0, "call_4", "noop", ""));
+    parser.feed(makeToolChunk(0, undefined, undefined, "", "tool_calls"));
+
+    const chunks = parser.finish();
+    expect(chunks.filter((c) => c.kind === "tool_call_start")).toHaveLength(1);
+    expect(chunks.filter((c) => c.kind === "tool_call_delta")).toHaveLength(0);
+    expect(chunks.filter((c) => c.kind === "tool_call_end")).toHaveLength(1);
+  });
+
+  test("text → tool → text: richContent preserves arrival order in buffered mode", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // Pre-tool text
+    parser.feed({
+      id: "c1",
+      choices: [{ index: 0, delta: { content: "before" }, finish_reason: null }],
+    });
+    // Tool call
+    parser.feed(makeToolChunk(0, "call_1", "my_fn", '{"x":1}'));
+    // Post-tool text (arrives after tool call delta)
+    parser.feed({
+      id: "c2",
+      choices: [{ index: 0, delta: { content: "after" }, finish_reason: "stop" }],
+    });
+
+    parser.finish();
+    const acc = parser.getAccumulator();
+    expect(acc.richContent).toHaveLength(3);
+    expect(acc.richContent[0]).toMatchObject({ kind: "text", text: "before" });
+    expect(acc.richContent[1]).toMatchObject({ kind: "tool_call", name: "my_fn" });
+    expect(acc.richContent[2]).toMatchObject({ kind: "text", text: "after" });
+  });
+
+  test("hasSeenToolCallDelta is false before any feed, true after first tool_calls delta", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+    expect(parser.hasSeenToolCallDelta()).toBe(false);
+
+    parser.feed(makeToolChunk(0, "call_1", "my_fn", ""));
+    expect(parser.hasSeenToolCallDelta()).toBe(true);
+  });
+
+  test("hasSeenToolCallDelta is false in progressive mode (tool events emitted, not buffered)", () => {
+    const parser = createStreamParser(makeAcc()); // default: supportsToolStreaming = true
+    parser.feed(makeToolChunk(0, "call_1", "my_fn", ""));
+    // Progressive mode does not set the flag — only buffered mode does
+    expect(parser.hasSeenToolCallDelta()).toBe(false);
+  });
+
+  test("tool A → text → tool B: richContent preserves interleaved ordering", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // Tool A
+    parser.feed(makeToolChunk(0, "call_a", "tool_a", '{"a":1}'));
+    // Text between the two tool calls
+    parser.feed({
+      id: "c1",
+      choices: [{ index: 0, delta: { content: "between" }, finish_reason: null }],
+    });
+    // Tool B (new id on same index — index reuse)
+    parser.feed(makeToolChunk(0, "call_b", "tool_b", '{"b":2}'));
+
+    parser.finish();
+    const acc = parser.getAccumulator();
+    expect(acc.richContent).toHaveLength(3);
+    expect(acc.richContent[0]).toMatchObject({ kind: "tool_call", name: "tool_a" });
+    expect(acc.richContent[1]).toMatchObject({ kind: "text", text: "between" });
+    expect(acc.richContent[2]).toMatchObject({ kind: "tool_call", name: "tool_b" });
+  });
+
+  test("pre-tool text streams live; post-tool text is suppressed until finish; richContent order preserved", () => {
+    // In buffered mode, text_delta before any tool_calls delta streams live (no stall).
+    // After the first tool_calls delta, subsequent text_delta is suppressed during feed
+    // to preserve event ordering: tool_call_start/end must precede the text that follows.
+    // richContent always reflects correct arrival order.
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // Pre-tool text — arrives live during feed
+    const preFeedChunks = parser.feed({
+      id: "c1",
+      choices: [{ index: 0, delta: { content: "pre" }, finish_reason: null }],
+    });
+    expect(preFeedChunks.some((c) => c.kind === "text_delta")).toBe(true);
+
+    // Tool call buffered — no live tool events
+    parser.feed(makeToolChunk(0, "call_1", "fn", '{"x":1}'));
+
+    // Post-tool text — suppressed during feed to preserve tool-then-text ordering
+    const postFeedChunks = parser.feed({
+      id: "c2",
+      choices: [{ index: 0, delta: { content: "post" }, finish_reason: "stop" }],
+    });
+    expect(postFeedChunks.some((c) => c.kind === "text_delta")).toBe(false);
+
+    // At finish: tool events and post-tool text_delta are emitted in order
+    const finishChunks = parser.finish();
+    const finishKinds = finishChunks.map((c) => c.kind);
+    expect(finishKinds).toContain("tool_call_start");
+    expect(finishKinds).toContain("tool_call_end");
+    // Post-tool text_delta must follow tool_call_end
+    const endIdx = finishKinds.lastIndexOf("tool_call_end");
+    const textIdx = finishKinds.indexOf("text_delta");
+    expect(textIdx).toBeGreaterThan(endIdx);
+
+    // richContent: pre-tool text, tool_call, post-tool text — correct arrival order
+    const acc = parser.getAccumulator();
+    expect(acc.richContent).toHaveLength(3);
+    expect(acc.richContent[0]).toMatchObject({ kind: "text", text: "pre" });
+    expect(acc.richContent[1]).toMatchObject({ kind: "tool_call", name: "fn" });
+    expect(acc.richContent[2]).toMatchObject({ kind: "text", text: "post" });
+  });
+
+  test("name delta overwrites partial name on subsequent chunk", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // First chunk: partial name "to"
+    parser.feed(makeToolChunk(0, "call_1", "to", ""));
+    // Second chunk: full name "tool_fn" (provider sends corrective delta)
+    parser.feed(makeToolChunk(0, undefined, "tool_fn", '{"x":1}'));
+
+    const chunks = parser.finish();
+    const start = chunks.find((c) => c.kind === "tool_call_start");
+    expect(start).toMatchObject({ kind: "tool_call_start", toolName: "tool_fn" });
   });
 });

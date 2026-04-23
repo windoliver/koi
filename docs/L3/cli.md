@@ -204,7 +204,10 @@ yielding (16ms, matching OpenTUI's frame cadence). Text/thinking deltas bypass t
 directly to `store.streamDelta()` (O(1) `produce()`-based path setter), while lifecycle events
 (`turn_start`/`turn_end`/`done`) are flushed in isolation. Burst detection ensures at least one
 mid-stream paint per HTTP chunk. On OpenRouter, `reasoning: { effort }` is enabled so models
-that support extended thinking return reasoning tokens rendered as a ThinkingBlock (toggleable
+that support extended thinking return reasoning tokens rendered as a ThinkingBlock. `thinkingDisplay`
+compat flag controls the wire shape: `"full"` (default), `"summarized"` (Anthropic summary
+via OpenRouter), or `"hidden"` (suppress via `reasoning: { exclude: true }` when the provider
+supports `supportsReasoningExclude`). A ThinkingBlockBlock (toggleable
 via `/thinking`).
 
 **Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
@@ -448,7 +451,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/engine` | L1 | `createKoi()` runtime factory |
 | `@koi/harness` | L2 | `createCliHarness()` — single-prompt + interactive REPL loop, TUI bridge. Renders `plan_update`/`task_progress` in verbose mode (#1555) |
 | `@koi/channel-cli` | L2 | stdin/stdout REPL channel (`start` interactive mode) |
-| `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
+| `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter). PR #2032: `supportsReasoningExclude`, `supportsThinkingType`, `thinkingDisplay` compat flags; buffered-mode post-tool text replay; SSE error deferral |
 | `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop, doom loop detection (#1593), tool arg type coercion (#1611) |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider. `task_update(completed)` defaults `output` when omitted (#1785) |

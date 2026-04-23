@@ -3,6 +3,7 @@
  */
 
 import type { ModelCapabilities } from "@koi/core/model-provider";
+import { applyModelCompatRules } from "./model-compat.js";
 
 // ---------------------------------------------------------------------------
 // Provider compatibility flags
@@ -50,6 +51,22 @@ export interface ProviderCompat {
    * Default: "medium".
    */
   readonly defaultReasoningEffort?: "low" | "medium" | "high" | undefined;
+  /** Whether the provider supports streaming tool call deltas. Default: true. */
+  readonly supportsToolStreaming?: boolean | undefined;
+  /** How thinking/reasoning blocks should be displayed. Default: "full". */
+  readonly thinkingDisplay?: "full" | "summarized" | "hidden" | undefined;
+  /**
+   * Whether the provider supports `reasoning: { exclude: true }` to suppress
+   * reasoning tokens from the response. OpenRouter-specific extension.
+   * Default: false.
+   */
+  readonly supportsReasoningExclude?: boolean | undefined;
+  /**
+   * Whether the provider supports `thinking: { type: "..." }` request field.
+   * OpenRouter+Anthropic-specific extension for summarized thinking.
+   * Default: false.
+   */
+  readonly supportsThinkingType?: boolean | undefined;
 }
 
 /** Fully resolved compat with all fields set. */
@@ -65,6 +82,12 @@ export interface ResolvedCompat {
   readonly supportsPromptCaching: boolean;
   readonly supportsReasoning: boolean;
   readonly defaultReasoningEffort: "low" | "medium" | "high";
+  readonly supportsToolStreaming: boolean;
+  readonly thinkingDisplay: "full" | "summarized" | "hidden";
+  /** Whether `reasoning: { exclude: true }` is supported (OpenRouter-specific). */
+  readonly supportsReasoningExclude: boolean;
+  /** Whether `thinking: { type: "..." }` is supported (OpenRouter+Anthropic-specific). */
+  readonly supportsThinkingType: boolean;
 }
 
 const _DEFAULT_COMPAT: ResolvedCompat = {
@@ -79,6 +102,10 @@ const _DEFAULT_COMPAT: ResolvedCompat = {
   supportsPromptCaching: false,
   supportsReasoning: false,
   defaultReasoningEffort: "medium",
+  supportsToolStreaming: true,
+  thinkingDisplay: "full",
+  supportsReasoningExclude: false,
+  supportsThinkingType: false,
 };
 
 /**
@@ -118,27 +145,49 @@ function detectCompat(baseUrl: string): ResolvedCompat {
     // contract for non-reasoning models, increase latency/cost, and risk 400s.
     supportsReasoning: false,
     defaultReasoningEffort: "medium",
+    supportsToolStreaming: true,
+    thinkingDisplay: "full",
+    // OpenRouter-specific reasoning wire shapes — separate from prompt caching
+    supportsReasoningExclude: isOpenRouter,
+    supportsThinkingType: isOpenRouter,
   };
 }
 
-/** Merge explicit overrides with auto-detected compat. */
-export function resolveCompat(baseUrl: string, overrides?: ProviderCompat): ResolvedCompat {
+/** Merge explicit overrides with auto-detected compat and per-model rules. */
+export function resolveCompat(
+  baseUrl: string,
+  model: string,
+  overrides?: ProviderCompat,
+): ResolvedCompat {
   const detected = detectCompat(baseUrl);
-  if (overrides === undefined) return detected;
+  const withModelOverrides = applyModelCompatRules(model, detected);
+  if (overrides === undefined) return withModelOverrides;
   return {
     supportsUsageInStreaming:
-      overrides.supportsUsageInStreaming ?? detected.supportsUsageInStreaming,
-    maxTokensField: overrides.maxTokensField ?? detected.maxTokensField,
-    supportsStore: overrides.supportsStore ?? detected.supportsStore,
-    supportsDeveloperRole: overrides.supportsDeveloperRole ?? detected.supportsDeveloperRole,
-    requiresToolResultName: overrides.requiresToolResultName ?? detected.requiresToolResultName,
+      overrides.supportsUsageInStreaming ?? withModelOverrides.supportsUsageInStreaming,
+    maxTokensField: overrides.maxTokensField ?? withModelOverrides.maxTokensField,
+    supportsStore: overrides.supportsStore ?? withModelOverrides.supportsStore,
+    supportsDeveloperRole:
+      overrides.supportsDeveloperRole ?? withModelOverrides.supportsDeveloperRole,
+    requiresToolResultName:
+      overrides.requiresToolResultName ?? withModelOverrides.requiresToolResultName,
     requiresAssistantAfterToolResult:
-      overrides.requiresAssistantAfterToolResult ?? detected.requiresAssistantAfterToolResult,
-    requiresThinkingAsText: overrides.requiresThinkingAsText ?? detected.requiresThinkingAsText,
-    supportsStrictMode: overrides.supportsStrictMode ?? detected.supportsStrictMode,
-    supportsPromptCaching: overrides.supportsPromptCaching ?? detected.supportsPromptCaching,
-    supportsReasoning: overrides.supportsReasoning ?? detected.supportsReasoning,
-    defaultReasoningEffort: overrides.defaultReasoningEffort ?? detected.defaultReasoningEffort,
+      overrides.requiresAssistantAfterToolResult ??
+      withModelOverrides.requiresAssistantAfterToolResult,
+    requiresThinkingAsText:
+      overrides.requiresThinkingAsText ?? withModelOverrides.requiresThinkingAsText,
+    supportsStrictMode: overrides.supportsStrictMode ?? withModelOverrides.supportsStrictMode,
+    supportsPromptCaching:
+      overrides.supportsPromptCaching ?? withModelOverrides.supportsPromptCaching,
+    supportsReasoning: overrides.supportsReasoning ?? withModelOverrides.supportsReasoning,
+    defaultReasoningEffort:
+      overrides.defaultReasoningEffort ?? withModelOverrides.defaultReasoningEffort,
+    supportsToolStreaming:
+      overrides.supportsToolStreaming ?? withModelOverrides.supportsToolStreaming,
+    thinkingDisplay: overrides.thinkingDisplay ?? withModelOverrides.thinkingDisplay,
+    supportsReasoningExclude:
+      overrides.supportsReasoningExclude ?? withModelOverrides.supportsReasoningExclude,
+    supportsThinkingType: overrides.supportsThinkingType ?? withModelOverrides.supportsThinkingType,
   };
 }
 
@@ -191,6 +240,8 @@ export interface ResolvedConfig {
   readonly model: string;
   readonly capabilities: ModelCapabilities;
   readonly compat: ResolvedCompat;
+  /** Raw caller-supplied compat overrides — retained so per-request model changes can re-resolve compat. */
+  readonly rawCompat: ProviderCompat | undefined;
   readonly headers: Readonly<Record<string, string>>;
   readonly provider: string;
   readonly trustTranscriptMetadata: boolean;
@@ -225,7 +276,8 @@ export function resolveConfig(config: OpenAICompatAdapterConfig): ResolvedConfig
     baseUrl,
     model: config.model,
     capabilities,
-    compat: resolveCompat(baseUrl, config.compat),
+    compat: resolveCompat(baseUrl, config.model, config.compat),
+    rawCompat: config.compat,
     headers: config.headers ?? {},
     provider: config.provider ?? "openai-compat",
     trustTranscriptMetadata: config.trustTranscriptMetadata ?? true,

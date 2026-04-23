@@ -32,6 +32,17 @@ type ParserState =
   | { readonly kind: "thinking" }
   | { readonly kind: "tool_call"; readonly callId: string; argBuffer: string };
 
+/**
+ * One item in the ordered buffer used by buffered tool call mode.
+ * Preserves the arrival order of text, thinking, and tool calls so that
+ * the final richContent array matches the provider's chronological ordering
+ * even for interleaved sequences like "tool A → text → tool B".
+ */
+type BufferedItem =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "thinking"; readonly text: string }
+  | { readonly kind: "tool_ref"; readonly slotIdx: number };
+
 // ---------------------------------------------------------------------------
 // Unicode sanitization
 // ---------------------------------------------------------------------------
@@ -308,10 +319,10 @@ function processToolCallDelta(
 
   if (tc.function?.arguments !== undefined) {
     active.argBuffer += tc.function.arguments;
-    // Only emit delta if start was already emitted (name is known).
+    // Only emit delta if start was already emitted (name is known) and args are non-empty.
     // If name hasn't arrived yet, buffer args silently — no lifecycle
     // events until the tool call can be identified.
-    if (active.startEmitted) {
+    if (active.startEmitted && tc.function.arguments.length > 0) {
       chunks.push({
         kind: "tool_call_delta",
         callId: toolCallId(active.id),
@@ -341,6 +352,133 @@ function closeActiveToolCalls(
   return chunks;
 }
 
+/**
+ * Accumulate a tool call delta into the ordered buffer (buffered mode only).
+ *
+ * Each unique (index, id) pair gets its own slot in bufferedSlots. A tool_ref
+ * pointing at that slot is inserted into bufferedItems at the slot's first
+ * appearance, preserving the chronological position among text/thinking items.
+ *
+ * Index reuse (provider sends a new call_id on the same chunk index) creates
+ * a fresh slot — the displaced call's data is retained at its original slot.
+ */
+function bufferToolCallSlot(
+  tc: ChatCompletionChunkToolCall,
+  bufferedItems: BufferedItem[],
+  bufferedSlots: Array<{ id: string; name: string; argBuffer: string }>,
+  activeSlotByIndex: Map<number, number>,
+): void {
+  const idx = tc.index;
+  const existingSlotIdx = activeSlotByIndex.get(idx);
+
+  if (existingSlotIdx !== undefined) {
+    const slot = bufferedSlots[existingSlotIdx];
+    if (slot !== undefined && tc.id !== undefined && slot.id !== tc.id) {
+      // Provider reusing chunk index for a different call — create a new slot
+      const newSlotIdx = bufferedSlots.length;
+      bufferedSlots.push({
+        id: tc.id,
+        name: tc.function?.name ?? "",
+        argBuffer: tc.function?.arguments ?? "",
+      });
+      activeSlotByIndex.set(idx, newSlotIdx);
+      bufferedItems.push({ kind: "tool_ref", slotIdx: newSlotIdx });
+    } else if (slot !== undefined) {
+      // Same call — accumulate name (unconditional overwrite) and args
+      if (tc.function?.name !== undefined) slot.name = tc.function.name;
+      if (tc.function?.arguments !== undefined) slot.argBuffer += tc.function.arguments;
+    }
+  } else {
+    // First delta for this index — create slot and record its position
+    const newSlotIdx = bufferedSlots.length;
+    bufferedSlots.push({
+      id: tc.id ?? `call_${idx}`,
+      name: tc.function?.name ?? "",
+      argBuffer: tc.function?.arguments ?? "",
+    });
+    activeSlotByIndex.set(idx, newSlotIdx);
+    bufferedItems.push({ kind: "tool_ref", slotIdx: newSlotIdx });
+  }
+}
+
+/**
+ * Flush the ordered buffer to richContent and produce lifecycle chunks.
+ * Processes bufferedItems in arrival order, so text/thinking/tool-calls
+ * appear in richContent exactly as the provider sent them.
+ */
+function flushBufferedItems(
+  bufferedItems: BufferedItem[],
+  bufferedSlots: Array<{ id: string; name: string; argBuffer: string }>,
+  acc: MutableAccumulator,
+): readonly ModelChunk[] {
+  const chunks: ModelChunk[] = [];
+  for (const item of bufferedItems) {
+    if (item.kind === "text") {
+      // Post-tool text was suppressed during feed() for ordering. Replay now
+      // so streaming consumers receive text_delta before done, in correct order.
+      acc.richContent.push({ kind: "text", text: item.text });
+      chunks.push({ kind: "text_delta", delta: item.text });
+    } else if (item.kind === "thinking") {
+      acc.richContent.push({ kind: "thinking", text: item.text });
+      chunks.push({ kind: "thinking_delta", delta: item.text });
+    } else {
+      const slot = bufferedSlots[item.slotIdx];
+      if (slot === undefined) continue;
+      // Truly empty slot: only an index/id fragment arrived with no function
+      // data at all. Surface a validation error so normal-success callers can
+      // propagate it; truncation paths already suppress errors via `continue`.
+      if (slot.name === "" && slot.argBuffer === "") {
+        chunks.push({
+          kind: "error",
+          message: `Tool call "${slot.id}" arrived with no function name or arguments — provider sent an incomplete tool_calls fragment`,
+          code: "VALIDATION",
+        });
+        continue;
+      }
+      if (slot.name === "") {
+        chunks.push(
+          { kind: "tool_call_start", toolName: "", callId: toolCallId(slot.id) },
+          {
+            kind: "error",
+            message: `Tool call "${slot.id}" has no function name — cannot dispatch`,
+            code: "VALIDATION",
+          },
+        );
+        continue;
+      }
+      const result = parseToolArguments(slot.argBuffer);
+      if (result.ok) {
+        acc.richContent.push({
+          kind: "tool_call",
+          id: toolCallId(slot.id),
+          name: slot.name,
+          arguments: result.args,
+        });
+        chunks.push({ kind: "tool_call_start", toolName: slot.name, callId: toolCallId(slot.id) });
+        if (slot.argBuffer.length > 0) {
+          chunks.push({
+            kind: "tool_call_delta",
+            callId: toolCallId(slot.id),
+            delta: slot.argBuffer,
+          });
+        }
+        chunks.push({ kind: "tool_call_end", callId: toolCallId(slot.id) });
+      } else {
+        chunks.push(
+          { kind: "tool_call_start", toolName: slot.name, callId: toolCallId(slot.id) },
+          {
+            kind: "error",
+            message: `Invalid tool call arguments for "${slot.name}": ${result.raw}`,
+            code: "VALIDATION",
+          },
+        );
+      }
+    }
+  }
+  bufferedItems.length = 0;
+  return chunks;
+}
+
 // ---------------------------------------------------------------------------
 // Stream parser internals
 // ---------------------------------------------------------------------------
@@ -348,19 +486,42 @@ function closeActiveToolCalls(
 interface ParserContext {
   state: ParserState;
   acc: MutableAccumulator;
+  readonly bufferToolCalls: boolean;
+  /** True once any tool_calls delta has been seen in the raw stream (even if buffered). */
+  sawToolCallDelta: boolean;
+  /** Active tool calls (non-buffered streaming path only). */
   activeToolCalls: Map<
     number,
     { id: string; name: string; argBuffer: string; startEmitted: boolean }
   >;
+  /** Ordered content items for buffered mode — preserves arrival order across text/thinking/tools. */
+  bufferedItems: BufferedItem[];
+  /** Resolved tool call data by slot index (buffered mode only). */
+  bufferedSlots: Array<{ id: string; name: string; argBuffer: string }>;
+  /** Maps chunk index → bufferedSlots index (buffered mode only). */
+  activeSlotByIndex: Map<number, number>;
 }
 
 function flushCurrentSegment(ctx: ParserContext): void {
   if (ctx.state.kind === "text" && ctx.acc.currentTextSegment.length > 0) {
-    ctx.acc.richContent.push({ kind: "text", text: ctx.acc.currentTextSegment });
+    const text = ctx.acc.currentTextSegment;
+    // Post-tool text in buffered mode: defer to bufferedItems so it is
+    // replayed after the tool call events at finish(), preserving arrival order.
+    // Pre-tool text (sawToolCallDelta still false) goes to richContent immediately.
+    if (ctx.bufferToolCalls && ctx.sawToolCallDelta) {
+      ctx.bufferedItems.push({ kind: "text", text });
+    } else {
+      ctx.acc.richContent.push({ kind: "text", text });
+    }
     ctx.acc.currentTextSegment = "";
   }
   if (ctx.state.kind === "thinking" && ctx.acc.currentThinkingSegment.length > 0) {
-    ctx.acc.richContent.push({ kind: "thinking", text: ctx.acc.currentThinkingSegment });
+    const text = ctx.acc.currentThinkingSegment;
+    if (ctx.bufferToolCalls && ctx.sawToolCallDelta) {
+      ctx.bufferedItems.push({ kind: "thinking", text });
+    } else {
+      ctx.acc.richContent.push({ kind: "thinking", text });
+    }
     ctx.acc.currentThinkingSegment = "";
   }
 }
@@ -389,7 +550,12 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
 
   if (delta.content !== undefined && delta.content !== null && delta.content.length > 0) {
     const r = processTextDelta(delta.content, ctx.state, ctx.acc, () => resetState(ctx));
-    output.push(...r.chunks);
+    // In buffered mode, suppress post-tool text_delta live emission to preserve
+    // event ordering: tool_call_start/end must precede any text that follows them.
+    // Pre-tool text (sawToolCallDelta still false) is emitted live.
+    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
+      output.push(...r.chunks);
+    }
     ctx.state = r.newState;
   }
 
@@ -399,22 +565,31 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
   const reasoningContent = findReasoningContent(delta);
   if (reasoningContent !== undefined) {
     const r = processThinkingDelta(reasoningContent, ctx.state, ctx.acc, () => resetState(ctx));
-    output.push(...r.chunks);
+    // Same ordering constraint: suppress post-tool thinking_delta live emission.
+    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
+      output.push(...r.chunks);
+    }
     ctx.state = r.newState;
   }
 
   if (delta.tool_calls !== undefined) {
-    // Flush any in-progress text/thinking segment before processing tool calls
     if (ctx.state.kind === "text" || ctx.state.kind === "thinking") {
       flushCurrentSegment(ctx);
       ctx.state = { kind: "idle" };
     }
-    for (const tc of delta.tool_calls) {
-      output.push(...processToolCallDelta(tc, ctx.activeToolCalls, ctx.acc));
-    }
-    const lastEntry = [...ctx.activeToolCalls.values()].at(-1);
-    if (lastEntry !== undefined) {
-      ctx.state = { kind: "tool_call", callId: lastEntry.id, argBuffer: lastEntry.argBuffer };
+    if (ctx.bufferToolCalls) {
+      ctx.sawToolCallDelta = true;
+      for (const tc of delta.tool_calls) {
+        bufferToolCallSlot(tc, ctx.bufferedItems, ctx.bufferedSlots, ctx.activeSlotByIndex);
+      }
+    } else {
+      for (const tc of delta.tool_calls) {
+        output.push(...processToolCallDelta(tc, ctx.activeToolCalls, ctx.acc));
+      }
+      const lastEntry = [...ctx.activeToolCalls.values()].at(-1);
+      if (lastEntry !== undefined) {
+        ctx.state = { kind: "tool_call", callId: lastEntry.id, argBuffer: lastEntry.argBuffer };
+      }
     }
   }
 
@@ -422,8 +597,12 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
 }
 
 function finishParsing(ctx: ParserContext): readonly ModelChunk[] {
-  // Flush any in-progress text/thinking segment before closing tool calls
   flushCurrentSegment(ctx);
+  if (ctx.bufferToolCalls) {
+    const output = [...flushBufferedItems(ctx.bufferedItems, ctx.bufferedSlots, ctx.acc)];
+    ctx.state = { kind: "idle" };
+    return output;
+  }
   const output = [...closeActiveToolCalls(ctx.activeToolCalls, ctx.acc)];
   ctx.state = { kind: "idle" };
   return output;
@@ -437,10 +616,14 @@ function finishParsing(ctx: ParserContext): readonly ModelChunk[] {
  * Stateful stream parser. Feed it SSE chunks one at a time; it emits
  * ModelChunk events and updates the accumulator.
  */
-export function createStreamParser(initialAccumulator: AccumulatedResponse): {
+export function createStreamParser(
+  initialAccumulator: AccumulatedResponse,
+  options?: { readonly supportsToolStreaming?: boolean },
+): {
   feed: (chunk: ChatCompletionChunk) => readonly ModelChunk[];
   finish: () => readonly ModelChunk[];
   getAccumulator: () => AccumulatedResponse;
+  hasSeenToolCallDelta: () => boolean;
 } {
   const ctx: ParserContext = {
     state: { kind: "idle" },
@@ -452,12 +635,18 @@ export function createStreamParser(initialAccumulator: AccumulatedResponse): {
       receivedFinishReason: false,
       receivedUsage: false,
     },
+    bufferToolCalls: !(options?.supportsToolStreaming ?? true),
+    sawToolCallDelta: false,
     activeToolCalls: new Map(),
+    bufferedItems: [],
+    bufferedSlots: [],
+    activeSlotByIndex: new Map(),
   };
 
   return {
     feed: (chunk) => feedChunk(ctx, chunk),
     finish: () => finishParsing(ctx),
     getAccumulator: () => ctx.acc,
+    hasSeenToolCallDelta: () => ctx.sawToolCallDelta,
   };
 }
