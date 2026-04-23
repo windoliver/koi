@@ -35,19 +35,21 @@ const permissionsSchema = z
   })
   .readonly();
 
-const hooksSchema = z.object({
-  PreToolUse: hookEventSchema.optional(),
-  PostToolUse: hookEventSchema.optional(),
-  SessionStart: hookEventSchema.optional(),
-  SessionEnd: hookEventSchema.optional(),
-  Stop: hookEventSchema.optional(),
-});
+const hooksSchema = z
+  .object({
+    PreToolUse: hookEventSchema.optional(),
+    PostToolUse: hookEventSchema.optional(),
+    SessionStart: hookEventSchema.optional(),
+    SessionEnd: hookEventSchema.optional(),
+    Stop: hookEventSchema.optional(),
+  })
+  .readonly();
 
 // ---------------------------------------------------------------------------
 // Top-level schema
 // ---------------------------------------------------------------------------
 
-const koiSettingsSchema: z.ZodType<KoiSettings> = z
+const koiSettingsSchema = z
   .object({
     $schema: z.string().optional(),
     permissions: permissionsSchema.optional(),
@@ -59,7 +61,7 @@ const koiSettingsSchema: z.ZodType<KoiSettings> = z
     disabledMcpServers: z.array(z.string().min(1)).optional(),
   })
   .strip()
-  .readonly();
+  .readonly() as z.ZodType<KoiSettings>;
 
 // ---------------------------------------------------------------------------
 // Exports

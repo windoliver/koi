@@ -498,6 +498,15 @@
         "@koi/session-repair": "workspace:*",
       },
     },
+    "packages/lib/settings": {
+      "name": "@koi/settings",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/shutdown": {
       "name": "@koi/shutdown",
       "version": "0.0.0",
@@ -1065,6 +1074,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/settings": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -1602,6 +1612,8 @@
     "@koi/session": ["@koi/session@workspace:packages/lib/session"],
 
     "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
+
+    "@koi/settings": ["@koi/settings@workspace:packages/lib/settings"],
 
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
