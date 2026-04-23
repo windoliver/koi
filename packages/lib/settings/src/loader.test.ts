@@ -141,4 +141,17 @@ describe("loadSettings", () => {
       }),
     ).rejects.toThrow();
   });
+
+  test("policy schema-invalid file throws (fail-closed)", async () => {
+    const policyPath = join(tmpDir, "policy-schema.json");
+    writeFileSync(policyPath, JSON.stringify({ theme: "neon" })); // invalid enum value
+    await expect(
+      loadSettings({
+        cwd: tmpDir,
+        homeDir: tmpDir,
+        layers: ["policy"],
+        policyPath,
+      }),
+    ).rejects.toThrow();
+  });
 });
