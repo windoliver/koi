@@ -156,6 +156,12 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
 
     async query(sessionId: string): Promise<readonly AuditEntry[]> {
       flushBuffer();
+      // Full session read, no in-sink cap. A bounded/cursored API would
+      // be nice for very long sessions (thousands of audit rows per
+      // session), but silently truncating here would mask partial reads
+      // from the decision-ledger and /trajectory audit lane. When that
+      // becomes necessary, add a proper `queryPage({ sessionId, cursor,
+      // limit })` surface and propagate `hasMore` through the ledger.
       const rows = db
         .prepare("SELECT * FROM audit_log WHERE session_id = ? ORDER BY id ASC")
         .all(sessionId);

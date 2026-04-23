@@ -79,6 +79,7 @@
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../security/audit-sink-ndjson" },
+    { "path": "../../security/violation-store-sqlite" },
     { "path": "../../lib/validation" }
   ]
 }

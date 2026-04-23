@@ -400,7 +400,7 @@ interface AuditEntry {
     readonly sessionId: string;
     readonly agentId: string;
     readonly turnIndex: number;
-    readonly kind: "model_call" | "tool_call" | "session_start" | "session_end" | "secret_access" | "permission_decision" | "config_change";
+    readonly kind: "model_call" | "tool_call" | "session_start" | "session_end" | "secret_access" | "permission_decision" | "compliance_event" | "config_change";
     /** Populated for tool_call entries — the tool's identifier. */
     readonly toolName?: string;
     readonly request?: unknown;

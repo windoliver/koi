@@ -45,6 +45,7 @@
     "@koi/memory-tools": "workspace:*",
     "@koi/audit-sink-ndjson": "workspace:*",
     "@koi/audit-sink-sqlite": "workspace:*",
+    "@koi/violation-store-sqlite": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-dream": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",

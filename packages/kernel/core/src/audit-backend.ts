@@ -21,6 +21,7 @@ export interface AuditEntry {
     | "session_end"
     | "secret_access"
     | "permission_decision"
+    | "compliance_event"
     | "config_change";
   /** Populated for tool_call entries — the tool's identifier. */
   readonly toolName?: string;

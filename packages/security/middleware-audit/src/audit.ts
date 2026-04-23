@@ -32,6 +32,10 @@ import { createBoundedQueue } from "./queue.js";
 import type { SigningHandle } from "./signing.js";
 import { createEphemeralSigningHandle } from "./signing.js";
 
+// v2: `compliance_event` kind added to AuditEntry.kind union. v1 readers
+// that exhaustively switch on `kind` would reject the new variant, so
+// producers advertise v2 explicitly per the L0 contract ("increment
+// when the shape changes. Readers gate on this field").
 const SCHEMA_VERSION = 2;
 const DEFAULT_MAX_ENTRY_SIZE = 10_000;
 const DEFAULT_MAX_QUEUE_DEPTH = 1000;

@@ -1,8 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GovernanceController, GovernanceSnapshot, SensorReading } from "@koi/core";
+import type {
+  GovernanceController,
+  GovernanceSnapshot,
+  SensorReading,
+  ViolationStore,
+} from "@koi/core";
 import { createGovernanceBridge } from "./governance-bridge.js";
 
 let tmpDir: string;
@@ -260,5 +265,67 @@ describe("governance-bridge", () => {
       .filter((l) => l.length > 0);
     expect(lines.length).toBeLessThanOrEqual(200);
     bridge.dispose();
+  });
+});
+
+describe("loadRecentViolations", () => {
+  test("returns [] when violationStore is absent", async () => {
+    const store = { dispatch: () => {} };
+    const bridge = createGovernanceBridge({
+      store: store as never,
+      controller: makeController({ timestamp: 1, healthy: true, violations: [], readings: [] }),
+      sessionId: "s1",
+      alertsPath,
+    });
+    const page = await bridge.loadRecentViolations(10);
+    expect(page).toEqual([]);
+    bridge.dispose();
+  });
+
+  test("queries the store with current sessionId + limit", async () => {
+    let seenFilter: unknown;
+    const violationStore: ViolationStore = {
+      getViolations: async (filter) => {
+        seenFilter = filter;
+        return { items: [{ rule: "r1", severity: "warning", message: "m" }] };
+      },
+    };
+    const store = { dispatch: () => {} };
+    const bridge = createGovernanceBridge({
+      store: store as never,
+      controller: makeController({ timestamp: 1, healthy: true, violations: [], readings: [] }),
+      sessionId: "S",
+      alertsPath,
+      violationStore,
+    });
+    const page = await bridge.loadRecentViolations(5);
+    expect(page).toHaveLength(1);
+    expect(seenFilter).toMatchObject({ sessionId: "S", limit: 5 });
+    bridge.dispose();
+  });
+
+  test("returns [] and warns when store throws", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const violationStore: ViolationStore = {
+        getViolations: async () => {
+          throw new Error("db gone");
+        },
+      };
+      const store = { dispatch: () => {} };
+      const bridge = createGovernanceBridge({
+        store: store as never,
+        controller: makeController({ timestamp: 1, healthy: true, violations: [], readings: [] }),
+        sessionId: "s1",
+        alertsPath,
+        violationStore,
+      });
+      const page = await bridge.loadRecentViolations(5);
+      expect(page).toEqual([]);
+      expect(warn).toHaveBeenCalled();
+      bridge.dispose();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

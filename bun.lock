@@ -730,6 +730,7 @@
         "@koi/tools-web": "workspace:*",
         "@koi/tui": "workspace:*",
         "@koi/url-safety": "workspace:*",
+        "@koi/violation-store-sqlite": "workspace:*",
         "@koi/watch-patterns": "workspace:*",
         "@opentelemetry/api": "1.9.1",
         "@opentelemetry/exporter-trace-otlp-http": "0.214.0",
@@ -841,6 +842,7 @@
         "@koi/tools-web": "workspace:*",
         "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
+        "@koi/violation-store-sqlite": "workspace:*",
         "@koi/watch-patterns": "workspace:*",
         "zod": "4.3.6",
       },
@@ -1079,6 +1081,14 @@
       "dependencies": {
         "@koi/validation": "workspace:*",
         "oxc-parser": "0.114.0",
+      },
+    },
+    "packages/security/violation-store-sqlite": {
+      "name": "@koi/violation-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/ui/tui": {
@@ -1633,6 +1643,8 @@
     "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
+
+    "@koi/violation-store-sqlite": ["@koi/violation-store-sqlite@workspace:packages/security/violation-store-sqlite"],
 
     "@koi/watch-patterns": ["@koi/watch-patterns@workspace:packages/lib/watch-patterns"],
 
