@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolsetDefinition, ToolsetRegistry } from "@koi/core";
 import type { MergeRegistriesOptions } from "./index.js";
-import { createBuiltinRegistry, mergeRegistries, resolveToolset } from "./index.js";
+import {
+  createBuiltinRegistry,
+  mergeRegistries,
+  resolutionToToolAllowlist,
+  resolveToolset,
+} from "./index.js";
 
 function makeRegistry(defs: readonly ToolsetDefinition[]): ToolsetRegistry {
   return new Map(defs.map((d) => [d.name, d]));
@@ -327,5 +332,37 @@ describe("mergeRegistries", () => {
   test("merging zero registries returns empty map", () => {
     const merged = mergeRegistries([]);
     expect(merged.size).toBe(0);
+  });
+});
+
+describe("resolutionToToolAllowlist", () => {
+  test("mode:all returns undefined — caller omits toolAllowlist to grant full access", () => {
+    expect(resolutionToToolAllowlist({ mode: "all" })).toBeUndefined();
+  });
+
+  test("mode:allowlist returns the tools array directly", () => {
+    const tools = ["fs_read", "web_fetch"] as const;
+    const result = resolutionToToolAllowlist({ mode: "allowlist", tools });
+    expect(result).toBe(tools);
+  });
+
+  test("round-trips through resolveToolset for developer preset", () => {
+    const reg = createBuiltinRegistry();
+    const resolution = resolveToolset("developer", reg);
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) return;
+    expect(resolutionToToolAllowlist(resolution.value)).toBeUndefined();
+  });
+
+  test("round-trips through resolveToolset for safe preset", () => {
+    const reg = createBuiltinRegistry();
+    const resolution = resolveToolset("safe", reg);
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) return;
+    const allowlist = resolutionToToolAllowlist(resolution.value);
+    expect(allowlist).toBeDefined();
+    expect(Array.isArray(allowlist)).toBe(true);
+    expect(allowlist).toContain("fs_read");
+    expect(allowlist).toContain("web_fetch");
   });
 });

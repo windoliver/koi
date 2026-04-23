@@ -11,3 +11,4 @@ export type { ToolsetDefinition, ToolsetRegistry, ToolsetResolution } from "@koi
 export type { MergeRegistriesOptions } from "./registry.js";
 export { createBuiltinRegistry, mergeRegistries } from "./registry.js";
 export { resolveToolset } from "./resolve-toolset.js";
+export { resolutionToToolAllowlist } from "./spawn-adapter.js";

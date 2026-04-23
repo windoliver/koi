@@ -17,7 +17,8 @@ import type { ToolsetDefinition } from "@koi/core";
 export const BUILTIN_TOOLSETS: readonly ToolsetDefinition[] = [
   {
     name: "safe",
-    description: "Read-only web + filesystem — no shell, no writes, safe for untrusted channels",
+    description:
+      "Read-only web + filesystem — no shell, no writes. Not an untrusted-channel sandbox: fs_read can read arbitrary workspace paths.",
     tools: ["web_fetch", "Glob", "Grep", "fs_read"],
     includes: [],
   },
