@@ -252,20 +252,16 @@ export function parseUploadFiles(
         err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
       };
     }
-    // MIME resolution priority:
-    //  1. Strong magic-byte detection — always authoritative (prevents mislabeling
-    //     arbitrary bytes as image/png to bypass accept filters or validators)
-    //  2. Caller-supplied mimeType — trusted when sniffing is inconclusive
-    //     (preserves correct MIME for .docx/.xlsx and other ambiguous containers)
-    //  3. Extension-based fallback from filename
-    //  4. application/octet-stream (final safe default)
+    // MIME is derived from content evidence only — caller-supplied values are
+    // never used as the authoritative type. Strong magic-byte detection wins;
+    // when inconclusive, extension-based detection from the filename is used
+    // (equally attacker-controlled but not worse); otherwise application/
+    // octet-stream is the safe default. This prevents callers from labeling
+    // arbitrary bytes as image/png to bypass accept filters or MIME validators.
     const bytes = new Uint8Array(Buffer.from(content, "base64"));
     const detected = detectFromBytes(bytes);
-    const resolvedMime = (() => {
-      if (detected?.confidence === "strong") return detected.mimeType;
-      if (typeof mimeType === "string") return mimeType;
-      return detectFromPath(name, bytes).mimeType;
-    })();
+    const resolvedMime =
+      detected?.confidence === "strong" ? detected.mimeType : detectFromPath(name, bytes).mimeType;
     files.push({ content, name, mimeType: resolvedMime });
   }
   return { ok: true, value: files };

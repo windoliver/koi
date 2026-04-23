@@ -3497,25 +3497,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // model sees the file directly without needing to call Glob/fs_read.
         const resolved = resolveAtReferences(text, process.cwd());
 
-        // Warn for each binary @-reference and continue with the turn.
-        // Aborting the whole message when one ref is binary would discard valid
-        // text references and the user's question alongside it — that regression
-        // is worse than proceeding with partial context. The model receives
-        // cleanText plus any text injections; binary refs are skipped.
-        // Multimodal block support is deferred until all adapters support it.
+        // Hard-fail when binary @-references are present. Proceeding without
+        // the referenced file would let the model answer without the evidence
+        // the user intended to supply — that silent data loss is worse than
+        // blocking the turn. Multimodal block support is deferred until all
+        // adapters support it end-to-end.
         if (resolved.binaryInjections.length > 0) {
           for (const b of resolved.binaryInjections) {
             store.dispatch({
-              kind: "add_info",
-              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. Reference skipped; remaining text and files were sent.`,
+              kind: "add_error",
+              code: "BINARY_AT_REF_UNSUPPORTED",
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. Remove the reference or convert to a text-based format.`,
             });
           }
+          activeController = null;
+          return;
         }
 
-        // Always use resolved.cleanText (not raw text) so that @-references
-        // to binary files are stripped from the model's input even when there
-        // are no text injections. Using raw text would leave "@file.pdf" in
-        // the prompt literally, which is meaningless to the model.
         const modelText =
           resolved.injections.length > 0
             ? formatAtReferencesForModel(resolved)
