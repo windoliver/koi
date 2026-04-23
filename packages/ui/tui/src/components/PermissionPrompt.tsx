@@ -240,7 +240,6 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         <text fg={COLORS.textMuted}>{"[n] Deny  [Esc]"}</text>
       </Show>
       <Show when={!isTooNarrow()}>
-
       {/* Title — stacks risk label below the heading on narrow terminals so
           "Permission Required [MEDIUM] (1 of 9)" (38+ chars) never clips. */}
       <box flexDirection={isNarrow() ? "column" : "row"} gap={isNarrow() ? 0 : 1}>
@@ -324,7 +323,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         </box>
       </Show>
 
-      </Show> {/* isTooNarrow() guard */}
+      </Show>
     </box>
   );
 }
