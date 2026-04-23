@@ -333,11 +333,31 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
  * uses `process.stderr.write()` so span dumps stay on the diagnostic
  * stream where redirection (`2>/tmp/spans.log`) captures them cleanly.
  */
+/** Koi-owned identity keys safe to emit in default headless logs. */
+const STDERR_RESOURCE_ALLOWLIST = [
+  "service.name",
+  "service.version",
+  "koi.mode",
+  "process.runtime.name",
+  "process.runtime.version",
+] as const;
+
 export class StderrSpanExporter implements SpanExporter {
   export(spans: readonly ReadableSpan[], resultCallback: (result: { code: number }) => void): void {
     for (const span of spans) {
+      // Only emit the Koi-owned identity keys in the resource field.
+      // Operator-supplied OTEL_RESOURCE_ATTRIBUTES may include routing tags,
+      // tenant IDs, or accidentally leaked secrets — emitting them verbatim
+      // on every span line would replicate them into all persistent stderr logs.
+      // Full resource metadata is always available via the OTLP exporter path.
+      const resource: Record<string, unknown> = {};
+      for (const k of STDERR_RESOURCE_ALLOWLIST) {
+        if (span.resource.attributes[k] !== undefined) {
+          resource[k] = span.resource.attributes[k];
+        }
+      }
       const obj = {
-        resource: span.resource.attributes,
+        resource,
         traceId: span.spanContext().traceId,
         spanId: span.spanContext().spanId,
         parentSpanId: span.parentSpanContext?.spanId,

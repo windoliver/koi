@@ -282,7 +282,7 @@ describe("buildResource integration: span carries resource attributes", () => {
 });
 
 describe("StderrSpanExporter: end-to-end serialized output", () => {
-  test("emits parseable NDJSON lines with all resource attrs and span fields", () => {
+  test("emits parseable NDJSON with Koi identity keys and span fields", () => {
     process.env.OTEL_SERVICE_NAME = "e2e-stderr-test";
     process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment=prod";
 
@@ -303,7 +303,6 @@ describe("StderrSpanExporter: end-to-end serialized output", () => {
     process.stderr.write = origWrite;
     void provider.shutdown();
 
-    // Each export call produces exactly one JSON line per span
     expect(stderrLines.length).toBeGreaterThan(0);
     const firstLine = stderrLines[0];
     if (firstLine === undefined) throw new Error("no stderr output");
@@ -314,11 +313,15 @@ describe("StderrSpanExporter: end-to-end serialized output", () => {
     expect(typeof parsed.spanId).toBe("string");
     expect(parsed.name).toBe("e2e-span");
 
-    // Resource must include both Koi defaults and operator-supplied attrs
+    // Resource must include Koi identity keys
     const resource = parsed.resource as Record<string, unknown>;
     expect(resource["service.name"]).toBe("e2e-stderr-test");
     expect(resource["koi.mode"]).toBe("headless");
-    expect(resource["deployment.environment"]).toBe("prod");
+
+    // Operator-supplied attrs must NOT appear in stderr output —
+    // they remain in the in-memory resource for OTLP export, but are
+    // excluded from the default log stream to avoid accidental data leakage.
+    expect(resource["deployment.environment"]).toBeUndefined();
   });
 
   test("otelDiag warnings are emitted as JSON lines (not plain text) to preserve NDJSON stream", () => {
