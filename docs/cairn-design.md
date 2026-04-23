@@ -283,6 +283,85 @@ workflows:
 
 A new vault inherits the default config. Teams fork a config as a shareable template (e.g. `cairn init --template research`, `--template engineering`, `--template personal`).
 
+### 3.2 Vault topology — who shares what
+
+A **vault** is the unit of physical colocation + atomic durability: one filesystem tree + one `.cairn/cairn.db` (Rust control plane) + one `<vault>/nexus.db` (memory store) + one `consent.log`. **Users, agents, and sessions are actors WITHIN a vault**, scoped by the identity model in §4.2 and the visibility tiers in §6.3. A vault is never per‑agent or per‑session; isolation across actors happens through scope tuples + rebac, not through separate files.
+
+**Four canonical shapes** (same format, same MCP contract, different scale):
+
+```
+  SHAPE 1: LAPTOP SOLO                SHAPE 2: LAPTOP MULTI-AGENT
+  ────────────────────                ────────────────────────────
+                                      ┌───────────────────────────┐
+  ┌─────────────────────┐             │  hmn:alice:v1             │
+  │  hmn:alice:v1       │             │  ├─ agt:claude-code:…     │
+  │  └─ agt:claude-code │             │  ├─ agt:codex:…           │
+  │     └─ sessions…    │             │  ├─ agt:research-bot:…    │
+  │                     │             │  └─ agt:reviewer-bot:…    │
+  │  ONE VAULT          │             │  └─ sessions (per (user,  │
+  │  one user, one      │             │     agent) pair)          │
+  │  agent, many        │             │                           │
+  │  sessions           │             │  ONE VAULT                │
+  │                     │             │  one user, N agents,      │
+  │                     │             │  many sessions            │
+  └─────────────────────┘             └───────────────────────────┘
+
+  SHAPE 3: TEAM HUB                   SHAPE 4: ORG FEDERATION
+  ──────────────────                   ───────────────────────
+  ┌───────────────────────┐           ┌──────────────┐   ┌──────────────┐
+  │  team-hub vault       │           │ alice laptop │   │ bob laptop   │
+  │  ├─ hmn:alice         │           │   (shape 2)  │   │   (shape 2)  │
+  │  ├─ hmn:bob           │           └──────┬───────┘   └──────┬───────┘
+  │  ├─ hmn:carol         │                  │  federation       │
+  │  ├─ agt:team-reviewer │                  ▼                   ▼
+  │  ├─ agt:team-deployer │                ┌────────────────────────────┐
+  │  └─ sessions (M×N)    │                │  org hub vault             │
+  │                       │                │  ├─ all team hubs          │
+  │  ONE VAULT (shared)   │                │  ├─ aggregate memory       │
+  │  M users, N agents,   │                │  └─ promoted public wiki   │
+  │  rebac enforces scope │                │                            │
+  └───────────────────────┘                │  N+1 VAULTS, federated via │
+                                           │  §12.a share_link/federation│
+                                           └────────────────────────────┘
+```
+
+**Scope tuples on every record (authoritative):**
+
+| Record field | Values | Source |
+|--------------|--------|--------|
+| `tenant` | e.g. `acme-corp`, `personal` | vault‑level; set at `cairn init` |
+| `user_id` | `hmn:alice:v1` | actor_chain principal (§4.2) |
+| `agent_id` | `agt:claude-code:opus-4-7:main:v3` | actor_chain author (§4.2) |
+| `session_id` | ULID, auto‑discovered per (user, agent) | §8.1 |
+| `visibility` | `private` / `session` / `project` / `team` / `org` / `public` | §6.3 |
+| `entity_id` | the record's own ULID | generated at create |
+
+Reads and writes compose these into keyspaces. `retrieve(scope: {user: "alice", agent: "reviewer"})` reads only records where both match. `search(visibility: "team")` reads records shared to the team tier and below, filtered by rebac (§4.2). An agent's `scope` tuple (`allowed_kinds`, `allowed_tiers`, …) from §4.2 restricts what that agent can write — a sandboxed scratchpad agent may write only to `private`, never to `team`.
+
+**When to use which shape:**
+
+| Question | Shape |
+|----------|-------|
+| "I want agent memory on my laptop" | Shape 1 |
+| "Multiple agents on my machine should share context" | Shape 2 — one vault, scope by `agent_id` |
+| "Multiple agents should NOT share memory" (privacy / sandbox) | Shape 2 + per‑agent scope restriction + visibility `private` only |
+| "My team shares decisions, playbooks, incident postmortems" | Shape 3 — team hub with rebac |
+| "Each engineer keeps their own laptop vault but we share org knowledge" | Shape 4 — federation |
+| "Agent serves many tenants (e.g., SaaS)" | One vault per tenant (Shape 3 or 4) + `cairn.aggregate.v1` extension for anonymized cross‑tenant insight |
+
+**What a vault is NOT:**
+
+- A vault is not a per‑agent filesystem — N agents share one vault, isolated by `agent_id` + scope.
+- A vault is not a per‑session filesystem — session is a metadata tuple, not a physical directory.
+- A vault is not a cross‑tenant container — one tenant per vault (hard boundary; federation crosses vaults).
+
+**Per‑agent isolation without per‑agent vaults.** When stronger isolation than rebac is required (regulated domains, adversarial agents), use one of:
+
+1. Separate vaults per agent (multiple `cairn init` roots, each with its own `.cairn/cairn.db`) — administratively heavier but hardest isolation.
+2. One vault + `tenant` field set per agent (`tenant: agt:<name>`) — uses the tenant isolation already in §4.2 and §5.6 lock scoping, cheaper than separate vaults.
+
+Most deployments use Shape 1–3 with rebac; the escape hatch exists for the edge cases.
+
 ---
 
 ## 4. Contracts — the Five That Matter
@@ -1436,6 +1515,30 @@ User: "great! so we should actually remember this — skillify it"
   [5. Run the full §11.3 promotion predicate (gates 1-9) + 10-step Skillify checklist]
   [6. On pass: PromotionWorkflow marks skill live]
 ```
+
+**The three failure modes skillify prevents** (every untested skill system eventually hits all three):
+
+| Failure mode | What goes wrong | Which audit catches it |
+|--------------|-----------------|-------------------------|
+| Duplicate skills | Agent creates `deploy-k8s` Monday, `kubernetes-deploy` Thursday; both exist, both match similar phrases, ambiguous routing fires the wrong one | DRY audit on `lane` field + resolver‑eval false‑positive test |
+| Silent upstream rot | Skill works perfectly when written; six weeks later the external API shape changes; skill quietly returns garbage until a human spots it | Daily integration tests + LLM evals (step 5 + 6 of the 10‑step) |
+| Orphan / dark skills | Skill exists on disk but no resolver trigger references it; eats index tokens; never runs; rots | `check-resolvable` on every skill change + weekly |
+
+**Daily health check (`cairn lint --daily`).** Runs every 10‑step artifact's tests, resolver‑evals, DRY audit, check‑resolvable, and the filing‑rules audit every 24 h. Any failure flips a `cairn health` badge from green to red, emits a `knowledge_gap` record, and surfaces in the next `lint-report.md`. "Silent rot" becomes impossible: a skill can't drift for six weeks without the daily check going red.
+
+**`lane` frontmatter field — the DRY primitive.** Every `skill_*.md` declares:
+
+```yaml
+---
+name: calendar-recall
+lane: calendar.historical                 # domain.subdomain, unique within domain
+triggers: ["find my trip to …", "when did I go to …", "old calendar entry …"]
+uses: scripts/calendar-recall.mjs
+files_to: wiki/entities/                  # where records this skill writes land
+---
+```
+
+The `lane` field is the DRY audit's primary key: within a domain (e.g., `calendar.*`), two skills must not share a subdomain. Overlap → audit fails; the human either merges the skills or disambiguates with a narrower lane. Four calendar skills can coexist (`calendar.historical`, `calendar.upcoming`, `calendar.realtime`, `calendar.conflict-check`); a fifth stepping on another's lane is rejected before it ships. `files_to` + `uses` are parsed by the filing‑rules audit and unreachable‑tool audit respectively.
 
 **Cross‑skill hygiene (the audits that keep skills honest):**
 
