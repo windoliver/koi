@@ -85,6 +85,18 @@ describe("validatePolicySettings", () => {
   });
 });
 
+describe("example file", () => {
+  test("examples/.koi/settings.json validates successfully", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const raw = JSON.parse(
+      readFileSync(join(import.meta.dir, "../../../../examples/.koi/settings.json"), "utf-8"),
+    );
+    const result = validateKoiSettings(raw);
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("getSettingsJsonSchema", () => {
   test("returns an object with $schema key", () => {
     const schema = getSettingsJsonSchema();

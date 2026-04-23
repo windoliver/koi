@@ -1,6 +1,6 @@
 # @koi/settings — Hierarchical Settings Cascade
 
-Loads and merges up to 5 settings layers at agent startup. Separates operator/user preferences (permissions, hooks, env, theme) from the agent manifest (`koi.yaml`).
+Loads and merges up to 5 settings layers at agent startup. Separates operator/user preferences (permissions) from the agent manifest (`koi.yaml`).
 
 ---
 
@@ -15,12 +15,14 @@ Loads and merges up to 5 settings layers at agent startup. Separates operator/us
 | Priority | Layer | Default path | Notes |
 |---------|-------|-------------|-------|
 | 1 (lowest) | `user` | `~/.koi/settings.json` | Personal defaults |
-| 2 | `project` | `<cwd>/.koi/settings.json` | Shared team defaults, checked in |
-| 3 | `local` | `<cwd>/.koi/settings.local.json` | User overrides inside project, gitignored |
+| 2 | `project` | `<project-root>/.koi/settings.json` | Shared team defaults, checked in |
+| 3 | `local` | `<project-root>/.koi/settings.local.json` | User overrides inside project, gitignored |
 | 4 | `flag` | `--settings <path>` CLI flag | Ephemeral, per-invocation |
 | 5 (highest) | `policy` | `/etc/koi/policy.json` (Linux) `/Library/Application Support/koi/policy.json` (macOS) | Admin-controlled, wins unconditionally |
 
 Later layers override earlier ones. Policy also runs a post-merge enforcement pass.
+
+Project root is resolved by walking up from `cwd` to the nearest git root or `.koi/settings.json` file — so `koi` launched from a subdirectory still finds the repo-level settings.
 
 ---
 
@@ -28,9 +30,8 @@ Later layers override earlier ones. Policy also runs a post-merge enforcement pa
 
 | Field type | Rule |
 |-----------|------|
-| Scalars (`theme`, `apiBaseUrl`, `defaultMode`, `enableAllProjectMcpServers`) | Last layer wins |
-| Arrays (`allow`, `ask`, `deny`, `disabledMcpServers`, `additionalDirectories`) | Concatenate all layers, deduplicate |
-| Objects (`env`, `hooks`) | Deep merge by key; last layer's value for a key wins |
+| Scalars (`defaultMode`) | Last layer wins |
+| Arrays (`allow`, `ask`, `deny`) | Concatenate all layers, deduplicate |
 | Policy | Post-merge pass: policy `deny` removes matching patterns from merged `allow`/`ask`; policy scalars override unconditionally |
 
 Policy can only **tighten** (never loosen): a policy `deny` always wins, a policy `allow` does not override a lower layer's `deny`.
@@ -39,30 +40,26 @@ Policy can only **tighten** (never loosen): a policy `deny` always wins, a polic
 
 ## Schema
 
+Only the `permissions` field is currently enforced by the runtime. Other fields may be added in future releases when their enforcement paths are wired in.
+
 ```jsonc
 {
   "$schema": "https://koi.dev/schemas/settings-v1.json",
   "permissions": {
-    "defaultMode": "default",
+    "defaultMode": "default",  // "default" | "auto"
     "allow": ["Read(*)", "Glob(*)"],
     "ask":   ["Bash(git push*)"],
-    "deny":  ["Bash(rm -rf*)", "WebFetch(*)"],
-    "additionalDirectories": ["/tmp/workspace"]
-  },
-  "env": {
-    "KOI_LOG_LEVEL": "info"
-  },
-  "hooks": {
-    "PreToolUse": [
-      { "type": "command", "command": "./.koi/hooks/audit.sh", "timeoutMs": 5000 }
-    ]
-  },
-  "apiBaseUrl": "https://openrouter.ai/api/v1",
-  "theme": "dark",
-  "enableAllProjectMcpServers": false,
-  "disabledMcpServers": ["risky-server"]
+    "deny":  ["Bash(rm -rf*)", "WebFetch(*)"]
+  }
 }
 ```
+
+### `permissions.defaultMode`
+
+| Value | Behavior |
+|-------|---------|
+| `"default"` | Rules evaluated; unmatched tool calls prompt for approval |
+| `"auto"` | Rules evaluated; unmatched tool calls auto-approved |
 
 ### Permission pattern format
 
@@ -76,16 +73,24 @@ Policy can only **tighten** (never loosen): a policy `deny` always wins, a polic
 | `"WebFetch"` | `WebFetch` tool, any action (bare name = `*`) |
 | `"*"` | Any tool, any action |
 
+Tool names must be plain identifiers (letters, digits, underscores starting with a letter). Bare glob metacharacters like `Read**` or `Bash:**` are rejected by the validator.
+
+### Policy-layer strictness
+
+Policy and explicit `--settings` files use strict validation: unknown keys (including unsupported permission sub-fields) produce a fatal error rather than being silently stripped. This prevents admins from believing a setting is active when it is ignored.
+
 ---
 
 ## Error Handling
 
-| Layer | Parse failure |
-|-------|--------------|
-| user, project, local, flag | Layer skipped; error collected in `SettingsLoadResult.errors`; loading continues |
-| policy | **Throws** — caller must catch and exit with code 2 |
+| Layer | Parse/schema failure |
+|-------|----------------------|
+| `user`, `project`, `local` | Layer skipped; error collected in `SettingsLoadResult.errors`; loading continues |
+| `flag` (explicit `--settings`) | **Throws** — operator specified a file that must load correctly |
+| `policy` | **Throws** — caller must catch and exit with code 2 |
 
-Missing files are silently skipped (not an error).
+Empty files are treated as errors for `flag` and `policy` layers (fail-closed).
+Missing files are silently skipped for all layers except `flag` (where ENOENT is fatal).
 
 ---
 

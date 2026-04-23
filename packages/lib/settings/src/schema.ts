@@ -64,33 +64,45 @@ const permissionStringSchema = z
     }
   });
 
-const permissionsSchema = z
-  .object({
-    // "bypass" excluded: settings cannot disable rule evaluation.
-    // "plan" excluded: plan mode hard-denies all "invoke" actions, which would
-    //   brick the TUI. Wire plan-mode action vocabulary before accepting this.
-    // Programmatic callers use createPermissionBackend({ mode }) directly.
-    defaultMode: z.enum(["default", "auto"]).optional(),
-    allow: z.array(permissionStringSchema).optional(),
-    ask: z.array(permissionStringSchema).optional(),
-    deny: z.array(permissionStringSchema).optional(),
-  })
-  .readonly();
+const permissionsFields = {
+  // "bypass" excluded: settings cannot disable rule evaluation.
+  // "plan" excluded: plan mode hard-denies all "invoke" actions, which would
+  //   brick the TUI. Wire plan-mode action vocabulary before accepting this.
+  // Programmatic callers use createPermissionBackend({ mode }) directly.
+  defaultMode: z.enum(["default", "auto"]).optional(),
+  allow: z.array(permissionStringSchema).optional(),
+  ask: z.array(permissionStringSchema).optional(),
+  deny: z.array(permissionStringSchema).optional(),
+} as const;
+
+/** Strip mode: unknown permission keys silently dropped. Used for user/project/local/flag. */
+const permissionsSchema = z.object(permissionsFields).readonly();
+
+/** Strict mode: unknown permission keys rejected. Used for policy + explicit --settings. */
+const permissionsSchemaStrict = z.object(permissionsFields).strict().readonly();
 
 // ---------------------------------------------------------------------------
 // Top-level schemas (strip vs strict)
 // ---------------------------------------------------------------------------
 
-const koiSettingsBase = z.object({
+const settingsFields = {
   $schema: z.string().optional(),
   permissions: permissionsSchema.optional(),
-});
+} as const;
+
+const settingsFieldsStrict = {
+  $schema: z.string().optional(),
+  permissions: permissionsSchemaStrict.optional(),
+} as const;
 
 /** Strip mode: unknown top-level keys are silently dropped. Used for user/project/local/flag. */
-const koiSettingsSchema: z.ZodType<KoiSettings> = koiSettingsBase.strip().readonly();
+const koiSettingsSchema: z.ZodType<KoiSettings> = z.object(settingsFields).strip().readonly();
 
-/** Strict mode: unknown top-level keys produce a validation error. Used for policy. */
-const koiSettingsStrictSchema: z.ZodType<KoiSettings> = koiSettingsBase.strict().readonly();
+/** Strict mode: unknown top-level and nested permission keys produce a validation error. */
+const koiSettingsStrictSchema: z.ZodType<KoiSettings> = z
+  .object(settingsFieldsStrict)
+  .strict()
+  .readonly();
 
 // ---------------------------------------------------------------------------
 // Exports
