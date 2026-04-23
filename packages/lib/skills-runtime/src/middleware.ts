@@ -164,7 +164,10 @@ function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObje
  * If no skills are attached, returns the original request unchanged.
  */
 function injectSkillsProgressive(agent: Agent, request: ModelRequest): ModelRequest {
-  const sorted = sortedSkills(agent);
+  // Only include runtime-progressive skills (content: "" marker set by attachProgressive).
+  // Skills from other providers (browser, memory, etc.) have non-empty content and are
+  // not loadable via the Skill tool — advertising them would cause NOT_FOUND errors.
+  const sorted = sortedSkills(agent).filter((s) => s.content === "");
   if (sorted.length === 0) return request;
 
   const block = generateAvailableSkillsBlock(sorted);
