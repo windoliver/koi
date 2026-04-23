@@ -436,15 +436,32 @@ interface ParserContext {
   readonly bufferToolCalls: boolean;
   /** True once any tool_calls delta has been seen in the raw stream (even if buffered). */
   sawToolCallDelta: boolean;
+  /**
+   * Text/thinking rich-content segments that arrived after the first buffered tool call.
+   * Appended to acc.richContent at finish(), after tool calls, to preserve ordering.
+   */
+  deferredRichContent: Array<{ kind: "text" | "thinking"; text: string }>;
 }
 
 function flushCurrentSegment(ctx: ParserContext): void {
   if (ctx.state.kind === "text" && ctx.acc.currentTextSegment.length > 0) {
-    ctx.acc.richContent.push({ kind: "text", text: ctx.acc.currentTextSegment });
+    const segment = { kind: "text" as const, text: ctx.acc.currentTextSegment };
+    // In buffered mode, text that arrives after tool call deltas goes to deferred list
+    // so it's appended to richContent after the tool calls at finish(), preserving order.
+    if (ctx.bufferToolCalls && ctx.sawToolCallDelta) {
+      ctx.deferredRichContent.push(segment);
+    } else {
+      ctx.acc.richContent.push(segment);
+    }
     ctx.acc.currentTextSegment = "";
   }
   if (ctx.state.kind === "thinking" && ctx.acc.currentThinkingSegment.length > 0) {
-    ctx.acc.richContent.push({ kind: "thinking", text: ctx.acc.currentThinkingSegment });
+    const segment = { kind: "thinking" as const, text: ctx.acc.currentThinkingSegment };
+    if (ctx.bufferToolCalls && ctx.sawToolCallDelta) {
+      ctx.deferredRichContent.push(segment);
+    } else {
+      ctx.acc.richContent.push(segment);
+    }
     ctx.acc.currentThinkingSegment = "";
   }
 }
@@ -516,6 +533,11 @@ function finishParsing(ctx: ParserContext): readonly ModelChunk[] {
   const output = ctx.bufferToolCalls
     ? [...flushBufferedToolCalls(ctx.activeToolCalls, ctx.completedToolCalls, ctx.acc)]
     : [...closeActiveToolCalls(ctx.activeToolCalls, ctx.acc)];
+  // Append any text/thinking that arrived after buffered tool calls, preserving order.
+  for (const segment of ctx.deferredRichContent) {
+    ctx.acc.richContent.push(segment);
+  }
+  ctx.deferredRichContent.length = 0;
   ctx.state = { kind: "idle" };
   return output;
 }
@@ -549,6 +571,7 @@ export function createStreamParser(
     },
     activeToolCalls: new Map(),
     completedToolCalls: [],
+    deferredRichContent: [],
     bufferToolCalls: !(options?.supportsToolStreaming ?? true),
     sawToolCallDelta: false,
   };

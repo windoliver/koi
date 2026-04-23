@@ -829,8 +829,8 @@ describe("buildRequestBody — thinkingDisplay", () => {
       compat: { supportsReasoning: true, thinkingDisplay: "hidden" },
     });
     const body = buildRequestBody(baseRequest, config) as Record<string, unknown>;
-    // supportsPromptCaching=false → exclude:true must not be sent
-    expect(body.reasoning).toEqual({ effort: "medium" });
+    // supportsPromptCaching=false → fail closed: don't request reasoning at all
+    expect(body.reasoning).toBeUndefined();
     expect(body.thinking).toBeUndefined();
   });
 

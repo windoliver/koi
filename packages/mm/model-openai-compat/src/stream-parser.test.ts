@@ -916,6 +916,30 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     expect(chunks.filter((c) => c.kind === "tool_call_end")).toHaveLength(1);
   });
 
+  test("text → tool → text: richContent preserves arrival order in buffered mode", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // Pre-tool text
+    parser.feed({
+      id: "c1",
+      choices: [{ index: 0, delta: { content: "before" }, finish_reason: null }],
+    });
+    // Tool call
+    parser.feed(makeToolChunk(0, "call_1", "my_fn", '{"x":1}'));
+    // Post-tool text (arrives after tool call delta)
+    parser.feed({
+      id: "c2",
+      choices: [{ index: 0, delta: { content: "after" }, finish_reason: "stop" }],
+    });
+
+    parser.finish();
+    const acc = parser.getAccumulator();
+    expect(acc.richContent).toHaveLength(3);
+    expect(acc.richContent[0]).toMatchObject({ kind: "text", text: "before" });
+    expect(acc.richContent[1]).toMatchObject({ kind: "tool_call", name: "my_fn" });
+    expect(acc.richContent[2]).toMatchObject({ kind: "text", text: "after" });
+  });
+
   test("hasSeenToolCallDelta is false before any feed, true after first tool_calls delta", () => {
     const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
     expect(parser.hasSeenToolCallDelta()).toBe(false);

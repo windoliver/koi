@@ -430,11 +430,13 @@ export function buildRequestBody(
   // Models without reasoning capability ignore it silently.
   if (config.compat.supportsReasoning) {
     const td = config.compat.thinkingDisplay;
-    // `exclude` and `thinking.type` are OpenRouter-specific shapes — only safe on
-    // providers that support prompt caching (i.e. OpenRouter). Custom endpoints
-    // that set supportsReasoning:true but not supportsPromptCaching get plain effort.
-    if (td === "hidden" && config.compat.supportsPromptCaching) {
-      body.reasoning = { exclude: true };
+    if (td === "hidden") {
+      if (config.compat.supportsPromptCaching) {
+        // OpenRouter-specific: exclude reasoning tokens from the response.
+        body.reasoning = { exclude: true };
+      }
+      // else: fail closed — caller requested hidden reasoning; don't request
+      // reasoning at all on endpoints that lack the exclude shape.
     } else if (td === "summarized") {
       if (config.compat.supportsPromptCaching && effectiveModel.startsWith("anthropic/")) {
         body.thinking = { type: "summarized" };
