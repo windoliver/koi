@@ -954,4 +954,38 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     // Progressive mode does not set the flag — only buffered mode does
     expect(parser.hasSeenToolCallDelta()).toBe(false);
   });
+
+  test("tool A → text → tool B: richContent preserves interleaved ordering", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // Tool A
+    parser.feed(makeToolChunk(0, "call_a", "tool_a", '{"a":1}'));
+    // Text between the two tool calls
+    parser.feed({
+      id: "c1",
+      choices: [{ index: 0, delta: { content: "between" }, finish_reason: null }],
+    });
+    // Tool B (new id on same index — index reuse)
+    parser.feed(makeToolChunk(0, "call_b", "tool_b", '{"b":2}'));
+
+    parser.finish();
+    const acc = parser.getAccumulator();
+    expect(acc.richContent).toHaveLength(3);
+    expect(acc.richContent[0]).toMatchObject({ kind: "tool_call", name: "tool_a" });
+    expect(acc.richContent[1]).toMatchObject({ kind: "text", text: "between" });
+    expect(acc.richContent[2]).toMatchObject({ kind: "tool_call", name: "tool_b" });
+  });
+
+  test("name delta overwrites partial name on subsequent chunk", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // First chunk: partial name "to"
+    parser.feed(makeToolChunk(0, "call_1", "to", ""));
+    // Second chunk: full name "tool_fn" (provider sends corrective delta)
+    parser.feed(makeToolChunk(0, undefined, "tool_fn", '{"x":1}'));
+
+    const chunks = parser.finish();
+    const start = chunks.find((c) => c.kind === "tool_call_start");
+    expect(start).toMatchObject({ kind: "tool_call_start", toolName: "tool_fn" });
+  });
 });

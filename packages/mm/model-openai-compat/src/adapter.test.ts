@@ -706,4 +706,36 @@ describe("adapter: buffered tool streaming retry suppression", () => {
       expect(error.retryable).toBe(true);
     }
   });
+
+  test("truncated buffered stream flushes complete tool calls before the error", async () => {
+    // Stream sends a complete tool call (all args received) but no finish_reason.
+    // The adapter must emit the tool call lifecycle events before the truncation error
+    // so callers can act on complete tool calls even on a truncated stream.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"btf","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","function":{"name":"do_it","arguments":"{\\"k\\":1}"}}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends — no finish_reason, no [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const kinds = chunks.map((c) => c.kind);
+    const startIdx = kinds.indexOf("tool_call_start");
+    const endIdx = kinds.indexOf("tool_call_end");
+    const errorIdx = kinds.indexOf("error");
+
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    expect(errorIdx).toBeGreaterThan(endIdx);
+  });
 });

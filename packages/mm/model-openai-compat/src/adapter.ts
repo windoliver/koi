@@ -424,6 +424,15 @@ async function* streamOnce(
 
     const acc = parser.getAccumulator();
     if (!acc.receivedFinishReason) {
+      // Flush any buffered tool calls first — if only the finish_reason was cut
+      // off, complete tool calls should not be silently dropped.
+      for (const chunk of parser.finish()) {
+        if (chunk.kind === "error") {
+          yield chunk;
+          return;
+        }
+        yield chunk;
+      }
       // Don't retry if tool calls were already streamed from the provider — retrying
       // would re-execute those tools with potential non-idempotent side effects.
       const retryable = !parser.hasSeenToolCallDelta();
