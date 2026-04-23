@@ -4,7 +4,11 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { buildResource, parseOtelResourceAttributes } from "../otel-bootstrap.js";
+import {
+  buildResource,
+  parseOtelResourceAttributes,
+  StderrSpanExporter,
+} from "../otel-bootstrap.js";
 
 // Snapshot and restore env vars touched by each test.
 const ENV_KEYS = ["OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES", "KOI_VERSION"] as const;
@@ -269,36 +273,65 @@ describe("buildResource integration: span carries resource attributes", () => {
   });
 });
 
-describe("StderrSpanExporter: operator OTEL_RESOURCE_ATTRIBUTES appear in serialized output", () => {
-  test("all resource attributes are serialized — operator-supplied attrs visible in headless output", () => {
-    // Operators set OTEL_RESOURCE_ATTRIBUTES to route and filter spans in their
-    // logging pipeline. The default headless exporter must include them so the
-    // feature works without an OTLP collector.
-    process.env.OTEL_SERVICE_NAME = "stderr-resource-test";
-    process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment=prod,region=us-east-1";
+describe("StderrSpanExporter: end-to-end serialized output", () => {
+  test("emits parseable NDJSON lines with all resource attrs and span fields", () => {
+    process.env.OTEL_SERVICE_NAME = "e2e-stderr-test";
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment=prod";
 
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      if (typeof chunk === "string") stderrLines.push(chunk);
+      return true;
+    };
+
+    const exporter = new StderrSpanExporter();
     const provider = new BasicTracerProvider({
       resource: buildResource("headless"),
-      spanProcessors: [new SimpleSpanProcessor(new InMemorySpanExporter())],
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
     });
-    const inMemExporter = new InMemorySpanExporter();
-    const inMemProvider = new BasicTracerProvider({
-      resource: buildResource("headless"),
-      spanProcessors: [new SimpleSpanProcessor(inMemExporter)],
-    });
-    inMemProvider.getTracer("test").startSpan("test-resource-span").end();
-    const spans = inMemExporter.getFinishedSpans();
-    void inMemProvider.shutdown();
+    provider.getTracer("test").startSpan("e2e-span").end();
+
+    process.stderr.write = origWrite;
     void provider.shutdown();
 
-    expect(spans.length).toBe(1);
-    const resourceAttrs = spans[0]?.resource.attributes ?? {};
-    // Koi identity keys must be present
-    expect(resourceAttrs["service.name"]).toBe("stderr-resource-test");
-    expect(resourceAttrs["koi.mode"]).toBe("headless");
-    // Operator-supplied keys must also be in the resource so StderrSpanExporter
-    // can serialize them when it writes span.resource.attributes directly.
-    expect(resourceAttrs["deployment.environment"]).toBe("prod");
-    expect(resourceAttrs.region).toBe("us-east-1");
+    // Each export call produces exactly one JSON line per span
+    expect(stderrLines.length).toBeGreaterThan(0);
+    const firstLine = stderrLines[0];
+    if (firstLine === undefined) throw new Error("no stderr output");
+    const parsed = JSON.parse(firstLine) as Record<string, unknown>;
+
+    // Span identity fields must be present
+    expect(typeof parsed.traceId).toBe("string");
+    expect(typeof parsed.spanId).toBe("string");
+    expect(parsed.name).toBe("e2e-span");
+
+    // Resource must include both Koi defaults and operator-supplied attrs
+    const resource = parsed.resource as Record<string, unknown>;
+    expect(resource["service.name"]).toBe("e2e-stderr-test");
+    expect(resource["koi.mode"]).toBe("headless");
+    expect(resource["deployment.environment"]).toBe("prod");
+  });
+
+  test("otelDiag warnings are emitted as JSON lines (not plain text) to preserve NDJSON stream", () => {
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      if (typeof chunk === "string") stderrWrites.push(chunk);
+      return true;
+    };
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "no-equals-sign";
+    buildResource("headless");
+    process.stderr.write = origWrite;
+
+    expect(stderrWrites.length).toBe(1);
+    // Must be valid JSON (not a plain text warning)
+    const firstWrite = stderrWrites[0];
+    if (firstWrite === undefined) throw new Error("no stderr output");
+    const parsed = JSON.parse(firstWrite) as Record<string, unknown>;
+    expect(parsed.level).toBe("warn");
+    expect(parsed.source).toBe("koi/otel");
+    expect(typeof parsed.msg).toBe("string");
+    expect((parsed.msg as string).includes("malformed")).toBe(true);
   });
 });

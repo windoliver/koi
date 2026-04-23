@@ -27,6 +27,16 @@ import {
 const DEFAULT_OTLP_TRACES_URL = "http://localhost:4318/v1/traces";
 
 /**
+ * Write a structured JSON diagnostic line to stderr.
+ *
+ * Keeps the stderr stream parseable as NDJSON when StderrSpanExporter is
+ * active — plain text warning lines would corrupt downstream JSON parsers.
+ */
+function otelDiag(level: "warn" | "error", msg: string): void {
+  process.stderr.write(JSON.stringify({ level, source: "koi/otel", msg }) + "\n");
+}
+
+/**
  * Build an OTel Resource from env vars and Koi-specific defaults.
  *
  * Priority (highest wins): OTEL_SERVICE_NAME > OTEL_RESOURCE_ATTRIBUTES key
@@ -65,8 +75,9 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   if (rawAttrs !== undefined && rawAttrs.length > 0) {
     const parsed = parseOtelResourceAttributes(rawAttrs);
     if (parsed === undefined) {
-      process.stderr.write(
-        "[koi] OTel: OTEL_RESOURCE_ATTRIBUTES is malformed — ignoring entire value to avoid partial resource identity.\n",
+      otelDiag(
+        "warn",
+        "OTEL_RESOURCE_ATTRIBUTES is malformed — ignoring entire value to avoid partial resource identity.",
       );
     } else {
       for (const [k, v] of Object.entries(parsed)) {
@@ -96,8 +107,9 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   ] as const;
   for (const key of guardKeys) {
     if (attrs[key] !== undefined && attrs[key].trim().length === 0) {
-      process.stderr.write(
-        `[koi] OTel: "${key}" was set to an empty or whitespace-only string — ignoring override.\n`,
+      otelDiag(
+        "warn",
+        `"${key}" was set to an empty or whitespace-only string — ignoring override.`,
       );
       const koiValue = koiSnapshot[key];
       if (koiValue !== undefined) {
@@ -276,9 +288,9 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
 
   // Unsupported explicit value — warn and disable.
   if (envExporter !== undefined) {
-    process.stderr.write(
-      `[koi] OTel: unsupported OTEL_TRACES_EXPORTER="${envExporter}". ` +
-        'Supported: "console", "otlp", "none". OTel export disabled.\n',
+    otelDiag(
+      "warn",
+      `unsupported OTEL_TRACES_EXPORTER="${envExporter}". Supported: "console", "otlp", "none". OTel export disabled.`,
     );
     return undefined;
   }
@@ -295,10 +307,9 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
   // won't stall exit — it just means spans are lost (acceptable for local dev).
   const url = otlpUrl ?? DEFAULT_OTLP_TRACES_URL;
   if (otlpUrl === undefined) {
-    process.stderr.write(
-      `[koi] OTel: using default OTLP endpoint ${DEFAULT_OTLP_TRACES_URL}\n` +
-        "  If no collector is running, spans will be silently lost.\n" +
-        "  Set OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_TRACES_EXPORTER=console\n",
+    otelDiag(
+      "warn",
+      `using default OTLP endpoint ${DEFAULT_OTLP_TRACES_URL} — if no collector is running, spans will be silently lost. Set OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_TRACES_EXPORTER=console`,
     );
   }
   return new OTLPTraceExporter({ url });
@@ -316,7 +327,7 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
  * uses `process.stderr.write()` so span dumps stay on the diagnostic
  * stream where redirection (`2>/tmp/spans.log`) captures them cleanly.
  */
-class StderrSpanExporter implements SpanExporter {
+export class StderrSpanExporter implements SpanExporter {
   export(spans: readonly ReadableSpan[], resultCallback: (result: { code: number }) => void): void {
     for (const span of spans) {
       const obj = {
