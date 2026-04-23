@@ -450,6 +450,11 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
     return fail("config.allowLegacyBackendBashFallback must be a boolean");
   }
 
+  // enableBashSpecGuard — boolean if set (security feature: fail-closed on bad types)
+  if (config.enableBashSpecGuard !== undefined && typeof config.enableBashSpecGuard !== "boolean") {
+    return fail("config.enableBashSpecGuard must be a boolean");
+  }
+
   // Cross-field invariant: `resolveBashCommand` requires a marker-aware
   // backend unless the operator explicitly opts into single-key
   // fallback. Mirror the constructor check here so validation catches

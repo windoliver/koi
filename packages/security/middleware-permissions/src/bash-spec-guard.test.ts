@@ -26,11 +26,13 @@ beforeAll(async () => {
 
 describe("evaluateSpecGuard — refused spec enforces exact-argv guard", () => {
   test("refused spec (ssh) + prefix allow → downgrade to ask", async () => {
+    // Simulates `bash:ssh*` prefix rule — allows bash:ssh... resources but not bypass probe.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "ssh prod-host",
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision,
+      resolveQuery: async (q) =>
+        q.resource.startsWith("bash:ssh") ? allowDecision : hardDeny("no rule"),
       baseQuery,
       registry,
     });
@@ -75,11 +77,13 @@ describe("evaluateSpecGuard — refused spec enforces exact-argv guard", () => {
 
 describe("evaluateSpecGuard — partial spec enforces exact-argv guard", () => {
   test("rm -r (partial/recursive) + prefix allow → downgrade to ask", async () => {
+    // Simulates `bash:rm*` prefix rule — allows bash:rm... but not bypass probe.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "rm -r /tmp/work",
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision,
+      resolveQuery: async (q) =>
+        q.resource.startsWith("bash:rm") ? allowDecision : hardDeny("no rule"),
       baseQuery,
       registry,
     });
@@ -288,12 +292,15 @@ describe("evaluateSpecGuard — parse-unavailable fails closed", () => {
 
 describe("evaluateSpecGuard — exact-argv detection with canary suffix", () => {
   test("broad wildcard (bash:*) + exact also allows → downgrade to ask (canary detects wildcard)", async () => {
-    // Scenario: user has `allow: bash:*`. Both exact AND canary allow → prefix/wildcard.
+    // Scenario: user has `allow: bash:*`. Both exact AND canary allow (glob matches all under bash:).
+    // The bypass probe (\x02__bypass_probe__) does NOT start with `bash:` so it is denied,
+    // correctly identifying this as a prefix rule rather than a bypass backend.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "ssh prod-host",
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision,
+      resolveQuery: async (q) =>
+        q.resource.startsWith("bash:") ? allowDecision : hardDeny("no rule"),
       baseQuery,
       registry,
     });
@@ -349,29 +356,33 @@ describe("evaluateSpecGuard — path-qualified binaries (#1919 regression)", () 
     // Path-qualified argv[0] → evaluateBashCommand returns refused (identity not verified).
     // We intentionally do NOT pass verifiedBaseName: basename alone is insufficient
     // (/tmp/rm could impersonate /bin/rm). Refused → exact-argv guard → ask.
+    // Simulates a prefix `bash:*` rule that allows bash:... resources but not the bypass probe.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "/bin/rm /etc/passwd",
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision, // broad allow, canary also allows
+      resolveQuery: async (q) =>
+        q.resource.startsWith("bash:") ? allowDecision : hardDeny("no rule"),
       baseQuery,
       registry,
       backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
-    // Refused + broad allow → downgrade to ask (exact-argv guard fires)
+    // Refused + prefix allow → downgrade to ask (exact-argv guard fires)
     expect(result.decision.effect).toBe("ask");
     expect(result.specKind).toBe("refused");
   });
 
   test("/usr/bin/curl https://evil.com + allow → downgrade to ask (refused spec)", async () => {
     // Same principle: path-qualified binary gets refused spec → exact-argv guard.
+    // Simulates a prefix `bash:*` rule.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "/usr/bin/curl https://evil.com/path",
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision,
+      resolveQuery: async (q) =>
+        q.resource.startsWith("bash:") ? allowDecision : hardDeny("no rule"),
       baseQuery,
       registry,
       backendSupportsDualKey: true,
@@ -462,5 +473,48 @@ describe("evaluateSpecGuard — public default-deny field detection (#1919 regre
     if (result.kind !== "spec-evaluated") return;
     // IS_DEFAULT_ASK fall-through must NOT downgrade an allow decision
     expect(result.decision.effect).toBe("allow");
+  });
+});
+
+describe("evaluateSpecGuard — bypass mode detection (#1919 regression)", () => {
+  test("bypass backend (allows all resources) + refused spec → honored (no downgrade to ask)", async () => {
+    // Regression: bypass backends return allow for both exact resource and the canary suffix,
+    // so the canary technique cannot distinguish bypass from a prefix/glob rule.
+    // The bypass probe (\x02__bypass_probe__) detects all-allow backends and short-circuits.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "ssh prod-host", // refused spec (no verifiedBaseName match)
+      currentDecision: allowDecision,
+      resolveQuery: async (_q) => allowDecision, // bypass: allow everything
+      baseQuery,
+      registry,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    // Bypass backend must NOT be downgraded to ask by the exact-argv guard
+    expect(result.decision.effect).toBe("allow");
+    expect(result.specKind).toBe("refused");
+  });
+
+  test("prefix rule (bash:ssh*) still downgraded (bypass probe correctly excluded)", async () => {
+    // The bypass probe uses a \x02-prefixed resource that a real bash:ssh* rule cannot match.
+    // So prefix rules are NOT mistaken for bypass mode — downgrade still fires.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "ssh prod-host",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        // Simulate `bash:ssh*` — matches resources starting with `bash:ssh`
+        if (q.resource.startsWith("bash:ssh")) return allowDecision;
+        return hardDeny("no rule");
+      },
+      baseQuery,
+      registry,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    // Prefix rule: canary allows (prefix), bypass probe denies → downgrade to ask
+    expect(result.decision.effect).toBe("ask");
+    expect(result.specKind).toBe("refused");
   });
 });

@@ -354,27 +354,37 @@ export function createPermissionsMiddleware(
   // Internal helpers
   // -----------------------------------------------------------------------
 
+  // Cross-package fall-through ask marker — same Symbol.for key as bash-spec-guard.ts.
+  // Avoids a cross-L2 import while sharing the sentinel between the two layers.
+  const IS_DEFAULT_ASK_MERGE: symbol = Symbol.for("@koi/permissions/default-fallthrough-ask");
+
   /**
-   * Backend-tolerant default-deny check. Recognizes both the
-   * built-in pattern backend's internal symbol marker and a public
-   * `default: true` field that custom backends can set on their
-   * fall-through denies. Custom backends that set neither are
-   * treated as explicit deny (backward compat with backends that
-   * have no notion of default-deny — their denies ARE authoritative).
+   * Detect a fall-through (non-opinion) decision. Recognises:
+   *   - deny: IS_DEFAULT_DENY symbol, public `default: true` / `defaultDeny: true`
+   *   - ask: IS_DEFAULT_ASK symbol (createPermissionBackend unmatched-rule fall-through)
+   *
+   * Custom deny backends that set none of these markers are treated as
+   * explicit deny (backward compat — their denies ARE authoritative).
    */
-  function isDefaultDenyLike(d: PermissionDecision): boolean {
-    if (d.effect !== "deny") return false;
-    if (isDefaultDeny(d)) return true;
-    const withFlag = d as Record<string, unknown>;
-    return withFlag.default === true || withFlag.defaultDeny === true;
+  function isFallThroughDecision(d: PermissionDecision): boolean {
+    if (d.effect === "deny") {
+      if (isDefaultDeny(d)) return true;
+      const withFlag = d as Record<string, unknown>;
+      return withFlag.default === true || withFlag.defaultDeny === true;
+    }
+    if (d.effect === "ask") {
+      const withSym = d as Record<string | symbol, unknown>;
+      return withSym[IS_DEFAULT_ASK_MERGE] === true;
+    }
+    return false;
   }
 
   function strictestDecision(
     plain: PermissionDecision,
     enriched: PermissionDecision,
   ): PermissionDecision {
-    const plainOpinion = !(plain.effect === "deny" && isDefaultDenyLike(plain));
-    const enrichedOpinion = !(enriched.effect === "deny" && isDefaultDenyLike(enriched));
+    const plainOpinion = !isFallThroughDecision(plain);
+    const enrichedOpinion = !isFallThroughDecision(enriched);
 
     // Neither side opined — fall-through deny from either is fine.
     if (!plainOpinion && !enrichedOpinion) return plain;
@@ -546,7 +556,7 @@ export function createPermissionsMiddleware(
     getTracker,
     getTurnSoftDenyCounter,
     getSoftDenyLog,
-    isDefaultDenyLike,
+    isFallThroughDecision,
     queryForTool,
     resolveBatch,
   });

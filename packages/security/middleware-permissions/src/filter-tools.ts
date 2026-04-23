@@ -26,7 +26,7 @@ export interface FilterToolsDeps {
   readonly getTracker: (sessionId: string) => DenialTracker;
   readonly getTurnSoftDenyCounter: (sessionId: string) => TurnSoftDenyCounter;
   readonly getSoftDenyLog: (sessionId: string) => SoftDenyLog;
-  readonly isDefaultDenyLike: (d: PermissionDecision) => boolean;
+  readonly isFallThroughDecision: (d: PermissionDecision) => boolean;
   readonly queryForTool: (
     ctx: TurnContext,
     resource: string,
@@ -78,7 +78,7 @@ export function createFilterTools(deps: FilterToolsDeps): {
     getTracker,
     getTurnSoftDenyCounter,
     getSoftDenyLog,
-    isDefaultDenyLike,
+    isFallThroughDecision,
     queryForTool,
     resolveBatch,
   } = deps;
@@ -113,7 +113,7 @@ export function createFilterTools(deps: FilterToolsDeps): {
       // Explicit deny overrides the visibility bypass. Default-deny
       // (no rule matches) does NOT — that's exactly the case
       // bashVisibleTools exists to accommodate.
-      if (decision.effect === "deny" && !isDefaultDenyLike(decision)) return false;
+      if (decision.effect === "deny" && !isFallThroughDecision(decision)) return false;
       return true;
     };
 
