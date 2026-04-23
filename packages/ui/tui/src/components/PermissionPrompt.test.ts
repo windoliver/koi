@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  computeMinSafeHeight,
   computePermissionPromptWidth,
   formatInputPreview,
   formatToolId,
@@ -154,22 +155,71 @@ describe("PERMISSION_PROMPT_MIN_SAFE_HEIGHT", () => {
 });
 
 // ---------------------------------------------------------------------------
+// computeMinSafeHeight — dynamic row budget accounting for prompt content
+// ---------------------------------------------------------------------------
+
+describe("computeMinSafeHeight", () => {
+  // Baseline: wide terminal, "{}" input (1 JSON line), no reason, no permanent.
+  // Budget: top(2) + borders(2) + title(1) + tool(2) + args(3) + hints(6) = 16.
+  test("returns PERMISSION_PROMPT_MIN_SAFE_HEIGHT for minimum content on wide terminal", () => {
+    expect(computeMinSafeHeight(80, "{}", undefined, false)).toBe(
+      PERMISSION_PROMPT_MIN_SAFE_HEIGHT,
+    );
+  });
+
+  test("adds rows for each extra JSON arg line", () => {
+    // 4-line JSON: raw budget = top(1)+borders(2)+title(1)+tool(2)+args(1+1+4)+hints(6) = 18.
+    // Baseline raw = 15, floored to 16. 4-line JSON raw = 18 (no floor needed).
+    const fourLineJson = '{\n  "a": "b",\n  "c": "d"\n}';
+    expect(computeMinSafeHeight(80, fourLineJson, undefined, false)).toBe(18);
+  });
+
+  test("adds rows for a non-empty reason string", () => {
+    // Short reason: raw = 15 + marginTop(1) + 1 line = 17. Floor = max(17, 16) = 17.
+    expect(computeMinSafeHeight(80, "{}", "short reason", false)).toBe(17);
+  });
+
+  test("adds 1 row for permanentAvailable (tested above the floor using reason)", () => {
+    // Use a reason to push above the floor, then verify +1 for permanent.
+    const withoutPermanent = computeMinSafeHeight(80, "{}", "a reason", false);
+    const withPermanent = computeMinSafeHeight(80, "{}", "a reason", true);
+    expect(withPermanent).toBe(withoutPermanent + 1);
+  });
+
+  test("narrow terminal produces higher height than wide (extra rows for stacked layout)", () => {
+    // 30-col (width=26, narrow): raw = 1+2+2+3+3+6 = 17, floor = 17.
+    // 80-col (wide): raw = 15, floor = 16.
+    const narrowHeight = computeMinSafeHeight(30, "{}", undefined, false);
+    const wideHeight = computeMinSafeHeight(80, "{}", undefined, false);
+    expect(narrowHeight).toBe(17);
+    expect(wideHeight).toBe(16);
+    expect(narrowHeight).toBeGreaterThan(wideHeight);
+  });
+
+  test("floor is always PERMISSION_PROMPT_MIN_SAFE_HEIGHT even for empty inputs", () => {
+    expect(computeMinSafeHeight(80, "", undefined, false)).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_MIN_SAFE_HEIGHT,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // cannotReview gate — render + handler guard (width OR height unsafe = blocked)
 // ---------------------------------------------------------------------------
 
 describe("cannotReview gate logic (isTooNarrow || isTooShort)", () => {
-  // Inline the gate formula to verify the combined-state contract without
-  // needing a SolidJS render context. The component uses the same expression.
+  // Use minimum content to mirror the baseline for the gate logic contract.
   function cannotReview(terminalCols: number, terminalRows: number): boolean {
     const width = computePermissionPromptWidth(terminalCols);
     const isTooNarrow = width < PERMISSION_PROMPT_MIN_SAFE_WIDTH;
-    const isTooShort = terminalRows < PERMISSION_PROMPT_MIN_SAFE_HEIGHT;
+    const minHeight = computeMinSafeHeight(terminalCols, "{}", undefined, false);
+    const isTooShort = terminalRows < minHeight;
     return isTooNarrow || isTooShort;
   }
 
   test("width-safe but height-unsafe terminal triggers cannotReview", () => {
     // 80-col terminal is wide enough (width=60 >= MIN_SAFE_WIDTH=20), but only
-    // 10 rows — too short (10 < MIN_SAFE_HEIGHT=14). Must block approval.
+    // 10 rows — too short (10 < computeMinSafeHeight(80, …) = 16). Must block.
     expect(cannotReview(80, 10)).toBe(true);
     expect(cannotReview(80, PERMISSION_PROMPT_MIN_SAFE_HEIGHT - 1)).toBe(true);
   });
@@ -180,13 +230,25 @@ describe("cannotReview gate logic (isTooNarrow || isTooShort)", () => {
   });
 
   test("both-safe terminal does not trigger cannotReview", () => {
-    // 80-col, 20-row terminal: width=60 >= 20, rows=20 >= 14.
+    // 80-col, 20-row terminal: width=60 >= 20, rows=20 >= 16.
     expect(cannotReview(80, 20)).toBe(false);
     expect(cannotReview(80, PERMISSION_PROMPT_MIN_SAFE_HEIGHT)).toBe(false);
   });
 
   test("both-unsafe terminal triggers cannotReview", () => {
     expect(cannotReview(10, 5)).toBe(true);
+  });
+
+  test("multiline-args prompt needs more rows than baseline", () => {
+    // 5-line JSON needs base+4 rows; a terminal at base rows should block.
+    const fiveLineJson = '{\n  "a": "1",\n  "b": "2",\n  "c": "3",\n  "d": "4"\n}';
+    const minH = computeMinSafeHeight(80, fiveLineJson, undefined, false);
+    expect(minH).toBeGreaterThan(PERMISSION_PROMPT_MIN_SAFE_HEIGHT);
+    // Terminal with only baseline rows should block when content is taller.
+    const width = computePermissionPromptWidth(80);
+    const isTooNarrow = width < PERMISSION_PROMPT_MIN_SAFE_WIDTH;
+    const isTooShort = PERMISSION_PROMPT_MIN_SAFE_HEIGHT < minH;
+    expect(isTooNarrow || isTooShort).toBe(true);
   });
 });
 

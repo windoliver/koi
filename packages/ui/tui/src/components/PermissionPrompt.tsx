@@ -84,25 +84,59 @@ export const PERMISSION_PROMPT_NARROW_THRESHOLD = 30;
 export const PERMISSION_PROMPT_MIN_SAFE_WIDTH = 20;
 
 /**
- * Minimum terminal row count at which the prompt can display enough vertical
- * approval context to be safely interactive.
- *
- * Budget breakdown (all rows needed from the top of the terminal):
- *   MODAL_POSITION.top = 2 rows offset
- *   border top = 1
- *   title row = 1
- *   marginTop(1) + tool row = 2
- *   marginTop(1) + "Arguments:\n{}" = 3 (minimum 2-line JSON + margin)
- *   marginTop(1) + [y]+[n]+[a…\n  id]+[Esc] = 6 (stacked hints)
- *   border bottom = 1
- *   ─────────────────────────────────────────────────────────────────
- *   Total = 2 + 14 = 16
- *
- * Below this threshold approval keys y/a/! are suppressed so users
- * cannot grant access when the prompt is vertically clipped off-screen.
+ * Absolute floor for `computeMinSafeHeight`: the minimum baseline for the
+ * shortest possible prompt (no reason, no permanent, empty-object JSON on a
+ * wide terminal). Derived:
+ *   MODAL_POSITION.top(2) + border(2) + title(1) + tool(2) + args(3) + hints(6) = 16
  * Exported for unit testing.
  */
 export const PERMISSION_PROMPT_MIN_SAFE_HEIGHT = 16;
+
+/**
+ * Estimate minimum terminal row count needed to show the full permission
+ * prompt without vertical clipping, given the current prompt content and
+ * terminal width.
+ *
+ * Row budget:
+ *   MODAL_POSITION.top + borders(2) + title(1 or 2 if narrow) +
+ *   marginTop + tool(1 or 2 if narrow) +
+ *   marginTop + "Arguments:\n" + inputPreview lines +
+ *   [if reason: marginTop + estimated lines] +
+ *   marginTop + [y](1) + [n](1) + [a…\n  toolId](2) + [!]?(1) + [Esc](1) +
+ *   border bottom (included in borders above)
+ *
+ * Returns at least PERMISSION_PROMPT_MIN_SAFE_HEIGHT (floor for minimum content).
+ * Exported for unit testing.
+ */
+export function computeMinSafeHeight(
+  terminalCols: number,
+  inputPreviewStr: string,
+  reason: string | undefined,
+  permanentAvailable: boolean,
+): number {
+  const width = computePermissionPromptWidth(terminalCols);
+  const isNarrow = width < PERMISSION_PROMPT_NARROW_THRESHOLD;
+
+  // top offset + border top + border bottom
+  let rows = MODAL_POSITION.top + 2;
+  // title row (risk label stacks below on narrow terminals)
+  rows += isNarrow ? 2 : 1;
+  // marginTop(1) + tool (1 wide, 2 narrow: "Tool:" + "  id")
+  rows += 1 + (isNarrow ? 2 : 1);
+  // marginTop(1) + "Arguments:" header + JSON preview lines
+  rows += 1 + 1 + inputPreviewStr.split("\n").length;
+  // reason: marginTop(1) + estimated line count based on inner width
+  if (reason !== undefined && reason !== "") {
+    const normalized = reason.replace(/\s+/g, " ").trim();
+    // "↳ " prefix (2 chars) + paddingLeft(1) = 3 chars overhead
+    const lineWidth = Math.max(1, width - 3);
+    rows += 1 + Math.max(1, Math.ceil(normalized.length / lineWidth));
+  }
+  // marginTop(1) + key hints: [y](1) + [n](1) + [a\n  toolId](2) + [!]?(1) + [Esc](1)
+  rows += 1 + 1 + 1 + 2 + (permanentAvailable ? 1 : 0) + 1;
+
+  return Math.max(rows, PERMISSION_PROMPT_MIN_SAFE_HEIGHT);
+}
 
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
@@ -226,8 +260,18 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   // the keyboard handler AND the render path so approval affordances are never
   // shown when they would be silently ignored. (#1913)
   const isTooNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_MIN_SAFE_WIDTH);
+  // Dynamic height estimate accounts for multiline JSON, reason text, narrow
+  // layout, and permanent approval row — not just the minimum baseline. (#1913)
+  const minSafeHeight = createMemo(() =>
+    computeMinSafeHeight(
+      props.terminalWidth ?? PERMISSION_PROMPT_WIDTH,
+      inputPreview(),
+      props.prompt.reason,
+      permanentAvailable(),
+    )
+  );
   const isTooShort = createMemo(() =>
-    (props.terminalHeight ?? PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 1) < PERMISSION_PROMPT_MIN_SAFE_HEIGHT
+    (props.terminalHeight ?? minSafeHeight() + 1) < minSafeHeight()
   );
   const cannotReview = createMemo(() => isTooNarrow() || isTooShort());
 
