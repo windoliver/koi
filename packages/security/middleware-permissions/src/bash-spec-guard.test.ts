@@ -319,3 +319,99 @@ describe("evaluateSpecGuard — exact-argv detection with canary suffix", () => 
     expect(result.specKind).toBe("refused");
   });
 });
+
+describe("evaluateSpecGuard — path-qualified binaries (#1919 regression)", () => {
+  test("/bin/rm /etc/passwd → resolves to complete spec + Write deny applies", async () => {
+    // Without verifiedBaseName, /bin/rm would return refused spec (no semantic check).
+    // With the fix, basename "rm" is extracted and the complete spec fires Write rules.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "/bin/rm /etc/passwd",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        if (q.action === "write" && q.resource.startsWith("/etc/"))
+          return hardDeny("writes to /etc denied");
+        return allowDecision;
+      },
+      baseQuery,
+      registry,
+      backendSupportsDualKey: true,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("deny");
+    expect(result.specKind).toBe("complete");
+  });
+
+  test("/usr/bin/curl https://evil.com → Network deny applies via verifiedBaseName", async () => {
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "/usr/bin/curl https://evil.com/path",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        if (q.action === "network" && q.resource === "evil.com") return hardDeny("blocked");
+        return allowDecision;
+      },
+      baseQuery,
+      registry,
+      backendSupportsDualKey: true,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("deny");
+  });
+});
+
+describe("evaluateSpecGuard — public default-deny field detection (#1919 regression)", () => {
+  test("backend with default:true field skips Write rule (not explicit deny)", async () => {
+    // Custom backends may mark fall-throughs via `default: true` instead of IS_DEFAULT_DENY symbol.
+    // The spec guard must treat these as fall-throughs, not explicit rules.
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "rm /tmp/safe",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        if (q.action === "write") {
+          // Simulate a backend that marks fall-throughs with public `default: true`
+          return {
+            effect: "deny",
+            reason: "no rule matched",
+            default: true,
+          } as PermissionDecision & { default: boolean };
+        }
+        return allowDecision;
+      },
+      baseQuery,
+      registry,
+      backendSupportsDualKey: true,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    // Fall-through default deny must NOT downgrade an allow
+    expect(result.decision.effect).toBe("allow");
+  });
+
+  test("backend with defaultDeny:true field skips Write rule (not explicit deny)", async () => {
+    const result = await evaluateSpecGuard({
+      toolId: "bash",
+      rawCommand: "rm /tmp/safe",
+      currentDecision: allowDecision,
+      resolveQuery: async (q) => {
+        if (q.action === "write") {
+          return {
+            effect: "deny",
+            reason: "fallthrough",
+            defaultDeny: true,
+          } as PermissionDecision & { defaultDeny: boolean };
+        }
+        return allowDecision;
+      },
+      baseQuery,
+      registry,
+      backendSupportsDualKey: true,
+    });
+    expect(result.kind).toBe("spec-evaluated");
+    if (result.kind !== "spec-evaluated") return;
+    expect(result.decision.effect).toBe("allow");
+  });
+});

@@ -23,7 +23,19 @@ import {
   initializeBashAst,
 } from "@koi/bash-ast";
 import type { PermissionDecision, PermissionQuery } from "@koi/core/permission-backend";
-import { isDefaultDeny } from "./classifier.js";
+import { IS_DEFAULT_DENY } from "./classifier.js";
+
+/**
+ * Detect fall-through denies from both the internal IS_DEFAULT_DENY symbol
+ * (set by createPatternPermissionBackend) and the public `default: true` /
+ * `defaultDeny: true` fields that custom backends may set per the
+ * PermissionBackend contract docs.
+ */
+function isDefaultDenyLike(decision: PermissionDecision): boolean {
+  if (decision.effect !== "deny") return false;
+  const d = decision as Record<string | symbol, unknown>;
+  return d[IS_DEFAULT_DENY] === true || d.default === true || d.defaultDeny === true;
+}
 
 export type SpecGuardOutcome =
   | { readonly kind: "skipped"; readonly reason: string }
@@ -60,14 +72,14 @@ async function evaluateSemanticRules(
 
   for (const path of semantics.writes) {
     const d = await resolveQuery({ ...baseQuery, resource: path, action: "write" });
-    if (isDefaultDeny(d)) continue; // fall-through, no explicit Write rule
+    if (isDefaultDenyLike(d)) continue; // fall-through, no explicit Write rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
 
   for (const path of semantics.reads) {
     const d = await resolveQuery({ ...baseQuery, resource: path, action: "read" });
-    if (isDefaultDeny(d)) continue; // fall-through, no explicit Read rule
+    if (isDefaultDenyLike(d)) continue; // fall-through, no explicit Read rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
@@ -75,7 +87,7 @@ async function evaluateSemanticRules(
   for (const net of semantics.network) {
     // Use net.host (parsed URL.host) for Network rule matching, NOT net.target
     const d = await resolveQuery({ ...baseQuery, resource: net.host, action: "network" });
-    if (isDefaultDeny(d)) continue; // fall-through, no explicit Network rule
+    if (isDefaultDenyLike(d)) continue; // fall-through, no explicit Network rule
     result = stricter(result, d);
     if (result.effect === "deny") return result;
   }
@@ -213,9 +225,17 @@ export async function evaluateSpecGuard(opts: {
     return { kind: "skipped", reason: "empty-command-list" };
   }
 
+  // If argv[0] is a path-qualified binary (e.g. /bin/rm, /usr/bin/curl), the
+  // bash-classifier has already normalized it and confirmed executable identity.
+  // Extract the basename and pass as verifiedBaseName so evaluateBashCommand can
+  // match the correct spec instead of falling back to refused/parse-error.
+  const argv0 = cmd.argv[0] ?? "";
+  const verifiedBaseName = argv0.includes("/") ? (argv0.split("/").pop() ?? argv0) : undefined;
+
   const specResult = evaluateBashCommand(
     { argv: cmd.argv, envVars: cmd.envVars, redirects: cmd.redirects },
     registry,
+    verifiedBaseName !== undefined ? { verifiedBaseName } : undefined,
   );
 
   if (specResult.kind === "refused" || specResult.kind === "partial") {
