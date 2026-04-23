@@ -1000,10 +1000,15 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     });
     expect(postFeedChunks.some((c) => c.kind === "text_delta")).toBe(false);
 
-    // At finish: tool events and post-tool text are emitted in order
+    // At finish: tool events and post-tool text_delta are emitted in order
     const finishChunks = parser.finish();
-    expect(finishChunks.some((c) => c.kind === "tool_call_start")).toBe(true);
-    expect(finishChunks.some((c) => c.kind === "tool_call_end")).toBe(true);
+    const finishKinds = finishChunks.map((c) => c.kind);
+    expect(finishKinds).toContain("tool_call_start");
+    expect(finishKinds).toContain("tool_call_end");
+    // Post-tool text_delta must follow tool_call_end
+    const endIdx = finishKinds.lastIndexOf("tool_call_end");
+    const textIdx = finishKinds.indexOf("text_delta");
+    expect(textIdx).toBeGreaterThan(endIdx);
 
     // richContent: pre-tool text, tool_call, post-tool text — correct arrival order
     const acc = parser.getAccumulator();

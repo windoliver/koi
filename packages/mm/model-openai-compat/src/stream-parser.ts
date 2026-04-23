@@ -414,11 +414,13 @@ function flushBufferedItems(
   const chunks: ModelChunk[] = [];
   for (const item of bufferedItems) {
     if (item.kind === "text") {
-      // Text was already streamed live during feed(); push to richContent only
-      // so the final model response reflects correct arrival order.
+      // Post-tool text was suppressed during feed() for ordering. Replay now
+      // so streaming consumers receive text_delta before done, in correct order.
       acc.richContent.push({ kind: "text", text: item.text });
+      chunks.push({ kind: "text_delta", delta: item.text });
     } else if (item.kind === "thinking") {
       acc.richContent.push({ kind: "thinking", text: item.text });
+      chunks.push({ kind: "thinking_delta", delta: item.text });
     } else {
       const slot = bufferedSlots[item.slotIdx];
       if (slot === undefined) continue;

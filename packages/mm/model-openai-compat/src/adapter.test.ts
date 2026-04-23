@@ -866,4 +866,46 @@ describe("adapter: buffered tool streaming retry suppression", () => {
     expect(endIdx).toBeGreaterThan(startIdx);
     expect(errorIdx).toBeGreaterThan(endIdx);
   });
+
+  test("buffered mode replays post-tool text_delta before done", async () => {
+    // text → tool → text in a buffered stream: streaming consumers must receive
+    // all text_delta chunks (including the trailing one) before the done event.
+    // Previously post-tool text was suppressed and never replayed as chunks.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"ptt","choices":[{"index":0,"delta":{"content":"before"},"finish_reason":null}]}`,
+        ``,
+        `data: {"id":"ptt","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"fn","arguments":"{\\"x\\":1}"}}]},"finish_reason":null}]}`,
+        ``,
+        `data: {"id":"ptt","choices":[{"index":0,"delta":{"content":"after"},"finish_reason":"stop"}]}`,
+        ``,
+        `data: [DONE]`,
+        ``,
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const kinds = chunks.map((c) => c.kind);
+
+    // Both text_deltas must be present
+    const textDeltas = chunks.filter((c) => c.kind === "text_delta");
+    expect(textDeltas.length).toBeGreaterThanOrEqual(2);
+
+    // trailing text_delta must come after tool_call_end
+    const lastTextDeltaIdx = kinds.lastIndexOf("text_delta");
+    const toolEndIdx = kinds.lastIndexOf("tool_call_end");
+    expect(lastTextDeltaIdx).toBeGreaterThan(toolEndIdx);
+
+    // done must be the final meaningful event
+    expect(kinds.at(-1)).toBe("done");
+  });
 });
