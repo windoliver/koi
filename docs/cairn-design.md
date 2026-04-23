@@ -54,7 +54,7 @@ Every capability in Cairn is tagged P0 / P1 / P2 / P3. Readers skimming for "wha
 | Concept | P0 position | P1+ upgrade path |
 |---------|-------------|-------------------|
 | Storage | single SQLite file with built‑in FTS5 | Nexus sandbox (adds BM25S + sqlite‑vec + litellm embeddings) → Nexus full hub (Postgres + pgvector via federation) |
-| Search | keyword via FTS5; `semantic_degraded=true` on every hit | semantic via sqlite‑vec (P1); hybrid (P1); cross‑tenant federation (P2) |
+| Search | `mode: "keyword"` only (FTS5); `mode: "semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (capability-gated) | `search.semantic` + `search.hybrid` advertised via sqlite‑vec (P1); federation capability (P2) |
 | Extract | `RegexExtractor` always on (zero-LLM); `LLMExtractor` runs iff an `LLMProvider` is configured — gracefully skipped otherwise | `AgentExtractorWorker` with tool loop (P2, §5.2.a) |
 | Dream | `LLMDreamWorker` runs iff an `LLMProvider` is configured; rolling summaries pause cleanly when not | `HybridDreamWorker` prune+summary (P1); `AgentDreamWorker` tool loop (P2, §10.2) |
 | Identity | single‑actor `author` key — Ed25519 keypair in platform keychain | full `actor_chain` delegation + countersignatures (P2) |
@@ -149,7 +149,7 @@ These are the load‑bearing invariants — everything else in this doc is conse
    └───────────────────────────────────────────────────────────────────────┘
                                     ▲
    ┌───────────────────────────────────────────────────────────────────────┐
-   │   5. Narrow typed contracts (6 interfaces, 15 pure functions)         │
+   │   5. Narrow typed contracts (7 interfaces, 15 pure functions)         │
    │   4. Local-first, cloud-optional                                      │  ← foundation
    │   3. Stand-alone (one Rust binary, zero creds)                        │
    │   2. Smallest viable backend; scale by adding layers                  │
@@ -163,7 +163,7 @@ Every higher-layer promise depends on a lower-layer promise. "Plugin architectur
 2. **Default to the smallest viable backend; scale by adding layers, not by swapping.** P0 default is a single SQLite file with FTS5 — zero external services. P1 upgrades the same vault to Nexus `sandbox` (adds Python sidecar + BM25S + `sqlite-vec` + embeddings) behind the same `MemoryStore` contract. P2 federates sandbox → Nexus `full` hub over HTTP. No code change in Cairn at any tier; the contract is still swappable for teams with an existing store, but Cairn does not "multi‑backend for multi‑backend's sake".
 3. **Stand‑alone.** A single Rust static binary (`brew install cairn` or `cargo install cairn`) on a fresh laptop with zero cloud credentials works end‑to‑end.
 4. **Local‑first, cloud‑optional.** The vault lives on disk. Cloud is opt‑in per sensor, per write path.
-5. **Narrow typed contracts.** Six real interfaces (five P0 + `AgentProvider` at P2). Fifteen pure functions. Everything else is composition.
+5. **Narrow typed contracts.** Seven real interfaces (five P0 + `AgentProvider` at P2 + `FrontendAdapter` at P3). Fifteen pure functions. Everything else is composition.
 6. **Continuous learning off the request path.** A durable `WorkflowOrchestrator` runs Dream / Reflect / Promote / Consolidate / Propagate / Expire / Evaluate in the background. Default v0.1 implementation is `tokio` + a SQLite job table; Temporal is an optional adapter. Harness latency is untouched in either case.
 7. **Privacy by construction.** Presidio pre‑persist, per‑user salt, append‑only consent log, no implicit share.
 8. **The eight verbs are the contract; the CLI is the ground truth.** MCP, SDK, and the Cairn skill are all thin wrappers over the same eight Rust functions under `src/verbs/`. If a harness can run a subprocess, a bash command, or a JSON-RPC client, it speaks Cairn.
@@ -319,7 +319,7 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 |------|-------------------|------------------------|-------------------------|
 | Record bodies (markdown + frontmatter) | **`.cairn/cairn.db` records table is authoritative** (`body`, `frontmatter_json`, `body_hash` columns). The `wiki/` + `raw/` markdown tree is a **repairable projection** of the DB, regenerated on demand via `cairn export --markdown` or automatically by the `markdown_projector` background job on every WAL commit. A missing or stale markdown file never corrupts the vault; `cairn lint --fix-markdown` rebuilds the tree from DB. | **same authority** — `.cairn/cairn.db` still owns record bodies. Nexus only mirrors them into CAS (`nexus-data/cas/`) as a derived content-addressed projection for the search brick to read; `cairn reindex --from-db` rebuilds Nexus's CAS mirror from the authoritative DB. | **same authority** — each vault's `.cairn/cairn.db` still owns record bodies. Hub Postgres holds a derived projection for shared-tier federation queries; on federation divergence, `cairn reindex --push-to-hub` replays from each vault's DB. |
 | Full-text search | SQLite FTS5 on body column (authoritative keyword index) | **BM25S** via Nexus `search` brick, **derived from DB**; FTS5 remains authoritative for keyword mode and answers local queries | BM25S on sandbox + federated BM25 on hub; results merged. All tiers derivable from each vault's DB. |
-| Semantic search | **unavailable** — results stamped `semantic_degraded=true` | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick; vectors keyed by `record_id` and rebuilt from DB on reindex | local `sqlite-vec` + pgvector on hub; results merged |
+| Semantic search | **unavailable** — `mode: "semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (no silent fallback; clients check `handshake.capabilities`) | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick; vectors keyed by `record_id` and rebuilt from DB on reindex. Advertises `cairn.mcp.v1.search.semantic`. | local `sqlite-vec` + pgvector on hub; results merged |
 | WAL / locks / consent journal | `.cairn/cairn.db` tables (authoritative linearization point for every tier) | **unchanged — still `.cairn/cairn.db`** (never moves to Nexus). All Nexus side-effects are keyed by `operation_id` and replayable from the WAL. | **unchanged** — each node has its own local control plane; hub never holds WAL state |
 | Raft / consensus | none (single-writer SQLite) | `nexus-data/root/raft/raft.redb` (Nexus-internal, only for Nexus's own sandbox peers — **not** for Cairn's WAL linearization) | hub-side only for cross-tenant coordination; still does not own record state |
 | Secrets / embeddings / raw PII | never persisted — stripped at Filter stage | same | same |
@@ -919,7 +919,7 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 
 ---
 
-## 4. Contracts — the Six That Matter (five P0 + AgentProvider at P2)
+## 4. Contracts — the Seven That Matter (five P0 + AgentProvider P2 + FrontendAdapter P3)
 
 ### 4.0 Overall architecture at a glance
 
@@ -935,7 +935,7 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                          CAIRN CORE  (L0, Rust, zero runtime deps)             │
 │                                                                                │
-│   Six contracts (traits)               Pipeline (pure functions)               │
+│   Seven contracts (traits)             Pipeline (pure functions)               │
 │   ─────────────────────────            ──────────────────────────────          │
 │   MemoryStore        [P0]◄┐            Extract · Filter · Classify · Scope     │
 │   LLMProvider        [P0] │  dispatch  Match · Rank · Consolidate · Promote    │
@@ -944,6 +944,8 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 │   MCPServer          [P0]◄┘                                                    │
 │   AgentProvider      [P2]     (opt-in — only active when an Agent-mode         │
 │                               ExtractorWorker or DreamWorker is configured)    │
+│   FrontendAdapter    [P3]     (opt-in — only active when at least one frontend │
+│                               adapter is registered; §13.5.d contract)         │
 │                                                                                │
 │   Identity layer:  HumanIdentity · AgentIdentity · SensorIdentity              │
 │                    Ed25519 keys · actor_chain on every record · ConsentReceipt │
@@ -989,11 +991,11 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 └───────────────────────────────────────┘
 ```
 
-**Read this top-down.** Harnesses call one of four surfaces (CLI / MCP / SDK / skill — all wrapping the same eight Rust functions in `src/verbs/`). Core dispatches through pure-function pipelines using the six contracts (five P0 + AgentProvider at P2). Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: **at P0 only the one SQLite file + the markdown tree**; at P1 Nexus sandbox adds `nexus-data/` alongside; at P2 federation adds a remote hub.
+**Read this top-down.** Harnesses call one of four surfaces (CLI / MCP / SDK / skill — all wrapping the same eight Rust functions in `src/verbs/`). Core dispatches through pure-function pipelines using the seven contracts (five P0 + AgentProvider P2 + FrontendAdapter P3). Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: **at P0 only the one SQLite file + the markdown tree**; at P1 Nexus sandbox adds `nexus-data/` alongside; at P2 federation adds a remote hub; at P3 frontend adapters project the DB into IDE/plugin surfaces.
 
 **Everything you'd plug in has a single socket.** Adding Postgres‑backed storage? Implement `MemoryStore`. Adding a Temporal Cloud workflow runner? Implement `WorkflowOrchestrator`. Adding Typora support? Implement `FrontendAdapter` (§13.5.d). No core changes, no forks.
 
-Everything in Cairn is a pure function over data, except these six interfaces.
+Everything in Cairn is a pure function over data, except these seven interfaces.
 
 | # | Contract | Priority | Purpose | Default implementation |
 |---|----------|----------|---------|------------------------|
@@ -1003,6 +1005,7 @@ Everything in Cairn is a pure function over data, except these six interfaces.
 | 4 | `SensorIngress` | P0 | push raw observations into the pipeline | hook sensors (P0); IDE, clipboard, screen (opt‑in), web clip (P1); Slack/email/GitHub (P2) |
 | 5 | `MCPServer` | P0 | harness‑facing tools | stdio + SSE; eight core verbs + opt‑in extensions (§8) |
 | 6 | `AgentProvider` | **P2** | spawn a constrained sub‑agent for `AgentExtractor` (§5.2.a) / `AgentDreamWorker` (§10.2) / any future agent‑mode worker | **Default**: Cairn ships a minimal loop (`cairn-agent-core` crate) that takes an `AgentIdentity`, a tool allowlist, and a `cost_budget`; runs with `LLMProvider` for the model and `cairn` CLI subprocess calls for read-only tools (`search`, `retrieve`, `lint --dry`). **Optional adapters**: wire in `pi-mono`, a custom in-harness loop, or any external agent runtime by implementing `AgentProvider::spawn(identity, scope, budget) → AgentHandle`. Not required at P0 or P1 — the extractor chain and dream worker default to `llm` / `hybrid` modes which use `LLMProvider` directly. Kicks in only when a deployment opts into `agent` mode for one of those workers. |
+| 7 | `FrontendAdapter` | **P3** | project `.cairn/cairn.db` state into whatever an editor / plugin / desktop GUI consumes (markdown + frontmatter, sidecar files, live events), and translate reverse edits back into signed `ReconcileRequest` envelopes (§13.5.d) | **None at P0/P1/P2** — headless vaults need zero frontend adapters. Optional at P3+: `cairn-frontend-obsidian`, `cairn-frontend-vscode`, `cairn-frontend-logseq`, `cairn-frontend-desktop`. All adapters are untrusted library code: they cannot apply edits directly; they emit `ReconcileRequest` with an `IdentityContext` + signed intent envelope that the backend re-verifies, subjects to field-level mutability rules (§13.5.c), runs optimistic version checks on, and either commits or rejects. Multiple adapters can run against the same backend simultaneously. |
 
 Everything else — Extractor, Filter, Classifier, Scope, Matcher, Ranker, Consolidator, Promoter, Expirer, SkillEmitter, HotMemoryAssembler, TraceCapturer, TraceLearner, UserSensor, UserSignalDetector, PropagationPolicy, OrphanDetector, ConflictDAG, StalenessScanner — is a **pure function** with a typed signature. Cairn ships a default implementation for each; users override by pointing `.cairn/config.yaml` at a different function exported from any registered plugin.
 
@@ -1013,7 +1016,7 @@ Cairn is plugin‑first end to end. "Plugin" means exactly one thing: a crate or
 **Registry rules:**
 
 - **L0 core (`cairn-core`) has zero implementation dependencies.** It defines traits + types + pure functions, nothing that talks to a network, filesystem, LLM, or workflow engine. L0 compiles with zero runtime deps.
-- **Every contract in §4 is a trait.** Six total: `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer` (all P0), plus `AgentProvider` (P2 opt-in — only active when an Agent-mode `ExtractorWorker` or `DreamWorker` is configured). Implementations live in separate crates / packages.
+- **Every contract in §4 is a trait.** Seven total: `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer` (all P0), plus `AgentProvider` (P2 opt-in — only active when an Agent-mode `ExtractorWorker` or `DreamWorker` is configured), plus `FrontendAdapter` (P3 opt-in — only active when at least one frontend adapter is registered; §13.5.d). Implementations live in separate crates / packages; plugin registration, capability tiering, and conformance tests are identical across all seven contracts — `FrontendAdapter` is not a special case.
 - **Every pure function in the pipeline is a trait + default impl.** `Extractor`, `Classifier`, `Ranker`, `HotMemoryAssembler`, etc. Override any one by naming a different function in `.cairn/config.yaml` under `pipeline.<stage>.function`.
 - **Registration is explicit, not magic.** Plugins call `cairn_core::register_plugin!(<trait>, <impl>, <name>)` in their entry point. The host assembles the active set from config at startup. No classpath scanning, no auto‑discovery surprises.
 - **Config selects the active implementation.** `.cairn/config.yaml` → `store.kind: sqlite | nexus-sandbox | nexus-full | qdrant | custom:<name>`; `llm.provider: openai-compatible | ollama | bedrock | custom:<name>`; `agent_provider.kind: cairn-core | pi-mono | custom:<name>` (only loaded when an Agent-mode worker is selected); same pattern for every contract.
@@ -1221,7 +1224,7 @@ The two statements run inside one short `BEGIN` transaction — no `FOR UPDATE`,
 
 **Signature‑first rejection.** Signature verification runs **before** any disk write to `.cairn/cairn.db`. An attacker replaying a valid signature hits step 5's unique constraint; an attacker sending junk never reaches step 5 because signature check rejects first. This prevents ledger pollution by unauthenticated traffic.
 
-**Replay consumption is coupled to WAL `PREPARE`, not independent.** The replay ledger (`used`, `issuer_seq`, `outstanding_challenges`) and the WAL op log (`wal_ops`, `consent_journal`) all live in the same SQLite file — `.cairn/cairn.db` — owned directly by the Rust core (see "Durability topology" in §3). At P0 the records themselves also live in this file, so one local SQLite commit covers everything. At P1+ Nexus owns record bodies in `nexus-data/` (CAS + ReDB metastore + BM25S + `sqlite-vec`) and Cairn coordinates via idempotency keys (§5.6), not via a distributed transaction. The transaction below is a single local SQLite commit that atomically couples replay consumption with the WAL `PREPARE` row:
+**Replay consumption is coupled to WAL `PREPARE`, not independent.** The replay ledger (`used`, `issuer_seq`, `outstanding_challenges`) and the WAL op log (`wal_ops`, `consent_journal`) all live in the same SQLite file — `.cairn/cairn.db` — owned directly by the Rust core (see "Durability topology" in §3). At every tier (P0 / P1 / P2) the **record bodies themselves also live in `.cairn/cairn.db`** — that file is the single authority for record state (§3.0 storage-authority rule). At P1+, Nexus additionally holds derived projections in `nexus-data/` (CAS mirror + BM25S + `sqlite-vec` + ReDB metastore) that are rebuildable from the DB via `cairn reindex --from-db`. Cairn coordinates the DB→Nexus projection via idempotency keys (§5.6), not via a distributed transaction. The transaction below is a single local SQLite commit that atomically couples replay consumption with the WAL `PREPARE` row:
 
 ```
 BEGIN;
@@ -1758,19 +1761,62 @@ CREATE TABLE lock_holders (
   scope_key         TEXT NOT NULL,
   holder_id         TEXT NOT NULL,     -- per-holder fencing token (ULID), stable for this holder's lifetime
   acquired_epoch    INTEGER NOT NULL,  -- value of locks.epoch when this holder acquired; frozen for life
-  boot_id           TEXT NOT NULL,     -- OS boot identity at acquisition — distinguishes lease clocks across restarts
+  owner_incarnation TEXT NOT NULL,     -- daemon incarnation token — ULID minted fresh on every daemon startup,
+                                       -- stored in a singleton row of `daemon_incarnation` (see below). All holders
+                                       -- admitted by this daemon carry its incarnation. A SIGKILL/restart mints a NEW
+                                       -- incarnation, so prior-incarnation rows are definitionally stale even in the
+                                       -- same OS boot session.
+  boot_id           TEXT NOT NULL,     -- OS boot identity at acquisition — distinguishes lease clocks across host reboots
                                        -- (Linux: /proc/sys/kernel/random/boot_id; macOS: sysctl kern.bootsessionuuid;
-                                       --  Windows: GetTickCount64 + session guid). Re-read on daemon startup.
+                                       --  Windows: GetTickCount64 + session guid).
   reclaim_deadline  INTEGER NOT NULL,  -- deadline for THIS holder, in BOOTTIME-nanoseconds (CLOCK_BOOTTIME on Linux,
                                        -- mach_absolute_time on macOS, QueryUnbiasedInterruptTime on Windows) — persistable,
                                        -- monotonic across suspend/resume. Refreshed by heartbeat. Valid ONLY when
-                                       -- lock_holders.boot_id matches the current process's boot_id.
+                                       -- lock_holders.boot_id matches the current process's boot_id AND
+                                       -- lock_holders.owner_incarnation matches the current daemon's incarnation.
   PRIMARY KEY (scope_kind, scope_key, holder_id),
   FOREIGN KEY (scope_kind, scope_key) REFERENCES locks(scope_kind, scope_key)
 );
+
+-- Singleton row holding the current daemon's incarnation token. Rewritten on every daemon startup.
+CREATE TABLE daemon_incarnation (
+  only_one     INTEGER PRIMARY KEY CHECK (only_one = 1),
+  incarnation  TEXT    NOT NULL,    -- fresh ULID per startup
+  boot_id      TEXT    NOT NULL,    -- OS boot_id captured at startup
+  started_at   INTEGER NOT NULL     -- BOOTTIME-ns at startup
+);
 ```
 
-**Durable lease clock — `boot_id` + `BOOTTIME` nanoseconds, not `std::time::Instant`.** `std::time::Instant` cannot be persisted across process restarts, so lock state uses OS-level boot-identity plus a monotonic clock that is stable across suspend/resume and durable across restarts *within the same boot session*. Across boots, the `boot_id` changes, so persisted `reclaim_deadline` values from a prior boot are automatically invalidated — a holder from a prior boot is definitionally dead. Daemon startup runs **crash recovery** before accepting any new acquisition: scan `lock_holders` where `boot_id != :current_boot_id`, treat them as zombies, run the normal garbage-collect + epoch-bump (same transaction the acquisition protocol uses for live zombies), then the daemon is ready to serve. This guarantees that after a daemon crash, abandoned holders are *always* reclaimable, and a new acquirer never honors a persisted lease from a dead boot.
+**Durable lease clock — `boot_id` + `owner_incarnation` + `BOOTTIME` nanoseconds, not `std::time::Instant`.** `std::time::Instant` cannot be persisted across process restarts, so lock state uses three stacked identity fields:
+
+1. `boot_id` — OS boot identity, changes on host reboot. Invalidates all leases after reboot.
+2. `owner_incarnation` — daemon incarnation token minted fresh on every daemon startup. Invalidates all leases after a daemon SIGKILL/restart even within the same OS boot (the review's Finding 3 case).
+3. `reclaim_deadline` — BOOTTIME-ns monotonic clock, stable across suspend/resume within a boot session.
+
+Daemon startup runs **crash recovery as a single recovery transaction** before accepting any new acquisition:
+
+```sql
+BEGIN IMMEDIATE;
+  -- Mint new incarnation + capture current boot_id.
+  INSERT OR REPLACE INTO daemon_incarnation (only_one, incarnation, boot_id, started_at)
+    VALUES (1, :new_incarnation_ulid, :current_boot_id, :now_boottime);
+  -- Reclaim every holder that belonged to a prior boot OR a prior daemon incarnation.
+  -- This is the same DELETE the acquisition protocol uses to GC live zombies,
+  -- run once at startup over the full lock_holders table.
+  DELETE FROM lock_holders
+    WHERE boot_id != :current_boot_id
+       OR owner_incarnation != :new_incarnation_ulid;
+  -- Bump epoch on every `locks` row whose holders we just cleared, so any in-flight
+  -- chunk CAS from a prior-incarnation process fails closed on its next commit attempt.
+  UPDATE locks
+    SET epoch = epoch + 1
+    WHERE (scope_kind, scope_key) IN (
+      SELECT DISTINCT scope_kind, scope_key FROM lock_holders_orphaned -- materialized from the DELETE
+    );
+COMMIT;
+```
+
+After this transaction the daemon is ready to serve. Every subsequent acquisition / heartbeat / fencing CAS also filters by `owner_incarnation = :current_incarnation` (in addition to `boot_id`), so there is **no window — not across host reboot, not across daemon restart within the same boot — where a prior-incarnation holder can prevent a new acquirer from reclaiming a lock** or complete a write after recovery.
 
 Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and session locks `(tenant, workspace, session:<id>)`. Every write acquires an entity lock in exclusive mode; a write that carries a `session_id` in its scope **also** acquires the session lock in **shared** mode. `forget_session` acquires the session lock in **exclusive** mode for the full Phase A (§5.6 delete row).
 
@@ -1782,10 +1828,12 @@ BEGIN IMMEDIATE;
   --    accepting any acquisition, DELETE FROM lock_holders WHERE boot_id != :current_boot_id.
   --    This reclaims every lease left behind by a prior boot.
 
-  -- 1) Garbage-collect dead holders — both stale-boot and expired-deadline.
+  -- 1) Garbage-collect dead holders — stale-boot, prior-incarnation, or expired-deadline.
   DELETE FROM lock_holders
     WHERE scope_kind = ? AND scope_key = ?
-      AND (boot_id != :current_boot_id OR reclaim_deadline < :now_boottime);
+      AND (boot_id != :current_boot_id
+           OR owner_incarnation != :current_incarnation
+           OR reclaim_deadline < :now_boottime);
 
   -- 2) Recompute live-holder count.
   SELECT mode, epoch, COUNT(h.holder_id) AS live
@@ -1796,13 +1844,13 @@ BEGIN IMMEDIATE;
 
   -- 3) Decide.
   -- a) No row yet: INSERT locks(epoch=1, mode=:wanted, holder_count=1);
-  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=1, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=1, owner_incarnation=:current_incarnation, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
   -- b) live=0 (all holders GC'd OR natural release): treat as free.
   --    UPDATE locks SET epoch = epoch + 1, mode = :wanted, holder_count = 1;   -- epoch bump = reclaim
-  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=new_epoch, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=new_epoch, owner_incarnation=:current_incarnation, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
   -- c) live>0 AND mode == :wanted AND :wanted == 'shared': compatible, no reclaim.
   --    UPDATE locks SET holder_count = live + 1;                               -- epoch UNCHANGED
-  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=current_epoch, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=current_epoch, owner_incarnation=:current_incarnation, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
   -- d) live>0 AND mode != :wanted (incompatible): return WAIT;
   --    caller enqueues in waiters and retries with exponential backoff.
 COMMIT;
@@ -1820,7 +1868,8 @@ BEGIN IMMEDIATE;
     SET reclaim_deadline = :now_boottime + :lease_duration_ms
     WHERE scope_kind = ? AND scope_key = ? AND holder_id = :my_holder_id
       AND boot_id = :current_boot_id
-      AND reclaim_deadline >= :now_boottime;  -- refuse to revive a zombie or a stale-boot lease
+      AND owner_incarnation = :current_incarnation
+      AND reclaim_deadline >= :now_boottime;  -- refuse to revive a zombie, stale-boot, or prior-incarnation lease
   -- If 0 rows updated: this holder has already been GC'd; stop heartbeating,
   -- abort any in-flight work (the epoch CAS below will reject it anyway).
   UPDATE locks
@@ -1841,6 +1890,7 @@ BEGIN IMMEDIATE;
         WHERE scope_kind = ? AND scope_key = ? AND holder_id = :cached_holder_id
           AND acquired_epoch = :cached_acquired_epoch
           AND boot_id = :current_boot_id
+          AND owner_incarnation = :current_incarnation
           AND reclaim_deadline >= :now_boottime) AS still_live;
   -- Abort if current_epoch != :cached_acquired_epoch OR still_live = 0.
   -- This rejects: (a) the group was reclaimed (epoch advanced), OR
@@ -1856,11 +1906,12 @@ A zombie worker cannot commit a chunk: if a new acquirer already reclaimed the r
 
 This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity, extended with per-holder tokens so shared locks scale without a spurious-invalidation tax.
 
-**Crash recovery — two layers.**
-1. *In-boot crash* (a holder process dies, but the daemon stays up): the dead holder's `reclaim_deadline` passes; the next acquirer's protocol Step 1 (GC) deletes the zombie row, Step 3 either reclaims (bumping `epoch` only if live count drops to 0 or mode conversion is needed) or silently absorbs the slot. Any in‑flight writes from the crashed holder are rejected by the per-holder CAS — the `still_live` predicate fails the instant its `lock_holders` row is deleted.
-2. *Daemon / host restart*: when the Cairn daemon starts, `boot_id` is re-read from the OS. Before accepting any acquisition, the daemon runs `DELETE FROM lock_holders WHERE boot_id != :current_boot_id`, which reclaims every lease that was persisted by a prior boot. The `locks.epoch` for each affected row then gets bumped on the next acquisition that runs the protocol, exactly like live-zombie reclaim. This guarantees that any `reclaim_deadline` persisted with a `BOOTTIME` value from a different boot is invalidated before a new holder is admitted — no "unreclaimable stale lease" window exists after restart.
+**Crash recovery — three layers.**
+1. *In-incarnation crash* (a holder process dies, but the daemon keeps the same incarnation): the dead holder's `reclaim_deadline` passes; the next acquirer's protocol Step 1 (GC) deletes the zombie row, Step 3 either reclaims (bumping `epoch` only if live count drops to 0 or mode conversion is needed) or silently absorbs the slot. Any in‑flight writes from the crashed holder are rejected by the per-holder CAS — the `still_live` predicate fails the instant its `lock_holders` row is deleted.
+2. *Daemon restart within the same boot* (daemon SIGKILL / crash / operator restart; OS `boot_id` unchanged): the new daemon mints a fresh `owner_incarnation` ULID and runs the startup recovery transaction (shown above). Every prior-incarnation `lock_holders` row is deleted and every affected `locks.epoch` is bumped in one transaction before the daemon accepts new acquisitions. A pre-restart holder cannot successfully run its fencing CAS after the new daemon comes up because the `still_live` predicate now requires `owner_incarnation = :current_incarnation` — closing the Finding-3 gap where same-boot restarts previously left live-looking holders behind.
+3. *Host restart*: `boot_id` additionally changes, so `BOOTTIME` values from the prior boot are invalidated by the same recovery transaction (the DELETE filter is `boot_id != :current_boot_id OR owner_incarnation != :current_incarnation`).
 
-The concurrency invariant test in §15 includes a *daemon-kill-and-restart* schedule: mid-way through a chunked `forget_session`, SIGKILL the daemon, restart it, and assert that (a) every prior holder is reclaimable by the next acquirer and (b) no pre-crash zombie commits any chunk after restart.
+The concurrency invariant test in §15 includes three restart schedules covering all three layers: (a) holder-only crash mid-chunk, (b) daemon SIGKILL + restart mid-`forget_session`, (c) host reboot mid-chunk. All three must prove (i) every prior holder is reclaimable by the next acquirer, (ii) no pre-crash zombie commits any chunk after recovery, and (iii) `forget_session`'s exclusive lock can be re-acquired or completed after the restart.
 
 **Why `forget_session` exclusive blocks child writes.** A write to a session child opens two SQLite transactions: one to acquire the entity lock and one to acquire the session lock in shared mode. If `forget_session` holds the session lock exclusive, the shared acquisition returns WAIT, and the child write blocks (with a configurable timeout — default 5 s, after which it fails with `SessionLockUnavailable`). The planner refuses to retry with a stale session lock — once `forget_session` commits, the session is gone and retries fail fast.
 
@@ -2277,7 +2328,7 @@ Concrete payoff: a harness with no MCP plugin (or one where the user prefers not
 |---|------|--------------|-------------------|
 | 1 | `ingest` | push an observation (text / image / video / tool call / screen frame / web clip) | signed actor chain; rate‑limited per‑agent (§4.2) |
 | 2 | `search` | hit records across scope. **Mode is capability-gated**: `mode: "keyword"` (SQLite FTS5) is the only always-present mode in `cairn.mcp.v1`; `mode: "semantic"` and `mode: "hybrid"` require the `cairn.mcp.v1.search.semantic` / `.hybrid` capabilities, advertised only by v0.2+ runtimes (Nexus sandbox enabled — BM25S + `sqlite-vec` ANN + graph). A v0.1 runtime handed `mode: "semantic"` rejects with `CapabilityUnavailable` rather than silently degrading. Clients inspect `handshake.capabilities` before issuing semantic/hybrid calls. | rebac‑gated; results filtered per visibility tier |
-| 3 | `retrieve` | get a specific memory by id, a full session, a folder subtree, or a scope — variant selected via `RetrieveArgs` (§8.0.c). Turn retrieval is a `session` variant with `include: ["tool_calls"]` + `turn_id` filter; turn IDs are **not** globally unique (monotonic per session, §18.c US1), so the `turn` shape is addressed as `{session_id, turn_id}`, never as a bare id | rebac‑gated; unverified chain → `trust: "unverified"` flag unless `allow_unverified: true` |
+| 3 | `retrieve` | get a specific memory by id, a full session, a single turn within a session, a folder subtree, or a scope — variant selected via `RetrieveArgs` (§8.0.c). Turn retrieval is its own first-class variant `target: "turn"` keyed by `{session_id, turn_id, include}` (turn IDs are monotonic per session — §18.c US1 — so the `turn` shape requires `session_id` as the disambiguator, never a bare id). `RetrieveArgs` is an exhaustive discriminated union generated from the single IDL; the CLI, MCP wire schema, and Rust SDK enum are all emitted from the same source (§13.5) | rebac‑gated; unverified chain → `trust: "unverified"` flag unless `allow_unverified: true` |
 | 4 | `summarize` | multi‑memory rollup; optional `persist: true` files the synthesis as a new `reference` or `strategy_success` memory with provenance | rebac‑gated on sources; `persist` requires write capability |
 | 5 | `assemble_hot` | return the always‑loaded prefix for this agent/session | rebac‑gated on sources |
 | 6 | `capture_trace` | persist a reasoning trajectory for later ACE distillation | signed actor chain |
@@ -2790,8 +2841,8 @@ This is what makes skills *compound* — `strategy_success` stays strategy‑sco
 
 | Tier | Priority | Who it's for | Adapters | Cloud? |
 |------|----------|--------------|----------|--------|
-| **Embedded** | **P0** | library mode inside a harness; CI runners; offline / air‑gap first run | **Pure SQLite** (`.cairn/cairn.db` with FTS5 — records + WAL + consent in one file) + in‑process `LLMProvider` + `tokio` job runner. **No Python, no Nexus, no embedding key.** `search` is keyword-only; results stamped `semantic_degraded=true` | none |
-| **Local** | **P1** | laptop, single user, researcher who wants semantic search | Embedded **+ Nexus `sandbox` profile** sidecar (Python: BM25S + `sqlite-vec` ANN + `litellm` embeddings + ReDB metastore + CAS blob store under `nexus-data/`). `.cairn/cairn.db` is unchanged; Nexus is additive. `search` gains `semantic`/`hybrid` modes when embedding key present | none |
+| **Embedded** | **P0** | library mode inside a harness; CI runners; offline / air‑gap first run | **Pure SQLite** (`.cairn/cairn.db` with FTS5 — records + WAL + consent in one file) + in‑process `LLMProvider` + `tokio` job runner. **No Python, no Nexus, no embedding key.** `search` ships `mode: "keyword"` only; `"semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (§8 verb 2 capability gate) | none |
+| **Local** | **P1** | laptop, single user, researcher who wants semantic search | Embedded **+ Nexus `sandbox` profile** sidecar (Python: BM25S + `sqlite-vec` ANN + `litellm` embeddings + ReDB metastore + CAS blob store under `nexus-data/`). `.cairn/cairn.db` is unchanged; Nexus is additive. `search` advertises `cairn.mcp.v1.search.semantic` + `.hybrid` once an embedding key is configured; `semantic_degraded=true` is only set when a transient litellm outage forces a keyword-only response mid-call | none |
 | **Cloud** | **P2** | team / enterprise with shared memory | Local **+ federation** — sandbox instances delegate cross-tenant queries to a shared Nexus `full` hub (PostgreSQL + pgvector + Dragonfly) over HTTPS + mTLS. Any OpenAI-compatible LLM. Optional Temporal orchestrator | yes |
 
 Switching tiers is a change in `.cairn/config.yaml` (`store.kind: sqlite` → `nexus-sandbox` → `nexus-full`). The vault on disk, the four contract surfaces (CLI · MCP · SDK · skill), the CLI commands, the hooks — all unchanged.
@@ -3341,7 +3392,7 @@ pub enum ReconcileError {
 
 - **New frontend = new adapter, zero core changes.** Someone wants Typora support? Write `@cairn/frontend-typora`, publish, install. Nothing inside `cairn-core` moves.
 - **Capability‑driven projection.** Adapter declares what it can render; Cairn's projection policy reads `capabilities()` and picks the richest subset. A minimal editor gets frontmatter; a full plugin gets live events.
-- **Contract parity with the rest of the kernel.** `FrontendAdapter` sits next to `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer` as a first‑class contract. Same registration, same capability tiering (§4.1), same fail‑closed default.
+- **Contract parity with the rest of the kernel.** `FrontendAdapter` is contract 7 of 7 in §4, sitting next to `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer`, and `AgentProvider`. Same registration, same capability tiering (§4.1), same fail‑closed default. Priority **P3** — opt-in, only active when at least one adapter is registered; not required by headless vaults.
 - **Multiple adapters can run at once.** User runs `@cairn/frontend-obsidian` on their laptop and `@cairn/frontend-vscode` on their work machine against the same backend. Cairn fans projections to every registered adapter.
 - **Testable in isolation.** Each adapter has its own test suite; core ships a conformance harness (same pattern as `MemoryStore` conformance tests) — every adapter must pass the same round‑trip + conflict‑resolution cases.
 
@@ -3830,7 +3881,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 ### P3 stories
 
 **US7 — Search across prior conversations and memories (SRE + Developer).** *Version‑scoped; matches the sequencing matrix, not a single "P3" box.*
-- **v0.1 (keyword only).** `search(mode: "keyword")` runs SQLite **FTS5** over the local `.cairn/cairn.db` — no Python, no embedding key, no network. `mode: "semantic"` or `"hybrid"` is accepted but returns `semantic_degraded: true` and falls back to FTS5, so callers always get a deterministic result set.
+- **v0.1 (keyword only, capability-gated rejection — no silent fallback).** `search(mode: "keyword")` runs SQLite **FTS5** over the local `.cairn/cairn.db` — no Python, no embedding key, no network. `mode: "semantic"` or `"hybrid"` is **rejected with `CapabilityUnavailable`** on v0.1 runtimes, per the §8.0 verb 2 capability gate — clients must inspect `handshake.capabilities` for `cairn.mcp.v1.search.semantic` / `.hybrid` before issuing those modes. There is no silent FTS5 fallback; fail-closed is the only behavior. A wire-compat CI test (§15) asserts that a v0.1 runtime rejects unadvertised search modes. (The `semantic_degraded` flag still exists on read responses but is only set when a v0.2+ runtime has a *transient* embedding-provider outage, not as a v0.1 degraded mode.)
 - **v0.2 (semantic + hybrid via Nexus sandbox).** `cairn-store-nexus` (§13) is enabled; `mode: "semantic"` now uses `sqlite-vec` ANN with `litellm` embeddings (OpenAI / local Ollama / Cohere) inside the Nexus `sandbox` sidecar, and `mode: "hybrid"` blends **BM25S** keyword scores with semantic scores via Nexus's `search` brick. `semantic_degraded` flips to `false`.
 - **v0.3 (cross‑tenant federation, true P3).** `search(federation: "on")` fans out to other Cairn vaults the caller has been granted `ShareLinkGrant` for; results merge across vaults with per‑source provenance. Requires the `cairn.federation.v1` extension namespace (§8.0.a).
 - Results shape (all versions): every hit returns `{record_id, snippet, timestamp, session_id, score, actor_chain, vault_id?}` so SRE audits and developer reuse both have full provenance.
@@ -3850,7 +3901,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 |---------|--------------|--------------------------------|
 | **Agent (Service Account)** | fast R/W for chat context | MCP verbs (§8), sub‑5 ms retrieve from local SQLite, hot‑memory prefix always < 25 KB (§7) |
 | **SRE (Maintainer)** | observability, archival, compliance | `/health`, OpenTelemetry metrics per workflow (§15), tier‑migration + hydration dashboards, `consent.log` audit, forget‑me workflow, `cairn lint` CI gate |
-| **Agent Developer** | APIs for entity memory, search, summaries | Six contracts (§4 — five P0 + AgentProvider at P2), plugin architecture (§4.1), conformance tests (including AgentProvider tool-allowlist + scope + cost-budget checks), CLI + SDK bindings (§13), golden‑query regression harness (§15) |
+| **Agent Developer** | APIs for entity memory, search, summaries | Seven contracts (§4 — five P0 + AgentProvider P2 + FrontendAdapter P3), plugin architecture (§4.1), conformance tests (including AgentProvider tool-allowlist + scope + cost-budget checks and FrontendAdapter round-trip + conflict-resolution checks), CLI + SDK bindings (§13), golden‑query regression harness (§15) |
 
 ### Coverage summary — priorities match §0 legend and §19 sequencing
 
@@ -3864,7 +3915,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 | US4 Reflection/REM/Deep tiers | **P1** | v0.2 | §10.1, §10.2 |
 | US5 tool calls with turns | **P0** | v0.1 | §6.1, §9.1, §5.2 |
 | US6 archive inactive sessions | **P1** | v0.2 | §3.0, §10 Expiration, §15 |
-| US7 search — keyword only (`semantic_degraded=true`) | **P0** | v0.1 | §8, §5.1 |
+| US7 search — keyword only (FTS5; semantic/hybrid reject with `CapabilityUnavailable`) | **P0** | v0.1 | §8, §5.1 |
 | US7 search — semantic + hybrid | **P1** | v0.2 | §8, §3.0 |
 | US7 search — cross-tenant federation | **P2** | v0.3 | §8, §12.a |
 | US8 delete — record | **P0** | v0.1 `forget_record` | §14, §5.6 |
@@ -3875,7 +3926,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 | Capability | v0.1 ships | v0.2 ships | v0.3+ |
 |------------|------------|-------------|-------|
 | Core verbs 1–8 (`ingest`/`search`/`retrieve`/`summarize`/`assemble_hot`/`capture_trace`/`lint`/`forget`) across all four surfaces (CLI · MCP · SDK · skill) | yes — all 8 | unchanged | unchanged |
-| `search` modes | **keyword only** (SQLite FTS5); every result stamped `semantic_degraded=true` | adds `semantic` + `hybrid` modes (Nexus sandbox — BM25S + `sqlite-vec` + `litellm` embeddings); stamp drops | adds cross‑tenant federation queries via Nexus full hub |
+| `search` modes | **keyword only** (SQLite FTS5); `semantic` / `hybrid` rejected with `CapabilityUnavailable` (capability-gated, no silent fallback) | advertises `cairn.mcp.v1.search.semantic` + `.hybrid` (Nexus sandbox — BM25S + `sqlite-vec` + `litellm` embeddings); `semantic_degraded=true` only on transient embedding-provider outages | adds `cairn.federation.v1` cross‑tenant queries via Nexus full hub |
 | Session reload | active‑session (US2 core) | + cold‑storage rehydration (US6) | unchanged |
 | `forget` modes | `record` (US8 core) | + `session` fan‑out with drain fences | + `scope` mode |
 | `ConsolidationWorkflow` | rolling‑summary pass only (US4 core) | + Reflection/REM/Deep tiers | + EvolutionWorkflow mutations |
@@ -3997,14 +4048,14 @@ The MCP server is still available (`cairn mcp`) for harnesses that prefer the wi
 ## 19. Sequencing
 
 **v0.1 — Minimum substrate (all P0).** Covers US1, US2 active‑session reload, US3, US4 rolling‑summary path, US5, US7 basic search, and US8 record‑level delete (see §18.c capability matrix for the authoritative mapping).
-Headless only. **Pure SQLite backend** — `.cairn/cairn.db` with built‑in FTS5 for keyword search; zero Python, zero Nexus, zero embedding keys, zero external services. Single Rust binary installs via `brew install cairn` or `cargo install cairn` and runs offline. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope; `forget` advertises `mode: "record"` capability only; `search` stamps every result `semantic_degraded=true` because semantic search is P1. `DreamWorkflow` (LLMDreamWorker only) + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`.
+Headless only. **Pure SQLite backend** — `.cairn/cairn.db` with built‑in FTS5 for keyword search; zero Python, zero Nexus, zero embedding keys, zero external services. Single Rust binary installs via `brew install cairn` or `cargo install cairn` and runs offline. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope; `forget` advertises `mode: "record"` capability only; `search` advertises `mode: "keyword"` only — `semantic` and `hybrid` are rejected with `CapabilityUnavailable` (no silent fallback; wire‑compat CI asserts the rejection). `DreamWorkflow` (LLMDreamWorker only) + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`.
 
 **Reference consumer for v0.1: Claude Code.** Chosen because (a) it is the first harness with a stable hook surface in shipping form, (b) Cairn's five hooks map 1:1 to CC's native events, (c) the primary maintainer already uses CC daily so dogfood signal is immediate, and (d) the CC MCP registration format is a documented reference every other harness (Codex, Gemini) can adapt. Codex integration ships in v0.2 as the second consumer.
 
-v0.1 acceptance ⇒ all **P0 stories** in §18.c pass their golden‑query suites against Claude Code (US1–US3, US4 rolling-summary path, US5, US7 keyword-only with `semantic_degraded=true`, US8 record-level forget), and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime. **P1 stories (US6 cold rehydration, US7 semantic/hybrid, US8 session fan-out) ship in v0.2** — they are not v0.1 acceptance criteria.
+v0.1 acceptance ⇒ all **P0 stories** in §18.c pass their golden‑query suites against Claude Code (US1–US3, US4 rolling-summary path, US5, US7 keyword-only with `mode: "semantic" | "hybrid"` rejected via `CapabilityUnavailable`, US8 record-level forget), and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime. **P1 stories (US6 cold rehydration, US7 semantic/hybrid, US8 session fan-out) ship in v0.2** — they are not v0.1 acceptance criteria.
 
 **v0.2 — Continuous learning + SRE surface + semantic search (all P1).** Covers US6, US7 semantic, US8 session‑wide delete, and full US4 reflection layer.
-**Backend upgrade: Nexus `sandbox` profile becomes the default** — Python sidecar adds BM25S + `sqlite-vec` + `litellm` embeddings; existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside). `search` supports `mode: "keyword" | "semantic" | "hybrid"`; `semantic_degraded=true` drops from results. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha. Optional Temporal adapter for orchestrator.
+**Backend upgrade: Nexus `sandbox` profile becomes the default** — Python sidecar adds BM25S + `sqlite-vec` + `litellm` embeddings; existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside as derived projections; `.cairn/cairn.db` remains the sole authority). `search` advertises `cairn.mcp.v1.search.semantic` + `.hybrid` once an embedding key is configured; `mode: "keyword" | "semantic" | "hybrid"` all accepted. `semantic_degraded=true` is set only on transient embedding-provider outages mid-call, not as a default mode. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha. Optional Temporal adapter for orchestrator.
 
 **v0.3 — Propagation + collective.**
 Add `PromotionWorkflow`, `PropagationWorkflow`, consent‑gated team/org share, `cairn.federation.v1` extension. Full sensor suite. `evolve` WAL state machine with canary rollout.
