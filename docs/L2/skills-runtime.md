@@ -494,6 +494,28 @@ subsequent invocations without a disk read.
 | Cost per turn | 30K × N turns | 100 × N turns |
 | Body token cost | injected at every turn | 3K when Skill() called |
 
+### Fork-mode skills
+
+Skills with `executionMode: "fork"` require a `spawnFn` to execute. In progressive mode, the
+middleware excludes them from `<available_skills>` by default (`hasForkSupport: false`). If your
+agent has fork support wired, pass `hasForkSupport: true`:
+
+```typescript
+const mw = createSkillInjectorMiddleware({
+  agent: () => ref.current!,
+  progressive: true,
+  hasForkSupport: true,        // advertise fork skills when spawnFn is configured
+});
+const skillTool = await createSkillTool({
+  resolver: runtime,
+  spawnFn: mySpawnFn,          // required for fork execution
+  signal: new AbortController().signal,
+});
+```
+
+Without `spawnFn` on the tool, fork skills will fail with a `VALIDATION` error at invocation time.
+The `hasForkSupport` flag on the middleware must be set consistently with the Skill tool's `spawnFn`.
+
 ### Backward compatibility
 
 Both `progressive` flags default to `false`. Existing callers that omit the flag continue to use
