@@ -12,16 +12,12 @@
 
 import type { TaskKindName } from "@koi/core";
 import type { TaskKindLifecycle, TaskRegistry } from "../task-registry.js";
+import { createLocalAgentLifecycle } from "./local-agent.js";
 import { createLocalShellLifecycle } from "./local-shell.js";
 import { createUnsupportedLifecycle } from "./unsupported.js";
 
 /** Explicitly listed unsupported kinds. Update when adding new TaskKindName values. */
-const UNSUPPORTED_KINDS: readonly TaskKindName[] = [
-  "local_agent",
-  "remote_agent",
-  "in_process_teammate",
-  "dream",
-];
+const UNSUPPORTED_KINDS: readonly TaskKindName[] = ["remote_agent", "in_process_teammate", "dream"];
 
 /**
  * Register all known task kind lifecycles into the given registry.
@@ -36,6 +32,7 @@ export function registerDefaultLifecycles(registry: TaskRegistry): void {
   // is covariant (RuntimeTaskBase vs LocalShellTask). Runtime config
   // validation is the lifecycle's responsibility, not the registry's.
   registry.register(createLocalShellLifecycle() as unknown as TaskKindLifecycle);
+  registry.register(createLocalAgentLifecycle() as unknown as TaskKindLifecycle);
   for (const kind of UNSUPPORTED_KINDS) {
     registry.register(createUnsupportedLifecycle(kind));
   }

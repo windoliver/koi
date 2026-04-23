@@ -228,6 +228,42 @@ downstream consumers (TUI, trajectory) receive the full board state at startup.
 
 `createLocalShellLifecycle()` — spawns shell processes via `Bun.spawn()`, pipes stdout/stderr to `TaskOutputStream`, handles timeouts, and propagates exit codes.
 
+### LocalAgentTask Lifecycle (#1657)
+
+`createLocalAgentLifecycle()` — runs a local subagent via a consumer-provided `run` callback.
+
+**Design:** Layer rules forbid `@koi/tasks` (L2) from importing `@koi/engine` (L1). The lifecycle therefore accepts a `run` callback in the config — the consumer (L3/app) provides the actual spawning logic. This mirrors the `@koi/task-spawn` pattern.
+
+**Config:**
+
+```typescript
+interface LocalAgentConfig {
+  readonly agentType: string;
+  /** Opaque inputs forwarded verbatim to the run callback. */
+  readonly inputs: unknown;
+  readonly timeout?: number;
+  readonly onExit?: (code: number) => void;
+  /**
+   * Consumer-provided runner — yields output chunks as the agent runs.
+   * Resolve = success (exit 0); reject = failure (exit 1).
+   * The signal is aborted on cancel() or timeout — implementations should
+   * respect it to avoid resource leaks.
+   */
+  readonly run: (
+    agentType: string,
+    inputs: unknown,
+    signal: AbortSignal,
+  ) => AsyncIterable<string>;
+}
+```
+
+**Behavior:**
+- `start()` calls `config.run()` and pipes chunks to `TaskOutputStream` (fire-and-forget async loop)
+- On natural completion, writes `\n[exit code: 0]\n` and calls `config.onExit?.(0)`
+- On error/rejection, writes the error message and calls `config.onExit?.(1)`
+- On timeout, aborts the controller after `config.timeout` ms
+- `stop()` calls `cancel()` (aborts the controller) and waits 50 ms
+
 ## Relationship to Other Packages
 
 | Package | Relationship |
@@ -274,7 +310,7 @@ type system but not yet runnable (e.g., `dream`, `local_agent`).
 | Kind | Lifecycle |
 |------|-----------|
 | `local_shell` | Real — `createLocalShellLifecycle()` |
-| `local_agent` | Stub — rejects on start |
+| `local_agent` | Real — `createLocalAgentLifecycle()` (#1657) |
 | `remote_agent` | Stub — rejects on start |
 | `in_process_teammate` | Stub — rejects on start |
 | `dream` | Stub — rejects on start |
