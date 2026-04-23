@@ -106,7 +106,7 @@ export function createAuthNotificationHandler(
       cancelWatchdogsForProvider(n.params.provider);
       progressState.delete(n.params.provider);
       bumpEpoch(n.params.provider);
-      const { provider, auth_url, message, mode, instructions } = n.params;
+      const { provider, auth_url, message, mode, instructions, correlation_id } = n.params;
       void Promise.resolve(
         oauthChannel.onAuthRequired({
           provider,
@@ -114,6 +114,7 @@ export function createAuthNotificationHandler(
           message,
           mode,
           instructions,
+          correlationId: correlation_id,
         }),
       ).catch((err: unknown) => {
         if (!active) return;

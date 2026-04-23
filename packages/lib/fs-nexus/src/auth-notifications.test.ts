@@ -146,6 +146,35 @@ describe("createAuthNotificationHandler", () => {
     expect(arg?.mode).toBe("remote");
   });
 
+  test("auth_required — forwards correlation_id for remote stale-paste protection", async () => {
+    const { oauthChannel } = makeOAuthChannel();
+    const { channel } = makeChannel();
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
+
+    const n: BridgeNotification = {
+      jsonrpc: "2.0",
+      method: "auth_required",
+      params: {
+        provider: "google-drive",
+        user_email: "user@example.com",
+        auth_url: "https://accounts.google.com/auth",
+        message: "Authorize",
+        mode: "remote",
+        instructions: "Paste the redirect URL back here",
+        correlation_id: "corr-abc-123",
+      },
+    };
+
+    handler(n);
+    await new Promise<void>((r) => setTimeout(r, 0));
+
+    const arg = oauthChannel.onAuthRequired.mock.calls[0]?.[0];
+    expect(arg?.correlationId).toBe("corr-abc-123");
+  });
+
   test("auth_progress — sends waiting message with elapsed time via channel.send", async () => {
     const { oauthChannel } = makeOAuthChannel();
     const { channel, sent } = makeChannel();
