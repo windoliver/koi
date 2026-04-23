@@ -43,6 +43,14 @@ function parsePermissionString(s: string): { readonly pattern: string; readonly 
  * Rules are emitted in order: deny, ask, allow — most restrictive first.
  * This ensures that within a single settings layer, deny rules shadow
  * broader allows when the evaluator uses first-match-wins semantics.
+ *
+ * **Command-scoped rules** (e.g. `"Bash(git push*)"`) are encoded as
+ * resource patterns (`"Bash:git push*"`) with `action: "invoke"`.  They
+ * only take effect when the caller's backend performs dual-key evaluation
+ * (i.e. `createPatternPermissionBackend` from `@koi/middleware-permissions`,
+ * which is marker-aware).  With the plain `createPermissionBackend` in
+ * single-key mode (`allowLegacyBackendBashFallback: true`) these rules are
+ * silently treated as if no command constraint was specified.
  */
 export function mapSettingsToSourcedRules(
   settings: KoiSettings,

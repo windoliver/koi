@@ -88,6 +88,27 @@ describe("settings cascade → permission enforcement", () => {
     expect(decision.effect).toBe("allow");
   });
 
+  test("local allow overrides project deny (local > project in SOURCE_PRECEDENCE)", async () => {
+    const projectRules = mapSettingsToSourcedRules(
+      { permissions: { deny: ["Read(*)"] } },
+      "project",
+    );
+    const localRules = mapSettingsToSourcedRules({ permissions: { allow: ["Read(*)"] } }, "local");
+
+    // local has higher precedence than project: local rules come first.
+    const backend = createPermissionBackend({
+      mode: "default",
+      rules: [...localRules, ...projectRules],
+    });
+
+    const decision = await backend.check({
+      resource: "Read",
+      action: "invoke",
+      principal: "agent",
+    });
+    expect(decision.effect).toBe("allow");
+  });
+
   test("layers cascade: project deny overrides user allow for same tool", async () => {
     const userRules = mapSettingsToSourcedRules(
       { permissions: { allow: ["Bash(git *)"] } },

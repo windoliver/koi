@@ -35,7 +35,9 @@ export interface PermissionRule {
 
 /**
  * Where a rule was loaded from. Determines precedence:
- * policy > flag > project > local > user (policy = highest priority).
+ * policy > flag > local > project > user (policy = highest priority).
+ * `local` outranks `project` so a developer's uncommitted settings.local.json
+ * can override checked-in project defaults.
  */
 export type RuleSource = "policy" | "flag" | "project" | "local" | "user";
 
@@ -83,8 +85,8 @@ export interface PermissionConfig {
 export const SOURCE_PRECEDENCE: readonly RuleSource[] = [
   "policy",
   "flag",
-  "project",
   "local",
+  "project",
   "user",
 ] as const;
 
