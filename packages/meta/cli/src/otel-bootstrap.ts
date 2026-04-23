@@ -92,15 +92,18 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   // OTEL_SERVICE_NAME takes highest priority for service.name.
   // Reject whitespace-only values — they collapse traces into blank service
   // buckets which are indistinguishable from unlabeled builds in collectors.
-  const serviceName = process.env.OTEL_SERVICE_NAME;
-  if (serviceName !== undefined && serviceName.trim().length > 0) {
+  // Trim before storing so padded values like "koi-prod " don't create a
+  // different service bucket from "koi-prod".
+  const serviceName = process.env.OTEL_SERVICE_NAME?.trim();
+  if (serviceName !== undefined && serviceName.length > 0) {
     attrs["service.name"] = serviceName;
   }
 
-  // Guard Koi-owned semantic keys against empty or whitespace-only overrides.
+  // Guard and normalize Koi-owned semantic keys:
+  //   - Reject all-whitespace overrides (restore from snapshot or delete).
+  //   - Trim padded values so "koi-prod " and "koi-prod" land in the same bucket.
   // Templated env vars that resolve to empty/whitespace would silently collapse
   // telemetry identity (service, version, mode) into unlabeled buckets.
-  // Restore from the pre-override snapshot; delete if Koi had no value either.
   const guardKeys = [
     "service.name",
     "service.version",
@@ -109,7 +112,10 @@ export function buildResource(mode: "tui" | "headless"): Resource {
     "process.runtime.version",
   ] as const;
   for (const key of guardKeys) {
-    if (attrs[key] !== undefined && attrs[key].trim().length === 0) {
+    const val = attrs[key];
+    if (val === undefined) continue;
+    const trimmed = val.trim();
+    if (trimmed.length === 0) {
       otelDiag(
         "warn",
         `"${key}" was set to an empty or whitespace-only string — ignoring override.`,
@@ -120,6 +126,8 @@ export function buildResource(mode: "tui" | "headless"): Resource {
       } else {
         delete attrs[key];
       }
+    } else if (trimmed !== val) {
+      attrs[key] = trimmed; // normalize surrounding whitespace
     }
   }
 

@@ -142,6 +142,19 @@ describe("buildResource", () => {
     const resource = buildResource("headless");
     expect(resource.attributes["service.version"]).toBeUndefined();
   });
+
+  test("padded OTEL_SERVICE_NAME is trimmed — no split-bucket from surrounding spaces", () => {
+    process.env.OTEL_SERVICE_NAME = "  koi-prod  ";
+    const resource = buildResource("headless");
+    expect(resource.attributes["service.name"]).toBe("koi-prod");
+  });
+
+  test("padded service.name from OTEL_RESOURCE_ATTRIBUTES is trimmed", () => {
+    // %20koi-prod%20 decodes to " koi-prod " — must be normalized to "koi-prod"
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "service.name=%20koi-prod%20";
+    const resource = buildResource("headless");
+    expect(resource.attributes["service.name"]).toBe("koi-prod");
+  });
 });
 
 describe("parseOtelResourceAttributes", () => {
