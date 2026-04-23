@@ -4564,6 +4564,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 const success = await provider.startAuthFlow();
                 if (success) {
                   await tuiOAuthChannel.onAuthComplete({ provider: serverName });
+                  // Tokens are now stored. Trigger a live status refresh: the
+                  // connection is in auth-needed state, so ensureConnected() will
+                  // call connect() which picks up the fresh tokens — no restart needed.
+                  const live = await runtimeHandle?.getMcpStatus();
+                  if (live !== undefined) {
+                    store.dispatch({
+                      kind: "set_mcp_status",
+                      servers: live.map((l) => ({
+                        name: l.name,
+                        status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
+                        toolCount: l.toolCount,
+                        detail: l.failureMessage,
+                      })),
+                    });
+                  }
                 } else {
                   store.dispatch({
                     kind: "add_error",

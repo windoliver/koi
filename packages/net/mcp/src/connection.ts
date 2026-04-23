@@ -393,7 +393,7 @@ export function createMcpConnection(
         // Clear stale tokens before attempting reauth so startAuthFlow starts clean.
         await Promise.resolve(onUnauthorized?.()).catch(() => {});
         if (onAuthNeeded !== undefined) {
-          const authed = await onAuthNeeded();
+          const authed = await onAuthNeeded().catch(() => false);
           if (authed) {
             const reconnResult = await connect();
             if (reconnResult.ok && client !== undefined) {
@@ -453,7 +453,7 @@ export function createMcpConnection(
         // Clear stale tokens before attempting reauth so startAuthFlow starts clean.
         await Promise.resolve(onUnauthorized?.()).catch(() => {});
         if (onAuthNeeded !== undefined) {
-          const authed = await onAuthNeeded();
+          const authed = await onAuthNeeded().catch(() => false);
           if (authed) {
             const reconnResult = await connect();
             if (reconnResult.ok && client !== undefined) {
