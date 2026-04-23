@@ -6,6 +6,11 @@ import { RETRYABLE_DEFAULTS } from "@koi/core";
  * Handles recursive `includes` composition with cycle detection.
  *
  * Returns `{ ok: false }` for unknown names or detected cycles.
+ *
+ * Note: this function validates toolset names and composition structure only.
+ * It does NOT validate that the resolved tool names exist in the runtime registry —
+ * that is an assembly-time responsibility performed by the caller with access to the
+ * live tool set. Unknown tool names in an allowlist are silently dropped by the engine.
  */
 export function resolveToolset(
   name: string,

@@ -22,19 +22,24 @@ describe("resolveToolset", () => {
   test("resolves includes recursively", () => {
     const reg = makeRegistry([
       {
-        name: "memory",
-        description: "Memory",
-        tools: ["memory_read", "memory_write"],
+        name: "reading",
+        description: "Read tools",
+        tools: ["Read", "Glob"],
         includes: [],
       },
-      { name: "researcher", description: "Researcher", tools: ["glob"], includes: ["memory"] },
+      {
+        name: "researcher",
+        description: "Researcher",
+        tools: ["web_search"],
+        includes: ["reading"],
+      },
     ]);
     const result = resolveToolset("researcher", reg);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.mode).toBe("allowlist");
     if (result.value.mode !== "allowlist") return;
-    expect([...result.value.tools].sort()).toEqual(["glob", "memory_read", "memory_write"]);
+    expect([...result.value.tools].sort()).toEqual(["Glob", "Read", "web_search"]);
   });
 
   test("deduplicates tools appearing in multiple toolsets", () => {
@@ -101,7 +106,7 @@ describe("createBuiltinRegistry", () => {
     expect(reg.has("minimal")).toBe(true);
   });
 
-  test("safe preset is read-only — no bash, writes, or deletes", () => {
+  test("safe preset is read-only — no Bash, Write, or Edit tools", () => {
     const reg = createBuiltinRegistry();
     const result = resolveToolset("safe", reg);
     expect(result.ok).toBe(true);
@@ -109,7 +114,7 @@ describe("createBuiltinRegistry", () => {
     expect(result.value.mode).toBe("allowlist");
     if (result.value.mode !== "allowlist") return;
     for (const tool of result.value.tools) {
-      expect(tool).not.toMatch(/bash|write|edit|delete/);
+      expect(tool).not.toMatch(/^Bash$|^Write$|^Edit$/);
     }
   });
 
@@ -121,28 +126,28 @@ describe("createBuiltinRegistry", () => {
     expect(result.value.mode).toBe("all");
   });
 
-  test("minimal preset has fewer tools than researcher", () => {
-    const reg = createBuiltinRegistry();
-    const minimalResult = resolveToolset("minimal", reg);
-    const researcherResult = resolveToolset("researcher", reg);
-    expect(minimalResult.ok).toBe(true);
-    expect(researcherResult.ok).toBe(true);
-    if (!minimalResult.ok || !researcherResult.ok) return;
-    if (minimalResult.value.mode !== "allowlist" || researcherResult.value.mode !== "allowlist")
-      return;
-    expect(minimalResult.value.tools.length).toBeLessThan(researcherResult.value.tools.length);
-  });
-
-  test("researcher preset is read-only — no writes or deletes", () => {
+  test("researcher preset includes glob and grep but no write/edit tools", () => {
     const reg = createBuiltinRegistry();
     const result = resolveToolset("researcher", reg);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.mode).toBe("allowlist");
     if (result.value.mode !== "allowlist") return;
+    expect(result.value.tools).toContain("Glob");
+    expect(result.value.tools).toContain("Grep");
     for (const tool of result.value.tools) {
-      expect(tool).not.toMatch(/write|delete/);
+      expect(tool).not.toMatch(/^Bash$|^Write$|^Edit$/);
     }
+  });
+
+  test("minimal preset contains only ask tool", () => {
+    const reg = createBuiltinRegistry();
+    const result = resolveToolset("minimal", reg);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.mode).toBe("allowlist");
+    if (result.value.mode !== "allowlist") return;
+    expect(result.value.tools).toEqual(["AskUserQuestion"]);
   });
 
   test("safe tools are a subset of researcher tools", () => {

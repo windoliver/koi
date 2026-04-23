@@ -15,10 +15,15 @@ at assembly time.
 
 ## Public API
 
-### `resolveToolset(name, registry): Result<readonly string[], KoiError>`
+### `resolveToolset(name, registry): Result<ToolsetResolution, KoiError>`
 
-Recursively resolves a named toolset to a flat, deduplicated list of tool names.
+Recursively resolves a named toolset to an explicit policy:
+- `{ mode: "all" }` — no filter (agent receives every tool)
+- `{ mode: "allowlist", tools: string[] }` — explicit tool allowlist
+
 Detects and rejects cycles. Returns `{ ok: false }` for unknown names or cycles.
+Does **not** validate tool names against the live runtime registry — callers must
+do that at assembly time if strict validation is required.
 
 ### `createBuiltinRegistry(): ToolsetRegistry`
 
@@ -33,18 +38,23 @@ Merges multiple registries. Later entries win on name collision.
 
 - `ToolsetDefinition` — `name`, `description`, `tools`, `includes`
 - `ToolsetRegistry` — `ReadonlyMap<string, ToolsetDefinition>`
+- `ToolsetResolution` — `{ mode: "all" } | { mode: "allowlist"; tools: string[] }`
 
 ## Built-in Presets
 
 | Name | Tools | Use case |
 |------|-------|----------|
-| `safe` | `web_search`, `web_fetch`, `memory_read` | Read-only web + memory — safe for untrusted channels (no writes, no deletes) |
-| `developer` | `*` wildcard — all tools pass through | Full access for coding agents |
-| `researcher` | `web_search`, `web_fetch`, `memory_read`, `read_file`, `glob`, `grep` | Read-only research — web, memory, filesystem (no writes) |
-| `minimal` | `memory_read`, `ask_user` | Conversation only — read-only memory and user interaction |
+| `safe` | `web_search`, `web_fetch`, `Glob`, `Grep`, `Read` | Read-only web + filesystem, no shell, no writes |
+| `developer` | `*` → `{ mode: "all" }` | Full access for coding agents |
+| `researcher` | `web_search`, `web_fetch`, `Glob`, `Grep`, `Read`, `ToolSearch` | Research without mutation — extends safe with tool discovery |
+| `minimal` | `AskUserQuestion` | Conversation only — no tool access beyond user interaction |
 
-`developer` uses the sentinel `"*"` — callers must handle this as "no filter" rather
-than a literal tool name.
+Tool names use Koi's primordial PascalCase convention (`Glob`, `Grep`, `Read`, `AskUserQuestion`).
+Web tools use the `web_` prefix from `@koi/tools-web` configured with `prefix: "web"`.
+Custom MCP or forged tools have different names — extend the registry with custom presets.
+
+`developer` stores `"*"` internally; `resolveToolset` converts it to `{ mode: "all" }` so
+callers receive an explicit tagged result and cannot accidentally use `"*"` as a tool name.
 
 ## Manifest Integration
 
