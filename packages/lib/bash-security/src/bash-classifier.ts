@@ -285,10 +285,15 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
       category: "destructive",
     };
   }
-  if (/\bpush\b/.test(cmd) && /(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b)/.test(cmd)) {
+  if (
+    /\bpush\b/.test(cmd) &&
+    // Explicit force flags OR a refspec starting with `+` (bash force-update).
+    /(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b|\bpush\b\s+[^\s#]+\s+\+\w)/.test(cmd)
+  ) {
     return {
       ok: false,
-      reason: "git push --force rewrites remote history and can erase teammates' work",
+      reason:
+        "git push --force (or + refspec) rewrites remote history and can erase teammates' work",
       pattern: "git+push+force",
       category: "destructive",
     };
@@ -303,7 +308,9 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
   }
   if (
     /\bbranch\b/.test(cmd) &&
-    /(?:\s-[a-zA-Z]*D\b|--delete\b[\s\S]{0,200}--force\b|--force\b[\s\S]{0,200}--delete\b)/.test(
+    // -D (force-delete), long-form --delete + --force in either order, or
+    // short-option pair -d + -f (in either order).
+    /(?:\s-[a-zA-Z]*D\b|--delete\b[\s\S]{0,200}--force\b|--force\b[\s\S]{0,200}--delete\b|\s-[a-zA-Z]*d\b[\s\S]{0,200}\s-[a-zA-Z]*f\b|\s-[a-zA-Z]*f\b[\s\S]{0,200}\s-[a-zA-Z]*d\b)/.test(
       cmd,
     )
   ) {
@@ -381,13 +388,13 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
  * that the literal `authorized_keys` substring check misses.
  */
 const SSH_DIR_WRITE: ThreatPattern = {
-  // Write-redirect (`>`, `>>`, `>|` noclobber-override, `&>` stderr+stdout,
-  // optional fd prefix like `3>`) or a file-write verb (tee/cp/mv/install),
-  // then an optional opening quote, then a target under ~/.ssh, $HOME/.ssh,
-  // or ${HOME}/.ssh. Matches: `> ~/.ssh/x`, `exec 3> "$HOME/.ssh/x"`,
-  // `exec 3>|$HOME/.ssh/x`, `cp key ~/.ssh/id_rsa`.
+  // Write-redirect (`>`, `>>`, `>|` noclobber-override, `&>` & `>&`
+  // stderr+stdout, optional fd prefix like `3>`) or a file-write verb
+  // (tee/cp/mv/install), then a target under ~/.ssh, $HOME/.ssh, ${HOME}/.ssh.
+  // Quote normalization in match.ts removes split-quoting forms like
+  // `> "$HOME"/.ssh/x` before this pattern runs.
   regex: new RegExp(
-    `(?:\\d*(?:>>?\\|?|&>)\\s*["']?|\\b(?:tee|cp|mv|install)\\b${B}\\s["']?)(?:~|\\$HOME|\\$\\{HOME\\})\\/\\.ssh\\/`,
+    `(?:\\d*(?:>>?\\|?|&>|>&)\\s*|\\b(?:tee|cp|mv|install)\\b${B}\\s)(?:~|\\$HOME|\\$\\{HOME\\})\\/\\.ssh\\/`,
   ),
   category: "persistence",
   reason: "Writing into ~/.ssh establishes persistent SSH access",

