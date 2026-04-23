@@ -25,6 +25,12 @@ const hookCommandSchema = z
 
 const hookEventSchema = z.array(hookCommandSchema).readonly();
 
+/**
+ * Valid tool name: starts with a letter, followed by letters/digits/underscores.
+ * Rejects glob metacharacters and colons that would silently create overbroad patterns.
+ */
+const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
+
 /** Validates a single permission string, catching the most common structural errors. */
 const permissionStringSchema = z
   .string()
@@ -32,11 +38,29 @@ const permissionStringSchema = z
   .superRefine((s, ctx) => {
     if (s === "*") return;
     const parenIdx = s.indexOf("(");
-    if (parenIdx === -1) return; // bare tool name or "Tool:glob" — structurally valid
+    if (parenIdx === -1) {
+      // Bare tool name — must be a plain identifier to prevent glob metacharacters
+      // like "Read**" or "Bash:**" from creating overbroad permission patterns.
+      if (!TOOL_NAME_RE.test(s)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Invalid permission string "${s}": bare names must be plain tool identifiers (letters, digits, underscores starting with a letter). Use "ToolName(*)" to match all invocations.`,
+        });
+      }
+      return;
+    }
     if (!s.endsWith(")")) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `Missing closing ")" in permission string "${s}"`,
+      });
+      return;
+    }
+    const toolName = s.slice(0, parenIdx);
+    if (!TOOL_NAME_RE.test(toolName)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid tool name "${toolName}" in permission string "${s}": must be a plain identifier (letters, digits, underscores starting with a letter).`,
       });
     }
   });

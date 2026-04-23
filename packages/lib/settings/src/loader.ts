@@ -35,11 +35,19 @@ const ALL_LAYERS: readonly SettingsLayer[] = [
  *
  * Missing files are silently skipped. Parse/schema errors in non-policy layers
  * are collected in `errors` and the layer is skipped. Policy errors throw so the
- * caller can exit with a non-zero code (fail-closed).
+ * caller can exit with a non-zero code (fail-closed). The flag layer also throws
+ * when `flagPath` was explicitly supplied — an unreadable or invalid explicit
+ * settings file should abort startup rather than silently lose the operator's
+ * intended restrictions.
  */
 export async function loadSettings(opts: SettingsLoadOptions = {}): Promise<SettingsLoadResult> {
   const paths = resolveSettingsPaths(opts);
   const layers = opts.layers ?? ALL_LAYERS;
+
+  // Policy always fatal; flag is fatal only when the operator explicitly passed
+  // --settings (i.e. flagPath is set), so a bad path fails closed.
+  const fatalLayers = new Set<SettingsLayer>(["policy"]);
+  if (opts.flagPath !== undefined) fatalLayers.add("flag");
 
   const errors: ValidationError[] = [];
 
@@ -47,7 +55,7 @@ export async function loadSettings(opts: SettingsLoadOptions = {}): Promise<Sett
   const layerResults = layers.flatMap((layer): [SettingsLayer, KoiSettings][] => {
     const filePath = paths[layer];
     if (filePath == null) return [];
-    const parsed = readSettingsFile(filePath, layer, errors);
+    const parsed = readSettingsFile(filePath, layer, errors, fatalLayers.has(layer));
     if (parsed == null) return [];
     return [[layer, parsed]];
   });
@@ -76,17 +84,20 @@ function readSettingsFile(
   filePath: string,
   layer: SettingsLayer,
   errors: ValidationError[],
+  isFatal: boolean,
 ): KoiSettings | null {
+  const layerLabel = layer === "policy" ? "Policy settings file" : "Settings file";
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf-8");
   } catch (e: unknown) {
-    if (isENOENT(e)) return null;
-    // Policy layer read failures propagate so callers can exit fail-closed.
-    // For optional layers (user/project/local/flag), treat read errors like
-    // schema errors: collect and skip, so a bad file permissions on ~/.koi/settings.json
-    // does not prevent startup.
-    if (layer === "policy") throw e;
+    if (isENOENT(e)) {
+      if (isFatal) {
+        throw new Error(`${layerLabel} "${filePath}" not found`, { cause: e });
+      }
+      return null;
+    }
+    if (isFatal) throw e;
     const message = e instanceof Error ? e.message : String(e);
     errors.push({ file: filePath, path: "", message: `Failed to read file: ${message}` });
     return null;
@@ -99,8 +110,8 @@ function readSettingsFile(
     parsed = JSON.parse(raw);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
-    if (layer === "policy") {
-      throw new Error(`Policy settings file at ${filePath} contains invalid JSON — ${message}`, {
+    if (isFatal) {
+      throw new Error(`${layerLabel} at ${filePath} contains invalid JSON — ${message}`, {
         cause: e,
       });
     }
@@ -110,9 +121,9 @@ function readSettingsFile(
 
   const result = validateKoiSettings(parsed);
   if (!result.ok) {
-    if (layer === "policy") {
+    if (isFatal) {
       throw new Error(
-        `Policy settings file at ${filePath} failed schema validation — ${result.error.message}`,
+        `${layerLabel} at ${filePath} failed schema validation — ${result.error.message}`,
         { cause: result.error },
       );
     }

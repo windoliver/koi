@@ -1541,7 +1541,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   let settingsDefaultMode: "default" | "plan" | "auto" = "default";
   // Tracks the mode explicitly set by the policy layer, so the custom-backend
   // path can fail startup rather than silently ignore a policy-mandated mode.
-  let policyDefaultMode: "default" | "bypass" | "plan" | "auto" | undefined;
+  let policyDefaultMode: "default" | "plan" | "auto" | undefined;
   try {
     const { sources, errors: settingsErrors } = await loadSettings({
       cwd,
@@ -1571,13 +1571,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     }
     policyDefaultMode = sources.policy?.permissions?.defaultMode;
   } catch (err) {
-    // Policy file is malformed or unreadable — rethrow with a clear prefix.
-    // The caller's top-level handler is expected to exit with code 2.
+    // Policy or explicit --settings file is malformed or unreadable — rethrow
+    // so the caller can exit with code 2 (fail-closed).
     const msg = err instanceof Error ? err.message : String(err);
-    throw new PolicyLoadError(
-      `[koi/${hostId}] fatal: admin policy settings failed to load — ${msg}`,
-      { cause: err },
-    );
+    throw new PolicyLoadError(`[koi/${hostId}] fatal: settings failed to load — ${msg}`, {
+      cause: err,
+    });
   }
 
   // Sort helpers: highest-precedence source first, then deny < ask < allow.
