@@ -344,6 +344,7 @@ describe("createLocalAgentLifecycle", () => {
     expect(exitCode).toBe(1);
     // Fired within ~50ms of the 100ms timeout (not waiting for pipe to settle)
     expect(exitFiredAt).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: guarded by toBeDefined() assertion above
     expect(exitFiredAt!).toBeLessThan(200);
     const combined = output
       .read(0)
