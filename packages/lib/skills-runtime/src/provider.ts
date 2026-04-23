@@ -25,12 +25,19 @@ import type { SkillDefinition, SkillsRuntime } from "./types.js";
 
 export interface SkillProviderConfig {
   /**
-   * When true: call discover() only, attaching SkillComponents with empty
-   * content. The middleware injects an <available_skills> block from
-   * descriptions; full bodies load on demand via the Skill tool.
+   * When true: validate all skills at attach time via loadAll() but attach each
+   * successful skill with content: "" and runtimeBacked: true. The middleware
+   * injects a compact <available_skills> XML block per model call instead of full
+   * bodies, reducing per-call prompt tokens. Blocked/VALIDATION skills are still
+   * reported in AttachResult.skipped for operator visibility.
    *
-   * When false (default): call loadAll() to eagerly load all bodies and
-   * inject them into systemPrompt at every model call.
+   * Trade-off vs. eager mode (progressive: false):
+   * - Both modes call loadAll() at startup (same validation and startup cost)
+   * - Progressive: ~100 tokens injected per model call (XML metadata only)
+   * - Eager: body text injected at every model call (can be thousands of tokens)
+   *
+   * When false (default): call loadAll() and inject full bodies into systemPrompt
+   * at every model call.
    */
   readonly progressive?: boolean;
 }
@@ -43,10 +50,10 @@ export interface SkillProviderConfig {
  *   with full body in content.
  *
  * Progressive mode (progressive: true):
- *   Calls runtime.loadAll() for full failure visibility (blocked/VALIDATION skills
- *   appear in AttachResult.skipped), then attaches successful skills with content: ""
- *   and runtimeBacked: true. Bodies are loaded on demand via the Skill tool.
- *   The middleware injects an <available_skills> XML summary block per model call.
+ *   Calls runtime.loadAll() for full blocked/VALIDATION visibility, then attaches
+ *   each successful skill with content: "" and runtimeBacked: true. Bodies are
+ *   discarded at attach time; the Skill tool re-loads a body on demand when the
+ *   model invokes a skill. The middleware injects an <available_skills> XML block.
  *
  * Compatible with Nexus in the future: swap the runtime implementation,
  * keep the same provider.
