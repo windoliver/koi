@@ -9,6 +9,7 @@ interface ResolvePathsOptions {
   readonly cwd?: string | undefined;
   readonly homeDir?: string | undefined;
   readonly flagPath?: string | undefined;
+  readonly policyPath?: string | undefined;
 }
 
 /**
@@ -18,6 +19,8 @@ interface ResolvePathsOptions {
  *   macOS  → /Library/Application Support/koi/policy.json
  *   Linux  → /etc/koi/policy.json
  *   other  → /etc/koi/policy.json
+ *
+ * Callers may supply `policyPath` to override the platform default (used in tests).
  */
 export function resolveSettingsPaths(opts: ResolvePathsOptions = {}): SettingsPaths {
   const cwd = opts.cwd ?? process.cwd();
@@ -28,7 +31,7 @@ export function resolveSettingsPaths(opts: ResolvePathsOptions = {}): SettingsPa
     project: join(cwd, ".koi", "settings.json"),
     local: join(cwd, ".koi", "settings.local.json"),
     flag: opts.flagPath ?? null,
-    policy: resolvePolicyPath(),
+    policy: opts.policyPath ?? resolvePolicyPath(),
   };
 }
 

@@ -70,6 +70,11 @@ export interface SettingsLoadOptions {
    * Useful in tests (skip policy) or subagents (skip user).
    */
   readonly layers?: readonly SettingsLayer[] | undefined;
+  /**
+   * Override the platform policy path. Used in tests to supply a custom
+   * policy file without root access to /etc/koi/ or /Library/...
+   */
+  readonly policyPath?: string | undefined;
 }
 
 /** Result returned by `loadSettings()`. */
