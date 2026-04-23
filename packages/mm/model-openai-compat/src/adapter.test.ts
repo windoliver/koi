@@ -646,3 +646,64 @@ describe("adapter: CRLF SSE event boundaries", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Buffered tool streaming: retry suppression after tool_calls seen
+// ---------------------------------------------------------------------------
+
+describe("adapter: buffered tool streaming retry suppression", () => {
+  test("truncated stream after buffered tool_calls yields non-retryable error", async () => {
+    // Stream sends tool_calls data then closes without finish_reason or [DONE].
+    // With supportsToolStreaming:false (buffered mode), the adapter must NOT mark
+    // the error as retryable — retrying would re-execute the tool call.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"bt","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"my_fn","arguments":""}}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends without finish_reason or [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      expect(error.retryable).toBe(false);
+      expect(error.message).toContain("truncation");
+    }
+  });
+
+  test("truncated stream with no tool_calls data yields retryable error", async () => {
+    // Same truncation scenario but no tool calls seen — should still be retryable.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [`data: {"id":"bt2","choices":[{"index":0,"delta":{},"finish_reason":null}]}`, ``].join(
+        "\n",
+      ),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      expect(error.retryable).toBe(true);
+    }
+  });
+});

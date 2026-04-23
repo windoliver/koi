@@ -915,4 +915,19 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     expect(chunks.filter((c) => c.kind === "tool_call_delta")).toHaveLength(0);
     expect(chunks.filter((c) => c.kind === "tool_call_end")).toHaveLength(1);
   });
+
+  test("hasSeenToolCallDelta is false before any feed, true after first tool_calls delta", () => {
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+    expect(parser.hasSeenToolCallDelta()).toBe(false);
+
+    parser.feed(makeToolChunk(0, "call_1", "my_fn", ""));
+    expect(parser.hasSeenToolCallDelta()).toBe(true);
+  });
+
+  test("hasSeenToolCallDelta is false in progressive mode (tool events emitted, not buffered)", () => {
+    const parser = createStreamParser(makeAcc()); // default: supportsToolStreaming = true
+    parser.feed(makeToolChunk(0, "call_1", "my_fn", ""));
+    // Progressive mode does not set the flag — only buffered mode does
+    expect(parser.hasSeenToolCallDelta()).toBe(false);
+  });
 });

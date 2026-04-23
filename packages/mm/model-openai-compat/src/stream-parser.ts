@@ -434,6 +434,8 @@ interface ParserContext {
   /** Calls displaced by index reuse — flushed alongside activeToolCalls at finish(). */
   completedToolCalls: Array<{ id: string; name: string; argBuffer: string }>;
   readonly bufferToolCalls: boolean;
+  /** True once any tool_calls delta has been seen in the raw stream (even if buffered). */
+  sawToolCallDelta: boolean;
 }
 
 function flushCurrentSegment(ctx: ParserContext): void {
@@ -491,6 +493,7 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
       ctx.state = { kind: "idle" };
     }
     if (ctx.bufferToolCalls) {
+      ctx.sawToolCallDelta = true;
       for (const tc of delta.tool_calls) {
         accumulateToolCallDelta(tc, ctx.activeToolCalls, ctx.completedToolCalls);
       }
@@ -532,6 +535,7 @@ export function createStreamParser(
   feed: (chunk: ChatCompletionChunk) => readonly ModelChunk[];
   finish: () => readonly ModelChunk[];
   getAccumulator: () => AccumulatedResponse;
+  hasSeenToolCallDelta: () => boolean;
 } {
   const ctx: ParserContext = {
     state: { kind: "idle" },
@@ -546,11 +550,13 @@ export function createStreamParser(
     activeToolCalls: new Map(),
     completedToolCalls: [],
     bufferToolCalls: !(options?.supportsToolStreaming ?? true),
+    sawToolCallDelta: false,
   };
 
   return {
     feed: (chunk) => feedChunk(ctx, chunk),
     finish: () => finishParsing(ctx),
     getAccumulator: () => ctx.acc,
+    hasSeenToolCallDelta: () => ctx.sawToolCallDelta,
   };
 }
