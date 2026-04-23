@@ -12,6 +12,7 @@ import type { ToolHandler, ToolRequest, ToolResponse, TurnContext } from "@koi/c
 import type { PermissionDecision } from "@koi/core/permission-backend";
 import { KoiRuntimeError } from "@koi/errors";
 import type { ApprovalStore } from "./approval-store.js";
+import { IS_SPEC_GUARD_ASK } from "./bash-spec-guard.js";
 import type { PermissionsMiddlewareConfig } from "./config.js";
 import type { DenialTracker } from "./denial-tracker.js";
 import { validateApprovalDecision } from "./middleware-internals.js";
@@ -163,7 +164,11 @@ export function createHandleAskDecision(deps: HandleAskDecisionDeps): {
           const isDangerous =
             rawForLegacy.trim().length > 0 &&
             classifyCommand(rawForLegacy.trim()).severity !== null;
-          hasLegacy = !isComplexForm && !isDangerous;
+          // Spec-guard-generated asks must never be resolved via legacy grant fallback.
+          // After spec-guard rebinding the resource is the exact argv, so the
+          // isComplexForm shape check is no longer reliable — use the marker directly.
+          const isSpecGuardAsk = (decision as Record<symbol, unknown>)[IS_SPEC_GUARD_ASK] === true;
+          hasLegacy = !isComplexForm && !isDangerous && !isSpecGuardAsk;
         }
         if (hasExact || hasLegacy) {
           const persistentStartMs = clock();

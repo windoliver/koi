@@ -20,6 +20,16 @@ import type { CompiledRule } from "./rule-types.js";
 export const IS_DEFAULT_ASK: symbol = Symbol.for("@koi/permissions/default-fallthrough-ask");
 
 /**
+ * Marks an allow decision produced by an exact-string rule (no glob metacharacters).
+ * Shared via Symbol.for() so bash-spec-guard can consume it without a cross-L2 import.
+ *
+ * When set, `hasExplicitExactArgvRule` trusts the allow directly instead of
+ * probing with the canary suffix — the canary heuristic fails when both an exact
+ * rule and a broader allow (e.g. `bash:*`) are present simultaneously.
+ */
+export const IS_EXACT_MATCH: symbol = Symbol.for("@koi/permissions/exact-match");
+
+/**
  * Test whether a resource path matches a compiled glob regex.
  */
 function matchResource(compiled: RegExp, resource: string): boolean {
@@ -258,6 +268,15 @@ export function evaluateRules(
       matchResource(rule.compiled, resource)
     ) {
       if (rule.effect === "allow") {
+        // Stamp exact-string rules (no glob metacharacters) so consumers can
+        // distinguish them from prefix/glob allows without a canary probe.
+        if (!/[*?[\]{]/.test(rule.pattern)) {
+          const exact: PermissionDecision & Record<symbol, boolean> = {
+            effect: "allow",
+            [IS_EXACT_MATCH]: true,
+          };
+          return exact;
+        }
         return { effect: "allow" };
       }
       const reason = rule.reason ?? `Matched ${rule.source} rule: ${rule.pattern}`;
