@@ -13,6 +13,9 @@ export function applyModelCompatRules(
   rules: readonly ModelCompatRule[] = MODEL_COMPAT_RULES,
 ): ResolvedCompat {
   for (const rule of rules) {
+    // Reset lastIndex before test() — global/sticky regexes mutate lastIndex,
+    // which would cause the same model string to alternate match/no-match across calls.
+    rule.match.lastIndex = 0;
     if (rule.match.test(model)) {
       return { ...base, ...rule.overrides };
     }

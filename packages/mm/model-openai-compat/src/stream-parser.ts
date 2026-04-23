@@ -548,7 +548,12 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
 
   if (delta.content !== undefined && delta.content !== null && delta.content.length > 0) {
     const r = processTextDelta(delta.content, ctx.state, ctx.acc, () => resetState(ctx));
-    output.push(...r.chunks);
+    // In buffered mode, suppress post-tool text_delta live emission to preserve
+    // event ordering: tool_call_start/end must precede any text that follows them.
+    // Pre-tool text (sawToolCallDelta still false) is emitted live.
+    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
+      output.push(...r.chunks);
+    }
     ctx.state = r.newState;
   }
 
@@ -558,7 +563,10 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
   const reasoningContent = findReasoningContent(delta);
   if (reasoningContent !== undefined) {
     const r = processThinkingDelta(reasoningContent, ctx.state, ctx.acc, () => resetState(ctx));
-    output.push(...r.chunks);
+    // Same ordering constraint: suppress post-tool thinking_delta live emission.
+    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
+      output.push(...r.chunks);
+    }
     ctx.state = r.newState;
   }
 

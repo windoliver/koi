@@ -27,6 +27,22 @@ describe("applyModelCompatRules", () => {
     expect(result.supportsToolStreaming).toBe(false);
   });
 
+  test("global-flag regex matches stably on repeated calls (lastIndex defense)", () => {
+    // RegExp with /g flag has stateful lastIndex. Without reset, test() alternates
+    // match/no-match on repeated calls with the same string. Verify the fix holds.
+    const rules: readonly ModelCompatRule[] = [
+      { match: /copilot/gi, overrides: { supportsToolStreaming: false } },
+    ];
+    const base = resolveCompat(OR_BASE, "copilot/gpt-4");
+    // Call three times with the same model — all must return the override
+    const r1 = applyModelCompatRules("copilot/gpt-4", base, rules);
+    const r2 = applyModelCompatRules("copilot/gpt-4", base, rules);
+    const r3 = applyModelCompatRules("copilot/gpt-4", base, rules);
+    expect(r1.supportsToolStreaming).toBe(false);
+    expect(r2.supportsToolStreaming).toBe(false);
+    expect(r3.supportsToolStreaming).toBe(false);
+  });
+
   test("only overrides specified fields; others fall through", () => {
     const rules: readonly ModelCompatRule[] = [
       { match: /weird-model/i, overrides: { supportsToolStreaming: false } },

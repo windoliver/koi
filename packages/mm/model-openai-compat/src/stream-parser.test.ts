@@ -976,11 +976,11 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     expect(acc.richContent[2]).toMatchObject({ kind: "tool_call", name: "tool_b" });
   });
 
-  test("text_delta streams live in buffered mode; richContent is ordered correctly at finish", () => {
-    // In buffered mode, text_delta chunks stream live as they arrive (no stall).
-    // The richContent accumulated in the model response reflects correct arrival
-    // order (pre-tool text, tool_call, post-tool text), even though the live stream
-    // may show text before the tool events at finish().
+  test("pre-tool text streams live; post-tool text is suppressed until finish; richContent order preserved", () => {
+    // In buffered mode, text_delta before any tool_calls delta streams live (no stall).
+    // After the first tool_calls delta, subsequent text_delta is suppressed during feed
+    // to preserve event ordering: tool_call_start/end must precede the text that follows.
+    // richContent always reflects correct arrival order.
     const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
 
     // Pre-tool text — arrives live during feed
@@ -993,14 +993,14 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     // Tool call buffered — no live tool events
     parser.feed(makeToolChunk(0, "call_1", "fn", '{"x":1}'));
 
-    // Post-tool text — also arrives live (no stall)
+    // Post-tool text — suppressed during feed to preserve tool-then-text ordering
     const postFeedChunks = parser.feed({
       id: "c2",
       choices: [{ index: 0, delta: { content: "post" }, finish_reason: "stop" }],
     });
-    expect(postFeedChunks.some((c) => c.kind === "text_delta")).toBe(true);
+    expect(postFeedChunks.some((c) => c.kind === "text_delta")).toBe(false);
 
-    // At finish: tool events are emitted (richContent ordering enforced)
+    // At finish: tool events and post-tool text are emitted in order
     const finishChunks = parser.finish();
     expect(finishChunks.some((c) => c.kind === "tool_call_start")).toBe(true);
     expect(finishChunks.some((c) => c.kind === "tool_call_end")).toBe(true);

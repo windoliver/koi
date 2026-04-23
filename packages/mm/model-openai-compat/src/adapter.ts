@@ -357,6 +357,10 @@ async function* streamOnce(
   let buffer = "";
   let sawDone = false;
   let hadError = false;
+  // Accumulate error chunks instead of yielding immediately so that buffered
+  // complete tool calls can be flushed first. complete() throws on the first
+  // error chunk, so errors must come after any salvageable tool call events.
+  const pendingErrors: ModelChunk[] = [];
 
   // Reset idle timer — headers arrived, now timing body chunks
   resetIdleTimer();
@@ -382,17 +386,21 @@ async function* streamOnce(
       for (const part of parts) {
         for (const sseResult of parseSSELines(`${part}\n`)) {
           if (!sseResult.ok) {
-            yield {
+            pendingErrors.push({
               kind: "error",
               message: `Malformed SSE payload: ${sseResult.raw}`,
               code: "EXTERNAL",
-            };
+            });
             hadError = true;
             continue;
           }
           for (const chunk of parser.feed(sseResult.chunk)) {
-            if (chunk.kind === "error") hadError = true;
-            yield chunk;
+            if (chunk.kind === "error") {
+              hadError = true;
+              pendingErrors.push(chunk);
+            } else {
+              yield chunk;
+            }
           }
         }
       }
@@ -405,29 +413,33 @@ async function* streamOnce(
       if (buffer.includes("[DONE]")) sawDone = true;
       for (const sseResult of parseSSELines(`${buffer}\n`)) {
         if (!sseResult.ok) {
-          yield {
+          pendingErrors.push({
             kind: "error",
             message: `Malformed SSE payload: ${sseResult.raw}`,
             code: "EXTERNAL",
-          };
+          });
           hadError = true;
           continue;
         }
         for (const chunk of parser.feed(sseResult.chunk)) {
-          if (chunk.kind === "error") hadError = true;
-          yield chunk;
+          if (chunk.kind === "error") {
+            hadError = true;
+            pendingErrors.push(chunk);
+          } else {
+            yield chunk;
+          }
         }
       }
     }
 
     if (hadError) {
-      // Flush buffered complete tool calls before returning. In buffered mode,
-      // calls are held until finish(); a later malformed SSE event must not
-      // silently discard already-buffered complete calls. Skip errors from
-      // finish() — the hadError signal is already authoritative.
+      // Flush buffered complete tool calls BEFORE the errors. In buffered mode,
+      // calls are held until finish(); errors must not be emitted first or
+      // complete() will throw before consuming salvageable tool call events.
       for (const chunk of parser.finish()) {
         if (chunk.kind !== "error") yield chunk;
       }
+      for (const err of pendingErrors) yield err;
       return;
     }
 
