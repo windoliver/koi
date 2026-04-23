@@ -1526,12 +1526,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // exit with the fail-closed error code rather than produce a generic crash.
   const settingsRules: SourcedRule[] = [];
   let settingsDefaultMode: "default" | "bypass" | "plan" | "auto" = "default";
+  // Tracks the mode explicitly set by the policy layer, so the custom-backend
+  // path can fail startup rather than silently ignore a policy-mandated mode.
+  let policyDefaultMode: "default" | "bypass" | "plan" | "auto" | undefined;
   try {
-    const {
-      settings: cascadedSettings,
-      sources,
-      errors: settingsErrors,
-    } = await loadSettings({ cwd });
+    const { sources, errors: settingsErrors } = await loadSettings({ cwd });
     for (const err of settingsErrors) {
       console.warn(`[koi/${hostId}] settings validation warning: ${err.file}: ${err.message}`);
     }
@@ -1541,9 +1540,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         settingsRules.push(...mapSettingsToSourcedRules(layerSettings, source));
       }
     }
-    if (cascadedSettings.permissions?.defaultMode != null) {
-      settingsDefaultMode = cascadedSettings.permissions.defaultMode;
+    // Compute effective defaultMode in precedence order. bypass is only honored
+    // from "policy" or "flag" layers — lower layers cannot disable enforcement.
+    for (const source of SOURCE_PRECEDENCE) {
+      const layerMode = sources[source]?.permissions?.defaultMode;
+      if (layerMode == null) continue;
+      if (layerMode === "bypass" && source !== "policy" && source !== "flag") {
+        console.warn(
+          `[koi/${hostId}] settings[${source}] permissions.defaultMode="bypass" ignored — ` +
+            `bypass requires the policy or flag layer.`,
+        );
+        continue;
+      }
+      settingsDefaultMode = layerMode;
+      break;
     }
+    policyDefaultMode = sources.policy?.permissions?.defaultMode;
   } catch (err) {
     // Policy file is malformed or unreadable — rethrow with a clear prefix.
     // The caller's top-level handler is expected to exit with code 2.
@@ -1577,6 +1589,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // Allow rules would bypass the caller's explicit whitelist (e.g. --allow-tool);
     // only deny/ask rules are applied so operators stay in control.
     const restrictingRules = sortRules(settingsRules.filter((r) => r.effect !== "allow"));
+    // Policy defaultMode is authoritative: fail startup rather than silently ignore it.
+    // A policy that requests plan/ask/bypass mode cannot be composed into an external
+    // marker-aware backend — operators must use deny/ask rules on this path.
+    if (policyDefaultMode != null && policyDefaultMode !== "default") {
+      throw new PolicyLoadError(
+        `[koi/${hostId}] fatal: policy settings permissions.defaultMode="${policyDefaultMode}" ` +
+          `is incompatible with a custom permission backend (koi start). ` +
+          `Use deny or ask rules to restrict permissions instead.`,
+      );
+    }
     if (settingsDefaultMode !== "default") {
       console.warn(
         `[koi/${hostId}] settings permissions.defaultMode="${settingsDefaultMode}" is ignored ` +
