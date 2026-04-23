@@ -9,20 +9,22 @@ import { z } from "zod";
 import type { PermissionRule, RuleSource, SourcedRule } from "./rule-types.js";
 import { SOURCE_PRECEDENCE } from "./rule-types.js";
 
-// .strict() prevents a mixed object like { Write: "/etc/**", pattern: "bash:*", ... }
-// from silently parsing as a flat rule and discarding the DSL key. Without strict(),
-// Zod strips unknown fields (like `Write`) and the intended deny becomes an allow.
-const permissionRuleSchema = z
-  .object({
-    pattern: z.string().min(1),
-    action: z.string().min(1),
-    effect: z.enum(["allow", "deny", "ask"]),
-    principal: z.string().min(1).optional(),
-    context: z.record(z.string(), z.string().min(1)).optional(),
-    reason: z.string().optional(),
-    on_deny: z.enum(["hard", "soft"]).optional(),
-  })
-  .strict();
+// Explicitly forbid DSL keys on flat rules so { Write: "/etc/**", pattern: "bash:*", ... }
+// fails here instead of having Write silently stripped and the deny misrouted.
+// Extra unknown fields (legacy metadata like description, tags, etc.) are stripped
+// by Zod's default behavior — no .strict() so existing policies with extra fields load.
+const permissionRuleSchema = z.object({
+  pattern: z.string().min(1),
+  action: z.string().min(1),
+  effect: z.enum(["allow", "deny", "ask"]),
+  principal: z.string().min(1).optional(),
+  context: z.record(z.string(), z.string().min(1)).optional(),
+  reason: z.string().optional(),
+  on_deny: z.enum(["hard", "soft"]).optional(),
+  Write: z.undefined().optional(),
+  Read: z.undefined().optional(),
+  Network: z.undefined().optional(),
+});
 
 const semanticEffectFields = {
   effect: z.enum(["allow", "deny", "ask"]),

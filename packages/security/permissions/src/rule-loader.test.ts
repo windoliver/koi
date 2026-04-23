@@ -199,6 +199,52 @@ describe("DSL sugar — Write/Read/Network rule shapes", () => {
     expect(result.value[0]?.on_deny).toBe("soft");
   });
 
+  test("flat rule with extra legacy metadata fields still loads (no .strict())", () => {
+    // Existing policy files may carry extra fields like description, tags, owner, etc.
+    // These are unknown to the schema and should be silently stripped, not rejected.
+    const result = loadRules(
+      new Map([
+        [
+          "project" as const,
+          [
+            {
+              pattern: "bash:rm",
+              action: "*",
+              effect: "deny",
+              reason: "destructive",
+              description: "legacy metadata",
+              owner: "security-team",
+            } as unknown as PermissionRule,
+          ],
+        ],
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value[0]?.pattern).toBe("bash:rm");
+    expect(result.value[0]?.effect).toBe("deny");
+  });
+
+  test("flat rule with a DSL key value is rejected (ambiguity guard)", () => {
+    // { Write: "/etc/**", pattern: "bash:*", effect: "deny" } must fail —
+    // without explicit rejection, Zod would strip Write and misroute the rule.
+    const result = loadRules(
+      new Map([
+        [
+          "policy" as const,
+          [
+            {
+              Write: "/etc/**",
+              pattern: "bash:*",
+              effect: "deny",
+            } as unknown as PermissionRule,
+          ],
+        ],
+      ]),
+    );
+    expect(result.ok).toBe(false);
+  });
+
   test("rejects ambiguous rule with two DSL keys (Write + Read together)", () => {
     // { Write: ..., Read: ..., effect: "deny" } is ambiguous — strict schemas ensure
     // neither branch silently discards the extra key, so validation rejects it.

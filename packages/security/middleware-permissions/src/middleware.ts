@@ -581,12 +581,12 @@ export function createPermissionsMiddleware(
     serializeTurnContext,
   });
 
-  // Spec guard: must be explicitly enabled via enableBashSpecGuard: true.
-  // Existing integrations that provide resolveBashCommand retain prior prefix-only
-  // semantics until they opt in. Without resolveBashCommand the guard is a no-op.
+  // Spec guard: enabled by default for any caller that provides resolveBashCommand.
+  // Pass enableBashSpecGuard: false to explicitly opt out (e.g. during migration).
+  // Without resolveBashCommand the guard is always a no-op regardless of the flag.
   const specRegistry = createSpecRegistry();
   const specGuardEnabled =
-    config.resolveBashCommand !== undefined && config.enableBashSpecGuard === true;
+    config.resolveBashCommand !== undefined && config.enableBashSpecGuard !== false;
   // Warm the parser immediately so that by the time the first bash command
   // arrives, the WASM grammar is already loaded. Swallow rejection here —
   // the request-time guard awaits init per-call and will deny safely if
