@@ -169,7 +169,9 @@ function createTimeoutRace(
  * it to keep guard and governance state in sync.
  */
 export interface IterationGuardHandle extends KoiMiddleware {
-  readonly resetForRun: () => void;
+  /** Reset per-run budgets. Pass runStartedAt (ms since epoch) to anchor the
+   * guard clock to the run() entry point rather than the reset call site. */
+  readonly resetForRun: (runStartedAt?: number) => void;
 }
 
 /**
@@ -277,10 +279,11 @@ export function createIterationGuard(config?: Partial<IterationLimits>): Iterati
       lastActivityMs = Date.now();
     },
 
-    resetForRun: (): void => {
+    resetForRun: (runStartedAt?: number): void => {
+      const t = runStartedAt ?? Date.now();
       turns = 0;
-      startedAt = Date.now();
-      lastActivityMs = Date.now();
+      startedAt = t;
+      lastActivityMs = t;
     },
 
     wrapModelCall: async (_ctx, request, next) => {
