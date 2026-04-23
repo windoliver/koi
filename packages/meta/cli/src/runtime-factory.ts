@@ -1191,6 +1191,18 @@ export function resolveMaxDurationMs(hostDefault?: number): number {
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
 }
 
+/**
+ * Thrown when the policy settings file fails to parse or load.
+ * `start.ts` catches this specifically to emit `bail(msg, 2)` — the documented
+ * policy-failure exit code — instead of a generic runtime-assembly error.
+ */
+export class PolicyLoadError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PolicyLoadError";
+  }
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
@@ -1536,9 +1548,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // Policy file is malformed or unreadable — rethrow with a clear prefix.
     // The caller's top-level handler is expected to exit with code 2.
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`[koi/${hostId}] fatal: admin policy settings failed to load — ${msg}`, {
-      cause: err,
-    });
+    throw new PolicyLoadError(
+      `[koi/${hostId}] fatal: admin policy settings failed to load — ${msg}`,
+      { cause: err },
+    );
   }
 
   // Sort helpers: highest-precedence source first, then deny < ask < allow.
@@ -1560,16 +1573,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   let permBackend: PermissionBackend;
   if (config.permissionBackend !== undefined) {
     const inner = config.permissionBackend;
-    const allSettingsRules = sortRules(settingsRules);
-    if (allSettingsRules.length > 0) {
+    // Settings may only TIGHTEN on the custom-backend path (koi start).
+    // Allow rules would bypass the caller's explicit whitelist (e.g. --allow-tool);
+    // only deny/ask rules are applied so operators stay in control.
+    const restrictingRules = sortRules(settingsRules.filter((r) => r.effect !== "allow"));
+    if (settingsDefaultMode !== "default") {
+      console.warn(
+        `[koi/${hostId}] settings permissions.defaultMode="${settingsDefaultMode}" is ignored ` +
+          `when a custom permission backend is active (koi start). ` +
+          `Use deny or ask rules to restrict permissions on this path.`,
+      );
+    }
+    if (restrictingRules.length > 0) {
       // Compile rules once at construction — never recompile per-query.
-      const compiledRules: readonly CompiledRule[] = allSettingsRules.map((r) => ({
+      const compiledRules: readonly CompiledRule[] = restrictingRules.map((r) => ({
         ...r,
         compiled: compileGlob(r.pattern),
       }));
       const wrappedCheck = async (query: PermissionQuery): Promise<PermissionDecision> => {
         const decision = evaluateRules(query, compiledRules);
-        // Sentinel "No matching permission rule" means settings have no opinion.
+        // Sentinel "No matching permission rule" means settings have no deny/ask opinion.
         // Delegate to the inner marker-aware backend (e.g. createPatternPermissionBackend).
         if (decision.effect === "ask" && decision.reason === "No matching permission rule") {
           return inner.check(query);

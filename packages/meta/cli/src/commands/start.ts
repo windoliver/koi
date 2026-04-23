@@ -48,7 +48,7 @@ import { loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
-import { createKoiRuntime } from "../runtime-factory.js";
+import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
@@ -838,6 +838,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   } catch (e: unknown) {
     // Ensure OTel provider is shut down even if runtime assembly fails.
     await otelHandle?.shutdown();
+    // Policy settings failures exit with code 2 — both in headless and interactive
+    // mode. Automated policy deployments key off exit 2 to distinguish
+    // "config invalid" from "unexpected crash".
+    if (e instanceof PolicyLoadError) {
+      const msg = e.message;
+      return bail(msg, 2);
+    }
     // In headless mode, route runtime-assembly throws through the same
     // NDJSON envelope as every other setup failure, so CI consumers see
     // a parseable `result` rather than an uncaught exception. Throws are
