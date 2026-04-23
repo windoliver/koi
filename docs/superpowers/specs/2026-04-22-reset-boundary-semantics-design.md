@@ -70,14 +70,22 @@ New payload shape — flat provenance fields, consistent with Claude Code's `Ses
 #### 1b. Add `ResetBoundary` vocabulary constant
 
 ```typescript
+/**
+ * Canonical boundary → governance event mapping.
+ * This contract applies when `resetBudgetPerRun: true` is set.
+ * When `resetBudgetPerRun: false` (default), no `run_reset` event is emitted at run_start —
+ * budgets accumulate across runs for the session lifetime.
+ * Consumers: do not assume `run_reset` is always present. Check for `session_reset` instead
+ * if you only need to know when a new session starts.
+ */
 export const RESET_BOUNDARIES = {
   turn_end:      "no governance event — turn counters are per-run, not per-turn",
-  run_start:     "run_reset",
+  run_start:     "run_reset (only when resetBudgetPerRun: true)",
   session_cycle: "session_reset",
 } as const satisfies Record<string, string>
 ```
 
-This constant is the machine-readable form of the mapping table above. Agents and tools can import it; docs reference it.
+This constant is the machine-readable form of the mapping table above. Agents and tools can import it; docs reference it. The `run_start` entry explicitly documents the conditional: consumers must not assume `run_reset` arrives on every run.
 
 #### 1c. Remove `iteration_reset` — rename everywhere in this PR
 
@@ -113,15 +121,23 @@ function resetRunBoundary(
   for (const mw of guards) {
     if (isIterationGuardHandle(mw)) {
       mw.resetForRun(runStartedAt)
+    } else if (isLegacyIterationGuard(mw)) {
+      // A legacy guard reached this point — either through dynamic composition (forge/
+      // applyRecomposition) or a bug in the construction-time check. Fail closed: throw
+      // rather than emit a false run_reset that would claim a stale guard was reset.
+      throw new Error(
+        `Legacy iteration guard "${mw.name}" reached run boundary reset. ` +
+        `Upgrade the guard to implement resetForRun() before using resetBudgetPerRun.`
+      )
     }
-    // Legacy guards (name-based, no brand) are rejected at createKoi() time when
-    // resetBudgetPerRun: true — they cannot appear here at runtime.
   }
   governance.record({ kind: "run_reset", source: "engine", boundaryId })
 }
 ```
 
-**`run_reset` is emitted unconditionally at every run boundary where `resetBudgetPerRun: true`.** There is no code path that suppresses the event. Legacy guards cannot reach `resetRunBoundary()` at runtime because `createKoi()` throws a `KoiError` at construction time when `resetBudgetPerRun: true` and any middleware in the initial set matches `isLegacyIterationGuard()`. This fail-closed gate ensures the vocabulary table invariant holds: `run_start` always maps to exactly one `run_reset` event.
+**`run_reset` is emitted unconditionally at every run boundary where `resetBudgetPerRun: true`** — or the function throws. There is no code path that silently skips the event or silently skips a guard reset. Two complementary gates enforce this:
+1. **Construction-time gate:** `createKoi()` throws `KoiError` if `resetBudgetPerRun: true` and the initial middleware set contains any legacy guard.
+2. **Runtime gate:** `resetRunBoundary()` throws if a legacy guard appears in the snapshot (catching any dynamically composed guard added by forge/`applyRecomposition()` after construction).
 
 Where `isLegacyIterationGuard(mw)` matches the actual compatibility surface in the engine today: a guard whose `name` is `"koi:iteration-guard"` but which lacks `ITERATION_GUARD_BRAND` and `resetForRun()` (i.e., pre-brand guards, detected via `mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)`). This matches the name-based fallback at `koi.ts:654-660`. The predicate lives in `engine-compose/src/guards.ts` alongside `isIterationGuardHandle`.
 
