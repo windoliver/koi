@@ -33,7 +33,11 @@ const DEFAULT_OTLP_TRACES_URL = "http://localhost:4318/v1/traces";
  * active — plain text warning lines would corrupt downstream JSON parsers.
  */
 function otelDiag(level: "warn" | "error", msg: string): void {
-  process.stderr.write(JSON.stringify({ level, source: "koi/otel", msg }) + "\n");
+  // type: "otel-diag" lets consumers distinguish diagnostics from span records
+  // in the shared NDJSON stream — both are valid JSON but have different shapes.
+  process.stderr.write(
+    `${JSON.stringify({ type: "otel-diag", level, source: "koi/otel", msg })}\n`,
+  );
 }
 
 /**
@@ -366,6 +370,7 @@ export class StderrSpanExporter implements SpanExporter {
         }
       }
       const obj = {
+        type: "otel-span", // discriminator — matches "otel-diag" from otelDiag()
         resource,
         traceId: span.spanContext().traceId,
         spanId: span.spanContext().spanId,

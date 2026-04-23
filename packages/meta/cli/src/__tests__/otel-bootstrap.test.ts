@@ -327,6 +327,9 @@ describe("StderrSpanExporter: end-to-end serialized output", () => {
     if (firstLine === undefined) throw new Error("no stderr output");
     const parsed = JSON.parse(firstLine) as Record<string, unknown>;
 
+    // Record type discriminator — consumers multiplex otel-span and otel-diag on this field
+    expect(parsed.type).toBe("otel-span");
+
     // Span identity fields must be present
     expect(typeof parsed.traceId).toBe("string");
     expect(typeof parsed.spanId).toBe("string");
@@ -359,6 +362,7 @@ describe("StderrSpanExporter: end-to-end serialized output", () => {
     const firstWrite = stderrWrites[0];
     if (firstWrite === undefined) throw new Error("no stderr output");
     const parsed = JSON.parse(firstWrite) as Record<string, unknown>;
+    expect(parsed.type).toBe("otel-diag");
     expect(parsed.level).toBe("warn");
     expect(parsed.source).toBe("koi/otel");
     expect(typeof parsed.msg).toBe("string");
