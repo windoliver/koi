@@ -49,7 +49,7 @@ const hooksSchema = z
 // Top-level schema
 // ---------------------------------------------------------------------------
 
-const koiSettingsSchema = z
+const koiSettingsSchema: z.ZodType<KoiSettings> = z
   .object({
     $schema: z.string().optional(),
     permissions: permissionsSchema.optional(),
@@ -61,7 +61,7 @@ const koiSettingsSchema = z
     disabledMcpServers: z.array(z.string().min(1)).optional(),
   })
   .strip()
-  .readonly() as z.ZodType<KoiSettings>;
+  .readonly();
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -78,5 +78,5 @@ export function validateKoiSettings(raw: unknown): Result<KoiSettings, KoiError>
 
 /** JSON Schema representation for IDE autocompletion. */
 export function getSettingsJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(koiSettingsSchema, { target: "draft-2020-12" }) as Record<string, unknown>;
+  return z.toJSONSchema(koiSettingsSchema, { target: "draft-2020-12" });
 }

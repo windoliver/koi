@@ -48,7 +48,11 @@ export interface KoiSettings {
   /** Environment variables injected into the agent process. */
   readonly env?: Readonly<Record<string, string>> | undefined;
   /** Hooks to run on lifecycle events. */
-  readonly hooks?: Readonly<Partial<Record<HookEventName, readonly HookCommand[]>>> | undefined;
+  readonly hooks?:
+    | {
+        readonly [K in HookEventName]?: readonly HookCommand[] | undefined;
+      }
+    | undefined;
   /** Override the model API base URL. */
   readonly apiBaseUrl?: string | undefined;
   /** UI theme preference. */
