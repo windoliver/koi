@@ -29,6 +29,7 @@ import type {
   HookConfig,
   InboundMessage,
   KoiMiddleware,
+  OAuthChannel,
   SessionId,
   SessionTranscript,
   Tool,
@@ -150,6 +151,7 @@ function resolveUserHooksConfigPath(): string {
 export async function loadUserMcpSetup(
   cwd: string,
   skillsRuntime: SkillsRuntime | undefined,
+  oauthChannel?: OAuthChannel | undefined,
 ): Promise<McpSetup | undefined> {
   // Project-local .mcp.json takes priority. Only fall back to
   // ~/.koi/.mcp.json when the project file is truly absent (NOT_FOUND),
@@ -194,7 +196,7 @@ export async function loadUserMcpSetup(
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
   const connections = result.value.servers.map((server) => {
-    const conn = createOAuthAwareMcpConnection(server, authProviders);
+    const conn = createOAuthAwareMcpConnection(server, authProviders, oauthChannel);
     connectionsByName.set(server.name, conn);
     return conn;
   });
@@ -257,6 +259,7 @@ export async function loadUserMcpSetup(
  */
 export function buildPluginMcpSetup(
   pluginMcpServers: readonly McpServerConfig[],
+  oauthChannel?: OAuthChannel | undefined,
 ): McpSetup | undefined {
   if (pluginMcpServers.length === 0) return undefined;
 
@@ -265,7 +268,7 @@ export function buildPluginMcpSetup(
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
   const connections = pluginMcpServers.map((server) => {
-    const conn = createOAuthAwareMcpConnection(server, authProviders);
+    const conn = createOAuthAwareMcpConnection(server, authProviders, oauthChannel);
     connectionsByName.set(server.name, conn);
     return conn;
   });
