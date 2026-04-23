@@ -143,13 +143,18 @@ describe("resolveAtReferences", () => {
 
 describe("formatAtReferencesForModel", () => {
   test("returns clean text when no injections", () => {
-    const result = formatAtReferencesForModel({ cleanText: "hello", injections: [] });
+    const result = formatAtReferencesForModel({
+      cleanText: "hello",
+      injections: [],
+      binaryInjections: [],
+    });
     expect(result).toBe("hello");
   });
 
   test("formats file injection with XML tags", () => {
     const result = formatAtReferencesForModel({
       cleanText: "explain this",
+      binaryInjections: [],
       injections: [
         {
           filePath: "src/math.ts",
@@ -169,6 +174,7 @@ describe("formatAtReferencesForModel", () => {
   test("includes line range in file tag", () => {
     const result = formatAtReferencesForModel({
       cleanText: "explain",
+      binaryInjections: [],
       injections: [
         {
           filePath: "src/math.ts",
@@ -185,6 +191,7 @@ describe("formatAtReferencesForModel", () => {
   test("includes truncation note when truncated", () => {
     const result = formatAtReferencesForModel({
       cleanText: "explain",
+      binaryInjections: [],
       injections: [
         {
           filePath: "big-file.ts",
@@ -201,6 +208,7 @@ describe("formatAtReferencesForModel", () => {
   test("question appears after file context", () => {
     const result = formatAtReferencesForModel({
       cleanText: "what does this do",
+      binaryInjections: [],
       injections: [
         {
           filePath: "a.ts",

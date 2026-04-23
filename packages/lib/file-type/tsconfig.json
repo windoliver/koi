@@ -4,6 +4,5 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/**/*"],
-  "references": [{ "path": "../../kernel/core" }, { "path": "../../lib/file-type" }]
+  "include": ["src/**/*"]
 }

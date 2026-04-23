@@ -3496,8 +3496,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
         const resolved = resolveAtReferences(text, process.cwd());
-        const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+
+        // Warn for each binary @-reference. Do NOT strip the @-token from the
+        // model prompt: keeping the original text lets the model recover via tools
+        // (fs_read, glob) since multimodal block attachment is not yet wired.
+        // Only text injections produce cleanText-based output.
+        if (resolved.binaryInjections.length > 0) {
+          for (const b of resolved.binaryInjections) {
+            store.dispatch({
+              kind: "add_info",
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. The model will see the reference and may use tools to read it.`,
+            });
+          }
+        }
+
+        // Use formatAtReferencesForModel (cleanText + injected content) only when
+        // text refs were actually resolved. Otherwise send the original text so
+        // the model sees @-references and can attempt its own resolution via tools.
+        // When BOTH text and binary refs are present, formatAtReferencesForModel
+        // uses cleanText which strips ALL @-tokens — append a note so the model
+        // knows binary refs exist and can access them via tools.
+        let modelText: string;
+        if (resolved.injections.length > 0) {
+          modelText = formatAtReferencesForModel(resolved);
+          if (resolved.binaryInjections.length > 0) {
+            const binaryRefs = resolved.binaryInjections
+              .map((b) => (b.filePath.includes(" ") ? `@"${b.filePath}"` : `@${b.filePath}`))
+              .join(", ");
+            modelText += `\n\n[Binary files referenced but not attached — use tools to access: ${binaryRefs}]`;
+          }
+        } else {
+          modelText = text;
+        }
 
         let stream: AsyncIterable<EngineEvent>;
         try {

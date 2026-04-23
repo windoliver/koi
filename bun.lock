@@ -273,6 +273,10 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/file-type": {
+      "name": "@koi/file-type",
+      "version": "0.0.0",
+    },
     "packages/lib/fs-local": {
       "name": "@koi/fs-local",
       "version": "0.0.0",
@@ -581,6 +585,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/file-type": "workspace:*",
       },
     },
     "packages/lib/tool-exec": {
@@ -676,6 +681,7 @@
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/file-type": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/governance-core": "workspace:*",
@@ -785,6 +791,7 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
         "@koi/event-trace": "workspace:*",
+        "@koi/file-type": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
@@ -1097,6 +1104,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/file-type": "workspace:*",
         "@opentui/core": "0.1.96",
         "@opentui/solid": "0.1.96",
         "solid-js": "1.9.11",
@@ -1504,6 +1512,8 @@
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
+
+    "@koi/file-type": ["@koi/file-type@workspace:packages/lib/file-type"],
 
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 

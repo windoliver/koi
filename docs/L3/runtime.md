@@ -4,6 +4,8 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/file-type` wired (#1935): added as a dependency of `@koi/runtime`. Two standalone golden queries added to `golden-replay.test.ts` (`Golden: @koi/file-type`) covering PNG and PDF magic-byte detection. No cassette trajectory recorded — the package is a pure detection utility with no LLM interaction. `@koi/tool-browser` and `@koi/tui` also gained `@koi/file-type` as a direct dependency; their runtime wiring is unchanged.
+
 `@koi/daemon` subprocess-isolated supervision (#1866): the daemon's `WorkerIpcMessage` L0 envelope and `validateWorkerIpcMessage` validator are now exported for hosts that subscribe to worker IPC traffic directly. The 24h terminal-record retention sweep (`sweepTerminalRecords`) is exposed on `SessionRegistry` so operators can prune stale subprocess records without restarting the supervisor. The `koi bg ps --all` flag now surfaces terminated records during the retention window, covered by the supervision end-to-end loop (in-process + subprocess tests in `packages/net/daemon/src/__tests__/`). Runtime surface is unchanged — these additions are consumed by `@koi/cli`'s supervision wiring bridge, not by `createRuntime()`.
 
 Doc-wiring sync for integrated packages (#1966): refreshed L2 docs for `@koi/memory-fs`, `@koi/middleware-extraction`, and `@koi/middleware-memory-recall` to reflect the confidence trust model, fail-closed frontmatter parsing, confidence-inclusive exactReplay dedup, and display rounding fix introduced by this bug fix branch. No runtime wiring changes.
