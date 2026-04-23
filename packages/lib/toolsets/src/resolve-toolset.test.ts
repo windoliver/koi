@@ -146,6 +146,41 @@ describe("resolveToolset", () => {
     if (result.ok) return;
     expect(result.error.code).toBe("VALIDATION");
   });
+
+  test("rejects resolution that exceeds depth limit", () => {
+    // Build a 55-level deep chain (beyond MAX_DEPTH=50)
+    const defs: ToolsetDefinition[] = [];
+    for (let i = 0; i < 55; i++) {
+      defs.push({
+        name: `level_${i}`,
+        description: "",
+        tools: [`tool_${i}`],
+        includes: i < 54 ? [`level_${i + 1}`] : [],
+      });
+    }
+    const reg = makeRegistry(defs);
+    const result = resolveToolset("level_0", reg);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("shared subgraph resolved only once — shared sibling includes deduplicate tools", () => {
+    const reg = makeRegistry([
+      { name: "shared", description: "Shared", tools: ["tool_x"], includes: [] },
+      { name: "a", description: "A", tools: ["tool_a"], includes: ["shared"] },
+      { name: "b", description: "B", tools: ["tool_b"], includes: ["shared"] },
+      { name: "combo", description: "Combo", tools: [], includes: ["a", "b"] },
+    ]);
+    const result = resolveToolset("combo", reg);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.mode).toBe("allowlist");
+    if (result.value.mode !== "allowlist") return;
+    // tool_x should appear exactly once despite being reachable via both a and b
+    expect([...result.value.tools].filter((t) => t === "tool_x")).toHaveLength(1);
+    expect([...result.value.tools].sort()).toEqual(["tool_a", "tool_b", "tool_x"]);
+  });
 });
 
 describe("createBuiltinRegistry", () => {
@@ -217,6 +252,40 @@ describe("createBuiltinRegistry", () => {
     for (const tool of safeResult.value.tools) {
       expect(researcherResult.value.tools).toContain(tool);
     }
+  });
+
+  test("builtin registry definitions are deep-frozen — tools array cannot be mutated at runtime", () => {
+    const reg = createBuiltinRegistry();
+    const safe = reg.get("safe");
+    expect(safe).toBeDefined();
+    if (!safe) return;
+    expect(Object.isFrozen(safe)).toBe(true);
+    expect(Object.isFrozen(safe.tools)).toBe(true);
+    expect(Object.isFrozen(safe.includes)).toBe(true);
+    expect(() => {
+      (safe.tools as string[]).push("Bash");
+    }).toThrow();
+  });
+
+  test("builtin registry supports all ReadonlyMap iteration methods", () => {
+    const reg = createBuiltinRegistry();
+    const expected = ["developer", "minimal", "researcher", "safe"];
+
+    const namesFromForEach: string[] = [];
+    reg.forEach((_def, name) => {
+      namesFromForEach.push(name);
+    });
+    expect(namesFromForEach.sort()).toEqual(expected);
+
+    expect([...reg.keys()].sort()).toEqual(expected);
+    expect([...reg.values()].map((d) => d.name).sort()).toEqual(expected);
+    expect([...reg.entries()].map(([k]) => k).sort()).toEqual(expected);
+
+    const namesFromIterator: string[] = [];
+    for (const [name] of reg) {
+      namesFromIterator.push(name);
+    }
+    expect(namesFromIterator.sort()).toEqual(expected);
   });
 });
 

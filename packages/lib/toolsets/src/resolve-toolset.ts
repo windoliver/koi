@@ -1,22 +1,25 @@
 import type { KoiError, Result, ToolsetRegistry, ToolsetResolution } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 
+const MAX_DEPTH = 50;
+
 /**
  * Resolves a named toolset to an explicit policy: "all tools" or an allowlist.
  * Handles recursive `includes` composition with cycle detection.
  *
- * Returns `{ ok: false }` for unknown names or detected cycles.
+ * Returns `{ ok: false }` for unknown names, detected cycles, depth limit exceeded,
+ * or any composition that inherits a wildcard into a non-wildcard preset.
  *
- * Note: this function validates toolset names and composition structure only.
- * It does NOT validate that the resolved tool names exist in the runtime registry —
- * that is an assembly-time responsibility performed by the caller with access to the
- * live tool set. Unknown tool names in an allowlist are silently dropped by the engine.
+ * Note: validates toolset names and composition structure only.
+ * Does NOT validate that resolved tool names exist in the runtime registry —
+ * that is an assembly-time responsibility performed by the caller.
  */
 export function resolveToolset(
   name: string,
   registry: ToolsetRegistry,
 ): Result<ToolsetResolution, KoiError> {
-  const inner = resolveToStrings(name, registry, []);
+  const memo = new Map<string, Result<ReadonlySet<string>, KoiError>>();
+  const inner = resolveToStrings(name, registry, [], memo);
   if (!inner.ok) return inner;
 
   if (inner.value.has("*")) {
@@ -29,6 +32,7 @@ function resolveToStrings(
   name: string,
   registry: ToolsetRegistry,
   path: readonly string[],
+  memo: Map<string, Result<ReadonlySet<string>, KoiError>>,
 ): Result<ReadonlySet<string>, KoiError> {
   if (path.includes(name)) {
     const cycleStr = [...path, name].join(" → ");
@@ -40,6 +44,19 @@ function resolveToStrings(
     };
     return { ok: false, error };
   }
+
+  if (path.length >= MAX_DEPTH) {
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `Toolset resolution depth limit (${MAX_DEPTH}) exceeded at "${name}" — reduce composition nesting`,
+      retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      context: { name, depth: MAX_DEPTH },
+    };
+    return { ok: false, error };
+  }
+
+  const memoized = memo.get(name);
+  if (memoized !== undefined) return memoized;
 
   const def = registry.get(name);
   if (def === undefined) {
@@ -66,7 +83,7 @@ function resolveToStrings(
   const collected = new Set<string>(def.tools);
 
   for (const include of def.includes) {
-    const inner = resolveToStrings(include, registry, nextPath);
+    const inner = resolveToStrings(include, registry, nextPath, memo);
     if (!inner.ok) return inner;
     if (inner.value.has("*")) {
       const error: KoiError = {
@@ -82,5 +99,7 @@ function resolveToStrings(
     }
   }
 
-  return { ok: true, value: collected };
+  const result: Result<ReadonlySet<string>, KoiError> = { ok: true, value: collected };
+  memo.set(name, result);
+  return result;
 }
