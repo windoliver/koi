@@ -151,8 +151,11 @@ export type GovernanceVerdict =
     }
   | {
       readonly ok: "ask";
+      /** Human-readable prompt shown to the approver (forwarded to `ctx.requestApproval`). */
       readonly prompt: string;
+      /** Globally-unique identifier for this ask — required for inflight coalescing. */
       readonly askId: AskId;
+      /** Optional structured context (e.g., rule id, requested scope) for UI display. */
       readonly metadata?: JsonObject | undefined;
     };
 
