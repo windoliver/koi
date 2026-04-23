@@ -40,8 +40,8 @@ Merges multiple registries. Later entries win on name collision.
 |------|-------|----------|
 | `safe` | `web_search`, `web_fetch`, `memory_read` | Read-only web + memory — safe for untrusted channels (no writes, no deletes) |
 | `developer` | `*` wildcard — all tools pass through | Full access for coding agents |
-| `researcher` | `web_search`, `web_fetch`, `memory_read`, `memory_write`, `memory_delete`, `read_file`, `glob`, `grep` | Research without mutation |
-| `minimal` | `memory_read`, `memory_write`, `memory_delete`, `ask_user` | Conversation only |
+| `researcher` | `web_search`, `web_fetch`, `memory_read`, `read_file`, `glob`, `grep` | Read-only research — web, memory, filesystem (no writes) |
+| `minimal` | `memory_read`, `ask_user` | Conversation only — read-only memory and user interaction |
 
 `developer` uses the sentinel `"*"` — callers must handle this as "no filter" rather
 than a literal tool name.

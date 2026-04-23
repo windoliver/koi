@@ -1,8 +1,8 @@
-import type { KoiError, Result, ToolsetRegistry } from "@koi/core";
+import type { KoiError, Result, ToolsetRegistry, ToolsetResolution } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 
 /**
- * Resolves a named toolset to a flat, deduplicated list of tool names.
+ * Resolves a named toolset to an explicit policy: "all tools" or an allowlist.
  * Handles recursive `includes` composition with cycle detection.
  *
  * Returns `{ ok: false }` for unknown names or detected cycles.
@@ -10,15 +10,21 @@ import { RETRYABLE_DEFAULTS } from "@koi/core";
 export function resolveToolset(
   name: string,
   registry: ToolsetRegistry,
-): Result<readonly string[], KoiError> {
-  return resolveWithPath(name, registry, []);
+): Result<ToolsetResolution, KoiError> {
+  const inner = resolveToStrings(name, registry, []);
+  if (!inner.ok) return inner;
+
+  if (inner.value.has("*")) {
+    return { ok: true, value: { mode: "all" } };
+  }
+  return { ok: true, value: { mode: "allowlist", tools: [...inner.value] } };
 }
 
-function resolveWithPath(
+function resolveToStrings(
   name: string,
   registry: ToolsetRegistry,
   path: readonly string[],
-): Result<readonly string[], KoiError> {
+): Result<ReadonlySet<string>, KoiError> {
   if (path.includes(name)) {
     const cycleStr = [...path, name].join(" → ");
     const error: KoiError = {
@@ -45,12 +51,12 @@ function resolveWithPath(
   const collected = new Set<string>(def.tools);
 
   for (const include of def.includes) {
-    const inner = resolveWithPath(include, registry, nextPath);
+    const inner = resolveToStrings(include, registry, nextPath);
     if (!inner.ok) return inner;
     for (const tool of inner.value) {
       collected.add(tool);
     }
   }
 
-  return { ok: true, value: [...collected] };
+  return { ok: true, value: collected };
 }

@@ -7,5 +7,6 @@
  * - mergeRegistries(): combine multiple toolset registries
  */
 
+export type { ToolsetDefinition, ToolsetRegistry, ToolsetResolution } from "@koi/core";
 export { createBuiltinRegistry, mergeRegistries } from "./registry.js";
 export { resolveToolset } from "./resolve-toolset.js";
