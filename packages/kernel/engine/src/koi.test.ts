@@ -1843,13 +1843,11 @@ describe("createKoi resetBudgetPerRun", () => {
     expect(secondEvents.at(-1)?.kind).toBe("done");
   });
 
-  test("legacy guard (canonical name, no brand) emits console.warn instead of silent no-op", async () => {
+  test("legacy guard (canonical name, no brand) is rejected at construction when resetBudgetPerRun is true", async () => {
     // Regression guard for version-skew scenario: pre-#1917 @koi/engine-compose
-    // guards carry no ITERATION_GUARD_BRAND and no resetForRun(). The engine must
-    // warn loudly so operators notice rather than getting silent stale timeouts.
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    // Simulate a legacy guard using the canonical middleware name.
+    // guards carry no ITERATION_GUARD_BRAND and no resetForRun(). When resetBudgetPerRun
+    // is enabled the engine must fail closed at construction (not silently emit a
+    // misleading run_reset while leaving stale guard state in place).
     const legacyGuard: KoiMiddleware = {
       name: "koi:iteration-guard",
       describeCapabilities: () => undefined,
@@ -1860,22 +1858,15 @@ describe("createKoi resetBudgetPerRun", () => {
     );
     const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
 
-    const runtime = await createKoi({
-      manifest: testManifest(),
-      adapter,
-      middleware: [legacyGuard],
-      resetBudgetPerRun: true,
-      loopDetection: false,
-    });
-
-    await collectEvents(runtime.run({ kind: "text", text: "first" }));
-
-    // Engine must have warned about the unresettable legacy guard.
-    const warnCalls = warnSpy.mock.calls.filter(
-      (args) => typeof args[0] === "string" && args[0].includes("resetBudgetPerRun"),
-    );
-    expect(warnCalls.length).toBeGreaterThan(0);
-    warnSpy.mockRestore();
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter,
+        middleware: [legacyGuard],
+        resetBudgetPerRun: true,
+        loopDetection: false,
+      }),
+    ).rejects.toThrow("koi:iteration-guard");
   });
 
   test("emits run_reset with deterministic boundaryId on sequential runs (non-coop)", async () => {

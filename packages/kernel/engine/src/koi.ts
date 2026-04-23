@@ -146,6 +146,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const debugInstrumentation: DebugInstrumentation | undefined =
     options.debug?.enabled === true ? createDebugInstrumentation(options.debug) : undefined;
 
+  // Runtime guard for JS/JSON-configured callers using the renamed option.
+  // TypeScript callers get a compile error; untyped hosts would silently lose reset behavior.
+  if ("resetIterationBudgetPerRun" in options) {
+    console.warn(
+      "[koi] createKoi: option `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
+        "Per-run guard reset is currently DISABLED. Replace the key to restore reset behavior.",
+    );
+  }
+
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {
     if (mw.describeCapabilities === undefined) {
@@ -156,8 +165,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     }
   }
 
-  // #1939: fail closed if any branded guard cannot be reset — prevents silent
+  // #1939: fail closed if any iteration guard cannot be reset — prevents silent
   // stale-state bugs when resetBudgetPerRun is enabled.
+  // Two failure modes caught at construction:
+  //   (a) Branded guard missing resetForRun() — version-skew on the symbol contract
+  //   (b) Unbranded guard with canonical name "koi:iteration-guard" — pre-#1917 legacy
+  //       guard that would cause partial-reset divergence at runtime
   if (options.resetBudgetPerRun === true) {
     for (const mw of allMiddleware) {
       if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
@@ -166,6 +179,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND ` +
             `but does not implement resetForRun(). ` +
             `Upgrade this guard to use IterationGuardHandle before enabling resetBudgetPerRun.`,
+        );
+      }
+      if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          `[koi] Middleware "koi:iteration-guard" does not implement resetForRun(). ` +
+            `This is a legacy pre-#1917 guard that cannot be reset per-run. ` +
+            `Upgrade @koi/engine-compose or remove resetBudgetPerRun from options.`,
         );
       }
     }
@@ -658,12 +679,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       runStartedAt: number,
       boundaryId: string,
     ): Promise<void> {
-      // let: tracks whether all relevant guards were reset
-      let allReset = true;
+      // Validate all guards first — throw before mutating any state.
       for (const mw of guards) {
-        if (isIterationGuardHandle(mw)) {
-          mw.resetForRun(runStartedAt);
-        } else if (hasIterationGuardBrand(mw)) {
+        if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
           // Construction gate should have caught this — but throw defensively.
           throw KoiRuntimeError.from(
             "VALIDATION",
@@ -671,19 +689,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               `All branded iteration guards must implement IterationGuardHandle. ` +
               `Guard: ${mw.name ?? "(unnamed)"}`,
           );
-        } else if (mw.name === "koi:iteration-guard") {
-          // Legacy guard (pre-#1917, no brand): warn and suppress run_reset so
-          // governance cannot claim a reset happened when guard state was not cleared.
-          console.warn(
-            "[koi] resetBudgetPerRun: found legacy iteration guard without resetForRun(). " +
-              "run_reset will not be emitted for this run. " +
-              "Upgrade @koi/engine-compose to get per-run budget reset.",
-          );
-          allReset = false;
         }
       }
-      if (allReset) {
-        await governance.record({ kind: "run_reset", source: "engine", boundaryId });
+      // Record the governance event BEFORE mutating guard state so that a
+      // rejecting async controller aborts the run without leaving guards reset
+      // and governance stale (partial-reset divergence).
+      await governance.record({ kind: "run_reset", source: "engine", boundaryId });
+      // Guards reset only after governance commit succeeds.
+      for (const mw of guards) {
+        if (isIterationGuardHandle(mw)) {
+          mw.resetForRun(runStartedAt);
+        }
       }
     }
 
