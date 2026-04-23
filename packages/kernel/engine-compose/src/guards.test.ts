@@ -2038,6 +2038,27 @@ describe("createLoopDetector — no-progress", () => {
     // We should bail out before traversing deep/extra properties.
     expect(tailAccessed).toBe(false);
   });
+
+  test("skips no-progress check for oversized outputs", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 2,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+    const hugeOutput = Object.fromEntries(
+      Array.from({ length: 5_000 }, (_unused, i) => [`key_${String(i)}`, `value_${String(i)}`]),
+    );
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse(hugeOutput)));
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 3 }), next);
+    expect(next).toHaveBeenCalledTimes(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

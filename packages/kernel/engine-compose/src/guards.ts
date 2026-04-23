@@ -67,6 +67,11 @@ interface EffectiveTimeout {
   readonly source: "wall_clock" | "inactivity";
 }
 
+interface TimeoutRace {
+  readonly promise: Promise<never>;
+  readonly cancel: () => void;
+}
+
 /**
  * Compute the effective timeout for the next awaited operation based on both
  * wall-clock and inactivity limits. Returns the tighter of the two with its
@@ -106,14 +111,6 @@ function computeEffectiveTimeout(
 }
 
 /**
- * A timeout race handle with explicit cancellation for timer cleanup.
- */
-interface TimeoutRace {
-  readonly promise: Promise<never>;
-  readonly cancel: () => void;
-}
-
-/**
  * Create a cancellable promise that rejects after `ms` milliseconds with a
  * TIMEOUT error. The timer is unref'd so it doesn't keep the process alive.
  */
@@ -145,13 +142,13 @@ function createTimeoutRace(
       (timer as { unref: () => void }).unref();
     }
   });
-
   return {
     promise,
     cancel: () => {
       if (timer !== undefined) {
         clearTimeout(timer);
       }
+      timer = undefined;
     },
   };
 }
