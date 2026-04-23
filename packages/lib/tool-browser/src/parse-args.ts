@@ -252,16 +252,20 @@ export function parseUploadFiles(
         err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
       };
     }
-    // Strong magic-byte detection is authoritative and overrides any caller-
-    // supplied mimeType — callers can label arbitrary bytes as image/png to
-    // bypass page accept filters or MIME validators. When no strong signature
-    // matches, detectFromPath provides an extension-derived fallback (derived
-    // from the caller-controlled filename, which is equally trusted) rather
-    // than degrading all text/csv/json uploads to application/octet-stream.
+    // MIME resolution priority:
+    //  1. Strong magic-byte detection — always authoritative (prevents mislabeling
+    //     arbitrary bytes as image/png to bypass accept filters or validators)
+    //  2. Caller-supplied mimeType — trusted when sniffing is inconclusive
+    //     (preserves correct MIME for .docx/.xlsx and other ambiguous containers)
+    //  3. Extension-based fallback from filename
+    //  4. application/octet-stream (final safe default)
     const bytes = new Uint8Array(Buffer.from(content, "base64"));
     const detected = detectFromBytes(bytes);
-    const resolvedMime =
-      detected?.confidence === "strong" ? detected.mimeType : detectFromPath(name, bytes).mimeType;
+    const resolvedMime = (() => {
+      if (detected?.confidence === "strong") return detected.mimeType;
+      if (typeof mimeType === "string") return mimeType;
+      return detectFromPath(name, bytes).mimeType;
+    })();
     files.push({ content, name, mimeType: resolvedMime });
   }
   return { ok: true, value: files };

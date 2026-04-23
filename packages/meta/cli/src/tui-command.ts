@@ -3512,8 +3512,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
 
+        // Always use resolved.cleanText (not raw text) so that @-references
+        // to binary files are stripped from the model's input even when there
+        // are no text injections. Using raw text would leave "@file.pdf" in
+        // the prompt literally, which is meaningless to the model.
         const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+          resolved.injections.length > 0
+            ? formatAtReferencesForModel(resolved)
+            : resolved.cleanText;
 
         let stream: AsyncIterable<EngineEvent>;
         try {
