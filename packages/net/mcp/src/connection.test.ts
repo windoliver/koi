@@ -624,3 +624,69 @@ describe("McpConnection with auth provider", () => {
     expect(calls[0]?.[0]?.authProvider).toBe(auth);
   });
 });
+
+// ---------------------------------------------------------------------------
+// OAuth inline flow integration
+// ---------------------------------------------------------------------------
+
+describe("MCP OAuth inline flow — full path", () => {
+  test("onAuthRequired fires, onAuthComplete fires, tool call retries after success", async () => {
+    const authRequired: string[] = [];
+    const authComplete: string[] = [];
+    const oauthChannel: import("@koi/core").OAuthChannel = {
+      onAuthRequired: (n) => {
+        authRequired.push(n.provider);
+      },
+      onAuthComplete: (n) => {
+        authComplete.push(n.provider);
+      },
+      submitAuthCode: () => {},
+    };
+
+    // let justified: track call count to verify retry
+    let callCount = 0;
+    const mockClient = {
+      connect: mock(async (_transport: unknown) => {}),
+      close: mock(async () => {}),
+      listTools: mock(async () => ({ tools: [] as { name: string }[] })),
+      callTool: mock(async (params: { name: string; arguments: Record<string, unknown> }) => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error("401 Unauthorized");
+        }
+        if (params.name === "list_issues") {
+          return { content: [{ type: "text", text: "issue-1" }] };
+        }
+        return {
+          content: [{ type: "text", text: `Unknown tool: ${params.name}` }],
+          isError: true,
+        };
+      }),
+    };
+    const mockTransport = createMockTransport();
+
+    const onAuthNeeded = mock(async () => {
+      oauthChannel.onAuthRequired({
+        provider: "linear",
+        message: "Authorize Linear",
+        mode: "local",
+      });
+      oauthChannel.onAuthComplete({ provider: "linear" });
+      return true;
+    });
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => mockClient) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onAuthNeeded,
+    });
+
+    await conn.connect();
+    const result = await conn.callTool("list_issues", {});
+
+    expect(result.ok).toBe(true);
+    expect(authRequired).toEqual(["linear"]);
+    expect(authComplete).toEqual(["linear"]);
+    expect(callCount).toBe(2);
+  });
+});
