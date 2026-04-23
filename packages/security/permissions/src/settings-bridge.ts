@@ -2,38 +2,58 @@ import type { KoiSettings } from "@koi/settings";
 import type { RuleEffect, RuleSource, SourcedRule } from "./rule-types.js";
 
 /**
- * Parse a settings permission string into a SourcedRule pattern+action pair.
+ * Parse a settings permission string into one or two pattern+action pairs.
  *
  * Settings strings use the format "ToolName(commandGlob)" where the command
  * glob refers to the tool's enriched resource key (e.g. "Bash:git push").
  * The permission backend always receives action:"invoke" from the middleware,
  * so command-scoped constraints are encoded in the pattern field.
  *
- *   "Read(*)"         → { pattern: "Read**",        action: "invoke" }
- *   "Bash(git push*)" → { pattern: "Bash:git push*", action: "invoke" }
- *   "Bash(rm -rf*)"   → { pattern: "Bash:rm -rf*",  action: "invoke" }
- *   "WebFetch"        → { pattern: "WebFetch**",     action: "invoke" }
- *   "*"               → { pattern: "**",             action: "invoke" }
+ * Bare tool names and `ToolName(*)` emit TWO patterns to avoid matching
+ * unrelated tool IDs that share the same prefix (e.g. "Read" must not
+ * match "ReadSecret"):
+ *   "Read(*)"  → [{ pattern: "Read" }, { pattern: "Read:**" }]
+ *   "Read"     → [{ pattern: "Read" }, { pattern: "Read:**" }]
+ *
+ * The first pattern matches the exact plain tool id; the second matches
+ * any enriched resource for that tool (e.g. "Read:/path/to/file").
+ * Using `:**` (double-star after the colon) captures paths with slashes.
+ *
+ * Command-scoped strings use a single rule:
+ *   "Bash(git push*)" → [{ pattern: "Bash:git push*" }]
+ *   "Bash(rm -rf*)"   → [{ pattern: "Bash:rm -rf*" }]
+ *
+ * Wildcard-only string:
+ *   "*"               → [{ pattern: "**" }]
  */
-function parsePermissionString(s: string): { readonly pattern: string; readonly action: string } {
+function parsePermissionString(
+  s: string,
+): ReadonlyArray<{ readonly pattern: string; readonly action: string }> {
   if (s === "*") {
-    return { pattern: "**", action: "invoke" };
+    return [{ pattern: "**", action: "invoke" }];
   }
   const parenIdx = s.indexOf("(");
   if (parenIdx === -1) {
-    // Bare tool name: match plain resource "ToolName" and enriched "ToolName:anything"
-    return { pattern: `${s}**`, action: "invoke" };
+    // Bare tool name: exact match + enriched match. Two rules prevent
+    // "Read" from matching unrelated "ReadSecret" via a `**` suffix.
+    return [
+      { pattern: s, action: "invoke" },
+      { pattern: `${s}:**`, action: "invoke" },
+    ];
   }
   const toolName = s.slice(0, parenIdx);
   const argGlob = s.slice(parenIdx + 1, s.endsWith(")") ? s.length - 1 : s.length);
   if (argGlob === "*") {
-    // "ToolName(*)" — any invocation of that tool
-    return { pattern: `${toolName}**`, action: "invoke" };
+    // "ToolName(*)" — any invocation of that tool (exact + enriched, no prefix bleed)
+    return [
+      { pattern: toolName, action: "invoke" },
+      { pattern: `${toolName}:**`, action: "invoke" },
+    ];
   }
   // "ToolName(commandGlob)" — encode command constraint in the resource pattern.
   // Middleware enriches tool resources as "ToolName:commandPrefix", so the
   // pattern "ToolName:commandGlob" matches those enriched resource keys.
-  return { pattern: `${toolName}:${argGlob}`, action: "invoke" };
+  return [{ pattern: `${toolName}:${argGlob}`, action: "invoke" }];
 }
 
 /**
@@ -74,8 +94,9 @@ export function mapSettingsToSourcedRules(
   for (const { strings, effect } of buckets) {
     if (strings == null) continue;
     for (const s of strings) {
-      const { pattern, action } = parsePermissionString(s);
-      rules.push({ pattern, action, effect, source: layer });
+      for (const { pattern, action } of parsePermissionString(s)) {
+        rules.push({ pattern, action, effect, source: layer });
+      }
     }
   }
 

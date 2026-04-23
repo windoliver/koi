@@ -14,9 +14,11 @@ describe("mapSettingsToSourcedRules", () => {
     };
     const rules = mapSettingsToSourcedRules(settings, "user");
     const allowRules = rules.filter((r) => r.effect === "allow");
-    expect(allowRules).toHaveLength(2);
-    // "Read(*)" → pattern "Read**" matches plain "Read" and enriched "Read:/path"
-    expect(allowRules[0]?.pattern).toBe("Read**");
+    // Each bare/(*) entry emits 2 rules (exact + enriched)
+    expect(allowRules).toHaveLength(4);
+    // "Read(*)" → exact "Read" and enriched "Read:**"
+    expect(allowRules[0]?.pattern).toBe("Read");
+    expect(allowRules[1]?.pattern).toBe("Read:**");
     expect(allowRules[0]?.action).toBe("invoke");
     expect(allowRules[0]?.source).toBe("user");
   });
@@ -26,6 +28,8 @@ describe("mapSettingsToSourcedRules", () => {
       permissions: { deny: ["Bash(rm -rf*)"] },
     };
     const rules = mapSettingsToSourcedRules(settings, "local");
+    // Command-scoped: single rule
+    expect(rules).toHaveLength(1);
     expect(rules[0]?.effect).toBe("deny");
     // "Bash(rm -rf*)" → pattern "Bash:rm -rf*" matches enriched resource "Bash:rm -rf /tmp"
     expect(rules[0]?.pattern).toBe("Bash:rm -rf*");
@@ -38,19 +42,35 @@ describe("mapSettingsToSourcedRules", () => {
       permissions: { ask: ["Bash(git push*)"] },
     };
     const rules = mapSettingsToSourcedRules(settings, "project");
+    expect(rules).toHaveLength(1);
     expect(rules[0]?.effect).toBe("ask");
     expect(rules[0]?.pattern).toBe("Bash:git push*");
     expect(rules[0]?.action).toBe("invoke");
   });
 
-  test("bare tool name (no parens) uses double-star pattern to match any invocation", () => {
+  test("bare tool name emits exact + enriched rules to avoid prefix bleed", () => {
     const settings: KoiSettings = {
       permissions: { deny: ["WebFetch"] },
     };
     const rules = mapSettingsToSourcedRules(settings, "policy");
-    // "WebFetch" → "WebFetch**" matches plain "WebFetch" and enriched "WebFetch:url"
-    expect(rules[0]?.pattern).toBe("WebFetch**");
+    // Two rules: "WebFetch" (exact) and "WebFetch:**" (enriched) — does NOT match "WebFetchProxy"
+    expect(rules).toHaveLength(2);
+    expect(rules[0]?.pattern).toBe("WebFetch");
+    expect(rules[1]?.pattern).toBe("WebFetch:**");
     expect(rules[0]?.action).toBe("invoke");
+  });
+
+  test("bare deny does not match unrelated tool with same prefix", () => {
+    const settings: KoiSettings = {
+      permissions: { deny: ["Read"] },
+    };
+    const rules = mapSettingsToSourcedRules(settings, "user");
+    const patterns = rules.map((r) => r.pattern);
+    expect(patterns).toContain("Read");
+    expect(patterns).toContain("Read:**");
+    // Must NOT contain a pattern that would match "ReadSecret"
+    // i.e. no "Read**" which compiles to /^Read.*$/
+    expect(patterns).not.toContain("Read**");
   });
 
   test("wildcard '*' becomes pattern='**' action='invoke'", () => {
@@ -58,6 +78,7 @@ describe("mapSettingsToSourcedRules", () => {
       permissions: { allow: ["*"] },
     };
     const rules = mapSettingsToSourcedRules(settings, "flag");
+    expect(rules).toHaveLength(1);
     expect(rules[0]?.pattern).toBe("**");
     expect(rules[0]?.action).toBe("invoke");
   });
@@ -77,7 +98,7 @@ describe("mapSettingsToSourcedRules", () => {
   test("rules are emitted deny-first so denies shadow broad allows within a layer", () => {
     const settings: KoiSettings = {
       permissions: {
-        allow: ["Bash**"],
+        allow: ["Bash:**"],
         deny: ["Bash:rm -rf**"],
       },
     };

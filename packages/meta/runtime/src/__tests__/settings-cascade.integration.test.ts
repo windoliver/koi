@@ -54,11 +54,12 @@ describe("settings cascade → permission enforcement", () => {
       return layerSettings != null ? mapSettingsToSourcedRules(layerSettings, layer) : [];
     });
 
-    expect(rules).toHaveLength(1);
+    // Bare "Bash" emits 2 rules: exact "Bash" + enriched "Bash:**"
+    expect(rules).toHaveLength(2);
     const rule = rules[0];
     expect(rule?.effect).toBe("deny");
-    // Bare "Bash" → pattern "Bash**" matches plain "Bash" and enriched "Bash:command"
-    expect(rule?.pattern).toBe("Bash**");
+    // First rule: exact match for plain "Bash"
+    expect(rule?.pattern).toBe("Bash");
     expect(rule?.action).toBe("invoke");
     expect(rule?.source).toBe("local");
 
