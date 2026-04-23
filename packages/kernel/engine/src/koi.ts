@@ -52,6 +52,7 @@ import {
   computeCapabilityBanner,
   createDebugInstrumentation,
   createDefaultGuardExtension,
+  hasIterationGuardBrand,
   isIterationGuardHandle,
   recomposeChains,
   resolveActiveMiddleware,
@@ -152,6 +153,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         `[koi] Middleware "${mw.name}" does not implement describeCapabilities(). ` +
           `This will be a hard error in a future release.`,
       );
+    }
+  }
+
+  // #1939: fail closed if any branded guard cannot be reset — prevents silent
+  // stale-state bugs when resetBudgetPerRun is enabled.
+  if (options.resetBudgetPerRun === true) {
+    for (const mw of allMiddleware) {
+      if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND ` +
+            `but does not implement resetForRun(). ` +
+            `Upgrade this guard to use IterationGuardHandle before enabling resetBudgetPerRun.`,
+        );
+      }
     }
   }
 
@@ -362,6 +378,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable so cycleSession can rotate the identity
   let factorySessionId: SessionId =
     options.sessionId ?? sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  // let justified: monotonic counters for deterministic boundaryId derivation (#1939)
+  let runIndex = 0;
+  let sessionCycleIndex = 0;
   // let justified: tracks the active run's AbortController so runtime.interrupt()
   // can operate without a registry. Set in streamEvents at the start of each
   // run, cleared in finally. Undefined when no run is active.
@@ -578,10 +597,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: guards already reset for the current run — prevents double-resets across recompositions
     let resetGuardsCurrentRun: Set<IterationGuardHandle> | undefined;
 
-    // let justified: set by applyRecomposition during the run-start reset pass;
-    // read after the pass to decide whether to record governance iteration_reset (#1917)
-    let legacyGuardFoundDuringReset = false;
-
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
 
@@ -626,6 +641,41 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
     }
 
+    /**
+     * Reset all branded iteration guards in the given set and record a run_reset
+     * governance event. Falls back to no governance record when govCtl is absent.
+     * Throws KoiRuntimeError if a branded guard lacks resetForRun() — the
+     * construction-time gate (above) should have already caught this.
+     */
+    function resetRunBoundary(
+      guards: ReadonlySet<KoiMiddleware> | readonly KoiMiddleware[],
+      governance: GovernanceController,
+      runStartedAt: number,
+      boundaryId: string,
+    ): void {
+      for (const mw of guards) {
+        if (isIterationGuardHandle(mw)) {
+          mw.resetForRun(runStartedAt);
+        } else if (hasIterationGuardBrand(mw)) {
+          // Construction gate should have caught this — but throw defensively.
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            `[koi] Middleware carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
+              `All branded iteration guards must implement IterationGuardHandle. ` +
+              `Guard: ${mw.name ?? "(unnamed)"}`,
+          );
+        } else if (mw.name === "koi:iteration-guard") {
+          // Legacy guard (pre-#1917, no brand): warn so operators notice the
+          // version-skew rather than getting silent stale timeouts.
+          console.warn(
+            "[koi] resetBudgetPerRun: found iteration guard without resetForRun(). " +
+              "Upgrade @koi/engine-compose to get per-run budget reset.",
+          );
+        }
+      }
+      void governance.record({ kind: "run_reset", source: "engine", boundaryId });
+    }
+
     /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place. */
     function applyRecomposition(
       forgedMw: readonly KoiMiddleware[] | undefined,
@@ -637,30 +687,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         forgedMw ?? undefined,
         dynamicMw ?? undefined,
       );
-      // Reset iteration guards when armed by the run-start phase.
-      // resetGuardsCurrentRun is set to a new Set() at run start, used here, then
-      // cleared to undefined immediately after — so only this one pre-turn
-      // composition call can trigger resets. Mid-run recompositions skip this block.
+      // #1939: reset all branded iteration guards after building the final middleware
+      // snapshot (includes forge + dynamic guards). runIndex incremented here so
+      // boundaryId is stable and deterministic.
       if (resetGuardsCurrentRun !== undefined) {
-        legacyGuardFoundDuringReset = false;
-        for (const g of sorted) {
-          if (isIterationGuardHandle(g)) {
-            if (!resetGuardsCurrentRun.has(g)) {
-              // Pass sessionStartedAt so guard and governance clocks are both
-              // anchored to run() entry rather than the post-forge reset site.
-              g.resetForRun(sessionStartedAt);
-              resetGuardsCurrentRun.add(g);
-            }
-          } else if (g.name === "koi:iteration-guard") {
-            // Legacy guard (dynamic/forged): no brand, no resetForRun.
-            // Warn once; legacyGuardFoundDuringReset blocks iteration_reset record.
-            legacyGuardFoundDuringReset = true;
-            console.warn(
-              "[koi] resetBudgetPerRun: found iteration guard without resetForRun(). " +
-                "Upgrade @koi/engine-compose to get per-run budget reset.",
-            );
+        runIndex++;
+        const boundaryId = `${factorySessionId}:run:${runIndex - 1}`;
+        const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+        if (govCtl !== undefined) {
+          resetRunBoundary(sorted, govCtl, sessionStartedAt, boundaryId);
+        } else {
+          for (const mw of sorted) {
+            if (isIterationGuardHandle(mw)) mw.resetForRun(sessionStartedAt);
           }
         }
+        resetGuardsCurrentRun = undefined;
       }
 
       const chains = recomposeChains(sorted, terminals, debugInstrumentation, provenanceHints);
@@ -796,52 +837,28 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         activeSessionCtx = candidateCtx;
       }
 
-      // #1742: per-run iteration budget reset. Opt-in via
-      // `options.resetBudgetPerRun` so cumulative session-level
-      // budget enforcement remains the default for batch/headless hosts.
-      // Interactive hosts (TUI) opt in to give each user submit a fresh
-      // turn/token/cost/duration budget. Spawn counts and rolling
-      // error-rate windows are NOT reset (runtime-scoped resources).
-      // #1917: arm the per-run guard reset. The actual resetForRun() calls are
-      // deferred until after initial forge setup (see below) so the reset targets
-      // the final pre-turn middleware snapshot (static + forge + dynamic) rather
-      // than a stale snapshot. Cleared at run end so no leftover state bleeds
-      // into the next run's reset phase.
+      // #1939: arm the per-run guard reset. Non-cooperating adapters reset here
+      // (static middleware set is final at run entry). Cooperating adapters defer
+      // to applyRecomposition() so forge/dynamic guards are included.
       resetGuardsCurrentRun = undefined;
 
       if (options.resetBudgetPerRun === true) {
         resetGuardsCurrentRun = new Set();
         if (!adapter.terminals) {
-          // Non-cooperating adapters skip the if (adapter.terminals) path below,
-          // so reset their static guards here. Anchored to sessionStartedAt (run()
-          // entry) so guard and governance clocks are consistent.
-          legacyGuardFoundDuringReset = false;
-          for (const g of allMiddleware) {
-            if (isIterationGuardHandle(g)) {
-              g.resetForRun(sessionStartedAt);
-              resetGuardsCurrentRun.add(g);
-            } else if (g.name === "koi:iteration-guard") {
-              // Legacy guard: no brand/resetForRun. Warn; don't record iteration_reset
-              // so governance stays consistent with the guard (both remain stale).
-              legacyGuardFoundDuringReset = true;
-              console.warn(
-                "[koi] resetBudgetPerRun: found iteration guard without resetForRun(). " +
-                  "Upgrade @koi/engine-compose to get per-run budget reset.",
-              );
-            }
-          }
-          // Record iteration_reset only if every iteration guard was actually reset.
-          // If a legacy guard was found, governance would diverge from the guard —
-          // skip the record so enforcement stays consistent.
-          if (!legacyGuardFoundDuringReset) {
-            const govCtl = agent.component<GovernanceController>(GOVERNANCE);
-            if (govCtl !== undefined) {
-              await govCtl.record({ kind: "iteration_reset" });
+          // Non-cooperating adapters: reset immediately at run entry (guard set is fixed).
+          runIndex++;
+          const boundaryId = `${factorySessionId}:run:${runIndex - 1}`;
+          const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+          if (govCtl !== undefined) {
+            resetRunBoundary(allMiddleware, govCtl, sessionStartedAt, boundaryId);
+          } else {
+            for (const g of allMiddleware) {
+              if (isIterationGuardHandle(g)) g.resetForRun(sessionStartedAt);
             }
           }
         }
-        // Cooperating adapter: post-forge applyRecomposition (below) resets guards,
-        // then records iteration_reset — guard timers and governance anchored together.
+        // Cooperating adapter: applyRecomposition() calls resetRunBoundary() after
+        // building the final middleware snapshot.
       }
 
       // Wire registry watcher → engine events for child agent visibility.
@@ -1051,26 +1068,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // Initial forge state (descriptors + forged middleware)
         await refreshForgeState(cachedTerminals);
 
-        // #1917: reset all iteration guards exactly once at the pre-turn boundary
-        // using the complete snapshot (static + forge + dynamic). Setting
-        // previousDynamicMw to the snapshot avoids a redundant identity-skip
-        // recomposition at the first turn boundary. resetGuardsCurrentRun is
-        // cleared immediately after so mid-run recompositions cannot re-issue
-        // fresh budgets.
+        // #1939: reset all iteration guards exactly once at the pre-turn boundary
+        // using the complete snapshot (static + forge + dynamic). applyRecomposition
+        // handles the reset and governance record via resetRunBoundary(), then clears
+        // resetGuardsCurrentRun so mid-run recompositions cannot re-issue fresh budgets.
+        // Setting previousDynamicMw to the snapshot avoids a redundant identity-skip
+        // recomposition at the first turn boundary.
         if (resetGuardsCurrentRun !== undefined) {
           const runStartDynamic = options.dynamicMiddleware?.() ?? [];
           previousDynamicMw = runStartDynamic;
           applyRecomposition(previousForgedMw ?? undefined, runStartDynamic, cachedTerminals);
-          // Record iteration_reset only if every iteration guard was actually reset.
-          // legacyGuardFoundDuringReset is set by applyRecomposition when a named-but-
-          // unresettable guard is encountered; skipping keeps governance consistent.
-          if (!legacyGuardFoundDuringReset) {
-            const govCtl = agent.component<GovernanceController>(GOVERNANCE);
-            if (govCtl !== undefined) {
-              await govCtl.record({ kind: "iteration_reset" });
-            }
-          }
-          resetGuardsCurrentRun = undefined;
+          // applyRecomposition clears resetGuardsCurrentRun; nothing more needed here.
         }
 
         // Subscribe to forge push notifications for mid-session tool visibility.
@@ -2345,7 +2353,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // spend ceilings still hold across the runtime lifetime.
           const govCtl = agent.component<GovernanceController>(GOVERNANCE);
           if (govCtl !== undefined) {
-            await govCtl.record({ kind: "session_reset" });
+            const sessionBoundaryId = `${factorySessionId}:session:${sessionCycleIndex}`;
+            sessionCycleIndex++;
+            await govCtl.record({
+              kind: "session_reset",
+              source: "host",
+              boundaryId: sessionBoundaryId,
+            });
           }
           // #1742: rotate the engine sessionId and rebuild the runtime-scoped
           // lifecycle ctx so checkpoint chains, persistent approval keys,

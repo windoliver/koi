@@ -1877,6 +1877,63 @@ describe("createKoi resetBudgetPerRun", () => {
     expect(warnCalls.length).toBeGreaterThan(0);
     warnSpy.mockRestore();
   });
+
+  test("emits run_reset with deterministic boundaryId on sequential runs (non-coop)", async () => {
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const { GOVERNANCE } = await import("@koi/core");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    // Spy on governance record after construction so we capture run_reset events.
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recordedEvents: import("@koi/core").GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      recordedEvents.push(event);
+      return original(event);
+    };
+
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+
+    const resets = recordedEvents.filter((e) => e.kind === "run_reset");
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+    expect(r0.source).toBe("engine");
+    expect(r0.boundaryId).toMatch(/:run:0$/);
+    expect(r1.boundaryId).toMatch(/:run:1$/);
+    expect(r0.boundaryId).not.toBe(r1.boundaryId);
+  });
+
+  test("throws at construction if branded guard lacks resetForRun", async () => {
+    const { ITERATION_GUARD_BRAND } = await import("@koi/engine-compose");
+    const brokenGuard: KoiMiddleware = Object.defineProperty(
+      { name: "broken-guard", describeCapabilities: () => undefined } as KoiMiddleware,
+      ITERATION_GUARD_BRAND,
+      { value: true, enumerable: false, configurable: false, writable: false },
+    ) as KoiMiddleware;
+
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([]),
+        middleware: [brokenGuard],
+        resetBudgetPerRun: true,
+      }),
+    ).rejects.toThrow("ITERATION_GUARD_BRAND");
+  });
 });
 
 // ---------------------------------------------------------------------------
