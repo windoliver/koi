@@ -175,3 +175,5 @@ Pick the backend that matches your deployment shape — semantics are identical,
 - Unit: 218 tests in `packages/lib/artifacts/src/__tests__/` covering CRUD, ACL, validation, lock, migration, recovery, concurrent-save edge cases, (Plan 3) policy validation, quota accounting, Phase A sweep across TTL/quota/retention, Phase B drain (claim/delete/reconcile + resume-from-claimed), save-side tombstone reclaim, scavenger orphan detection, and (Plan 4) stale-intent grace-window drain, local-only open path, TTL-only open sweep, `drainBlobReadyZero` repair probes, background worker scaffolding (start/stop/runOnce), close-barrier iteration flush, and structured `onEvent` drift signals.
 - Integration: 5 standalone Golden tests + 1 ATIF trajectory-replay test in `packages/meta/runtime/src/__tests__/golden-replay.test.ts` (cassette: `fixtures/artifacts-roundtrip.trajectory.json`).
 - TUI corner cases (manual): concurrent-TUI degradation, bogus-id not_found, list filters, delete-then-get.
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

@@ -24,6 +24,12 @@ export interface SigintHandlerDeps {
   readonly onForce: () => void;
   /** Used to print the "Interrupting…" hint. Typically `process.stderr.write`. */
   readonly write: (msg: string) => void;
+  /**
+   * Optional override for the "Interrupting…" hint. When provided, called
+   * instead of `write` so TUI hosts can route the message through the store
+   * rather than raw stderr (#1912). Falls back to `write` when absent.
+   */
+  readonly onInterruptHint?: (msg: string) => void;
   /** How long the user has to tap Ctrl+C a second time. */
   readonly doubleTapWindowMs: number;
   /**
@@ -58,11 +64,18 @@ export interface SigintHandlerDeps {
    *     interactive loop runs multiple turns without a per-turn callback,
    *     and staying armed across turns would turn routine cancellations
    *     into force-exits.
+   *   - A function `() => "stay-armed" | "reset-to-idle"`: evaluated at
+   *     window-elapse time so the policy can vary based on runtime state.
+   *     Use this when the correct policy depends on live state that isn't
+   *     known at handler-creation time (e.g. whether a child spawn is still
+   *     running — see issue #1999).
    */
-  readonly onWindowElapse?: "stay-armed" | "reset-to-idle";
+  readonly onWindowElapse?: "stay-armed" | "reset-to-idle" | (() => "stay-armed" | "reset-to-idle");
   /** Injectable timer factory. Production uses a `setTimeout` wrapper. */
   readonly setTimer: (fn: () => void, ms: number) => Timer;
-  /** Injectable clock. Production uses `() => Date.now()`. */
+  /** Injectable clock. Production defaults to `() => performance.now()` (monotonic)
+   *  so elapsed comparisons are immune to NTP adjustments and manual clock changes.
+   *  Test overrides should use a fake monotonic clock (not wall-clock time). */
   readonly now?: () => number;
 }
 
@@ -93,15 +106,32 @@ type State =
   | {
       readonly kind: "armed";
       readonly failsafeTimer: Timer | null;
+      /** Monotonic arm-generation counter — incremented on every idle→armed transition.
+       *  Used as a generation key so stale doubleTapTimer callbacks from a prior arm
+       *  can detect that the state has moved on and bail without mutating the new arm.
+       *  Wall-clock time is not safe here: two arms within the same millisecond share
+       *  the same `Date.now()` value, which would allow a stale callback to pass the
+       *  guard and corrupt the new arm's state. */
+      readonly armGen: number;
+      /** Wall-clock timestamp (ms) when this arm was entered — used only for the
+       *  `windowElapsedByWallClock` guard in `handleSignal`, not as a generation key. */
+      readonly armedAt: number;
       doubleTapTimer: Timer | null;
     }
   | { readonly kind: "forced" };
 
 export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
   let state: State = { kind: "idle" };
-  const now = deps.now ?? ((): number => Date.now());
+  // let: justified — incremented on every idle→armed transition; generation key for timer guard
+  let armGen = 0;
+  // Default to performance.now() (monotonic) so elapsed comparisons are immune
+  // to NTP adjustments and manual clock changes. Callers may inject a custom
+  // clock (e.g. a fake clock in tests) via deps.now.
+  const now = deps.now ?? ((): number => performance.now());
   const coalesceWindowMs = deps.coalesceWindowMs ?? 0;
   const onWindowElapse = deps.onWindowElapse ?? "stay-armed";
+  const resolveWindowElapsePolicy = (): "stay-armed" | "reset-to-idle" =>
+    typeof onWindowElapse === "function" ? onWindowElapse() : onWindowElapse;
   // let: justified — timestamp of most recent non-coalesced signal
   let lastSignalAt = Number.NEGATIVE_INFINITY;
 
@@ -119,8 +149,15 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
     deps.onForce();
   };
 
-  const armDoubleTapTimer = (): Timer =>
+  const armDoubleTapTimer = (capturedArmGen: number): Timer =>
     deps.setTimer(() => {
+      // Guard: bail if the state has moved on since this timer was scheduled.
+      // After a late-spawn re-entry the handler re-arms with a new armGen; a
+      // delayed callback from the previous arm (different armGen) must not
+      // corrupt the new arm. A monotonic counter is used — not armedAt — because
+      // two arms within the same millisecond would share the same Date.now()
+      // value and a stale callback would pass a timestamp-based guard.
+      if (state.kind !== "armed" || state.armGen !== capturedArmGen) return;
       // Double-tap window elapsed. Behavior depends on host policy:
       //   - stay-armed: clear the double-tap slot but stay in the armed
       //     state. Subsequent taps force until complete() is called.
@@ -128,8 +165,7 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
       //     request; go back to idle so the next SIGINT is a fresh first
       //     tap. Failsafe (if any) is cancelled because there is no
       //     in-flight graceful request to guard anymore.
-      if (state.kind !== "armed") return;
-      if (onWindowElapse === "reset-to-idle") {
+      if (resolveWindowElapsePolicy() === "reset-to-idle") {
         state.failsafeTimer?.cancel();
         state = { kind: "idle" };
       } else {
@@ -158,11 +194,33 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
     }
 
     if (state.kind === "armed") {
-      // Any tap after the first graceful request — within the double-tap
-      // window OR after it elapsed — forces exit. Once the interrupt
-      // sequence has started, the only way back to idle is `complete()`;
-      // subsequent taps are the user's "get out NOW" escape hatch, not a
-      // request to re-enter the graceful path.
+      // Window has elapsed either when the timer callback fired (doubleTapTimer
+      // === null) OR when wall-clock time has passed the window boundary —
+      // whichever comes first. Under a busy event loop the timer callback can be
+      // delayed, so doubleTapTimer !== null is not a reliable indicator that the
+      // window is still open. Using armedAt + doubleTapWindowMs gives a
+      // timer-delivery-independent answer.
+      const windowElapsedByWallClock = t - state.armedAt >= deps.doubleTapWindowMs;
+      if (
+        (state.doubleTapTimer === null || windowElapsedByWallClock) &&
+        resolveWindowElapsePolicy() === "reset-to-idle"
+      ) {
+        state.failsafeTimer?.cancel();
+        state.doubleTapTimer?.cancel(); // cancel any still-pending timer
+        state = { kind: "idle" };
+        // Reset the coalesce timestamp so the re-entry is not silently dropped by
+        // the deduplication guard at the top of handleSignal. Without this, with
+        // any non-zero coalesceWindowMs (TUI uses 150ms) the recursive call would
+        // be treated as a duplicate of the just-processed signal and return
+        // immediately, leaving the handler in idle with no graceful action taken.
+        lastSignalAt = Number.NEGATIVE_INFINITY;
+        handleSignal(); // re-enter as fresh first tap (single recursion, safe)
+        return;
+      }
+      // Any other tap after the first graceful request — within the window OR
+      // after it elapsed — forces exit. Once the interrupt sequence has started,
+      // the only way back to idle is `complete()` or the re-entry guard above;
+      // subsequent taps are the user's "get out NOW" escape hatch.
       force();
       return;
     }
@@ -176,9 +234,10 @@ export function createSigintHandler(deps: SigintHandlerDeps): SigintHandler {
             force();
           }, deps.failsafeMs)
         : null;
-    const doubleTapTimer = armDoubleTapTimer();
-    state = { kind: "armed", failsafeTimer, doubleTapTimer };
-    deps.write("\nInterrupting… (Ctrl+C again to force)\n");
+    const thisArmGen = ++armGen; // monotonic; unique even for same-millisecond re-arms
+    const doubleTapTimer = armDoubleTapTimer(thisArmGen);
+    state = { kind: "armed", failsafeTimer, doubleTapTimer, armGen: thisArmGen, armedAt: t };
+    (deps.onInterruptHint ?? deps.write)("\nInterrupting… (Ctrl+C again to force)\n");
     deps.onGraceful();
   };
 

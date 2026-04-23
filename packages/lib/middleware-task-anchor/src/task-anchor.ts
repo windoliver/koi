@@ -13,6 +13,9 @@ import type {
   SessionContext,
   SessionId,
   TaskBoard,
+  ToolHandler,
+  ToolRequest,
+  ToolResponse,
   TurnContext,
 } from "@koi/core";
 import { KoiRuntimeError, swallowError } from "@koi/errors";
@@ -288,6 +291,7 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
         return next(request);
       }
 
+      const taskCount = result.board.all().length;
       const text = pickReminderText(
         result.board,
         state,
@@ -300,6 +304,15 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
         // Clear the force flags so a non-blocked completion lifts protection,
         // but record `observedEmptyThisTurn` so `onAfterTurn` can re-arm
         // protection if this retry is itself stop-blocked.
+        ctx.reportDecision?.({
+          action: "suppress",
+          reason: state.forceRequiresTasks
+            ? "forceRequiresTasks"
+            : !nudgeOnEmptyBoard
+              ? "nudgeDisabled"
+              : "noPriorTaskTool",
+          boardState: "empty",
+        });
         state.observedEmptyThisTurn = true;
         state.forceInjectNextTurn = false;
         state.forceRequiresTasks = false;
@@ -310,11 +323,25 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
       // `idle = 0` so error paths that skip `onAfterTurn` still leave a clean
       // state. Lift both force flags (protection successfully served). Rollback
       // for stop-gate retries is handled explicitly via `previousIdle`.
+      const forced = state.forceInjectNextTurn;
+      const idleAtInject = state.idle;
       state.previousIdle = state.idle;
       state.idle = 0;
       state.injectedThisTurn = true;
       state.forceInjectNextTurn = false;
       state.forceRequiresTasks = false;
+      try {
+        ctx.reportDecision?.({
+          action: "inject",
+          promptLength: text.length,
+          reminderKind: taskCount > 0 ? "task-list" : "empty-board-nudge",
+          forced,
+          idle: idleAtInject,
+          taskCount,
+        });
+      } catch (e: unknown) {
+        swallowError(e, { package: "@koi/middleware-task-anchor", operation: "reportDecision" });
+      }
       return next(prepend(request, reminderMessage(text)));
     },
 
@@ -341,6 +368,7 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
         return;
       }
 
+      const taskCount = result.board.all().length;
       const text = pickReminderText(
         result.board,
         state,
@@ -350,6 +378,15 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
       );
       if (text === undefined) {
         // See wrapModelCall — track empty observation for blocked-retry restore.
+        ctx.reportDecision?.({
+          action: "suppress",
+          reason: state.forceRequiresTasks
+            ? "forceRequiresTasks"
+            : !nudgeOnEmptyBoard
+              ? "nudgeDisabled"
+              : "noPriorTaskTool",
+          boardState: "empty",
+        });
         state.observedEmptyThisTurn = true;
         state.forceInjectNextTurn = false;
         state.forceRequiresTasks = false;
@@ -357,15 +394,33 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
         return;
       }
 
+      const forced = state.forceInjectNextTurn;
+      const idleAtInject = state.idle;
       state.previousIdle = state.idle;
       state.idle = 0;
       state.injectedThisTurn = true;
       state.forceInjectNextTurn = false;
       state.forceRequiresTasks = false;
+      try {
+        ctx.reportDecision?.({
+          action: "inject",
+          promptLength: text.length,
+          reminderKind: taskCount > 0 ? "task-list" : "empty-board-nudge",
+          forced,
+          idle: idleAtInject,
+          taskCount,
+        });
+      } catch (e: unknown) {
+        swallowError(e, { package: "@koi/middleware-task-anchor", operation: "reportDecision" });
+      }
       yield* next(prepend(request, reminderMessage(text)));
     },
 
-    async wrapToolCall(ctx, request, next) {
+    async wrapToolCall(
+      ctx: TurnContext,
+      request: ToolRequest,
+      next: ToolHandler,
+    ): Promise<ToolResponse> {
       const state = sessions.get(ctx.session.sessionId);
       const response = await next(request);
 

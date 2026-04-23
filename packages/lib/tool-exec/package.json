@@ -1,0 +1,24 @@
+{
+  "name": "@koi/tool-exec",
+  "description": "execute_code: runs model scripts via Koi tools in an isolated Bun Worker, returning only the final result (L2)",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/tools-core": "workspace:*"
+  },
+  "koi": {}
+}

@@ -550,6 +550,7 @@ export async function executeHooks(
 ): Promise<readonly HookExecutionResult[]> {
   // Auto-detect bare HookConfig[] and wrap as "user" tier
   const registered: readonly RegisteredHook[] =
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     hooks.length > 0 && "hook" in hooks[0]!
       ? (hooks as readonly RegisteredHook[])
       : createRegisteredHooks(hooks as readonly HookConfig[], "user");

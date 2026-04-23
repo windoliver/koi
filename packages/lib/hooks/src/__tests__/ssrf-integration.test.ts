@@ -235,6 +235,7 @@ describe("Env-var allowlisting integration", () => {
     try {
       const results = await executeHooks(
         httpHook({
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional shell variable in test string
           headers: { "X-Db": "${SECRET_DB_URL}" },
           allowedEnvVars: ["HOOK_TOKEN"], // SECRET_DB_URL not in list
         }),
@@ -260,6 +261,7 @@ describe("Env-var allowlisting integration", () => {
       const _before = receivedRequests.length;
       const results = await executeHooks(
         httpHook({
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: intentional shell variable in test string
           headers: { "X-Token": "${HOOK_TEST_INTEGRATION}" },
           allowedEnvVars: ["HOOK_TEST_INTEGRATION"],
         }),

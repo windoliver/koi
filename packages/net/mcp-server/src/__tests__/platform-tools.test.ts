@@ -185,6 +185,7 @@ describe("koi_send_message security", () => {
   test("from is always callerId regardless of args", async () => {
     const mb = mockMailbox();
     const tools = createPlatformTools({ callerId: CALLER, mailbox: mb });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const sendTool = tools.find((t) => t.descriptor.name === "koi_send_message")!;
 
     await sendTool.execute({
@@ -200,6 +201,7 @@ describe("koi_send_message security", () => {
   test("kind is always event", async () => {
     const mb = mockMailbox();
     const tools = createPlatformTools({ callerId: CALLER, mailbox: mb });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const sendTool = tools.find((t) => t.descriptor.name === "koi_send_message")!;
 
     await sendTool.execute({
@@ -217,11 +219,13 @@ describe("koi_update_task ownership", () => {
   test("complete uses completeOwnedTask with callerId", async () => {
     const board = mockTaskBoard([makeTask("t-1", "in_progress")]);
     const tools = createPlatformTools({ callerId: CALLER, taskBoard: board });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const updateTool = tools.find((t) => t.descriptor.name === "koi_update_task")!;
 
     await updateTool.execute({ taskId: "t-1", action: "complete", output: "done" });
 
     expect(board.completeOwnedTask).toHaveBeenCalledTimes(1);
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const [, callerArg] = (board.completeOwnedTask as ReturnType<typeof mock>).mock.calls[0]!;
     expect(callerArg).toBe(CALLER);
   });
@@ -229,11 +233,13 @@ describe("koi_update_task ownership", () => {
   test("complete without output defaults to task subject", async () => {
     const board = mockTaskBoard([makeTask("t-1", "in_progress")]);
     const tools = createPlatformTools({ callerId: CALLER, taskBoard: board });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const updateTool = tools.find((t) => t.descriptor.name === "koi_update_task")!;
 
     await updateTool.execute({ taskId: "t-1", action: "complete" });
 
     expect(board.completeOwnedTask).toHaveBeenCalledTimes(1);
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const [, , result] = (board.completeOwnedTask as ReturnType<typeof mock>).mock.calls[0]!;
     expect((result as Record<string, unknown>).output).toBe("Completed: Task t-1");
   });
@@ -241,6 +247,7 @@ describe("koi_update_task ownership", () => {
   test("complete rejects non-string output", async () => {
     const board = mockTaskBoard([makeTask("t-1", "in_progress")]);
     const tools = createPlatformTools({ callerId: CALLER, taskBoard: board });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const updateTool = tools.find((t) => t.descriptor.name === "koi_update_task")!;
 
     await expect(
@@ -251,11 +258,13 @@ describe("koi_update_task ownership", () => {
   test("fail uses failOwnedTask with callerId", async () => {
     const board = mockTaskBoard([makeTask("t-1", "in_progress")]);
     const tools = createPlatformTools({ callerId: CALLER, taskBoard: board });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const updateTool = tools.find((t) => t.descriptor.name === "koi_update_task")!;
 
     await updateTool.execute({ taskId: "t-1", action: "fail", error: "broke" });
 
     expect(board.failOwnedTask).toHaveBeenCalledTimes(1);
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const [, callerArg] = (board.failOwnedTask as ReturnType<typeof mock>).mock.calls[0]!;
     expect(callerArg).toBe(CALLER);
   });
@@ -265,10 +274,12 @@ describe("koi_list_agents visibility", () => {
   test("passes VisibilityContext with callerId", async () => {
     const reg = mockRegistry();
     const tools = createPlatformTools({ callerId: CALLER, registry: reg });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const listTool = tools.find((t) => t.descriptor.name === "koi_list_agents")!;
 
     await listTool.execute({});
 
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const [, visibility] = (reg.list as ReturnType<typeof mock>).mock.calls[0]!;
     expect(visibility).toEqual({ callerId: CALLER });
   });
@@ -276,6 +287,7 @@ describe("koi_list_agents visibility", () => {
   test("excludes metadata and generation from response", async () => {
     const reg = mockRegistry();
     const tools = createPlatformTools({ callerId: CALLER, registry: reg });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
     const listTool = tools.find((t) => t.descriptor.name === "koi_list_agents")!;
 
     const result = (await listTool.execute({})) as readonly Record<string, unknown>[];

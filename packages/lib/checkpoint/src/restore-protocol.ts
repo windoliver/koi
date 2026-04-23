@@ -174,7 +174,7 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
               ),
             };
           }
-        } catch (e: unknown) {
+        } catch (_e: unknown) {
           return {
             ok: false,
             error: internal(

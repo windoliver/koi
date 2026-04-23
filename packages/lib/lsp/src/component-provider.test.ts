@@ -321,4 +321,17 @@ describe("createLspComponentProvider", () => {
     expect(result.clients).toHaveLength(1);
     expect(result.failures).toHaveLength(0);
   });
+
+  test("autoDetect:true without servers array does not crash", async () => {
+    Bun.which = mock((binary: string) => {
+      if (binary === "gopls") return "/usr/local/bin/gopls";
+      return null;
+    }) as typeof Bun.which;
+
+    const factory = createMockClientFactory([{ name: "gopls" }]);
+    const result = await createLspComponentProvider({ autoDetect: true }, factory);
+
+    expect(result.clients).toHaveLength(1);
+    expect(result.failures).toHaveLength(0);
+  });
 });

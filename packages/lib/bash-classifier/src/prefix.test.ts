@@ -534,11 +534,15 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
 
   // ------- loop-2 round 4: smarter brace handling -------
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variable expansion is the literal test name
   test("parameter expansion ${VAR} does NOT trigger !complex", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variable expansion is the literal test input
     expect(canonicalPrefix("echo ${HOME}")).toBe("echo");
     // `-C` on git is a security-relevant flag (changes working dir),
     // so the combination fails closed — but ${VAR} alone doesn't.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variable expansion is the literal test input
     expect(canonicalPrefix("bash ${HOME}/script.sh")).toBe("bash");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variable expansion is the literal test input
     expect(canonicalPrefix("sudo ${MY_CMD}")).toBe("sudo");
   });
 
@@ -548,7 +552,9 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix("touch file{1..5}.log")).toBe("touch");
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variable expansion is the literal test name
   test("parameter expansion with default ${var:-default} is still prefix-extractable", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variable expansion is the literal test input
     expect(canonicalPrefix("echo ${USER:-anonymous}")).toBe("echo");
   });
 

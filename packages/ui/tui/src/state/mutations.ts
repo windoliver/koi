@@ -685,8 +685,11 @@ export function mutate(state: Draft, action: TuiAction): void {
         break;
       }
 
+      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
       const agentName = progress?.agentName ?? existingRecord!.agentName;
+      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
       const description = progress?.description ?? existingRecord!.description;
+      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
       const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
       const finishedAt = Date.now();
       const durationMs = finishedAt - startedAt;

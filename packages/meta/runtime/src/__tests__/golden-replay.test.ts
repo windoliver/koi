@@ -9391,9 +9391,9 @@ describe("Golden: @koi/middleware-extraction", () => {
     // Category mapping preserves fine-grained → coarse type
     expect(mapCategoryToMemoryType("gotcha")).toBe("feedback");
     expect(mapCategoryToMemoryType("correction")).toBe("feedback");
-    expect(mapCategoryToMemoryType("heuristic")).toBe("reference");
-    expect(mapCategoryToMemoryType("pattern")).toBe("reference");
-    expect(mapCategoryToMemoryType("preference")).toBe("user");
+    expect(mapCategoryToMemoryType("heuristic")).toBe("feedback"); // regression #1964: was "reference"
+    expect(mapCategoryToMemoryType("pattern")).toBe("feedback"); // regression #1964: was "reference"
+    expect(mapCategoryToMemoryType("preference")).toBe("user"); // correct type; not persisted until user-scoped store exists
     expect(mapCategoryToMemoryType("context")).toBe("project");
 
     // Extractor combines markers + heuristics
@@ -11772,5 +11772,488 @@ describe("Golden: @koi/violation-store-sqlite", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tool-exec (standalone, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tool-exec", () => {
+  test("createExecuteCodeTool produces a valid operator Tool named execute_code", async () => {
+    const { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, createExecuteCodeTool } = await import(
+      "@koi/tool-exec"
+    );
+
+    const result = createExecuteCodeTool({
+      acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+      tools: new Map(),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.descriptor.name).toBe("execute_code");
+      expect(result.value.origin).toBe("operator");
+      expect(result.value.policy.sandbox).toBe(false);
+      expect(result.value.descriptor.inputSchema).toBeDefined();
+    }
+  });
+
+  test("createExecuteCodeTool refuses construction without trust acknowledgement", async () => {
+    const { createExecuteCodeTool } = await import("@koi/tool-exec");
+
+    // @ts-expect-error — intentionally omitting required acknowledgement
+    const result = createExecuteCodeTool({ tools: new Map() });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("executeScript runs a multi-tool pipeline and returns only the final result", async () => {
+    const { ACKNOWLEDGE_UNSANDBOXED_EXECUTION, executeScript } = await import("@koi/tool-exec");
+    const { buildTool } = await import("@koi/tools-core");
+
+    const doubleResult = buildTool({
+      name: "double",
+      description: "Doubles a number",
+      inputSchema: { type: "object", properties: { n: { type: "number" } } },
+      origin: "operator",
+      execute: async (args: JsonObject) => ({ result: (args.n as number) * 2 }),
+    });
+    const stringifyResult = buildTool({
+      name: "stringify",
+      description: "Stringifies a value",
+      inputSchema: { type: "object", properties: { value: { type: "unknown" } } },
+      origin: "operator",
+      execute: async (args: JsonObject) => String(args.value),
+    });
+
+    expect(doubleResult.ok).toBe(true);
+    expect(stringifyResult.ok).toBe(true);
+    if (!doubleResult.ok || !stringifyResult.ok) return;
+
+    const tools = new Map([
+      ["double", doubleResult.value],
+      ["stringify", stringifyResult.value],
+    ]);
+
+    const result = await executeScript({
+      acknowledgeUnsandboxedExecution: ACKNOWLEDGE_UNSANDBOXED_EXECUTION,
+      code: `
+        const doubled = await tools.double({ n: 21 });
+        const str = await tools.stringify({ value: doubled.result });
+        return { summary: "Answer is " + str, toolCallCount: 2 };
+      `,
+      tools,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.toolCallCount).toBe(2);
+    expect(result.result).toEqual({ summary: "Answer is 42", toolCallCount: 2 });
+    expect(result.durationMs).toBeGreaterThan(0);
+  });
+
+  // Trajectory replay: validates the recorded ATIF for tool-exec-code-use.
+  // Live recording drove the model through: model → execute_code(script) →
+  // inner add_numbers x2 via tools.* → script return → model final answer.
+  // This test asserts the recorded trajectory looks right without calling
+  // the LLM (all assertions against the frozen fixture).
+  test("recorded trajectory: execute_code ran a 2-step inner pipeline and returned the final sum", async () => {
+    const trajectoryPath = `${FIXTURES}/tool-exec-code-use.trajectory.json`;
+    const trajectory = (await Bun.file(trajectoryPath).json()) as {
+      readonly schema_version: string;
+      readonly steps: ReadonlyArray<{
+        readonly source: string;
+        readonly message?: string;
+        readonly observation?: { readonly results?: ReadonlyArray<{ readonly content?: string }> };
+      }>;
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    const agentSteps = trajectory.steps.filter((s) => s.source === "agent");
+    // 2 agent turns: first invokes execute_code, second returns the answer.
+    expect(agentSteps.length).toBeGreaterThanOrEqual(2);
+
+    // Second agent turn's observation should be the execute_code result
+    // containing ok:true and the final sum from the inner pipeline.
+    const executeCodeResultText = agentSteps[1]?.message ?? "";
+    expect(executeCodeResultText).toContain('"ok":true');
+    expect(executeCodeResultText).toContain('"result":15');
+    expect(executeCodeResultText).toContain('"toolCallCount":2');
+
+    // Final model reply must surface the final sum (2+3=5, 5+10=15).
+    const finalReply = agentSteps[agentSteps.length - 1]?.observation?.results?.[0]?.content ?? "";
+    expect(finalReply).toContain("15");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-collective-memory
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-collective-memory", () => {
+  test("extraction pipeline: markers take priority over heuristics", async () => {
+    const { createDefaultExtractor } = await import("@koi/middleware-collective-memory");
+    const extractor = createDefaultExtractor();
+
+    const output = [
+      "[LEARNING:gotcha] Always pin exact versions in CI lockfiles",
+      "I learned that the API requires OAuth2 tokens for all endpoints",
+      "[LEARNING:pattern] Use exponential backoff with jitter for retries",
+    ].join("\n");
+
+    const results = extractor.extract(output);
+
+    // At least 3 learnings extracted (2 markers + 1 heuristic)
+    expect(results.length).toBeGreaterThanOrEqual(3);
+
+    // Markers (confidence 1.0) sorted before heuristics (confidence 0.7)
+    expect(results[0]?.confidence).toBe(1.0);
+    expect(results[1]?.confidence).toBe(1.0);
+
+    // Categories correct
+    const categories = results.map((r) => r.category);
+    expect(categories).toContain("gotcha");
+    expect(categories).toContain("pattern");
+    expect(categories).toContain("heuristic");
+  });
+
+  test("inject + compact pipeline preserves invariants", async () => {
+    const { formatCollectiveMemory, shouldCompact, compactCollectiveMemory } = await import(
+      "@koi/middleware-collective-memory"
+    );
+    const { DEFAULT_COLLECTIVE_MEMORY } = await import("@koi/core");
+
+    const now = 1_700_000_000_000;
+    const entries = Array.from({ length: 60 }, (_, i) => ({
+      id: `e${String(i)}`,
+      content: `learning entry number ${String(i)} about some topic`,
+      category: (["gotcha", "heuristic", "pattern"][i % 3] ?? "context") as
+        | "gotcha"
+        | "heuristic"
+        | "pattern",
+      source: { agentId: "agent", runId: "run", timestamp: now },
+      createdAt: now,
+      accessCount: i % 5,
+      lastAccessedAt: now,
+    }));
+
+    const memory = { ...DEFAULT_COLLECTIVE_MEMORY, entries, totalTokens: 9500 };
+
+    // Should trigger compaction (60 > 50 entries, 9500 > 8000 tokens)
+    expect(shouldCompact(memory)).toBe(true);
+
+    // Compaction reduces entries and increments generation
+    const compacted = compactCollectiveMemory(memory);
+    expect(compacted.entries.length).toBeLessThan(entries.length);
+    expect(compacted.generation).toBe(1);
+    expect(compacted.lastCompactedAt).toBeDefined();
+
+    // Injection formatting works on compacted memory
+    const formatted = formatCollectiveMemory(compacted.entries, 2000);
+    expect(formatted).toContain("## Collective Memory");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/browser-ext (standalone API coverage)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/browser-ext", () => {
+  test("createExtensionBrowserDriver factory returns a BrowserDriver-shaped transport", async () => {
+    const { createExtensionBrowserDriver } = await import("@koi/browser-ext");
+    const driver: import("@koi/core").BrowserDriver = createExtensionBrowserDriver({
+      instancesDir: "/tmp/koi-browser-ext-golden",
+      authToken: "golden-token",
+    });
+
+    expect(driver.name).toBe("browser-ext");
+    expect(typeof driver.tabList).toBe("function");
+    expect(typeof driver.snapshot).toBe("function");
+    expect(typeof driver.navigate).toBe("function");
+    expect(typeof driver.dispose).toBe("function");
+  });
+
+  test("public export surface stays stable", async () => {
+    const browserExt = await import("@koi/browser-ext");
+
+    expect(Object.keys(browserExt).sort()).toEqual([
+      "createDriverClient",
+      "createExtensionBrowserDriver",
+      "createLoopbackWebSocketBridge",
+    ]);
+  });
+
+  test("browser tools can be enumerated from the extension driver", async () => {
+    const { createExtensionBrowserDriver } = await import("@koi/browser-ext");
+    const { OPERATIONS, createBrowserProvider, createMockAgent } = await import(
+      "@koi/tool-browser"
+    );
+    const { isAttachResult, toolToken } = await import("@koi/core");
+
+    const driver = createExtensionBrowserDriver({
+      instancesDir: "/tmp/koi-browser-ext-golden",
+      authToken: "golden-token",
+    });
+    const provider = createBrowserProvider({ backend: driver });
+    const agent = createMockAgent();
+    const attached = await provider.attach(agent);
+    const components = isAttachResult(attached) ? attached.components : attached;
+
+    for (const operation of OPERATIONS) {
+      expect(components.has(toolToken(`browser_${operation}`) as string)).toBe(true);
+    }
+
+    await provider.detach?.(agent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/browser-playwright (standalone API coverage)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/browser-playwright", () => {
+  test("createPlaywrightBrowserDriver is exported and returns a function", async () => {
+    const pw = await import("@koi/browser-playwright");
+    expect(typeof pw.createPlaywrightBrowserDriver).toBe("function");
+    expect(typeof pw.detectInstalledBrowsers).toBe("function");
+    expect(typeof pw.STEALTH_INIT_SCRIPT).toBe("string");
+    expect(pw.STEALTH_INIT_SCRIPT.length).toBeGreaterThan(0);
+  });
+
+  test("public export surface stays stable", async () => {
+    const pw = await import("@koi/browser-playwright");
+    expect(Object.keys(pw).sort()).toEqual([
+      "STEALTH_INIT_SCRIPT",
+      "createPlaywrightBrowserDriver",
+      "detectInstalledBrowsers",
+    ]);
+  });
+});
+
+// Production wiring: both L2 browser drivers compose into the runtime
+// through createBrowserBackend. Verifies the discriminated-union config
+// surface that callers of RuntimeConfig.browser.backend use.
+describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
+  test("kind=playwright constructs a BrowserDriver", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    // Headless launch mode — don't actually launch, just verify construction.
+    const driver = await createBrowserBackend({ kind: "playwright", headless: true });
+    expect(typeof driver.name).toBe("string");
+    expect(typeof driver.snapshot).toBe("function");
+    expect(typeof driver.navigate).toBe("function");
+    expect(typeof driver.dispose).toBe("function");
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext constructs an ExtensionBrowserDriver with auto-composed delegate", async () => {
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = await createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test",
+      authToken: "1234567890abcdef",
+    });
+    expect(driver.name).toBe("browser-ext");
+    // ExtensionBrowserDriver surface includes the extra attachLoopbackBridge
+    // + selectTargetTab methods beyond the BrowserDriver contract.
+    expect(
+      typeof (driver as unknown as { attachLoopbackBridge: unknown }).attachLoopbackBridge,
+    ).toBe("function");
+    expect(typeof (driver as unknown as { selectTargetTab: unknown }).selectTargetTab).toBe(
+      "function",
+    );
+    await driver.dispose?.();
+  });
+
+  test("kind=browser-ext auto-wires createPlaywrightDriver factory by default", async () => {
+    // Contract: if the caller does NOT supply createPlaywrightDriver, the
+    // factory auto-composes @koi/browser-playwright via connectOverCDP on
+    // the extension's loopback WS bridge. Verify the composition seam by
+    // checking the driver advertises the composed surface (attachLoopback
+    // + selectTargetTab exist) without the caller importing @koi/browser-
+    // playwright directly.
+    const { createBrowserBackend } = await import("../create-browser-backend.js");
+    const driver = (await createBrowserBackend({
+      kind: "browser-ext",
+      instancesDir: "/tmp/koi-browser-ext-factory-test-auto",
+      authToken: "1234567890abcdef",
+    })) as unknown as {
+      readonly name: string;
+      readonly attachLoopbackBridge: unknown;
+      readonly selectTargetTab: unknown;
+      readonly dispose?: () => Promise<void>;
+    };
+    expect(driver.name).toBe("browser-ext");
+    expect(typeof driver.attachLoopbackBridge).toBe("function");
+    expect(typeof driver.selectTargetTab).toBe("function");
+    await driver.dispose?.();
+  });
+});
+
+describe("Golden: @koi/middleware-feedback-loop", () => {
+  test("createFeedbackLoopMiddleware returns a KoiMiddleware with correct priority and name", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const mw = createFeedbackLoopMiddleware({});
+    expect(mw.name).toBe("feedback-loop");
+    expect(mw.priority).toBe(450);
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapToolCall).toBe("function");
+  });
+
+  test("shouldFlush returns false when not dirty", async () => {
+    const { shouldFlush } = await import("@koi/middleware-feedback-loop");
+    expect(
+      shouldFlush(
+        {
+          dirty: false,
+          flushing: false,
+          invocationsSinceFlush: 100,
+          errorRateSinceFlush: 0,
+          lastFlushedErrorRate: 0,
+        },
+        10,
+        0.05,
+      ),
+    ).toBe(false);
+  });
+
+  test("MW composes through createKoi with feedback-loop-pass cassette", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const cassette = await loadCassette(`${FIXTURES}/feedback-loop-pass.cassette.json`);
+    const trajDir = `/tmp/koi-feedback-loop-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-feedback-loop";
+
+    const store = createAtifDocumentStore(
+      { agentName: "feedback-loop-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "feedback-loop-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    const feedbackHandle = createFeedbackLoopMiddleware({
+      validators: [{ name: "pass-through", validate: (_response) => ({ valid: true }) }],
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks, { secondCallText: "7" });
+
+    const runtime = await createKoi({
+      manifest: { name: "feedback-loop-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, feedbackHandle, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+
+    // feedback-loop spans present
+    expect(mwNames.has("feedback-loop")).toBe(true);
+
+    // permissions still works alongside
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool call executed successfully through feedback-loop chain
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Model steps present
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // wrapModelStream span present (validator ran)
+    const feedbackSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "feedback-loop");
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span present (tool health check ran)
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (pass-through validator)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  }, 15000);
+
+  test("feedback-loop-pass trajectory: middleware spans appear for both wrapModelStream and wrapToolCall", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const raw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "feedback-loop-pass.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+        };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // At least one agent step (model response)
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    // At least one tool step (add_numbers executed)
+    expect(trajectory.steps.some((s) => s.source === "tool")).toBe(true);
+
+    // feedback-loop middleware spans are present
+    const feedbackSpans = trajectory.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra.middlewareName === "feedback-loop",
+    );
+    expect(feedbackSpans.length).toBeGreaterThanOrEqual(2);
+
+    // wrapModelStream span is present (validator ran on model response)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span is present (tool health tracking ran)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (validator passed)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
   });
 });

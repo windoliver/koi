@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../kernel/core" },
+    { "path": "../../mm/token-estimator" },
+    { "path": "../../lib/validation" },
+    { "path": "../../security/redaction" }
+  ]
+}

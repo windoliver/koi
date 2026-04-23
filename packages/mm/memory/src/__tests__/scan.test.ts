@@ -522,4 +522,90 @@ describe("scanMemoryDirectory", () => {
     // biome-ignore lint/style/noNonNullAssertion: length checked above
     expect(first!.fileSize).toBe(file.size);
   });
+
+  test("preserves confidence from frontmatter into scanned record", async () => {
+    const body = [
+      "---",
+      "name: extracted-heuristic",
+      "description: auto-inferred heuristic",
+      "type: feedback",
+      "confidence: 0.7",
+      "---",
+      "",
+      "prefer small focused functions",
+    ].join("\n");
+    const file: MockFile = {
+      path: "/memory/extracted-heuristic.md",
+      content: body,
+      size: body.length,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(1);
+    expect(result.memories[0]?.record.confidence).toBe(0.7);
+  });
+
+  test("confidence is absent in scanned record when not in frontmatter", async () => {
+    const file = makeMemoryFile("No Confidence", "feedback", "Some content", 0);
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(1);
+    expect(result.memories[0]?.record.confidence).toBeUndefined();
+  });
+
+  test("unknown frontmatter key causes file to be dropped (fail-closed, trust protection)", async () => {
+    // A typo like 'confdence: 0.2' or an injected unknown field must NOT produce
+    // a valid full-trust (confidence=undefined) record. Fail-closed keeps the
+    // trust boundary intact — misspelled trust fields are not silently ignored.
+    const body = [
+      "---",
+      "name: misspelled-trust",
+      "description: test memory",
+      "type: feedback",
+      "confdence: 0.2",
+      "---",
+      "",
+      "some content",
+    ].join("\n");
+    const file: MockFile = {
+      path: "/memory/misspelled_trust.md",
+      content: body,
+      size: body.length,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    // File with unknown key must be dropped entirely, not recalled at full trust
+    expect(result.memories.length).toBe(0);
+  });
+
+  test("blank confidence field drops the record (fail-closed, prevents stale full-trust)", async () => {
+    // Hand-edited or partially mangled file with 'confidence:' but no value.
+    // Treating it as absent (undefined → ?? 1.0) would let a corrupted file surface
+    // as fully trusted after shedding its low-confidence marker. Drop the record instead.
+    const body = [
+      "---",
+      "name: blank-confidence",
+      "description: test memory",
+      "type: feedback",
+      "confidence:",
+      "---",
+      "",
+      "some content",
+    ].join("\n");
+    const file: MockFile = {
+      path: "/memory/blank_confidence.md",
+      content: body,
+      size: body.length,
+      modifiedAt: Date.now(),
+    };
+    const fs = createMockFs([file]);
+    const result = await scanMemoryDirectory(fs, { memoryDir: "/memory" });
+
+    expect(result.memories.length).toBe(0);
+  });
 });

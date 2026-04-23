@@ -178,7 +178,8 @@ function fnv1a(text: string): number {
  * type) are detected, not just content edits.
  */
 function recordSignatureText(record: ScannedMemory["record"]): string {
-  return `${record.name}\u0000${record.description}\u0000${record.type}\u0000${record.content}`;
+  const conf = record.confidence !== undefined ? `\u0000${String(record.confidence)}` : "";
+  return `${record.name}\u0000${record.description}\u0000${record.type}\u0000${record.content}${conf}`;
 }
 
 function signatureFromRecord(record: ScannedMemory["record"]): FileSignature {
@@ -320,6 +321,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
             description: m.record.description,
             type: m.record.type,
             id: m.record.id,
+            ...(m.record.confidence !== undefined ? { confidence: m.record.confidence } : {}),
           }));
         }
       }
@@ -442,6 +444,9 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
             filePath: relPath,
             createdAt: 0,
             updatedAt: 0,
+            ...(parsed.frontmatter.confidence !== undefined
+              ? { confidence: parsed.frontmatter.confidence }
+              : {}),
           },
           fileSize: settled.value.size,
         });
@@ -643,6 +648,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
           description: m.record.description,
           type: m.record.type,
           id: m.record.id,
+          ...(m.record.confidence !== undefined ? { confidence: m.record.confidence } : {}),
         });
       }
       const replaced = state.memoryManifest.map((e) => changedById.get(e.id) ?? e);

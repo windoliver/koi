@@ -31,7 +31,34 @@ export FIXTURE="/tmp/koi-bugbash-${NAMESPACE}"
 export CAPTURE_FILE="/tmp/koi-capture-${NAMESPACE}.txt"
 export HOOK_LOG="/tmp/koi-hook-log-${NAMESPACE}.txt"
 export KOI_HOME="/tmp/koi-home-${NAMESPACE}"
+# Always recreate KOI_HOME from scratch — prior sessions, OAuth cache, and dream
+# artifacts from a previous run would otherwise survive and corrupt assertions.
+rm -rf "$KOI_HOME"
 mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
+
+# Hook path isolation: KOI_HOOKS_CONFIG_PATH takes precedence over HOME-derived
+# hook paths in runtime-factory.ts/shared-wiring.ts. Unset it so all hook
+# loading is rooted under the fresh $KOI_HOME rather than the operator's machine.
+# Do NOT export KOI_DISABLE_HOOKS here — that would break S6 (Q21-Q22) which
+# requires user hooks to actually fire. Hook disabling is applied per-scenario
+# only (currently: S25, which needs hermetic sessions for file-count assertions).
+unset KOI_HOOKS_CONFIG_PATH
+
+# Initialize $FIXTURE as an isolated git repo — required by §1.5 reset and S25 setup.
+# Must be a standalone root (not nested inside another repo) so resolveMemoryDir()
+# and all cleanup scripts target $FIXTURE/.koi/memory exclusively.
+# Always recreate from scratch so setup is idempotent (safe to rerun).
+rm -rf "$FIXTURE"
+mkdir -p "$FIXTURE"
+git -C "$FIXTURE" init -q
+# Create an initial commit so `git reset --hard HEAD` works in §1.5.
+# An unborn repo (no commits) causes reset --hard to exit non-zero.
+git -C "$FIXTURE" \
+  -c user.name='koi-bugbash' \
+  -c user.email='koi-bugbash@example.invalid' \
+  -c commit.gpgsign=false \
+  -c core.hooksPath=/dev/null \
+  commit --allow-empty -q -m "chore: fixture init"
 
 # Expose operator-chosen tools (bun, node, etc.) to the Bash tool.
 # Faking HOME disables home-derived PATH detection for security reasons
@@ -42,7 +69,15 @@ export KOI_BASH_EXTRA_PATH="$HOME/.bun/bin:/opt/homebrew/bin"
 
 ### 1.3 TUI Configuration
 
-The TUI (`koi tui`) is configured via **environment variables and CLI flags** — it does NOT read `koi.yaml` or manifest files. (`koi start` supports `--manifest` for Nexus filesystem; see S13.)
+The TUI (`koi tui`) is configured via **environment variables and CLI flags**. It does NOT read `koi.yaml`, but it **does** accept `--manifest <path>` to select stack sets and plugins. (`koi start` also supports `--manifest`; see S13.)
+
+**Stack requirements per memory scenario:**
+
+| Scenario | Required stacks | Notes |
+|----------|-----------------|-------|
+| S14 — memory persist/recall | default stack (no `--manifest`) | Runs without a manifest so memory tools are exercised within the same shipped default stack configuration users get. Extraction is wired into `memoryStack` but its TUI-level behavior is covered by the `@koi/runtime` golden tests (see "Test-suite only" in S14 below). |
+| S25 — memory dir isolation | default stack (no `--manifest`) | Dream consolidation requires ≥ 5 sessions + 24 h (gate in `@koi/dream`). S25 runs only 2 sessions on a fresh harness, so `dreamStack` is active but consolidation never fires — file-count assertions are safe. Plugin isolation uses a throw-away `S25_KOI_HOME=$(mktemp -d)` — see S25 setup block. **Do not** use `$KOI_HOME`: S9 creates plugins under `$KOI_HOME/.koi/plugins` which bleed into S25. |
+| S10 — task + memory | `memory` + task/spawn | **Do not** use a `--manifest` with only `[memory]`: Q43-Q45 require `task_create`/`task_update`/`task_list`, which are only available when the spawn-backed task board is enabled. Run S10 without `--manifest` (default stack set). |
 
 ```bash
 # Model selection (pick one provider)
@@ -76,9 +111,22 @@ tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ### 1.5 Reset Between Scenarios
 
 ```bash
+# Validate FIRST — before any destructive commands — that $FIXTURE is its own
+# isolated git root. If it is nested inside another repo, git reset/clean would
+# operate on the wrong repo and rm -rf would wipe an unrelated store.
+_FIXTURE_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [ "$_FIXTURE_GIT_ROOT" != "$FIXTURE" ]; then
+  echo "HARNESS ERROR: \$FIXTURE ($FIXTURE) is not an isolated git root (resolved: '${_FIXTURE_GIT_ROOT}'). Re-run §1.2 setup to initialize the fixture." >&2
+  exit 1
+fi
+
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
 ( cd "$FIXTURE" && git reset --hard -q && git clean -fdq )
-rm -rf "$KOI_HOME/.koi/sessions" "$KOI_HOME/.koi/memory"
+rm -rf "$KOI_HOME/.koi/sessions" "$FIXTURE/.koi/memory"
+# Clear plugins installed by prior scenarios (e.g. S9 creates $KOI_HOME/.koi/plugins/hello-plugin/).
+# Without this, every later TUI launch with HOME='$KOI_HOME' loads that plugin's hooks/tools.
+# Scenarios that require plugins (e.g. S9) must reinstall their fixtures after each reset.
+rm -rf "$KOI_HOME/.koi/plugins"
 mkdir -p "$KOI_HOME/.koi/sessions"
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
@@ -348,9 +396,15 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 
 ### S14 — Memory Deep
 
-> The TUI uses `createInMemoryMemoryBackend()` — all memory is session-scoped.
-> This scenario exercises the full memory tool surface (store, recall, search, delete, dedup, extraction)
-> within a single TUI session. Cross-session persistence, dream consolidation, and team-sync are test-suite only.
+> The TUI uses a **file-backed** memory store (`@koi/memory-fs` via `memoryStack`).
+> `resolveMemoryDir(cwd)` locates the store: `<gitRoot>/.koi/memory/` when a git root is found,
+> otherwise `<cwd>/.koi/memory/` (detached fallback). Memories **persist across `/new` resets and
+> process restarts** — this is by design. Run `git rev-parse --show-toplevel` to find the active path.
+> This scenario exercises the core memory tool surface (store, recall, search, delete, dedup) within a
+> single TUI session. Dream consolidation, team-sync, and extraction are test-suite only — extraction
+> cannot be verified deterministically via TUI because the extraction middleware only fires on
+> spawn-family tool outputs (`Spawn`/`agent_spawn`/`task_delegate`), and the spawned tool output
+> content cannot be controlled from a manual TUI prompt.
 
 **All queries run in the SAME TUI session (no reset between queries).**
 
@@ -369,9 +423,7 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 | Q94 | `Delete the memory about the infra contact.` | memory_delete | Memory removed; subsequent recall doesn't return it |
 | Q95 | `What do you remember about the infra contact?` | memory_recall | Returns nothing (deleted) |
 | Q96 | `Remember my AWS key is AKIAIOSFODNN7EXAMPLE.` | memory_store | Redacted or refused — secret never stored verbatim |
-| Q97 | (have agent run a tool that outputs `[LEARNING:pattern] Always validate input at boundaries`) verify extraction | extraction MW | Transcript shows extracted learning stored as `reference` type (marker-based, confidence 1.0) |
-| Q98 | (have agent run a tool whose output contains `Learned that connection pooling improves throughput`) verify extraction | extraction MW | Heuristic extraction fires ("learned that" pattern, confidence 0.7); stored as `reference` |
-| Q99 | `/new` (reset session) then `What do you remember?` | memory_recall | Returns nothing — in-memory backend cleared on session reset |
+| Q97 | `/new` (reset session) then `What do you remember?` | memory_recall | Bun runtime (Q84), return-type feedback (Q85), and senior-engineer user fact (Q87) all recalled; infra-contact (deleted in Q94) absent; AWS key (Q96) still not present verbatim; `.koi/memory/` directory still populated on disk |
 
 **Test-suite only (not via TUI):**
 
@@ -387,20 +439,30 @@ bun run test --filter=@koi/memory
 
 # Team-sync filtering (type deny, secret scan, fail-closed)
 bun run test --filter=@koi/memory-team-sync
+
+# Extraction (marker-based [LEARNING:...] + heuristic patterns, spawn-family tool IDs,
+# feedback-type persistence, fire-and-forget write path)
+# Package unit tests cover regex extractor, category mapping, and middleware factory:
+bun run test --filter=@koi/middleware-extraction
+# Runtime golden tests prove extraction is wired correctly through memoryStack in
+# the koi tui assembly ("Golden: @koi/middleware-extraction" in golden-replay.test.ts):
+bun run test --filter=@koi/runtime
 ```
 
 ### S9 — Skills & Plugins
 
 **Setup for skills**: create skill at `$KOI_HOME/.claude/skills/hello/SKILL.md`
 **Setup for suspicious skill**: create `$KOI_HOME/.claude/skills/bad-skill/SKILL.md` with `rm -rf` pattern
-**Setup for plugins**: create `$KOI_HOME/.koi/plugins/hello-plugin/plugin.json`
+**Setup for plugins**: create `$KOI_HOME/.koi/plugins/hello-plugin/plugin.json` — do this **after** the §1.5 reset if running Q41/Q42 post-reset, since the reset removes `$KOI_HOME/.koi/plugins`.
+
+> **Note**: §1.5 reset unconditionally removes `$KOI_HOME/.koi/plugins`. If you reset between skills (Q38-Q40) and plugins (Q41-Q42), re-run the plugin setup block above before Q41.
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
 | Q38 | `What skills do you have?` | none | `hello` appears in skill list |
 | Q39 | `Use the hello skill.` | Skill | Skill tool called with `name=hello`; output returned |
 | Q40 | `List skills.` (bad-skill loaded) | none | Suspicious skill excluded or flagged |
-| Q41 | (after plugin setup + reset) `What plugins are loaded?` | none | `hello-plugin` appears without errors |
+| Q41 | (plugin fixture installed, fresh TUI launch) `What plugins are loaded?` | none | `hello-plugin` appears without errors |
 | Q42 | (any tool-invoking prompt) | any | Plugin hook fires before tool call |
 
 ### S10 — Tasks & Memory
@@ -411,7 +473,7 @@ bun run test --filter=@koi/memory-team-sync
 | Q44 | `Create a task "Run tests" and leave it pending.` → `Mark it in_progress.` → `Mark it completed.` | task_create, task_update ×2 | Transitions: pending → in_progress → completed |
 | Q45 | `Show me all my current tasks.` | task_list | Task list renders with status |
 | Q46 | `Remember that this project uses Bun 1.3 and Biome for linting.` → `What do you remember about the toolchain?` | memory_store, memory_recall | Recall returns Bun + Biome facts |
-| Q47 | (after session reset /new) `What do you remember about the toolchain?` | memory_recall | Returns nothing (in-memory backend cleared) |
+| Q47 | (after session reset /new) `What do you remember about the toolchain?` | memory_recall | Returns Bun 1.3 + Biome facts — file-backed store persists across `/new` |
 | Q48 | `Remember my API key is sk-test-fake-key-12345.` → `What did you store?` | memory_store, memory_recall | Key is redacted or refused; never returned verbatim |
 
 ### S11 — TUI UI Features
@@ -436,7 +498,7 @@ bun run test --filter=@koi/memory-team-sync
 | Q62 | Trajectory view | `/trajectory` (after ≥1 turn) | ATIF steps displayed with kind/duration/outcome |
 | Q63 | Sessions view | Ctrl+S or `/sessions` | Session list renders with recent sessions |
 | Q64 | Command palette | Ctrl+P → type partial command | Fuzzy-filtered command list; Enter executes |
-| Q65 | New session | Ctrl+N or `/new` | Fresh session starts; memory cleared |
+| Q65 | New session | Ctrl+N or `/new` | Fresh session starts; conversation history cleared; **persisted memories survive** (file-backed store is not wiped) |
 
 ### S12 — Resilience & Edge Cases
 
@@ -603,44 +665,39 @@ export KOI_AUDIT_ENABLED=true
 | Q132 | (verify SQLite sink) `sqlite3 ~/.koi/audit/<hash>.sqlite "SELECT kind, count(*) FROM audit_log GROUP BY kind"` | — | All 3+ kinds present; counts match NDJSON |
 | Q133 | (verify signing) Inspect `signature` field in audit entries | — | Non-null Ed25519 signatures on every entry (when `signing: true`) |
 
-### S21 — Goal Tracking & Run Report
+### S21 — Task Planning & Run Report
 
-> `@koi/middleware-goal` is **already wired** via `--goal` CLI flag (`tui-command.ts`).
-> Injects `## Active Goals` message every N turns (adaptive interval: base=5, max=20).
-> Detects drift (objective keywords absent from last 3 messages) and completion (`[x]`, "done", "completed").
->
-> `@koi/middleware-report` is **NOT currently wired**. Accumulates per-session activity data
-> and produces a `RunReport` at session end. Needs `createReportMiddleware` added to `allMiddleware`.
+> User states objectives in first message; model decomposes via `task_create` (#1848 pattern).
+> `@koi/middleware-task-anchor` re-injects task board state after idle turns (CC parity).
+> `@koi/middleware-planning` exposes the `koi_plan_write` tool for structured plans (opt-in via `KOI_PLANNING_ENABLED=true`).
+> `@koi/middleware-report` accumulates per-session activity and emits a `RunReport` on quit (opt-in via `KOI_REPORT_ENABLED=true`).
+> `@koi/middleware-goal` has been removed from the codebase — Q134-Q138 in older docs referred to goal tracking; those are retired.
 
-**Prerequisites for report MW**: wire `@koi/middleware-report` into `tui-runtime.ts`.
-
-```typescript
-// tui-runtime.ts wiring sketch for report MW
-import { createReportMiddleware } from "@koi/middleware-report";
-const reportHandle = createReportMiddleware({
-  objective: config.goals?.join("; "),
-  onReport: (report, formatted) => console.log("[run-report]", formatted),
-});
-// Add reportHandle.middleware to allMiddleware (after otelHandle, before checkpointMw)
-```
-
-**Setup**: launch TUI with goals.
+**Setup** (Q134-Q138 — task anchor + planning):
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
-   --goal 'Write unit tests for the math module' \
-   --goal 'Ensure 100% test coverage'"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
+
+**Setup** (Q139-Q140 — also enable run-report). Redirect stderr to a log file so the `RunReport`
+survives after the TUI exits (the tmux session and pane are destroyed when the process exits):
+```bash
+KOI_REPORT_LOG="$FIXTURE/.koi/report.log"
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' KOI_PLANNING_ENABLED=true KOI_REPORT_ENABLED=true bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui 2>'$KOI_REPORT_LOG'"
+```
+
+**Precondition**: S21 requires the task board surface to be active — task-anchor only arms after a successful `task_create` call. Verify Q134 produced at least one `task_create` before running Q135-Q138; if not, retry Q134 with a more explicit instruction.
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q134 | `What are my current goals?` | none | Agent mentions both goals (reads from injected `## Active Goals` block) |
-| Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write | Works toward goal; goal completion not triggered yet |
-| Q136 | `Tell me about the weather.` (repeat 5× across turns — deliberate drift) | none | After ~5 turns off-topic, goal re-injection fires (adaptive interval resets); agent re-states objectives |
-| Q137 | `I've finished writing all the tests. The test coverage goal is done.` | none | Completion detection fires for "Ensure 100% test coverage" goal; `[x]` shown on next injection |
-| Q138 | Check `/trajectory` after Q135-Q137 | — | `middleware:goal` steps visible; `reportDecision` shows `{ objectives, completedCount, totalCount }` |
-| Q139 | (report MW, if wired) Quit TUI after Q134-Q138 | — | `RunReport` printed: summary with turn count, action count, duration, token usage |
-| Q140 | (report MW, if wired) Verify `RunReport.actions` | — | Ring buffer contains model_call + tool_call entries matching session history |
+| Q134 | `Help me write unit tests for the math module and ensure 100% coverage. Use task_create to decompose this into individual tasks.` | task_create | Model calls `task_create` at least once; task board shows 2+ tasks. **Stop and retry if task_create was not called.** |
+| Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write, task_update | Works toward task; model calls `task_update` when done; task status transitions to completed |
+| Q136 | `Tell me about the weather.` (repeat 4× — deliberate idle turns) | none | After ~3 idle turns, task-anchor fires: `<system-reminder>` with task list injected; model re-orients |
+| Q137 | `Use koi_plan_write to create a structured plan for the remaining coverage work.` | koi_plan_write | Model calls `koi_plan_write` with pending/in_progress items; plan injected as system message next turn |
+| Q138 | Check `/trajectory` after Q134-Q137 | — | `middleware:task-anchor` steps visible on idle turns; `middleware:planning` spans on Q137; `task_create`/`task_update` and `koi_plan_write` tool steps |
+| Q139 | (KOI_REPORT_ENABLED=true) Quit TUI after Q134-Q138 | — | `RunReport` present in `$KOI_REPORT_LOG`: run `grep -c 'RunReport' "$KOI_REPORT_LOG"` → output ≥ 1; report includes turn count, action count, duration, token usage |
+| Q140 | (KOI_REPORT_ENABLED=true) Verify `RunReport.actions` | — | `grep 'model_call\|tool_call' "$KOI_REPORT_LOG"` → ring buffer entries matching session history appear in log |
 
 ### S22 — Model Router & Failover
 
@@ -722,47 +779,120 @@ tmux new-session -d -s "$KOI_SESSION" \
 
 ### S25 — File-Based Memory Persistence
 
-> `@koi/memory-fs` is **NOT currently wired** into `tui-runtime.ts` (TUI uses `createInMemoryMemoryBackend()`).
-> `createMemoryStore(config)` stores each memory as a Markdown file with frontmatter,
-> maintains `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
+> `@koi/memory-fs` is wired into the **TUI/runtime** via `memoryStack` (`packages/meta/cli/src/preset-stacks/memory.ts`).
+> `createMemoryStore` stores each memory as a Markdown file with frontmatter under the resolved memory directory,
+> maintains a `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
 >
-> **To wire**: add `KOI_MEMORY_DIR` env var in `tui-command.ts`; swap in `createMemoryStore` when set.
+> **S25 runs on the default TUI stack** (no `--manifest`). Dream consolidation only fires when the gate
+> is satisfied: ≥ 5 sessions elapsed AND ≥ 24 h since the last dream (`packages/mm/dream/src/gate.ts`).
+> S25 uses only 2 sessions on a fresh harness (initial + restart for Q159), so `dreamStack` is active
+> but consolidation never runs — `$MEMORY_DIR` file counts are safe.
+> Plugin isolation for S25 specifically is provided by `S25_KOI_HOME=$(mktemp -d)` — a throw-away empty
+> directory used as `HOME` only for S25 tmux launches. **Do NOT use `$KOI_HOME` for S25**: S9 creates
+> `$KOI_HOME/.koi/plugins/hello-plugin/`, and the runtime loads plugins via
+> `join(homedir(), '.koi', 'plugins')`. Using `HOME='$KOI_HOME'` in S25 would load S9 plugins and
+> perturb file-count assertions. The `S25_KOI_HOME` tmpdir is empty, so no plugins are visible.
+>
+> **⚠ koi dream split**: `koi dream` defaults to `~/.koi/memory` (home-scoped), not the worktree-local store.
+> When running dream consolidation against TUI-persisted memories, pass `--memory-dir "$MEMORY_DIR"` explicitly
+> (where `$MEMORY_DIR` is the resolved store path set up in the S25 setup script).
+> Without this flag, dream and TUI operate on **different stores** — tracked as a separate bug.
 
-**Prerequisites**: wire `@koi/memory-fs` into `tui-runtime.ts` first.
+**Setup**: `$FIXTURE` must contain its own initialized Git repo (`.git` present at `$FIXTURE` itself).
+`resolveMemoryDir(cwd)` walks UP to the **first directory containing `.git`**, so as long as
+`$FIXTURE/.git` exists, memory resolves to `$FIXTURE/.koi/memory` — even if `$FIXTURE` is nested
+inside a parent repo. The dangerous case is `$FIXTURE` having **no local `.git`**, which makes
+the resolver skip up to an ancestor repo. The safety check below ensures `$FIXTURE` is its own root.
 
-```typescript
-// tui-runtime.ts wiring sketch
-import { createMemoryStore } from "@koi/memory-fs";
-const memoryBackend = process.env.KOI_MEMORY_DIR
-  ? createMemoryFsBackend(createMemoryStore({ dir: process.env.KOI_MEMORY_DIR }))
-  : createInMemoryMemoryBackend();
-```
-
-**Setup**: set memory directory, launch TUI.
 ```bash
-export KOI_MEMORY_DIR="$KOI_HOME/.koi/memory"
-mkdir -p "$KOI_MEMORY_DIR"
+# SAFETY: $FIXTURE must be its own isolated git root (not a subdirectory of another repo,
+# and not merely containing a .git file from a broken symlink).
+# Use rev-parse to validate: handles both .git directories and linked worktrees (.git file).
+_S25_GIT_ROOT=$(git -C "$FIXTURE" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [ "$_S25_GIT_ROOT" != "$FIXTURE" ]; then
+  # $FIXTURE is not an isolated git root — either nested inside another repo or not
+  # a git repo at all.  We do NOT auto-init here: running git init on an arbitrary
+  # existing path is unsafe and masks a broken harness state.
+  # The correct fix is to re-run the §1.2 Per-Tester Isolation setup, which tears
+  # down and recreates $FIXTURE from scratch.
+  echo "S25 HARNESS ERROR: \$FIXTURE ($FIXTURE) is not an isolated git root." >&2
+  echo "  Expected git root : $FIXTURE" >&2
+  echo "  Actual git root   : ${_S25_GIT_ROOT:-<not a git repo>}" >&2
+  echo "  Fix: re-run the §1.2 Per-Tester Isolation setup block and retry." >&2
+  exit 1
+fi
+
+# One canonical memory dir — reused for TUI cleanup, assertions, and koi dream.
+GIT_ROOT="$FIXTURE"    # verified: $FIXTURE is its own git root
+MEMORY_DIR="$GIT_ROOT/.koi/memory"
+
+# Kill any prior session with the same name BEFORE clearing the store.
+# If a session already exists and new-session silently fails, $MEMORY_DIR would
+# be wiped while the old TUI stays alive, making Q156-Q160 assertions unreliable.
+tmux kill-session -t "$KOI_SESSION" 2>/dev/null || true
+
+# REQUIRED: start each S25 run with an empty store so count-based assertions are reliable.
+rm -rf "$MEMORY_DIR"
+mkdir -p "$MEMORY_DIR"
+
+# Pin the dream gate: a fresh store has lastDreamAt=0, which means the 24h time gate
+# is already satisfied (Date.now() >> 86_400_000 ms). With the time gate met, only
+# the session counter (threshold: 5) stands between S25 and spurious dream consolidation.
+# Writing lastDreamAt=now ensures the time gate cannot be met during this run.
+echo "{\"lastDreamAt\":$(date +%s)000,\"sessionsSinceDream\":0}" > "$MEMORY_DIR/.dream-gate.json"
+
+# Use a throw-away HOME for S25 so prior scenario plugins (e.g. S9) don't bleed in,
+# AND so that $KOI_HOME plugin state is not mutated (preventing harness ordering issues
+# when S9 is revisited after S25). Runtime discovers plugins at join(homedir(), '.koi', 'plugins');
+# an empty tmpdir has no plugins.
+S25_KOI_HOME=$(mktemp -d)
+
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$S25_KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+
+# Verify the session was actually created and the TUI process did not exit immediately.
+# Approach: has-session (tmux frame exists) + pane_dead check (process still alive).
+# Checking only for non-empty pane output is NOT sufficient — a stack trace or shell
+# prompt left behind by a crashed bun process would still yield non-empty output.
+if ! tmux has-session -t "$KOI_SESSION" 2>/dev/null; then
+  echo "S25 HARNESS ERROR: tmux session '$KOI_SESSION' failed to start. Aborting." >&2
+  exit 1
+fi
+sleep 2   # allow bun startup to complete (TUI render typically < 1 s)
+_S25_PANE_DEAD=$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}' 2>/dev/null || echo "1")
+if [ "$_S25_PANE_DEAD" = "1" ]; then
+  echo "S25 HARNESS ERROR: TUI process exited immediately after launch (pane_dead=1). Aborting." >&2
+  tmux capture-pane -t "$KOI_SESSION" -p 2>/dev/null || true   # show last output for diagnosis
+  exit 1
+fi
 ```
+
+> **S25 plugin isolation**: `KOI_DISABLE_HOOKS=1` disables user hooks. The setup block creates `$S25_KOI_HOME=$(mktemp -d)` — a fresh empty directory used as `HOME` for this scenario only. Plugin discovery is rooted at `join(homedir(), '.koi', 'plugins')`, and `homedir()` returns `$S25_KOI_HOME` (empty), so no operator or bug-bash plugins are visible. `$KOI_HOME` is not modified, so S9 plugin state remains intact if those scenarios are revisited.
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$KOI_MEMORY_DIR/`; frontmatter has `type: project` |
-| Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file created; `MEMORY.md` index has 2 entries |
-| Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from filesystem, not in-memory map) |
-| Q159 | (cross-session persistence) Kill TUI, relaunch, `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
-| Q160 | `Remember: this project uses Bun 1.3 for all scripts.` (near-duplicate of Q156) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
-| Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$KOI_MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
-| Q162 | (concurrent safety) Rapidly send 3 `Remember: ...` prompts in sequence | memory_store ×3 | All 3 stored without corruption; `MEMORY.md` consistent; no lock contention errors |
+| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | At least one `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index updated. (Do **not** assert on `type:` or exact frontmatter — the model chooses these fields based on prompt phrasing and may legitimately produce different values.) |
+| Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | A second `.md` file written to `$MEMORY_DIR/`; `MEMORY.md` index now has ≥ 2 entries |
+| Q158 | `What do you remember about the runtime?` | memory_recall | Response references Bun 1.3; no hallucination. (In-session sanity check only — the model may answer from transcript context or in-process cache. Disk-backed recall is verified at Q159 after restart.) |
+| Q159 | (cross-session persistence) Kill and **non-destructively** relaunch the TUI — do **not** rerun the S25 setup block or §1.5 reset (those wipe `$MEMORY_DIR`). Relaunch: `tmux kill-session -t "$KOI_SESSION" 2>/dev/null; tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$S25_KOI_HOME' KOI_DISABLE_HOOKS=1 KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"` (`$S25_KOI_HOME` was set in the S25 setup block above — must still be in scope). Verify TUI started: `sleep 2; tmux has-session -t "$KOI_SESSION" || exit 1; [ "$(tmux display-message -t "$KOI_SESSION" -p '#{pane_dead}')" = "0" ] || { echo "Q159 RESTART ERROR: TUI process exited (pane_dead=1). Aborting." >&2; exit 1; }` (same liveness check as initial setup: pane_dead=1 means the bun process exited, not just empty output). Then send `/new` in TUI to open a **fresh session** (clears transcript carry-over so recall must come from disk). Ask `What do you remember?` | memory_recall | Both `.md` record files still exist in `$MEMORY_DIR/`; TUI response on fresh session references both Bun 1.3 and input validation (loaded from disk, not resumed transcript) |
+| Q160 | `Delete the memory about input validation.` | memory_delete | **Filesystem deletion check**: run the Q160 verification command below; count must be **1**. `MEMORY.md` index no longer references input validation; asking `What do you remember?` does not return the deleted fact. |
 
+**Q160 verification command** (pipe character cannot be escaped inside GFM table cells — run in a terminal):
+
+```bash
+# Q160: deletion check — must output 1
+find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' ! -name 'MEMORY.md' | wc -l
+```
+
+> **Dedup coverage (Q156 near-duplicate)**: The two-stage `memory_store` dedup (same-key collision check + broad Jaccard content scan at 0.7 threshold) is not reliably testable via TUI because `input.content` is model-generated and may differ across runs even for identical prompts. Authoritative Jaccard dedup regression test: `bun run test --filter=@koi/memory-fs`.
 ### Packages Not Testable via TUI (justified)
 
 The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun run test --filter=@koi/runtime`) and package-level unit tests.
 
 | Package | Reason | Test Approach |
 |---------|--------|---------------|
-| `@koi/dream` | Offline batch memory consolidation job. Requires injected `listMemories`, `writeMemory`, `deleteMemory`, and `modelCall` handles. No triggering surface in TUI or CLI. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation` |
+| `@koi/memory-fs` (concurrent writes) | Concurrent multi-process write safety requires parallel writers; a single TUI session only exercises sequential turns. | `bun run test --filter=@koi/memory-fs` — unit suite exercises parallel writes via locking primitives |
+| `@koi/dream` | Offline batch memory consolidation job. Not exercisable via **TUI prompts** but has a real `koi dream` CLI command. Smoke-test via CLI using an **isolated copy** of the store (never the live S25 fixture — dream calls `writeMemory`/`deleteMemory` and can mutate records that Q156-Q160 depend on): `DREAM_DIR=$(mktemp -d) && cp -r "$MEMORY_DIR/." "$DREAM_DIR/" && rm -f "$DREAM_DIR/.dream.lock" "$DREAM_DIR/.dream-gate.json" && HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" dream --force --memory-dir "$DREAM_DIR"`. The `rm -f` step removes control files that `cp -r` would otherwise copy from the source store: a copied `.dream.lock` with a still-alive PID causes dream to exit early with "Dream already running" instead of running consolidation. Use the repo-local entrypoint (`bun run $REPO_ROOT/.../bin.ts`) — do **not** rely on a globally installed `koi` binary, which may not reflect the branch under test. `--force` bypasses the gate (requires 24h+sessions). Requires API key. **Pass**: exits 0; acquires/releases `.dream.lock`; output line is `Dream complete: N merged, M pruned, K unchanged` — all three values ≥ 0 and no error message. No-op runs (`merged=0, pruned=0, unchanged=N`) are valid when input memories are not merge/prune candidates. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation`; CLI smoke: see description |
 | `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun run test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
 
 ### Always-On Packages (implicitly tested by every TUI session)
@@ -813,16 +943,18 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S18** | Browser Automation | Q110-Q117 | 1 | Wire `@koi/tool-browser` into TUI first |
 | **S19** | LSP Integration | Q118-Q125 | 1 | Wire `@koi/lsp` into TUI; `typescript-language-server` on PATH |
 | **S20** | Audit Stack | Q126-Q133 | 1 | Wire audit MW + sinks; `KOI_AUDIT_ENABLED=true` |
-| **S21** | Goal Tracking & Report | Q134-Q140 | 1 | `--goal "..."` (already wired); report MW needs wiring |
+| **S21** | Task Planning & Report | Q134-Q140 | 1 | `KOI_PLANNING_ENABLED=true`; add `KOI_REPORT_ENABLED=true` + stderr log for Q139-Q140 |
 | **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
 | **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
 | **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
-| **S25** | Memory FS Persistence | Q156-Q162 | 2 (restart for Q159) | Wire `@koi/memory-fs`; `KOI_MEMORY_DIR=...` |
+| **S25** | Memory FS Persistence | Q156-Q160 | 2 (restart for Q159) | default stack; git-backed `$FIXTURE`; dream gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; plugin isolation via fake `$KOI_HOME` |
 
-**All scenarios run with the full TUI middleware stack:**
+**TUI scenarios (S1-S14, S16-S25) run with the full TUI middleware stack** (default stack set, no `--manifest`):
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
 
-Optional MW (model-router, goal, otel, audit, report) require explicit config — tested in S20-S23.
+**S13 and S15** use `koi start` (non-TUI) and activate stacks via `--manifest`. See those scenario headings for their specific stack configuration.
+
+Optional MW (model-router, planning, otel, audit, report) require explicit config — tested in S20-S23. (`@koi/middleware-goal` has been removed from the codebase.)
 
 ---
 
@@ -844,8 +976,8 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-semantic-retry | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q58 | |
 | @koi/checkpoint | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q43 | `*` | |
 | @koi/middleware-audit | — | — | — | — | — | — | — | — | — | — | — | — | **S20**: Q126-Q133 (wire first) |
-| @koi/middleware-report | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q139-Q140 (wire first) |
-| @koi/middleware-goal | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q134-Q138 (`--goal` flag) |
+| @koi/middleware-report | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q139-Q140 (`KOI_REPORT_ENABLED=true`; stderr redirected to log file) |
+| @koi/middleware-goal | — | — | — | — | — | — | — | — | — | — | — | — | removed — Goal MW deleted from codebase; not testable |
 | @koi/middleware-otel | — | — | — | — | — | — | — | — | — | — | — | — | **S23**: Q147-Q152 (`KOI_OTEL_ENABLED`) |
 
 `*` = always-on middleware; fires on every query in that scenario. Bold Q = explicitly tests that package.
@@ -912,11 +1044,13 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/spawn-tools | **S17** | Q102-Q109 (agent spawning — fully wired in TUI) |
 | @koi/tool-browser | **S18** | Q110-Q117 (wire `createBrowserProvider` into TUI first) |
 | @koi/lsp | **S19** | Q118-Q125 (wire `createLspComponentProvider` into TUI first) |
-| @koi/middleware-goal | **S21** | Q134-Q138 (`--goal` flag, already wired) |
-| @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
+| @koi/middleware-goal | **removed** | Goal MW deleted from codebase; not testable |
+| @koi/middleware-task-anchor | **S21** | Q134-Q138 (active when task-board surface is enabled; requires task_create call first) |
+| @koi/middleware-planning | **S21** | Q137 (`KOI_PLANNING_ENABLED=true`; `koi_plan_write` tool) |
+| @koi/middleware-report | **S21** | Q139-Q140 (`KOI_REPORT_ENABLED=true`; stderr redirected to log file) |
 | @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
 | @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
-| @koi/memory-fs | **S25** | Q156-Q162 (wire `KOI_MEMORY_DIR` first) |
+| @koi/memory-fs | **S25** | Q156-Q160 (`memoryStack` in default stack set; dream consolidation gate requires ≥ 5 sessions + 24 h — never fires in 2-session run; concurrent-write safety via unit test) |
 | @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
 | @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
 | @koi/dream | non-TUI | `bun run test --filter=@koi/dream` (offline batch job) |
@@ -1060,7 +1194,7 @@ bun run test --filter=@koi/runtime
 | spawn-agent, spawn-coordinator, spawn-fork | agent-runtime, spawn-tools | Spawn lifecycle: define → load → spawn → inherit permissions → complete |
 | spawn-inheritance, spawn-allowlist, spawn-manifest-ceiling | agent-runtime, spawn-tools | Tool narrowing, permission inheritance, manifest ceiling enforcement |
 | model-router | model-router | Failover chain; circuit-breaker trips; health probe recovery |
-| goal-tracking, goal-callback | middleware-goal, middleware-report | Goal injection; drift detection; completion callback fires |
+| task-planning, task-anchor, write-plan | middleware-task-anchor, middleware-planning, middleware-report | task_create decomposition; idle-turn re-injection; write_plan structured plan; run-report on quit (stderr log) |
 | otel-spans | middleware-otel | OpenTelemetry spans emitted; semantic conventions correct |
 | memory-recall-pipeline | memory (core) | Salience scoring; exponential decay; token budget; format with trust boundary |
 | memory-fs | memory-fs | File persistence; Jaccard dedup; MEMORY.md index rebuild; concurrent writes |
@@ -1106,8 +1240,8 @@ bun run test --filter=@koi/model-openai-compat # adapter tested via provider sel
 
 ## 8. Exit Criteria
 
-1. All S1-S25 scenarios run at least once (S18-S20, S25 after wiring; skip if not wired)
-2. All Q1-Q162 queries executed with pass/fail recorded
+1. All S1-S25 scenarios run at least once (S18-S20 skip if not wired)
+2. All Q1-Q160 TUI queries executed with pass/fail recorded (Jaccard dedup and extraction coverage moved to unit tests — run `bun run test --filter=@koi/memory-fs` and `bun run test --filter=@koi/middleware-extraction`)
 3. All S16 golden queries pass (`bun run test --filter=@koi/runtime` green)
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass

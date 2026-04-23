@@ -292,3 +292,5 @@ The crash-injection harness is the test that validates the ordered+idempotent at
 ## Layer
 
 L2 — depends on `@koi/core` (L0) and `@koi/errors` (L0u) only. Uses `bun:sqlite` (Bun built-in, not an npm dependency).
+
+<!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->

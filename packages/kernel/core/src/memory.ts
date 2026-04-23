@@ -79,6 +79,8 @@ export interface MemoryFrontmatter {
   readonly name: string;
   readonly description: string;
   readonly type: MemoryType;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
 }
 
 /** A complete memory record with frontmatter + content. */
@@ -91,6 +93,8 @@ export interface MemoryRecord {
   readonly filePath: string;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
 }
 
 /** Input shape for creating a new memory record. */
@@ -99,6 +103,8 @@ export interface MemoryRecordInput {
   readonly description: string;
   readonly type: MemoryType;
   readonly content: string;
+  /** Extraction confidence in [0, 1]. Absent means fully trusted (equivalent to 1.0). */
+  readonly confidence?: number | undefined;
 }
 
 /** Sparse update shape for modifying a memory record. */
@@ -107,6 +113,7 @@ export interface MemoryRecordPatch {
   readonly description?: string | undefined;
   readonly type?: MemoryType | undefined;
   readonly content?: string | undefined;
+  readonly confidence?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +194,13 @@ function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined 
     if (colonIndex === -1) return undefined;
 
     const key = trimmedLine.slice(0, colonIndex).trim();
-    if (key !== "name" && key !== "description" && key !== "type") return undefined;
+    // Fail-closed on unknown keys — a typo like 'confdence: 0.2' must not
+    // silently parse as confidence=undefined (full trust). Unknown keys mean
+    // the file is malformed or written by a future schema version; drop it so
+    // the trust boundary holds. Known keys: name, description, type, confidence.
+    if (key !== "name" && key !== "description" && key !== "type" && key !== "confidence") {
+      return undefined;
+    }
     if (fields.has(key)) return undefined;
 
     const value = trimmedLine.slice(colonIndex + 1).trim();
@@ -201,7 +214,21 @@ function parseFrontmatterFields(fmBlock: string): MemoryFrontmatter | undefined 
   if (!name || !description || !type) return undefined;
   if (!isMemoryType(type)) return undefined;
 
-  return { name, description, type };
+  const rawConfidence = fields.get("confidence");
+  // A present-but-blank "confidence:" field is malformed — drop the whole record.
+  // Treating it as undefined would score as implicit 1.0 trust, which is worse than
+  // a hard-coded low value: a partially-written or corrupted file could shed its
+  // low-confidence marker and surface as fully trusted.
+  if (rawConfidence !== undefined && rawConfidence.trim() === "") {
+    return undefined;
+  }
+  const confidence: number | undefined =
+    rawConfidence !== undefined ? Number(rawConfidence) : undefined;
+  if (confidence !== undefined && (Number.isNaN(confidence) || confidence < 0 || confidence > 1)) {
+    return undefined;
+  }
+
+  return { name, description, type, ...(confidence !== undefined ? { confidence } : {}) };
 }
 
 /**
@@ -294,15 +321,24 @@ export function serializeMemoryFrontmatter(
   if (name.length === 0) return undefined;
   if (description.length === 0) return undefined;
 
-  return [
+  const lines = [
     "---",
     `name: ${name}`,
     `description: ${description}`,
     `type: ${frontmatter.type}`,
-    "---",
-    "",
-    content,
-  ].join("\n");
+  ];
+  if (frontmatter.confidence !== undefined) {
+    if (
+      !Number.isFinite(frontmatter.confidence) ||
+      frontmatter.confidence < 0 ||
+      frontmatter.confidence > 1
+    ) {
+      return undefined;
+    }
+    lines.push(`confidence: ${frontmatter.confidence}`);
+  }
+  lines.push("---", "", content);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +392,20 @@ export function validateMemoryRecordInput(
       field: "content",
       message: "content is required and must be a non-empty string",
     });
+  }
+
+  if (input.confidence !== undefined) {
+    if (
+      typeof input.confidence !== "number" ||
+      !Number.isFinite(input.confidence) ||
+      input.confidence < 0 ||
+      input.confidence > 1
+    ) {
+      errors.push({
+        field: "confidence",
+        message: "confidence must be a finite number in [0, 1]",
+      });
+    }
   }
 
   return errors;
@@ -420,7 +470,7 @@ function escapeTitle(value: string): string {
 
 /** Unescapes Markdown link metacharacters in a title (backslash + brackets). */
 function unescapeTitle(value: string): string {
-  return value.replace(/\\([\[\]\\])/g, "$1");
+  return value.replace(/\\([[\]\\])/g, "$1");
 }
 
 /**

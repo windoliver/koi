@@ -11,6 +11,34 @@ import {
 } from "./__test-utils.js";
 import { createMemoryStoreTool } from "./memory-store.js";
 
+// Regression tests for #1964 — type field schema description must disambiguate
+describe("memory_store schema type field (regression #1964)", () => {
+  function getTypeDesc(): string {
+    const result = createMemoryStoreTool(mockBackend(), TEST_MEMORY_DIR);
+    if (!result.ok) throw new Error("tool build failed");
+    const schema = result.value.descriptor.inputSchema as {
+      properties: { type: { description: string } };
+    };
+    return schema.properties.type.description;
+  }
+
+  test("type description distinguishes feedback from project", () => {
+    // feedback = behavioral guidance ('always do X'); project = ongoing work/deadlines
+    expect(getTypeDesc()).toMatch(
+      /feedback.*(?:always|guidance|style|behavior)|(?:always|guidance|style|behavior).*feedback/i,
+    );
+  });
+
+  test("type description routes person contacts to user, not reference", () => {
+    // person contacts must stay in user (private) — reference is sync-eligible (#1964 privacy fix)
+    const desc = getTypeDesc();
+    expect(desc).toMatch(/user.*(?:contact|email)|(?:contact|email).*user/i);
+    expect(desc).toMatch(
+      /reference.*(?:system|tool|url|tracked)|(?:system|tool|url|tracked).*reference/i,
+    );
+  });
+});
+
 describe("createMemoryStoreTool", () => {
   test("builds successfully", () => {
     const result = createMemoryStoreTool(mockBackend(), TEST_MEMORY_DIR);

@@ -1,0 +1,188 @@
+import type { NmControlFrame } from "../../src/native-host/control-frames.js";
+import type { NmFrame } from "../../src/native-host/nm-frame.js";
+import { respondToAdminClearGrants } from "./admin-responder.js";
+import type { AttachFsm } from "./attach-fsm.js";
+import { type ChunkSender, createChunkReceiver } from "./chunking.js";
+import { respondToAttachStateProbe } from "./probe-responder.js";
+import type { ExtensionStorage } from "./storage.js";
+
+export interface Router {
+  readonly routeFrame: (frame: NmFrame) => Promise<void>;
+  readonly routeControlFrame: (frame: NmControlFrame) => Promise<void>;
+}
+
+export function createRouter(deps: {
+  readonly fsm: AttachFsm;
+  readonly storage: ExtensionStorage;
+  readonly emitFrame: (frame: NmFrame) => void;
+  readonly chunkSender: ChunkSender;
+}): Router {
+  const chunkReceiver = createChunkReceiver(async (frame) => {
+    await routeFrame(frame);
+  });
+
+  async function routeFrame(frame: NmFrame): Promise<void> {
+    switch (frame.kind) {
+      case "list_tabs": {
+        const tabs = (await (
+          chrome.tabs.query as unknown as (
+            queryInfo: chrome.tabs.QueryInfo,
+          ) => Promise<readonly chrome.tabs.Tab[]>
+        )({})) as readonly chrome.tabs.Tab[];
+        deps.emitFrame({
+          kind: "tabs",
+          requestId: frame.requestId,
+          tabs: tabs
+            .filter((tab): tab is chrome.tabs.Tab & { readonly id: number } => tab.id !== undefined)
+            .map((tab) => ({
+              id: tab.id,
+              url: tab.url ?? "",
+              title: tab.title ?? "",
+            })),
+        });
+        return;
+      }
+      case "open_tab": {
+        try {
+          const props: chrome.tabs.CreateProperties = {};
+          if (frame.url !== undefined) props.url = frame.url;
+          const tab = (await (
+            chrome.tabs.create as unknown as (
+              p: chrome.tabs.CreateProperties,
+            ) => Promise<chrome.tabs.Tab>
+          )(props)) as chrome.tabs.Tab;
+          if (tab.id === undefined) {
+            deps.emitFrame({
+              kind: "tab_opened",
+              requestId: frame.requestId,
+              ok: false,
+              error: "chrome.tabs.create returned tab without id",
+            });
+            return;
+          }
+          deps.emitFrame({
+            kind: "tab_opened",
+            requestId: frame.requestId,
+            ok: true,
+            tab: {
+              id: tab.id,
+              url: tab.url ?? frame.url ?? "",
+              title: tab.title ?? "",
+            },
+          });
+        } catch (error) {
+          deps.emitFrame({
+            kind: "tab_opened",
+            requestId: frame.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      case "close_tab": {
+        try {
+          await (chrome.tabs.remove as unknown as (tabId: number) => Promise<void>)(frame.tabId);
+          deps.emitFrame({ kind: "tab_closed", requestId: frame.requestId, ok: true });
+        } catch (error) {
+          deps.emitFrame({
+            kind: "tab_closed",
+            requestId: frame.requestId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
+      case "attach":
+        await deps.fsm.handleAttach(frame);
+        return;
+      case "detach":
+        await deps.fsm.handleDetachRequest(frame);
+        return;
+      case "abandon_attach": {
+        const affectedTabs = await deps.fsm.handleAbandonAttach(frame.leaseToken);
+        deps.emitFrame({ kind: "abandon_attach_ack", leaseToken: frame.leaseToken, affectedTabs });
+        return;
+      }
+      case "admin_clear_grants":
+        await respondToAdminClearGrants({
+          storage: deps.storage,
+          fsm: deps.fsm,
+          request: {
+            requestId: frame.requestId,
+            scope: frame.scope,
+            origin: frame.origin,
+          },
+          emitFrame: deps.emitFrame,
+        });
+        return;
+      case "attach_state_probe": {
+        const attachedTabs = await respondToAttachStateProbe(deps.fsm);
+        deps.emitFrame({
+          kind: "attach_state_probe_ack",
+          requestId: frame.requestId,
+          attachedTabs,
+        });
+        return;
+      }
+      case "cdp": {
+        const attachedState = deps.fsm.getAttachedStateBySessionId(frame.sessionId);
+        if (!attachedState) {
+          // Unknown sessionId (session ended, extension restart, race with
+          // detach). Return a deterministic cdp_error so the host can fail
+          // the pending request immediately; silently dropping leaves the
+          // loopback WebSocket caller hanging until a higher-level timeout.
+          deps.emitFrame({
+            kind: "cdp_error",
+            sessionId: frame.sessionId,
+            id: frame.id,
+            error: {
+              code: -32001,
+              message: `Unknown or ended session ${frame.sessionId}`,
+            },
+          });
+          return;
+        }
+        try {
+          const result = await (
+            chrome.debugger.sendCommand as unknown as <TResult = unknown>(
+              target: chrome.debugger.Debuggee,
+              method: string,
+              params?: object,
+            ) => Promise<TResult>
+          )({ tabId: attachedState.tabId }, frame.method, frame.params as object);
+          deps.chunkSender.sendResult({
+            kind: "cdp_result",
+            sessionId: frame.sessionId,
+            id: frame.id,
+            result,
+          });
+        } catch (error) {
+          deps.emitFrame({
+            kind: "cdp_error",
+            sessionId: frame.sessionId,
+            id: frame.id,
+            error: {
+              code: -32000,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          });
+        }
+        return;
+      }
+      case "chunk":
+        chunkReceiver.addChunk(frame);
+        return;
+      default:
+        return;
+    }
+  }
+
+  return {
+    routeFrame,
+    async routeControlFrame(frame): Promise<void> {
+      if (frame.kind === "ping") deps.emitFrame({ kind: "pong", seq: frame.seq } as never);
+    },
+  };
+}

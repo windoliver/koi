@@ -196,6 +196,14 @@ describe("createAuditMiddleware", () => {
     expect(entry.durationMs).toBeGreaterThanOrEqual(0);
   });
 
+  test("tool_call entry has top-level toolName populated from toolId", async () => {
+    await mw.wrapToolCall?.(ctx, { toolId: "Bash", input: {} }, makeToolHandler());
+    await mw.flush();
+    const entry = sink.entries[0];
+    if (entry === undefined) throw new Error("expected entry");
+    expect(entry.toolName).toBe("Bash");
+  });
+
   test("logs tool error and re-throws", async () => {
     await expect(
       mw.wrapToolCall?.(ctx, { toolId: "bad", input: {} }, makeFailingToolHandler("tool crash")),
@@ -259,6 +267,16 @@ describe("createAuditMiddleware", () => {
   // ---------------------------------------------------------------------------
   // Redaction + truncation
   // ---------------------------------------------------------------------------
+
+  test("tool_call entry retains toolName even when redactRequestBodies is true", async () => {
+    const redactMw = createAuditMiddleware({ sink, redactRequestBodies: true });
+    await redactMw.wrapToolCall?.(ctx, { toolId: "Bash", input: {} }, makeToolHandler());
+    await redactMw.flush();
+    const entry = sink.entries[0];
+    if (entry === undefined) throw new Error("expected entry");
+    expect(entry.toolName).toBe("Bash");
+    expect(entry.request).toBe("[redacted]");
+  });
 
   test("redactRequestBodies replaces request with [redacted]", async () => {
     const redactMw = createAuditMiddleware({ sink, redactRequestBodies: true });

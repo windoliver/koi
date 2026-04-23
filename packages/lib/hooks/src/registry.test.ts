@@ -8,6 +8,7 @@ import { createHookRegistry } from "./registry.js";
 
 /** Wrap a HookConfig as a RegisteredHook for test convenience. */
 function _rh(hook: HookConfig, tier: "managed" | "user" | "session" = "user"): RegisteredHook {
+  // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
   return createRegisteredHooks([hook], tier)[0]!;
 }
 
