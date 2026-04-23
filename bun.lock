@@ -638,6 +638,13 @@
         "@koi/url-safety": "workspace:*",
       },
     },
+    "packages/lib/toolsets": {
+      "name": "@koi/toolsets",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/url-safety": {
       "name": "@koi/url-safety",
       "version": "0.0.0",
@@ -1648,6 +1655,8 @@
     "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
 
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
+
+    "@koi/toolsets": ["@koi/toolsets@workspace:packages/lib/toolsets"],
 
     "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
 
