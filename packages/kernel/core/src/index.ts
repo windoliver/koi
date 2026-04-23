@@ -815,15 +815,15 @@ export type {
   NameSuggestion,
 } from "./name-service.js";
 export { ANS_SCOPE_PRIORITY, DEFAULT_ANS_CONFIG } from "./name-service.js";
+// nexus-path — branded string type for Nexus namespace paths
+export type { NexusPath } from "./nexus-path.js";
+export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
 // oauth-channel — shared OAuth authorization channel protocol
 export type {
   AuthCompleteNotification,
   AuthRequiredNotification,
   OAuthChannel,
 } from "./oauth-channel.js";
-// nexus-path — branded string type for Nexus namespace paths
-export type { NexusPath } from "./nexus-path.js";
-export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
 // outcome-evaluator — rubric-graded LLM-as-judge iteration loop types
 export type {
   CriterionResult,

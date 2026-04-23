@@ -37,8 +37,8 @@ export interface AuthCompleteNotification {
  * The CLI's `createOAuthChannel` factory is the single concrete implementation.
  */
 export interface OAuthChannel {
-  readonly onAuthRequired: (n: AuthRequiredNotification) => void;
-  readonly onAuthComplete: (n: AuthCompleteNotification) => void;
+  readonly onAuthRequired: (n: AuthRequiredNotification) => void | Promise<void>;
+  readonly onAuthComplete: (n: AuthCompleteNotification) => void | Promise<void>;
   /** Forward a pasted redirect URL to the transport (remote mode only). */
   readonly submitAuthCode: (redirectUrl: string, correlationId?: string) => void;
 }
