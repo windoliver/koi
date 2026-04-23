@@ -150,8 +150,11 @@ export function widenCommandScopedRulesForTui(
       // Strip: widening a command-scoped allow to the whole tool would over-permit.
       continue;
     }
+    // Widen to exact tool match + enriched-wildcard (mirrors bare-tool dual-rule
+    // strategy) to avoid prefix bleed: "Bash" must not match "BashScript".
     const toolName = rule.pattern.slice(0, rule.pattern.indexOf(":"));
-    normalized.push({ ...rule, pattern: `${toolName}**` });
+    normalized.push({ ...rule, pattern: toolName });
+    normalized.push({ ...rule, pattern: `${toolName}:**` });
   }
   return { rules: normalized, hadCommandScoped };
 }

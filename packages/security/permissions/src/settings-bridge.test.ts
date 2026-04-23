@@ -118,13 +118,24 @@ describe("widenCommandScopedRulesForTui", () => {
     expect(result).toEqual(rules);
   });
 
-  test("command-scoped deny widened to ToolName** (fail-closed)", () => {
+  test("command-scoped deny widens to exact + enriched (no prefix bleed)", () => {
     const rules = mapSettingsToSourcedRules({ permissions: { deny: ["Bash(rm -rf*)"] } }, "local");
     const { rules: result, hadCommandScoped } = widenCommandScopedRulesForTui(rules);
     expect(hadCommandScoped).toBe(true);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.pattern).toBe("Bash**");
+    // Two rules: exact "Bash" + enriched "Bash:**" — avoids matching "BashScript"
+    expect(result).toHaveLength(2);
+    expect(result[0]?.pattern).toBe("Bash");
+    expect(result[1]?.pattern).toBe("Bash:**");
     expect(result[0]?.effect).toBe("deny");
+  });
+
+  test("widened deny does not match sibling tool with same prefix", () => {
+    const rules = mapSettingsToSourcedRules({ permissions: { deny: ["Bash(rm -rf*)"] } }, "local");
+    const { rules: result } = widenCommandScopedRulesForTui(rules);
+    // Neither widened pattern should match "BashScript" or "BashProxy"
+    const patterns = result.map((r) => r.pattern);
+    expect(patterns).not.toContain("Bash**");
+    // "Bash" matches only exact "Bash"; "Bash:**" matches "Bash:..." but not "BashProxy"
   });
 
   test("command-scoped allow stripped entirely (no over-permitting)", () => {
@@ -134,11 +145,13 @@ describe("widenCommandScopedRulesForTui", () => {
     expect(result).toHaveLength(0);
   });
 
-  test("command-scoped ask widened to tool-level (fail-closed)", () => {
+  test("command-scoped ask widens to exact + enriched (fail-closed)", () => {
     const rules = mapSettingsToSourcedRules({ permissions: { ask: ["Bash(git push*)"] } }, "local");
     const { rules: result, hadCommandScoped } = widenCommandScopedRulesForTui(rules);
     expect(hadCommandScoped).toBe(true);
-    expect(result[0]?.pattern).toBe("Bash**");
+    expect(result).toHaveLength(2);
+    expect(result[0]?.pattern).toBe("Bash");
+    expect(result[1]?.pattern).toBe("Bash:**");
     expect(result[0]?.effect).toBe("ask");
   });
 

@@ -51,6 +51,8 @@ import type {
   KoiMiddleware,
   ModelAdapter,
   PermissionBackend,
+  PermissionDecision,
+  PermissionQuery,
   PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
@@ -1503,11 +1505,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       reason: "File is outside the workspace — approve to read",
     },
   ] as const;
-  // Load .koi/settings cascade and convert per-layer settings to SourcedRules.
-  // Errors in non-policy layers are logged but do not abort startup.
+  // Always load settings — policy-layer rules must be enforced on every startup
+  // path, including koi start which supplies its own custom backend.
+  // Non-policy parse/schema errors are logged and skipped (fail-open for user
+  // layers); a policy-layer error is re-thrown so the top-level handler can
+  // exit with the fail-closed error code rather than produce a generic crash.
   const settingsRules: SourcedRule[] = [];
   let settingsDefaultMode: "default" | "bypass" | "plan" | "auto" = "default";
-  if (config.permissionBackend === undefined) {
+  try {
     const {
       settings: cascadedSettings,
       sources,
@@ -1525,11 +1530,51 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     if (cascadedSettings.permissions?.defaultMode != null) {
       settingsDefaultMode = cascadedSettings.permissions.defaultMode;
     }
-    // Command-scoped rules (pattern contains ":") require a marker-aware backend for
-    // precise enforcement. The default TUI backend uses single-key mode and only receives
-    // plain tool ids — it never evaluates "ToolName:command" patterns.
-    // widenCommandScopedRulesForTui applies fail-closed normalization:
-    //   deny/ask → widened to tool-level; allow → stripped.
+  } catch (err) {
+    // Policy file is malformed or unreadable — rethrow with a clear prefix.
+    // The caller's top-level handler is expected to exit with code 2.
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`[koi/${hostId}] fatal: admin policy settings failed to load — ${msg}`, {
+      cause: err,
+    });
+  }
+
+  // Sort helpers: highest-precedence source first, then deny < ask < allow.
+  const EFFECT_ORDER: Readonly<Record<string, number>> = { deny: 0, ask: 1, allow: 2 };
+  const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
+  const sortRules = (rules: readonly SourcedRule[]): readonly SourcedRule[] =>
+    [...rules].sort((a, b) => {
+      const srcDiff = precedenceIdx(a) - precedenceIdx(b);
+      if (srcDiff !== 0) return srcDiff;
+      return (EFFECT_ORDER[a.effect] ?? 3) - (EFFECT_ORDER[b.effect] ?? 3);
+    });
+
+  // Build the permission backend:
+  //   Custom backend path (koi start): enforce policy-layer rules first, then
+  //     delegate to the caller's marker-aware backend.  No widening needed —
+  //     the custom backend evaluates enriched command-scoped resources directly.
+  //   TUI path: widen command-scoped rules fail-closed (the TUI backend only
+  //     receives plain tool ids), then add built-in TUI allows as fallback.
+  let permBackend: PermissionBackend;
+  if (config.permissionBackend !== undefined) {
+    const policyRules = sortRules(settingsRules.filter((r) => r.source === "policy"));
+    const inner = config.permissionBackend;
+    if (policyRules.length > 0) {
+      const policyEnforcer = createPermissionBackend({ mode: "bypass", rules: policyRules });
+      const wrappedCheck = async (query: PermissionQuery): Promise<PermissionDecision> => {
+        const pd = await policyEnforcer.check(query);
+        if (pd.effect !== "allow") return pd;
+        return inner.check(query);
+      };
+      permBackend =
+        inner.dispose != null
+          ? { check: wrappedCheck, dispose: inner.dispose }
+          : { check: wrappedCheck };
+    } else {
+      permBackend = inner;
+    }
+  } else {
+    // TUI single-key mode: widen command-scoped rules (fail-closed).
     const { rules: widenedRules, hadCommandScoped } = widenCommandScopedRulesForTui(settingsRules);
     if (hadCommandScoped) {
       console.warn(
@@ -1537,35 +1582,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           `(deny/ask become tool-wide; allow rules are stripped). ` +
           `Use \`koi start\` for precise command-scoped enforcement.`,
       );
-      settingsRules.length = 0;
-      settingsRules.push(...widenedRules);
     }
-  }
-
-  // Permission backend: caller may override (koi start passes an
-  // auto-allow pattern backend). Default to the TUI's tiered default
-  // mode so existing TUI behavior is preserved.
-  //
-  // Rule ordering (first-match-wins evaluation):
-  //   1. All settings rules, sorted by SOURCE_PRECEDENCE (policy→flag→local→project→user)
-  //      Within each layer, deny/ask rules precede allows (from mapSettingsToSourcedRules).
-  //   2. Built-in TUI allow rules as fallback defaults — only fire when no settings rule matched.
-  //
-  // Placing TUI built-ins LAST ensures any settings deny (even project/local/user layers)
-  // can override a built-in default allow for the same tool.
-  const EFFECT_ORDER: Readonly<Record<string, number>> = { deny: 0, ask: 1, allow: 2 };
-  const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
-  const sortedSettingsRules = [...settingsRules].sort((a, b) => {
-    const srcDiff = precedenceIdx(a) - precedenceIdx(b);
-    if (srcDiff !== 0) return srcDiff;
-    return (EFFECT_ORDER[a.effect] ?? 3) - (EFFECT_ORDER[b.effect] ?? 3);
-  });
-  const permBackend =
-    config.permissionBackend ??
-    createPermissionBackend({
+    permBackend = createPermissionBackend({
       mode: settingsDefaultMode,
-      rules: [...sortedSettingsRules, ...tuiAllowRules],
+      rules: [...sortRules(widenedRules), ...tuiAllowRules],
     });
+  }
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
   // Bash prefix enrichment (#1881). Feeds the raw command to
