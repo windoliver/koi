@@ -13,6 +13,13 @@ of tool names that can reference other toolsets (composition). Manifests and spa
 configurations reference toolsets by name; the resolver expands them to flat tool lists
 at assembly time.
 
+> **Scope: library infrastructure only.**
+> This package is a pure resolution helper — it does NOT enforce tool access at runtime.
+> The assembler/engine does not yet call `resolveToolset` automatically; callers must
+> wire the resolved policy into `SpawnRequest.toolAllowlist` themselves.
+> Do not treat a named preset as an enforced permission boundary until the assembler
+> integration is complete. See "Manifest Integration" below.
+
 ## Public API
 
 ### `resolveToolset(name, registry): Result<ToolsetResolution, KoiError>`
@@ -21,24 +28,45 @@ Recursively resolves a named toolset to an explicit policy:
 - `{ mode: "all" }` — no filter (agent receives every tool)
 - `{ mode: "allowlist", tools: string[] }` — explicit tool allowlist
 
-Detects and rejects cycles. Returns `{ ok: false }` for unknown names or cycles.
+Detects and rejects cycles. Returns `{ ok: false }` for unknown names, cycles,
+and any composition that would inherit a wildcard (`mode: "all"`) into a non-wildcard
+preset — wildcard inheritance always fails closed.
+
 Does **not** validate tool names against the live runtime registry — callers must
 do that at assembly time if strict validation is required.
 
 ### `createBuiltinRegistry(): ToolsetRegistry`
 
 Returns a `ReadonlyMap` of the four built-in presets. Callers may merge custom
-toolsets on top.
+toolsets on top with `mergeRegistries`.
 
-### `mergeRegistries(...registries): ToolsetRegistry`
+### `mergeRegistries(registries, opts?): ToolsetRegistry`
 
-Merges multiple registries. Later entries win on name collision.
+Merges an array of registries into one.
+
+**Default (fail-closed):** throws if any name appears more than once — preset names
+are authorization identifiers and silent shadowing can widen an agent's tool surface.
+
+Pass `{ allowOverrides: true }` to enable last-wins semantics when intentional override
+is needed (e.g., operator customization layer replacing a built-in preset).
+
+```typescript
+// Safe: distinct names, no collision
+const merged = mergeRegistries([builtinReg, customReg]);
+
+// Intentional override of a built-in
+const merged = mergeRegistries([builtinReg, operatorReg], { allowOverrides: true });
+```
 
 ### Types (re-exported from `@koi/core`)
 
 - `ToolsetDefinition` — `name`, `description`, `tools`, `includes`
 - `ToolsetRegistry` — `ReadonlyMap<string, ToolsetDefinition>`
 - `ToolsetResolution` — `{ mode: "all" } | { mode: "allowlist"; tools: string[] }`
+
+### Types (from `@koi/toolsets`)
+
+- `MergeRegistriesOptions` — `{ allowOverrides?: boolean }`
 
 ## Built-in Presets
 
@@ -63,6 +91,8 @@ callers receive an explicit tagged result and cannot accidentally use `"*"` as a
 
 > **Not yet wired.** `AgentManifest.toolsets` and `ManifestSpawnConfig.tools.toolset` schema fields
 > will be added once the assembler calls `resolveToolset` and enforces the resulting allowlist.
+> Until then this package is a **library helper only** — the runtime does not automatically
+> apply any preset to agent tool access.
 > Callers can use `resolveToolset` + `toolAllowlist` on `SpawnRequest` directly today.
 
 ```typescript
@@ -86,3 +116,14 @@ a → b → a                             ✗  cycle — error returned
 
 Resolution visits each toolset once and returns an error if a name is encountered
 a second time in the same resolution path.
+
+## Wildcard Safety
+
+`"*"` in a toolset definition is a sentinel that resolves to `{ mode: "all" }`. Safety rules:
+
+- `"*"` must be the sole tool in its definition with no `includes`
+- Any preset that includes another preset that resolves to `mode: "all"` is rejected
+- Wildcard inheritance is always rejected regardless of depth
+
+These rules ensure that a caller cannot accidentally receive `mode: "all"` through
+composition when it expects a named allowlist.

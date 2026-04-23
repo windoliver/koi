@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolsetDefinition, ToolsetRegistry } from "@koi/core";
+import type { MergeRegistriesOptions } from "./index.js";
 import { createBuiltinRegistry, mergeRegistries, resolveToolset } from "./index.js";
 
 function makeRegistry(defs: readonly ToolsetDefinition[]): ToolsetRegistry {
@@ -227,24 +228,35 @@ describe("mergeRegistries", () => {
     const custom = makeRegistry([
       { name: "custom", description: "Custom", tools: ["my_tool"], includes: [] },
     ]);
-    const merged = mergeRegistries(base, custom);
+    const merged = mergeRegistries([base, custom]);
     expect(merged.has("web")).toBe(true);
     expect(merged.has("custom")).toBe(true);
   });
 
-  test("later registry wins on name collision", () => {
+  test("throws on name collision by default — silent shadowing is not allowed", () => {
     const first = makeRegistry([
       { name: "web", description: "First", tools: ["tool_a"], includes: [] },
     ]);
     const second = makeRegistry([
       { name: "web", description: "Second", tools: ["tool_b"], includes: [] },
     ]);
-    const merged = mergeRegistries(first, second);
+    expect(() => mergeRegistries([first, second])).toThrow(/duplicate toolset name "web"/);
+  });
+
+  test("later registry wins on name collision when allowOverrides is true", () => {
+    const first = makeRegistry([
+      { name: "web", description: "First", tools: ["tool_a"], includes: [] },
+    ]);
+    const second = makeRegistry([
+      { name: "web", description: "Second", tools: ["tool_b"], includes: [] },
+    ]);
+    const opts: MergeRegistriesOptions = { allowOverrides: true };
+    const merged = mergeRegistries([first, second], opts);
     expect(merged.get("web")?.tools).toEqual(["tool_b"]);
   });
 
   test("merging zero registries returns empty map", () => {
-    const merged = mergeRegistries();
+    const merged = mergeRegistries([]);
     expect(merged.size).toBe(0);
   });
 });

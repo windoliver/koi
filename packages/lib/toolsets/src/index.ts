@@ -8,5 +8,6 @@
  */
 
 export type { ToolsetDefinition, ToolsetRegistry, ToolsetResolution } from "@koi/core";
+export type { MergeRegistriesOptions } from "./registry.js";
 export { createBuiltinRegistry, mergeRegistries } from "./registry.js";
 export { resolveToolset } from "./resolve-toolset.js";
