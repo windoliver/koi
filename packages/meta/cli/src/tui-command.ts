@@ -3497,30 +3497,33 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // model sees the file directly without needing to call Glob/fs_read.
         const resolved = resolveAtReferences(text, process.cwd());
 
-        // Hard-fail when binary @-references are present. Proceeding without
-        // the referenced file would let the model answer without the evidence
-        // the user intended to supply — that silent data loss is worse than
-        // blocking the turn. Multimodal block support is deferred until all
-        // adapters support it end-to-end.
+        // Warn per binary @-reference and continue with remaining context.
+        // Aborting the whole turn would block text refs and the user's question.
+        // Binary refs are already stripped from resolved.cleanText, so the model
+        // receives only the text it can actually process.
+        // Multimodal block support is deferred until all adapters support it.
         if (resolved.binaryInjections.length > 0) {
           for (const b of resolved.binaryInjections) {
             store.dispatch({
-              kind: "add_error",
-              code: "BINARY_AT_REF_UNSUPPORTED",
-              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. Remove the reference or convert to a text-based format.`,
+              kind: "add_info",
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. Reference skipped.`,
             });
           }
-          activeController = null;
-          return;
         }
 
-        // Fall back to the original text (not resolved.cleanText) when no refs
-        // were materialized. cleanText strips every @token even for files that
-        // didn't resolve (nonexistent, oversized, blocked). Sending raw text
-        // lets the model see the @-reference and attempt its own resolution.
-        // Binary refs are already handled above by hard-fail early return.
+        // Use cleanText when at least one ref was resolved or explicitly warned
+        // (binary). The @-tokens for those refs are already stripped from cleanText
+        // and the user was notified. When no refs resolved at all (file missing,
+        // oversized, blocked), fall back to the original text so the model sees
+        // the @-reference and can attempt its own file resolution via tools.
+        const hasAnyHandled =
+          resolved.injections.length > 0 || resolved.binaryInjections.length > 0;
         const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+          resolved.injections.length > 0
+            ? formatAtReferencesForModel(resolved)
+            : hasAnyHandled
+              ? resolved.cleanText
+              : text;
 
         let stream: AsyncIterable<EngineEvent>;
         try {
