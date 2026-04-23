@@ -384,4 +384,54 @@ describe("createSkillInjectorMiddleware — progressive mode", () => {
     expect(prompt).toContain('name="commit"');
     expect(prompt).toContain('name="review"');
   });
+
+  test("non-progressive middleware fallback excludes fork skills (no spawnFn = VALIDATION risk)", async () => {
+    // In the legacy fallback path, runtimeBacked fork skills must NOT appear in the XML
+    // block because there is no hasForkSupport=true and no spawnFn — the Skill tool would
+    // VALIDATION-error if the model invokes a fork skill.
+    const skills = new Map([
+      progressiveSkill("normal-skill"),
+      progressiveSkill("fork-skill", { executionMode: "fork" }),
+    ]);
+    const agent = mockAgent(skills);
+    const mw = createSkillInjectorMiddleware({ agent }); // non-progressive, no hasForkSupport
+    const { wrapModelCall } = assertHooks(mw);
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), mockRequest(), async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    expect(prompt).toContain('name="normal-skill"');
+    // Fork skill must NOT appear — no spawn support in non-progressive middleware
+    expect(prompt).not.toContain('name="fork-skill"');
+  });
+
+  test("progressive mode reports excludedForkSkills telemetry even when all skills are filtered", async () => {
+    // When progressive mode has only fork skills and hasForkSupport is false,
+    // injectSkillsProgressive returns the original request unchanged.
+    // reportDecision must still fire so excludedForkSkills is visible to operators.
+    const skills = new Map([progressiveSkill("fork-only", { executionMode: "fork" })]);
+    const agent = mockAgent(skills);
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true }); // hasForkSupport defaults false
+    const { wrapModelCall } = assertHooks(mw);
+
+    const decisions: unknown[] = [];
+    const ctx = {
+      ...mockTurnContext(),
+      reportDecision: (d: unknown) => {
+        decisions.push(d);
+      },
+    };
+
+    await wrapModelCall(ctx, mockRequest(), async (req) => req as never);
+
+    // Decision must be reported even though the request was unchanged
+    expect(decisions).toHaveLength(1);
+    const decision = decisions[0] as Record<string, unknown>;
+    expect(Array.isArray(decision["excludedForkSkills"])).toBe(true);
+    expect((decision["excludedForkSkills"] as string[]).includes("fork-only")).toBe(true);
+  });
 });

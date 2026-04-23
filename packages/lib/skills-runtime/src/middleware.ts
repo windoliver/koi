@@ -127,7 +127,11 @@ function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
   const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
   // Fallback for provider/middleware progressive mismatch: include runtimeBacked
   // skills via XML block so they are not silently dropped.
-  const runtimeBackedSkills = sorted.filter((s) => s.runtimeBacked === true);
+  // Fork skills are excluded (no hasForkSupport in legacy path = safe default):
+  // without spawnFn the Skill tool would VALIDATION-error on fork execution.
+  const runtimeBackedSkills = sorted.filter(
+    (s) => s.runtimeBacked === true && s.executionMode !== "fork",
+  );
 
   if (bodies.length === 0 && runtimeBackedSkills.length === 0) return request;
 
@@ -242,6 +246,22 @@ function injectSkillsProgressive(
   return { ...request, systemPrompt };
 }
 
+/**
+ * Returns true when progressive mode has excluded fork skills but injected nothing,
+ * so `injected === request`. Without this guard, `reportDecision` would be skipped
+ * and `excludedForkSkills` would never surface in the ATIF trajectory — making the
+ * hasForkSupport misconfiguration invisible to operators.
+ */
+function shouldReportExclusions(
+  agent: Agent,
+  progressive: boolean,
+  hasForkSupport: boolean,
+): boolean {
+  if (!progressive || hasForkSupport) return false;
+  const sorted = sortedSkills(agent);
+  return sorted.some((s) => s.runtimeBacked === true && s.executionMode === "fork");
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -274,7 +294,9 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       const injected = progressive
         ? injectSkillsProgressive(agent, request, hasForkSupport)
         : injectSkills(agent, request);
-      if (injected !== request) {
+      // Always report when skills changed OR when progressive mode has excluded fork
+      // skills (injected === request but exclusion metadata should still be visible).
+      if (injected !== request || shouldReportExclusions(agent, progressive, hasForkSupport)) {
         ctx.reportDecision?.(
           buildDecision(agent, injected.systemPrompt, progressive, hasForkSupport),
         );
@@ -291,7 +313,7 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
       const injected = progressive
         ? injectSkillsProgressive(agent, request, hasForkSupport)
         : injectSkills(agent, request);
-      if (injected !== request) {
+      if (injected !== request || shouldReportExclusions(agent, progressive, hasForkSupport)) {
         ctx.reportDecision?.(
           buildDecision(agent, injected.systemPrompt, progressive, hasForkSupport),
         );
