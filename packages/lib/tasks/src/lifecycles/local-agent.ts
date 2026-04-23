@@ -92,6 +92,15 @@ async function drainOrKill(
   ]);
   if (!settled) {
     safeHardKill(hardKill);
+    if (hardKill !== undefined) {
+      // Give the iterator one more window to settle after hard kill before
+      // declaring the task dead. Prevents terminal state racing a still-running
+      // agent when hardKill is a cooperative mechanism (e.g. SIGKILL).
+      await Promise.race([
+        pipe,
+        new Promise<void>((resolve) => setTimeout(resolve, drainTimeoutMs)),
+      ]);
+    }
   }
 }
 
@@ -131,6 +140,7 @@ export function createLocalAgentLifecycle(
       const emitTerminal = (code: number, message: string): void => {
         if (terminal) return;
         terminal = true;
+        active.delete(taskId); // clear immediately so stuck agents don't leak map entries
         output.write(message);
         try {
           config.onExit?.(code);

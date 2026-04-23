@@ -508,6 +508,36 @@ describe("createLocalAgentLifecycle", () => {
     expect(exitCode).toBe(1);
   });
 
+  test("active map entry is removed after timeout even when generator never settles", async () => {
+    const shortDrainLifecycle = createLocalAgentLifecycle({ drainTimeoutMs: 50 });
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      timeout: 100,
+      onExit: (code) => {
+        exitCode = code;
+      },
+      run: async function* () {
+        yield "start";
+        await new Promise<never>(() => {}); // permanently stuck, no hardKill
+      },
+    };
+    await shortDrainLifecycle.start(taskItemId("task_17"), output, config);
+
+    // Wait past timeout + drain: 100 + 50 = 150ms
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    // Terminal was emitted (verifies active map was cleaned up via emitTerminal)
+    expect(exitCode).toBe(1);
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    expect(combined).toContain("[timed out]");
+  });
+
   test("inputs are forwarded to run callback", async () => {
     const output = createOutputStream();
     let capturedAgentType: string | undefined;
