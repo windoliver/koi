@@ -354,6 +354,11 @@ CREATE TABLE records (
   active      INTEGER NOT NULL DEFAULT 0,  -- 1 for the currently-visible version, 0 for staged or superseded
   tombstoned  INTEGER NOT NULL DEFAULT 0,  -- set by forget_record / forget_session on EVERY version of the target
                                            -- (not just active) so superseded versions cannot resurrect content
+  is_static   INTEGER NOT NULL DEFAULT 0,  -- 1 = permanent trait (name, hometown, birth date), exempt from the expirer;
+                                           -- 0 = dynamic fact (current project, device, blocker) subject to decay.
+                                           -- Defaults: `user` / `fact` / `entity` kinds → 1; `event` / `signal` /
+                                           -- `trace` / `reasoning` → 0; other kinds inherit the ExtractorWorker's
+                                           -- verdict. AutoUserProfile (§7.1) uses this to split static vs dynamic.
   UNIQUE (target_id, version)           -- second idempotency key: a retry cannot stage version N+1 twice
 );
 
@@ -388,12 +393,35 @@ CREATE TRIGGER records_fts_au AFTER UPDATE ON records BEGIN
   INSERT INTO records_fts(rowid, body) VALUES (new.rowid, new.body);
 END;
 
--- Graph edges (links, backlinks, requires/provides, entity relationships). Keyed by per-version
--- deterministic record_id so a pointer-swap atomically replaces the edge set along with the body.
+-- Graph edges (links, backlinks, requires/provides, entity relationships, fact lineage). Keyed
+-- by per-version deterministic record_id so a pointer-swap atomically replaces the edge set
+-- along with the body. Cairn blesses three fact-lineage edge kinds that ConflictDAG (§10) and
+-- the ranker read directly: `updates` (new fact supersedes old; old becomes not-latest),
+-- `extends` (new fact adds detail to old; both remain latest), `derives` (new fact inferred
+-- from one or more existing facts; source facts remain latest). Combined with the `is_latest`
+-- computed view below, `retrieve(kind=fact, latest_only=true)` returns exactly the currently-
+-- true facts without walking the whole edge DAG at read time.
 CREATE TABLE edges (
-  src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, weight REAL,
+  src TEXT NOT NULL,
+  dst TEXT NOT NULL,
+  kind TEXT NOT NULL,             -- link | backlink | requires | provides | updates | extends | derives | <custom>
+  weight REAL,
   PRIMARY KEY (src, dst, kind)
 );
+
+-- `is_latest` is derived, not stored: a record version is "latest" when no `updates` edge
+-- points to it. ConflictDAG (§10) emits `updates` edges whenever Consolidation classifies
+-- a fresh fact as a supersession; the ranker and `retrieve(latest_only=true)` join on this
+-- view instead of walking edges per query.
+CREATE VIEW records_latest AS
+  SELECT r.*
+    FROM records r
+   WHERE r.active = 1
+     AND r.tombstoned = 0
+     AND NOT EXISTS (
+       SELECT 1 FROM edges e
+        WHERE e.kind = 'updates' AND e.dst = r.record_id
+     );
 ```
 
 Plus the control-plane tables (same file, same transaction scope):
@@ -2270,17 +2298,22 @@ On‑demand retrieval, classification hooks, and full‑file reads are charged t
 
 ---
 
-## 7.1 Auto‑Built User Profile [P1]
+## 7.1 Auto‑Built User Profile [P0]
 
-`assemble_hot` includes a synthesized profile that grows automatically from every turn, without the user maintaining it.
+`assemble_hot` and the new `retrieve({target: "profile"})` variant (§8.0.c) both return a synthesized profile that grows automatically from every turn, without the user maintaining it. The profile is split along `records.is_static` (§3.0) so callers can tell "who the user is" apart from "what the user is doing right now" in one round trip instead of fanning out 3–5 search calls.
 
-Three sections, refreshed on `DreamWorkflow` runs:
+Two halves, refreshed on `DreamWorkflow` runs:
 
-- **summary** — current snapshot of the user: role, goals, active projects, preferred style. ~300 words.
-- **historical_summary** — narrative of what's happened and been resolved. Append‑only in spirit; old entries compress, never vanish.
+- **static** — permanent traits drawn from records where `is_static = 1`: name, role, time zone, primary language, core preferences, long-lived entities (employer, primary project). Changes rarely; expirer never touches it.
+- **dynamic** — current state drawn from records where `is_static = 0`: active session / project, current_issues, blocker in progress, devices actively in use, recent tool outcomes, recurring patterns detected in the last N days. Decays under the expirer.
+
+Within each half, three structured fields:
+
+- **summary** — current snapshot. ~300 words; top of the hot prefix.
+- **historical_summary** — narrative of what's happened and been resolved. Append-only in spirit; old entries compress, never vanish.
 - **key_facts** — structured fields: `devices`, `software`, `preferences`, `current_issues`, `addressed_issues`, `recurring_issues`, `known_entities`.
 
-Each field is derived from `user_*.md` + `feedback_*.md` + `entity_*.md` + `strategy_*_*.md` records. A `UserProfileSynthesizer` pure function produces the frontmatter + markdown body; `HotMemoryAssembler` includes the profile summary in the top of the hot prefix. The profile has its own evidence gates — a `current_issue` is only listed after it appears in two turns on different days.
+Each field is derived from `user_*.md` + `feedback_*.md` + `entity_*.md` + `strategy_*_*.md` records, filtered by the `is_static` flag. A `UserProfileSynthesizer` pure function produces the frontmatter + markdown body; `HotMemoryAssembler` includes the profile summary in the top of the hot prefix; the `retrieve.profile` verb returns the full `{static, dynamic, updated_at}` document. The profile has its own evidence gates — a `current_issue` is only listed after it appears in two turns on different days. The static/dynamic split + single-verb retrieval is **P0** (plain SQLite aggregation — no embedding key, no Nexus); the richer rolling-summary and historical-narrative layers remain P1 since they depend on `DreamWorkflow` regeneration.
 
 ## 8. Contract — CLI is ground truth; MCP, SDK, and Skill all wrap CLI [P0]
 
@@ -2330,7 +2363,7 @@ Cairn exposes one set of eight verbs through four surfaces. **The CLI is the gro
 |------|-----|-----|------------|
 | 1 | `cairn ingest --kind user --body "..."` | `{verb:"ingest", args:{kind,body,...}}` | `cairn::ingest(IngestArgs {...})` |
 | 2 | `cairn search "query" [--mode semantic]` | `{verb:"search", args:{...}}` | `cairn::search(SearchArgs {...})` |
-| 3 | `cairn retrieve <record-id>`<br>`cairn retrieve --session <id> [--limit K --order desc --rehydrate]`<br>`cairn retrieve --session <id> --turn <n> [--include tool_calls,reasoning]`<br>`cairn retrieve --folder <path>`<br>`cairn retrieve --scope <expr>` | `{verb:"retrieve", args: RetrieveArgs}` (discriminated union — see §8.0.c) | `cairn::retrieve(RetrieveArgs::{Record,Session,Turn,Folder,Scope}{…})` |
+| 3 | `cairn retrieve <record-id>`<br>`cairn retrieve --session <id> [--limit K --order desc --rehydrate]`<br>`cairn retrieve --session <id> --turn <n> [--include tool_calls,reasoning]`<br>`cairn retrieve --folder <path>`<br>`cairn retrieve --scope <expr>`<br>`cairn retrieve --profile [--user <id>] [--agent <id>]` | `{verb:"retrieve", args: RetrieveArgs}` (discriminated union — see §8.0.c) | `cairn::retrieve(RetrieveArgs::{Record,Session,Turn,Folder,Scope,Profile}{…})` |
 | 4 | `cairn summarize <record-ids...> [--persist]` | `{verb:"summarize", args:{...}}` | `cairn::summarize(SumArgs {...})` |
 | 5 | `cairn assemble_hot [--session <id>]` | `{verb:"assemble_hot", args:{...}}` | `cairn::assemble_hot(...)` |
 | 6 | `cairn capture_trace --from <file>` | `{verb:"capture_trace", args:{...}}` | `cairn::capture_trace(...)` |
@@ -2384,7 +2417,8 @@ The `status` response (deterministic):
     "cairn.mcp.v1.retrieve.session",
     "cairn.mcp.v1.retrieve.turn",
     "cairn.mcp.v1.retrieve.folder",
-    "cairn.mcp.v1.retrieve.scope"
+    "cairn.mcp.v1.retrieve.scope",
+    "cairn.mcp.v1.retrieve.profile"
   ],
   "extensions": []                    // e.g., "cairn.aggregate.v1", "cairn.admin.v1", "cairn.federation.v1"
 }
@@ -2481,9 +2515,18 @@ All verbs — core and extension — share a single request/response envelope so
 
 The **eight verbs** are the only public entry points — four surfaces, same verbs, same signed envelope, same policy trace. A CLI invocation like `cairn forget --session <id>` dispatches to the same Rust function as the MCP frame `{verb: "forget", args: {mode: "session", session_id: "..."}}`; neither is "syntactic sugar" over the other — both are thin shells around `src/verbs/forget.rs`. Hooks, library calls, and skill invocations route through the same layer.
 
+**MCP tool descriptions are prompt-engineered, not just documentation.** When `cairn mcp` registers its verbs with the harness, each tool description is deliberately opinionated — it tells the model *when to use this tool* and, critically, *when not to*. Weak models (cheap inference tiers, smaller open-weight models) pick tools mostly from the description; generic docstrings produce wrong-tool selection. Every Cairn MCP verb description therefore includes:
+
+1. **One-line purpose** — "persist a memory about the user, the task, or the world"
+2. **Positive trigger examples** — "use when the user says 'remember that…', 'from now on…', or you detect a correction"
+3. **Negative triggers** — "do NOT use for one-off computation results, for facts the user can re-derive, or for chat transcripts (those flow through `capture_trace`)"
+4. **Exclusivity hint when a harness ships multiple memory tools** — "this is the canonical memory tool for this vault; prefer it over other `remember_*` / `save_*` tools registered in this session"
+
+The descriptions are generated from the same IDL (§13.5) as the JSON schemas, so there is one source of truth for both machine-readable signatures and human/model-readable selection prompts. §15 includes a tool-selection eval that measures how often a weaker model picks the right Cairn verb from the description alone.
+
 ### 8.0.c `RetrieveArgs` — discriminated union [P0]
 
-`retrieve` serves five distinct read shapes (record by id, full session, a single turn within a session, folder tree, arbitrary scope filter). Rather than overload a single `{id}` shape, the verb's `args` is a tagged union keyed on `target`. Unknown `target` values are rejected at the wire layer, never silently ignored.
+`retrieve` serves six distinct read shapes (record by id, full session, a single turn within a session, folder tree, arbitrary scope filter, and the composed user/agent **profile**). Rather than overload a single `{id}` shape, the verb's `args` is a tagged union keyed on `target`. Unknown `target` values are rejected at the wire layer, never silently ignored.
 
 ```jsonc
 // args: RetrieveArgs — exactly one variant per call
@@ -2492,6 +2535,7 @@ The **eight verbs** are the only public entry points — four surfaces, same ver
 { "target": "turn",    "session_id": "01HQY...", "turn_id": 42, "include": ["tool_calls", "reasoning"] }
 { "target": "folder",  "path": "people/<user_id>", "depth": 2 }
 { "target": "scope",   "scope": { "user": "...", "agent": "...", "kind": ["user","feedback"] } }
+{ "target": "profile", "user": "...", "agent": "..." }
 ```
 
 | Variant | CLI form | What it returns | Auth gate |
@@ -2501,6 +2545,7 @@ The **eight verbs** are the only public entry points — four surfaces, same ver
 | `turn` | `cairn retrieve --session <id> --turn <n> [--include tool_calls,reasoning]` | one turn record for `(session_id, turn_id)` plus any `include`-requested children (tool calls, reasoning) — addresses US5's `retrieve(turn_id, include: ["tool_calls"])` without the confusion of a globally-bare `turn_id` (§18.c US1 says `turn_id` is monotonic per session, not unique) | rebac on the turn + each included child |
 | `folder` | `cairn retrieve --folder <path> [--depth N]` | `_index.md` + `_summary.md` + child index (§3.4) | rebac on folder |
 | `scope` | `cairn retrieve --scope '{"user":"u","agent":"a"}'` | all records matching the filter (paginated) | rebac applied per-row at MemoryStore layer |
+| `profile` | `cairn retrieve --profile [--user <id>] [--agent <id>]` | single-shot composed profile: `{static: {...permanent traits...}, dynamic: {...current issues, recent activity, recurring patterns...}, updated_at}`. Backed by `AutoUserProfile` (§7.1); splits the record set by `is_static` (§3.0). Returns in one call what would otherwise take 3–5 `search` / `scope` round-trips, keeping "who is the user and what are they doing" off the hot path of every agent turn. | rebac on the scope tuple |
 
 **Rust SDK mirror** — `RetrieveArgs` is the exact same Rust enum emitted by the single IDL (§13.5):
 
@@ -2511,10 +2556,56 @@ pub enum RetrieveArgs {
     Turn    { session_id: SessionId, turn_id: u64, include: Vec<IncludeField> },
     Folder  { path: VaultPath, depth: Option<u8> },
     Scope   { scope: ScopeFilter },
+    Profile { user: Option<UserId>, agent: Option<AgentId> },
 }
 ```
 
-`cairn retrieve` (CLI) parses positional vs. flag forms into exactly one variant and errors if the caller mixes them (e.g., `--session X --folder Y` is `InvalidArgs` — not "last wins"; `--turn N` without `--session` is rejected because `turn_id` is not globally unique). SKILL.md documents the five forms as five separate bash recipes so LLM agents never guess the shape.
+`cairn retrieve` (CLI) parses positional vs. flag forms into exactly one variant and errors if the caller mixes them (e.g., `--session X --folder Y` is `InvalidArgs` — not "last wins"; `--turn N` without `--session` is rejected because `turn_id` is not globally unique; `--profile` without at least one of `--user` / `--agent` is rejected). SKILL.md documents the six forms as six separate bash recipes so LLM agents never guess the shape.
+
+### 8.0.d `SearchArgs.filters` — metadata filter DSL [P0]
+
+`search` supports a structured metadata filter grammar on top of the scope tuple so callers don't have to fan out multiple queries for "`kind=user AND priority >= 7 AND category != draft`"-shaped questions. Filters compose `AND` / `OR` / `NOT` trees over a small set of typed predicates. The same grammar applies at P0 (FTS5 + column filter) and P1 (ranker re-scores within the filtered set); no semantic-mode surface changes.
+
+```jsonc
+// args: SearchArgs
+{
+  "query": "migration strategy",
+  "mode":  "keyword",                    // capability-gated, §8.0 verb 2
+  "scope": { "user": "...", "agent": "..." },
+  "filters": {
+    "and": [
+      { "field": "kind",       "op": "in",              "value": ["strategy_success", "playbook"] },
+      { "field": "is_static",  "op": "eq",              "value": false },
+      { "field": "tags",       "op": "array_contains",  "value": "infra" },
+      { "field": "priority",   "op": "gte",             "value": 7 },
+      { "or": [
+          { "field": "category", "op": "eq",             "value": "shipped" },
+          { "not": { "field": "category", "op": "eq",    "value": "draft" } }
+      ]},
+      { "field": "title",      "op": "string_contains", "value": "pg" }
+    ]
+  },
+  "limit": 25,
+  "citations": "compact"
+}
+```
+
+**Supported ops per field type:**
+
+| Field type | Ops |
+|------------|-----|
+| `string` (kind, class, visibility, path, title, category, …) | `eq`, `neq`, `in`, `nin`, `string_contains`, `string_starts_with`, `string_ends_with` |
+| `integer` / `float` (priority, version, created_at, confidence) | `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `between` |
+| `boolean` (`is_static`, `tombstoned`, `active`) | `eq` |
+| `array` (tags, actor_chain, backlinks) | `array_contains`, `array_contains_any`, `array_contains_all`, `array_size_eq` |
+
+**Composition.** `{ and: [ ... ] }`, `{ or: [ ... ] }`, `{ not: <filter> }`; nested to arbitrary depth. Each leaf is `{ field, op, value }`. Unknown fields or unsupported op-on-field combinations are rejected at the wire layer with `InvalidFilter` — never silently dropped.
+
+**Execution at P0.** The filter compiles to a SQLite `WHERE` clause against the `records` table (all fields are either columns or indexed JSON paths on `frontmatter_json`); the FTS5 match narrows the row set, then the filter narrows further. Everything in one query. At P1 the ranker re-scores the filtered set against the semantic index; the filter itself never moves into Nexus.
+
+**Same grammar on `retrieve --scope`.** The `ScopeFilter` used by `RetrieveArgs::Scope` (§8.0.c) accepts the exact same filter expression, so a scope-level read and a search-within-scope read share one parser, one test suite, one IDL schema.
+
+---
 
 ---
 
@@ -4157,13 +4248,13 @@ Headless only. **Pure SQLite backend** — `.cairn/cairn.db` with built‑in FTS
 v0.1 acceptance ⇒ all **P0 stories** in §18.c pass their golden‑query suites against Claude Code (US1–US3, US4 rolling-summary path, US5, US7 keyword-only with `mode: "semantic" | "hybrid"` rejected via `CapabilityUnavailable`, US8 record-level forget), and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime. **P1 stories (US6 cold rehydration, US7 semantic/hybrid, US8 session fan-out) ship in v0.2** — they are not v0.1 acceptance criteria.
 
 **v0.2 — Continuous learning + SRE surface + semantic search (all P1).** Covers US6, US7 semantic, US8 session‑wide delete, and full US4 reflection layer.
-**Backend upgrade: Nexus `sandbox` profile becomes the default** — Python sidecar adds BM25S + `sqlite-vec` + `litellm` embeddings; existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside as derived projections; `.cairn/cairn.db` remains the sole authority). `search` advertises `cairn.mcp.v1.search.semantic` + `.hybrid` once an embedding key is configured; `mode: "keyword" | "semantic" | "hybrid"` all accepted. `semantic_degraded=true` is set only on transient embedding-provider outages mid-call, not as a default mode. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha. Optional Temporal adapter for orchestrator.
+**Backend upgrade: Nexus `sandbox` profile becomes the default** — Python sidecar adds BM25S + `sqlite-vec` + `litellm` embeddings; existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside as derived projections; `.cairn/cairn.db` remains the sole authority). `search` advertises `cairn.mcp.v1.search.semantic` + `.hybrid` once an embedding key is configured; `mode: "keyword" | "semantic" | "hybrid"` all accepted. `semantic_degraded=true` is set only on transient embedding-provider outages mid-call, not as a default mode. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha with a bundled 2D force-directed graph view over the `edges` table (reusable MIT-licensed component; no graph-viz code in `cairn-core`). Optional Temporal adapter for orchestrator. **Public benchmark harness `cairn bench` ships** — replays long-horizon / multi-session / conversation-memory corpora through the 8 verbs with no LLM or network, publishes scores alongside every release; §15 coherence budgets are enforced against the harness's outputs.
 
 **v0.3 — Propagation + collective.**
-Add `PromotionWorkflow`, `PropagationWorkflow`, consent‑gated team/org share, `cairn.federation.v1` extension. Full sensor suite. `evolve` WAL state machine with canary rollout.
+Add `PromotionWorkflow`, `PropagationWorkflow`, consent‑gated team/org share, `cairn.federation.v1` extension. Full sensor suite: **the `SensorIngress` connector set expands to cover the memory surfaces that actually live outside editors** — incremental-sync adapters for GitHub (issues / PRs / commits), email (IMAP + webhook), Drive (Google / OneDrive), Notion, and a generic web-clipper extension. Each connector is a separate L2 crate keyed off a stable OAuth / webhook payload format; `cairn.admin.v1` grows `connector_enable` / `connector_disable` / `connector_backfill` operator verbs. `evolve` WAL state machine with canary rollout.
 
 **v0.4 — Evaluation and polish.**
-Multi‑session coherence benchmarks. Replay cassettes. Documentation freeze. Beta distribution channels.
+Extended `cairn bench` corpora (domain-specific suites — research / engineering / support). Replay cassettes. Documentation freeze. Beta distribution channels.
 
 **v1.0 — Production.**
 SLAs hit. Three harnesses shipped. Desktop GUI on three OSes. Semver commitment on MCP surface (`cairn.mcp.v1` frozen).
