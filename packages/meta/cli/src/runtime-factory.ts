@@ -1637,7 +1637,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // user/project/local/flag deny rules fire first. Non-policy allow rules come
     // AFTER the out-of-workspace fs_read guard so that a broad "allow all" rule
     // in project settings cannot bypass the workspace boundary prompt.
-    const policySettingsRules = sortRules(widenedRules.filter((r) => r.source === "policy"));
+    // Policy is tightening-only on TUI path as well: allows are already stripped at
+    // collection time, but guard here explicitly to prevent any future regression.
+    const policySettingsRules = sortRules(
+      widenedRules.filter((r) => r.source === "policy" && r.effect !== "allow"),
+    );
     const subPolicyRestrictRules = sortRules(
       widenedRules.filter((r) => r.source !== "policy" && r.effect !== "allow"),
     );

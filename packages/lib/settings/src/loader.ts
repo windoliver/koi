@@ -103,7 +103,15 @@ function readSettingsFile(
     return null;
   }
 
-  if (raw.trim() === "") return {};
+  if (raw.trim() === "") {
+    // Fatal layers (policy, explicit --settings) must never silently produce
+    // empty settings from a blank file — a truncated policy file during
+    // deployment would otherwise disable all enforcement without any signal.
+    if (isFatal) {
+      throw new Error(`${layerLabel} "${filePath}" is empty`);
+    }
+    return {};
+  }
 
   let parsed: unknown;
   try {
