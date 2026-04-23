@@ -424,25 +424,27 @@ async function* streamOnce(
 
     const acc = parser.getAccumulator();
     if (!acc.receivedFinishReason) {
-      // Flush any buffered tool calls first — if only the finish_reason was cut
-      // off, complete tool calls should not be silently dropped.
+      // Flush buffered tool calls first — if only the finish_reason was cut off,
+      // complete tool calls should not be silently dropped.
+      let hadCompleteToolCall = false;
       for (const chunk of parser.finish()) {
+        if (chunk.kind === "tool_call_end") hadCompleteToolCall = true;
         if (chunk.kind === "error") {
           yield chunk;
           return;
         }
         yield chunk;
       }
-      // Don't retry if tool calls were already streamed from the provider — retrying
-      // would re-execute those tools with potential non-idempotent side effects.
-      const retryable = !parser.hasSeenToolCallDelta();
+      // Retryable unless at least one complete tool call was dispatched — retrying
+      // after a complete call would re-execute non-idempotent tool side effects.
+      // A partial fragment (sawToolCallDelta but no tool_call_end) is still retryable.
       yield {
         kind: "error",
         message: sawDone
           ? "Stream sent [DONE] without a finish_reason — possible truncation"
           : "Stream terminated without [DONE] marker or finish_reason — possible truncation",
         code: "EXTERNAL",
-        retryable,
+        retryable: !hadCompleteToolCall,
       };
       return;
     }
@@ -467,8 +469,17 @@ async function* streamOnce(
     clearIdleTimer();
     if (request.signal?.aborted === true) return;
 
-    // Suppress retry when tool calls have already been streamed from the provider.
-    const sawToolCalls = parser.hasSeenToolCallDelta();
+    // Flush buffered tool calls — emit any complete calls before the error and
+    // determine retryability (non-retryable only if a complete call was dispatched).
+    let hadCompleteToolCall = false;
+    for (const chunk of parser.finish()) {
+      if (chunk.kind === "tool_call_end") hadCompleteToolCall = true;
+      if (chunk.kind === "error") {
+        yield chunk;
+        return;
+      }
+      yield chunk;
+    }
 
     // Idle timeout fired → aborted the body read → threw AbortError
     if (idleController.signal.aborted) {
@@ -476,7 +487,7 @@ async function* streamOnce(
         kind: "error",
         message: `Stream idle for ${STREAM_IDLE_TIMEOUT_MS / 1000}s — aborting hung connection`,
         code: "TIMEOUT",
-        retryable: !sawToolCalls,
+        retryable: !hadCompleteToolCall,
       };
       return;
     }
@@ -486,7 +497,7 @@ async function* streamOnce(
       kind: "error",
       message: error instanceof Error ? error.message : String(error),
       code: "EXTERNAL",
-      retryable: isConnReset && !sawToolCalls,
+      retryable: isConnReset && !hadCompleteToolCall,
     };
   }
 }

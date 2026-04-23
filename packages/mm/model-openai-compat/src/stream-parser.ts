@@ -415,11 +415,18 @@ function flushBufferedItems(
   for (const item of bufferedItems) {
     if (item.kind === "text") {
       acc.richContent.push({ kind: "text", text: item.text });
+      // Deferred text that was suppressed during feed() — emit now in arrival order
+      chunks.push({ kind: "text_delta", delta: item.text });
     } else if (item.kind === "thinking") {
       acc.richContent.push({ kind: "thinking", text: item.text });
+      chunks.push({ kind: "thinking_delta", delta: item.text });
     } else {
       const slot = bufferedSlots[item.slotIdx];
       if (slot === undefined) continue;
+      // Truly empty slot (only index/id arrived, no function field) — silently
+      // drop rather than emit a confusing validation error. This happens when
+      // the stream is truncated before the provider sends any function data.
+      if (slot.name === "" && slot.argBuffer === "") continue;
       if (slot.name === "") {
         chunks.push(
           { kind: "tool_call_start", toolName: "", callId: toolCallId(slot.id) },
@@ -490,9 +497,10 @@ interface ParserContext {
 function flushCurrentSegment(ctx: ParserContext): void {
   if (ctx.state.kind === "text" && ctx.acc.currentTextSegment.length > 0) {
     const text = ctx.acc.currentTextSegment;
-    // In buffered mode all content goes through bufferedItems to preserve
-    // arrival order across interleaved text/thinking/tool sequences.
-    if (ctx.bufferToolCalls) {
+    // Post-tool text in buffered mode: defer to bufferedItems so it is
+    // replayed after the tool call events at finish(), preserving arrival order.
+    // Pre-tool text (sawToolCallDelta still false) goes to richContent immediately.
+    if (ctx.bufferToolCalls && ctx.sawToolCallDelta) {
       ctx.bufferedItems.push({ kind: "text", text });
     } else {
       ctx.acc.richContent.push({ kind: "text", text });
@@ -501,7 +509,7 @@ function flushCurrentSegment(ctx: ParserContext): void {
   }
   if (ctx.state.kind === "thinking" && ctx.acc.currentThinkingSegment.length > 0) {
     const text = ctx.acc.currentThinkingSegment;
-    if (ctx.bufferToolCalls) {
+    if (ctx.bufferToolCalls && ctx.sawToolCallDelta) {
       ctx.bufferedItems.push({ kind: "thinking", text });
     } else {
       ctx.acc.richContent.push({ kind: "thinking", text });
@@ -534,8 +542,13 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
 
   if (delta.content !== undefined && delta.content !== null && delta.content.length > 0) {
     const r = processTextDelta(delta.content, ctx.state, ctx.acc, () => resetState(ctx));
-    output.push(...r.chunks);
     ctx.state = r.newState;
+    // In buffered mode after a tool call has been seen, suppress live text_delta —
+    // the segment is already recorded in currentTextSegment and will be emitted in
+    // arrival order from flushBufferedItems when finish() is called.
+    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
+      output.push(...r.chunks);
+    }
   }
 
   // Check multiple reasoning field names — providers use different fields:
@@ -544,8 +557,10 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
   const reasoningContent = findReasoningContent(delta);
   if (reasoningContent !== undefined) {
     const r = processThinkingDelta(reasoningContent, ctx.state, ctx.acc, () => resetState(ctx));
-    output.push(...r.chunks);
     ctx.state = r.newState;
+    if (!(ctx.bufferToolCalls && ctx.sawToolCallDelta)) {
+      output.push(...r.chunks);
+    }
   }
 
   if (delta.tool_calls !== undefined) {

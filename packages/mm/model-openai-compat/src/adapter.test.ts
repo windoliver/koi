@@ -707,6 +707,36 @@ describe("adapter: buffered tool streaming retry suppression", () => {
     }
   });
 
+  test("truncated buffered stream with partial fragment (no name yet) yields retryable error", async () => {
+    // Provider sent a tool_calls delta with only an index and id but no function name yet,
+    // then the stream died. No complete tool call was dispatched, so retry must be allowed.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        // Delta has id but no function name — incomplete fragment
+        `data: {"id":"btp","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x"}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends without finish_reason or [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      // Partial fragment only — no complete call was dispatched, so retryable
+      expect(error.retryable).toBe(true);
+    }
+  });
+
   test("truncated buffered stream flushes complete tool calls before the error", async () => {
     // Stream sends a complete tool call (all args received) but no finish_reason.
     // The adapter must emit the tool call lifecycle events before the truncation error

@@ -976,6 +976,47 @@ describe("createStreamParser — supportsToolStreaming: false (buffered mode)", 
     expect(acc.richContent[2]).toMatchObject({ kind: "tool_call", name: "tool_b" });
   });
 
+  test("post-tool text_delta emitted at finish in correct order, not during feed", () => {
+    // In buffered mode the live stream must not emit post-tool text_delta before
+    // tool events. Downstream consumers relying on monotonic stream order would
+    // mis-sequence UI updates or event-driven logic otherwise.
+    const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
+
+    // Pre-tool text — must arrive live during feed
+    const preFeedChunks = parser.feed({
+      id: "c1",
+      choices: [{ index: 0, delta: { content: "pre" }, finish_reason: null }],
+    });
+    expect(preFeedChunks.some((c) => c.kind === "text_delta")).toBe(true);
+
+    // Tool call buffered — no live events
+    parser.feed(makeToolChunk(0, "call_1", "fn", '{"x":1}'));
+
+    // Post-tool text — must NOT arrive live
+    const postFeedChunks = parser.feed({
+      id: "c2",
+      choices: [{ index: 0, delta: { content: "post" }, finish_reason: "stop" }],
+    });
+    expect(postFeedChunks.some((c) => c.kind === "text_delta")).toBe(false);
+
+    // At finish: tool events first, then post-tool text_delta
+    const finishChunks = parser.finish();
+    const kinds = finishChunks.map((c) => c.kind);
+    const toolStartIdx = kinds.indexOf("tool_call_start");
+    const toolEndIdx = kinds.indexOf("tool_call_end");
+    const postTextIdx = kinds.indexOf("text_delta");
+    expect(toolStartIdx).toBeGreaterThanOrEqual(0);
+    expect(toolEndIdx).toBeGreaterThan(toolStartIdx);
+    expect(postTextIdx).toBeGreaterThan(toolEndIdx);
+
+    // richContent also in correct order
+    const acc = parser.getAccumulator();
+    expect(acc.richContent).toHaveLength(3);
+    expect(acc.richContent[0]).toMatchObject({ kind: "text", text: "pre" });
+    expect(acc.richContent[1]).toMatchObject({ kind: "tool_call", name: "fn" });
+    expect(acc.richContent[2]).toMatchObject({ kind: "text", text: "post" });
+  });
+
   test("name delta overwrites partial name on subsequent chunk", () => {
     const parser = createStreamParser(makeAcc(), { supportsToolStreaming: false });
 
