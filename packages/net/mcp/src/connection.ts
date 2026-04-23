@@ -442,7 +442,13 @@ export function createMcpConnection(
     // If a prior passive discovery (listTools/connect) put the connection in
     // auth-needed, run the interactive OAuth flow now before ensureConnected()
     // attempts a plain reconnect that would just return AUTH_REQUIRED again.
-    if (stateMachine.current.kind === "auth-needed" && authInFlight === undefined) {
+    // Skip if a reconnect is already in progress (e.g., concurrent getMcpStatus)
+    // so we don't race with a legitimate reconnect that will resolve auth-needed.
+    if (
+      stateMachine.current.kind === "auth-needed" &&
+      authInFlight === undefined &&
+      reconnecting === undefined
+    ) {
       const authed = await runAuthFlow();
       if (authed) {
         await connect();
