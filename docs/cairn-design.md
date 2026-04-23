@@ -11,9 +11,69 @@
 
 ---
 
-## 1. Thesis
+## 0. Priority legend — how to read this doc
 
-**Cairn** is a stand‑alone, harness‑agnostic agent memory framework. It gives any agent loop — local or cloud, open‑source or proprietary — a shared substrate for per‑turn extraction, nightly consolidation, trajectory→playbook learning, hot‑memory prefix injection, typed taxonomy, consent‑gated propagation, and a privacy‑first local default. Its external contract is a tiny MCP surface — **eight core verbs** (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) plus opt‑in extension namespaces for aggregates / admin / federation (§8). Its default backend is **Nexus `sandbox` profile** — a Python sidecar that brings SQLite + BM25S + `sqlite-vec` semantic search in a single `nexus.db` file with zero external services; scale happens through federation to a Nexus `full` hub, not through swapping adapters. The `MemoryStore` contract is still swappable if a team already runs a different store. It is lightweight enough to install as a single Rust binary (`brew install cairn` / `cargo install cairn`) on a laptop and industrial enough to run behind an enterprise gateway — **same interfaces, same Nexus, different topology**.
+Every capability in Cairn is tagged P0 / P1 / P2 / P3. Readers skimming for "what do I build first" should read only P0 sections; each subsequent tier is a superset that adds power without breaking the lower tier's contract.
+
+```
+  Priority ─ ships in ─ what it means ─────────────────────── example capabilities
+  ─────────────────────────────────────────────────────────────────────────────────
+  [P0]  v0.1  "Ship-blocking minimum Cairn"                    8 MCP verbs · 5 hooks
+                zero network · zero Python · zero services      pure SQLite + FTS5
+                Rust binary + one SQLite file + markdown files  wiki/ markdown tree
+                must cover US1-US5, US7 basic, US8 record        rolling summaries
+                every P0 path works on a fresh laptop offline     record-level forget
+                                                                    WAL upsert+forget
+
+  [P1]  v0.2  "Core but deferrable"                             Nexus sandbox sidecar
+                adds Python sidecar + embeddings + BM25S         semantic search
+                US6 archive, US7 semantic, US8 session delete    cold rehydration
+                SRE observability                                session-wide forget
+                                                                 ReflectionWorkflow
+                                                                 Tauri GUI alpha
+
+  [P2]  v0.3  "Power + multi-user"                              federation → hub
+                teams, orgs, aggregates, full sensor suite       PropagationWorkflow
+                                                                 EvolutionWorkflow
+                                                                 AgentDreamWorker
+                                                                 AgentExtractorWorker
+                                                                 canary rollout
+
+  [P3]  v1.0  "Polish + production SLAs"                        3 harnesses shipped
+                desktop GUI on 3 OSes                            MCP v1 frozen
+                replay cassettes · coherence benchmarks          cross-tenant search
+                                                                 semver commitment
+```
+
+**The contract surface is stable at P0.** MCP verb set, vault layout invariants, record schema, WAL state machines — all defined at P0 and never broken by higher tiers. What changes between tiers is which **backends, workers, and workflows** are active; the wire format, file format, and audit trail never change.
+
+**Rule of thumb:** if a feature requires a network call, a Python sidecar, or a cloud credential, it is at least P1. **P0 is pure Rust + pure SQLite + markdown — nothing else.**
+
+| Concept | P0 position | P1+ upgrade path |
+|---------|-------------|-------------------|
+| Storage | single SQLite file with built‑in FTS5 | Nexus sandbox (adds BM25S + sqlite‑vec + litellm embeddings) → Nexus full hub (Postgres + pgvector via federation) |
+| Search | keyword via FTS5; `semantic_degraded=true` on every hit | semantic via sqlite‑vec (P1); hybrid (P1); cross‑tenant federation (P2) |
+| Extract | regex rules + LLM call via `LLMProvider` | `AgentExtractorWorker` with tool loop (P2, §5.2.a) |
+| Dream | `LLMDreamWorker` (one prompted call per stage) | `HybridDreamWorker` prune+summary (P1); `AgentDreamWorker` tool loop (P2, §10.2) |
+| Identity | single‑actor `author` key — Ed25519 keypair in platform keychain | full `actor_chain` delegation + countersignatures (P2) |
+| Visibility | `private` + `session` tiers only | + `project`/`team`/`org`/`public` via PropagationWorkflow (P2) |
+| Orchestrator | `tokio` + SQLite job table | Temporal adapter (P1 opt‑in); DBOS / Inngest / Hatchet (P2) |
+| Sensors | 5 hooks (`SessionStart`/`UserPromptSubmit`/`PreToolUse`/`PostToolUse`/`Stop`) | IDE + clipboard + screen (opt‑in) + Slack/email/GitHub (P2) |
+| Frontend | raw `wiki/` markdown in any editor | Obsidian / VS Code / Logseq adapters (P1); Tauri GUI (P1 alpha, P3 GA) |
+| Consolidation | rolling‑summary pass only | Light Sleep / REM Sleep / Deep Dreaming (P1–P2) |
+| Forget | record‑level (`forget --record`) | session‑level fan‑out + reader fence (P1) |
+
+Throughout the rest of the doc, selected section headings carry `[P0]` / `[P1]` / `[P2]` / `[P3]` tags where the priority is non‑obvious. Unmarked sections are P0 unless context makes otherwise clear.
+
+---
+
+## 1. Thesis [P0]
+
+**Cairn** is a stand‑alone, harness‑agnostic agent memory framework. It gives any agent loop — local or cloud, open‑source or proprietary — a shared substrate for per‑turn extraction, nightly consolidation, trajectory→playbook learning, hot‑memory prefix injection, typed taxonomy, consent‑gated propagation, and a privacy‑first local default. Its external contract is **eight verbs** (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) exposed through **four isomorphic surfaces**: the `cairn` CLI (ground truth — `cairn ingest …` / `cairn search …`), an MCP adapter that wraps the CLI for harnesses speaking MCP, a Rust SDK for in‑process embedding, and a shippable **Cairn skill** (SKILL.md + bash tool) for harnesses that don't want to run an MCP server. Opt‑in extension namespaces add aggregates / admin / federation (§8).
+
+**The P0 backend is a single SQLite file.** One `.cairn/cairn.db` with SQLite's built‑in FTS5 for keyword search and markdown under `wiki/` for the human surface. No Python sidecar, no network, no embedding key, no external services. This is what ships in v0.1 and what every P0 path exercises on a fresh laptop offline.
+
+**Scale‑up is a P1 decision, not a rewrite.** When you want semantic search, the **Nexus `sandbox` profile** adds a Python sidecar (BM25S + `sqlite-vec` + `litellm` embeddings) behind the same `MemoryStore` contract — config change, not code change. When you want a shared team hub, sandbox instances federate to a Nexus `full` hub zone (Postgres + pgvector + Dragonfly) over HTTP. The `MemoryStore` contract is still swappable if a team already runs a different store. The Rust binary installs with `brew install cairn` or `cargo install cairn`, ~15 MB, no runtime deps.
 
 ### 1.a What the end user actually does (KISS)
 
@@ -54,7 +114,7 @@ That's the whole user surface. Everything under this is optional:
 ### 1.b First principles (why it stays small as it grows)
 
 1. **Memory is markdown files on disk.** Not a proprietary database. Any editor can read them; `grep` finds them; `git` diffs them.
-2. **One contract, one door.** MCP is the only public entry point (eight core verbs + opt‑in extensions). CLI, hooks, library calls — all route through the same verbs.
+2. **One contract, four surfaces.** Eight verbs, exposed as CLI (ground truth), MCP (protocol wrapper), SDK (in‑process), and skill (SKILL.md + bash). All four surfaces invoke the same eight Rust functions under `src/verbs/`. Hooks, library calls, internal agents — all route through the same verbs. **The CLI is primary**; MCP is a 300‑LOC adapter.
 3. **Schema is YAML frontmatter.** No migrations. Add or disable `MemoryKind`s in `.cairn/config.yaml`; the pipeline follows.
 4. **Plugins, not forks.** Every non‑trivial component is behind a typed contract; swapping is a config line. The default plugins and third‑party plugins use the same registration path.
 5. **Local‑first, cloud‑optional.** The `cairn` Rust static binary works on a fresh laptop with zero credentials. Cloud is opt‑in per sensor and per write path.
@@ -65,16 +125,46 @@ These are the load‑bearing invariants — everything else in this doc is conse
 
 ---
 
-## 2. Design Principles (non‑negotiable)
+## 2. Design Principles (non‑negotiable) [P0]
 
-1. **Harness‑agnostic.** Works with any agent loop that can speak MCP.
-2. **Default to one backend; scale by federation, not by swapping.** Nexus `sandbox` profile is the default `MemoryStore` at every tier (embedded, local, cloud). Scale‑up is federation from sandbox → Nexus `full` hub over HTTP — not a code change in Cairn. The contract is still swappable if a team already runs a different store, but Cairn does not "multi‑backend for multi‑backend's sake".
+**The principles as dependency layers — lower layers constrain higher ones:**
+
+```
+   ┌───────────────────────────────────────────────────────────────────────┐
+   │  15. Plugin architecture                                              │
+   │  14. Sources immutable · records LLM-owned · schema co-evolved        │  ← user-visible
+   │  13. Compiled once, kept current                                      │    guarantees
+   │  12. Folders group by purpose · links group by meaning                │
+   │  11. summarize(persist:true) files itself back                        │
+   │  10. A note without links is a bug                                    │
+   └───────────────────────────────────────────────────────────────────────┘
+                                    ▲
+   ┌───────────────────────────────────────────────────────────────────────┐
+   │   9. Procedural code owns env · agent owns content                    │
+   │   8. Four surfaces, same verbs (§8)                                   │  ← operational
+   │   7. Privacy by construction (Presidio + consent log + per-user salt) │    invariants
+   │   6. Continuous learning off the request path                         │
+   └───────────────────────────────────────────────────────────────────────┘
+                                    ▲
+   ┌───────────────────────────────────────────────────────────────────────┐
+   │   5. Narrow typed contracts (5 interfaces, 15 pure functions)         │
+   │   4. Local-first, cloud-optional                                      │  ← foundation
+   │   3. Stand-alone (one Rust binary, zero creds)                        │
+   │   2. Smallest viable backend; scale by adding layers                  │
+   │   1. Harness-agnostic                                                 │
+   └───────────────────────────────────────────────────────────────────────┘
+```
+
+Every higher-layer promise depends on a lower-layer promise. "Plugin architecture" (15) only makes sense because "narrow typed contracts" (5) defines what a plugin plugs into. "Privacy by construction" (7) only works because the backend is "stand-alone" (3) — a remote-only backend can't make the privacy promise. **Break a foundation principle and every principle above it weakens.**
+
+1. **Harness‑agnostic.** Works with any agent loop that can either speak MCP **or** run a bash tool (via the Cairn skill §18.d) — which is every mainstream harness shipping today.
+2. **Default to the smallest viable backend; scale by adding layers, not by swapping.** P0 default is a single SQLite file with FTS5 — zero external services. P1 upgrades the same vault to Nexus `sandbox` (adds Python sidecar + BM25S + `sqlite-vec` + embeddings) behind the same `MemoryStore` contract. P2 federates sandbox → Nexus `full` hub over HTTP. No code change in Cairn at any tier; the contract is still swappable for teams with an existing store, but Cairn does not "multi‑backend for multi‑backend's sake".
 3. **Stand‑alone.** A single Rust static binary (`brew install cairn` or `cargo install cairn`) on a fresh laptop with zero cloud credentials works end‑to‑end.
 4. **Local‑first, cloud‑optional.** The vault lives on disk. Cloud is opt‑in per sensor, per write path.
 5. **Narrow typed contracts.** Five real interfaces. Fifteen pure functions. Everything else is composition.
 6. **Continuous learning off the request path.** A durable `WorkflowOrchestrator` runs Dream / Reflect / Promote / Consolidate / Propagate / Expire / Evaluate in the background. Default v0.1 implementation is `tokio` + a SQLite job table; Temporal is an optional adapter. Harness latency is untouched in either case.
 7. **Privacy by construction.** Presidio pre‑persist, per‑user salt, append‑only consent log, no implicit share.
-8. **MCP is the contract.** If a harness speaks MCP it speaks Cairn.
+8. **The eight verbs are the contract; the CLI is the ground truth.** MCP, SDK, and the Cairn skill are all thin wrappers over the same eight Rust functions under `src/verbs/`. If a harness can run a subprocess, a bash command, or a JSON-RPC client, it speaks Cairn.
 9. **Procedural code owns the environment. The agent owns content.** Deterministic hooks + workflows do classification, validation, indexing, and lifecycle. Content decisions (what to write, where to file, what to link) stay with the agent.
 10. **A note without links is a bug.** Orphan detection is a first‑class metric.
 11. **Good answers file themselves back.** `summarize(persist: true)` turns a synthesis into a new memory with provenance.
@@ -85,7 +175,7 @@ These are the load‑bearing invariants — everything else in this doc is conse
 
 ---
 
-## 3. Vault Layout (the on‑disk surface)
+## 3. Vault Layout (the on‑disk surface) [P0]
 
 Flat markdown. Git‑friendly. Obsidian‑compatible. Editor‑agnostic. Three layers, strict roles.
 
@@ -165,80 +255,187 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 
 **Git is first‑class.** The vault is a git repo. Version history, branching, and collaboration come free. Humans curate sources + schema; the LLM edits records + wiki; merge conflicts are resolved by `ConsolidationWorkflow`.
 
-### 3.0 Storage topology — Cairn on top of Nexus primitives
+### 3.0 Storage topology — layered, P0 SQLite-only, P1 Nexus added
 
-Nexus is the platform; **Cairn is the memory layer** that does not exist in Nexus itself. Nexus gives Cairn four primitives — `filesystem` for storage, `search` for retrieval, `rebac` for scoping, `snapshot` for versioning — plus `parsers`, `workflows`, `mcp`, and `ipc`. All memory semantics (the 19 kinds, consolidation, promotion, evolution, hot‑memory assembly, confidence bands, conflict DAG, etc.) are Cairn's own.
-
-Nexus is the platform; **Cairn is the memory layer** that does not exist in Nexus itself. Nexus has 26 bricks — Cairn uses 13 of them and deliberately ignores the rest.
+**Cairn's storage is additive, not replaceable.** P0 is one SQLite file. P1 adds a Nexus sidecar **alongside** it (not instead of it). P2 federates the Nexus sidecar to a hub. The Cairn-owned SQLite file never goes away; higher tiers layer on top.
 
 ```
-  Cairn Rust core  ──HTTP/MCP──►  Nexus sandbox (Python, ~300 MB RSS, one nexus.db file)
-  (owns memory taxonomy, pipeline,
-   workflows, Dream / Promote / Evolve)
+  P0  (all you need for v0.1)                 P1  (add when you want semantic search)
+  ──────────────────────────────────          ──────────────────────────────────────────
+   cairn Rust binary                           cairn Rust binary
+     │                                          │              │
+     ▼                                          ▼              ▼
+   .cairn/cairn.db  ◄── single SQLite file;    .cairn/cairn.db  Nexus sandbox (Python)
+     · WAL state machine                         (unchanged —    │
+     · Replay ledger                              still Cairn-    ▼
+     · Consent journal                            owned control  nexus-data/  (internals — Cairn
+     · Locks + reader fences                      plane)                        does not depend on
+     · Records store (FTS5 index                                               the internal layout)
+       on body; JSON frontmatter                                · BM25S lexical index
+       as indexed columns)                                      · sqlite-vec ANN (embeddings
+                                                                  via litellm — OPENAI_API_KEY
+                                                                  or any provider)
+                                                                · content-addressable blob
+                                                                  storage (cas/)
+                                                                · metadata store (ReDB)
+                                                                · skills/ + zones/ auxiliary
+
+   cairn Rust binary speaks to               Cairn calls only the Nexus `search`, `filesystem`,
+   SQLite directly via rusqlite —            and related bricks over HTTP+MCP. It never opens
+   zero network, zero sidecar.               files inside nexus-data/ directly.
+
+
+  P2  (add when you share across users/machines)
+  ─────────────────────────────────────────────────────────────────────
+   cairn Rust binary                       ┌──► Nexus full hub (shared)
+     │              │                      │     · PostgreSQL + pgvector
+     ▼              ▼                      │     · Dragonfly (cache)
+   .cairn/cairn.db  Nexus sandbox  ────────┤     · Nexus `search` brick
+     (unchanged —    (unchanged —          │       (federated BM25 + ANN)
+      still P0        still P1             └──   over HTTPS + mTLS
+      control         local memory)
+      plane)
+
+                                           Federation queries: sandbox delegates
+                                           search when scope requires team/org/public;
+                                           graceful local fallback if hub unreachable.
 ```
 
-### Nexus bricks Cairn leverages
+**Storage layer by priority — a single authoritative table:**
 
-| Brick | How Cairn uses it |
-|-------|-------------------|
-| `filesystem` | persist every memory record + source + wiki page as a file with frontmatter; vault tree IS a Nexus path tree |
-| `search` | BM25S + `sqlite-vec` (semantic) + `litellm` embeddings — Cairn's `search` and `retrieve` MCP verbs call this |
-| `rebac` | enforce `{userId, agentId, project, team, org}` scope + visibility at path level; Cairn never re‑implements ACLs |
-| `access_manifest` | declarative policy manifest for visibility tier boundaries (`private` → `session` → `project` → `team` → `org`) |
-| `snapshot` | `cairn snapshot` = Nexus snapshot of `/<vault>/`; weekly archive is a one‑call op |
-| `versioning` | every memory edit gets undo history via Nexus's operation‑undo service — Cairn doesn't build its own revert |
-| `portability` | `.nexus` bundles = Cairn's export/import native format; `cairn export` and `cairn import --from <another-cairn-vault>` are thin wrappers |
-| `parsers` | PDF / DOCX / HTML / CSV / Parquet / JSON → markdown on the way into `sources/`; Cairn's source sensors delegate parsing |
-| `catalog` | schema extraction for structured sources (CSV/Parquet/JSON) — feeds `entity_*.md` and `fact_*.md` records automatically |
-| `share_link` | `PropagationWorkflow` generates consent‑gated share links for `private → team → org` promotion, with expiry + revocation |
-| `workspace` | per‑project or per‑user Cairn vaults isolated as separate Nexus workspaces |
-| `mcp` | Cairn's eight core verbs register as MCP tools on the Nexus MCP surface; harnesses talk to either side interchangeably |
-| `workflows` | optional durable job queue for teams that prefer Nexus‑native orchestration over Cairn's `tokio` default or Temporal |
-| `discovery` | dynamic skill + playbook registration — `EvolutionWorkflow` publishes evolved skills through Nexus discovery |
+| Layer | Priority | Owned by | On-disk location | What it holds | When active |
+|-------|----------|----------|-------------------|----------------|-------------|
+| Cairn control plane | **P0** (always) | Rust core (direct `rusqlite`) | `.cairn/cairn.db` (one SQLite file) | WAL state, replay ledger, consent journal, locks, reader fences, **and the records store itself at P0** | every tier |
+| Nexus sandbox data | **P1** (opt-in) | Nexus Python sidecar (never touched by Rust) | `nexus-data/` directory tree (Nexus-internal layout) | records (CAS blobs), BM25S lexical index, `sqlite-vec` ANN vectors, ReDB metastore | when `store.kind: nexus-sandbox` |
+| Nexus full hub data | **P2** (opt-in) | remote Nexus hub | Postgres + pgvector + Dragonfly (service-managed) | projected records for team/org/public tier; aggregate indexes | when federation enabled |
 
-### Nexus bricks Cairn does NOT use
+**What goes where, at each tier:**
 
-| Brick | Why skip |
-|-------|----------|
-| `ipc` | filesystem‑as‑IPC for agent‑to‑agent. Cairn agents talk through MCP, not FS‑IPC |
-| `auth`, `identity`, `secrets` | the harness upstream owns user auth; Cairn inherits context |
-| `pay`, `sandbox` (brick), `mount`, `upload` | out of scope — billing, sandbox provisioning, FUSE, upload UI |
-| `context_manifest`, `governance`, `task_manager`, `delegation` | overlap with features Cairn owns (hot memory, user signals, workflow, propagation); revisit if a Nexus primitive becomes clearly better than Cairn's |
+| Data | P0 (SQLite only) | P1 (+ Nexus sandbox) | P2 (+ hub federation) |
+|------|-------------------|------------------------|-------------------------|
+| Record bodies (markdown + frontmatter) | `wiki/` + `raw/` (markdown files, authoritative) + `.cairn/cairn.db` records table (index + cache) | same markdown files; additionally projected to `nexus-data/cas/` for CAS addressing | same + hub's Postgres projection for shared-tier records |
+| Full-text search | SQLite FTS5 on body column | **BM25S** via Nexus `search` brick; FTS5 still answers local queries | BM25S on sandbox + federated BM25 on hub; results merged |
+| Semantic search | **unavailable** — results stamped `semantic_degraded=true` | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick | local `sqlite-vec` + pgvector on hub; results merged |
+| WAL / locks / consent journal | `.cairn/cairn.db` tables | **unchanged — still `.cairn/cairn.db`** (never moves to Nexus) | **unchanged** — each node has its own control plane |
+| Raft / consensus | none | `nexus-data/root/raft/raft.redb` (Nexus-internal) | hub-side only |
+| Secrets / embeddings / raw PII | never persisted — stripped at Filter stage | same | same |
+
+### Records-in-SQLite at P0 — what the FTS5-native layout looks like
+
+At P0, Cairn stores records as rows in `.cairn/cairn.db`. The markdown files under `wiki/` and `raw/` are the authoritative content; the SQLite rows are an indexed projection. Query latency stays under 5 ms for typical reads because it's one `SELECT` against one local SQLite file with WAL mode enabled.
+
+```sql
+-- P0 records table (inside .cairn/cairn.db — no separate file, no separate process)
+CREATE TABLE records (
+  record_id   TEXT PRIMARY KEY,         -- ULID
+  path        TEXT NOT NULL UNIQUE,     -- e.g., wiki/entities/people/alice.md
+  kind        TEXT NOT NULL,            -- one of 19 MemoryKinds
+  class       TEXT NOT NULL,            -- episodic | semantic | procedural | graph
+  visibility  TEXT NOT NULL,            -- private | session | project | team | org | public
+  scope       TEXT NOT NULL,            -- JSON tuple (tenant, workspace, ...)
+  actor_chain TEXT NOT NULL,            -- JSON array of signed actors
+  body_hash   TEXT NOT NULL,            -- sha256 of the file body
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  active      INTEGER NOT NULL DEFAULT 1  -- WAL COW pointer-swap (§5.6)
+);
+CREATE INDEX records_kind_idx       ON records(kind);
+CREATE INDEX records_visibility_idx ON records(visibility);
+CREATE INDEX records_scope_idx      ON records(scope);
+
+-- SQLite FTS5 virtual table — the P0 keyword search surface
+CREATE VIRTUAL TABLE records_fts USING fts5(
+  record_id UNINDEXED,
+  body,                                 -- the markdown body, indexed
+  tokenize='porter unicode61'
+);
+
+-- Graph edges (links, backlinks, requires/provides, entity relationships)
+CREATE TABLE edges (
+  src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, weight REAL,
+  PRIMARY KEY (src, dst, kind)
+);
+```
+
+Plus the control-plane tables (same file, same transaction scope):
+
+```sql
+-- WAL state machine (§5.6)
+CREATE TABLE wal_ops    (operation_id TEXT PK, state TEXT, envelope JSONB, …);
+CREATE TABLE wal_steps  (operation_id TEXT, step_ord INT, state TEXT, PK(operation_id, step_ord));
+
+-- Replay ledger (§4.2)
+CREATE TABLE used                   (operation_id TEXT, nonce BLOB, issuer TEXT, sequence INT, committed_at INT, UNIQUE(operation_id, nonce));
+CREATE TABLE issuer_seq             (issuer TEXT PK, high_water INT);
+CREATE TABLE outstanding_challenges (issuer TEXT, challenge BLOB, expires_at INT, PK(issuer, challenge));
+
+-- Concurrency control (§5.6, §10.1)
+CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, lock_id TEXT, leased_until INT, PK(scope_kind, scope_key));
+CREATE TABLE reader_fence (session_id TEXT PK, op_id TEXT, state TEXT);
+
+-- Audit
+CREATE TABLE consent_journal (row_id INTEGER PK AUTOINCREMENT, op_id TEXT, actor TEXT, kind TEXT, payload JSONB, committed_at INT);
+```
+
+**All in one SQLite file.** At P0 every mutation is one local `BEGIN IMMEDIATE; … COMMIT;` that atomically couples the records update, the WAL row, and the consent journal row. No cross-process coordination, no HTTP, no Python. SQLite's own durability is the durability guarantee.
+
+### Atomicity model — P0 is simple, P1+ is durable-messaging
+
+**At P0 there is exactly one SQLite file and one writer process (the Cairn Rust binary).** Every mutation is a single `BEGIN IMMEDIATE; … COMMIT;` that atomically:
+
+1. upserts the record row (or tombstones, or expires)
+2. upserts the FTS5 row
+3. upserts the edges rows
+4. writes the WAL `PREPARE → COMMITTED` transition
+5. consumes the replay ledger entry
+6. appends the `consent_journal` row
+
+SQLite's WAL-mode durability covers the whole transaction. No two-phase commit, no compensation actions, no partial-state recovery. The only recovery path is SQLite's own crash recovery.
+
+**At P1 (Nexus sandbox active)** Cairn uses a durable-messaging pattern across two storage systems — `.cairn/cairn.db` (Cairn-owned SQLite) and `nexus-data/` (Nexus-owned, multi-file, opaque to Cairn):
+
+1. Rust core commits a local SQLite transaction in `.cairn/cairn.db` that atomically writes the WAL `PREPARE` row + consumes the replay ledger entry. **No `consent_journal` row at PREPARE time** — consent is linearized with the state transition.
+2. Rust calls the Nexus HTTP apply endpoint, keyed by `operation_id`. Nexus performs its own durable writes to `nexus-data/` (cas write + index updates + ReDB metastore update); all of this is internal to Nexus.
+3. On HTTP success, Rust commits a second local transaction in `.cairn/cairn.db` that atomically flips `wal_ops.state = 'COMMITTED'` **and** appends the `consent_journal` row.
+
+Crash windows:
+- Crash between (1) and (2): recovery replays step (2) with the same `operation_id` (idempotent at the Nexus endpoint).
+- Crash between (2) and (3): recovery probes Nexus for that `operation_id`; if Nexus has already applied, step (3) runs and couples `COMMITTED` + consent journal atomically.
+
+**The idempotency key is the linearization primitive across processes.** This is weaker than distributed 2PC and we call it out rather than pretend otherwise. SQLite provides atomicity inside Cairn; Nexus's internal durability (its own fsync discipline) provides atomicity inside Nexus; `operation_id` couples them.
+
+### What Nexus contributes at P1+ (and what it doesn't)
+
+Nexus is a Python sidecar composed of independent bricks. At P1 Cairn activates these:
+
+| Brick | What Nexus does | Cairn-side usage |
+|-------|------------------|-----------------|
+| `filesystem` | file-system abstraction over a content-addressable store in `nexus-data/cas/` | Cairn's `wiki/` and `raw/` markdown are projected here for CAS addressing + share-link packaging |
+| `search` | BM25S lexical index + `sqlite-vec` ANN + `litellm` embeddings (sandbox profile); federates to hub for cross-tenant queries | Cairn's `search` verb delegates semantic + hybrid modes to this brick |
+| `rebac` | ReBAC relation graph for tenant / workspace / project scoping | enforces visibility tier filters at query time |
+| `access_manifest` | declarative policy manifest (who can read what) | read by `rebac` per query |
+| `snapshot` | filesystem-level snapshotting | `cairn snapshot` delegates; sequences with `.cairn/cairn.db` copy |
+| `versioning` | operation-undo over the CAS | used by §5.6 WAL compensation actions |
+| `portability` | `.nexus` bundle format | `cairn export` / `cairn import` delegate |
+| `parsers` | PDF/DOCX/HTML/CSV/Parquet → markdown | source sensors delegate parsing |
+| `catalog` | schema extraction for structured sources | feeds `entity_*.md` / `fact_*.md` |
+| `share_link` | consent-gated time-bound grants | `PropagationWorkflow` generates these |
+| `workspace` | Nexus workspace isolation | backs Cairn's vault registry (§3.3) |
+| `mcp` | Nexus's own MCP surface | Cairn's verbs register alongside Nexus bricks |
+| `workflows` | optional durable job queue | alternate `WorkflowOrchestrator` if you don't want tokio or Temporal |
+| `discovery` | dynamic skill + playbook registration | used by `EvolutionWorkflow` |
+
+**Bricks Cairn deliberately does not use** (out of scope): `ipc` (FS-as-IPC — we use CLI subprocess instead), `auth` / `identity` / `secrets` (harness upstream owns auth), `pay` / `sandbox` (brick) / `mount` / `upload` (billing / FUSE / upload UI), `context_manifest` / `governance` / `task_manager` / `delegation` (overlap with features Cairn owns).
+
+**No `memory` brick exists in Nexus today.** Cairn owns memory semantics (19 kinds, consolidation, promotion, evolution, hot-memory assembly, confidence bands, conflict DAG). If a future Nexus `memory` brick ships, Cairn's adapter can delegate.
 
 ### Operational notes
 
-- **No `memory` brick in Nexus today.** Cairn owns memory. If a future Nexus `memory` brick ships, Cairn's adapter can delegate.
-- **Two files on disk (backup covers both).** Nexus owns `<vault>/nexus.db` (records, vectors, FTS, metadata); the Rust core owns `.cairn/cairn.db` (control‑plane state — see schema below). Back up by copying both files atomically (or use `cairn snapshot`, which sequences both with a filesystem snapshot).
-- **Semantic search is opt‑in.** With an embedding API key (`OPENAI_API_KEY` or any `litellm` provider), `sqlite-vec` is primary. Without a key, BM25S results are stamped `semantic_degraded=true` end to end.
-- **Records land through `filesystem` + `search`.** A memory = a markdown file with frontmatter at `/<vault>/raw/<kind>_<slug>.md`. `search` indexes body; `rebac` + `access_manifest` enforce scope; `snapshot` + `versioning` cover backup and undo. Cairn's Rust core **does not speak to the Nexus memory‑store SQLite file directly** — all memory mutations are HTTP calls to the Nexus sidecar. See "Durability topology" below for the full atomicity model.
-- **Durability topology (two SQLite files, one ownership line):**
-  - **`nexus.db`** — owned by the Nexus Python sidecar. Holds records, vectors, FTS, metadata. Cairn reaches it only over HTTP + MCP.
-  - **`.cairn/cairn.db`** — owned by the Rust core, opened directly from the Cairn process. Small (typically < 50 MB). Canonical control‑plane schema (all tables in one DB; this is the authoritative list referenced everywhere else in this doc):
-
-    ```sql
-    -- WAL state machine (§5.6)
-    CREATE TABLE wal_ops    (operation_id TEXT PK, state TEXT, envelope JSONB, …);
-    CREATE TABLE wal_steps  (operation_id TEXT, step_ord INT, state TEXT, PK(operation_id, step_ord));
-
-    -- Replay ledger (§4.2)
-    CREATE TABLE used                   (operation_id TEXT, nonce BLOB, issuer TEXT, sequence INT, committed_at INT, UNIQUE(operation_id, nonce));
-    CREATE TABLE issuer_seq             (issuer TEXT PK, high_water INT);
-    CREATE TABLE outstanding_challenges (issuer TEXT, challenge BLOB, expires_at INT, PK(issuer, challenge));
-
-    -- Concurrency control (§5.6, §10.1)
-    CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, lock_id TEXT, leased_until INT, PK(scope_kind, scope_key));
-    CREATE TABLE reader_fence (session_id TEXT PK, op_id TEXT, state TEXT);
-
-    -- Audit
-    CREATE TABLE consent_journal (row_id INTEGER PK AUTOINCREMENT, op_id TEXT, actor TEXT, kind TEXT, payload JSONB, committed_at INT);
-    ```
-
-    These are **local control‑plane state** the Rust core must access natively for single‑host atomicity. They are never shared with Nexus.
-  - **Atomicity model.** Cairn uses a durable‑messaging pattern, not a distributed transaction: (1) Rust core commits a local SQLite transaction in `cairn.db` that atomically writes the WAL `PREPARE` row + replay consumption. **No `consent_journal` row is written at PREPARE time** — consent is linearized with the state transition, not with PREPARE. (2) Rust calls the Nexus HTTP apply endpoint, keyed by `operation_id`, which performs its own single local SQLite transaction inside `nexus.db`. (3) On success, the Rust core commits a second short local transaction that atomically marks `wal_ops.state = 'COMMITTED'` **and** writes the `consent_journal` row. This ordering means `consent_journal` only records operations that are reader‑visible (or, for deletes, operations that made data reader‑invisible); a crash between (1) and (2) leaves no consent entry. Crash between (1) and (2) ⇒ recovery re‑calls Nexus with the same `operation_id` (idempotent). Crash between (2) and (3) ⇒ recovery observes Nexus has already applied, then runs step (3) to both promote `COMMITTED` and append the `consent_journal` row in one transaction. Nexus's own durability is guaranteed by its internal SQLite transaction; Cairn's guarantee is that every PREPARED row is either COMMITTED or ABORTED after bounded recovery, and every `consent_journal` row corresponds to a reader‑visible state transition.
-  - **No cross‑process two‑phase commit required.** The idempotency key is the linearization primitive; SQLite provides atomicity inside each process. This is strictly weaker than distributed 2PC, and we call it out rather than pretending otherwise.
-  - Canonical on‑disk paths: `<vault>/nexus.db` (Nexus memory store) and `.cairn/cairn.db` (Cairn control plane: `wal_ops`, `used`, `issuer_seq`, `outstanding_challenges`, `consent_journal`, `locks`, `reader_fence`). Any other `.cairn/*.db` path in this doc is a typo against these two.
-- **Federation, not re‑platforming, scales.** A sandbox on a laptop can federate `search` queries to a remote Nexus `full` hub (PostgreSQL + Dragonfly + Zoekt + txtai). Hub unreachable → graceful BM25S fallback, never a boot failure.
-- **Process boundary.** Nexus is Python; Cairn core is Rust. They communicate over HTTP + MCP. `cairn-nexus-supervisor` spawns Nexus, tails logs, health‑checks, restarts.
+- **Backup at P0:** copy `.cairn/cairn.db` + the `wiki/` + `raw/` + `sources/` tree. One SQLite file; one markdown tree; done.
+- **Backup at P1:** copy `.cairn/cairn.db` + the markdown tree + the `nexus-data/` directory. Use `cairn snapshot` which sequences them with a filesystem snapshot for consistency.
+- **Semantic search is opt-in.** At P0 it's unavailable (keyword-only via FTS5, every result stamped `semantic_degraded=true`). At P1 semantic becomes available if the user supplies an embedding API key (`OPENAI_API_KEY` or any `litellm` provider). Without a key at P1, sandbox still does semantic via local embedding models; BM25 is the fallback either way.
+- **Process boundary at P1+:** Nexus is Python, Cairn core is Rust. They communicate over HTTP + MCP. `cairn-nexus-supervisor` spawns Nexus, tails logs, health-checks, restarts. A crashed Nexus never blocks Cairn — queries degrade to P0 behavior until Nexus recovers.
+- **Federation, not re-platforming, scales at P2.** A sandbox on a laptop can federate `search` queries to a remote Nexus `full` hub (PostgreSQL + pgvector + Dragonfly). Hub unreachable → graceful fallback to local sandbox or (further) local FTS5; never a boot failure.
 
 ### 3.1 The layout is a template — configurable, not prescribed
 
@@ -320,8 +517,10 @@ sensors:
   screen: { enabled: false }
   slack: { enabled: false, scope: [] }
 store:
-  kind: nexus-sandbox         # nexus-sandbox | nexus-full | postgres | custom:<name>
-  path: <vault>/nexus.db      # canonical location — Nexus-owned memory store (§3 Durability topology)
+  kind: sqlite                # P0 default — sqlite | nexus-sandbox (P1) | nexus-full (P2) | postgres | custom:<name>
+  # path: omitted for sqlite — uses .cairn/cairn.db (the single P0 SQLite file)
+  # At P1:  kind: nexus-sandbox — Nexus sidecar adds nexus-data/ directory alongside .cairn/cairn.db
+  # At P2:  kind: nexus-full   — federates to a remote Nexus hub (Postgres+pgvector)
 llm:
   provider: openai-compatible
   base_url: https://…
@@ -333,7 +532,7 @@ A new vault inherits the default config. Teams fork a config as a shareable temp
 
 ### 3.2 Vault topology — who shares what
 
-A **vault** is the unit of physical colocation + atomic durability: one filesystem tree + one `.cairn/cairn.db` (Rust control plane) + one `<vault>/nexus.db` (memory store) + one `consent.log`. **Users, agents, and sessions are actors WITHIN a vault**, scoped by the identity model in §4.2 and the visibility tiers in §6.3. A vault is never per‑agent or per‑session; isolation across actors happens through scope tuples + rebac, not through separate files.
+A **vault** is the unit of physical colocation + atomic durability: one filesystem tree + one `.cairn/cairn.db` (always — Rust control plane + P0 records store) + the markdown tree (`wiki/` · `raw/` · `sources/`) + one `consent.log` + optionally a Nexus `nexus-data/` directory at P1+. **Users, agents, and sessions are actors WITHIN a vault**, scoped by the identity model in §4.2 and the visibility tiers in §6.3. A vault is never per‑agent or per‑session; isolation across actors happens through scope tuples + rebac, not through separate files.
 
 **Four canonical shapes** (same format, same MCP contract, different scale):
 
@@ -412,7 +611,304 @@ Most deployments use Shape 1–3 with rebac; the escape hatch exists for the edg
 
 ---
 
-## 4. Contracts — the Five That Matter
+### 3.3 Many vaults per user — registry, switching, isolation
+
+A single user rarely has one vault. Typical patterns: one `work` vault on a corporate laptop + one `personal` vault on the same machine + a transient `research-sprint` vault for a specific project + per‑client vaults for consultants. Cairn treats multiple vaults as first‑class: each is a self‑contained directory; none knows about the others; the user picks which is active per invocation.
+
+**Vault = directory. That's the whole model.**
+
+```
+  ~/vaults/
+    ├── work/              ← cairn init here (P0 layout shown)
+    │   ├── .cairn/
+    │   │   ├── cairn.db        ← the one SQLite file (records + WAL + consent)
+    │   │   └── config.yaml
+    │   ├── purpose.md
+    │   ├── wiki/               ← markdown tree, authoritative content
+    │   ├── raw/
+    │   └── sources/
+    │   (+ nexus-data/ appears here only after P1 is enabled)
+    ├── personal/          ← cairn init here
+    │   ├── .cairn/ ... same shape
+    │   └── ...
+    ├── research/
+    └── client-acme/
+```
+
+**Vault registry** — a lightweight index so the CLI / GUI know which vaults exist without scanning the disk. Lives at `~/.config/cairn/vaults.toml` (Linux/macOS) or `%APPDATA%\cairn\vaults.toml` (Windows):
+
+```toml
+default = "work"
+
+[[vault]]
+name = "work"
+path = "~/vaults/work"
+label = "day job, kept off personal cloud"
+
+[[vault]]
+name = "personal"
+path = "~/vaults/personal"
+label = "side projects, OSS, reading"
+
+[[vault]]
+name = "research"
+path = "~/vaults/research"
+expires_at = "2026-07-01"   # transient vault; lint warns after
+```
+
+The registry is **a UX convenience, not a security boundary** — every vault's `.cairn/cairn.db` remains the authority for identity, consent, and WAL state within that vault. Deleting the registry never damages a vault.
+
+**Picking the active vault — four ways, same precedence as most tools:**
+
+| # | Mechanism | Wins over | Use when |
+|---|-----------|-----------|-----------|
+| 1 | `--vault <name\|path>` CLI flag | everything | scripts, CI, ad‑hoc one‑off |
+| 2 | `CAIRN_VAULT=<name\|path>` env var | shell / registry default | per‑terminal context switching |
+| 3 | `.cairn/` discovered by walking up from `$PWD` | registry default | running inside a project tree |
+| 4 | `default = "…"` in `vaults.toml` | nothing (lowest) | outside any vault, no flag/env |
+
+`cairn vault list` / `cairn vault switch <name>` / `cairn vault add <path>` / `cairn vault remove <name>` manage the registry.
+
+**One invocation, one vault — per surface.** Every Cairn invocation binds to exactly one vault through `--vault <name>` (or `CAIRN_VAULT=<name>` env, or walk-up discovery). This is true for **every surface**, not just MCP:
+
+```
+  # CLI (ground truth, most common)
+  cairn --vault work search "pgvector perf"
+  cairn --vault personal ingest --kind user --body "..."
+
+  # Skill (via the harness's bash tool)
+  CAIRN_VAULT=work cairn search "..."              # one-off
+  export CAIRN_VAULT=work                          # session-scoped
+
+  # MCP (for harnesses that register MCP servers)
+  # Each registered MCP server is bound to one vault:
+  cairn-work        → cairn mcp --vault work
+  cairn-personal    → cairn mcp --vault personal
+
+  # SDK (in-process)
+  cairn::init(VaultPath::by_name("work")?)
+```
+
+**The harness picks which vault to use per turn** — by user intent, project path, a `/switch` slash command, or a `CAIRN_VAULT` env var set at session start. **Cairn never merges across vaults server-side**, regardless of surface — doing so would violate the isolation property the user opted into by having separate vaults. A harness that wants cross-vault queries makes multiple independent calls and merges client-side (and inherits full responsibility for the visibility-tier implications).
+
+**What crosses vaults, what doesn't:**
+
+| Item | Crosses vaults? | Why |
+|------|-----------------|-----|
+| Memory records | no | a vault is the isolation unit; crossing would break tenant/rebac invariants |
+| `search` queries | no by default | opt‑in via explicit multi‑vault federation (§12.a hub model) |
+| Hot memory prefix | no | assembled from one active vault per turn |
+| Ed25519 keypairs | no — **one keypair per vault per identity** | stored under that vault's row in the platform keychain; revoking one vault's key doesn't affect others |
+| `consent.log` | no — each vault owns its own | per‑vault audit is the law |
+| `skills/` content | optionally, via `cairn skillpack` | bundle‑level export/import, not transparent |
+| Plugin installs | global by default | one Cairn binary, one plugin registry; active set filters per vault's `config.yaml` |
+
+**When to make a new vault:**
+
+- the data is in a different trust domain (work vs. personal) → **new vault**
+- the data is in the same trust domain but a different project → **same vault, different `project:` scope**
+- the data is transient (research sprint, contest, migration dry‑run) → **new vault with `expires_at`**
+- the data needs to be shareable with a specific team → **same vault, share via `share_link` + `team` tier**
+
+---
+
+### 3.4 Folders are first‑class — nested, self‑describing, self‑summarizing [P0 basic · P1 summary]
+
+Folders inside `wiki/` and `raw/` nest to arbitrary depth. Each folder — at any depth — can carry three optional sidecar files that make it self‑describing, navigable, and retrievable as a unit: `_index.md`, `_summary.md`, `_policy.yaml`. Cairn treats a folder with these sidecars as a **first‑class memory unit** — not just a directory.
+
+**Example nested layout:**
+
+```
+  wiki/
+    entities/                           ← folder can have sidecars at any depth
+      _index.md                         ← auto-generated table of contents
+      _summary.md                       ← LLM-generated rolling summary (P1)
+      _policy.yaml                      ← allowed_kinds, visibility default, ...
+      people/
+        _index.md
+        _summary.md
+        _policy.yaml                    ← e.g., "only `entity` kind, visibility private by default"
+        alice.md                        ← the actual records
+        bob.md
+        carol/                          ← a single entity can even be a folder
+          _index.md                     ← when the entity has many sub-records
+          profile.md
+          interactions.md
+          deltas/                       ← arbitrary sub-structure allowed
+            2026-03.md
+            2026-04.md
+      projects/
+        _index.md
+        koi/
+          _index.md
+          _summary.md
+          rfc-001.md
+          rfc-002.md
+      companies/
+        _index.md
+        acme.md
+    summaries/
+      _index.md
+      weekly/
+      monthly/
+    skills/
+      _index.md
+      _policy.yaml                      ← only `playbook`/`strategy_success` allowed here
+      deploy/
+      debug/
+      review/
+```
+
+**The three sidecar files — what each does:**
+
+| File | Purpose | Who writes it | Updated when | Priority |
+|------|---------|---------------|---------------|-----------|
+| `_index.md` | machine‑readable table of contents for this folder — child paths, kinds, last‑modified, record count, backlinks | `PostToolUse` hook whenever a child record is written, renamed, or deleted | every write in the folder's subtree | **P0** — always maintained |
+| `_summary.md` | LLM‑generated rolling summary of the folder's conceptual content — "what does this folder know?" suitable for `assemble_hot` | a new `FolderSummaryWorkflow` (off‑path, `tokio` orchestrator) | on consolidation cadence (default: every 24 h + after N new records) | **P1** — adds LLM cost |
+| `_policy.yaml` | folder‑level config: allowed kinds, visibility default for new records, consolidation cadence override, owner agent | human or `cairn config` CLI; enforced by Filter stage (§5.2) | manually edited; read by every write into this folder | **P0** — enforced if present |
+
+**Example `_index.md` (auto-generated):**
+
+```markdown
+---
+folder: wiki/entities/people
+kind: folder_index
+updated_at: 2026-04-22T14:02:11Z
+record_count: 42
+subfolder_count: 3
+---
+# entities/people
+
+## Records (42)
+- [alice.md](alice.md) — entity · updated 2026-04-21 · 5 backlinks
+- [bob.md](bob.md) — entity · updated 2026-04-19 · 3 backlinks
+- ... (40 more)
+
+## Subfolders (3)
+- [carol/](carol/) — 8 records · last updated 2026-04-22
+- [engineering/](engineering/) — 14 records · last updated 2026-04-20
+- [leadership/](leadership/) — 6 records · last updated 2026-04-18
+
+## Backlinks into this folder (17)
+- [../projects/koi/rfc-001.md](../projects/koi/rfc-001.md)
+- ... (16 more)
+```
+
+**Example `_summary.md` (P1, LLM-generated by FolderSummaryWorkflow):**
+
+```markdown
+---
+folder: wiki/entities/people
+kind: folder_summary
+generated_at: 2026-04-22T03:00:00Z
+generated_by: agt:cairn-librarian:v2
+covers_records: 42
+summary_tokens: 180
+---
+This folder holds personal and professional context for 42 people the user
+has interacted with over the past 18 months. Largest cluster: 14 Koi team
+engineers (see engineering/). Highest recall: alice (12 interactions,
+primary collaborator on v2 rewrite). Recent additions focus on contractors
+for the Cairn MCP integration work.
+
+Dominant kinds: entity (40), reasoning (2).
+Visibility distribution: private (38), session (3), project (1).
+```
+
+**Example `_policy.yaml`:**
+
+```yaml
+folder: wiki/entities/people
+allowed_kinds: [entity, reasoning]       # Filter stage rejects writes of other kinds
+visibility_default: private
+consolidation_cadence: weekly            # overrides global default
+owner_agent: agt:cairn-librarian:v2      # this agent owns summaries for this folder
+retention_days: unlimited                # per-folder retention override
+summary_max_tokens: 300                  # cap for _summary.md regeneration
+```
+
+**How retrieval uses these:**
+
+| Use case | What happens |
+|----------|--------------|
+| `cairn search "people skills"` | search hits `_summary.md` files first (high density, pre‑digested); zero‑hit folders are skipped |
+| `cairn retrieve --folder wiki/entities/people` | returns `_index.md` + `_summary.md` + direct children; lets an agent "browse" instead of "grep" |
+| `assemble_hot` | can inject the `_summary.md` of the top‑scoped folder into the hot prefix (~200 tokens replaces ~2000 tokens of raw file list) |
+| `cairn lint` | checks that every non‑empty folder has an `_index.md`; flags folders where `_summary.md` is > N days stale |
+| agent navigation | an agent exploring the vault reads `_index.md` at each level instead of `ls`‑ing thousands of files — faster, cheaper, safer |
+
+**How they're kept fresh — zero manual upkeep:**
+
+```
+  write to wiki/entities/people/alice.md
+          │
+          ▼
+  PostToolUse hook (synchronous, <5 ms)
+          │
+          ├──► update wiki/entities/people/_index.md
+          │    (append/update row for alice.md; bump updated_at)
+          │
+          ├──► update wiki/entities/_index.md           ← walks up to parent
+          │    (recompute aggregates: record_count, last_update)
+          │
+          ├──► update wiki/_index.md                     ← and parent's parent
+          │
+          └──► enqueue FolderSummaryWorkflow job        (P1 only; async)
+               (runs on cadence, regenerates _summary.md
+                when new records exceed threshold)
+```
+
+**Folder-level operations become O(1):**
+
+- "What's in `wiki/entities/people/`?" — read one file (`_index.md`), not 42
+- "What does this folder know?" — read one file (`_summary.md`), not 42 × LLM pass
+- "Forget everything under this folder" — `cairn forget --folder <path>` chunks through the subtree using §5.6 `forget` WAL state machine; same Phase A + Phase B guarantees
+- "Copy this folder to a teammate" — `cairn share --folder <path>` bundles the subtree (index + summary + records) as a `.nexus` bundle under a `share_link`
+
+**Folder vs. scope vs. tier — when to use which:**
+
+| If you want to… | Use… |
+|-----------------|-------|
+| physically group related records in one place on disk | **a folder** |
+| filter queries by project / entity / topic without moving files | **a scope** (in the record's frontmatter) |
+| control who can read the records | **a visibility tier** (§6.3) |
+| control what kinds can be written here | **a `_policy.yaml` in the folder** |
+| share a group of records as a unit | **a folder + `cairn share`** |
+
+Folders, scopes, and tiers are orthogonal — the same record can live in `wiki/entities/people/alice.md`, have scope `(team: infra, project: koi)`, and visibility `team`. Each axis does one thing.
+
+### 3.4.a Prior art — what the Obsidian ecosystem did and what to reuse
+
+Obsidian is the closest battle‑tested reference for "markdown vault with folder organization." Cairn has a **different constraint** (every write is pipeline‑driven, no human file editor) but several Obsidian patterns survive the translation. Three worth stealing; three worth avoiding.
+
+**Three patterns to reuse:**
+
+| # | Pattern | Source | How Cairn applies it |
+|---|---------|--------|----------------------|
+| 1 | **Filesystem‑event‑driven index regeneration** | [Waypoint](https://github.com/IdreesInc/Waypoint), [Zoottelkeeper](https://github.com/akosbalasko/zoottelkeeper-obsidian-plugin) — watch `create/rename/move/delete` events, rewrite the parent folder's index deterministically | Cairn's `PostToolUse` hook already does this — on every WAL‑committed write, walk up the parent chain and regenerate `_index.md`. No LLM needed; the structural index is a deterministic scan. **Keep `_summary.md` (semantic, LLM‑generated) separate so the cheap structural regen runs on every write, and the expensive semantic regen only runs on cadence.** |
+| 2 | **Deepest‑match folder templates** | [Templater — Folder Templates](https://silentvoid13.github.io/Templater/settings.html) — walk up from the target path, first `_template.md` found wins | On every new‑record write, Cairn resolves the template by walking up from the target path. `wiki/entities/people/carol/interactions.md` → check `people/carol/_template.md`, then `people/_template.md`, then `entities/_template.md`, then `wiki/_template.md`, then root fallback. **Deepest match beats regex lists** — deterministic, diff‑friendly, and agents can reason about it by reading the folder tree. |
+| 3 | **PARA‑style top‑level organization as a starter template** | [Tiago Forte's PARA](https://fortelabs.com/blog/para/) — Projects / Areas / Resources / Archives used widely in Obsidian | `cairn init --template para` scaffolds `wiki/projects/` · `wiki/areas/` · `wiki/resources/` · `wiki/archive/` each with a pre‑seeded `_policy.yaml`. Not prescribed, just a starter; teams overrride via `cairn init --template <domain>` (§18.b). |
+
+**Three anti‑patterns to avoid:**
+
+| # | Anti‑pattern | Why | Cairn's alternative |
+|---|---------------|-----|---------------------|
+| 1 | **Folder‑name‑equals‑file‑name coupling** (Obsidian folder notes: `people/people.md` IS the folder's hub note) | Renaming a folder silently breaks the hub note; Waypoint's own README warns about data loss. Two writers racing on one file clobber each other. | Cairn uses **sidecars** — `_index.md` + `_summary.md` + `_policy.yaml` inside each folder. Cairn owns the sidecars; human edits to other files in the folder never touch them. Folder rename is a simple `git mv`; sidecars move with the folder. We lose Obsidian's graph‑view freebie, but we gain atomic concurrency. |
+| 2 | **Magic‑word in‑place rewriting** (`%% Begin Waypoint %% … %% End Waypoint %%` region inside a human‑authored note) | Concurrency trap: the agent, the user, and the hook can all target the same file; splicing into arbitrary markdown is fragile. | Cairn's sidecars are **entirely machine‑owned** and rewritten as atomic whole‑file replaces with `fsync`. The file has no user content to protect. Humans who want to annotate a folder write a separate `notes.md` — never touch `_index.md`. |
+| 3 | **UI‑coupled organization** (Dataview query blocks, graph‑view landmarks, plugin‑runtime rendering) | Dataview code fences only render inside Obsidian; `grep`, `cat`, and `git diff` see raw syntax. Any downstream consumer (the agent, the MCP server, a CI checker, a human on a plane) gets unreadable markdown. | **Every Cairn record is pure markdown — parseable without a plugin runtime.** If enrichment is needed, it's baked into the `_summary.md` as plain prose during the workflow pass, not deferred to a renderer. Obsidian users who want Dataview queries can install their own plugin; Cairn never emits them. |
+
+**Naming trade‑off we explicitly accepted.** Obsidian-land convention is `folder-name.md` inside `folder-name/` (the "folder note"). We deliberately chose `_index.md` + `_summary.md` + `_policy.yaml` because:
+
+- sidecars don't rename when the folder renames;
+- the `_` prefix sorts them to the top in every file listing (Obsidian + VS Code + raw `ls`);
+- machine‑owned names are distinct from any human file the user might want to drop in;
+- three separate files decouple cheap structural regen from expensive semantic regen.
+
+Users who migrate from Obsidian can run `cairn import --from obsidian --folder-notes-as <sidecar|keep>` to either (a) absorb the folder‑note into Cairn's `_summary.md` or (b) leave it in place as a plain `<folder-name>.md` record — both work; `_index.md` is generated fresh either way.
+
+---
+
+## 4. Contracts — the Five That Matter [P0]
 
 ### 4.0 Overall architecture at a glance
 
@@ -420,9 +916,10 @@ Most deployments use Shape 1–3 with rebac; the escape hatch exists for the edg
                 ┌───────────────────────────────────────────────┐
                 │   HARNESSES  (CC · Codex · Gemini · custom)   │
                 └─────────────────────┬─────────────────────────┘
-                                      │  MCP (8 core verbs: ingest · search · retrieve · summarize
-                                      │       · assemble_hot · capture_trace · lint · forget
-                                      │       + opt-in extensions §8.0.a)
+                                      │  Four surfaces, same 8 verbs (§8.0):
+                                      │    CLI (ground truth) · MCP · SDK · skill
+                                      │  Verbs: ingest · search · retrieve · summarize
+                                      │         · assemble_hot · capture_trace · lint · forget
                                       ▼
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                          CAIRN CORE  (L0, Rust, zero runtime deps)             │
@@ -445,38 +942,54 @@ Most deployments use Shape 1–3 with rebac; the escape hatch exists for the edg
 ┌──────────┐   ┌──────────┐    ┌────────────┐   ┌────────────┐   ┌────────────┐
 │ Store    │   │ LLM      │    │ Orchestr.  │   │ Sensors    │   │ Frontend   │
 │ plugin   │   │ plugin   │    │ plugin     │   │ plugins    │   │ adapter    │
-│ (Nexus   │   │ (OpenAI‑ │    │ (tokio     │   │ (hook, IDE,│   │ (Obsidian, │
-│ sandbox) │   │ compat.) │    │  default,  │   │  clipboard,│   │  VS Code,  │
-│          │   │          │    │  Temporal) │   │  screen,   │   │  Logseq,   │
-│          │   │          │    │            │   │  Slack,    │   │  desktop,  │
-│          │   │          │    │            │   │  GitHub…)  │   │  headless) │
+│          │   │          │    │            │   │            │   │            │
+│ P0: pure │   │ (OpenAI- │    │ (tokio     │   │ (hook, IDE,│   │ (Obsidian, │
+│  SQLite  │   │ compat.) │    │  default,  │   │  clipboard,│   │  VS Code,  │
+│ P1: +    │   │          │    │  Temporal) │   │  screen,   │   │  Logseq,   │
+│  Nexus   │   │          │    │            │   │  Slack,    │   │  desktop,  │
+│  sandbox │   │          │    │            │   │  GitHub…)  │   │  headless) │
+│ P2: +    │   │          │    │            │   │            │   │            │
+│  federate│   │          │    │            │   │            │   │            │
 └────┬─────┘   └──────────┘    └────────────┘   └─────┬──────┘   └─────┬──────┘
      │                                                │                │
      ▼                                                ▼                ▼
-┌─────────────────────────┐                 ┌──────────────────┐ ┌────────────────┐
-│  <vault>/ (on disk)     │                 │ external systems │ │ third‑party    │
-│  ├── sources/    immut. │                 │ (Slack, email,   │ │ editor reads   │
-│  ├── raw/        private│                 │  GitHub, Notion, │ │ .md + sidecar; │
-│  ├── wiki/  skills/     │                 │  Calendar…)      │ │ optional plug‑ │
-│  │           promoted   │                 │                  │ │ in for live UI │
-│  ├── .cairn/ config+WAL │                 └──────────────────┘ └────────────────┘
-│  └── consent.log audit  │
-└─────────────────────────┘
+┌───────────────────────────────────────┐     ┌──────────────────┐ ┌────────────────┐
+│  <vault>/ (on disk)                   │     │ external systems │ │ third‑party    │
+│  ├── sources/    immut.               │     │ (Slack, email,   │ │ editor reads   │
+│  ├── raw/        private              │     │  GitHub, Notion, │ │ .md + sidecar; │
+│  ├── wiki/  skills/                   │     │  Calendar…)      │ │ optional plug‑ │
+│  │           promoted                 │     │                  │ │ in for live UI │
+│  ├── .cairn/                          │     └──────────────────┘ └────────────────┘
+│  │   ├── cairn.db ◄── P0: records +   │
+│  │   │              WAL + replay +    │
+│  │   │              consent + locks   │
+│  │   │              (ONE SQLite file) │
+│  │   ├── config.yaml                  │
+│  │   └── consent.log (async mirror)   │
+│  └── nexus-data/ ◄── P1+ ONLY         │
+│      ├── BM25S lexical index          │
+│      ├── sqlite-vec ANN               │
+│      ├── CAS blob store               │
+│      └── ReDB metastore               │
+│      (internal Nexus layout; opaque   │
+│       to Cairn — HTTP+MCP only)       │
+└───────────────────────────────────────┘
 ```
 
-**Read this top‑down.** Harnesses call MCP. MCP hits Cairn core. Core dispatches through pure‑function pipelines using the five contracts. Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: vault on disk, external APIs, third‑party editors.
+**Read this top-down.** Harnesses call one of four surfaces (CLI / MCP / SDK / skill — all wrapping the same eight Rust functions in `src/verbs/`). Core dispatches through pure-function pipelines using the five contracts. Contracts are satisfied by plugins (swap any one via `.cairn/config.yaml`). Plugins touch the outside world: **at P0 only the one SQLite file + the markdown tree**; at P1 Nexus sandbox adds `nexus-data/` alongside; at P2 federation adds a remote hub.
 
 **Everything you'd plug in has a single socket.** Adding Postgres‑backed storage? Implement `MemoryStore`. Adding a Temporal Cloud workflow runner? Implement `WorkflowOrchestrator`. Adding Typora support? Implement `FrontendAdapter` (§13.5.d). No core changes, no forks.
 
-Everything in Cairn is a pure function over data, except these five interfaces.
+Everything in Cairn is a pure function over data, except these six interfaces.
 
-| # | Contract | Purpose | Default implementation |
-|---|----------|---------|------------------------|
-| 1 | `MemoryStore` | typed CRUD + ANN + FTS + graph over `MemoryRecord` | **Nexus `sandbox` profile** (Python sidecar; SQLite + BM25S + `sqlite-vec` for semantic via `litellm` embeddings + in‑process LRU; single DB file, zero external services; ~300–400 MB RSS, <5 s warm boot). **Scale‑up path = federation** — sandbox instances delegate to a **Nexus `full`** hub zone (PostgreSQL + Dragonfly + Zoekt + txtai) over HTTP; Cairn does not switch Cairn‑side adapters to scale. Cairn talks to Nexus over HTTP + MCP, **not in‑process** (Rust core ↔ Python Nexus across the process boundary). |
-| 2 | `LLMProvider` | one function — `complete(prompt, schema?) → text \| json` | OpenAI‑compatible (local Ollama, any cloud) |
-| 3 | `WorkflowOrchestrator` | durable scheduling + execution for background loops | **Rust‑native default**: `tokio` + a SQLite‑backed job table (durable, crash‑safe, single binary, zero services). **Optional Temporal adapter**: `temporalio-sdk` + `temporalio-client` (both published on crates.io, currently prerelease) when GA; a TypeScript Temporal worker sidecar as the safe path today |
-| 4 | `SensorIngress` | push raw observations into the pipeline | hook sensors, IDE, clipboard, screen (opt‑in), web clip |
-| 5 | `MCPServer` | harness‑facing tools | stdio + SSE; eight core verbs + opt‑in extensions (§8) |
+| # | Contract | Priority | Purpose | Default implementation |
+|---|----------|----------|---------|------------------------|
+| 1 | `MemoryStore` | P0 | typed CRUD + ANN + FTS + graph over `MemoryRecord` | **P0 default = pure SQLite** (`.cairn/cairn.db`, FTS5 keyword search, no sidecar, ~15 MB binary, zero deps); **P1 default = Nexus `sandbox` profile** (Python sidecar — BM25S lexical index + `sqlite-vec` ANN + `litellm` embeddings + ReDB metastore + CAS blob store, all under `nexus-data/` alongside the unchanged `.cairn/cairn.db`; ~300–400 MB RSS, <5 s warm boot). **Scale‑up path = federation**, not adapter swap — sandbox instances delegate to a **Nexus `full`** hub zone (PostgreSQL + pgvector + Dragonfly) over HTTP. Every tier talks to its backend through the same `MemoryStore` trait; the P0→P1 jump is a config line (`store.kind: sqlite` → `store.kind: nexus-sandbox`), not a code change. |
+| 2 | `LLMProvider` | P0 | one function — `complete(prompt, schema?) → text \| json` | OpenAI‑compatible (local Ollama, any cloud) |
+| 3 | `WorkflowOrchestrator` | P0 | durable scheduling + execution for background loops | **Rust‑native default**: `tokio` + a SQLite‑backed job table (durable, crash‑safe, single binary, zero services). **Optional Temporal adapter**: `temporalio-sdk` + `temporalio-client` (both published on crates.io, currently prerelease) when GA; a TypeScript Temporal worker sidecar as the safe path today |
+| 4 | `SensorIngress` | P0 | push raw observations into the pipeline | hook sensors (P0); IDE, clipboard, screen (opt‑in), web clip (P1); Slack/email/GitHub (P2) |
+| 5 | `MCPServer` | P0 | harness‑facing tools | stdio + SSE; eight core verbs + opt‑in extensions (§8) |
+| 6 | `AgentProvider` | **P2** | spawn a constrained sub‑agent for `AgentExtractor` (§5.2.a) / `AgentDreamWorker` (§10.2) / any future agent‑mode worker | **Default**: Cairn ships a minimal loop (`cairn-agent-core` crate) that takes an `AgentIdentity`, a tool allowlist, and a `cost_budget`; runs with `LLMProvider` for the model and `cairn` CLI subprocess calls for read-only tools (`search`, `retrieve`, `lint --dry`). **Optional adapters**: wire in `pi-mono`, a custom in-harness loop, or any external agent runtime by implementing `AgentProvider::spawn(identity, scope, budget) → AgentHandle`. Not required at P0 or P1 — the extractor chain and dream worker default to `llm` / `hybrid` modes which use `LLMProvider` directly. Kicks in only when a deployment opts into `agent` mode for one of those workers. |
 
 Everything else — Extractor, Filter, Classifier, Scope, Matcher, Ranker, Consolidator, Promoter, Expirer, SkillEmitter, HotMemoryAssembler, TraceCapturer, TraceLearner, UserSensor, UserSignalDetector, PropagationPolicy, OrphanDetector, ConflictDAG, StalenessScanner — is a **pure function** with a typed signature. Cairn ships a default implementation for each; users override by pointing `.cairn/config.yaml` at a different function exported from any registered plugin.
 
@@ -521,9 +1034,24 @@ cairn plugins verify                     # runs contract conformance tests again
 
 CI enforces all four: L0 has no impl deps; no module in core imports from any adapter; every bundled plugin passes contract conformance; capability declarations match runtime behavior.
 
-### 4.2 Identity — agents, sensors, actor chains
+### 4.2 Identity — agents, sensors, actor chains [P0 minimal · P2 full chain]
 
 Multi‑agent collaboration only works if every memory record can answer **who wrote this, who asked for it, on whose behalf**. Cairn treats identity as a first‑class contract, not a string tag.
+
+**Priority split** — the identity model layers just like storage does:
+
+| Piece | Priority | What ships |
+|-------|----------|------------|
+| Ed25519 keypair per vault in platform keychain (Keychain / Secret Service / DPAPI) | **P0** | single `author` identity per write; signature on every record; no chain |
+| Signed envelope schema (operation_id, nonce, sequence, target_hash, issued_at, expires_at, signature) | **P0** | every CLI / MCP / SDK / skill call carries one; replay ledger + atomic consumption in `.cairn/cairn.db` |
+| Three identity kinds (`HumanIdentity` · `AgentIdentity` · `SensorIdentity`) | **P0** | each write is tagged as human / agent / sensor; identity kind gates visibility defaults + consent capability |
+| `actor_chain` with delegation (principal → delegator → author → sensor) | **P2** | multi-hop signing when one agent spawns another; required once more than one agent writes to the same vault |
+| Countersignatures (`attestation_chain`) | **P2** | each actor in the chain signs independently; needed for adversarial-multi-agent and cross-org scenarios |
+| `ConsentReceipt` for shared-tier promotions (`private → project → team → org → public`) | **P2** | human signature required to promote any record to `team`+; propagation workflow (§10) depends on this |
+| Trust score per identity | **P2** | weights ranker + skill evolution gates; only meaningful once multiple identities have track records |
+| Scope tuple + `rebac` integration | **P1 scope · P2 full rebac** | scope tuple lands at P0 on every record; dynamic rebac enforcement arrives with Nexus sandbox |
+
+**At P0 a single user with a single agent doesn't need the chain** — the record carries one `author: agt:claude-code:opus-4-7:v1` signature and one sensor label if applicable. That signature is enough for audit, forget-me, and replay protection. Full delegation, countersignatures, and trust scores only become load-bearing once a vault has more than one agent writing to it concurrently (the multi-agent P2 case).
 
 **Three identity kinds, all stable + verifiable:**
 
@@ -548,6 +1076,41 @@ attestation_chain: [sig1, sig2, sig3]  # countersignatures from each actor
 ```
 
 **Why a chain and not a single `author` field:** multi‑agent systems delegate. A supervisor agent spawns a reviewer agent; the reviewer spawns a critic agent; the critic writes a memory. Every hop is material to trust and auditability. Cairn enforces the chain at write time — a record without a valid signed chain is rejected by the Filter stage (§5.2). Verification at read time lets `recall` surface records with broken chains for human review rather than silently hiding them.
+
+**Flow — how a chained signature is built (write time):**
+
+```
+     Human              Supervisor           Reviewer            Critic             Cairn
+     (hmn:alice)        agent                agent               agent              MCP server
+        │                  │                   │                   │                   │
+        │── "review PR" ─▶ │                   │                   │                   │
+        │                  │── delegate(PR) ─▶ │                   │                   │
+        │                  │                   │── spawn(critic)─▶ │                   │
+        │                  │                   │                   │── extract memory  │
+        │                  │                   │                   │                   │
+        │                  │                   │                   │─ sign(env,        │
+        │                  │                   │                   │   role=author,    │
+        │                  │                   │                   │   key=critic)     │
+        │                  │                   │─ countersign(env, │                   │
+        │                  │                   │   role=delegator) │                   │
+        │                  │─ countersign(env, │                   │                   │
+        │                  │   role=delegator) │                   │                   │
+        │── countersign ──▶│                   │                   │                   │
+        │  (env,           │                   │                   │                   │
+        │   role=principal)│                   │                   │                   │
+        │                  │                   │                   │── ingest(env + chain + payload) ─▶│
+        │                  │                   │                   │                   │
+        │                  │                   │                   │                   │  § 5.2 Filter stage:
+        │                  │                   │                   │                   │    1. verify each signature against its key_version
+        │                  │                   │                   │                   │    2. verify chain order (principal → delegator* → author → sensor*)
+        │                  │                   │                   │                   │    3. verify scope tuple fits each actor's allowed_kinds/allowed_tiers
+        │                  │                   │                   │                   │    4. atomic replay check (§4.2 "Atomic replay + ordering")
+        │                  │                   │                   │                   │    5. write MemoryRecord with frontmatter.actor_chain + attestation_chain
+        │                  │                   │                   │                   │
+        │                  │                   │                   │◀── op_receipt ────│
+```
+
+**Read-time verification is cheap.** `retrieve` reads the record, walks the chain once, checks each signature against the cached public keys, and returns a typed `chain_status: "valid" | "expired_key" | "revoked" | "broken"`. Only `valid` surfaces through `search`; the other three land in `cairn lint` output for human review. Caller sees the status; they never see records with a broken chain unless they explicitly request them.
 
 **Per‑agent scope + policy:**
 
@@ -627,7 +1190,7 @@ The two statements run inside one short `BEGIN` transaction — no `FOR UPDATE`,
 
 **Signature‑first rejection.** Signature verification runs **before** any disk write to `.cairn/cairn.db`. An attacker replaying a valid signature hits step 5's unique constraint; an attacker sending junk never reaches step 5 because signature check rejects first. This prevents ledger pollution by unauthenticated traffic.
 
-**Replay consumption is coupled to WAL `PREPARE`, not independent.** The replay ledger (`used`, `issuer_seq`, `outstanding_challenges`) and the WAL op log (`wal_ops`, `consent_journal`) all live in the same SQLite file — `.cairn/cairn.db` — owned directly by the Rust core (see "Durability topology" in §3). Nexus has its own `nexus.db` for memory state; the two files are coordinated via idempotency keys (§5.6), not via a distributed transaction. The transaction below is a single local SQLite commit that atomically couples replay consumption with the WAL `PREPARE` row:
+**Replay consumption is coupled to WAL `PREPARE`, not independent.** The replay ledger (`used`, `issuer_seq`, `outstanding_challenges`) and the WAL op log (`wal_ops`, `consent_journal`) all live in the same SQLite file — `.cairn/cairn.db` — owned directly by the Rust core (see "Durability topology" in §3). At P0 the records themselves also live in this file, so one local SQLite commit covers everything. At P1+ Nexus owns record bodies in `nexus-data/` (CAS + ReDB metastore + BM25S + `sqlite-vec`) and Cairn coordinates via idempotency keys (§5.6), not via a distributed transaction. The transaction below is a single local SQLite commit that atomically couples replay consumption with the WAL `PREPARE` row:
 
 ```
 BEGIN;
@@ -695,7 +1258,7 @@ The shared‑tier gate (§11.3) re‑verifies the receipt at apply time — a re
 
 ---
 
-## 5. Pipeline — Read, Write, Consolidate
+## 5. Pipeline — Read, Write, Consolidate [P0]
 
 Cairn's pipeline has three explicit paths: the **read path** that serves a turn, the **write path** that captures what the agent learned, and the **consolidation path** that runs off‑request.
 
@@ -729,8 +1292,8 @@ One message, one turn — trace every stage:
       │                                    ▼                           │                    │
       │                           [optional: on‑demand                 │                    │
       │                            cairn search / retrieve             │                    │
-      │                            via MCP, bounded to                 │                    │
-      │                            N tokens budget]                    │                    │
+      │                            via CLI or MCP, bounded             │                    │
+      │                            to N tokens budget]                 │                    │
       │                                    │                           │                    │
       │                                    ▼                           │                    │
       │                          [LLM generates; calls tools           │                    │
@@ -774,6 +1337,157 @@ One message, one turn — trace every stage:
 ```
 
 **Total harness latency added:** hot‑prefix assembly on `SessionStart` (p50 < 20 ms warm) + optional on‑demand `search` on `UserPromptSubmit` (p50 < 10 ms). The write path, WAL flush, and workflow scheduling all run **off** the response path — the user never waits on them.
+
+### 5.0.a Three capture modes — auto, explicit, proactive (all run concurrently)
+
+A single turn can trigger **all three** capture modes at once. Cairn doesn't pick one — the pipeline de‑duplicates at the Filter stage (§5.2), so even overlapping captures produce one final record per concept.
+
+```
+                 one user turn enters the system through three paths simultaneously
+    ══════════════════════════════════════════════════════════════════════════════════════
+                                              │
+                ┌─────────────────────────────┼─────────────────────────────┐
+                │                             │                             │
+                ▼                             ▼                             ▼
+     ╔══════════════════╗          ╔══════════════════╗          ╔══════════════════╗
+     ║  MODE A: AUTO    ║          ║  MODE B: EXPLICIT║          ║  MODE C:         ║
+     ║  (sensor-driven) ║          ║  ("tell it")     ║          ║  PROACTIVE       ║
+     ║                  ║          ║                  ║          ║  (agent decides) ║
+     ╚══════════════════╝          ╚══════════════════╝          ╚══════════════════╝
+     Hook fires on every           User says:                     Agent notices:
+       SessionStart                  "remember that I              "this is a novel
+       UserPromptSubmit               prefer X"                      entity I haven't
+       PreToolUse                   "forget what I                   seen before"
+       PostToolUse                    said about Y"                "user corrected me —
+       Stop                         "skillify this"                  save as feedback"
+                                                                   "this strategy
+     Every hook event            The skill (§18.d) or                worked — promote
+     becomes a CaptureEvent      "tell it directly"                   to strategy_success"
+     signed by the sensor's      triggers (§18.a) route             "I hit an unmet
+     SensorIdentity, enters      directly to cairn ingest            prerequisite —
+     the pipeline.               with an explicit kind                emit knowledge_gap"
+                                 declared by the user.
+     ExtractorWorker chain       Goes through the same              Agent invokes
+     runs in default order       Filter/Classify/Store              cairn ingest with
+     (regex → llm → agent).      as any other capture —             its own AgentIdentity
+     Agent has zero               no fast path, no skipping         signature.
+     involvement.                 PII redaction.
+                │                             │                             │
+                └─────────────────────────────┼─────────────────────────────┘
+                                              │
+                                              ▼
+                            ┌──────────────────────────────────┐
+                            │  SAME INGESTION PIPELINE §5.2    │
+                            │  Extract → Filter → Classify →   │
+                            │  Scope → Store (§5.6 WAL upsert) │
+                            │                                   │
+                            │  Filter stage de-dupes across     │
+                            │  modes — if all three paths       │
+                            │  captured "user prefers dark      │
+                            │  mode" in one turn, one record    │
+                            │  lands, attributed to the         │
+                            │  highest-authority actor.         │
+                            └──────────────────┬────────────────┘
+                                               │
+                                               ▼
+                                    same MemoryStore, same vault
+```
+
+**Which mode fires when:**
+
+| Scenario | Mode A auto | Mode B explicit | Mode C proactive | Why |
+|----------|-------------|------------------|-------------------|-----|
+| User types a message | ✓ (hook captures raw msg) | — | ✓ (agent may re‑emit as `user` or `feedback` kind) | hook always fires; proactive is judgment |
+| User says "remember that …" | ✓ (hook captures raw msg) | ✓ (skill trigger matches) | — | explicit wins; agent doesn't also re‑remember |
+| Tool call completes | ✓ (PostToolUse hook) | — | ✓ (agent may emit `trace` child or `strategy_success`) | hook is automatic; proactive records the meaning |
+| Novel entity encountered | ✓ (hook captures raw transcript) | — | ✓ (agent emits `entity` record) | user isn't thinking about memory; agent decides |
+| User corrects the agent | ✓ (hook captures msg) | — | ✓ (agent emits `feedback` with high confidence) | correction is high‑salience; agent should capture |
+| Ad‑hoc success worth reusing | ✓ (hook captures trace) | may say "skillify this" | ✓ (agent may emit `strategy_success` on its own) | explicit accelerates; proactive catches what user forgets |
+| Session ends | ✓ (Stop hook → `capture_trace`) | — | ✓ (agent may emit session summary) | both run; rolling summary consolidates downstream |
+
+**Mode composition — none of these modes requires the other two:**
+
+- **Minimum Cairn (no agent cooperation):** only Mode A runs. Hooks fire, `ExtractorWorker` chain produces drafts, pipeline stores them. A harness that does nothing beyond loading the MCP server still gets a functional memory.
+- **Explicit only:** a user who disables hooks and only types "remember …" still gets durable memory via Mode B. Works in any bash-capable harness via the skill.
+- **Proactive only:** an agent with strong self-awareness may choose to call `cairn ingest` at key moments without waiting for hooks. Uncommon in P0 but common in P2 (AgentExtractor as the default extractor).
+
+**Who records what — the attribution rule:**
+
+Every record's `actor_chain` (§4.2) names the actual author. Mode A records are authored by the sensor (`snr:local:hook:cc-session:v1`); Mode B records are authored by the user (`hmn:alice:v1`) with the agent as delegator; Mode C records are authored by the agent (`agt:claude-code:opus-4-7:main:v3`). An auditor reading `consent.log` + `actor_chain` can reconstruct which mode fired for any record.
+
+### 5.0.b Auto-learning loop — how raw capture becomes durable skill
+
+Capturing isn't the same as learning. Raw `trace` records are dead bytes until a workflow distills them into reusable knowledge. Three workflows, running off-request, do this automatically:
+
+```
+     RAW CAPTURE (the last 24 h of trace + turn + reasoning records)
+                                │
+                                ▼
+          ┌──────────────────────────────────────────────────┐
+          │  ConsolidationWorkflow (rolling summary, P0)     │
+          │  every N turns, emit a `reasoning` record        │
+          │  summarizing window_size_turns worth of history  │
+          │  → lets assemble_hot load meaning, not raw turns │
+          └──────────────────┬───────────────────────────────┘
+                             ▼
+          ┌──────────────────────────────────────────────────┐
+          │  ReflectionWorkflow (P1)                         │
+          │  mid-depth pass — hourly or on high-salience     │
+          │  identifies repeated patterns:                   │
+          │    - same tool error recurring → knowledge_gap   │
+          │    - novel entity appeared → entity_candidate    │
+          │    - user corrected agent 3× same way → rule     │
+          │  emits new records as candidates for promotion   │
+          └──────────────────┬───────────────────────────────┘
+                             ▼
+          ┌──────────────────────────────────────────────────┐
+          │  ACE — SkillEmitter (P1, trajectory→playbook)    │
+          │  nightly DeepDream: scans successful trajectories│
+          │  distills them into `playbook`/`strategy_success`│
+          │  records. This is where one successful ad-hoc    │
+          │  procedure becomes a reusable skill.             │
+          │  Example: user + agent solved a deploy issue in  │
+          │  6 steps → SkillEmitter produces                 │
+          │  `skill_deploy-hotfix_v1.md` + its scripts+tests │
+          │  via Skillify pipeline (§11.b stage 2).          │
+          └──────────────────┬───────────────────────────────┘
+                             ▼
+          ┌──────────────────────────────────────────────────┐
+          │  EvolutionWorkflow (P2)                          │
+          │  mutates existing skills based on new traces:    │
+          │  A/B proposals + §11.3 nine-gate promotion       │
+          │  predicate + canary rollout before going live.   │
+          └──────────────────┬───────────────────────────────┘
+                             ▼
+                   ┌──────────────────────┐
+                   │  durable skills +    │
+                   │  cleaner summaries + │
+                   │  auto-built user     │
+                   │  profile (§7.1)      │
+                   └──────────────────────┘
+```
+
+**So the answer to "who decides what to remember":**
+
+- **The user never has to** — hooks + `ExtractorWorker` + ConsolidationWorkflow keep working in the background.
+- **The user can always override** — `remember that …` and `skillify this` bypass classifier heuristics and force immediate capture.
+- **The agent should do the hard judgment calls** — which `trace` records deserve an `entity` promotion, which `feedback` warrants a `rule`, which ad‑hoc success is worth `strategy_success`.
+
+Cairn provides the tooling for all three; deployments tune the balance via `.cairn/config.yaml`:
+
+```yaml
+capture:
+  mode_a_hooks: enabled       # default P0
+  mode_b_explicit: enabled    # default P0 (skill triggers)
+  mode_c_proactive:
+    enabled: true             # default P0 (agent has cairn CLI/MCP access)
+    encouragement: strong     # one of: off | weak | strong
+                              # strong: agent sees "capture this" hints in
+                              # its system prompt whenever a novel entity,
+                              # rule, or success is detected
+```
+
+---
 
 **Where each user story (§18.c) shows up:** US1 turn sequence = raw/turn_*.md boxes; US3 user memory = AutoUserProfile in hot prefix; US5 tool calls = PostToolUse arrow; US4 rolling summary = LightSleep / REMSleep loop.
 
@@ -823,12 +1537,83 @@ Agent ──interactions──► [Capture] ──raw events──► [Extract] 
 |-------|--------------|---------------|
 | **Capture** | gather events, tool calls, outcomes, sensor frames, user signals | `capture` |
 | **Tool‑squash** | compact verbose tool outputs before they become memories: dedup repeated lines, truncate with `[…skipped N lines…]`, strip ANSI, extract structured fields when the tool declares a schema | `squash` |
-| **Extract** | LLM‑backed distillation of experiences, facts, preferences, skills — OR zero‑LLM regex fallback | `extract` |
+| **Extract** | distillation of experiences, facts, preferences, skills into `MemoryRecord` drafts — runs through the pluggable `ExtractorWorker` trait (§5.2.a) with three built‑in modes: regex (P0), LLM (P0), agent (P2) | `ExtractorWorker` trait |
 | **Filter (Memorize?)** | decide `yes` (proceed) or `no` (discard). Discard reasons are first‑class and logged: `volatile`, `tool_lookup`, `competing_source`, `low_salience`, `pii_blocked`, `policy_blocked`, `duplicate`. Also handles PII redaction (Presidio) and prompt‑injection fencing before the yes branch | `shouldMemorize` + `redact` + `fence` |
 | **Classify & Scope** | kind (19) × class (4) × visibility (6) × scope → keyspace; emits `ADD / UPDATE / DELETE / NOOP` decision. Kind cardinality is generated from the single IDL (§13.5) — a CI check fails on drift across sections, examples, and validators | `classifyAndScope` |
 | **Memory Store upsert** | persist with provenance; write index + cache entries | `MemoryStore.upsert` (contract) |
 
 Capture → Memory Store is **always on‑path** and bounded — p95 < 50 ms including hot‑memory re‑assembly on high‑salience writes.
+
+### 5.2.a ExtractorWorker — pluggable dispatch modes
+
+The **Extract** stage is on the hot path of every turn (unlike DreamWorker which runs off‑path). Cost and latency matter more than for dreaming. Cairn ships three built‑in implementations on one `ExtractorWorker` trait; deployments pick per write‑kind so you can use regex for noisy high‑volume sensors, LLM for mainline capture, and an agent for the rare "this turn is worth deeply reasoning about" event.
+
+```rust
+// L0 trait — zero deps, pure data over in/out
+pub trait ExtractorWorker: Send + Sync {
+    fn name(&self) -> &'static str;                 // "regex" | "llm" | "agent" | custom
+    fn budget(&self) -> ExtractBudget;              // tokens, wall-clock, tool calls
+    async fn extract(&self, event: &CaptureEvent) -> Vec<MemoryDraft>;
+}
+```
+
+**The three built‑ins + when to pick each:**
+
+| Mode | How extraction runs | Cost | Latency | Right default for | Priority |
+|------|----------------------|------|---------|--------------------|-----------|
+| **`RegexExtractor`** | pattern‑matches the event against declared rules (pre‑compiled regex + small state machine per `MemoryKind`). No LLM, no network. | ~0 | p99 < 2 ms | sensor events with predictable shape (hook payloads, tool call frames, "user says X" triggers from §18.a) | **P0** — always on |
+| **`LLMExtractor`** | single prompted LLM call with a structured schema (`{kind, body, entities, confidence}`). Schema enforced via `LLMProvider`'s JSON mode. | ~1 model call × ≤ 2 KB prompt | p95 < 400 ms | mainline turn capture: free‑form user messages, agent reasoning traces, novel entities/facts | **P0** — default for turn capture |
+| **`AgentExtractor`** | invokes a full Cairn agent with read‑only tools (`search`, `retrieve`, `lint --dry`) in a short multi‑turn loop. Agent can corroborate against existing records before drafting, call deterministic scripts for parsing, iterate on ambiguous input. | 5–20× LLM cost; tool calls metered | unbounded unless capped — cap via `budget.max_turns` + `max_wall_s` | high‑stakes captures where extraction accuracy matters more than latency: `rule`/`playbook`/`opinion` kinds, adversarial sources, domain‑specific extraction | **P2** — opt‑in |
+
+**Contract rules (all three modes obey):**
+
+- Every mode produces the **same `MemoryDraft` vector** — identical schema, identical downstream `Filter → Classify → Store` pipeline. An agent extraction is indistinguishable from a regex extraction after serialization.
+- Every mode respects `budget` — exceeding it returns `ExtractBudgetExceeded`, the event falls through to the next extractor in the chain (or to `RegexExtractor` as last‑resort fallback).
+- **No extractor writes to the vault directly.** The draft flows through §5.6 WAL `upsert` like every other write. An agent cannot skip the Filter stage, PII redaction, or classification.
+- **Agent mode shells out to the same `cairn` CLI** as external callers — not an "internal MCP server." The `AgentExtractor` is a Cairn agent whose tool set is literally `bash(cairn search …)`, `bash(cairn retrieve …)`, `bash(cairn lint --dry …)`. Same binary, same policy gates, same signed‑envelope requirement (with the extractor's own `agt:cairn-extractor:v1` identity). One thing to test, one thing to secure, one thing to observe; stdout lands in the harness log stream like any other command.
+- Agent mode's CLI commands are **read‑only by default**. An `AgentExtractor` that tries to invoke `cairn ingest` or `cairn forget` is rejected at the signed‑envelope layer — the extractor's scope tuple (§4.2) forbids mutating verbs. The binary knows the caller is an extractor from the signed `issuer` field.
+
+**Chained extractors — the real deployment:**
+
+```
+  capture event ──►  RegexExtractor       ──► matched kind? ──► draft list
+                     (first pass, <2 ms)          │ no
+                                                   ▼
+                     LLMExtractor          ──► structured output ──► draft list
+                     (P0 mainline)                 │ confidence < 0.6
+                                                   ▼
+                     AgentExtractor        ──► multi-turn reasoning ──► draft list
+                     (P2 opt-in, only for selected kinds or low-confidence events)
+```
+
+Each stage is a function call in the extract chain, configured per vault:
+
+```yaml
+# .cairn/config.yaml
+pipeline:
+  extract:
+    chain:
+      - worker: regex              # P0 always
+        kinds: [trace, sensor_observation, user_signal]
+      - worker: llm                # P0 default for turn capture
+        kinds: [user, feedback, rule, playbook, reasoning, strategy_success]
+        model: ${LLM_MODEL:-gpt-4o-mini}
+        budget: { max_tokens: 2000, max_wall_ms: 500 }
+      - worker: agent              # P2 opt-in, only for flagged events
+        trigger: confidence_below  # 0.6 threshold
+        agent_profile: cairn-extractor:v1
+        budget: { max_turns: 6, max_wall_s: 30 }
+```
+
+**Why three modes and not "pick one":** the real‑world reference systems each picked a different point on this spectrum for *extraction*, and each picked correctly for their use case:
+
+| Reference system | Extraction mode | Why |
+|-------------------|-------------------|-----|
+| **Hindsight / hermes‑agent** | `llm` — `post_llm_call` hook fires structured extraction with a fixed prompt | single‑tenant personal agent; latency budget matters; works well for entity + fact extraction |
+| **opencode** | `regex`‑equivalent — structured "parts" with typed fields; no LLM extraction on session writes | sessions store raw exchanges verbatim; extraction happens only at compaction time, not at capture |
+| **gbrain** | `agent`‑equivalent — skills dispatched as subagents can enrich + cross‑reference before drafting | personal knowledge‑base; 10k+ files; extraction accuracy compounds over months, worth the cost |
+
+Cairn supports all three behind the same `ExtractorWorker` trait. Default `regex + llm` chain at P0; add `agent` at P2 for the kinds where accuracy matters more than 400 ms of latency. **Switching modes is a config line; the record schema, WAL, and pipeline are identical.**
 
 ### 5.3 Consolidation path — off‑request, durable
 
@@ -861,7 +1646,7 @@ Every write path run produces a **FlushPlan** before any bytes hit the `MemorySt
 | Mode | Behavior |
 |------|----------|
 | `autonomous` (default) | Capture → … → Plan → apply inline, same turn |
-| `dry_run` | Plan returned via MCP `ingest(dry_run: true)`; no writes |
+| `dry_run` | Plan returned via `cairn ingest --dry-run` (CLI) or `ingest(dry_run: true)` (MCP); no writes |
 | `human_review` | Plan written to `.cairn/flush/<ts>.plan.json` + human diff; apply waits for `cairn flush apply <id>` |
 
 Benefits: plans are idempotent (re‑apply = no‑op), reviewable, replayable for eval, and the primary audit artifact for *every* memory mutation. Same pattern as OpenClaw's flush‑plan.
@@ -1045,9 +1830,107 @@ Persisting per‑step completion markers (`step:N:done`) is what makes step 3 ab
 | §10.1 single‑writer ordering | dependencies field enforces deterministic precedence under contention |
 | §11.3 evolution rollout | canary → full rollout is one multi‑step op; rollback uses the WAL's compensating ops |
 
+### 5.7 Sessions are trees, not logs
+
+Most agent memory systems model a session as a flat append‑only log. Cairn models it as a **tree**: any session can be forked at any turn, producing a new `session_id` that inherits history up to the fork point but diverges afterward. This keeps side‑quest exploration from polluting the main context and makes recall like "show me what happened if we'd taken the other path" a first‑class query.
+
+```
+  trunk session (s1)
+  ─────────────────────────────────────────────────────────►  time
+   t1    t2    t3    t4    t5    t6    t7    t8    t9    t10
+
+                   ├──── fork ──── side‑quest session (s2)
+                   │    t4'   t5'   t6'                         (abandoned; kept for history)
+                   │
+                         ├──── fork ──── research session (s3)
+                         │    t5''  t6''  t7''   ──── merge summary ───►  promoted into trunk at t8
+                         │
+                                 ├──── clone ──── experiment (s4)
+                                 │    (copy of t6, new identity, isolated writes)
+```
+
+**Primitives (§8 forget/retrieve/search already know about session_id; add three session‑mode verbs):**
+
+| CLI | MCP | What it does |
+|-----|-----|---------------|
+| `cairn session tree <root>` | `retrieve(scope:"session_tree", root:<id>)` | walk the ancestry + siblings of a session; returns a typed tree |
+| `cairn session fork <sid> --at <turn_id>` | `ingest(op:"fork_session", from:<sid>, at:<turn_id>)` | create child session `s'` whose history is the prefix `s[0..turn_id]`; future writes go to `s'` |
+| `cairn session clone <sid>` | `ingest(op:"clone_session", from:<sid>)` | hard copy at the latest turn — new `session_id`, new identity chain hop, isolated writes (for experiments you don't want to leak back) |
+| `cairn session switch <sid>` | — | change the "active" session pointer for a (user, agent) pair without altering history |
+| `cairn session merge <src> <dst>` | `ingest(op:"merge_session", src:<s2>, into:<s1>, strategy:"summary"\|"all")` | fold a fork's outcome back into the trunk as a `reasoning` summary record or a full turn splice |
+
+**Storage model.** Forks are cheap because they are copy‑on‑write pointers: child inherits parent's `wal_ops` references up to the fork point; new writes go under the child's `session_id` only. The Nexus `versioning` brick (§3.0) handles the underlying CoW semantics; `snapshot` handles the immutable checkpoint needed at fork time. Clones are a full copy (different `session_id` owner), priced to encourage forks as the default.
+
+**Why this matters beyond aesthetics:**
+
+- **Side‑quests don't destroy main context.** "Try this debugging approach in a side‑session, come back if it works" is a one‑command workflow (`fork → work → merge on success, discard on failure`).
+- **Trajectory learning benefits from counterfactuals.** §11 `EvolutionWorkflow` already feeds on `strategy_success` + `strategy_failure`; session forks generate paired trajectories (main vs. side‑quest) that are direct evidence for which path worked better. Same eval, richer signal.
+- **Undo is a primitive.** "Undo last turn" is just `cairn session fork --at <last-ok-turn>`; the bad branch persists for audit but no longer steers future `assemble_hot` calls.
+- **Cross‑agent collaboration.** A reviewer agent can fork the main session, leave its review as side‑quest turns, and merge the verdict back — without the reviewer's scratch work polluting the principal's context.
+
+**Guarantees preserved across the tree:**
+
+- Every turn in every session still carries its full `actor_chain`, `session_id`, and WAL lineage (§4.2, §5.6). Forks do not reset identity.
+- `forget --session <id>` deletes only that node; descendants and ancestors survive. A second command `forget --tree <root>` can cascade if that's what the user wants — explicit and separate.
+- Visibility tiers propagate per record, not per session — promoting a record from `s3` to `public` does not promote the tree.
+
+### 5.8 Pipeable CLI modes — one binary, five shapes
+
+Inspired by pi‑mono's multi‑mode pattern, the `cairn` binary has the same operations available in five shapes so scripts, agents, and humans all compose over the same verbs:
+
+| Mode | Example | Output |
+|------|---------|--------|
+| Interactive TUI | `cairn` | Ink/ratatui dashboard: sessions, search, lint, workflow status |
+| Print‑and‑exit | `cairn search -p "flight to Singapore"` | plain text to stdout; pipeable into `grep` / `jq` / `head` |
+| JSON event stream | `cairn --mode json retrieve <sid>` | one JSON object per line; structured fields |
+| RPC (LF‑delimited JSONL stdin/stdout) | `cairn --mode rpc` | stdin takes JSONL request envelopes, stdout emits JSONL responses — designed for non‑Node hosts; clients **must** split on `\n` only (not Unicode line separators) |
+| SDK import | `use cairn::client` (Rust) / `import { createCairnClient } from "cairn"` (TS) | same API in‑process |
+
+Every mode is a thin adapter over the same eight core MCP verbs (§8) — there is no mode‑specific logic the others can't reach. `cairn --mode rpc` is the long‑lived counterpart of `cairn mcp` (stdio MCP server) when the caller wants a simpler LF‑delimited transport.
+
 ---
 
-## 6. Taxonomy
+## 6. Taxonomy [P0]
+
+**Every record has four orthogonal tags:** `kind × class × visibility × scope`. They compose — the taxonomy is a tensor, not a tree. Ranker, Consolidator, Promoter, and Expirer all branch on these four axes to pick the right behavior per record.
+
+```
+                        19 kinds                  4 classes                 6 visibility tiers
+                 ──────────────────────    ──────────────────────    ───────────────────────────
+                 user           │          episodic  ▲ event,          private → session →
+                 feedback       │          (timed)   │ trace             ▲
+                 rule           │                    │ reasoning         │  (requires consent
+                 fact           │                    │ feedback          │   log entry per hop)
+                 belief         │                    │                   │
+                 opinion        │          semantic  ▲ fact,             project →
+                 event          │          (facts)   │ entity            │
+                 entity         │                    │ reference         │
+                 reference      │                    │ belief            │
+                 project        │                    │                   team →
+                 workflow       │          procedural▲ playbook,         │
+                 trace          │          (how-to)  │ workflow          │
+                 reasoning      │                    │ strategy_success  │
+                 playbook       │                    │ strategy_failure  org →
+                 strategy_success│                   │ rule              │
+                 strategy_failure│          graph    ▲ relationships,    │
+                 sensor_observation│       (links)   │ edges, tag          public
+                 user_signal    │                    │ backlinks
+                 knowledge_gap  │                    │
+                                                                               scope tuple:
+                                                                               (tenant, workspace,
+                                                                                project, session,
+                                                                                entity, user, agent)
+```
+
+**Examples of the tensor in use:**
+
+| Example record | kind | class | visibility | scope |
+|----------------|------|-------|------------|--------|
+| "user prefers dark mode" | `user` | `semantic` | `private` | `user=tafeng` |
+| rolling summary of session 01H3… | `reasoning` | `episodic` | `session` | `session=01H3…` |
+| "deploy-k8s playbook v3" | `playbook` | `procedural` | `team` | `team=infra, project=koi` |
+| contract "HIPAA compliance" | `fact` | `semantic` | `org` | `org=acme` |
+| agent‑written self‑critique | `strategy_failure` | `procedural` | `private` | `agent=agt:reviewer:v2` |
 
 ### 6.1 MemoryKind — 19 values
 
@@ -1065,6 +1948,42 @@ Persisting per‑step completion markers (`step:N:done`) is what makes step 3 ab
 ### 6.3 MemoryVisibility — 6 tiers
 
 `private` → `session` → `project` → `team` → `org` → `public`. Promotion between tiers always requires an entry in `.cairn/consent.log`.
+
+```
+  Visibility ladder — default is private; each hop requires consent
+  ─────────────────────────────────────────────────────────────────
+            public      ◄── opt-in only, never automatic; 3 human
+              ▲             approvals for any org→public promotion
+              │ ConsentReceipt + evidence gate + canary
+              │
+            org         ◄── cross-team; 2 human approvals; requires
+              ▲             federation hub or cloud tier
+              │ ConsentReceipt + evidence gate
+              │
+            team        ◄── small-group knowledge; 1 human approval;
+              ▲             shared hub or share_link grants
+              │ ConsentReceipt (signed by HumanIdentity with team tier capability)
+              │
+            project     ◄── within one project tree; agents can propose;
+              ▲             human signs off; stays on the same machine/hub
+              │ ConsentReceipt (signed by HumanIdentity)
+              │
+            session     ◄── reachable by any turn in this session;
+              ▲             auto-promoted from private on first reuse
+              │ implicit (same session boundary)
+              │
+            private     ◄── default for every new write; agent working
+                            memory; never leaves the vault without
+                            explicit promotion
+```
+
+**Rules:**
+
+- Every new record starts at `private` or `session`. The choice is kind-dependent (default table in `.cairn/config.yaml`).
+- Promotion is **always one tier at a time** — no skipping. `private → team` is not allowed in one hop; it must pass through `project` first so the project signer has visibility.
+- Every promotion writes an append-only entry to `.cairn/consent.log` (§14). The log is the only auditable record of who authorized what.
+- Demotion is possible via `forget` with `mode: record` or `mode: scope`; there is no soft "unshare" — once a record is visible at a tier it must be deleted to remove it.
+- `AutoUserProfile` (§7.1) and hot-memory assembly respect the caller's maximum visibility — an agent with `agent.max_visibility: project` never sees team/org/public records even if they exist in the vault.
 
 ### 6.3.a Factual stores vs conversational memory
 
@@ -1107,7 +2026,7 @@ Confidence is a single scalar; **Evidence** is the multi‑factor vector that dr
 
 ---
 
-## 6.a Multi‑Modal Memory
+## 6.a Multi‑Modal Memory [P2]
 
 Not all memory is text. Cairn's `ingest` verb already accepts non‑text payloads; §6.a is the architecture that makes them first‑class.
 
@@ -1118,29 +2037,37 @@ Not all memory is text. Cairn's `ingest` verb already accepts non‑text payload
 - **Embedding model per modality.** `LLMProvider` is extended with a `multimodal_embed(blob, kind) → vector` capability; providers declare which modalities they support. Cairn routes by modality; unsupported modalities fall back to caption‑only indexing.
 - **Cost control.** Dense video frame embedding is disabled by default; enable per source (`sources/<id>/config.yaml: dense_embed: true`) so a specific camera / channel can opt in without blanket cost.
 
-## 7. Hot Memory — the Always‑Loaded Prefix
+## 7. Hot Memory — the Always‑Loaded Prefix [P0]
 
 Every harness turn starts with a hot‑memory assembly:
 
-- Bounded **200 lines / 25 KB**.
+- Bounded **200 lines / 25 KB / ~6,250 tokens** (at ~4 bytes per token). Hard ceiling enforced by `HotMemoryAssembler`; anything that would push over is demoted to on‑demand retrieval.
 - Composed from `purpose.md` + `index.md` + pinned `user`/`feedback` memories + highest‑salience `project` memories + active `playbook` + recent `user_signal`s.
 - Assembled by the `HotMemoryAssembler` pure function.
 - Cached per‑agent in the hot tier.
 - Re‑assembled on Dream (nightly), on high‑salience write, and on `SessionStart`.
-- Surfaced via MCP `assemble_hot` so non‑Koi harnesses consume the exact same prefix.
+- Surfaced via `cairn assemble_hot` (CLI, MCP, SDK, or skill) so non‑Koi harnesses consume the exact same prefix through whichever surface they prefer.
 
-**Tiered token budget:**
+**Explicit token budget (every component declared up front — same spirit as pi‑mono's `<1000 tokens for tools` target):**
 
-| Tier | What | Cost |
-|------|------|------|
-| Always | hot‑memory prefix + harness config | ~2 KB |
-| On‑demand | semantic / FTS / graph hits for the current turn | targeted |
-| Triggered | classification + validation hooks | ~100 + ~200 tokens |
-| Rare | full file reads | only when explicitly asked |
+| Component | Budget (tokens) | Source |
+|-----------|------------------|--------|
+| Eight core MCP verb schemas | ~550 | §8 — tool defs are intentionally tiny |
+| `cairn.mcp.v1` envelope + capability handshake | ~80 | §8.0.b |
+| `purpose.md` framing | ~200 | user‑authored; capped at 800 tokens |
+| `index.md` catalog | ~600 | auto‑maintained; capped at 200 lines / ~1,600 tokens |
+| `AutoUserProfile` summary (§7.1) | ~400 | auto‑built, compressed on Dream |
+| Pinned `user` + `feedback` memories | ~1,200 | top 8 by salience × recency |
+| Highest‑salience `project` + active `playbook` | ~1,800 | top 6 |
+| Recent `user_signal`s | ~150 | last 24h |
+| Reserved headroom | ~1,270 | absorbs prompt expansion across models |
+| **Total hot prefix** | **~6,250 tokens (25 KB)** | hard cap |
+
+On‑demand retrieval, classification hooks, and full‑file reads are charged to the per‑turn budget, not the always‑loaded prefix. A harness running at 128k context gets ~5% of its context spent on Cairn baseline; at 1M context, < 1%.
 
 ---
 
-## 7.1 Auto‑Built User Profile
+## 7.1 Auto‑Built User Profile [P1]
 
 `assemble_hot` includes a synthesized profile that grows automatically from every turn, without the user maintaining it.
 
@@ -1152,9 +2079,89 @@ Three sections, refreshed on `DreamWorkflow` runs:
 
 Each field is derived from `user_*.md` + `feedback_*.md` + `entity_*.md` + `strategy_*_*.md` records. A `UserProfileSynthesizer` pure function produces the frontmatter + markdown body; `HotMemoryAssembler` includes the profile summary in the top of the hot prefix. The profile has its own evidence gates — a `current_issue` is only listed after it appears in two turns on different days.
 
-## 8. MCP Surface — Versioned Verb Set
+## 8. Contract — CLI is ground truth; MCP, SDK, and Skill all wrap CLI [P0]
 
-**Contract version.** `cairn.mcp.v1` — the entire verb set below is frozen under this name; a breaking change yields `cairn.mcp.v2` and both versions run side by side during deprecation. The contract version, verb list, and per‑verb schema are generated from the single IDL (§13.5); wire‑compat tests fail CI on drift. Clients declare the version they implement via capability negotiation at handshake; Cairn refuses unknown verbs rather than silently dropping them.
+### 8.0 The four surfaces are isomorphic — CLI comes first
+
+Cairn exposes one set of eight verbs through four surfaces. **The CLI is the ground truth.** Every other surface — MCP server, language SDK, "cairn skill" for harnesses that don't speak MCP — is a thin wrapper that invokes the same Rust functions the CLI invokes. There is no "internal protocol" distinct from what a human at a shell can type.
+
+```
+       ┌─────────────────────────────────────────────────────────────────┐
+       │                  Eight verbs (cairn.mcp.v1)                     │
+       │   ingest · search · retrieve · summarize · assemble_hot         │
+       │   capture_trace · lint · forget                                  │
+       └─────────────────────────────────────────────────────────────────┘
+                                     ▲
+                                     │  (same 8 Rust functions)
+           ┌─────────────────────────┼─────────────────────────┐
+           │                         │                         │
+   ┌───────┴────────┐       ┌────────┴────────┐       ┌────────┴────────┐
+   │   cairn CLI    │       │   cairn mcp     │       │  cairn skill    │
+   │   (ground      │       │   (protocol     │       │  (SKILL.md +    │
+   │    truth)      │       │    wrapper      │       │   bash tool —   │
+   │                │       │    ~300 LOC)    │       │   no server)    │
+   └───────┬────────┘       └────────┬────────┘       └────────┬────────┘
+           │                         │                         │
+           ▼                         ▼                         ▼
+       human · CI ·             Claude Code ·              Codex · Gemini ·
+       shell · scripts          Cursor · any harness        opencode · any
+                                that speaks MCP             harness with a
+                                                            bash tool + file
+                                                            discovery
+```
+
+**Why CLI-first:**
+
+| Property | Why it matters |
+|----------|-----------------|
+| **One testable surface** | Every verb path is exercisable from `bash` — CI, shell scripts, humans all use the same entry point |
+| **Zero protocol overhead for internal use** | `AgentExtractor` and `AgentDreamWorker` subprocess the CLI; no internal MCP server to operate or secure |
+| **Observable by default** | `stdout` + `stderr` with `--log-format json` replaces wire sniffing; works inside tmux, editor terminals, log pipelines |
+| **Discoverable** | `cairn --help` and `cairn <verb> --help` are the spec; any LLM can read them |
+| **Composable** | `cairn search X \| jq '.hits[].id' \| xargs -n1 cairn retrieve` — UNIX pipes replace orchestrator glue |
+| **Degrades gracefully** | If a harness doesn't support MCP, it still supports `bash` — install the Cairn skill, you're done |
+
+**The mapping is 1:1.** One CLI command per verb, one MCP verb per command, one SDK function per command:
+
+| Verb | CLI | MCP | SDK (Rust) |
+|------|-----|-----|------------|
+| 1 | `cairn ingest --kind user --body "..."` | `{verb:"ingest", args:{kind,body,...}}` | `cairn::ingest(IngestArgs {...})` |
+| 2 | `cairn search "query" [--mode semantic]` | `{verb:"search", args:{...}}` | `cairn::search(SearchArgs {...})` |
+| 3 | `cairn retrieve <record-id>` | `{verb:"retrieve", args:{id}}` | `cairn::retrieve(&id)` |
+| 4 | `cairn summarize <record-ids...> [--persist]` | `{verb:"summarize", args:{...}}` | `cairn::summarize(SumArgs {...})` |
+| 5 | `cairn assemble_hot [--session <id>]` | `{verb:"assemble_hot", args:{...}}` | `cairn::assemble_hot(...)` |
+| 6 | `cairn capture_trace --from <file>` | `{verb:"capture_trace", args:{...}}` | `cairn::capture_trace(...)` |
+| 7 | `cairn lint [--write-report]` | `{verb:"lint", args:{...}}` | `cairn::lint(LintArgs {...})` |
+| 8 | `cairn forget --record <id> \| --session <id>` | `{verb:"forget", args:{mode,...}}` | `cairn::forget(ForgetArgs {...})` |
+
+**What lives where in the binary:**
+
+```
+  cairn (one static Rust binary, ~15 MB)
+    ├── src/verbs/          ← 8 Rust functions, one per verb (ground truth)
+    ├── src/cli/            ← clap command tree, calls verbs directly
+    ├── src/mcp/            ← ~300 LOC: reads JSON-RPC, calls verbs, writes JSON-RPC
+    ├── src/sdk/            ← exported as a library crate (`cairn` on crates.io)
+    └── skills/cairn/       ← SKILL.md ships with the binary; installed by `cairn skill install`
+```
+
+`cairn mcp` is **not a separate process or service**. It is a subcommand that reads MCP frames on stdio, dispatches to `src/verbs/*`, writes responses. If a harness can spawn a subprocess and pipe it JSON-RPC, MCP works. If a harness can only run bash commands, the skill works. Either way the same 8 Rust functions produce the same 8 outputs.
+
+### 8.0.a The Cairn skill — what gets installed when you say "cairn skill install"
+
+A SKILL.md file teaches any bash-capable agent how to use Cairn without MCP. This is the pattern Garry Tan's gbrain and Anthropic's Claude Code Skills use: a fat markdown doc + deterministic commands + LLM reads the doc and calls the commands via the harness's native `bash` tool.
+
+```
+  ~/.cairn/skills/cairn/
+    ├── SKILL.md            ← the contract (§18.d)
+    ├── conventions.md       ← when to ingest vs. search; kinds cheat-sheet
+    ├── examples/            ← 10-20 real transcripts: user intent → cairn call
+    └── scripts/             ← any deterministic helpers (none required for v0.1)
+```
+
+Concrete payoff: a harness with no MCP plugin (or one where the user prefers not to install servers) can still use Cairn fully by loading the skill.
+
+**Contract version.** `cairn.mcp.v1` — the entire verb set below is frozen under this name; a breaking change yields `cairn.mcp.v2` and both versions run side by side during deprecation. The contract version, verb list, and per‑verb schema are generated from the single IDL (§13.5); wire‑compat tests fail CI on drift. Clients declare the version they implement via capability negotiation at handshake; Cairn refuses unknown verbs rather than silently dropping them. The same IDL generates the CLI clap definitions and SDK trait signatures — single source of truth across all four surfaces.
 
 ### 8.0 Core verbs (always present in `cairn.mcp.v1`)
 
@@ -1211,13 +2218,48 @@ All verbs — core and extension — share a single request/response envelope so
 
 `policy_trace` is always present on mutating verbs so auditors see which gates ran and how they decided — not just the final outcome.
 
-MCP is the **only** public entry point. Everything else — CLI commands, hooks, library calls — routes through the core or extension verbs internally. A CLI like `cairn forget --session <id>` is syntactic sugar over `verb: "forget", args: {...}`.
+The **eight verbs** are the only public entry points — four surfaces, same verbs, same signed envelope, same policy trace. A CLI invocation like `cairn forget --session <id>` dispatches to the same Rust function as the MCP frame `{verb: "forget", args: {mode: "session", session_id: "..."}}`; neither is "syntactic sugar" over the other — both are thin shells around `src/verbs/forget.rs`. Hooks, library calls, and skill invocations route through the same layer.
 
 ---
 
-## 8.1 Session Lifecycle — Auto‑Discovery + Auto‑Create
+## 8.1 Session Lifecycle — Auto‑Discovery + Auto‑Create [P0]
 
 All eight core MCP verbs accept an optional `session_id`. When absent, Cairn applies this policy:
+
+```
+  caller invokes any verb without session_id
+                    │
+                    ▼
+          ┌───────────────────────┐
+          │  Find most recent     │  (query .cairn/cairn.db sessions
+          │  active session for   │   for this agent_id, ordered by
+          │  (user_id, agent_id)  │   last_activity_at desc)
+          └─────────┬─────────────┘
+                    │
+          ┌─────────┴─────────┐
+          │                   │
+        found?              not found?
+          │                   │
+          ▼                   ▼
+    ┌───────────┐       ┌──────────────────┐
+    │ idle window│       │ create new session│
+    │ <= 24 h?   │       │ with title: ""    │
+    │ (default)  │       │ populated by next │
+    └─────┬──────┘       │ DreamWorkflow pass│
+          │              └────────┬──────────┘
+      yes │ no                    │
+          │  │                    │
+          │  ▼                    │
+          │ create new            │
+          │ session (old one      │
+          │ stays "ended")        │
+          │  │                    │
+          ▼  ▼                    ▼
+     ┌──────────────────────────────────┐
+     │  resolved session_id returned    │
+     │  in every response envelope      │
+     └──────────────────────────────────┘
+```
 
 1. **Find** the user's most recent active session for this `agent_id` (within a configurable idle window, default 24 h).
 2. **If found** — reuse it; append turns to it.
@@ -1228,9 +2270,33 @@ This mirrors the "just call `ingest` — I don't want to manage sessions" patter
 
 Sessions carry metadata (`channel`, `priority`, `tags`), emit a `session_ended` event when the idle window elapses, and are searchable via the `search` verb with `scope: "sessions"` — the same way records are searchable.
 
-## 9. Sensors and User Signals
+## 9. Sensors — the Capture stage of the ingestion pipeline [P0 hooks · P2 full suite]
 
-### 9.1 Sensors — two families, all opt‑in per‑sensor
+**Sensors are not a separate concept — they are the source adapters for §5.2's ingestion pipeline.** Every sensor emits `CaptureEvent`s that enter the same `Capture → Tool‑squash → Extract → Filter → Classify & Scope → Store` flow as a human typing `cairn ingest`. This section catalogs the sources; the processing lives in §5.
+
+```
+   SOURCES (this section)                       INGESTION PIPELINE (§5.2)
+   ──────────────────────────────              ────────────────────────────────
+    hooks (CC/Codex/Gemini) ──┐
+    IDE events                 │
+    terminal commands          │
+    clipboard                  │
+    screen frames              ├──► CaptureEvent ──► Capture ──► Tool-squash
+    Slack / email              │                                    │
+    GitHub / GitLab            │                                    ▼
+    web clips / RSS            │                                  Extract (§5.2.a)
+    document imports           │                                    │
+    transcripts                │                                    ▼
+    cairn ingest CLI ─────────┘                                   Filter → Classify
+    cairn ingest MCP ─────────┘                                    → Scope → Store
+                                                                     │
+                                                                     ▼
+                                                                  MemoryStore
+```
+
+All sources produce the same `CaptureEvent` schema, signed with the sensor's `SensorIdentity` (§4.2). A Slack message, a screen frame, and a CLI `cairn ingest` invocation are indistinguishable after Capture — they differ only in the sensor label and any modality‑specific extraction hint.
+
+### 9.1 Source families — all opt‑in per‑sensor
 
 **No UI required.** Every sensor enables via config (`.cairn/config.yaml`) or CLI flag (`cairn sensor enable <name>`). Sensors run as background daemons under `cairn daemon start` — works on headless servers, SSH sessions, and CI runners. The desktop GUI (§13) is purely optional: it exposes the same toggles but is never required to turn a sensor on or off.
 
@@ -1261,7 +2327,7 @@ Sessions carry metadata (`channel`, `priority`, `tags`), emit a `session_ended` 
 | RSS / Atom sensor | feed polling | long‑running research loops |
 | Harness‑memory import | `cairn import --from <chatgpt|claude-memory|notion|obsidian>` one‑shot migration | leave another memory system without losing context |
 
-**All source sensors emit through the same write path** (§5.2). They are not a parallel pipeline — they are just different starting points for `Capture`. A Slack message and a screen frame are both `raw events` once they enter `Extract`.
+**All sensors emit through the same write path** (§5.2) — one ingestion pipeline, many source adapters. A Slack message and a screen frame and a `cairn ingest` CLI call are all `CaptureEvent`s once they cross the sensor boundary; the `ExtractorWorker` chain (§5.2.a) picks the right extractor per event kind and the rest of the pipeline proceeds identically.
 
 **Ingestion rate limits and budget.** Every source sensor declares a per‑scope budget (`max_items_per_hour`, `max_bytes_per_day`). Cairn's Filter stage enforces these. Exceeding budget routes to `discard(budget_exceeded)` and surfaces in the next `lint` report — Cairn never silently drops under budget pressure.
 
@@ -1283,7 +2349,7 @@ Hooks are plain scripts executed via `cairn hook <name>` (Rust binary on `$PATH`
 
 ---
 
-## 10. Continuous Learning — Eight Durable Workflows
+## 10. Continuous Learning — Eight Durable Workflows [P0 rolling · P1 full tiers · P2 agent]
 
 **Orchestrator truth table (by version).** Every durability and replay claim in this section applies to whichever `WorkflowOrchestrator` plugin the deployment has selected. Both default and optional adapters satisfy the same `WorkflowOrchestrator` contract (§4, §4.1); swapping is a config change.
 
@@ -1407,9 +2473,72 @@ When a single `agent_id` serves many users, each user's private memory stays pri
 
 Each tier is a FlushPlan producer (§5.5) — the plan is serialized before apply, so a deep‑dream run is reviewable and replayable.
 
+### 10.2 DreamWorker — pluggable dispatch modes
+
+**"Who actually runs the dream pass"** is pluggable. The three tiers above describe *when* and *what*; the `DreamWorker` trait describes *how*. Cairn ships three built‑in implementations on the same trait, and third‑party plugins can add more.
+
+```rust
+// L0 trait — zero deps, pure data over in/out
+pub trait DreamWorker: Send + Sync {
+    fn name(&self) -> &'static str;                     // "llm" | "agent" | "hybrid" | custom
+    fn cost_budget(&self) -> DreamBudget;               // tokens, wall-clock, tool calls allowed
+    async fn run(&self, tier: DreamTier, plan_input: &DreamInputs) -> DreamPlan;
+}
+```
+
+**The three built‑ins + when to pick each:**
+
+| Mode | How a dream pass executes | Cost | Latency | Risk | Right default for |
+|------|---------------------------|------|---------|------|--------------------|
+| **`LLMDreamWorker` (default, v0.1)** | each sub‑stage (consolidate, classify, promote) is **one prompted LLM call** with a structured schema; no tool loop; no self‑invocation | lowest — bounded by token count × stages | bounded, predictable; p95 < 60 s for Light Sleep | lowest | L1/L2, single‑user, offline, CI runs |
+| **`AgentDreamWorker` (opt‑in, v0.2+)** | invokes a full Cairn agent (with its own `agt:*` identity + tool allowlist scoped to `search` / `retrieve` / `lint`) in a multi‑turn loop; agent can iterate, call deterministic scripts, use its own memory | 5–20× LLM cost; tool calls metered | unbounded unless capped; cap via `cost_budget.max_turns + max_wall_s` | medium — tool sprawl, cost blowup | power users, team/org vaults with complex corpora, compounding skill synthesis |
+| **`HybridDreamWorker` (opt‑in, v0.2+)** | deterministic prune first (stamp stale records, dedup by hash); then one LLM call per remaining bucket; no tool loop | close to LLM mode | ~10–20 % slower than LLM mode (prune pass first) | low — prune is idempotent | anyone whose corpus has measurable dup rate; opencode‑style compaction |
+
+**Contract rules (all three modes obey):**
+
+- Every mode produces the **same `DreamPlan` output** (§5.5 FlushPlan). A hybrid plan is indistinguishable from a pure‑LLM plan after serialization.
+- Every mode respects `cost_budget` — exceeding it aborts the run with a `DreamBudgetExceeded` entry in the `lint-report.md`; partial plans are never applied.
+- Every mode writes its `DreamPlan` through the same §5.6 WAL `promote`/`consolidate`/`expire` state machines — the WAL is the safety net regardless of who authored the plan.
+- **Agent mode shells out to the same `cairn` CLI** as external callers. The `AgentDreamWorker` is a Cairn agent (identity `agt:cairn-librarian:v2` by default) whose tool set is `bash(cairn search …)`, `bash(cairn retrieve …)`, `bash(cairn lint --dry …)`. No internal MCP server runs — the binary you type at a shell is the binary the dreamer invokes.
+- Agent mode's CLI commands are **read‑only by default**. The agent proposes a `DreamPlan`; the plan goes through the normal §11.3 promotion predicate before any mutation. An agent cannot unilaterally write to the vault from inside a dream pass; attempted `cairn ingest` / `cairn forget` calls are rejected at the signed‑envelope layer via the dreamer's scope tuple (§4.2).
+
+**Config selector (per vault, per tier):**
+
+```yaml
+# .cairn/config.yaml
+dream:
+  light_sleep:
+    worker: llm               # default — cheap, every Stop hook
+  rem_sleep:
+    worker: hybrid            # prune first, then LLM — dedup pays off hourly
+  deep_dreaming:
+    worker: agent             # nightly — full agent loop; the heavy pass
+    agent_profile: cairn-librarian:v2
+    cost_budget:
+      max_turns: 40
+      max_wall_s: 900
+      max_tokens: 800000
+```
+
+**Why three modes and not "pick one":** the real‑world reference systems each picked a different point on this spectrum, and each picked correctly for their user:
+
+| Reference system | Mode | Why it's right for them |
+|-------------------|------|--------------------------|
+| **Hindsight / hermes‑agent** | `llm` — `post_llm_call` hook fires async structured extraction; no tool loop | single‑tenant personal agent, hard latency + cost budget, bounded surface |
+| **opencode** | `hybrid` — `SessionCompaction.process` does deterministic stale‑output prune → one‑pass summary (hidden "compaction agent" in config but no self‑invocation) | session‑level compaction under a strict token ceiling, needs reversibility (stamp‑not‑delete) |
+| **Garry Tan / gbrain** | `agent` — nightly cron "dream cycle" dispatches skills as subagents/Minions over a 10 k+ file markdown brain | personal knowledge compounding over months; worth the tool‑loop cost because the corpus is huge and heterogeneous |
+
+Cairn is *harness‑agnostic memory*, so we commit to **all three** behind the same `DreamWorker` trait. Default `llm`; opt in to `hybrid` once dup rate justifies it; opt in to `agent` once the corpus is big enough that a tool loop compounds. Switching modes is a one‑line config change — the plan schema, WAL, and audit trail are identical.
+
+**Anti‑patterns the contract prevents:**
+
+- An `AgentDreamWorker` that writes directly to `wiki/` without going through the §5.6 WAL — structurally impossible (agent's tools are read‑only; plan goes through the normal promotion gate).
+- Unbounded cost — every worker declares `cost_budget`; violating it aborts the run, not the vault.
+- Silent mode drift — `cairn vault status` shows which `DreamWorker` ran each tier last and its budget consumption, so operators never wake up surprised by a 10× cost spike.
+
 ---
 
-## 11. Self‑Evolution — the Evolution Workflow
+## 11. Self‑Evolution — the Evolution Workflow [P2]
 
 Memory without evolution stagnates. `EvolutionWorkflow` takes existing artifacts (skills, prompts, tool descriptions) and produces measurably better versions by reading execution traces and proposing targeted mutations. No GPU training; everything runs via the `LLMProvider`.
 
@@ -1501,7 +2630,7 @@ Triggers outside this set default to `discard(low_salience)` — §5.2 enumerate
 
 ---
 
-## 11.a Graph of Skills — Dependency‑Aware Structural Retrieval
+## 11.a Graph of Skills — Dependency‑Aware Structural Retrieval [P2]
 
 Skills are not a flat pile. They form a **directed acyclic dependency graph** — `ship-a-pr` depends on `run-tests` depends on `lint-the-diff`. Retrieving a skill that has unmet prerequisites is worse than useless, so Cairn surfaces the DAG explicitly.
 
@@ -1514,17 +2643,17 @@ Skills are not a flat pile. They form a **directed acyclic dependency graph** �
 
 This is what makes skills *compound* — `strategy_success` stays strategy‑scoped, but its dependency closure lets the agent assemble bigger plans turn‑after‑turn.
 
-## 12. Deployment Tiers — Same Interfaces, Different Adapters
+## 12. Deployment Tiers — Same Interfaces, Different Adapters [P0 embedded · P1 local · P2 cloud]
 
 | Tier | Who it's for | Adapters | Cloud? |
 |------|--------------|----------|--------|
 | **Embedded** | library mode inside a harness | Nexus `sandbox` profile sidecar (SQLite + BM25S + `sqlite-vec` semantic when embedding key available; BM25S keyword fallback otherwise) + in‑process LLM + `tokio` job runner | none |
 | **Local** | laptop, single user, researcher, air‑gap | same as Embedded + optional federation to a peer Nexus | none |
-| **Cloud** | team / enterprise | Nexus `sandbox` per client **federated to** a shared Nexus `full` hub (PostgreSQL + Dragonfly + Zoekt + txtai) + any OpenAI‑compatible LLM + optional Temporal | yes |
+| **Cloud** | team / enterprise | Nexus `sandbox` per client **federated to** a shared Nexus `full` hub (PostgreSQL + pgvector + Dragonfly) + any OpenAI‑compatible LLM + optional Temporal | yes |
 
 Switching tiers is a change in `.cairn/config.yaml`. The vault on disk, the MCP surface, the CLI, the hooks — all unchanged.
 
-## 11.b Skillify — turning every failure into a permanent skill with tests
+## 11.b Skillify — turning every failure into a permanent skill with tests [P1 base · P2 agent-authored]
 
 The Evolution Workflow (§11) can mutate prompts and tool descriptions, but most failures don't need a model change — they need a **procedural fix** that makes the bug structurally impossible to recur. Skillify is the loop that promotes a one‑off failure into a tested, durable skill.
 
@@ -1551,17 +2680,60 @@ A skill that fails any of the ten is stuck at `candidate` status and cannot be p
 
 **"Skillify" as a one‑word promotion.** In daily use, the user drops a single directive — `skillify this` — after a successful ad‑hoc procedure. The harness captures the conversation, extracts the decision tree, generates all ten artifacts, and runs them through the normal evolution constraint gates (§11.3) before going live. No manual spec writing, no ticket — the working prototype becomes durable infrastructure in one message.
 
-```
-User: "great! so we should actually remember this — skillify it"
+**Skillify pipeline — from one directive to durable skill:**
 
-       │
-       ▼
-  [1. Extract skill spec from conversation trace]
-  [2. Generate deterministic script from tool‑call sequence]
-  [3. Author unit tests from observed inputs/outputs]
-  [4. Wire resolver trigger + eval]
-  [5. Run the full §11.3 promotion predicate (gates 1-9) + 10-step Skillify checklist]
-  [6. On pass: PromotionWorkflow marks skill live]
+```
+  User: "great! so we should actually remember this — skillify it"
+    │
+    ▼
+  ┌─ STAGE 1: Extract (from conversation trace)
+  │   trace → decision tree → tool-call sequence → success criteria
+  │   output:  skill-spec.draft.json
+  ▼
+  ┌─ STAGE 2: Author the ten artifacts (LLM + code gen)
+  │   ┌───────────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
+  │   │ 1. skill_*.md         │  │ 2. scripts/<s>.mjs   │  │ 3. unit tests    │
+  │   │    (contract)         │  │    (deterministic)   │  │    (fixtures)    │
+  │   └───────────────────────┘  └──────────────────────┘  └──────────────────┘
+  │   ┌───────────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
+  │   │ 4. integration tests  │  │ 5. LLM evals         │  │ 6. resolver trig.│
+  │   │    (real endpoints)   │  │    (rubric judge)    │  │    (catalog row) │
+  │   └───────────────────────┘  └──────────────────────┘  └──────────────────┘
+  │   ┌───────────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
+  │   │ 7. resolver eval      │  │ 8. check-resolvable  │  │ 9. E2E smoke     │
+  │   │    (false +/- cases)  │  │    + DRY audit       │  │    (prompt→out)  │
+  │   └───────────────────────┘  └──────────────────────┘  └──────────────────┘
+  │                                           ┌──────────────────┐
+  │                                           │ 10. filing rules │
+  │                                           │    (files_to:)   │
+  │                                           └──────────────────┘
+  ▼
+  ┌─ STAGE 3: Gate (§11.3 promotion predicate)
+  │   v0.1 subset: gates 1-6 (tests, size, semantic preservation, caching, confidence, review)
+  │   v0.2:        + gates 7-8 (held-out adversarial, canary rollout)
+  │   v0.3+:       + gate 9 (shared-tier gate)
+  │   any failure → status stays `candidate`; lint report surfaces the gap
+  ▼
+  ┌─ STAGE 4: Promote (PromotionWorkflow)
+  │   skill_*.md → `live` ; resolver row activated ; `wiki/skills/` updated ; signed bundle
+  ▼
+  ┌─ STAGE 5: Daily health check (`cairn lint --daily`, runs every 24 h)
+      unit + integration + LLM eval + resolver eval + DRY + check-resolvable + filing-rules
+      first failure → badge red, `knowledge_gap` record, lint-report.md updated
+      ⇒ silent rot structurally impossible
+```
+
+**Two failure paths feeding back into the same pipeline:**
+
+```
+     failure class         feedback hook                    skillify triggered?
+  ┌────────────────────┬────────────────────────────────┬──────────────────────┐
+  │ hallucinated tool  │ PostToolUse hook notices tool  │ yes — auto-skillify  │
+  │ call / wrong arg   │ error + agent retry sequence   │ with blocking review │
+  ├────────────────────┼────────────────────────────────┼──────────────────────┤
+  │ ad-hoc procedure   │ user types "skillify this"     │ yes — user-triggered │
+  │ that worked        │                                │ no blocking review   │
+  └────────────────────┴────────────────────────────────┴──────────────────────┘
 ```
 
 **The three failure modes skillify prevents** (every untested skill system eventually hits all three):
@@ -1612,7 +2784,7 @@ The `lane` field is the DRY audit's primary key: within a domain (e.g., `calenda
 
 ---
 
-## 12.a Distribution Model — Beyond Single‑User
+## 12.a Distribution Model — Beyond Single‑User [P2]
 
 Obsidian's vault lives on one laptop; "sync" is a paid plugin or a manual `git` dance. Cairn is **distributed by design** — the same vault format scales from one developer to an entire organization through six concrete mechanisms, all in the doc above but consolidated here:
 
@@ -1633,6 +2805,46 @@ Obsidian's vault lives on one laptop; "sync" is a paid plugin or a manual `git` 
 | **Single user, many machines** | individual across laptop + phone + server | sandbox per machine, all federating to the same cloud `full` hub; writes replicate; private tier stays on each machine |
 | **Small team, shared knowledge** | 2–20 people | one shared `full` hub; each user keeps a local sandbox that federates to it; team‑tier records propagate through the hub; `share_link` grants cross agents per request |
 | **Org‑wide, many agents, many users** | 100+ users × many agent identities | hub per region / business unit; `agent.enable_aggregate: true` on multi‑user agents so operators see anonymized `common_issues` without touching individual vaults; propagation policy tightens per tier (`org` requires two human approvals; `public` requires three) |
+
+**Federation flow — how a `search` query fans out from sandbox to hub:**
+
+```
+                             ┌────────────────────────────────┐
+                             │   Nexus `full` hub (shared)    │
+                             │   Postgres + pgvector + Dragonfly │
+                             │   holds tier ∈ {team,org,public}│
+                             └──────────────┬─────────────────┘
+                                            │  (HTTPS, mTLS, RBAC via rebac)
+                                            │
+           ┌────────────────────────────────┼───────────────────────────────┐
+           │                                │                               │
+  ┌────────┴─────────┐              ┌───────┴──────────┐            ┌───────┴──────────┐
+  │  Alice's laptop  │              │  Bob's laptop    │            │  CI runner       │
+  │  sandbox vault   │              │  sandbox vault   │            │  sandbox vault   │
+  │  private+session │              │  private+session │            │  ephemeral       │
+  │  tier local only │              │  tier local only │            │                  │
+  └────────┬─────────┘              └──────┬───────────┘            └─────┬────────────┘
+           │                               │                              │
+           │   search("pgvector perf")     │                              │
+           ├───────────────────────────────┴──────────────────────────────┘
+           │     1. sandbox runs local BM25 + sqlite-vec over own vault  (<15 ms p95)
+           │     2. if scope includes team|org|public → federate to hub  (asynchronous)
+           │     3. hub query runs on Postgres + pgvector; rebac drops non-readable rows
+           │     4. merge + re-rank; return to caller with provenance_per_hit
+           │     5. on hub timeout → stamp `semantic_degraded=true`, return local-only
+           ▼
+   agent gets combined result set, knows exactly which hits came from local vs hub
+```
+
+**The failure modes this topology handles:**
+
+| Scenario | What happens | Why it's safe |
+|----------|--------------|----------------|
+| Hub unreachable | Sandbox returns local‑only results with `degraded: hub_unreachable` | No query ever blocks; agent knows result set is partial |
+| Hub down + user writes | Writes stay in sandbox's local WAL; `PropagationWorkflow` resumes on reconnect | Local vault is the source of truth; hub is a projection |
+| rebac revokes a team grant mid‑query | Hub drops non‑readable rows atomically; query still returns readable rows | Filter lives at the store layer; caller never sees leaked rows |
+| Federation is off but a write targets `team` tier | Write fails fast with `FederationRequired`; no silent downgrade | Visibility tier is never silently lowered |
+| Forget‑me crosses the boundary | Local Phase A/B runs; same verb fans out to hub via `forget` extension; hub deletes its projection under its own WAL | Two‑file durability topology applies to both sandbox and hub independently |
 
 ### What Obsidian plus sync still doesn't give you
 
@@ -1659,7 +2871,7 @@ Cairn is local‑*first* but distributed‑*ready* — scaling from laptop to or
 
 ---
 
-## 13. UI / UX
+## 13. UI / UX [P0 markdown · P1 GUI alpha · P3 GUI GA]
 
 ### 13.1 Three skins, one vault format
 
@@ -1679,7 +2891,7 @@ Cairn is local‑*first* but distributed‑*ready* — scaling from laptop to or
 
 An **alternative slim skin** stays available for users who want a small download or air‑gap with minimal surface: Tauri 2 shell over the same Rust core, swap TipTap for Milkdown. Same vault, same MCP. Decision recorded in `.cairn/config.yaml` under `ui.shell = electron | tauri`.
 
-### 13.3 Commands (thin wrappers over MCP)
+### 13.3 Commands — the ground truth; MCP wraps these (§8.0)
 
 ```
 cairn init                       scaffold vault + config
@@ -1724,7 +2936,7 @@ cairn snapshot                   weekly archive into .cairn/snapshots/YYYY-MM-DD
 | Hook scripts | TypeScript | same as every harness's scripting ecosystem |
 | Cairn internal libs consumed by harnesses | TypeScript | L0/L1/L2 package pattern stays TS so harnesses can import in‑process |
 
-The Rust core is **a single binary** shipped with both the CLI and the GUI; TypeScript packages on the harness side talk to it via MCP. A harness never links against the Rust core — it always crosses the MCP boundary.
+The Rust core is **a single binary** shipped with both the CLI and the GUI. TypeScript packages on the harness side talk to it via whichever surface fits: CLI subprocess (most common; zero protocol overhead), MCP (for harnesses that already speak it), or a Cairn skill (for harnesses with only a bash tool). A harness never links against the Rust core — it always crosses a process boundary through one of the four surfaces in §8.0.
 
 ### 13.5.a Obsidian (or any markdown editor) as the frontend
 
@@ -1988,7 +3200,51 @@ This keeps Cairn headless‑by‑default and frontend‑agnostic in the stronges
 
 ---
 
-## 14. Privacy and Consent
+## 14. Privacy and Consent [P0]
+
+**Consent flow — every sensitive action crosses one of these gates:**
+
+```
+    ┌─────────────────────────────┐
+    │  user action / sensor event │
+    └─────────────┬───────────────┘
+                  ▼
+        ┌─────────────────────┐
+        │ Presidio redaction  │  PII/secrets stripped pre-persist
+        │ (pre-persist gate)  │  → dropped bytes never hit disk
+        └─────────┬───────────┘
+                  │
+                  ▼
+        ┌─────────────────────┐
+        │ scope check (§4.2)  │  caller's scope tuple permits this kind+tier?
+        └─────────┬───────────┘
+           pass │  │ fail → reject with policy_trace
+                ▼
+        ┌─────────────────────┐
+        │ visibility decision │  start at private or session (§6.3)
+        └─────────┬───────────┘
+                  ▼
+        ┌─────────────────────┐
+        │  WAL upsert (§5.6)  │  + consent_journal row committed atomically
+        └─────────┬───────────┘
+                  │
+                  ▼          ────────────────────────────────────────
+        ┌─────────────────────┐                                      │
+        │ consent_log_        │  async tail → .cairn/consent.log     │
+        │ materializer        │  (append-only; never edited; never   │
+        │ (background)        │  deleted; survives GDPR review)      │
+        └─────────────────────┘                                      │
+                                                                      │
+                                                                      │
+    LATER: promotion across tiers                                     │
+    ┌─────────────────────┐                                           │
+    │ agent proposes      │──► needs HumanIdentity signature         │
+    │ private → project   │    (or project lead) before applying ────┘
+    │ private → team      │    every promotion writes a new
+    │ project → org       │    consent_journal row
+    │ org → public        │    irreversible via "unshare" —
+    └─────────────────────┘    only forget can remove content
+```
 
 - **Local‑first default.** First run writes only to disk.
 - **Per‑sensor opt‑in.** Screen, clipboard, web clip, terminal — each requires explicit enable with a consent prompt.
@@ -2001,7 +3257,46 @@ This keeps Cairn headless‑by‑default and frontend‑agnostic in the stronges
 
 ---
 
-## 15. Evaluation
+## 15. Evaluation [P0 core · P1 full SRE]
+
+**The eval harness — one pipeline, four checks, runs on every PR:**
+
+```
+     cassette fixtures + golden queries + scenarios
+            │
+            ▼
+  ┌────────────────────────────────────────────────────┐
+  │  Replay engine — deterministic, no LLM, no network │
+  │  (loads cassette → feeds into cairn verbs)         │
+  └─────────┬────────────┬────────────┬────────────────┘
+            │            │            │
+            ▼            ▼            ▼
+      ┌────────────┐ ┌──────────┐ ┌────────────────┐
+      │  Golden    │ │ Multi-   │ │  Metrics:      │
+      │  queries   │ │ session  │ │  · orphans     │
+      │  (exact    │ │ coherence│ │  · conflicts   │
+      │  match or  │ │ (5-50    │ │  · staleness   │
+      │  within    │ │ sessions │ │  · recall_rate │
+      │  ε)        │ │ each)    │ │  · latency     │
+      └─────┬──────┘ └────┬─────┘ └───────┬────────┘
+            │             │               │
+            └─────────────┴───────────────┘
+                          │
+                          ▼
+              ┌─────────────────────────┐
+              │  CI regression gate     │
+              │  fails build if any     │
+              │  metric drops > 2% or   │
+              │  a golden query breaks  │
+              └─────────────────────────┘
+
+  SLOs enforced at the gate (per §18 targets):
+    · p95 turn latency with hot-assembly + write   < 50 ms
+    · p99 turn latency                             < 100 ms
+    · forget-me reader-invisible latency (1M recs) < 1 s p95
+    · forget-me physical purge (Phase B)           < 30 s p95
+    · cold-rehydration (≤ 10 MB session)           < 3 s p95
+```
 
 Every new contract, new taxonomy, new workflow, or new adapter ships with an evaluation.
 
@@ -2016,7 +3311,7 @@ Every new contract, new taxonomy, new workflow, or new adapter ships with an eva
 
 ---
 
-## 16. Distribution and Packaging
+## 16. Distribution and Packaging [P0 binary · P3 full channels]
 
 - `brew install cairn` (macOS / Linux) — Homebrew tap; single static Rust binary (~15 MB), no runtime deps.
 - `cargo install cairn` — install from crates.io for Rust users.
@@ -2055,7 +3350,7 @@ cairn/
 
 ---
 
-## 16.a Replacing Existing Memory Systems
+## 16.a Replacing Existing Memory Systems [P2]
 
 Cairn can slot into four widely‑used agent stacks — each with a concrete import path and a runtime bridge. The import is one command; the bridge is Cairn registered as an MCP server on the host.
 
@@ -2117,13 +3412,18 @@ Cairn is designed to replace the three memory‑adjacent meta‑packages in Koi 
 ```
 Koi harness (Rust agent loop + middleware stack)
       │
-      │  MCP (8 core verbs)
+      │  CLI subprocess (default) / MCP / SDK / skill — pick your surface
       ▼
-Cairn Rust static binary (cairn mcp)
+Cairn Rust static binary (cairn <verb>  OR  cairn mcp)
       │
-      ├─► .cairn/cairn.db      (WAL, replay, locks, consent journal)
+      ├─► .cairn/cairn.db      (WAL · replay · locks · consent journal · records
+      │                         at P0 via FTS5; at P1+ still here for control plane)
       │
-      └─► <vault>/nexus.db     (records, vectors, FTS, edges)  via HTTP+MCP to Nexus sandbox sidecar
+      └─► nexus-data/           (P1+ only — BM25S lexical index · sqlite-vec ANN
+                                 · CAS blob store · ReDB metastore; internal layout
+                                 is Nexus's concern, not Cairn's)
+                                 Cairn reaches Nexus only over HTTP+MCP, never opens
+                                 files inside nexus-data/ directly.
 ```
 
 No Koi‑side code writes to disk directly; every mutation goes through Cairn's 8 MCP verbs. The v1 meta‑packages above are either (a) replaced by a Cairn L2 plugin, (b) collapsed into the core pipeline, or (c) deleted because Cairn handles the concern end‑to‑end.
@@ -2147,24 +3447,70 @@ All four (plus Koi v1) migrations share the same three steps:
 2. **Dual‑run briefly** — both the legacy memory and Cairn stay active; reads prefer Cairn; writes fan to both. Lets you validate parity on real turns.
 3. **Cut over** — legacy becomes a one‑way export target for audit; Cairn is the source of truth.
 
-Nothing in these migrations requires the legacy system to change. Cairn runs as an MCP server — every one of these stacks already speaks MCP or has a plugin slot that does.
+Nothing in these migrations requires the legacy system to change. Cairn exposes eight verbs through four surfaces (§8.0) — every legacy stack can call whichever fits: the `cairn` CLI from a shell plugin, `cairn mcp` for MCP-speaking harnesses, the Rust SDK for in-process embedding, or the Cairn skill for bash-only environments.
 
 ---
 
 ## 17. Non‑Goals (what Cairn will never be)
 
-- Not a harness. No agent loop, no tool execution, no opinionated LLM adapter beyond `LLMProvider`.
-- Not a scheduler of last resort. Cairn runs a `WorkflowOrchestrator` (the default v0.1 implementation is `tokio` + a SQLite job table, crash‑safe, single binary, zero external services); Temporal is an optional swap‑in adapter for deployments that already operate it. Durability + idempotency guarantees apply to both; see §10 for the per‑version orchestrator truth table.
-- Not a vector DB. Nexus `sandbox` profile (SQLite + `sqlite-vec` + `litellm` embeddings) provides the default vector path via its `search` brick.
-- Not a UI framework. The desktop GUI is optional and purposely small.
-- Not an IAM engine. `MemoryVisibility` is a tag; enterprise IAM lives elsewhere.
-- Not an application. No built‑in "brag doc", no "review brief", no "standup template" — those are user‑space templates that sit on top of Cairn's primitives.
+Every line below follows the pi‑mono pattern: **"Not X — you might expect X because Y. Use Z instead."** The point is to pre‑empt the five most common category errors and redirect without argument.
+
+**Decision tree — pick the right tool first:**
+
+```
+  What do you need?
+      │
+      ├─► Run an agent loop + tools + model calls
+      │       └─► NOT Cairn.  →  Use Claude Code · Codex · Gemini · pi-mono
+      │
+      ├─► Persist typed memory across sessions and hand it to your agent
+      │       └─► Cairn. ✓
+      │
+      ├─► Vector search at scale across 100M+ records
+      │       └─► Partly Cairn (sandbox) + your vector DB (full profile path)
+      │            →  Use Postgres+pgvector or Qdrant behind MemoryStore trait
+      │
+      ├─► IAM / SSO / role assignments / auth provider
+      │       └─► NOT Cairn.  →  Use Okta · Azure AD · Google Workspace
+      │            Cairn signs envelopes with your resolved principal.
+      │
+      ├─► Schedule durable background jobs
+      │       └─► Partly Cairn (tokio default) + your runner (Temporal adapter)
+      │            →  Keep tokio default unless ops already runs Temporal
+      │
+      ├─► Ship a desktop GUI for knowledge browsing
+      │       └─► Optional Cairn + your editor.  →  Use Obsidian · VS Code · Logseq
+      │            Cairn's Tauri GUI is small on purpose; it never owns the data
+      │
+      ├─► Run a built-in "standup bot" or "brag doc" feature
+      │       └─► NOT Cairn.  →  Build it as a user-space template on top of cairn verbs
+      │
+      ├─► Distribute skills publicly via marketplace
+      │       └─► NOT Cairn v0.1.  →  Use cairn share for peer-to-peer .nexus bundles
+      │            Public indexing is out of scope until v0.3+
+      │
+      └─► Casual "ChatGPT-style memory toggle"
+              └─► Cairn L1 (§18.a).  →  cairn skill install + "remember that..." triggers
+                    Same primitives underneath; just lighter-weight UX
+```
+
+**The non-goal list below elaborates each branch.**
+
+
+- **Not a harness.** You might expect one because every other memory framework ships a loop. Cairn has no agent loop, no tool executor, no opinionated LLM adapter beyond `LLMProvider`. → **Use** Claude Code, Codex, Gemini, pi‑mono, or your own loop; register `cairn mcp` as a tool.
+- **Not a scheduler of last resort.** You might expect Temporal‑grade durability to be required because we talk about `WorkflowOrchestrator`. The v0.1 default is `tokio` + a SQLite job table — crash‑safe, single binary, zero external services. → **Use** the default orchestrator; swap to Temporal only when your ops team already runs it. Durability + idempotency guarantees apply to both; see §10 truth table.
+- **Not a vector database.** You might expect a dedicated pgvector / Pinecone / Weaviate dependency. The Nexus `sandbox` profile ships SQLite + `sqlite-vec` + `litellm` embeddings as the default vector path via the `search` brick, and it is enough for millions of records per vault. → **Use** the sandbox profile for L1/L2; swap to the `search` brick's Postgres adapter when you cross the single‑SQLite ceiling.
+- **Not a UI framework.** You might expect a full IDE‑style surface because of the §13 UI section. The desktop GUI is optional, purposely small (browse/edit/graph/consent), and never a prerequisite. → **Use** Obsidian, VS Code, Logseq, or raw Markdown via the FrontendAdapter contract (§13.5.c); the vault is plain files.
+- **Not an IAM engine.** You might expect role assignments, SSO, identity providers, because we talk about actors, visibility, and tenant scopes. `MemoryVisibility` is a tag; `rebac` is a query‑time filter. → **Use** your existing IAM (Okta / Azure AD / Google Workspace); pass the resolved principal into the signed envelope's `issuer` field.
+- **Not an application.** You might expect built‑in "brag doc", "standup template", "review brief", "knowledge wiki" features. Those are opinionated user‑space compositions, not framework primitives. → **Use** templates that sit on top of Cairn's verbs (`templates/<domain>/`), or build your own — every domain has different vocabulary.
+- **Not a chat memory plugin.** You might expect a one‑click ChatGPT‑style "memory" toggle. Cairn is a substrate; every capture is explicit (hook event, signed envelope, consent journal) so it survives audit and forget‑me. → **Use** L1 "tell it directly" triggers (§18.a) if you want the casual chat experience — they run over the same primitives.
+- **Not a skill registry.** You might expect npm / PyPI / marketplace distribution of skills. Skills live inside a vault, shipped via `.nexus` bundles under consent‑gated share links (§12.a). → **Use** `cairn share` for peer‑to‑peer skill handoff; public indexing is opt‑in and out of scope for v0.1.
 
 ---
 
-## 18. Success Criteria
+## 18. Success Criteria [P3 — v1.0 targets]
 
-1. **Adoption.** Three independent harnesses speak Cairn MCP in v0.1; ten by v1.0.
+1. **Adoption.** Three independent harnesses call Cairn's eight verbs (via CLI, MCP, SDK, or skill — pick the one that fits) in v0.1; ten by v1.0.
 2. **Standalone proof.** `cairn init` on a fresh laptop (no network), works end‑to‑end.
 3. **Latency.** p95 harness turn with Cairn MCP hot‑assembly < 50 ms.
 4. **Privacy.** `forget-me` on a 1M‑record vault: reader‑invisible within 1 s p95 (Phase A tombstones + fence closed), physical purge within 30 s p95 (Phase B); append‑only consent log survives GDPR review.
@@ -2177,6 +3523,40 @@ Nothing in these migrations requires the legacy system to change. Cairn runs as 
 ## 18.a Progressive Adoption — three ways to use Cairn
 
 Users don't have to commit to the full stack on day one. Cairn is designed to be useful at three levels of commitment, each a superset of the last.
+
+```
+     L3 ─ Second brain with continuous learning         1-2 hours · P1-P2
+     ─────────────────────────────────────────────     ───────────────────
+      + source sensors (Slack · email · GitHub · web)   + Nexus sandbox
+      + Light/REM/Deep dream tiers running overnight    + sqlite-vec semantic
+      + desktop GUI (Tauri) for browsing + graph view   + ReflectionWorkflow
+      + EvolutionWorkflow auto-promotes skills          + EvolutionWorkflow
+      + auto-built user profile refreshes daily
+                              ▲
+                              │  (same vault; turn on a config flag)
+                              │
+     L2 ─ File-based vault on disk                      5 minutes · P0-P1
+     ─────────────────────────────────────────────     ───────────────────
+      + cairn init scaffolds ~/vaults/<name>/            + purpose.md
+      + raw/ tree (plain markdown, one file per record)  + CLAUDE.md
+      + .cairn/cairn.db (WAL + identity + consent log)   + AGENTS.md / GEMINI.md
+      + git works (diff, blame, revert)                  + cairn snapshot weekly
+      + any editor works (Obsidian, VS Code, vim, Typora)
+                              ▲
+                              │  (cairn init "claims" the existing L1 memories)
+                              │
+     L1 ─ Zero-config in your harness                    30 seconds · P0
+     ─────────────────────────────────────────────     ───────────────────
+      + install the cairn binary                         + brew install cairn
+      + register cairn mcp OR install the cairn skill    + cargo install cairn
+      + "tell it directly" triggers (§11.6):             + winget install cairn
+         "remember that I prefer X"  → user memory
+         "forget what I said about Y" → forget verb
+         "what do you know about Z?"  → search
+      + eight core MCP verbs usable from any chat
+```
+
+**You can live at any level indefinitely.** L1 is fine for casual use. L2 gives you portability. L3 gives you compounding knowledge. Each level is a superset; you don't rewrite anything to move up.
 
 | Level | Commitment | What you get | When |
 |-------|------------|--------------|------|
@@ -2341,17 +3721,127 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 
 **Therefore:** P0 (US1–US3), US4 rolling‑summary, US5, US7 basic search, and US8 record‑level forget all land in v0.1. US6 cold‑rehydration, US8 session fan‑out, and the full reflection/evolution surface land in v0.2.
 
+## 18.d The Cairn skill — install once, use anywhere [P0]
+
+For harnesses that don't speak MCP (or where the user prefers not to run an extra server), Cairn ships as a **skill** — a single `SKILL.md` file plus a directory of examples. The harness's native `bash` tool is the only runtime dependency. Any LLM that can read markdown and call `bash` can use Cairn.
+
+**Install:**
+
+```bash
+cairn skill install --harness <claude-code|codex|gemini|opencode|cursor|custom>
+# writes ~/.cairn/skills/cairn/ and registers the path in the harness's skill index
+```
+
+**What gets installed:**
+
+```
+  ~/.cairn/skills/cairn/
+    ├── SKILL.md              ← the spec (reproduced below, ~200 lines)
+    ├── conventions.md         ← when to ingest vs. search; kind cheat-sheet
+    ├── examples/              ← 10-20 example transcripts (user intent → cairn call)
+    │   ├── 01-remember-preference.md
+    │   ├── 02-forget-something.md
+    │   ├── 03-search-prior-decision.md
+    │   ├── 04-skillify-this.md
+    │   └── ...
+    └── .version               ← pins cairn.mcp.v1 (skill and binary must match)
+```
+
+**The SKILL.md file — the whole contract on one page:**
+
+```markdown
+---
+name: cairn
+description: Cairn memory system. Use for persistent memory across turns, sessions, and agents. Install required: `brew install cairn` or `cargo install cairn`.
+triggers:
+  - "remember (that|to) …"
+  - "forget (that|what) …"
+  - "what do (we|you) know about …"
+  - "skillify (this|it)"
+  - "search (prior|old|my) …"
+  - any time the user shares a preference, constraint, correction, or procedure
+---
+
+# Cairn Memory Skill
+
+You have persistent memory via the `cairn` CLI. Use it for anything the user
+wants to remember across turns, sessions, or agents. The binary is already
+installed (run `cairn --version` to confirm).
+
+## When to call cairn
+
+| User says / situation                        | Command to run                                       |
+|----------------------------------------------|-------------------------------------------------------|
+| "remember that I prefer X"                    | `cairn ingest --kind user --body "prefers X"`        |
+| "remember: never do Y"                        | `cairn ingest --kind rule --body "never do Y"`       |
+| "correction: it's actually Z"                 | `cairn ingest --kind feedback --body "Z"`            |
+| "forget what I said about W"                  | `cairn forget --record $(cairn search "W" -1q)`      |
+| "what do you know about K?"                   | `cairn search "K" --limit 10`                         |
+| "load my preferences for this session"        | `cairn assemble_hot --session ${SESSION_ID}`          |
+| before answering any non-trivial question     | `cairn search "$USER_INTENT" --limit 5`              |
+| after completing an ad-hoc procedure          | `cairn ingest --kind strategy_success --body "..."`  |
+| before ending the session                     | `cairn capture_trace --from ${TRANSCRIPT_PATH}`       |
+
+## Kind cheat-sheet (pick one — never invent new kinds)
+
+- `user`       — preferences, working style, identity
+- `feedback`   — corrections the user gave you
+- `rule`       — invariants ("never X", "always Y")
+- `fact`       — verifiable claims about the world
+- `entity`     — people, projects, systems you encountered
+- `playbook`   — reusable procedures with decision trees
+- `strategy_success` — an ad-hoc procedure that worked
+- `trace`      — reasoning trajectories (auto-captured; don't call directly)
+
+## Output format
+
+Every `cairn` command returns JSON on stdout. Parse it. Don't "read" prose.
+
+```bash
+$ cairn search "pgvector" --limit 2 --json
+{"hits":[
+  {"id":"01HQZ...","kind":"fact","body":"pgvector needs extension","score":0.94},
+  {"id":"01HQY...","kind":"feedback","body":"user prefers sqlite-vec","score":0.81}
+]}
+```
+
+## Non-negotiable rules
+
+1. Never invent record IDs. Always get them from `cairn search` or `cairn retrieve`.
+2. Never call `cairn forget` without confirming with the user — forget is irreversible.
+3. If a command fails, show the user `stderr` verbatim. Don't paper over errors.
+4. Every `ingest` signs with your agent identity — you don't pass `--signed-intent`
+   explicitly; `cairn` reads it from `$CAIRN_IDENTITY` set at harness startup.
+5. Don't run `cairn ingest` for trivia the user didn't ask you to remember. Use
+   the trigger list above — if it's not on the list, ask before storing.
+```
+
+**Why this works better than "install an MCP server":**
+
+| Property | MCP server install | Cairn skill install |
+|----------|---------------------|----------------------|
+| Setup time | edit `.claude.json` or `settings.json`; restart harness | drop one directory; restart not required |
+| Offline | requires running a server process | just a binary on `$PATH` |
+| Debugging | sniff MCP wire | read `stderr` |
+| Works in CI | requires MCP client in CI | every CI has `bash` |
+| Migration when binary updates | server restart, potentially breaking API surface | same CLI contract forever (version gate in `.version` file) |
+| Works in a harness that doesn't support MCP | no | yes (any bash-capable agent) |
+
+The MCP server is still available (`cairn mcp`) for harnesses that prefer the wire protocol — Claude Code, Codex, Gemini all do. The skill is the **lowest‑common‑denominator** path: if a harness can run `bash`, it can use Cairn.
+
+---
+
 ## 19. Sequencing
 
-**v0.1 — Minimum substrate.** Covers US1, US2 active‑session reload, US3, US4 rolling‑summary path, US5, US7 basic search, and US8 record‑level delete (see §18.c capability matrix for the authoritative mapping).
-Headless only. Nexus local backend. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope; `forget` advertises `mode: "record"` capability only. `DreamWorkflow` + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`.
+**v0.1 — Minimum substrate (all P0).** Covers US1, US2 active‑session reload, US3, US4 rolling‑summary path, US5, US7 basic search, and US8 record‑level delete (see §18.c capability matrix for the authoritative mapping).
+Headless only. **Pure SQLite backend** — `.cairn/cairn.db` with built‑in FTS5 for keyword search; zero Python, zero Nexus, zero embedding keys, zero external services. Single Rust binary installs via `brew install cairn` or `cargo install cairn` and runs offline. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope; `forget` advertises `mode: "record"` capability only; `search` stamps every result `semantic_degraded=true` because semantic search is P1. `DreamWorkflow` (LLMDreamWorker only) + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`.
 
 **Reference consumer for v0.1: Claude Code.** Chosen because (a) it is the first harness with a stable hook surface in shipping form, (b) Cairn's five hooks map 1:1 to CC's native events, (c) the primary maintainer already uses CC daily so dogfood signal is immediate, and (d) the CC MCP registration format is a documented reference every other harness (Codex, Gemini) can adapt. Codex integration ships in v0.2 as the second consumer.
 
 v0.1 acceptance ⇒ all §18.c P0 + P1 stories pass their golden‑query suites against Claude Code, and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime.
 
-**v0.2 — Continuous learning + SRE surface.** Covers US6, US7, US8 session‑wide delete, and full US4 reflection layer.
-Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha.
+**v0.2 — Continuous learning + SRE surface + semantic search (all P1).** Covers US6, US7 semantic, US8 session‑wide delete, and full US4 reflection layer.
+**Backend upgrade: Nexus `sandbox` profile becomes the default** — Python sidecar adds BM25S + `sqlite-vec` + `litellm` embeddings; existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside). `search` supports `mode: "keyword" | "semantic" | "hybrid"`; `semantic_degraded=true` drops from results. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. Tauri GUI alpha. Optional Temporal adapter for orchestrator.
 
 **v0.3 — Propagation + collective.**
 Add `PromotionWorkflow`, `PropagationWorkflow`, consent‑gated team/org share, `cairn.federation.v1` extension. Full sensor suite. `evolve` WAL state machine with canary rollout.
@@ -2361,6 +3851,115 @@ Multi‑session coherence benchmarks. Replay cassettes. Documentation freeze. Be
 
 **v1.0 — Production.**
 SLAs hit. Three harnesses shipped. Desktop GUI on three OSes. Semver commitment on MCP surface (`cairn.mcp.v1` frozen).
+
+---
+
+## 19.a KISS — the v0.1 subset you can hold in your head [P0]
+
+The doc above covers the full spec through v1.0. Most of the surface is skippable for the first working prototype. This section is the **complexity budget**: what ships in v0.1, what doesn't, and the entire agent ↔ memory loop in pseudocode short enough to fit on one screen.
+
+### What v0.1 actually is — five things, nothing else
+
+| # | Capability | Where it lives | Skippable until |
+|---|------------|-----------------|------------------|
+| 1 | Eight verbs over the signed envelope, exposed as CLI + MCP + SDK + skill | `cairn` binary (§8.0) | never — this is the product |
+| 2 | **One SQLite file** (`.cairn/cairn.db`) with FTS5 — records, WAL, replay, consent journal, locks all in one file | Rust core via `rusqlite` | never |
+| 3 | Five hooks (`SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`) | harness integration layer | never |
+| 4 | WAL two‑phase commit for `upsert` + `forget_record` | Rust core | never |
+| 5 | `tokio` orchestrator for `DreamWorkflow` + `ExpirationWorkflow` + `EvaluationWorkflow` + rolling‑summary `ConsolidationWorkflow` | Rust core | never |
+
+**Everything below ships later — don't build it in v0.1:**
+
+| Deferred to | What you're skipping | Why it's safe to skip |
+|--------------|-----------------------|------------------------|
+| v0.2 | `ReflectionWorkflow`, `SkillEmitter`, Dream/REM/Deep consolidation tiers, session‑wide `forget`, cold rehydration, OpenTelemetry dashboards, Tauri GUI | None of these are on the hot path for US1–US5 + US7 basic + US8 record |
+| v0.3 | `PromotionWorkflow`, `PropagationWorkflow`, federation, `evolve` WAL state, full sensor suite | Single‑user/single‑machine works without any of this |
+| v0.4+ | Multi‑session coherence benchmarks, replay cassettes, desktop GUI polish, second/third harness | These are polish, not substrate |
+
+### The whole agent turn in 50 lines of pseudocode
+
+If you only read one code block in this document, read this one. Everything else is an elaboration.
+
+```rust
+// Agent turn with Cairn memory — the entire v0.1 loop, simplified for clarity
+// Real impl adds envelope signing, error typing, retry policy — not shown here
+
+async fn turn(session_id: SessionId, user_msg: &str) -> Result<AgentMsg> {
+    // 1. HOOK: session_start (on first turn only) — fires once, lets Cairn inject hot memory
+    let hot = cairn::assemble_hot(session_id).await?;        // ≤ 25 KB, ≤ 6,250 tokens (§7)
+
+    // 2. HOOK: user_prompt_submit — user intent enters the journal
+    cairn::capture_trace(session_id, Event::UserMsg(user_msg)).await?;
+
+    // 3. BUILD THE PROMPT — hot prefix + rolling summary + last K turns
+    let summary = cairn::summarize(session_id, window: 50).await?;  // rolling, only if > N turns
+    let recent  = cairn::retrieve(session_id, limit: 10, order: Desc).await?;
+    let prompt  = Prompt::new().system(hot).context(summary).history(recent).user(user_msg);
+
+    // 4. MODEL CALL — your harness owns this, Cairn doesn't
+    let mut response = llm::stream(prompt).await?;
+
+    // 5. TOOL LOOP — PreToolUse / PostToolUse hooks fire around every tool call
+    while let Some(tool_call) = response.next_tool_call().await? {
+        cairn::capture_trace(session_id, Event::PreToolUse(&tool_call)).await?;
+        let result = tool::exec(&tool_call).await?;          // may fail — Cairn still logs
+        cairn::capture_trace(session_id, Event::PostToolUse(&tool_call, &result)).await?;
+        response.feed_tool_result(result).await?;
+    }
+
+    // 6. HOOK: stop — the turn is done, let Cairn consolidate async
+    let agent_msg = response.finalize().await?;
+    cairn::capture_trace(session_id, Event::AgentMsg(&agent_msg)).await?;
+    cairn::stop(session_id).await?;   // triggers rolling-summary orchestrator if cadence hit
+
+    Ok(agent_msg)
+}
+
+// That's it. Everything else — Extract, Filter, Classify, Store, Consolidate,
+// Dream, Reflect, Promote, Evolve, Federation — runs inside the `tokio`
+// orchestrator behind those 6 calls. The harness never sees it.
+```
+
+**What runs behind each of those six calls:**
+
+```
+  cairn::assemble_hot    ─▶ read purpose.md + index.md + pinned + profile + playbook ─▶ 25 KB prefix
+  cairn::capture_trace   ─▶ §5.2 Filter(PII, visibility, scope) ─▶ WAL upsert ─▶ SQLite
+  cairn::summarize       ─▶ rolling-summary ConsolidationWorkflow (only if cadence hit)
+  cairn::retrieve        ─▶ single SQL query over SQLite primary key, p50 < 5 ms
+  cairn::stop            ─▶ enqueue post-turn jobs in tokio; return immediately
+  cairn::forget (later)  ─▶ §5.6 delete state machine (Phase A tombstone + Phase B purge)
+```
+
+### Complexity budget — what you can skip and still have a working system
+
+| You don't strictly need… | …until |
+|---------------------------|---------|
+| `actor_chain` with multi‑hop delegation | you have more than one agent writing to the vault |
+| `ConsentReceipt` + propagation | you want to share records beyond `private` tier |
+| Signed envelope with `sequence` + `server_challenge` | you expose the MCP server over a network boundary |
+| Skillify 10‑step pipeline | the agent has been writing skills for long enough to accumulate rot |
+| Federation to a hub | more than one person uses the same knowledge |
+| Sensors beyond the five hooks | you want capture from sources outside the harness |
+| Desktop GUI | raw `wiki/` markdown + any editor is already enough |
+| Rich visibility tiers beyond `private` + `session` | the vault never leaves one laptop |
+
+**Everything in the table above is a progressive enhancement.** v0.1 ships with `private` + `session` only, single‑actor `author` identity, one hook surface, one orchestrator (local `tokio`), one MCP wire format (`cairn.mcp.v1`), and one set of five workflows. That is enough to pass all P0 + P1 user stories. Every later version adds one capability on top; nothing retroactively changes the v0.1 wire format.
+
+### First principles check (§1.b)
+
+Every capability above is derivable from these seven invariants — if you violate one, you are not shipping Cairn:
+
+```
+  1. Memory = plain text + explicit schema. The vault is inspectable, editable, grep‑able.
+  2. Eight verbs are the contract; the CLI is the ground truth. MCP, SDK, skill all wrap the same eight Rust functions.
+  3. One SQLite file at P0. Everything in .cairn/cairn.db (records + WAL + replay + consent + locks).
+     Nexus adds a nexus-data/ directory at P1+ alongside the unchanged SQLite file. Never the other way around.
+  4. Signed envelope on every write. Chain of trust never optional, even in v0.1 single-actor mode.
+  5. WAL two-phase for every mutation. No "just write, we'll recover from a crash later."
+  6. Orchestrator is pluggable but has a zero-dependency default. `tokio` + SQLite job table.
+  7. Harness never sees Cairn internals. Eight verbs in, eight verb responses out. Every migration, every version, forever.
+```
 
 ---
 
