@@ -16,6 +16,7 @@ const CONFIG: ResolvedConfig = {
   model: "test-model",
   capabilities: DEFAULT_CAPABILITIES,
   compat: DEFAULT_COMPAT,
+  rawCompat: undefined,
   headers: {},
   provider: "openai-compat",
   trustTranscriptMetadata: true,

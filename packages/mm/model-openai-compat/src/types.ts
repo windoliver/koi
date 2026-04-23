@@ -216,6 +216,8 @@ export interface ResolvedConfig {
   readonly model: string;
   readonly capabilities: ModelCapabilities;
   readonly compat: ResolvedCompat;
+  /** Raw caller-supplied compat overrides — retained so per-request model changes can re-resolve compat. */
+  readonly rawCompat: ProviderCompat | undefined;
   readonly headers: Readonly<Record<string, string>>;
   readonly provider: string;
   readonly trustTranscriptMetadata: boolean;
@@ -251,6 +253,7 @@ export function resolveConfig(config: OpenAICompatAdapterConfig): ResolvedConfig
     model: config.model,
     capabilities,
     compat: resolveCompat(baseUrl, config.model, config.compat),
+    rawCompat: config.compat,
     headers: config.headers ?? {},
     provider: config.provider ?? "openai-compat",
     trustTranscriptMetadata: config.trustTranscriptMetadata ?? true,

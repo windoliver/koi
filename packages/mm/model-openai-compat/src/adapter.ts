@@ -25,7 +25,7 @@ import {
 import { createStreamParser, parseSSELines } from "./stream-parser.js";
 import { mapToolDescriptors } from "./tool-mapper.js";
 import type { ChatCompletionTool, OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
-import { resolveConfig } from "./types.js";
+import { resolveCompat, resolveConfig } from "./types.js";
 
 /** Stream idle timeout — abort hung streams after 90s of no data. */
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
@@ -228,9 +228,19 @@ async function* streamOnce(
   request: ModelRequest,
   getDisableKeepAlive: () => boolean,
 ): AsyncIterable<ModelChunk> {
+  // Re-resolve model-specific compat when request.model differs from the adapter's
+  // default model — model-compat rules may differ per model within the same provider.
+  const effectiveModel = request.model ?? config.model;
+  const streamCompat =
+    effectiveModel !== config.model
+      ? resolveCompat(config.baseUrl, effectiveModel, config.rawCompat)
+      : config.compat;
+  const streamConfig: ResolvedConfig =
+    streamCompat !== config.compat ? { ...config, compat: streamCompat } : config;
+
   const tools =
-    request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
-  const body = buildRequestBody(request, config, tools);
+    request.tools !== undefined ? mapToolDescriptors(request.tools, streamCompat) : undefined;
+  const body = buildRequestBody(request, streamConfig, tools);
   // Fingerprint the actual wire payload (sorted tools + system prompt) so
   // diagnostics accurately reflect provider-visible prefix changes.
   const promptPrefixFingerprint = computePrefixFingerprint(request.systemPrompt, tools);
@@ -339,9 +349,10 @@ async function* streamOnce(
     return;
   }
 
-  const effectiveModel = request.model ?? config.model;
   const accumulator = createEmptyAccumulator(effectiveModel);
-  const parser = createStreamParser(accumulator);
+  const parser = createStreamParser(accumulator, {
+    supportsToolStreaming: streamCompat.supportsToolStreaming,
+  });
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDone = false;
