@@ -72,6 +72,8 @@ export interface WrapToolCallDeps {
   readonly specRegistry: ReadonlyMap<string, CommandSpec>;
   /** Whether bash-ast spec-aware enforcement is enabled. */
   readonly specGuardEnabled: boolean;
+  /** When true, the backend is a bypass backend — skip spec guard entirely. */
+  readonly specGuardBypass: boolean;
 }
 
 export function createWrapToolCall(deps: WrapToolCallDeps): {
@@ -97,6 +99,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     handleAskDecision,
     specRegistry,
     specGuardEnabled,
+    specGuardBypass,
   } = deps;
 
   async function wrapToolCall(
@@ -241,7 +244,7 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
     // Bash spec guard: evaluate Write/Read/Network rules + exact-argv enforcement.
     // Runs after the dangerous-command ratchet so that any further downgrade
     // (deny/ask) from semantic rules is respected on top of prefix policy.
-    if (specGuardEnabled && decision.effect !== "deny") {
+    if (specGuardEnabled && !specGuardBypass && decision.effect !== "deny") {
       const raw = config.resolveBashCommand?.(request.toolId, request.input);
       if (raw !== undefined && raw.trim().length > 0) {
         const specOutcome = await evaluateSpecGuard({

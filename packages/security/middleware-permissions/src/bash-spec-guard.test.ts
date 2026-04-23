@@ -476,29 +476,31 @@ describe("evaluateSpecGuard — public default-deny field detection (#1919 regre
   });
 });
 
-describe("evaluateSpecGuard — bypass mode detection (#1919 regression)", () => {
-  test("bypass backend (allows all resources) + refused spec → honored (no downgrade to ask)", async () => {
-    // Regression: bypass backends return allow for both exact resource and the canary suffix,
-    // so the canary technique cannot distinguish bypass from a prefix/glob rule.
-    // The bypass probe (\x02__bypass_probe__) detects all-allow backends and short-circuits.
+describe("evaluateSpecGuard — canary-based exact-argv detection (#1919 regression)", () => {
+  test("all-allow backend (prefix/glob or bypass) + refused spec → downgraded to ask by evaluateSpecGuard", async () => {
+    // evaluateSpecGuard itself downgrades all-allow backends (including bypass mode) because
+    // the canary also returns allow — indistinguishable from a broad prefix/glob rule.
+    // Bypass backends are short-circuited UPSTREAM in wrapToolCall via specGuardBypass before
+    // evaluateSpecGuard is ever called, so this downgrade is never reached for real bypass backends.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "ssh prod-host", // refused spec (no verifiedBaseName match)
       currentDecision: allowDecision,
-      resolveQuery: async (_q) => allowDecision, // bypass: allow everything
+      resolveQuery: async (_q) => allowDecision, // all-allow: exact + canary both allow
       baseQuery,
       registry,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
-    // Bypass backend must NOT be downgraded to ask by the exact-argv guard
-    expect(result.decision.effect).toBe("allow");
+    // All-allow backend: canary also allows → canary cannot distinguish → downgrade to ask
+    expect(result.decision.effect).toBe("ask");
     expect(result.specKind).toBe("refused");
   });
 
-  test("prefix rule (bash:ssh*) still downgraded (bypass probe correctly excluded)", async () => {
-    // The bypass probe uses a \x02-prefixed resource that a real bash:ssh* rule cannot match.
-    // So prefix rules are NOT mistaken for bypass mode — downgrade still fires.
+  test("prefix rule (bash:ssh*) downgraded — canary suffix breaks prefix match", async () => {
+    // The canary suffix (\x01__spec_guard_canary__) appended to the resource string breaks
+    // prefix/glob rules: `bash:ssh*` compiled to /^bash:ssh/ still matches the canary string,
+    // so canary=allow → not explicit → downgrade to ask.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "ssh prod-host",
@@ -513,7 +515,7 @@ describe("evaluateSpecGuard — bypass mode detection (#1919 regression)", () =>
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
-    // Prefix rule: canary allows (prefix), bypass probe denies → downgrade to ask
+    // Prefix rule: canary allows (prefix still matches) → downgrade to ask
     expect(result.decision.effect).toBe("ask");
     expect(result.specKind).toBe("refused");
   });

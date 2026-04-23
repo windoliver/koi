@@ -126,11 +126,17 @@ export function createPermissionBackend(config: PermissionConfig): PermissionBac
     // Stateless — nothing to clean up.
   }
 
-  // This backend is now marker-aware: evaluateRules() stamps fall-through ask
-  // decisions with IS_DEFAULT_ASK (Symbol.for("@koi/permissions/default-fallthrough-ask"))
-  // so consumers in @koi/middleware-permissions can distinguish them from explicit
-  // ask rules during dual-key semantic evaluation. Setting supportsDefaultDenyMarker: true
-  // enables backendSupportsDualKey in the bash spec guard, activating Write/Read/Network
-  // semantic rule enforcement for the default CLI/TUI permission path.
+  // Bypass backends have no policy rules — they allow everything unconditionally.
+  // Mark them with bypassAllSpecGuards so the bash spec guard skips exact-argv
+  // and semantic rule enforcement entirely (the canary technique cannot distinguish
+  // bypass from prefix/glob when all queries return allow).
+  if (mode === "bypass") {
+    return { check, checkBatch, dispose, bypassAllSpecGuards: true as const };
+  }
+
+  // Non-bypass backends are marker-aware: evaluateRules() stamps fall-through ask
+  // decisions with IS_DEFAULT_ASK so consumers can distinguish them from explicit
+  // ask rules during dual-key semantic evaluation. supportsDefaultDenyMarker: true
+  // activates Write/Read/Network semantic rule enforcement.
   return { check, checkBatch, dispose, supportsDefaultDenyMarker: true as const };
 }

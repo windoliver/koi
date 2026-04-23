@@ -581,16 +581,20 @@ export function createPermissionsMiddleware(
     serializeTurnContext,
   });
 
-  // Spec guard: requires explicit opt-in via enableBashSpecGuard: true.
-  // Defaults to disabled so existing deployments with broad bash allows are
-  // not surprised by ask-downgrades for partial/refused specs on upgrade.
+  // Spec guard: active by default when resolveBashCommand is configured.
+  // Opt out by setting enableBashSpecGuard: false explicitly.
+  // Without resolveBashCommand the guard is a no-op anyway (no raw command to parse).
   const specRegistry = createSpecRegistry();
-  const specGuardEnabled = config.enableBashSpecGuard === true;
+  const specGuardEnabled =
+    config.resolveBashCommand !== undefined ? config.enableBashSpecGuard !== false : false;
+  // Bypass backends signal that all checks should be skipped — the canary technique
+  // cannot distinguish bypass from prefix/glob when all queries return allow.
+  const specGuardBypass = config.backend.bypassAllSpecGuards === true;
   // Warm the parser immediately so that by the time the first bash command
   // arrives, the WASM grammar is already loaded. Swallow rejection here —
   // the request-time guard awaits init per-call and will deny safely if
   // init never succeeds, so the warmup is best-effort only.
-  if (specGuardEnabled) {
+  if (specGuardEnabled && !specGuardBypass) {
     void initializeBashAst().catch(() => {
       // intentionally swallowed: request-time guard handles init failure
     });
@@ -613,6 +617,7 @@ export function createPermissionsMiddleware(
     handleAskDecision,
     specRegistry,
     specGuardEnabled,
+    specGuardBypass,
   });
 
   // -----------------------------------------------------------------------

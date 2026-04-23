@@ -173,26 +173,8 @@ async function hasExplicitExactArgvRule(
   // Exact allows — distinguish exact rule from prefix/glob with a canary suffix.
   const canaryResource = `${exactResource}\x01__spec_guard_canary__`;
   const canaryDecision = await resolveQuery({ ...baseQuery, resource: canaryResource });
-  if (canaryDecision.effect !== "allow") {
-    // Canary denied → exact rule matched (glob `*` would have matched the canary too).
-    return true;
-  }
-  // Canary also allows → check if the backend allows EVERYTHING (bypass mode or `allow: *`).
-  // A bypass/all-allow backend has no rules — the canary technique cannot distinguish
-  // prefix from exact because all queries return allow. If the backend also allows a
-  // clearly unrelated probe resource (no tool-id prefix, control-char leading byte),
-  // treat the backend as bypass-like and skip the downgrade.
-  const bypassProbeDecision = await resolveQuery({
-    ...baseQuery,
-    resource: "\x02__bypass_probe__",
-  });
-  if (bypassProbeDecision.effect === "allow") {
-    // Backend allows everything — bypass mode or global `allow: *` wildcard.
-    // Honor the existing allow; do not downgrade to ask.
-    return true;
-  }
-  // Canary allows but bypass probe denies → prefix/glob rule matched the canary.
-  return false;
+  // Canary also allows → rule is prefix/glob, not exact
+  return canaryDecision.effect !== "allow";
 }
 
 /**
