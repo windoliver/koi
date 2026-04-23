@@ -124,6 +124,12 @@ describe("buildResource", () => {
     const resource = buildResource("headless");
     expect(resource.attributes["service.version"]).toBe("0.5.0");
   });
+
+  test("whitespace-only OTEL_SERVICE_NAME is ignored — falls back to default", () => {
+    process.env.OTEL_SERVICE_NAME = "   ";
+    const resource = buildResource("headless");
+    expect(resource.attributes["service.name"]).toBe("koi");
+  });
 });
 
 describe("parseOtelResourceAttributes", () => {
@@ -153,8 +159,14 @@ describe("parseOtelResourceAttributes", () => {
     expect(parseOtelResourceAttributes("optional.tag=")).toEqual({ "optional.tag": "" });
   });
 
-  test("accepts foo=a=b (splits on first = only per OTel spec)", () => {
-    expect(parseOtelResourceAttributes("foo=a=b")).toEqual({ foo: "a=b" });
+  test("returns undefined for foo=a=b (unencoded = in value not allowed — matches OTel JS EnvDetector)", () => {
+    // The OTel JS EnvDetector uses split("=") and requires exactly 2 parts.
+    // foo=a=b produces 3 parts → malformed. Use foo=a%3Db to encode the value "=".
+    expect(parseOtelResourceAttributes("foo=a=b")).toBeUndefined();
+  });
+
+  test("accepts percent-encoded = in value (foo=a%3Db → {foo: 'a=b'})", () => {
+    expect(parseOtelResourceAttributes("foo=a%3Db")).toEqual({ foo: "a=b" });
   });
 
   test("skips empty segments from trailing/double commas", () => {
@@ -203,6 +215,22 @@ describe("buildResource semantic key protection", () => {
     expect(resource.attributes.region).toBe("us-east-1");
     // service.name default must still be intact
     expect(resource.attributes["service.name"]).toBe("koi");
+  });
+
+  test("whitespace-only service.name via OTEL_RESOURCE_ATTRIBUTES falls back with warning", () => {
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: string | Uint8Array) => {
+      if (typeof chunk === "string") stderrWrites.push(chunk);
+      return true;
+    };
+    // %20 = space — parses to " " which is whitespace-only
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "service.name=%20";
+    const resource = buildResource("headless");
+    process.stderr.write = origWrite;
+
+    expect(resource.attributes["service.name"]).toBe("koi");
+    expect(stderrWrites.some((w) => w.includes("service.name"))).toBe(true);
   });
 });
 

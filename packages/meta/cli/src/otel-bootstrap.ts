@@ -76,14 +76,16 @@ export function buildResource(mode: "tui" | "headless"): Resource {
   }
 
   // OTEL_SERVICE_NAME takes highest priority for service.name.
+  // Reject whitespace-only values — they collapse traces into blank service
+  // buckets which are indistinguishable from unlabeled builds in collectors.
   const serviceName = process.env.OTEL_SERVICE_NAME;
-  if (serviceName !== undefined && serviceName.length > 0) {
+  if (serviceName !== undefined && serviceName.trim().length > 0) {
     attrs["service.name"] = serviceName;
   }
 
-  // Guard Koi-owned semantic keys against empty overrides.
-  // Templated env vars that resolve to empty would silently collapse telemetry
-  // identity (service, version, mode) into unlabeled buckets.
+  // Guard Koi-owned semantic keys against empty or whitespace-only overrides.
+  // Templated env vars that resolve to empty/whitespace would silently collapse
+  // telemetry identity (service, version, mode) into unlabeled buckets.
   // Restore from the pre-override snapshot; delete if Koi had no value either.
   const guardKeys = [
     "service.name",
@@ -93,9 +95,9 @@ export function buildResource(mode: "tui" | "headless"): Resource {
     "process.runtime.version",
   ] as const;
   for (const key of guardKeys) {
-    if (attrs[key] !== undefined && attrs[key].length === 0) {
+    if (attrs[key] !== undefined && attrs[key].trim().length === 0) {
       process.stderr.write(
-        `[koi] OTel: "${key}" was set to an empty string — ignoring override.\n`,
+        `[koi] OTel: "${key}" was set to an empty or whitespace-only string — ignoring override.\n`,
       );
       const koiValue = koiSnapshot[key];
       if (koiValue !== undefined) {
@@ -112,14 +114,15 @@ export function buildResource(mode: "tui" | "headless"): Resource {
 /**
  * Parse OTEL_RESOURCE_ATTRIBUTES into a key→value map.
  *
- * Follows OTel spec: comma-separated key=value pairs, values split on the
- * first "=" only (so "foo=a=b" → key "foo", value "a=b"), empty values
- * are accepted (spec-compliant), empty segments from trailing/double commas
- * are skipped.
+ * Follows the OTel JS EnvDetector grammar (mirrored from
+ * @opentelemetry/resources@2.6.1): comma-separated key=value pairs where
+ * "," and "=" in keys/values MUST be percent-encoded. Each pair must contain
+ * exactly one "=" (unencoded "=" in values is an error). Empty segments from
+ * trailing/double commas are skipped. Empty values are allowed per spec.
  *
- * Returns `undefined` if any pair has a missing/empty key, missing "=", or
- * a percent-decode failure — fail-closed so operators see a clean warning
- * rather than partially-wrong resource metadata.
+ * Returns `undefined` if any pair has a missing/empty key, not exactly one
+ * unencoded "=", or a percent-decode failure — fail-closed so operators see a
+ * clean warning rather than partially-wrong resource metadata.
  *
  * Exported for unit testing — not part of the public CLI API.
  */
@@ -128,11 +131,11 @@ export function parseOtelResourceAttributes(raw: string): Record<string, string>
   for (const pair of raw.split(",")) {
     const trimmed = pair.trim();
     if (trimmed.length === 0) continue; // empty segment from trailing/double comma — skip
-    const eq = trimmed.indexOf("=");
-    if (eq < 0) return undefined; // no "=" at all → malformed
-    const key = trimmed.slice(0, eq).trim();
+    const parts = trimmed.split("=");
+    if (parts.length !== 2) return undefined; // missing "=" or unencoded "=" in value → malformed
+    const key = parts[0].trim();
     if (key.length === 0) return undefined; // empty key → malformed
-    const rawValue = trimmed.slice(eq + 1);
+    const rawValue = parts[1].trim();
     try {
       result[key] = decodeURIComponent(rawValue); // empty value is allowed per spec
     } catch {
