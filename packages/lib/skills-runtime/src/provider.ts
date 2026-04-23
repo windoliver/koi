@@ -88,25 +88,20 @@ async function attachEager(runtime: SkillsRuntime): Promise<AttachResult> {
 }
 
 async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> {
-  // Use loadAll() so that blocked/failed skills are visible as skipped entries,
-  // preserving the operator-observability contract of the eager path.
-  // Bodies are pre-warmed in the LRU cache but set content: "" so the middleware
-  // injects only the <available_skills> XML block, not the full bodies.
-  const allResult = await runtime.loadAll();
+  // Use discover() only — no body loading at attach time.
+  // Blocked skills are not surfaced as skipped entries (discover() excludes them);
+  // operator visibility of blocked skills requires the eager path or direct telemetry.
+  const discoverResult = await runtime.discover();
   const components = new Map<string, unknown>();
   const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
 
-  if (!allResult.ok) {
-    skipped.push({ name: "__discover__", reason: allResult.error.message });
+  if (!discoverResult.ok) {
+    skipped.push({ name: "__discover__", reason: discoverResult.error.message });
     return { components: components as ReadonlyMap<string, unknown>, skipped };
   }
 
-  for (const [name, result] of allResult.value) {
-    if (!result.ok) {
-      skipped.push({ name, reason: result.error.message });
-      continue;
-    }
-    components.set(skillToken(name), skillMetadataToComponent(result.value));
+  for (const [name, metadata] of discoverResult.value) {
+    components.set(skillToken(name), skillMetadataToComponent(metadata));
   }
 
   return { components: components as ReadonlyMap<string, unknown>, skipped };

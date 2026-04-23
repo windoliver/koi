@@ -164,16 +164,24 @@ function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObje
  * If no skills are attached, returns the original request unchanged.
  */
 function injectSkillsProgressive(agent: Agent, request: ModelRequest): ModelRequest {
-  // Only include runtime-progressive skills (content: "" marker set by attachProgressive).
-  // Skills from other providers (browser, memory, etc.) have non-empty content and are
-  // not loadable via the Skill tool — advertising them would cause NOT_FOUND errors.
-  const sorted = sortedSkills(agent).filter((s) => s.content === "");
-  if (sorted.length === 0) return request;
+  const sorted = sortedSkills(agent);
+  // Runtime-backed progressive skills have content: "" (set by attachProgressive).
+  // Advertise them as an XML block so the model knows to invoke the Skill tool.
+  const runtimeSkills = sorted.filter((s) => s.content === "");
+  // Non-runtime skills (browser, memory, etc.) carry non-empty bodies.
+  // Inject them via the legacy path so their guidance still reaches the model.
+  const otherBodies = sorted.map((s) => s.content).filter((c) => c !== "");
 
-  const block = generateAvailableSkillsBlock(sorted);
+  if (runtimeSkills.length === 0 && otherBodies.length === 0) return request;
+
+  const parts: string[] = [];
+  if (runtimeSkills.length > 0) parts.push(generateAvailableSkillsBlock(runtimeSkills));
+  if (otherBodies.length > 0) parts.push(otherBodies.join(SEPARATOR));
+  const injected = parts.join("\n\n");
+
   const existing = request.systemPrompt;
   const systemPrompt =
-    existing !== undefined && existing.length > 0 ? `${block}\n\n${existing}` : block;
+    existing !== undefined && existing.length > 0 ? `${injected}\n\n${existing}` : injected;
   return { ...request, systemPrompt };
 }
 
