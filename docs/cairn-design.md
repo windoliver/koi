@@ -924,13 +924,15 @@ Users who migrate from Obsidian can run `cairn import --from obsidian --folder-n
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                          CAIRN CORE  (L0, Rust, zero runtime deps)             │
 │                                                                                │
-│   Five contracts (traits)              Pipeline (pure functions)               │
+│   Six contracts (traits)               Pipeline (pure functions)               │
 │   ─────────────────────────            ──────────────────────────────          │
-│   MemoryStore ◄───────────┐            Extract · Filter · Classify · Scope     │
-│   LLMProvider             │  dispatch  Match · Rank · Consolidate · Promote    │
-│   WorkflowOrchestrator ◄──┼──────────► Expire · Assemble · Learn · Propagate   │
-│   SensorIngress           │            Redact · Fence · Lint                   │
-│   MCPServer ◄─────────────┘                                                    │
+│   MemoryStore        [P0]◄┐            Extract · Filter · Classify · Scope     │
+│   LLMProvider        [P0] │  dispatch  Match · Rank · Consolidate · Promote    │
+│   WorkflowOrchestrator[P0]┼──────────► Expire · Assemble · Learn · Propagate   │
+│   SensorIngress      [P0] │            Redact · Fence · Lint                   │
+│   MCPServer          [P0]◄┘                                                    │
+│   AgentProvider      [P2]     (opt-in — only active when an Agent-mode         │
+│                               ExtractorWorker or DreamWorker is configured)    │
 │                                                                                │
 │   Identity layer:  HumanIdentity · AgentIdentity · SensorIdentity              │
 │                    Ed25519 keys · actor_chain on every record · ConsentReceipt │
@@ -1000,12 +1002,13 @@ Cairn is plugin‑first end to end. "Plugin" means exactly one thing: a crate or
 **Registry rules:**
 
 - **L0 core (`cairn-core`) has zero implementation dependencies.** It defines traits + types + pure functions, nothing that talks to a network, filesystem, LLM, or workflow engine. L0 compiles with zero runtime deps.
-- **Every contract in §4 is a trait.** `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer`. Implementations live in separate crates / packages.
+- **Every contract in §4 is a trait.** Six total: `MemoryStore`, `LLMProvider`, `WorkflowOrchestrator`, `SensorIngress`, `MCPServer` (all P0), plus `AgentProvider` (P2 opt-in — only active when an Agent-mode `ExtractorWorker` or `DreamWorker` is configured). Implementations live in separate crates / packages.
 - **Every pure function in the pipeline is a trait + default impl.** `Extractor`, `Classifier`, `Ranker`, `HotMemoryAssembler`, etc. Override any one by naming a different function in `.cairn/config.yaml` under `pipeline.<stage>.function`.
 - **Registration is explicit, not magic.** Plugins call `cairn_core::register_plugin!(<trait>, <impl>, <name>)` in their entry point. The host assembles the active set from config at startup. No classpath scanning, no auto‑discovery surprises.
-- **Config selects the active implementation.** `.cairn/config.yaml` → `store.kind: nexus | qdrant | opensearch | custom:<name>`; `llm.provider: openai-compatible | ollama | bedrock | custom:<name>`; same pattern for every contract.
+- **Config selects the active implementation.** `.cairn/config.yaml` → `store.kind: sqlite | nexus-sandbox | nexus-full | qdrant | custom:<name>`; `llm.provider: openai-compatible | ollama | bedrock | custom:<name>`; `agent_provider.kind: cairn-core | pi-mono | custom:<name>` (only loaded when an Agent-mode worker is selected); same pattern for every contract.
 - **Contracts are versioned.** Each trait declares a `CONTRACT_VERSION`. Plugins declare the range they support. Startup fails closed if versions diverge — never a silent run with a mismatched contract.
-- **Capability declaration.** Each plugin publishes a capability manifest (supports streaming? multi‑vault? async? transactions?). Cairn's pipeline queries capabilities before dispatching — features gracefully degrade (e.g., if the store doesn't support graph edges, `wiki/entities/` still works but backlinks fall back to text search).
+- **Capability declaration.** Each plugin publishes a capability manifest (supports streaming? multi‑vault? async? transactions?). `AgentProvider` capabilities additionally include: supported tool allowlist surfaces (CLI subprocess, in-process trait, MCP), scope-tuple enforcement mode, cost-budget honoring (`max_turns` / `max_wall_s` / `max_tokens`). Cairn's pipeline queries capabilities before dispatching — features gracefully degrade (e.g., if the store doesn't support graph edges, `wiki/entities/` still works but backlinks fall back to text search; if the `AgentProvider` doesn't honor `cost_budget`, Agent-mode workers are rejected at startup).
+- **Conformance is tested.** `cairn plugins verify` runs the contract conformance test suite against every active plugin. For `AgentProvider`, conformance includes: (a) refuses to invoke a verb outside the configured tool allowlist, (b) aborts cleanly on `cost_budget` exceeded, (c) writes produced by the spawned agent go through §5.6 WAL like every other write — no direct vault mutations.
 - **Plugins can compose.** A `MemoryStore` plugin may wrap another — e.g., `cairn-store-caching` wraps any inner store with an LRU cache. Same pattern for middleware over any contract.
 
 **What this buys:**
@@ -1063,7 +1066,24 @@ Multi‑agent collaboration only works if every memory record can answer **who w
 
 Every identity keypair lives in the platform keychain (Keychain on macOS, Secret Service on Linux, DPAPI on Windows) — never on disk in plaintext, never synced into the vault.
 
-**Actor chain on every record.** `MemoryRecord` frontmatter carries a typed chain describing the full provenance:
+**Actor chain on every record.** `MemoryRecord` frontmatter carries a typed chain describing the full provenance. What the chain **must** contain depends on priority:
+
+| Priority | Minimum required chain | Filter stage behavior |
+|----------|------------------------|------------------------|
+| **P0** | Single-entry chain: one `{ role: author, identity: <AgentIdentity \| HumanIdentity>, at: <ts> }` plus `signature` signed by that identity. `attestation_chain` and multi-role entries are **permitted but not required**. | Filter rejects records with **no signature** or **invalid signature**; accepts single-author records without delegation. |
+| **P1** | Same as P0 + optional sensor entry for sensor-originated writes (`{ role: sensor, identity: snr:…, at: … }`) | Same as P0, plus: reject writes whose declared sensor label doesn't match a registered `SensorIdentity`. |
+| **P2** | Full chain: `principal → delegator* → author → sensor*` with countersignatures in `attestation_chain`. Multi-hop delegation required when one agent spawns another. | Filter rejects (a) records with **no valid author signature**, (b) P2 records with **missing countersignatures** from any actor in the declared chain, (c) records whose chain order violates `principal → delegator* → author → sensor*`. |
+
+**P0 minimum valid example** (single-user, single-agent vault — the v0.1 baseline):
+
+```yaml
+actor_chain:
+  - { role: author, identity: agt:claude-code:opus-4-7:main:v1, at: 2026-04-23T09:12:04Z }
+signature: ed25519:...        # signed by the author's key in the platform keychain
+# attestation_chain omitted — only one actor
+```
+
+**P2 full example** (multi-agent delegation with countersignatures):
 
 ```yaml
 actor_chain:
@@ -1075,9 +1095,9 @@ signature: ed25519:...                 # signed by the *author* identity
 attestation_chain: [sig1, sig2, sig3]  # countersignatures from each actor
 ```
 
-**Why a chain and not a single `author` field:** multi‑agent systems delegate. A supervisor agent spawns a reviewer agent; the reviewer spawns a critic agent; the critic writes a memory. Every hop is material to trust and auditability. Cairn enforces the chain at write time — a record without a valid signed chain is rejected by the Filter stage (§5.2). Verification at read time lets `recall` surface records with broken chains for human review rather than silently hiding them.
+**Why a chain (P2) and not just a single `author` field:** multi‑agent systems delegate. A supervisor agent spawns a reviewer agent; the reviewer spawns a critic agent; the critic writes a memory. Every hop is material to trust and auditability. P0 vaults rarely need this because one user + one agent = one author per record; full delegation only becomes load-bearing at P2.
 
-**Flow — how a chained signature is built (write time):**
+**Flow — how a chained signature is built (P2 write time):**
 
 ```
      Human              Supervisor           Reviewer            Critic             Cairn
@@ -2645,13 +2665,13 @@ This is what makes skills *compound* — `strategy_success` stays strategy‑sco
 
 ## 12. Deployment Tiers — Same Interfaces, Different Adapters [P0 embedded · P1 local · P2 cloud]
 
-| Tier | Who it's for | Adapters | Cloud? |
-|------|--------------|----------|--------|
-| **Embedded** | library mode inside a harness | Nexus `sandbox` profile sidecar (SQLite + BM25S + `sqlite-vec` semantic when embedding key available; BM25S keyword fallback otherwise) + in‑process LLM + `tokio` job runner | none |
-| **Local** | laptop, single user, researcher, air‑gap | same as Embedded + optional federation to a peer Nexus | none |
-| **Cloud** | team / enterprise | Nexus `sandbox` per client **federated to** a shared Nexus `full` hub (PostgreSQL + pgvector + Dragonfly) + any OpenAI‑compatible LLM + optional Temporal | yes |
+| Tier | Priority | Who it's for | Adapters | Cloud? |
+|------|----------|--------------|----------|--------|
+| **Embedded** | **P0** | library mode inside a harness; CI runners; offline / air‑gap first run | **Pure SQLite** (`.cairn/cairn.db` with FTS5 — records + WAL + consent in one file) + in‑process `LLMProvider` + `tokio` job runner. **No Python, no Nexus, no embedding key.** `search` is keyword-only; results stamped `semantic_degraded=true` | none |
+| **Local** | **P1** | laptop, single user, researcher who wants semantic search | Embedded **+ Nexus `sandbox` profile** sidecar (Python: BM25S + `sqlite-vec` ANN + `litellm` embeddings + ReDB metastore + CAS blob store under `nexus-data/`). `.cairn/cairn.db` is unchanged; Nexus is additive. `search` gains `semantic`/`hybrid` modes when embedding key present | none |
+| **Cloud** | **P2** | team / enterprise with shared memory | Local **+ federation** — sandbox instances delegate cross-tenant queries to a shared Nexus `full` hub (PostgreSQL + pgvector + Dragonfly) over HTTPS + mTLS. Any OpenAI-compatible LLM. Optional Temporal orchestrator | yes |
 
-Switching tiers is a change in `.cairn/config.yaml`. The vault on disk, the MCP surface, the CLI, the hooks — all unchanged.
+Switching tiers is a change in `.cairn/config.yaml` (`store.kind: sqlite` → `nexus-sandbox` → `nexus-full`). The vault on disk, the four contract surfaces (CLI · MCP · SDK · skill), the CLI commands, the hooks — all unchanged.
 
 ## 11.b Skillify — turning every failure into a permanent skill with tests [P1 base · P2 agent-authored]
 
@@ -2708,10 +2728,10 @@ A skill that fails any of the ten is stuck at `candidate` status and cannot be p
   │                                           │    (files_to:)   │
   │                                           └──────────────────┘
   ▼
-  ┌─ STAGE 3: Gate (§11.3 promotion predicate)
+  ┌─ STAGE 3: Gate (§11.3 promotion predicate — version-scoped subset)
   │   v0.1 subset: gates 1-6 (tests, size, semantic preservation, caching, confidence, review)
-  │   v0.2:        + gates 7-8 (held-out adversarial, canary rollout)
-  │   v0.3+:       + gate 9 (shared-tier gate)
+  │   v0.2:        + gate 7  (held-out adversarial)
+  │   v0.3+:       + gates 8-9 (canary rollout, shared-tier gate) — full predicate
   │   any failure → status stays `candidate`; lint report surfaces the gap
   ▼
   ┌─ STAGE 4: Promote (PromotionWorkflow)
@@ -2894,20 +2914,31 @@ An **alternative slim skin** stays available for users who want a small download
 ### 13.3 Commands — the ground truth; MCP wraps these (§8.0)
 
 ```
+# Core verbs — canonical spelling matches §8 verb IDs, MCP frames, and SDK function names.
+# Verb IDs use underscores (assemble_hot, capture_trace). CLI names match verb IDs exactly.
+# A single IDL generates the CLI clap tree, MCP schemas, SDK signatures, and SKILL.md triggers —
+# a CI lint fails on any drift. No dash aliases exist.
+
+cairn ingest <file|url|-->       verb 1 — ingest a source / record
+cairn search <query>             verb 2 — search (keyword P0, +semantic P1, +federation P2)
+cairn retrieve <id>              verb 3 — retrieve a specific record
+cairn summarize <query>          verb 4 — summarize (optional --persist)
+cairn assemble_hot               verb 5 — print the hot prefix
+cairn capture_trace <file>       verb 6 — capture a reasoning trajectory
+cairn lint                       verb 7 — health check; writes .cairn/lint-report.md
+cairn forget --record|--session  verb 8 — delete (capability-gated per runtime)
+
+# Vault / session / operator commands (not core verbs; management-only):
 cairn init                       scaffold vault + config
 cairn bootstrap                  20‑min first‑session interview → purpose.md + seed memories
-cairn ingest <file|url|-->       ingest a source
-cairn search <query>             search
-cairn retrieve <id>              retrieve
-cairn summarize <query>          summarize (optional --persist)
-cairn assemble-hot               print the hot prefix
-cairn trace <file>               capture a trajectory
-cairn lint                       health check; writes .cairn/lint-report.md
-cairn standup                    pretty print of assemble-hot + recent log entries
-cairn mcp                        stdio MCP server
-cairn serve                      HTTP + SSE server
+cairn vault list|switch|add|remove    vault registry (§3.3)
+cairn session tree|fork|clone|switch|merge    session-as-tree primitives (§5.7)
+cairn standup                    pretty print of `assemble_hot` + recent log entries
+cairn mcp                        stdio MCP adapter that wraps the same verbs (§8.0)
+cairn serve                      HTTP + SSE server (alternate protocol adapter)
 cairn ui                         open desktop GUI (Electron by default; Tauri when configured)
 cairn sensor <name> enable       interactive consent prompt
+cairn skill install              install SKILL.md for the active harness (§18.d)
 cairn export                     tar of the vault
 cairn import --from <provider>   one‑shot migration: chatgpt | claude-memory | notion | obsidian
 cairn snapshot                   weekly archive into .cairn/snapshots/YYYY-MM-DD/ (git‑independent)
@@ -2989,7 +3020,7 @@ Cairn's backend carries state plain markdown can't express: Nexus `version` tupl
 
 - Signed `ConsentReceipt` payload + Ed25519 signature — verified server‑side; frontend sees a `consent_verified: true` boolean only
 - WAL `operation_id` ULIDs + single‑writer lock state — internal
-- Temporal workflow IDs — exposed via `cairn trace <id>` CLI
+- Temporal workflow IDs — exposed via `cairn capture_trace --trace-id <id>` CLI
 - Raw embedding vectors — projected as `similarity` score only
 - Nexus share‑link tokens — never written into any markdown; held in keychain/secret store
 
@@ -3709,15 +3740,15 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 
 **Coverage vs. sequencing (§19) — single source of truth:** The capability matrix below drives both this section and §19; a CI lint fails the build if §8, §18.c, and §19 disagree on what ships when.
 
-| Capability | v0.1 ships | v0.2 ships |
-|------------|------------|-------------|
-| Core MCP verbs 1–8 (`ingest`/`search`/`retrieve`/`summarize`/`assemble_hot`/`capture_trace`/`lint`/`forget`) | yes — all 8 | unchanged |
-| `search` modes | keyword + semantic + hybrid | adds cross‑tenant federation queries |
-| Session reload | active‑session (US2 core) | + cold‑storage rehydration (US6) |
-| `forget` modes | `record` (US8 core) | + `session` fan‑out with drain fences |
-| `ConsolidationWorkflow` | rolling‑summary pass only (US4 core) | + Reflection/REM/Deep tiers |
-| SRE observability (OTel dashboards, tier‑migration metrics, rehydration gates) | basic lint + health | full SRE surface |
-| Extension namespaces | none required for P0/P1 | `cairn.aggregate.v1` |
+| Capability | v0.1 ships | v0.2 ships | v0.3+ |
+|------------|------------|-------------|-------|
+| Core verbs 1–8 (`ingest`/`search`/`retrieve`/`summarize`/`assemble_hot`/`capture_trace`/`lint`/`forget`) across all four surfaces (CLI · MCP · SDK · skill) | yes — all 8 | unchanged | unchanged |
+| `search` modes | **keyword only** (SQLite FTS5); every result stamped `semantic_degraded=true` | adds `semantic` + `hybrid` modes (Nexus sandbox — BM25S + `sqlite-vec` + `litellm` embeddings); stamp drops | adds cross‑tenant federation queries via Nexus full hub |
+| Session reload | active‑session (US2 core) | + cold‑storage rehydration (US6) | unchanged |
+| `forget` modes | `record` (US8 core) | + `session` fan‑out with drain fences | + `scope` mode |
+| `ConsolidationWorkflow` | rolling‑summary pass only (US4 core) | + Reflection/REM/Deep tiers | + EvolutionWorkflow mutations |
+| SRE observability (OTel dashboards, tier‑migration metrics, rehydration gates) | basic lint + health | full SRE surface | unchanged |
+| Extension namespaces | none required for P0/P1 | `cairn.aggregate.v1` | + `cairn.federation.v1` |
 
 **Therefore:** P0 (US1–US3), US4 rolling‑summary, US5, US7 basic search, and US8 record‑level forget all land in v0.1. US6 cold‑rehydration, US8 session fan‑out, and the full reflection/evolution surface land in v0.2.
 
