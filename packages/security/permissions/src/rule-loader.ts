@@ -27,17 +27,27 @@ const semanticEffectFields = {
   on_deny: z.enum(["hard", "soft"]).optional(),
 };
 
+// .strict() rejects extra keys so { Write: "/etc/**", Read: "/other", effect: "deny" }
+// fails all three schemas (each sees the other's key as unknown) instead of
+// silently discarding the second DSL key and creating an allow gap.
 const semanticWriteSchema = z
   .object({ Write: z.string().min(1), ...semanticEffectFields })
+  .strict()
   .transform(({ Write, ...rest }) => ({ pattern: Write, action: "write" as const, ...rest }));
 
 const semanticReadSchema = z
   .object({ Read: z.string().min(1), ...semanticEffectFields })
+  .strict()
   .transform(({ Read, ...rest }) => ({ pattern: Read, action: "read" as const, ...rest }));
 
 const semanticNetworkSchema = z
   .object({ Network: z.string().min(1), ...semanticEffectFields })
-  .transform(({ Network, ...rest }) => ({ pattern: Network, action: "network" as const, ...rest }));
+  .strict()
+  .transform(({ Network, ...rest }) => ({
+    pattern: Network,
+    action: "network" as const,
+    ...rest,
+  }));
 
 const anyRuleSchema = z.union([
   semanticWriteSchema,

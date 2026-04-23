@@ -571,17 +571,19 @@ export function createPermissionsMiddleware(
     serializeTurnContext,
   });
 
-  // Spec guard: enabled when resolveBashCommand is configured and
-  // enableBashSpecGuard is not explicitly set to false.
+  // Spec guard: requires explicit opt-in via enableBashSpecGuard: true.
+  // Defaults to disabled so existing deployments with broad bash allows are
+  // not surprised by ask-downgrades for partial/refused specs on upgrade.
   const specRegistry = createSpecRegistry();
-  const specGuardEnabled =
-    config.resolveBashCommand !== undefined && config.enableBashSpecGuard !== false;
+  const specGuardEnabled = config.enableBashSpecGuard === true;
   // Warm the parser immediately so that by the time the first bash command
-  // arrives, the WASM grammar is already loaded. Without this, the guard
-  // returns parse-unavailable(not-initialized) — which now fails closed
-  // per the bash-ast contract — until some later caller triggers init.
+  // arrives, the WASM grammar is already loaded. Swallow rejection here —
+  // the request-time guard awaits init per-call and will deny safely if
+  // init never succeeds, so the warmup is best-effort only.
   if (specGuardEnabled) {
-    void initializeBashAst();
+    void initializeBashAst().catch(() => {
+      // intentionally swallowed: request-time guard handles init failure
+    });
   }
 
   // Wire up wrapToolCall via factory

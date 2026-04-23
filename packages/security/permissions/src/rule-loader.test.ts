@@ -199,6 +199,26 @@ describe("DSL sugar — Write/Read/Network rule shapes", () => {
     expect(result.value[0]?.on_deny).toBe("soft");
   });
 
+  test("rejects ambiguous rule with two DSL keys (Write + Read together)", () => {
+    // { Write: ..., Read: ..., effect: "deny" } is ambiguous — strict schemas ensure
+    // neither branch silently discards the extra key, so validation rejects it.
+    const result = loadRules(
+      new Map([
+        [
+          "policy",
+          [
+            {
+              Write: "/etc/**",
+              Read: "/secret/**",
+              effect: "deny",
+            } as unknown as PermissionRule,
+          ],
+        ],
+      ]),
+    );
+    expect(result.ok).toBe(false);
+  });
+
   test("Network DSL rule with principal field", () => {
     const result = loadRules(
       new Map([

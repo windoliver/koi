@@ -233,9 +233,25 @@ export interface PermissionsMiddlewareConfig {
    */
   readonly softDenyPerTurnCap?: number;
   /**
-   * Enable bash-ast spec-aware enforcement. Defaults to `true` when
-   * `resolveBashCommand` is configured. Set to `false` to use legacy
-   * prefix-only enforcement.
+   * Enable bash-ast spec-aware enforcement. Must be explicitly set to `true`
+   * to activate — defaults to disabled to preserve existing bash-allow policy
+   * behavior on upgrade.
+   *
+   * When `true`, the guard enforces two additional properties at execution time:
+   *
+   * - **Exact-argv guard**: commands with `partial` or `refused` specs (e.g.
+   *   `ssh`, `rm -r`) downgrade broad-prefix `allow` to `ask` unless an
+   *   exact-argv rule explicitly allows the full command string. Prevents
+   *   broad `allow: bash:*` from silently authorizing dangerous forms.
+   *
+   * - **Semantic rules** (requires `backendSupportsDualKey`): evaluates
+   *   `Write(path)`, `Read(path)`, and `Network(host)` rules from `@koi/permissions`
+   *   against the command's actual filesystem/network effects.
+   *
+   * - **Complex-form ratchet**: commands the AST cannot analyze (`too-complex`,
+   *   pipelines, over-length) downgrade `allow` to `ask`.
+   *
+   * Set to `false` or leave unset for legacy prefix-only enforcement.
    */
   readonly enableBashSpecGuard?: boolean | undefined;
 }
