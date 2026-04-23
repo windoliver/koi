@@ -307,19 +307,21 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 
 | Layer | Priority | Owned by | On-disk location | What it holds | When active |
 |-------|----------|----------|-------------------|----------------|-------------|
-| Cairn control plane | **P0** (always) | Rust core (direct `rusqlite`) | `.cairn/cairn.db` (one SQLite file) | WAL state, replay ledger, consent journal, locks, reader fences, **and the records store itself at P0** | every tier |
-| Nexus sandbox data | **P1** (opt-in) | Nexus Python sidecar (never touched by Rust) | `nexus-data/` directory tree (Nexus-internal layout) | records (CAS blobs), BM25S lexical index, `sqlite-vec` ANN vectors, ReDB metastore | when `store.kind: nexus-sandbox` |
-| Nexus full hub data | **P2** (opt-in) | remote Nexus hub | Postgres + pgvector + Dragonfly (service-managed) | projected records for team/org/public tier; aggregate indexes | when federation enabled |
+| Cairn control plane + **record store** | **P0** (always) | Rust core (direct `rusqlite`) | `.cairn/cairn.db` (one SQLite file) | **record bodies + frontmatter + FTS5 + edges** (authoritative at every tier), WAL state, replay ledger, consent journal, locks, reader fences | every tier |
+| Nexus sandbox **indexes** (derived projection) | **P1** (opt-in) | Nexus Python sidecar (never touched by Rust) | `nexus-data/` directory tree (Nexus-internal layout) | derived-only: BM25S lexical index, `sqlite-vec` ANN vectors, ReDB metastore, CAS blobs (content-addressed mirror of `records.body`). **Never the source of truth** — any `nexus-data/` state can be deleted and rebuilt from `.cairn/cairn.db` by `cairn reindex --from-db`. | when `store.kind: nexus-sandbox` |
+| Nexus full hub **federation** (derived projection) | **P2** (opt-in) | remote Nexus hub | Postgres + pgvector + Dragonfly (service-managed) | derived-only: cross-vault search index for shared-tier records; aggregate indexes. Original records still live in each vault's `.cairn/cairn.db`. | when federation enabled |
+
+**Authority rule at every tier: `.cairn/cairn.db` is the sole authority for record bodies, frontmatter, edges, and WAL state.** Every Nexus table (sandbox or hub) is a derived index built from it, idempotently rebuildable via `cairn reindex --from-db`. This is the same relationship markdown has to the DB: repairable projection, never source of truth. Linearization is always defined by `.cairn/cairn.db`'s commit order — at P1 the idempotency-keyed Nexus apply endpoint makes the projection eventually consistent with that order, never vice versa.
 
 **What goes where, at each tier:**
 
 | Data | P0 (SQLite only) | P1 (+ Nexus sandbox) | P2 (+ hub federation) |
 |------|-------------------|------------------------|-------------------------|
-| Record bodies (markdown + frontmatter) | **`.cairn/cairn.db` records table is authoritative** (`body`, `frontmatter_json`, `body_hash` columns). The `wiki/` + `raw/` markdown tree is a **repairable projection** of the DB, regenerated on demand via `cairn export --markdown` or automatically by the `markdown_projector` background job on every WAL commit. A missing or stale markdown file never corrupts the vault; `cairn lint --fix-markdown` rebuilds the tree from DB. | same authority model; markdown tree additionally projected to `nexus-data/cas/` for CAS addressing | same + hub's Postgres projection for shared-tier records |
-| Full-text search | SQLite FTS5 on body column | **BM25S** via Nexus `search` brick; FTS5 still answers local queries | BM25S on sandbox + federated BM25 on hub; results merged |
-| Semantic search | **unavailable** — results stamped `semantic_degraded=true` | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick | local `sqlite-vec` + pgvector on hub; results merged |
-| WAL / locks / consent journal | `.cairn/cairn.db` tables | **unchanged — still `.cairn/cairn.db`** (never moves to Nexus) | **unchanged** — each node has its own control plane |
-| Raft / consensus | none | `nexus-data/root/raft/raft.redb` (Nexus-internal) | hub-side only |
+| Record bodies (markdown + frontmatter) | **`.cairn/cairn.db` records table is authoritative** (`body`, `frontmatter_json`, `body_hash` columns). The `wiki/` + `raw/` markdown tree is a **repairable projection** of the DB, regenerated on demand via `cairn export --markdown` or automatically by the `markdown_projector` background job on every WAL commit. A missing or stale markdown file never corrupts the vault; `cairn lint --fix-markdown` rebuilds the tree from DB. | **same authority** — `.cairn/cairn.db` still owns record bodies. Nexus only mirrors them into CAS (`nexus-data/cas/`) as a derived content-addressed projection for the search brick to read; `cairn reindex --from-db` rebuilds Nexus's CAS mirror from the authoritative DB. | **same authority** — each vault's `.cairn/cairn.db` still owns record bodies. Hub Postgres holds a derived projection for shared-tier federation queries; on federation divergence, `cairn reindex --push-to-hub` replays from each vault's DB. |
+| Full-text search | SQLite FTS5 on body column (authoritative keyword index) | **BM25S** via Nexus `search` brick, **derived from DB**; FTS5 remains authoritative for keyword mode and answers local queries | BM25S on sandbox + federated BM25 on hub; results merged. All tiers derivable from each vault's DB. |
+| Semantic search | **unavailable** — results stamped `semantic_degraded=true` | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick; vectors keyed by `record_id` and rebuilt from DB on reindex | local `sqlite-vec` + pgvector on hub; results merged |
+| WAL / locks / consent journal | `.cairn/cairn.db` tables (authoritative linearization point for every tier) | **unchanged — still `.cairn/cairn.db`** (never moves to Nexus). All Nexus side-effects are keyed by `operation_id` and replayable from the WAL. | **unchanged** — each node has its own local control plane; hub never holds WAL state |
+| Raft / consensus | none (single-writer SQLite) | `nexus-data/root/raft/raft.redb` (Nexus-internal, only for Nexus's own sandbox peers — **not** for Cairn's WAL linearization) | hub-side only for cross-tenant coordination; still does not own record state |
 | Secrets / embeddings / raw PII | never persisted — stripped at Filter stage | same | same |
 
 ### Records-in-SQLite at P0 — what the FTS5-native layout looks like
@@ -373,8 +375,10 @@ CREATE TABLE used                   (operation_id TEXT, nonce BLOB, issuer TEXT,
 CREATE TABLE issuer_seq             (issuer TEXT PK, high_water INT);
 CREATE TABLE outstanding_challenges (issuer TEXT, challenge BLOB, expires_at INT, PK(issuer, challenge));
 
--- Concurrency control (§5.6, §10.1) — epoch counter is the fencing primitive, not wall-clock
-CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, lock_id TEXT, epoch INT, last_heartbeat_at INT, reclaim_deadline INT, PK(scope_kind, scope_key));
+-- Concurrency control (§5.6, §10.1) — epoch counter is the fencing primitive, not wall-clock;
+-- per-holder rows with boot_id + BOOTTIME-ns deadlines make leases durable across daemon restarts.
+CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, epoch INT, waiters BLOB, last_heartbeat_at INT, PK(scope_kind, scope_key));
+CREATE TABLE lock_holders (scope_kind TEXT, scope_key TEXT, holder_id TEXT, acquired_epoch INT, boot_id TEXT, reclaim_deadline INT, PK(scope_kind, scope_key, holder_id));
 CREATE TABLE reader_fence (session_id TEXT PK, op_id TEXT, state TEXT);
 
 -- Audit
@@ -383,18 +387,21 @@ CREATE TABLE consent_journal (row_id INTEGER PK AUTOINCREMENT, op_id TEXT, actor
 
 **All in one SQLite file.** At P0 every mutation is one local `BEGIN IMMEDIATE; … COMMIT;` that atomically couples the records update, the WAL row, and the consent journal row. No cross-process coordination, no HTTP, no Python. SQLite's own durability is the durability guarantee.
 
-### Atomicity model — P0 is simple, P1+ is durable-messaging
+### Atomicity model — P0 is single-transaction, P1+ is durable-messaging
 
-**At P0 there is exactly one SQLite file and one writer process (the Cairn Rust binary).** Every mutation is a single `BEGIN IMMEDIATE; … COMMIT;` that atomically:
+**At P0 there is exactly one SQLite file and one writer process (the Cairn Rust binary).** The WAL state machine `ISSUED → PREPARED → COMMITTED / ABORTED / REJECTED` (§5.6) still exists at P0 — it is the audit / replay ledger — but **all state transitions plus every side-effect land in one `BEGIN IMMEDIATE; … COMMIT;`**. That single SQLite transaction atomically:
 
-1. upserts the record row (or tombstones, or expires)
-2. upserts the FTS5 row
-3. upserts the edges rows
-4. writes the WAL `PREPARE → COMMITTED` transition
+1. advances `wal_ops.state` from the prior state to the new state (`ISSUED → PREPARED` or `PREPARED → COMMITTED`)
+2. upserts the record row (or tombstones, or expires)
+3. upserts the FTS5 row
+4. upserts the edges rows
 5. consumes the replay ledger entry
 6. appends the `consent_journal` row
+7. updates per-holder lock rows (`lock_holders.reclaim_deadline`, etc.)
 
-SQLite's WAL-mode durability covers the whole transaction. No two-phase commit, no compensation actions, no partial-state recovery. The only recovery path is SQLite's own crash recovery.
+Because every transition commits together with its side-effects, there are no "PREPARED but not COMMITTED" rows at rest — SQLite's atomic commit either applies all of steps 1-7 or none of them. **No distributed two-phase commit, no compensation actions, no partial-state recovery.** The only recovery path is SQLite's own WAL-mode crash recovery: either the commit landed and the WAL op is `COMMITTED`, or it didn't and the op is still `ISSUED` (replayed as a fresh attempt). §5.6's `PREPARED → ABORTED` compensation path and §19's step-marker flow are **P1+ only** — they materialize exactly when side effects cross the SQLite boundary into Nexus, because only then can a mid-flight failure leave inconsistent state.
+
+**The WAL states at P0 are audit markers, not a distributed protocol.** Tools like `cairn admin replay-wal` use them to reconstruct what happened; the FSM diagram in §5.6 still applies, but transitions `PREPARED → ABORTED` and `PREPARED → COMMITTED` are both *implemented as part of the same SQLite transaction that made the side-effect visible*, not as separate round-trips.
 
 **At P1 (Nexus sandbox active)** Cairn uses a durable-messaging pattern across two storage systems — `.cairn/cairn.db` (Cairn-owned SQLite) and `nexus-data/` (Nexus-owned, multi-file, opaque to Cairn):
 
@@ -1713,11 +1720,15 @@ ISSUED ──acquire locks──► PREPARED ──fan-out: nexus store/index + 
 REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated)   DURABLE
 ```
 
+**Transitions at P0 (single-transaction model)** — the FSM progresses strictly through its states, but because there is only one storage system (SQLite), `ISSUED → PREPARED → COMMITTED` typically collapses into **one `BEGIN IMMEDIATE; … COMMIT;`** that writes all state markers together with every side-effect (records / FTS / edges / consent_journal / lock_holders). `PREPARED → ABORTED` at P0 is reachable only via `ISSUED → REJECTED` (validation failure in the same txn) — there is no "partial side effects, now compensate" window at P0.
+
+**Transitions at P1+ (two-transaction durable-messaging model)** — `PREPARED` becomes observable at rest between the two local transactions sandwiching the Nexus HTTP apply call (§3.0 P1 flow); compensation paths and supervisor crash recovery activate.
+
 | Transition | Requires | What happens |
 |------------|----------|--------------|
-| `ISSUED → PREPARED` | signature valid, idempotency key unused, principal/issuer policy ok, locks acquired (see below) | writes `PREPARE <op>` marker at end of WAL; locks held under `(scope, entity_id)` |
-| `PREPARED → COMMITTED` | all fan‑out side effects succeeded (Nexus store upsert, vector upsert, FTS upsert, edge upsert, and the `consent_journal` row atomically committed in the same SQLite transaction as the state change that triggers it). `.cairn/consent.log` file is updated by the async `consent_log_materializer` — never on the request path. | writes `COMMIT <op>` marker; releases locks |
-| `PREPARED → ABORTED` | any side effect failed OR supervisor crashed | compensating ops run (delete partial rows, remove vectors); writes `ABORT <op>` marker; releases locks |
+| `ISSUED → PREPARED` | signature valid, idempotency key unused, principal/issuer policy ok, locks acquired (see below) | writes `PREPARE <op>` marker in `wal_ops`. **P0: same txn as side-effects.** **P1+: first local txn, before Nexus HTTP apply.** Locks held under `(scope, entity_id)`. |
+| `PREPARED → COMMITTED` | **P0:** all side-effects (records / FTS / edges / consent_journal) committed atomically in the same txn that wrote `PREPARE`. `.cairn/consent.log` file is updated by the async `consent_log_materializer` — never on the request path. **P1+:** Nexus HTTP apply returned success, then a second local txn flips `wal_ops.state = COMMITTED` and appends `consent_journal` atomically. | writes `COMMIT <op>` marker; releases locks |
+| `PREPARED → ABORTED` | **P1+ only** (P0 has no PREPARED-at-rest): Nexus HTTP apply failed, probe confirmed Nexus did not apply the op (idempotency-keyed). | compensating ops run (delete partial local rows, remove local tracking state); writes `ABORT <op>` marker; releases locks |
 | `ISSUED → REJECTED` | signature invalid / idempotency key reused / policy deny | writes `REJECT <op>` + reason; no locks ever taken |
 
 **Idempotency.** `operation_id` is the idempotency key — second `PREPARE` with the same id returns the first commit's outcome without re‑doing side effects. Third‑party writers collide safely on retries; broken networks can't double‑apply.
@@ -1747,12 +1758,19 @@ CREATE TABLE lock_holders (
   scope_key         TEXT NOT NULL,
   holder_id         TEXT NOT NULL,     -- per-holder fencing token (ULID), stable for this holder's lifetime
   acquired_epoch    INTEGER NOT NULL,  -- value of locks.epoch when this holder acquired; frozen for life
-  reclaim_deadline  INTEGER NOT NULL,  -- monotonic local-clock deadline for THIS holder
-                                       -- (std::time::Instant + lease_duration_ms); refreshed by heartbeat
+  boot_id           TEXT NOT NULL,     -- OS boot identity at acquisition — distinguishes lease clocks across restarts
+                                       -- (Linux: /proc/sys/kernel/random/boot_id; macOS: sysctl kern.bootsessionuuid;
+                                       --  Windows: GetTickCount64 + session guid). Re-read on daemon startup.
+  reclaim_deadline  INTEGER NOT NULL,  -- deadline for THIS holder, in BOOTTIME-nanoseconds (CLOCK_BOOTTIME on Linux,
+                                       -- mach_absolute_time on macOS, QueryUnbiasedInterruptTime on Windows) — persistable,
+                                       -- monotonic across suspend/resume. Refreshed by heartbeat. Valid ONLY when
+                                       -- lock_holders.boot_id matches the current process's boot_id.
   PRIMARY KEY (scope_kind, scope_key, holder_id),
   FOREIGN KEY (scope_kind, scope_key) REFERENCES locks(scope_kind, scope_key)
 );
 ```
+
+**Durable lease clock — `boot_id` + `BOOTTIME` nanoseconds, not `std::time::Instant`.** `std::time::Instant` cannot be persisted across process restarts, so lock state uses OS-level boot-identity plus a monotonic clock that is stable across suspend/resume and durable across restarts *within the same boot session*. Across boots, the `boot_id` changes, so persisted `reclaim_deadline` values from a prior boot are automatically invalidated — a holder from a prior boot is definitionally dead. Daemon startup runs **crash recovery** before accepting any new acquisition: scan `lock_holders` where `boot_id != :current_boot_id`, treat them as zombies, run the normal garbage-collect + epoch-bump (same transaction the acquisition protocol uses for live zombies), then the daemon is ready to serve. This guarantees that after a daemon crash, abandoned holders are *always* reclaimable, and a new acquirer never honors a persisted lease from a dead boot.
 
 Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and session locks `(tenant, workspace, session:<id>)`. Every write acquires an entity lock in exclusive mode; a write that carries a `session_id` in its scope **also** acquires the session lock in **shared** mode. `forget_session` acquires the session lock in **exclusive** mode for the full Phase A (§5.6 delete row).
 
@@ -1760,9 +1778,14 @@ Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and
 
 ```sql
 BEGIN IMMEDIATE;
-  -- 1) Garbage-collect dead holders (their reclaim_deadline already passed).
+  -- 0) (Runs once per daemon startup, NOT per acquisition): on startup, before
+  --    accepting any acquisition, DELETE FROM lock_holders WHERE boot_id != :current_boot_id.
+  --    This reclaims every lease left behind by a prior boot.
+
+  -- 1) Garbage-collect dead holders — both stale-boot and expired-deadline.
   DELETE FROM lock_holders
-    WHERE scope_kind = ? AND scope_key = ? AND reclaim_deadline < :now_monotonic;
+    WHERE scope_kind = ? AND scope_key = ?
+      AND (boot_id != :current_boot_id OR reclaim_deadline < :now_boottime);
 
   -- 2) Recompute live-holder count.
   SELECT mode, epoch, COUNT(h.holder_id) AS live
@@ -1773,17 +1796,19 @@ BEGIN IMMEDIATE;
 
   -- 3) Decide.
   -- a) No row yet: INSERT locks(epoch=1, mode=:wanted, holder_count=1);
-  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=1, reclaim_deadline=:now+lease).
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=1, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
   -- b) live=0 (all holders GC'd OR natural release): treat as free.
   --    UPDATE locks SET epoch = epoch + 1, mode = :wanted, holder_count = 1;   -- epoch bump = reclaim
-  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=new_epoch, reclaim_deadline=:now+lease).
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=new_epoch, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
   -- c) live>0 AND mode == :wanted AND :wanted == 'shared': compatible, no reclaim.
   --    UPDATE locks SET holder_count = live + 1;                               -- epoch UNCHANGED
-  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=current_epoch, reclaim_deadline=:now+lease).
+  --    INSERT lock_holders(holder_id=:new_ulid, acquired_epoch=current_epoch, boot_id=:current_boot_id, reclaim_deadline=:now_boottime+lease).
   -- d) live>0 AND mode != :wanted (incompatible): return WAIT;
   --    caller enqueues in waiters and retries with exponential backoff.
 COMMIT;
 ```
+
+Every `:now_boottime` above is `CLOCK_BOOTTIME` nanoseconds on Linux, `mach_absolute_time` (converted to nanoseconds via `mach_timebase_info`) on macOS, and `QueryUnbiasedInterruptTime` on Windows — each of these keeps counting across suspend/resume and can be read back by the same process or a successor process within the same boot session, which is what makes the deadline persistable.
 
 **Epoch bumps ONLY on reclaim or mode conversion — never on heartbeat.** This is the fix that makes shared locks coherent: when ten readers hold the session lock in shared mode and one heartbeats, the heartbeat touches only that reader's `lock_holders` row, never the parent `locks.epoch`. The other nine readers' cached `(holder_id, acquired_epoch)` pair stays valid. Epoch advances exactly when a new acquirer must invalidate the whole group (all holders are zombies, or an exclusive acquirer is taking over after all shared holders dropped) — which is precisely when invalidating "ALL holders" is the correct behavior. NTP jumps, DST changes, suspend/resume, and container clock drift cannot alter the epoch counter — the only thing that bumps it is a SQLite commit that went through this protocol.
 
@@ -1792,9 +1817,10 @@ COMMIT;
 ```sql
 BEGIN IMMEDIATE;
   UPDATE lock_holders
-    SET reclaim_deadline = :now_monotonic + :lease_duration_ms
+    SET reclaim_deadline = :now_boottime + :lease_duration_ms
     WHERE scope_kind = ? AND scope_key = ? AND holder_id = :my_holder_id
-      AND reclaim_deadline >= :now_monotonic;  -- refuse to revive a zombie
+      AND boot_id = :current_boot_id
+      AND reclaim_deadline >= :now_boottime;  -- refuse to revive a zombie or a stale-boot lease
   -- If 0 rows updated: this holder has already been GC'd; stop heartbeating,
   -- abort any in-flight work (the epoch CAS below will reject it anyway).
   UPDATE locks
@@ -1814,7 +1840,8 @@ BEGIN IMMEDIATE;
     EXISTS (SELECT 1 FROM lock_holders
         WHERE scope_kind = ? AND scope_key = ? AND holder_id = :cached_holder_id
           AND acquired_epoch = :cached_acquired_epoch
-          AND reclaim_deadline >= :now_monotonic) AS still_live;
+          AND boot_id = :current_boot_id
+          AND reclaim_deadline >= :now_boottime) AS still_live;
   -- Abort if current_epoch != :cached_acquired_epoch OR still_live = 0.
   -- This rejects: (a) the group was reclaimed (epoch advanced), OR
   -- (b) this specific holder was GC'd (heartbeat missed), OR
@@ -1829,7 +1856,11 @@ A zombie worker cannot commit a chunk: if a new acquirer already reclaimed the r
 
 This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity, extended with per-holder tokens so shared locks scale without a spurious-invalidation tax.
 
-**Crash recovery.** If the current holder crashes without releasing, its own `reclaim_deadline` passes; the next acquirer's protocol Step 1 (GC) deletes the zombie's row, Step 3 either reclaims (bumping `epoch` only if live count drops to 0 or mode conversion is needed) or silently absorbs the slot. Any in‑flight writes from the crashed holder are rejected by the per-holder CAS — the `still_live` predicate fails the instant its `lock_holders` row is deleted.
+**Crash recovery — two layers.**
+1. *In-boot crash* (a holder process dies, but the daemon stays up): the dead holder's `reclaim_deadline` passes; the next acquirer's protocol Step 1 (GC) deletes the zombie row, Step 3 either reclaims (bumping `epoch` only if live count drops to 0 or mode conversion is needed) or silently absorbs the slot. Any in‑flight writes from the crashed holder are rejected by the per-holder CAS — the `still_live` predicate fails the instant its `lock_holders` row is deleted.
+2. *Daemon / host restart*: when the Cairn daemon starts, `boot_id` is re-read from the OS. Before accepting any acquisition, the daemon runs `DELETE FROM lock_holders WHERE boot_id != :current_boot_id`, which reclaims every lease that was persisted by a prior boot. The `locks.epoch` for each affected row then gets bumped on the next acquisition that runs the protocol, exactly like live-zombie reclaim. This guarantees that any `reclaim_deadline` persisted with a `BOOTTIME` value from a different boot is invalidated before a new holder is admitted — no "unreclaimable stale lease" window exists after restart.
+
+The concurrency invariant test in §15 includes a *daemon-kill-and-restart* schedule: mid-way through a chunked `forget_session`, SIGKILL the daemon, restart it, and assert that (a) every prior holder is reclaimable by the next acquirer and (b) no pre-crash zombie commits any chunk after restart.
 
 **Why `forget_session` exclusive blocks child writes.** A write to a session child opens two SQLite transactions: one to acquire the entity lock and one to acquire the session lock in shared mode. If `forget_session` holds the session lock exclusive, the shared acquisition returns WAIT, and the child write blocks (with a configurable timeout — default 5 s, after which it fails with `SessionLockUnavailable`). The planner refuses to retry with a stale session lock — once `forget_session` commits, the session is gone and retries fail fast.
 
@@ -2204,7 +2235,7 @@ Cairn exposes one set of eight verbs through four surfaces. **The CLI is the gro
 |------|-----|-----|------------|
 | 1 | `cairn ingest --kind user --body "..."` | `{verb:"ingest", args:{kind,body,...}}` | `cairn::ingest(IngestArgs {...})` |
 | 2 | `cairn search "query" [--mode semantic]` | `{verb:"search", args:{...}}` | `cairn::search(SearchArgs {...})` |
-| 3 | `cairn retrieve <record-id>`<br>`cairn retrieve --session <id> [--limit K --order desc --rehydrate]`<br>`cairn retrieve --folder <path>`<br>`cairn retrieve --scope <expr>` | `{verb:"retrieve", args: RetrieveArgs}` (discriminated union — see §8.0.c) | `cairn::retrieve(RetrieveArgs::{Record,Session,Folder,Scope}{…})` |
+| 3 | `cairn retrieve <record-id>`<br>`cairn retrieve --session <id> [--limit K --order desc --rehydrate]`<br>`cairn retrieve --session <id> --turn <n> [--include tool_calls,reasoning]`<br>`cairn retrieve --folder <path>`<br>`cairn retrieve --scope <expr>` | `{verb:"retrieve", args: RetrieveArgs}` (discriminated union — see §8.0.c) | `cairn::retrieve(RetrieveArgs::{Record,Session,Turn,Folder,Scope}{…})` |
 | 4 | `cairn summarize <record-ids...> [--persist]` | `{verb:"summarize", args:{...}}` | `cairn::summarize(SumArgs {...})` |
 | 5 | `cairn assemble_hot [--session <id>]` | `{verb:"assemble_hot", args:{...}}` | `cairn::assemble_hot(...)` |
 | 6 | `cairn capture_trace --from <file>` | `{verb:"capture_trace", args:{...}}` | `cairn::capture_trace(...)` |
@@ -2245,8 +2276,8 @@ Concrete payoff: a harness with no MCP plugin (or one where the user prefers not
 | # | Verb | What it does | Auth requirement |
 |---|------|--------------|-------------------|
 | 1 | `ingest` | push an observation (text / image / video / tool call / screen frame / web clip) | signed actor chain; rate‑limited per‑agent (§4.2) |
-| 2 | `search` | BM25 + ANN + graph hybrid across scope | rebac‑gated; results filtered per visibility tier |
-| 3 | `retrieve` | get a specific memory by id (and related edges) | rebac‑gated; unverified chain → `trust: "unverified"` flag unless `allow_unverified: true` |
+| 2 | `search` | hit records across scope. **Mode is capability-gated**: `mode: "keyword"` (SQLite FTS5) is the only always-present mode in `cairn.mcp.v1`; `mode: "semantic"` and `mode: "hybrid"` require the `cairn.mcp.v1.search.semantic` / `.hybrid` capabilities, advertised only by v0.2+ runtimes (Nexus sandbox enabled — BM25S + `sqlite-vec` ANN + graph). A v0.1 runtime handed `mode: "semantic"` rejects with `CapabilityUnavailable` rather than silently degrading. Clients inspect `handshake.capabilities` before issuing semantic/hybrid calls. | rebac‑gated; results filtered per visibility tier |
+| 3 | `retrieve` | get a specific memory by id, a full session, a folder subtree, or a scope — variant selected via `RetrieveArgs` (§8.0.c). Turn retrieval is a `session` variant with `include: ["tool_calls"]` + `turn_id` filter; turn IDs are **not** globally unique (monotonic per session, §18.c US1), so the `turn` shape is addressed as `{session_id, turn_id}`, never as a bare id | rebac‑gated; unverified chain → `trust: "unverified"` flag unless `allow_unverified: true` |
 | 4 | `summarize` | multi‑memory rollup; optional `persist: true` files the synthesis as a new `reference` or `strategy_success` memory with provenance | rebac‑gated on sources; `persist` requires write capability |
 | 5 | `assemble_hot` | return the always‑loaded prefix for this agent/session | rebac‑gated on sources |
 | 6 | `capture_trace` | persist a reasoning trajectory for later ACE distillation | signed actor chain |
@@ -2299,12 +2330,13 @@ The **eight verbs** are the only public entry points — four surfaces, same ver
 
 ### 8.0.c `RetrieveArgs` — discriminated union [P0]
 
-`retrieve` serves four distinct read shapes (record by id, full session, folder tree, arbitrary scope filter). Rather than overload a single `{id}` shape, the verb's `args` is a tagged union keyed on `target`. Unknown `target` values are rejected at the wire layer, never silently ignored.
+`retrieve` serves five distinct read shapes (record by id, full session, a single turn within a session, folder tree, arbitrary scope filter). Rather than overload a single `{id}` shape, the verb's `args` is a tagged union keyed on `target`. Unknown `target` values are rejected at the wire layer, never silently ignored.
 
 ```jsonc
 // args: RetrieveArgs — exactly one variant per call
 { "target": "record",  "id": "01HQZ..." }
 { "target": "session", "session_id": "01HQY...", "limit": 100, "order": "desc", "rehydrate": false, "include": ["tool_calls"] }
+{ "target": "turn",    "session_id": "01HQY...", "turn_id": 42, "include": ["tool_calls", "reasoning"] }
 { "target": "folder",  "path": "people/<user_id>", "depth": 2 }
 { "target": "scope",   "scope": { "user": "...", "agent": "...", "kind": ["user","feedback"] } }
 ```
@@ -2313,6 +2345,7 @@ The **eight verbs** are the only public entry points — four surfaces, same ver
 |---------|----------|-----------------|-----------|
 | `record` | `cairn retrieve <id>` | one `MemoryRecord` + its edges | rebac on the record |
 | `session` | `cairn retrieve --session <id> [--limit K --order asc\|desc --rehydrate]` | ordered turn stream; `rehydrate: true` unpacks cold snapshots (US2, §18.c) | rebac on session + every included turn |
+| `turn` | `cairn retrieve --session <id> --turn <n> [--include tool_calls,reasoning]` | one turn record for `(session_id, turn_id)` plus any `include`-requested children (tool calls, reasoning) — addresses US5's `retrieve(turn_id, include: ["tool_calls"])` without the confusion of a globally-bare `turn_id` (§18.c US1 says `turn_id` is monotonic per session, not unique) | rebac on the turn + each included child |
 | `folder` | `cairn retrieve --folder <path> [--depth N]` | `_index.md` + `_summary.md` + child index (§3.4) | rebac on folder |
 | `scope` | `cairn retrieve --scope '{"user":"u","agent":"a"}'` | all records matching the filter (paginated) | rebac applied per-row at MemoryStore layer |
 
@@ -2322,12 +2355,13 @@ The **eight verbs** are the only public entry points — four surfaces, same ver
 pub enum RetrieveArgs {
     Record  { id: RecordId },
     Session { session_id: SessionId, limit: Option<u32>, order: Order, rehydrate: bool, include: Vec<IncludeField> },
+    Turn    { session_id: SessionId, turn_id: u64, include: Vec<IncludeField> },
     Folder  { path: VaultPath, depth: Option<u8> },
     Scope   { scope: ScopeFilter },
 }
 ```
 
-`cairn retrieve` (CLI) parses positional vs. flag forms into exactly one variant and errors if the caller mixes them (e.g., `--session X --folder Y` is `InvalidArgs` — not "last wins"). SKILL.md documents the four forms as four separate bash recipes so LLM agents never guess the shape.
+`cairn retrieve` (CLI) parses positional vs. flag forms into exactly one variant and errors if the caller mixes them (e.g., `--session X --folder Y` is `InvalidArgs` — not "last wins"; `--turn N` without `--session` is rejected because `turn_id` is not globally unique). SKILL.md documents the five forms as five separate bash recipes so LLM agents never guess the shape.
 
 ---
 
@@ -3781,7 +3815,7 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 
 **US5 — Store tool calls and results with turns (agent).**
 - Each tool call and each tool result is its own `trace` record linked to the parent turn via `parent_turn_id`. The Hook sensor (§9.1) emits one event per `PostToolUse`; `Extract` stage turns it into a child `trace` record with `{name, args, result, duration_ms, exit_code}`.
-- Retrievable independently: `retrieve(turn_id, include: ["tool_calls"])` or `search(kind: "trace", tool: "<name>")`.
+- Retrievable independently via `RetrieveArgs::Turn` (§8.0.c): `retrieve({target:"turn", session_id, turn_id, include:["tool_calls"]})` — turn IDs are monotonic *per session*, so the `(session_id, turn_id)` pair is always required. Or use `search(kind: "trace", tool: "<name>")` for cross-session tool-call queries.
 - Sections: §6.1 MemoryKind (`trace`), §9.1 Sensors (Hook sensor, Neuroskill sensor), §5.2 Write path.
 
 ### P2 stories
