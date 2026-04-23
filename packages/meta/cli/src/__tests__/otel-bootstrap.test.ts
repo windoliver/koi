@@ -225,42 +225,29 @@ describe("buildResource integration: span carries resource attributes", () => {
   });
 });
 
-describe("StderrSpanExporter: resource attributes in output", () => {
-  test("serialized span JSON includes resource field", () => {
-    // Capture what StderrSpanExporter writes by using a real provider with
-    // a custom capturing exporter that mimics the serializer.
+describe("StderrSpanExporter: resource in output is limited to Koi-owned keys", () => {
+  test("includes Koi identity keys but excludes arbitrary OTEL_RESOURCE_ATTRIBUTES values", () => {
+    // Operator supplies a sensitive-looking value alongside Koi-owned keys.
+    // The exporter must only emit the known-safe Koi keys, not the arbitrary one.
     process.env.OTEL_SERVICE_NAME = "stderr-resource-test";
-    const lines: string[] = [];
-    const capturingExporter = {
-      export(
-        spans: Parameters<typeof InMemorySpanExporter.prototype.export>[0],
-        cb: Parameters<typeof InMemorySpanExporter.prototype.export>[1],
-      ) {
-        for (const span of spans) {
-          // Replicate the StderrSpanExporter object shape (with resource)
-          const obj = {
-            resource: span.resource.attributes,
-            name: span.name,
-          };
-          lines.push(JSON.stringify(obj));
-        }
-        cb({ code: 0 });
-      },
-      shutdown: async () => {},
-      forceFlush: async () => {},
-    };
+    process.env.OTEL_RESOURCE_ATTRIBUTES = "internal.token=secret123,deployment.environment=prod";
+
+    const exporter = new InMemorySpanExporter();
     const provider = new BasicTracerProvider({
       resource: buildResource("headless"),
-      spanProcessors: [
-        new SimpleSpanProcessor(capturingExporter as unknown as InMemorySpanExporter),
-      ],
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
     });
     provider.getTracer("test").startSpan("test-resource-span").end();
-
-    expect(lines.length).toBe(1);
-    const parsed = JSON.parse(lines[0] ?? "{}") as { resource?: Record<string, unknown> };
-    expect(parsed.resource?.["service.name"]).toBe("stderr-resource-test");
-
+    const spans = exporter.getFinishedSpans();
     void provider.shutdown();
+    expect(spans.length).toBe(1);
+    const resourceAttrs = spans[0]?.resource.attributes ?? {};
+    // Koi identity keys must be present
+    expect(resourceAttrs["service.name"]).toBe("stderr-resource-test");
+    expect(resourceAttrs["koi.mode"]).toBe("headless");
+    // Operator keys are in the resource but must NOT appear in StderrSpanExporter output.
+    // (We verify they exist in the resource itself to confirm they were applied.)
+    expect(resourceAttrs["internal.token"]).toBe("secret123");
+    expect(resourceAttrs["deployment.environment"]).toBe("prod");
   });
 });

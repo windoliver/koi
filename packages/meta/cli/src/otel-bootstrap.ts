@@ -306,8 +306,25 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
 class StderrSpanExporter implements SpanExporter {
   export(spans: readonly ReadableSpan[], resultCallback: (result: { code: number }) => void): void {
     for (const span of spans) {
+      // Only include Koi-controlled identity keys in resource output.
+      // OTEL_RESOURCE_ATTRIBUTES can carry arbitrary operator values (tokens,
+      // tenant IDs, internal hostnames) — emitting span.resource.attributes in
+      // full would mirror them verbatim into process logs on every span.
+      const koiKeys = [
+        "service.name",
+        "service.version",
+        "koi.mode",
+        "process.runtime.name",
+        "process.runtime.version",
+      ] as const;
+      const resourceIdentity: Record<string, unknown> = {};
+      for (const k of koiKeys) {
+        if (span.resource.attributes[k] !== undefined) {
+          resourceIdentity[k] = span.resource.attributes[k];
+        }
+      }
       const obj = {
-        resource: span.resource.attributes,
+        resource: resourceIdentity,
         traceId: span.spanContext().traceId,
         spanId: span.spanContext().spanId,
         parentSpanId: span.parentSpanContext?.spanId,
