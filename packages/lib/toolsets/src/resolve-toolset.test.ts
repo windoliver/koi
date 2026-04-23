@@ -186,6 +186,36 @@ describe("resolveToolset", () => {
     expect([...result.value.tools].filter((t) => t === "tool_x")).toHaveLength(1);
     expect([...result.value.tools].sort()).toEqual(["tool_a", "tool_b", "tool_x"]);
   });
+
+  test("empty preset (no tools, no includes) resolves to empty allowlist — not mode:all", () => {
+    const reg = makeRegistry([{ name: "none", description: "No tools", tools: [], includes: [] }]);
+    const result = resolveToolset("none", reg);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.mode).toBe("allowlist");
+    if (result.value.mode !== "allowlist") return;
+    expect(result.value.tools).toHaveLength(0);
+    // [] and undefined have opposite semantics for toolAllowlist — verify [] is returned
+    expect(resolutionToToolAllowlist(result.value)).toEqual([]);
+  });
+
+  test("duplicate tool names within a single preset are deduplicated", () => {
+    const reg = makeRegistry([
+      {
+        name: "dup",
+        description: "",
+        tools: ["fs_read", "fs_read", "web_fetch"],
+        includes: [],
+      },
+    ]);
+    const result = resolveToolset("dup", reg);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.mode).toBe("allowlist");
+    if (result.value.mode !== "allowlist") return;
+    expect(result.value.tools).toHaveLength(2);
+    expect([...result.value.tools].sort()).toEqual(["fs_read", "web_fetch"]);
+  });
 });
 
 describe("createBuiltinRegistry", () => {
@@ -333,11 +363,39 @@ describe("mergeRegistries", () => {
     const merged = mergeRegistries([]);
     expect(merged.size).toBe(0);
   });
+
+  test("merging a registry with itself throws — self-collision on every name", () => {
+    const reg = createBuiltinRegistry();
+    expect(() => mergeRegistries([reg, reg])).toThrow(/duplicate toolset name/);
+  });
+
+  test("operator override pattern: stricter safe preset wins over builtin", () => {
+    const builtins = createBuiltinRegistry();
+    const operatorReg = makeRegistry([
+      { name: "safe", description: "Web only", tools: ["web_fetch"], includes: [] },
+    ]);
+    const merged = mergeRegistries([builtins, operatorReg], { allowOverrides: true });
+    const result = resolveToolset("safe", merged);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.mode).toBe("allowlist");
+    if (result.value.mode !== "allowlist") return;
+    expect(result.value.tools).toEqual(["web_fetch"]);
+    expect(result.value.tools).not.toContain("fs_read");
+    expect(result.value.tools).not.toContain("Glob");
+  });
 });
 
 describe("resolutionToToolAllowlist", () => {
   test("mode:all returns undefined — caller omits toolAllowlist to grant full access", () => {
     expect(resolutionToToolAllowlist({ mode: "all" })).toBeUndefined();
+  });
+
+  test("empty allowlist returns [] not undefined — [] and undefined have opposite semantics", () => {
+    const result = resolutionToToolAllowlist({ mode: "allowlist", tools: [] });
+    // undefined = no filter (full access); [] = deny all tools. Must be [] here.
+    expect(result).toEqual([]);
+    expect(result).not.toBeUndefined();
   });
 
   test("mode:allowlist returns the tools array directly", () => {
