@@ -19,7 +19,7 @@
 
 import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { detectFromPath } from "@koi/file-type";
+import { detectFromBytes, detectFromPath } from "@koi/file-type";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -214,24 +214,32 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
       } finally {
         closeSync(fd);
       }
-      const detected = detectFromPath(ref.filePath, head);
+      // Use byte evidence only for the binary/text gate — never the filename
+      // extension. A file named foo.json with binary content must go the binary
+      // path; detectFromPath's extension fallback would label it application/json
+      // and send binary bytes through the UTF-8 read path.
+      const detectedByBytes = detectFromBytes(head);
       const isText =
-        detected.mimeType === "text/plain" ||
-        detected.mimeType.startsWith("text/") ||
-        detected.mimeType === "application/json" ||
-        detected.mimeType === "application/xml" ||
-        detected.mimeType === "application/yaml" ||
-        detected.mimeType === "application/toml";
+        detectedByBytes !== null &&
+        (detectedByBytes.mimeType === "text/plain" ||
+          detectedByBytes.mimeType.startsWith("text/") ||
+          detectedByBytes.mimeType === "application/json" ||
+          detectedByBytes.mimeType === "application/xml" ||
+          detectedByBytes.mimeType === "application/yaml" ||
+          detectedByBytes.mimeType === "application/toml");
 
       if (!isText) {
         // Binary file: line ranges are meaningless. Enforce size cap regardless.
         if (stat.size > MAX_READ_BYTES) continue;
         const base64 = readFileSync(validatedPath).toString("base64");
+        // Use detectFromPath for display mimeType — extension fallback is fine
+        // for the human-readable note; it's not a trust boundary here.
+        const detectedForDisplay = detectFromPath(ref.filePath, head);
         binaryInjections.push({
           filePath: ref.filePath,
           base64,
-          mimeType: detected.mimeType,
-          strongDetection: detected.confidence === "strong",
+          mimeType: detectedForDisplay.mimeType,
+          strongDetection: detectedByBytes !== null && detectedByBytes.confidence === "strong",
         });
         continue;
       }

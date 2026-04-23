@@ -252,17 +252,19 @@ export function parseUploadFiles(
         err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
       };
     }
-    // Derive MIME from magic bytes only — never trust the filename extension
-    // for uploads, as the extension can be spoofed to bypass accept filters or
-    // downstream MIME validators. Strong magic-byte matches are authoritative;
-    // anything else defaults to application/octet-stream.
+    // Strong magic-byte detection is authoritative and overrides any caller-
+    // supplied mimeType. Without this, callers can label arbitrary bytes as
+    // image/png to bypass page accept filters or downstream MIME validators.
+    // If no strong signature matches, the caller-supplied value is used when
+    // present; otherwise application/octet-stream is the safe default.
     const bytes = new Uint8Array(Buffer.from(content, "base64"));
-    const resolvedMime = (() => {
-      if (typeof mimeType === "string") return mimeType;
-      const detected = detectFromBytes(bytes);
-      if (detected !== null && detected.confidence === "strong") return detected.mimeType;
-      return "application/octet-stream";
-    })();
+    const detected = detectFromBytes(bytes);
+    const resolvedMime =
+      detected?.confidence === "strong"
+        ? detected.mimeType
+        : typeof mimeType === "string"
+          ? mimeType
+          : "application/octet-stream";
     files.push({ content, name, mimeType: resolvedMime });
   }
   return { ok: true, value: files };

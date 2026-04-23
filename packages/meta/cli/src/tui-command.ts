@@ -3495,40 +3495,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // #10: resolve @-mention file references before sending to the engine.
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
-        // Binary files are noted in the text prompt; multimodal block sending
-        // is deferred until all model adapters support non-text ContentBlocks.
         const resolved = resolveAtReferences(text, process.cwd());
 
-        // Notify the user for each binary @-reference that couldn't be sent.
-        // The model still receives a text note so it knows the file exists;
-        // the user gets an explicit info banner so there's no silent data loss.
+        // Explicitly reject binary @-references with a user-visible notice.
+        // The model receives no content or note for them — sending a text
+        // placeholder ("Binary file: foo.pdf") would let users believe the
+        // model has the file when it doesn't, which is worse than no action.
+        // Multimodal block support is deferred until adapters support it end-to-end.
         if (resolved.binaryInjections.length > 0) {
           for (const b of resolved.binaryInjections) {
             store.dispatch({
               kind: "add_info",
-              message: `@${b.filePath} (${b.mimeType}) — binary file detected; multimodal attachment not yet supported. The model will see the filename and type but not the file contents.`,
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. Reference was not included.`,
             });
           }
         }
 
-        const binaryNote =
-          resolved.binaryInjections.length > 0
-            ? "\n\n" +
-              resolved.binaryInjections
-                .map(
-                  (b) =>
-                    `[Binary file: ${b.filePath} (${b.mimeType}) — multimodal attach not yet supported]`,
-                )
-                .join("\n")
-            : "";
-
-        const baseText =
+        const modelText =
           resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
-        const modelText = baseText + binaryNote;
-
-        // No display blocks for binary @-references: showing an image thumbnail
-        // that the model never received would create a misleading transcript.
-        // The text note in modelText is the only user-visible signal.
 
         let stream: AsyncIterable<EngineEvent>;
         try {
