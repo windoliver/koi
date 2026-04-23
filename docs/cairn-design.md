@@ -19,17 +19,19 @@ Every capability in Cairn is tagged P0 / P1 / P2 / P3. Readers skimming for "wha
   Priority ─ ships in ─ what it means ─────────────────────── example capabilities
   ─────────────────────────────────────────────────────────────────────────────────
   [P0]  v0.1  "Ship-blocking minimum Cairn"                    8 MCP verbs · 5 hooks
-                zero network · zero Python · zero services      pure SQLite + FTS5
-                Rust binary + one SQLite file + markdown files  wiki/ markdown tree
-                must cover US1-US5, US7 basic, US8 record        rolling summaries
-                every P0 path works on a fresh laptop offline     record-level forget
-                                                                    WAL upsert+forget
+                zero network · zero Python · zero services      SQLite + FTS5 + sqlite-vec
+                Rust binary + SQLite + markdown + local models  candle local embeddings
+                must cover US1-US5, US7 all 3 modes, US8 rec    keyword+semantic+hybrid
+                every P0 path works on a fresh laptop offline   voice (sherpa-onnx)
+                local sensors bundled: hooks/IDE/term/clip       screen (screenpipe subproc)
+                voice / screen / recording-to-text              recording-to-text pipeline
+                                                                 WAL upsert+forget
 
   [P1]  v0.2  "Core but deferrable"                             Nexus sandbox sidecar
-                adds Python sidecar + embeddings + BM25S         semantic search
-                US6 archive, US7 semantic, US8 session delete    cold rehydration
-                SRE observability                                session-wide forget
-                                                                 ReflectionWorkflow
+                adds Python sidecar: BM25S, cloud embeddings,    richer search backends
+                multi-modal parsers, vision captions             US6 cold rehydration
+                US6 archive, US8 session delete, reflection      session-wide forget
+                SRE observability                                ReflectionWorkflow
                                                                  Electron GUI alpha
 
   [P2]  v0.3  "Power + multi-user"                              federation → hub
@@ -53,8 +55,8 @@ Every capability in Cairn is tagged P0 / P1 / P2 / P3. Readers skimming for "wha
 
 | Concept | P0 position | P1+ upgrade path |
 |---------|-------------|-------------------|
-| Storage | single SQLite file with built‑in FTS5 | Nexus sandbox (adds BM25S + sqlite‑vec + litellm embeddings) → Nexus full hub (Postgres + pgvector via federation) |
-| Search | `mode: "keyword"` only (FTS5); `mode: "semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (capability-gated) | `search.semantic` + `search.hybrid` advertised via sqlite‑vec (P1); federation capability (P2) |
+| Storage | single SQLite file with built‑in FTS5 **+ `sqlite-vec` extension (statically linked) + pure‑Rust embedding runtime (`candle` with a bundled small model, downloaded on first run, ~25 MB)** | Nexus sandbox adds BM25S + richer parsers + cloud embedding providers (OpenAI / Cohere / Voyage) → Nexus full hub (Postgres + pgvector via federation) |
+| Search | **all three modes available**: `mode: "keyword"` (FTS5), `mode: "semantic"` (sqlite-vec + local `candle` embeddings), `mode: "hybrid"` (local blend). No cloud, no Python, no embedding key. A deployment that opts out of the embedding model (`search.local_embeddings: false` in config) serves only `keyword` and rejects `semantic` / `hybrid` with `CapabilityUnavailable`. | Adds BM25S lexical scoring; adds cloud embedding providers via `litellm`; `semantic_degraded=true` only on transient provider outages. Adds cross-tenant federation (P2). |
 | Extract | `RegexExtractor` always on (zero-LLM); `LLMExtractor` runs iff an `LLMProvider` is configured — gracefully skipped otherwise | `AgentExtractorWorker` with tool loop (P2, §5.2.a) |
 | Dream | `LLMDreamWorker` runs iff an `LLMProvider` is configured; rolling summaries pause cleanly when not | `HybridDreamWorker` prune+summary (P1); `AgentDreamWorker` tool loop (P2, §10.2) |
 | Identity | single‑actor `author` key — Ed25519 keypair in platform keychain | full `actor_chain` delegation + countersignatures (P2) |
@@ -307,7 +309,7 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 
 | Layer | Priority | Owned by | On-disk location | What it holds | When active |
 |-------|----------|----------|-------------------|----------------|-------------|
-| Cairn control plane + **record store** | **P0** (always) | Rust core (direct `rusqlite`) | `.cairn/cairn.db` (one SQLite file) | **record bodies + frontmatter + FTS5 + edges** (authoritative at every tier), WAL state, replay ledger, consent journal, locks, reader fences | every tier |
+| Cairn control plane + **record store** + **local semantic index** | **P0** (always) | Rust core (direct `rusqlite` + statically-linked `sqlite-vec` C extension + pure-Rust `candle` runtime) | `.cairn/cairn.db` (one SQLite file) + `.cairn/models/` (downloaded embedding model, ~25 MB on first run) | **record bodies + frontmatter + FTS5 + edges + `sqlite-vec` ANN over locally-embedded vectors** (authoritative at every tier), WAL state, replay ledger, consent journal, locks, reader fences | every tier |
 | Nexus sandbox **indexes** (derived projection) | **P1** (opt-in) | Nexus Python sidecar (never touched by Rust) | `nexus-data/` directory tree (Nexus-internal layout) | derived-only: BM25S lexical index, `sqlite-vec` ANN vectors, ReDB metastore, CAS blobs (content-addressed mirror of `records.body`). **Never the source of truth** — any `nexus-data/` state can be deleted and rebuilt from `.cairn/cairn.db` by `cairn reindex --from-db`. | when `store.kind: nexus-sandbox` |
 | Nexus full hub **federation** (derived projection) | **P2** (opt-in) | remote Nexus hub | Postgres + pgvector + Dragonfly (service-managed) | derived-only: cross-vault search index for shared-tier records; aggregate indexes. Original records still live in each vault's `.cairn/cairn.db`. | when federation enabled |
 
@@ -318,8 +320,8 @@ The same split Karpathy's LLM‑Wiki pattern prescribes: the LLM compiles and ma
 | Data | P0 (SQLite only) | P1 (+ Nexus sandbox) | P2 (+ hub federation) |
 |------|-------------------|------------------------|-------------------------|
 | Record bodies (markdown + frontmatter) | **`.cairn/cairn.db` records table is authoritative** (`body`, `frontmatter_json`, `body_hash` columns). The `wiki/` + `raw/` markdown tree is a **repairable projection** of the DB, regenerated on demand via `cairn export --markdown` or automatically by the `markdown_projector` background job on every WAL commit. A missing or stale markdown file never corrupts the vault; `cairn lint --fix-markdown` rebuilds the tree from DB. | **same authority** — `.cairn/cairn.db` still owns record bodies. Nexus only mirrors them into CAS (`nexus-data/cas/`) as a derived content-addressed projection for the search brick to read; `cairn reindex --from-db` rebuilds Nexus's CAS mirror from the authoritative DB. | **same authority** — each vault's `.cairn/cairn.db` still owns record bodies. Hub Postgres holds a derived projection for shared-tier federation queries; on federation divergence, `cairn reindex --push-to-hub` replays from each vault's DB. |
-| Full-text search | SQLite FTS5 on body column (authoritative keyword index) | **BM25S** via Nexus `search` brick, **derived from DB**; FTS5 remains authoritative for keyword mode and answers local queries | BM25S on sandbox + federated BM25 on hub; results merged. All tiers derivable from each vault's DB. |
-| Semantic search | **unavailable** — `mode: "semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (no silent fallback; clients check `status.capabilities`) | **`sqlite-vec`** with `litellm` embeddings via Nexus `search` brick; vectors keyed by `record_id` and rebuilt from DB on reindex. Advertises `cairn.mcp.v1.search.semantic`. | local `sqlite-vec` + pgvector on hub; results merged |
+| Full-text search | SQLite FTS5 on body column (authoritative keyword index) | **BM25S** via Nexus `search` brick as an **additional** scorer alongside FTS5 (derived from DB); FTS5 remains authoritative | BM25S on sandbox + federated BM25 on hub; results merged. All tiers derivable from each vault's DB. |
+| Semantic search | **`sqlite-vec` over pure-Rust `candle` embeddings** (default model: `bge-small-en-v1.5` or `all-MiniLM-L6-v2`, ~25 MB, downloaded on first run into `.cairn/models/`). Zero network after fetch, zero Python, single-process. Advertises `cairn.mcp.v1.search.semantic` by default. Can be disabled via `search.local_embeddings: false` — then keyword only, semantic/hybrid rejected with `CapabilityUnavailable`. | Same `sqlite-vec` index; Nexus adds the option to swap the embedding provider to `litellm` (OpenAI / Cohere / Voyage / Ollama) for richer vectors than the local small model. Vectors keyed by `record_id` and rebuilt from DB on reindex. | local `sqlite-vec` + pgvector on hub; results merged |
 | WAL / locks / consent journal | `.cairn/cairn.db` tables (authoritative linearization point for every tier) | **unchanged — still `.cairn/cairn.db`** (never moves to Nexus). All Nexus side-effects are keyed by `operation_id` and replayable from the WAL. | **unchanged** — each node has its own local control plane; hub never holds WAL state |
 | Raft / consensus | none (single-writer SQLite) | `nexus-data/root/raft/raft.redb` (Nexus-internal, only for Nexus's own sandbox peers — **not** for Cairn's WAL linearization) | hub-side only for cross-tenant coordination; still does not own record state |
 | Secrets / embeddings / raw PII | never persisted — stripped at Filter stage | same | same |
@@ -509,7 +511,7 @@ Nexus is a Python sidecar composed of independent bricks. At P1 Cairn activates 
   - **Backups.** Every `cairn snapshot --backup` writes a backup registry entry; `forget` Phase B step `backup.replay_tombstones` scans the registry and for each listed backup runs a post-hoc `cairn snapshot --rewrite <backup_id> --drop-targets <target_id_list>` pass that produces a new redacted backup file and invalidates the old one (cryptographically shredded and listed in `.cairn/backups/shredded.log`). Restoring a backup **always** applies tombstone replay from the current consent log before reads are served — the restored vault picks up every `forget` committed since the backup was taken. Both mechanisms together ensure no backup restore can surface a forgotten target.
   - **`sources/` re-ingestion.** `sources/` holds the raw inputs (emails, transcripts, PDFs) as immutable provenance. If a forgotten `target_id` was derived from a source file, the source file is **not** deleted (it is outside Cairn's authority — the user or upstream system owns it), but the **link from the source to any Cairn memory is severed** and a `source_forget` entry is added to `consent_journal`. Any future re-ingestion that tries to re-derive memories from that source checks the `consent_journal` and skips any previously-forgotten targets (dedup by content-hash). Users who require stricter guarantees set `source.redact_on_forget: true` in `.cairn/config.yaml`, which deletes the source file contents (preserving only its hash + metadata) on `forget`. The default is `false` because sources are often shared with other tooling.
   - **Test.** §15 privacy suite adds a backup-restore-after-forget regression: take backup B, ingest content C, forget C, restore B, assert C never becomes reader-visible.
-- **Semantic search availability — one rule.** Semantic and hybrid search modes require an `embedding_provider` to be configured in `.cairn/config.yaml`. An embedding provider can be either (a) a local model bundled with Nexus sandbox (e.g., `all-MiniLM-L6-v2` via `litellm`'s local adapter — no API key, no network) or (b) a cloud embedding API (OpenAI, Cohere, Voyage, any `litellm`-compatible provider). When an embedding provider is configured and reachable, `search mode: semantic | hybrid` returns enriched results and the `semantic_degraded=true` stamp is dropped. When no provider is configured or the provider is unreachable, all results are stamped `semantic_degraded=true` and BM25 (sandbox) or FTS5 (P0 fallback) answers the query. At **P0** no embedding provider is defined, so semantic search is permanently unavailable. At **P1** the default sandbox config bundles the local embedding adapter, so semantic is available out-of-the-box; swapping to a cloud provider is a config line.
+- **Semantic search availability — one rule (updated).** Semantic and hybrid search require an `embedding_provider`. The default at **P0 is the bundled pure-Rust `candle` runtime** loading a small local model (`bge-small-en-v1.5` or `all-MiniLM-L6-v2`, ~25 MB, downloaded to `.cairn/models/` on first run) — no API key, no network after fetch, no Python. **P1** Nexus sandbox adds the option to swap in `litellm` (OpenAI / Cohere / Voyage / local Ollama) when the user wants richer vectors. When an embedding provider is configured and reachable, `search mode: semantic | hybrid` returns enriched results. When the provider is unreachable mid-call, results are stamped `semantic_degraded=true` and FTS5 answers the query. Only when the user explicitly sets `search.local_embeddings: false` **and** has no P1+ provider does the runtime drop `cairn.mcp.v1.search.semantic` from `status.capabilities` and reject semantic calls with `CapabilityUnavailable`.
 - **Process boundary at P1+:** Nexus is Python, Cairn core is Rust. They communicate over HTTP + MCP. `cairn-nexus-supervisor` spawns Nexus, tails logs, health-checks, restarts. A crashed Nexus never blocks Cairn — queries degrade to P0 behavior until Nexus recovers.
 - **Federation, not re-platforming, scales at P2.** A sandbox on a laptop can federate `search` queries to a remote Nexus `full` hub (PostgreSQL + pgvector + Dragonfly). Hub unreachable → graceful fallback to local sandbox or (further) local FTS5; never a boot failure.
 
@@ -2405,9 +2407,9 @@ The `status` response (deterministic):
   "server_info": { "version": "0.1.0", "build": "…", "started_at": "…", "incarnation": "01HQZ…" },
   "capabilities": [
     "cairn.mcp.v1.search.keyword",
-    // advertised ONLY on v0.2+ runtimes with Nexus sandbox + embedding key:
-    // "cairn.mcp.v1.search.semantic",
-    // "cairn.mcp.v1.search.hybrid",
+    "cairn.mcp.v1.search.semantic",    // advertised at v0.1 via local candle + sqlite-vec
+    "cairn.mcp.v1.search.hybrid",      // advertised at v0.1 via local blend
+    // dropped from this list ONLY when `search.local_embeddings: false` in config
     "cairn.mcp.v1.forget.record",
     // advertised ONLY on v0.2+ runtimes:
     // "cairn.mcp.v1.forget.session",
@@ -2462,7 +2464,7 @@ Concrete payoff: a harness with no MCP plugin (or one where the user prefers not
 | # | Verb | What it does | Auth requirement |
 |---|------|--------------|-------------------|
 | 1 | `ingest` | push an observation (text / image / video / tool call / screen frame / web clip) | signed actor chain; rate‑limited per‑agent (§4.2) |
-| 2 | `search` | hit records across scope. **Mode is capability-gated**: `mode: "keyword"` (SQLite FTS5) is the only always-present mode in `cairn.mcp.v1`; `mode: "semantic"` and `mode: "hybrid"` require the `cairn.mcp.v1.search.semantic` / `.hybrid` capabilities, advertised only by v0.2+ runtimes (Nexus sandbox enabled — BM25S + `sqlite-vec` ANN + graph). A v0.1 runtime handed `mode: "semantic"` rejects with `CapabilityUnavailable` rather than silently degrading. Clients inspect `status.capabilities` before issuing semantic/hybrid calls. | rebac‑gated; results filtered per visibility tier |
+| 2 | `search` | hit records across scope. **All three modes ship at v0.1** via the P0 stack (SQLite FTS5 + statically-linked `sqlite-vec` + pure-Rust `candle` embeddings — §3.0): `mode: "keyword"`, `mode: "semantic"`, `mode: "hybrid"`. Each mode is advertised as a separate capability (`cairn.mcp.v1.search.keyword` / `.semantic` / `.hybrid`). A deployment that opts out of local embeddings via `search.local_embeddings: false` drops the semantic/hybrid capabilities from `status.capabilities` and rejects those modes with `CapabilityUnavailable` — never silent fallback. P1 Nexus sandbox adds BM25S as an additional scorer and the option to swap the embedding provider to `litellm` (OpenAI / Cohere / Voyage / Ollama) for richer vectors. Clients inspect `status.capabilities` before issuing any mode. | rebac‑gated; results filtered per visibility tier |
 | 3 | `retrieve` | get a specific memory by id, a full session, a single turn within a session, a folder subtree, or a scope — variant selected via `RetrieveArgs` (§8.0.c). Turn retrieval is its own first-class variant `target: "turn"` keyed by `{session_id, turn_id, include}` (turn IDs are monotonic per session — §18.c US1 — so the `turn` shape requires `session_id` as the disambiguator, never a bare id). `RetrieveArgs` is an exhaustive discriminated union generated from the single IDL; the CLI, MCP wire schema, and Rust SDK enum are all emitted from the same source (§13.5) | rebac‑gated; unverified chain → `trust: "unverified"` flag unless `allow_unverified: true` |
 | 4 | `summarize` | multi‑memory rollup; optional `persist: true` files the synthesis as a new `reference` or `strategy_success` memory with provenance | rebac‑gated on sources; `persist` requires write capability |
 | 5 | `assemble_hot` | return the always‑loaded prefix for this agent/session | rebac‑gated on sources |
@@ -2657,7 +2659,7 @@ This mirrors the "just call `ingest` — I don't want to manage sessions" patter
 
 Sessions carry metadata (`channel`, `priority`, `tags`), emit a `session_ended` event when the idle window elapses, and are searchable via the `search` verb with `scope: "sessions"` — the same way records are searchable.
 
-## 9. Sensors — the Capture stage of the ingestion pipeline [P0 hooks · P2 full suite]
+## 9. Sensors — the Capture stage of the ingestion pipeline [P0 hooks + voice + screen · P2 source connectors]
 
 **Sensors are not a separate concept — they are the source adapters for §5.2's ingestion pipeline.** Every sensor emits `CaptureEvent`s that enter the same `Capture → Tool‑squash → Extract → Filter → Classify & Scope → Store` flow as a human typing `cairn ingest`. This section catalogs the sources; the processing lives in §5.
 
@@ -2687,16 +2689,17 @@ All sources produce the same `CaptureEvent` schema, signed with the sensor's `Se
 
 **No UI required.** Every sensor enables via config (`.cairn/config.yaml`) or CLI flag (`cairn sensor enable <name>`). Sensors run as background daemons under `cairn daemon start` — works on headless servers, SSH sessions, and CI runners. The desktop GUI (§13) is purely optional: it exposes the same toggles but is never required to turn a sensor on or off.
 
-**Local sensors** — run on the same machine as Cairn, emit events into the pipeline as they happen:
+**Local sensors** — run on the same machine as Cairn, emit events into the pipeline as they happen. Every local sensor ships in v0.1 (P0) and is a pure-Rust adapter unless the "Backed by" column says otherwise.
 
-| Sensor | What it captures | Privacy |
-|--------|------------------|---------|
-| Hook sensor | `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PreCompact`, `Stop` — harness‑agnostic (CC / Codex / Gemini) | harness‑scoped |
-| IDE sensor | file edits, diagnostics, tests run, language server events | opt‑in per project |
-| Terminal sensor | captured commands + outputs | opt‑in, secret‑scrubbed |
-| Clipboard sensor | clipboard snapshots | opt‑in |
-| Screen sensor | frames via OS‑native capture APIs | opt‑in, per‑app allow‑list, password fields blurred |
-| Neuroskill sensor | structured agent tool‑call traces emitted by the harness itself | always on when harness cooperates |
+| Sensor | Priority | What it captures | Backed by | Privacy |
+|--------|----------|------------------|-----------|---------|
+| Hook sensor | P0 | `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PreCompact`, `Stop` — harness‑agnostic (CC / Codex / Gemini) | harness hook protocol | harness‑scoped |
+| IDE sensor | P0 | file edits, diagnostics, tests run, language server events | LSP client in Rust core | opt‑in per project |
+| Terminal sensor | P0 | captured commands + outputs | shell integration scripts | opt‑in, secret‑scrubbed |
+| Clipboard sensor | P0 | clipboard snapshots | [`arboard`](https://github.com/1Password/arboard) (Apache-2) | opt‑in |
+| **Voice sensor** | **P0** | continuous mic capture → VAD-gated utterances → ASR transcript + **speaker embeddings** (attaches `HumanIdentity` via enrollment — §4.2). Streams `{speaker_id, text, ts_start, ts_end, confidence}` as `CaptureEvent`s. | [`cpal`](https://github.com/RustAudio/cpal) (Apache-2, mic I/O) + [**sherpa-onnx**](https://github.com/k2-fsa/sherpa-onnx) (Apache-2, one ONNX Runtime running VAD + ASR + diarization + speaker-embedding models — ~50 MB runtime + ~50 MB models). Bound via direct C FFI from Rust core (thin ~600 LOC adapter); models downloaded on first run into `.cairn/models/`. | opt‑in; per-app / per-process allowlist; PII-scrub pass before Store |
+| **Screen sensor** | **P0** (via subprocess) | continuous screen frames + active-window + URL + accessibility tree → OCR'd text + app-activity events. Streams `{app, window_title, text, url?, bbox}` as `CaptureEvent`s. On-demand snapshot mode also supported for hotkey-driven capture. | Primary: [**screenpipe**](https://github.com/screenpipe/screenpipe) (MIT main tree — pin; never import `ee/`) spawned as subprocess by `cairn daemon start`; Cairn subscribes to its HTTP `/events` SSE and `/search` API. Fallback (when screenpipe unavailable / policy-blocked): in-process [`xcap`](https://github.com/nashaofu/xcap) (Apache-2) + [`tesseract`](https://github.com/tesseract-ocr/tesseract) via `leptess` — pure Rust, no subprocess, ~250 MB total working set. | opt‑in, per‑app allow‑list, password fields blurred, PII-scrub pass before Store |
+| Neuroskill sensor | P0 | structured agent tool‑call traces emitted by the harness itself | harness neuroskill protocol | always on when harness cooperates |
 
 **Source sensors** — pull from external systems on a schedule or on `ingest` command. Each is a separate L2 adapter package; install only what you need. All require explicit auth + consent:
 
@@ -2717,6 +2720,50 @@ All sources produce the same `CaptureEvent` schema, signed with the sensor's `Se
 **All sensors emit through the same write path** (§5.2) — one ingestion pipeline, many source adapters. A Slack message and a screen frame and a `cairn ingest` CLI call are all `CaptureEvent`s once they cross the sensor boundary; the `ExtractorWorker` chain (§5.2.a) picks the right extractor per event kind and the rest of the pipeline proceeds identically.
 
 **Ingestion rate limits and budget.** Every source sensor declares a per‑scope budget (`max_items_per_hour`, `max_bytes_per_day`). Cairn's Filter stage enforces these. Exceeding budget routes to `discard(budget_exceeded)` and surfaces in the next `lint` report — Cairn never silently drops under budget pressure.
+
+### 9.1.a Recording-to-text — understanding audio and video after the fact
+
+The voice + screen sensors above stream observations **as they happen**. A separate batch pipeline handles the "understand this recording" case — a meeting MP4, a podcast, a screen-recording of a workflow, a voice memo. Same `CaptureEvent` schema, different source:
+
+```
+  recording file (mp4 / m4a / mp3 / mkv / webm)
+       │
+       ▼
+  `cairn ingest --recording <path>`   (CLI)
+       │                                        ┌──────────────────────────────────┐
+       ├─► split into audio + video tracks ──► │  audio track: sherpa-onnx ASR +  │
+       │   (ffmpeg, shelled out)                │  diarization → timestamped      │
+       │                                        │  utterances                     │
+       │                                        └──────────────────────────────────┘
+       │                                        ┌──────────────────────────────────┐
+       │                                    ──► │  video track: frame-sample at   │
+       │                                        │  1–2 fps; OCR each frame        │
+       │                                        │  (tesseract), dedupe via        │
+       │                                        │  perceptual-hash; optional      │
+       │                                        │  vision-LM caption pass via     │
+       │                                        │  LLMProvider                    │
+       │                                        └──────────────────────────────────┘
+       ▼
+  fused transcript stream: `[{t: 00:42, speaker: alice, text: "..."}, {t: 00:45, frame_ocr: "config.yaml line 12: ..."}, ...]`
+       │
+       ▼
+  one CaptureEvent per aligned segment → Extract → Filter → Classify → Store (§5.2)
+       │
+       ▼
+  every segment gets a `trace` / `meeting` / `transcript` record with back-links to the
+  source file (kept under sources/, hashed for §3 forget-me re-ingest consent) and to
+  any people / entities mentioned (edge kind = `attended` / `mentioned`)
+```
+
+**Tier placement.**
+
+| Tier | What recording-to-text can do |
+|------|-------------------------------|
+| **P0** | `cairn ingest --recording <path>` works offline using local sherpa-onnx (audio) + tesseract OCR (video frames). No vision model, no cloud. Diarization attaches speakers via local embeddings; unrecognized speakers become `unknown_speaker_<ulid>` until enrolled. |
+| **P1** | Nexus sandbox adds a richer video pipeline: whisper via `litellm`, frame-level vision captions via a small local VLM, entity-linking into the knowledge graph (every face / logo / on-screen name resolved against `entity_*` records). |
+| **P2** | Continuous-recording sensor: `cairn record --on` spools full-day video+audio to disk with per-app privacy masks; `DreamWorkflow` at night processes the spool into the pipeline. Opt-in only, explicit retention cap (default 7 days before auto-purge). |
+
+No external product name is baked in; the pipeline is composed from the same local libraries the continuous voice + screen sensors already use, so there is no second toolchain to install.
 
 ### 9.2 User signals
 
@@ -3034,8 +3081,8 @@ This is what makes skills *compound* — `strategy_success` stays strategy‑sco
 
 | Tier | Priority | Who it's for | Adapters | Cloud? |
 |------|----------|--------------|----------|--------|
-| **Embedded** | **P0** | library mode inside a harness; CI runners; offline / air‑gap first run | **Pure SQLite** (`.cairn/cairn.db` with FTS5 — records + WAL + consent in one file) + in‑process `LLMProvider` + `tokio` job runner. **No Python, no Nexus, no embedding key.** `search` ships `mode: "keyword"` only; `"semantic"` / `"hybrid"` rejected with `CapabilityUnavailable` (§8 verb 2 capability gate) | none |
-| **Local** | **P1** | laptop, single user, researcher who wants semantic search | Embedded **+ Nexus `sandbox` profile** sidecar (Python: BM25S + `sqlite-vec` ANN + `litellm` embeddings + ReDB metastore + CAS blob store under `nexus-data/`). `.cairn/cairn.db` is unchanged; Nexus is additive. `search` advertises `cairn.mcp.v1.search.semantic` + `.hybrid` once an embedding key is configured; `semantic_degraded=true` is only set when a transient litellm outage forces a keyword-only response mid-call | none |
+| **Embedded** | **P0** | library mode inside a harness; CI runners; offline / air‑gap first run | **Pure SQLite + `sqlite-vec` + `candle`** — `.cairn/cairn.db` with FTS5 (records + WAL + consent), statically-linked `sqlite-vec` for ANN, and a pure-Rust `candle` runtime loading a small embedding model (~25 MB, downloaded once into `.cairn/models/`). `LLMProvider` in-process, `tokio` job runner. **No Python, no Nexus, no embedding key.** `search` ships all three modes — `keyword`, `semantic`, `hybrid` — at v0.1. Semantic is only rejected when the user sets `search.local_embeddings: false`. | none |
+| **Local** | **P1** | laptop, single user, researcher who wants richer semantic + BM25 + multi-modal parsers | Embedded **+ Nexus `sandbox` profile** sidecar (Python: BM25S + richer parsers + `litellm` providers + ReDB metastore + CAS blob store under `nexus-data/`). `.cairn/cairn.db` is unchanged; Nexus is additive. `search` retains all three modes; Nexus offers `litellm` as an **alternative** embedding backend when the user wants larger vectors than the local small model. `semantic_degraded=true` only flips on transient provider outages. | none |
 | **Cloud** | **P2** | team / enterprise with shared memory | Local **+ federation** — sandbox instances delegate cross-tenant queries to a shared Nexus `full` hub (PostgreSQL + pgvector + Dragonfly) over HTTPS + mTLS. Any OpenAI-compatible LLM. Optional Temporal orchestrator | yes |
 
 Switching tiers is a change in `.cairn/config.yaml` (`store.kind: sqlite` → `nexus-sandbox` → `nexus-full`). The vault on disk, the four contract surfaces (CLI · MCP · SDK · skill), the CLI commands, the hooks — all unchanged.
@@ -4108,8 +4155,8 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 | US4 Reflection/REM/Deep tiers | **P1** | v0.2 | §10.1, §10.2 |
 | US5 tool calls with turns | **P0** | v0.1 | §6.1, §9.1, §5.2 |
 | US6 archive inactive sessions | **P1** | v0.2 | §3.0, §10 Expiration, §15 |
-| US7 search — keyword only (FTS5; semantic/hybrid reject with `CapabilityUnavailable`) | **P0** | v0.1 | §8, §5.1 |
-| US7 search — semantic + hybrid | **P1** | v0.2 | §8, §3.0 |
+| US7 search — all three modes (FTS5 keyword + `sqlite-vec` semantic + local `candle` hybrid) | **P0** | v0.1 | §8, §5.1, §3.0 |
+| US7 search — BM25S + cloud embedding providers (litellm OpenAI / Cohere / Voyage) | **P1** | v0.2 | §8, §3.0 |
 | US7 search — cross-tenant federation | **P2** | v0.3 | §8, §12.a |
 | US8 delete — record | **P0** | v0.1 `forget_record` | §14, §5.6 |
 | US8 delete — session fan-out | **P1** | v0.2 `forget_session` | §14, §10, §5.6 |
@@ -4119,14 +4166,14 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 | Capability | v0.1 ships | v0.2 ships | v0.3+ |
 |------------|------------|-------------|-------|
 | Core verbs 1–8 (`ingest`/`search`/`retrieve`/`summarize`/`assemble_hot`/`capture_trace`/`lint`/`forget`) across all four surfaces (CLI · MCP · SDK · skill) | yes — all 8 | unchanged | unchanged |
-| `search` modes | **keyword only** (SQLite FTS5); `semantic` / `hybrid` rejected with `CapabilityUnavailable` (capability-gated, no silent fallback) | advertises `cairn.mcp.v1.search.semantic` + `.hybrid` (Nexus sandbox — BM25S + `sqlite-vec` + `litellm` embeddings); `semantic_degraded=true` only on transient embedding-provider outages | adds `cairn.federation.v1` cross‑tenant queries via Nexus full hub |
+| `search` modes | all three modes (keyword via FTS5 + semantic via `sqlite-vec` + hybrid via local `candle` blend); dropped only when `search.local_embeddings: false` (then keyword-only, `CapabilityUnavailable` on others) | adds BM25S lexical scoring + swappable cloud embedding provider via `litellm`; `semantic_degraded=true` only on transient provider outages | adds `cairn.federation.v1` cross‑tenant queries via Nexus full hub |
 | Session reload | active‑session (US2 core) | + cold‑storage rehydration (US6) | unchanged |
 | `forget` modes | `record` (US8 core) | + `session` fan‑out with drain fences | + `scope` mode |
 | `ConsolidationWorkflow` | rolling‑summary pass only (US4 core) | + Reflection/REM/Deep tiers | + EvolutionWorkflow mutations |
 | SRE observability (OTel dashboards, tier‑migration metrics, rehydration gates) | basic lint + health | full SRE surface | unchanged |
 | Extension namespaces | `cairn.admin.v1` (operator verbs) | + `cairn.aggregate.v1` (anonymized agent insights) | + `cairn.federation.v1` (share / accept / revoke — folder-scoped via `subject.path_prefix`) + `cairn.sessiontree.v1` (fork / clone / switch / merge — §5.7) |
 
-**Therefore:** P0 (US1–US3), US4 rolling‑summary, US5, US7 basic search, and US8 record‑level forget all land in v0.1. US6 cold‑rehydration, US8 session fan‑out, and the full reflection/evolution surface land in v0.2.
+**Therefore:** P0 (US1–US3), US4 rolling‑summary, US5, **US7 all three search modes (keyword + semantic + hybrid via local `sqlite-vec` + `candle`)**, and US8 record‑level forget all land in v0.1 — plus local sensors (voice via sherpa-onnx, screen via screenpipe subprocess + xcap fallback, recording-to-text batch pipeline). US6 cold‑rehydration, US8 session fan‑out, BM25S + cloud embedding providers, and the full reflection/evolution surface land in v0.2.
 
 ## 18.d The Cairn skill — install once, use anywhere [P0]
 
@@ -4240,15 +4287,15 @@ The MCP server is still available (`cairn mcp`) for harnesses that prefer the wi
 
 ## 19. Sequencing
 
-**v0.1 — Minimum substrate (all P0).** Covers US1, US2 active‑session reload, US3, US4 rolling‑summary path, US5, US7 basic search, and US8 record‑level delete (see §18.c capability matrix for the authoritative mapping).
-Headless only. **Pure SQLite backend** — `.cairn/cairn.db` with built‑in FTS5 for keyword search; zero Python, zero Nexus, zero embedding keys, zero external services. Single Rust binary installs via `brew install cairn` or `cargo install cairn` and runs offline. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope; `forget` advertises `mode: "record"` capability only; `search` advertises `mode: "keyword"` only — `semantic` and `hybrid` are rejected with `CapabilityUnavailable` (no silent fallback; wire‑compat CI asserts the rejection). `DreamWorkflow` (LLMDreamWorker only) + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`.
+**v0.1 — Minimum substrate (all P0).** Covers US1, US2 active‑session reload, US3, US4 rolling‑summary path, US5, US7 **all three search modes** (keyword + semantic + hybrid via local embeddings), and US8 record‑level delete (see §18.c capability matrix for the authoritative mapping).
+Headless only. **SQLite + statically-linked `sqlite-vec` + pure-Rust `candle` embedding runtime** — `.cairn/cairn.db` with FTS5 for keyword + `sqlite-vec` ANN for semantic over locally-computed vectors (default model `bge-small-en-v1.5` or `all-MiniLM-L6-v2`, ~25 MB, downloaded to `.cairn/models/` on first run). **Zero Python, zero Nexus, zero embedding key, zero external services**; single Rust binary installs via `brew install cairn` or `cargo install cairn` and runs offline after the one-time model fetch. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope; `forget` advertises `mode: "record"` capability only; `search` advertises `keyword` + `semantic` + `hybrid` by default (droppable via `search.local_embeddings: false` — then only keyword, rejecting the others with `CapabilityUnavailable`). **Local sensors bundled in the P0 binary: hooks, IDE, terminal, clipboard, voice (sherpa-onnx direct C FFI + cpal mic), screen (screenpipe subprocess primary + xcap/tesseract in-process fallback), neuroskill — plus the §9.1.a recording-to-text batch pipeline** (`cairn ingest --recording <path>`). `DreamWorkflow` (LLMDreamWorker only) + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`. **Working set budget:** Rust core ~15 MB + embedding model ~25 MB + sherpa-onnx runtime+models ~100 MB + optional screenpipe subprocess ~500 MB (opt-in per sensor) → **~140 MB for the always-on default**, ~640 MB with full screen capture. Smaller than Chrome; one static install artifact.
 
 **Reference consumer for v0.1: Claude Code.** Chosen because (a) it is the first harness with a stable hook surface in shipping form, (b) Cairn's five hooks map 1:1 to CC's native events, (c) the primary maintainer already uses CC daily so dogfood signal is immediate, and (d) the CC MCP registration format is a documented reference every other harness (Codex, Gemini) can adapt. Codex integration ships in v0.2 as the second consumer.
 
-v0.1 acceptance ⇒ all **P0 stories** in §18.c pass their golden‑query suites against Claude Code (US1–US3, US4 rolling-summary path, US5, US7 keyword-only with `mode: "semantic" | "hybrid"` rejected via `CapabilityUnavailable`, US8 record-level forget), and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime. **P1 stories (US6 cold rehydration, US7 semantic/hybrid, US8 session fan-out) ship in v0.2** — they are not v0.1 acceptance criteria.
+v0.1 acceptance ⇒ all **P0 stories** in §18.c pass their golden‑query suites against Claude Code (US1–US3, US4 rolling-summary path, US5, US7 all three search modes via local embeddings, US8 record-level forget), plus the local sensor golden tests (§15) for the voice + screen + recording-to-text pipelines, and the CI wire‑compat matrix confirms `cairn.mcp.v1` verb set + declared capabilities match the runtime. **Deferred to v0.2:** US6 cold rehydration, US8 session fan-out, BM25S and cloud embedding options via Nexus, full reflection/evolution layer.
 
-**v0.2 — Continuous learning + SRE surface + semantic search (all P1).** Covers US6, US7 semantic, US8 session‑wide delete, and full US4 reflection layer.
-**Backend upgrade: Nexus `sandbox` profile becomes the default** — Python sidecar adds BM25S + `sqlite-vec` + `litellm` embeddings; existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside as derived projections; `.cairn/cairn.db` remains the sole authority). `search` advertises `cairn.mcp.v1.search.semantic` + `.hybrid` once an embedding key is configured; `mode: "keyword" | "semantic" | "hybrid"` all accepted. `semantic_degraded=true` is set only on transient embedding-provider outages mid-call, not as a default mode. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. **Electron GUI alpha** (the primary desktop stack — §13.2) with a bundled 2D force-directed graph view over the `edges` table (reusable MIT-licensed component; no graph-viz code in `cairn-core`). The slim Tauri build stays available for bandwidth-constrained / air-gap users but is not the default. Optional Temporal adapter for orchestrator. **Public benchmark harness `cairn bench` ships** — replays long-horizon / multi-session / conversation-memory corpora through the 8 verbs with no LLM or network, publishes scores alongside every release; §15 coherence budgets are enforced against the harness's outputs.
+**v0.2 — Continuous learning + SRE surface + richer search backends (all P1).** Covers US6, US8 session‑wide delete, and full US4 reflection layer. Semantic search already shipped at v0.1 via local `candle`; v0.2 **adds** backend options, not baseline capability.
+**Backend upgrade: Nexus `sandbox` profile becomes opt-in** — Python sidecar adds BM25S lexical scoring as an additional search signal, richer multi-modal parsers (PDF / DOCX / video frames with vision captions), and the option to swap the embedding provider from local `candle` to `litellm` (OpenAI / Cohere / Voyage / Ollama) when the user wants larger vectors than the local small model. Existing v0.1 vaults migrate in‑place (SQLite file stays; Nexus adds its indexes alongside as derived projections; `.cairn/cairn.db` remains the sole authority). `semantic_degraded=true` is set only on transient provider outages mid-call, not as a default mode. Add `ReflectionWorkflow`, `SkillEmitter`, full `ConsolidationWorkflow` (Dream/REM/Deep tiers). DreamWorker gains `hybrid` mode. §5.6 WAL gains `forget_session` (with drain fences) and `promote` state machines. SRE observability: OpenTelemetry + tier‑migration dashboards + rehydration latency gates (§15). Second consumer wired. **Electron GUI alpha** (the primary desktop stack — §13.2) with a bundled 2D force-directed graph view over the `edges` table (reusable MIT-licensed component; no graph-viz code in `cairn-core`). The slim Tauri build stays available for bandwidth-constrained / air-gap users but is not the default. Optional Temporal adapter for orchestrator. **Public benchmark harness `cairn bench` ships** — replays long-horizon / multi-session / conversation-memory corpora through the 8 verbs with no LLM or network, publishes scores alongside every release; §15 coherence budgets are enforced against the harness's outputs.
 
 **v0.3 — Propagation + collective.**
 Add `PromotionWorkflow`, `PropagationWorkflow`, consent‑gated team/org share, `cairn.federation.v1` extension. Full sensor suite: **the `SensorIngress` connector set expands to cover the memory surfaces that actually live outside editors** — incremental-sync adapters for GitHub (issues / PRs / commits), email (IMAP + webhook), Drive (Google / OneDrive), Notion, and a generic web-clipper extension. Each connector is a separate L2 crate keyed off a stable OAuth / webhook payload format; `cairn.admin.v1` grows `connector_enable` / `connector_disable` / `connector_backfill` operator verbs. `evolve` WAL state machine with canary rollout.
