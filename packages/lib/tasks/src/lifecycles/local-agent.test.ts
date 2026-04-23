@@ -345,7 +345,8 @@ describe("createLocalAgentLifecycle", () => {
       .read(0)
       .map((c) => c.content)
       .join("");
-    expect(combined).toContain("[timed out]");
+    // Stuck generator with no hardKill: cleanup cannot be confirmed
+    expect(combined).toContain("[timed out: cleanup incomplete]");
     expect(combined).not.toContain("[exit code: 0]");
   });
 
@@ -444,12 +445,12 @@ describe("createLocalAgentLifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     runningTasks.pop();
 
-    // Terminal message still written despite onExit failure
+    // Terminal message still written despite onExit failure (stuck → cleanup incomplete)
     const combined = output
       .read(0)
       .map((c) => c.content)
       .join("");
-    expect(combined).toContain("[timed out]");
+    expect(combined).toContain("[timed out: cleanup incomplete]");
   });
 
   test("throwing hardKill does not escape stop() or timeout", async () => {
@@ -508,7 +509,7 @@ describe("createLocalAgentLifecycle", () => {
     expect(exitCode).toBe(1);
   });
 
-  test("active map entry is removed after timeout even when generator never settles", async () => {
+  test("stuck agent without hardKill emits cleanup-incomplete message and fires onExit", async () => {
     const shortDrainLifecycle = createLocalAgentLifecycle({ drainTimeoutMs: 50 });
     const output = createOutputStream();
     let exitCode: number | undefined;
@@ -526,16 +527,16 @@ describe("createLocalAgentLifecycle", () => {
     };
     await shortDrainLifecycle.start(taskItemId("task_17"), output, config);
 
-    // Wait past timeout + drain: 100 + 50 = 150ms
+    // Wait past timeout + drain: 100 + 50 = 150ms (no post-hardKill wait, no hardKill)
     await new Promise((resolve) => setTimeout(resolve, 250));
 
-    // Terminal was emitted (verifies active map was cleaned up via emitTerminal)
     expect(exitCode).toBe(1);
     const combined = output
       .read(0)
       .map((c) => c.content)
       .join("");
-    expect(combined).toContain("[timed out]");
+    // No hardKill means cleanup cannot be confirmed — distinct message
+    expect(combined).toContain("[timed out: cleanup incomplete]");
   });
 
   test("inputs are forwarded to run callback", async () => {

@@ -81,27 +81,33 @@ function safeHardKill(fn: (() => void) | undefined): void {
   }
 }
 
+/**
+ * Wait for the pipe to settle, optionally invoking hardKill if it doesn't.
+ * Returns true if pipe settled (agent is confirmed stopped), false otherwise.
+ * Callers must treat false as "agent may still be running".
+ */
 async function drainOrKill(
   pipe: Promise<void>,
   drainTimeoutMs: number,
   hardKill: (() => void) | undefined,
-): Promise<void> {
+): Promise<boolean> {
   const settled = await Promise.race([
     pipe.then(() => true as const),
     new Promise<false>((resolve) => setTimeout(() => resolve(false), drainTimeoutMs)),
   ]);
-  if (!settled) {
-    safeHardKill(hardKill);
-    if (hardKill !== undefined) {
-      // Give the iterator one more window to settle after hard kill before
-      // declaring the task dead. Prevents terminal state racing a still-running
-      // agent when hardKill is a cooperative mechanism (e.g. SIGKILL).
-      await Promise.race([
-        pipe,
-        new Promise<void>((resolve) => setTimeout(resolve, drainTimeoutMs)),
-      ]);
-    }
+  if (settled) return true;
+  safeHardKill(hardKill);
+  if (hardKill !== undefined) {
+    // Give the iterator one more window to settle after hard kill before
+    // declaring the task dead. Prevents terminal state racing a still-running
+    // agent when hardKill works cooperatively (e.g. SIGKILL on a subprocess).
+    const postKillSettled = await Promise.race([
+      pipe.then(() => true as const),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), drainTimeoutMs)),
+    ]);
+    return postKillSettled;
   }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,13 +146,15 @@ export function createLocalAgentLifecycle(
       const emitTerminal = (code: number, message: string): void => {
         if (terminal) return;
         terminal = true;
-        active.delete(taskId); // clear immediately so stuck agents don't leak map entries
         output.write(message);
         try {
           config.onExit?.(code);
         } catch {
           // Consumer onExit must not crash the lifecycle's terminal path.
         }
+        // NOTE: active entry is intentionally NOT deleted here. For unconfirmed
+        // cleanup (stuck generators), the entry stays so stop() retries are safe.
+        // pipe.finally() handles deletion once the iterator actually settles.
       };
 
       // Deferred pipe reference so the timeout handler can await it.
@@ -162,10 +170,14 @@ export function createLocalAgentLifecycle(
           // Bounded drain before marking terminal — attempt cleanup first so
           // the task is not declared dead while the agent is still running.
           void (async () => {
-            if (pipeRef !== undefined) {
-              await drainOrKill(pipeRef, drainTimeoutMs, config.hardKill);
-            }
-            emitTerminal(1, "\n[timed out]\n");
+            const cleaned =
+              pipeRef !== undefined
+                ? await drainOrKill(pipeRef, drainTimeoutMs, config.hardKill)
+                : true;
+            // Distinct message when cleanup could not be confirmed — signals
+            // that the underlying agent may still be running.
+            const msg = cleaned ? "\n[timed out]\n" : "\n[timed out: cleanup incomplete]\n";
+            emitTerminal(1, msg);
           })();
         }, config.timeout);
       }
