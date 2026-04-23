@@ -281,4 +281,34 @@ describe("createSkillProvider — progressive mode", () => {
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.value.body).toContain("Updated body.");
   });
+
+  test("progressive attach does not mark MCP external skills as runtimeBacked", async () => {
+    // MCP skills registered via registerExternal() have source: "mcp" and body: description === "".
+    // In eager mode, injectSkills() filters them via content === "" — they never reach systemPrompt.
+    // Progressive mode must match this behavior: MCP skills must NOT get runtimeBacked: true and
+    // must NOT appear in the <available_skills> XML block.
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    runtime.registerExternal([
+      {
+        name: "mcp-tool",
+        description: "",
+        source: "mcp" as const,
+        dirPath: "mcp://test-server",
+      },
+    ]);
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    const result = await provider.attach(STUB_AGENT);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const component = result.components.get(skillToken("mcp-tool")) as
+      | { runtimeBacked?: boolean; content: string }
+      | undefined;
+    expect(component).toBeDefined();
+    // MCP skill must NOT be runtimeBacked — it would otherwise appear in <available_skills>
+    expect(component?.runtimeBacked).toBeUndefined();
+    // Content should be empty (MCP body is description === "")
+    expect(component?.content).toBe("");
+  });
 });

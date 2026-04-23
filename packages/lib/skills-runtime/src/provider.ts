@@ -123,8 +123,17 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
       skipped.push({ name, reason: result.error.message });
       continue;
     }
-    components.set(skillToken(name), skillDefinitionToProgressiveComponent(result.value));
-    runtime.invalidate(name);
+    // MCP (source: "mcp") skills have no SKILL.md body — body is their empty
+    // description. Marking them runtimeBacked would advertise them in the
+    // <available_skills> XML block even though Skill() would return an empty
+    // body. Use the eager helper instead so they are filtered by content === ""
+    // in injectSkills, matching eager-mode behavior.
+    if (result.value.source === "mcp") {
+      components.set(skillToken(name), skillDefinitionToComponent(result.value));
+    } else {
+      components.set(skillToken(name), skillDefinitionToProgressiveComponent(result.value));
+      runtime.invalidate(name);
+    }
   }
 
   return { components: components as ReadonlyMap<string, unknown>, skipped };
