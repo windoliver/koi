@@ -423,26 +423,48 @@ Every signature Cairn checks (actor chain, `ConsentReceipt`, WAL op, discovery r
 
 ```json
 {
-  "operation_id": "01HQZ...",     // ULID, must not repeat for this key within `expires_at`
-  "nonce": "base64:16B",          // fresh per message; Cairn keeps a rolling 24h bloom filter
+  "operation_id": "01HQZ...",     // ULID, must not repeat for this issuer within `expires_at`
+  "nonce": "base64:16B",          // fresh per message; server keeps a rolling 24h bloom + ledger
+  "sequence": 41828,              // monotonic per-issuer counter; strictly increasing, signed
   "target_hash": "sha256:...",    // bound to the record/plan/receipt this signature authorizes
   "scope": { "tenant": "...", "workspace": "...", "entity": "...", "tier": "private|..." },
   "issuer": "agt:claude-code:opus-4-7:reviewer:v1",
   "issued_at": "2026-04-22T14:02:11Z",
   "expires_at": "2026-04-22T14:07:11Z",   // default 5 min; promotion receipts default 24 h
   "key_version": 3,               // matches the current rev of the issuer's keypair
+  "server_challenge": "base64:...",     // optional nonce from a prior cairn handshake; required when sequence is absent or when issuer uses challenge-mode
   "chain_parents": ["op:01HQ...","op:01HR..."],   // operations this one depends on
-  "signature": "ed25519:..."      // over the canonical JSON of all fields above
+  "signature": "ed25519:..."      // over the canonical JSON of ALL fields above (including sequence + server_challenge)
 }
 ```
 
-**One‑time consumption ledger.** `operation_id` + `nonce` tuples are recorded in `.cairn/receipts/used.db` (SQLite, WAL‑backed). A replay attempt on the same tuple within the TTL window is rejected, but the ledger is only written **after** the signature and scope checks pass — an unauthenticated attacker can't pollute the ledger by replaying junk. The in‑memory bloom filter guards the hot path: a bloom hit triggers a full ledger read to confirm the hit (with a disk‑hit budget of p99 < 2 ms).
+`sequence` and `server_challenge` are **inside the signed payload** — an attacker cannot rewrite them without invalidating the signature. Callers without a reliable local counter (e.g., stateless retries) must use `server_challenge` mode: call `cairn handshake` to get a fresh server‑minted nonce, bake it into the signed envelope, and the server consumes it atomically with the rest of the replay check.
+
+**Atomic replay + ordering check.** All replay and ordering state lives in **one SQLite file** (`.cairn/receipts/replay.db`) with `(operation_id, nonce)` as the unique consumption key and `issuer_seq` as a per‑issuer high‑water mark table. Every incoming signed envelope runs through this single transaction:
+
+```sql
+BEGIN IMMEDIATE;
+  -- 1. Signature verify (in‑memory; transaction still holds row lock)
+  -- 2. Timestamp bounds check (server monotonic clock)
+  -- 3. Key version + revocation check
+  -- 4. SELECT high_water FROM issuer_seq WHERE issuer = ? FOR UPDATE;
+  -- 5. Reject if sequence <= high_water (or, in challenge-mode, reject if
+  --    server_challenge doesn't match the outstanding challenge for this issuer)
+  -- 6. INSERT OR ROLLBACK INTO used (operation_id, nonce, issuer, committed_at);
+  --    unique constraint catches any parallel-writer collision
+  -- 7. UPDATE issuer_seq SET high_water = ?.sequence WHERE issuer = ?;
+COMMIT;
+```
+
+The `BEGIN IMMEDIATE` + `SELECT ... FOR UPDATE` serializes concurrent submissions from the same issuer; two parallel writes with the same sequence are ordered by SQLite, and the second one fails the `sequence > high_water` check inside the transaction — no race. An in‑memory bloom filter runs **before** `BEGIN` as a rejection fast path, but is never the source of truth: bloom hits always fall through to the ledger check, and bloom misses never short‑circuit the ledger write.
+
+**Signature‑first rejection.** Signature verification runs **before** any disk write in `replay.db`. An attacker replaying a valid signature hits the ledger (rejected by the unique constraint); an attacker sending junk never writes a row (signature check fails first). This prevents ledger pollution by unauthenticated traffic.
 
 **Server‑side freshness.** Signer‑supplied timestamps are treated as untrusted hints — the server enforces the real freshness window:
 
-- `issued_at` must be within `±2 min` of the server's monotonic clock. Outside that window → `ExpiredIntent`. This bounds backdating (an attacker with a stolen key can't synthesize receipts dated before revocation took effect).
+- `issued_at` must be within `±2 min` of the server's monotonic clock. Outside that window → `ExpiredIntent`. Bounds backdating against a stolen key.
 - `expires_at` must be `≤ issued_at + max_ttl` (default 5 min, 24 h for promotion receipts) — clients can't extend their own TTLs.
-- Each issuer carries a **monotonic sequence number** (stored per `issuer` in `.cairn/receipts/issuer_seq.db`). Every accepted message must have a strictly higher sequence than the previous accepted message from the same issuer (or include a server‑issued nonce challenge from a fresh `cairn handshake`). Sequence gaps are tolerated; reversals are not. This prevents replaying old messages even within the freshness window.
+- `sequence` must be **strictly greater** than the stored high‑water mark for the issuer (checked inside the same transaction as the ledger write, above). Sequence gaps are tolerated; reversals are not. Stateless clients use `server_challenge` mode instead.
 - Post‑revocation: even a technically valid signature from a revoked key is rejected before any ledger write, bounded by the `effective_at` revocation timestamp.
 
 **Key rotation + revocation.**
@@ -690,8 +712,8 @@ REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated
 
 | Op | Forward steps (in order) | Per‑step compensation |
 |----|---------------------------|------------------------|
-| `upsert` | 1. `primary.upsert` [idem] → 2. `vector.upsert` [idem] → 3. `fts.upsert` [idem] → 4. `edges.upsert` [idem] → 5. `consent.log.append` | on abort: delete partial rows/vectors written after the last known clean state recorded in `[snapshot]`; consent log is not compensated (append‑only — abort marker is itself appended) |
-| `delete` / `forget_record` / `forget_session` | 1. `snapshot.stage` [snapshot] — serialize full record + all index entries into WAL entry → 2. `primary.mark_tombstone` — set `deleted_at`, drop from active views → 3. `vector.drain` — wait for vector index to fully exclude the row (index generation bump + re‑merge fence) → 4. `fts.drain` — wait for FTS to drop the terms (checkpoint fsync) → 5. `edges.drain` — drop adjacency entries → 6. `primary.purge` — overwrite blob + zero the vector storage region → 7. `consent.log.append(delete)` | on abort **before** step 6: restore the original record + indexes from the `[snapshot]` stage. On abort **at or after** step 6: the operation is NOT rolled back — step 6 is the point of no return; instead recovery marks `ABORT_AFTER_PURGE` and fails closed, surfacing a compliance alert in `lint`. Drain steps (3–5) have explicit completion criteria; COMMIT cannot be written until every drain acknowledges. |
+| `upsert` | 1. `snapshot.stage` [snapshot] — if the target already exists, capture its pre‑image (primary row + all index entries) into the WAL entry; for a pure insert, stage a sentinel "absent" marker → 2. `primary.upsert_cow` [idem] — copy‑on‑write pointer swap; new version lives at `(target_id, version=N+1)`, the old version is retained until COMMIT → 3. `vector.upsert` [idem] — writes the new vector under `version=N+1` → 4. `fts.upsert` [idem] → 5. `edges.upsert` [idem] → 6. `primary.activate` — atomic pointer swap on `(target_id)` from `version=N` to `version=N+1`; this is the only linearization point readers observe → 7. `consent.log.append` | on abort **before step 6**: drop the `version=N+1` row + indexes; old version `=N` remains live and unchanged; compensation is a pure delete of the staged version, never a resurrection of deleted data. On abort **after step 6** (extremely narrow window — the atomic pointer swap and consent append are grouped in one SQLite transaction): recovery re‑runs step 7 via idempotency key; this window cannot observe a half‑applied state to readers. Consent log is append‑only — abort marker is appended separately, never rewritten. |
+| `delete` / `forget_record` / `forget_session` | **Phase A — atomic logical delete (observable to readers at COMMIT):** 1. `snapshot.stage` [snapshot] — serialize full record + all index entries into WAL entry → 2. `primary.mark_tombstone` for every target record (session fan‑out writes N tombstones in one SQLite transaction) → 3. `vector.drain` — index generation bump + re‑merge fence, confirms every target excluded → 4. `fts.drain` — checkpoint fsync, confirms every target's terms dropped → 5. `edges.drain` — adjacency entries dropped → 6. `consent.log.append(delete)` — all in one atomic SQLite transaction with steps 2–6 (drains 3–5 complete *before* the transaction commits; commit is the linearization point). **Phase B — async physical purge GC (separate idempotent op per child):** 7. `primary.purge` — overwrite blob + zero vector storage; runs as its own WAL child op per target record, retriable independently, never re‑introducing content. Phase B does not need to be atomic with Phase A because readers already can't see tombstoned records. | on abort **before Phase A commit** (steps 1–6): restore from `[snapshot]`; no tombstones visible, no partial session delete. Phase A commit is atomic — session delete is either observable to all readers or to none. Abort **during Phase B** (physical purge): the specific child op is retried idempotently; the overall session delete is already committed, so retries simply re‑attempt the zero‑ing of storage with no reader‑visible effect. If Phase B exhausts retries for a given child, that child is flagged `PURGE_PENDING` in `lint` with an escalation to operator; reader queries never surface the record either way. |
 | `promote` | 1. `snapshot.stage` → 2. `policy.verify_receipt` → 3. `primary.update_tier` → 4. `rebac.add_relation` → 5. `consent.log.append(promote)` | on abort before step 3: no‑op. After step 3: reverse tier update using `[snapshot]`; revoke rebac relation added in step 4. Consent entry for the promote remains with its abort marker. |
 | `expire` | 1. `snapshot.stage` → 2. `primary.mark_expired` → 3. `vector.drain` → 4. `fts.drain` → 5. `edges.drain` → 6. `consent.log.append(expire)` | identical rollback rules as `delete`, but step 6 is `mark_expired` not `purge` — expiration can be reversed by future writes (un‑expire via `upsert` of a later version) until a subsequent `forget` hits point of no return. |
 | `evolve` | per‑candidate steps from §11.3 canary rollout; each candidate is its own child op with its own WAL entry and its own compensation | parent op records `child_op_ids`; parent COMMIT requires all children COMMITTED; any child ABORT triggers parent ABORT which compensates all earlier children via their own rollback steps |
@@ -706,8 +728,8 @@ REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated
 2. Build a dependency DAG from the `dependencies` field of every un‑terminal op; topologically sort. Ops whose deps aren't terminal wait.
 3. **TTL applies to new external requests, not to WAL recovery.** The `expires_at` field rejects fresh `ingest/forget/promote` calls past the cutoff; **recovery of an already‑PREPARED op runs regardless of TTL** — once PREPARED, the operation is durably committed to either finish or abort with full compensation.
 4. For each op in dependency‑safe order, resume at `step:(last_done + 1)` using its operation‑specific step graph; already‑applied idempotent steps are no‑ops via the idempotency key.
-5. If a non‑idempotent step had crossed its point of no return (e.g., `primary.purge` was partially executed), write `ABORT_AFTER_PURGE` marker, surface a compliance alert, never attempt to restore.
-6. Successful recovery writes `RECOVERED <op>` next to `COMMIT`; failed recovery writes `ABORTED <op>` with reason and runs compensations (subject to point‑of‑no‑return above).
+5. Phase B physical‑purge children of a COMMITTED `delete`/`forget_*` op are retried idempotently — they have no reader‑visible effect (readers see the tombstone), so partial purge on crash is safe. Children that exhaust retries get flagged `PURGE_PENDING` in `lint`.
+6. Successful recovery writes `RECOVERED <op>` next to `COMMIT`; failed Phase A recovery writes `ABORTED <op>` with reason and runs compensations from the staged pre‑image. Phase A is always reversible because its commit is a single atomic SQLite transaction — either every side effect applied or none did.
 
 Persisting per‑step completion markers (`step:N:done`) is what makes step 3 above safe: recovery never "replays the fan‑out" blindly — it resumes from the exact last known good step and honors operation‑specific rollback rules.
 
@@ -1373,7 +1395,17 @@ Frontend edits can only mutate user‑content fields. Policy‑sensitive fields 
 
 **Adapters are untrusted.** The `FrontendAdapter` trait deliberately does not sign edits — plugins are library code running alongside untrusted editors (Obsidian community plugin, VS Code extension). The authoritative check happens on the backend when the reconcile call arrives: signed‑intent envelope present? signer holds the required capability? target_hash matches the server's current state? field diff stays within mutable columns? Anything less than all four → reject.
 
-**Signed‑intent minting flow for file‑originated edits.** Raw markdown editors (vim, nano, plain VS Code without plugin, Obsidian with no companion plugin) cannot produce signatures themselves. The `cairn daemon` process — which runs on the same machine as the editor under the same OS user and holds the user's identity keypair in the platform keychain — mints the intent on the editor's behalf, bound to local filesystem evidence:
+**Signed‑intent minting flow for file‑originated edits.** Raw markdown editors (vim, nano, plain VS Code without plugin, Obsidian with no companion plugin) cannot produce signatures themselves. The `cairn daemon` process — which runs on the same machine as the editor under the same OS user and holds the user's identity keypair in the platform keychain — mints the intent on the editor's behalf, **but only when a user‑presence claim is also present**. This defends against same‑user local compromise: a malicious process running as the logged‑in user can write to the vault directory, but cannot satisfy the user‑presence gate without stealing an authenticated session token.
+
+**User‑presence claim (mandatory; never auto‑granted to a file write).** Before the daemon mints a file‑originated intent, the editor session must hold a fresh **EditorSessionToken** — short‑lived (default 8 h idle, 24 h absolute), bound to a specific editor process (PID + start time + editor binary path) and to a specific vault root. Tokens are granted only through one of:
+
+1. `cairn editor login` — interactive CLI prompt that requires the user to approve via keychain biometric / OS secure prompt; returns a token scoped to the current shell + vault.
+2. A connected companion plugin that completed an OAuth‑style handshake against the daemon (plugin signs a handshake challenge with a key approved once at install time; approval is itself interactive).
+3. The Cairn desktop GUI which runs inside its own trust boundary — tokens minted there carry a `gui_trusted: true` claim and can only mint intents for edits that originated through the GUI's own event bus, not from arbitrary filesystem writes.
+
+A file write on its own — even from the correct OS user — **never** produces a valid intent. The file‑watcher pairs every detected edit with the active EditorSessionToken from the associated editor process (looked up by filesystem lock / VS Code integration channel / Obsidian IPC). If no token is attached, the edit is **quarantined by default** (below); the user must either attach a session (via `cairn editor attach <pid>`) or discard the edit.
+
+With that precondition:
 
 ```
   editor saves file.md  ───►  file‑watcher sensor (part of daemon, §9.1)
@@ -1677,7 +1709,7 @@ Users don't have to commit to the full stack on day one. Cairn is designed to be
 
 | Level | Commitment | What you get | When |
 |-------|------------|--------------|------|
-| **L1 — Zero‑config in your harness** | 30 seconds | `cairn mcp` registered as an MCP server in CC / Codex / Gemini. Seven verbs available. "Tell it directly" — say *"remember that I prefer X"* in chat and Cairn captures a `user` or `feedback` memory. `cairn export` for portable memory. | you want better in‑chat memory today |
+| **L1 — Zero‑config in your harness** | 30 seconds | `cairn mcp` registered as an MCP server in CC / Codex / Gemini. Eight core verbs available (§8). "Tell it directly" — say *"remember that I prefer X"* in chat and Cairn captures a `user` or `feedback` memory. `cairn export` for portable memory. | you want better in‑chat memory today |
 | **L2 — File‑based vault on disk** | 5 minutes | `cairn init` scaffolds the vault. `purpose.md` + `.cairn/config.yaml` + harness schema files (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`) are your schema layer. `raw/` is your Memory.md / Preferences / Corrections / Patterns / Decisions — one file per record. Git gives you history and archive for free. `cairn snapshot` writes an extra weekly snapshot into `.cairn/snapshots/YYYY-MM-DD/`. | you want a persistent, portable, editable memory |
 | **L3 — Second brain with continuous learning** | 1–2 hours | Add source sensors (Slack, email, GitHub, web clips). Temporal runs Dream / Reflect / Promote / Evolve on its own. Desktop GUI (Electron + TipTap + graph) for browsing. Workflow on every turn: Capture → Extract → Filter → Classify → Store → Consolidate. | you want a compounding, self‑evolving knowledge wiki |
 
@@ -1820,14 +1852,26 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 | US4 rolling summaries | P1 | v0.1 (rolling path); full in v0.2 | §10, §7, §6.1 |
 | US5 tool calls with turns | P1 | v0.1 | §6.1, §9.1, §5.2 |
 | US6 archive inactive sessions | P2 | v0.2 | §3.0, §10, §15 |
-| US7 search | P3 | v0.2 | §8, §5.1, §4.2, §6.3 |
+| US7 search | P3 | v0.1 (keyword+semantic+hybrid); v0.2 cross‑tenant federation | §8, §5.1, §4.2, §6.3 |
 | US8 session delete | P3 | v0.1 `forget_record` / v0.2 `forget_session` | §14, §10, §5.6 |
 
-**Coverage vs. sequencing (§19):** P0 stories (US1–US3), US4's `ConsolidationWorkflow` rolling‑summary pass, and US5 all land in v0.1. US6 (archive + cold‑storage rehydration) and US7 (search) land in v0.2 when SRE observability + extended orchestration come online. US8 (session delete) requires the full §5.6 WAL delete state machine — its core path (record‑level forget) ships in v0.1; session‑wide fan‑out with drain fences ships in v0.2. §19 reflects this split explicitly.
+**Coverage vs. sequencing (§19) — single source of truth:** The capability matrix below drives both this section and §19; a CI lint fails the build if §8, §18.c, and §19 disagree on what ships when.
+
+| Capability | v0.1 ships | v0.2 ships |
+|------------|------------|-------------|
+| Core MCP verbs 1–8 (`ingest`/`search`/`retrieve`/`summarize`/`assemble_hot`/`capture_trace`/`lint`/`forget`) | yes — all 8 | unchanged |
+| `search` modes | keyword + semantic + hybrid | adds cross‑tenant federation queries |
+| Session reload | active‑session (US2 core) | + cold‑storage rehydration (US6) |
+| `forget` modes | `record` (US8 core) | + `session` fan‑out with drain fences |
+| `ConsolidationWorkflow` | rolling‑summary pass only (US4 core) | + Reflection/REM/Deep tiers |
+| SRE observability (OTel dashboards, tier‑migration metrics, rehydration gates) | basic lint + health | full SRE surface |
+| Extension namespaces | none required for P0/P1 | `cairn.aggregate.v1` |
+
+**Therefore:** P0 (US1–US3), US4 rolling‑summary, US5, US7 basic search, and US8 record‑level forget all land in v0.1. US6 cold‑rehydration, US8 session fan‑out, and the full reflection/evolution surface land in v0.2.
 
 ## 19. Sequencing
 
-**v0.1 — Minimum substrate.** Covers US1, US2 (active‑session reload only), US3, US4 (rolling summary), US5, and US8 record‑level delete.
+**v0.1 — Minimum substrate.** Covers US1, US2 active‑session reload, US3, US4 rolling‑summary path, US5, US7 basic search, and US8 record‑level delete (see §18.c capability matrix for the authoritative mapping).
 Headless only. Nexus local backend. Eight core MCP verbs (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) with the full §8.0.b envelope. `DreamWorkflow` + `ExpirationWorkflow` + `EvaluationWorkflow` + `ConsolidationWorkflow` (rolling‑summary path only). §5.6 WAL with `upsert`, `forget_record`, and `expire` state machines. Five hooks. Vault on disk. `cairn bootstrap`. One reference consumer wired end‑to‑end.
 
 **v0.2 — Continuous learning + SRE surface.** Covers US6, US7, US8 session‑wide delete, and full US4 reflection layer.
