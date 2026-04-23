@@ -329,4 +329,22 @@ describe("gate() — ask verdict", () => {
       expect((e as KoiRuntimeError).code).toBe("PERMISSION");
     }
   });
+
+  // --- Task 15: scope regression ---
+
+  it("grant for {model:'m1'} does NOT cover {model:'m2'}", async () => {
+    const handler = mock<ApprovalHandler>(
+      async () => ({ kind: "always-allow", scope: "session" }) as ApprovalDecision,
+    );
+    const mw = createGovernanceMiddleware(makeConfig({ verdict: askVerdict("scope-k1") }));
+    const ctx = makeCtx({ requestApproval: handler });
+    const next = async () => ({ content: "x" }) as never;
+
+    if (mw.wrapModelCall === undefined) throw new Error("expected wrapModelCall");
+    await mw.wrapModelCall(ctx, { model: "m1", messages: [] } as ModelRequest, next); // approve + grant
+    await mw.wrapModelCall(ctx, { model: "m1", messages: [] } as ModelRequest, next); // fast-path
+    await mw.wrapModelCall(ctx, { model: "m2", messages: [] } as ModelRequest, next); // different payload → re-ask
+
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
 });
