@@ -258,18 +258,18 @@ export function createWrapToolCall(deps: WrapToolCallDeps): {
         });
         if (specOutcome.kind === "spec-evaluated") {
           decision = specOutcome.decision;
-          // Spec-guard downgrades are keyed to the exact argv, not the coarse
-          // prefix resource (e.g. `bash:rm`). Using the prefix would cause
-          // repeated semantic denies on one command (e.g. `rm /etc/*`) to
-          // accumulate against the prefix bucket and poison soft-deny caps /
-          // escalation for unrelated safe commands (`rm /tmp/file`).
           if (decision.effect !== "allow") {
+            // Audit/report uses the exact argv so incident response can see
+            // precisely what was blocked (e.g. `bash:rm /etc/passwd`, not `bash:rm`).
             const exactResource = `${request.toolId}:${raw.trim()}`;
             query = queryForTool(ctx, exactResource, request.metadata, resolvedPath);
-            trackingResource = exactResource;
-            // Propagate exact argv to audit/report/approval so logs reflect
-            // what was actually enforced, not the coarse prefix resource.
             resource = exactResource;
+            // Enforcement bookkeeping (soft-deny caps, escalation) uses the
+            // command name, not the full argv, so repeated probes of the same
+            // protected path/host with different argv variants still accumulate
+            // against the same budget — closing the argv-churn evasion window.
+            const cmdName = raw.trim().split(/\s+/)[0] ?? raw.trim();
+            trackingResource = `${request.toolId}:${cmdName}`;
           }
         }
       }

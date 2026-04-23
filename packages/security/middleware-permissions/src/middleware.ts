@@ -164,7 +164,8 @@ export function createPermissionsMiddleware(
   //    acknowledged that prefix rules will not apply; middleware
   //    still logs a warning so the weaker enforcement is visible.
   const backendSupportsDualKey = config.backend.supportsDefaultDenyMarker === true;
-  if (config.resolveBashCommand !== undefined && !backendSupportsDualKey) {
+  const specGuardBypassEarly = config.backend.bypassAllSpecGuards === true;
+  if (config.resolveBashCommand !== undefined && !backendSupportsDualKey && !specGuardBypassEarly) {
     if (config.allowLegacyBackendBashFallback !== true) {
       throw new Error(
         "createPermissionsMiddleware: `resolveBashCommand` requires a " +
@@ -587,9 +588,9 @@ export function createPermissionsMiddleware(
   const specRegistry = createSpecRegistry();
   const specGuardEnabled =
     config.resolveBashCommand !== undefined && config.enableBashSpecGuard === true;
-  // Bypass backends signal that all checks should be skipped — the canary technique
-  // cannot distinguish bypass from prefix/glob when all queries return allow.
-  const specGuardBypass = config.backend.bypassAllSpecGuards === true;
+  // Bypass backends signal that all checks should be skipped — derived above
+  // at construction-guard time (specGuardBypassEarly) for the same value.
+  const specGuardBypass = specGuardBypassEarly;
   // Warm the parser immediately so that by the time the first bash command
   // arrives, the WASM grammar is already loaded. Swallow rejection here —
   // the request-time guard awaits init per-call and will deny safely if
