@@ -1247,6 +1247,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
       if (agentRef.current === undefined) throw new Error("Agent not yet wired");
       return agentRef.current;
     },
+    progressive: true,
   });
 
   const tracedMiddleware = [
@@ -1598,7 +1599,7 @@ console.log(
   `Skills registry query verified: tags=["formatting"] → [${queryResult.value.map((s) => s.name).join(", ")}]`,
 );
 
-const skillProvider = createSkillProvider(skillRuntime);
+const skillProvider = createSkillProvider(skillRuntime, { progressive: true });
 console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
 
 // ---------------------------------------------------------------------------
