@@ -97,9 +97,11 @@ async function attachEager(runtime: SkillsRuntime): Promise<AttachResult> {
 }
 
 async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> {
-  // Call loadAll() for full blocked/VALIDATION visibility (same skipped contract as eager).
-  // Bodies are loaded but discarded — successful skills are attached with content: "" so
-  // the middleware injects a compact <available_skills> block instead of full bodies.
+  // loadAll() gives full blocked/VALIDATION visibility for the skipped list.
+  // After building components, invalidate() clears the body cache so bodies are
+  // not held in memory for the session lifetime — they are re-loaded on demand
+  // when the Skill tool is invoked. This satisfies the progressive contract:
+  // startup validation parity with eager mode, but no long-term body retention.
   const allResult = await runtime.loadAll();
   const components = new Map<string, unknown>();
   const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
@@ -116,6 +118,10 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
     }
     components.set(skillToken(name), skillDefinitionToProgressiveComponent(result.value));
   }
+
+  // Evict cached bodies — they were needed only for validation and component
+  // construction. Future load() calls (from the Skill tool) re-read from disk.
+  await runtime.invalidate();
 
   return { components: components as ReadonlyMap<string, unknown>, skipped };
 }
