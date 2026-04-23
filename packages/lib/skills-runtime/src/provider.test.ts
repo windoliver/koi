@@ -262,4 +262,23 @@ describe("createSkillProvider — progressive mode", () => {
     const skippedNames = result.skipped.map((s) => s.name);
     expect(skippedNames).toContain("blocked-skill");
   });
+
+  test("progressive attach evicts body cache so Skill tool always reads fresh content", async () => {
+    // regression: without per-skill invalidate() after loadAll(), Skill tool calls within
+    // the same session would serve the body snapshot taken at attach time rather than
+    // re-reading from disk, making edits to SKILL.md invisible to the agent.
+    await writeSkill(userRoot, "editable", "Original body.");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    await provider.attach(STUB_AGENT);
+
+    // Overwrite the skill file to simulate an in-session edit.
+    await writeSkill(userRoot, "editable", "Updated body.");
+
+    // The Skill tool calls runtime.load() — it must see the updated body.
+    const loaded = await runtime.load("editable");
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) expect(loaded.value.body).toContain("Updated body.");
+  });
 });

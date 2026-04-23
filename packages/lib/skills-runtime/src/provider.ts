@@ -98,11 +98,17 @@ async function attachEager(runtime: SkillsRuntime): Promise<AttachResult> {
 
 async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> {
   // loadAll() gives full blocked/VALIDATION visibility for the skipped list —
-  // the same parity as eager mode. Bodies are loaded into the runtime cache
-  // as a side effect; they remain cached for fast on-demand loading when the
-  // Skill tool is invoked. Do NOT call invalidate() here: full invalidation
-  // clears externalSkills and discovery state, which would break Skill tool
-  // load() calls for externally-registered skills.
+  // the same parity as eager mode.
+  //
+  // After collecting validation results, evict each successful skill's body from
+  // the LRU cache via invalidate(name). This ensures Skill tool invocations always
+  // load fresh content from disk rather than the body snapshot taken at attach time.
+  // Without eviction, edits to SKILL.md after session start would be invisible to
+  // the agent for the rest of the session.
+  //
+  // Do NOT call invalidate() with no args: full invalidation clears externalSkills
+  // and discovery state, which would break Skill tool load() calls for externally-
+  // registered skills.
   const allResult = await runtime.loadAll();
   const components = new Map<string, unknown>();
   const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
@@ -118,6 +124,7 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
       continue;
     }
     components.set(skillToken(name), skillDefinitionToProgressiveComponent(result.value));
+    runtime.invalidate(name);
   }
 
   return { components: components as ReadonlyMap<string, unknown>, skipped };
