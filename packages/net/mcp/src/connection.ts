@@ -94,6 +94,13 @@ export interface ConnectionDeps {
   readonly random: () => number;
   /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
   readonly onUnauthorized?: () => void | Promise<void>;
+  /**
+   * Called when a mid-session 401 triggers auth-needed. The implementation
+   * should perform the full OAuth flow and return true when tokens are ready,
+   * or false if auth was cancelled or failed. When true is returned, the
+   * connection will reconnect and retry the operation automatically.
+   */
+  readonly onAuthNeeded?: () => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +117,7 @@ export function createMcpConnection(
     createTransport: makeTransport = defaultCreateTransport,
     random = Math.random,
     onUnauthorized,
+    onAuthNeeded,
   } = deps ?? {};
 
   const stateMachine: TransportStateMachine = createTransportStateMachine();
@@ -382,6 +390,25 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
+        if (onAuthNeeded !== undefined) {
+          const authed = await onAuthNeeded();
+          if (authed) {
+            const reconnResult = await connect();
+            if (reconnResult.ok && client !== undefined) {
+              try {
+                const retryResponse = await client.listTools();
+                const tools: readonly McpToolInfo[] = retryResponse.tools.map((t) => ({
+                  name: t.name,
+                  description: t.description ?? "",
+                  inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
+                }));
+                return { ok: true, value: tools };
+              } catch {
+                // Retry failed — fall through to return the original auth error
+              }
+            }
+          }
+        }
         // Notify host to clear stale tokens and prompt for re-auth
         void Promise.resolve(onUnauthorized?.()).catch(() => {});
         return { ok: false, error: koiError };
@@ -451,6 +478,49 @@ export function createMcpConnection(
           kind: "auth-needed",
           challenge: { type: "oauth" },
         });
+        if (onAuthNeeded !== undefined) {
+          const authed = await onAuthNeeded();
+          if (authed) {
+            const reconnResult = await connect();
+            if (reconnResult.ok && client !== undefined) {
+              try {
+                const retryResult = await client.callTool({
+                  name,
+                  arguments: args as Record<string, unknown>,
+                });
+                const retryContent = retryResult.content as
+                  | readonly Record<string, unknown>[]
+                  | undefined;
+                if (retryResult.isError === true) {
+                  const errorText =
+                    retryContent
+                      ?.filter(
+                        (
+                          c,
+                        ): c is Record<string, unknown> & {
+                          readonly type: "text";
+                          readonly text: string;
+                        } => c.type === "text" && typeof c.text === "string",
+                      )
+                      .map((c) => c.text)
+                      .join("\n") ?? "unknown error";
+                  return {
+                    ok: false,
+                    error: {
+                      code: "EXTERNAL",
+                      message: `MCP tool "${name}" on "${config.name}": ${errorText}`,
+                      retryable: false,
+                      context: { serverName: config.name, toolName: name },
+                    },
+                  };
+                }
+                return { ok: true, value: retryContent };
+              } catch {
+                // Retry failed — fall through to return the original auth error
+              }
+            }
+          }
+        }
         // Notify host to clear stale tokens and prompt for re-auth
         void Promise.resolve(onUnauthorized?.()).catch(() => {});
         return { ok: false, error: koiError };

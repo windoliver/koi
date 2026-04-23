@@ -272,6 +272,13 @@ interface ConnectionDeps {
     readonly random: () => number;
     /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
     readonly onUnauthorized?: () => void | Promise<void>;
+    /**
+     * Called when a mid-session 401 triggers auth-needed. The implementation
+     * should perform the full OAuth flow and return true when tokens are ready,
+     * or false if auth was cancelled or failed. When true is returned, the
+     * connection will reconnect and retry the operation automatically.
+     */
+    readonly onAuthNeeded?: () => Promise<boolean>;
 }
 declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
 
