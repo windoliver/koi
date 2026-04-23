@@ -20,10 +20,15 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
   },
   {
     // source / dot-command executes arbitrary scripts from the filesystem.
-    // Both `source` and `.` must be at a command boundary (start of input,
-    // after ; | & or a newline) so that package names like `source-map` or
-    // flags like `--source` do not match. ^\s* tolerates leading whitespace.
-    regex: /(?:^\s*|[;|&\n]\s*)(?:source|\.)\s+\S/,
+    // Lookbehind excludes the common false-positive contexts: preceding word
+    // chars (e.g. `--source`), `.` (path component like `.ssh` or a quoted
+    // sentence-period), or `-` (flag continuation). Every legitimate command
+    // position — `^`, whitespace, `;`, `|`, `&`, `(`, `$(`, `{`, `!`, reserved
+    // words like `if`/`then`/`else` — has either nothing before or a non
+    // [\w.-] character before the `source`/`.`, so it matches.
+    // `\s+\S` requires whitespace + a non-whitespace arg so package names
+    // like `source-map` (no space after) do not match.
+    regex: /(?<![\w.-])(?:source|\.)\s+\S/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },

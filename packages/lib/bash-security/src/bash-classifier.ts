@@ -1,4 +1,4 @@
-import { matchPatterns } from "./match.js";
+import { MAX_INPUT_LENGTH, matchPatterns, normalizeForMatch } from "./match.js";
 import type { ClassificationResult, ThreatPattern } from "./types.js";
 
 /**
@@ -166,10 +166,11 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
   },
   {
     // ssh with a remote host — can execute commands or open tunnels.
-    // Lookbehind excludes path components (`.ssh/`, `/ssh/`) and word chars;
-    // lookahead excludes hyphen-suffixed local tools (`ssh-keygen`, `ssh-add`,
-    // `ssh-copy-id`) and word chars.
-    regex: /(?<![\w./-])ssh(?![-\w])/,
+    // Lookbehind excludes `.ssh/` path references and word-continuations but
+    // NOT `/` so path-invoked executables like `/usr/bin/ssh user@host` still
+    // match. Lookahead excludes hyphen-suffixed local tools (`ssh-keygen`,
+    // `ssh-add`, `ssh-copy-id`) and word chars.
+    regex: /(?<![\w.-])ssh(?![-\w])/,
     category: "data-exfiltration",
     reason: "ssh can execute remote commands or tunnel data out-of-band",
   },
@@ -224,17 +225,107 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
 const SYSTEM_PATH_TARGETS =
   "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s)|\\$(?:\\{HOME\\}|HOME\\b)";
 
-const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
-  {
-    // rm with both -r and -f (any order, any flag grouping) targeting bare root,
-    // a system top-level dir, `~`, or `$HOME`. Catches `rm -rf /`, `rm -Rf /etc`,
-    // `rm -fr /var`, `rm --recursive --force ~`, `rm -rf /Users/x`.
-    regex: new RegExp(
-      `\\brm\\b[^\\n#]*\\s(?:--recursive\\s+--force|--force\\s+--recursive|-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)[^\\n#]*?\\s(?:${SYSTEM_PATH_TARGETS})`,
-    ),
-    category: "destructive",
+/** Bounded wildcard span — caps backtrack state to prevent regex-DoS. */
+const B = "[^\\n#]{0,512}";
+
+// Anchor to start-of-string or whitespace so `dist/*`, `foo/etc`, etc. don't
+// trip the `/<sys-dir>` alternatives embedded mid-token.
+const SYSTEM_PATH_REGEX = new RegExp(`(?:^|\\s)(?:${SYSTEM_PATH_TARGETS})`);
+
+/**
+ * rm with BOTH a recursive-flag and a force-flag (in any order, grouped or
+ * split) targeting a system path is the destructive case. Using three separate
+ * linear-time regex tests avoids the combinatorial-backtrack space that a
+ * monolithic regex would produce on adversarial input, and handles `rm -r -f`,
+ * `rm -f -r`, `rm --recursive -f`, `rm -f --recursive`, etc.
+ */
+function checkDestructiveRm(cmd: string): ClassificationResult {
+  if (!/\brm\b/.test(cmd)) return { ok: true };
+  const hasRecursive = /(?:\s-[a-zA-Z]*[rR][a-zA-Z]*|\s--recursive\b)/.test(cmd);
+  const hasForce = /(?:\s-[a-zA-Z]*[fF][a-zA-Z]*|\s--force\b)/.test(cmd);
+  if (!hasRecursive || !hasForce) return { ok: true };
+  if (!SYSTEM_PATH_REGEX.test(cmd)) return { ok: true };
+  return {
+    ok: false,
     reason: "rm -rf targeting the root, a system directory, or the home directory is unrecoverable",
-  },
+    pattern: "rm+recursive+force+system-path",
+    category: "destructive",
+  };
+}
+
+function checkDestructiveChmod(cmd: string): ClassificationResult {
+  if (!/\bchmod\b/.test(cmd)) return { ok: true };
+  const hasRecursive = /(?:\s-[a-zA-Z]*R[a-zA-Z]*|\s--recursive\b)/.test(cmd);
+  const has777 = /\b[0-7]*777[0-7]*\b/.test(cmd);
+  if (!hasRecursive || !has777) return { ok: true };
+  if (!SYSTEM_PATH_REGEX.test(cmd)) return { ok: true };
+  return {
+    ok: false,
+    reason: "chmod -R 777 on the root or a system directory is a catastrophic permission change",
+    pattern: "chmod+recursive+777+system-path",
+    category: "destructive",
+  };
+}
+
+/**
+ * Git destructive operations. Subcommand + force-flag presence are checked
+ * with independent linear regexes rather than a single greedy pattern so
+ * inputs with many repeated subcommand words cannot force V8 backtracking.
+ * Does NOT defeat quote-splitting obfuscation (`git reset --ha""rd`) — that
+ * requires shell tokenization; see @koi/bash-ast for the AST-based classifier.
+ */
+function checkDestructiveGit(cmd: string): ClassificationResult {
+  if (!/\bgit\b/.test(cmd)) return { ok: true };
+
+  if (/\breset\b/.test(cmd) && /--hard\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "git reset --hard discards uncommitted changes without confirmation",
+      pattern: "git+reset+--hard",
+      category: "destructive",
+    };
+  }
+  if (/\bpush\b/.test(cmd) && /(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b)/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "git push --force rewrites remote history and can erase teammates' work",
+      pattern: "git+push+force",
+      category: "destructive",
+    };
+  }
+  if (/\bclean\b/.test(cmd) && /(?:--force\b|\s-[a-zA-Z]*f)/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "git clean -f permanently deletes untracked files",
+      pattern: "git+clean+force",
+      category: "destructive",
+    };
+  }
+  if (
+    /\bbranch\b/.test(cmd) &&
+    /(?:\s-[a-zA-Z]*D\b|--delete\b[\s\S]{0,200}--force\b|--force\b[\s\S]{0,200}--delete\b)/.test(
+      cmd,
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "git branch -D force-deletes a branch and can lose unmerged commits",
+      pattern: "git+branch+force-delete",
+      category: "destructive",
+    };
+  }
+  if (/\bcheckout\b/.test(cmd) && /(?:--force\b|\s-[a-zA-Z]*f\b)/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "git checkout -f discards uncommitted changes in the working tree",
+      pattern: "git+checkout+force",
+      category: "destructive",
+    };
+  }
+  return { ok: true };
+}
+
+const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
   {
     // mkfs, mkfs.ext4, mke2fs, mkswap — reformat a filesystem (destroys all data)
     regex: /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap)\b/,
@@ -243,7 +334,7 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
   },
   {
     // dd if=... of=/dev/<disk> — raw block-device write destroys the target disk
-    regex: /\bdd\b[^\n#]*\bof=\/dev\//,
+    regex: new RegExp(`\\bdd\\b${B}\\bof=\\/dev\\/`),
     category: "destructive",
     reason: "dd writing to a /dev/ block device destroys all data on the target disk",
   },
@@ -252,14 +343,6 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
     regex: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
     category: "destructive",
     reason: "fork bomb exhausts process slots and wedges the host",
-  },
-  {
-    // chmod -R 777 on a system path. Mirrors the rm -rf target set.
-    regex: new RegExp(
-      `\\bchmod\\b[^\\n#]*\\s-[a-zA-Z]*R[a-zA-Z]*\\s+[0-7]*777[0-7]*\\s+(?:${SYSTEM_PATH_TARGETS})`,
-    ),
-    category: "destructive",
-    reason: "chmod -R 777 on the root or a system directory is a catastrophic permission change",
   },
   {
     // shutdown / reboot / halt / poweroff — takes the host offline
@@ -274,50 +357,20 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
     reason: "init 0/6 halts or reboots the host",
   },
   {
-    // git reset --hard — discards uncommitted work, unrecoverable
-    regex: /\bgit\b[^\n#]*\breset\b[^\n#]*--hard\b/,
-    category: "destructive",
-    reason: "git reset --hard discards uncommitted changes without confirmation",
-  },
-  {
-    // git push with --force / -f / --force-with-lease — rewrites remote history
-    regex: /\bgit\b[^\n#]*\bpush\b[^\n#]*(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b)/,
-    category: "destructive",
-    reason: "git push --force rewrites remote history and can erase teammates' work",
-  },
-  {
-    // git clean -f / -fd — deletes untracked files
-    regex: /\bgit\b[^\n#]*\bclean\b[^\n#]*\s-[a-zA-Z]*f/,
-    category: "destructive",
-    reason: "git clean -f permanently deletes untracked files",
-  },
-  {
-    // git branch -D — force-delete a branch, losing commits unique to it
-    regex: /\bgit\b[^\n#]*\bbranch\b[^\n#]*\s-[a-zA-Z]*D\b/,
-    category: "destructive",
-    reason: "git branch -D force-deletes a branch and can lose unmerged commits",
-  },
-  {
-    // git checkout -f / --force — discards local changes
-    regex: /\bgit\b[^\n#]*\bcheckout\b[^\n#]*(?:--force\b|\s-[a-zA-Z]*f\b)/,
-    category: "destructive",
-    reason: "git checkout -f discards uncommitted changes in the working tree",
-  },
-  {
     // find -exec rm / -execdir rm — destructive chain that bypasses rm's -rf system-path guard
-    regex: /\bfind\b[^\n#]*-exec(?:dir)?\b[^\n#]*\brm\b/,
+    regex: new RegExp(`\\bfind\\b${B}-exec(?:dir)?\\b${B}\\brm\\b`),
     category: "destructive",
     reason: "find -exec rm deletes matched files without per-file confirmation",
   },
   {
     // find -delete — in-tree destructive deletion
-    regex: /\bfind\b[^\n#]*-delete\b/,
+    regex: new RegExp(`\\bfind\\b${B}-delete\\b`),
     category: "destructive",
     reason: "find -delete removes matched files in-place",
   },
   {
     // xargs ... rm — delete-everything-from-stdin chain
-    regex: /\bxargs\b[^\n#]*\brm\b/,
+    regex: new RegExp(`\\bxargs\\b${B}\\brm\\b`),
     category: "destructive",
     reason: "xargs rm deletes files fed from stdin with no confirmation",
   },
@@ -328,8 +381,14 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
  * that the literal `authorized_keys` substring check misses.
  */
 const SSH_DIR_WRITE: ThreatPattern = {
-  // redirect / tee / cp / mv / install writing to ~/.ssh, $HOME/.ssh, ${HOME}/.ssh
-  regex: /(?:>+\s*|\b(?:tee|cp|mv|install)\b[^\n#]*\s)(?:~|\$HOME|\$\{HOME\})\/\.ssh\//,
+  // Write-redirect (`>`, `>>`, `>|` noclobber-override, `&>` stderr+stdout,
+  // optional fd prefix like `3>`) or a file-write verb (tee/cp/mv/install),
+  // then an optional opening quote, then a target under ~/.ssh, $HOME/.ssh,
+  // or ${HOME}/.ssh. Matches: `> ~/.ssh/x`, `exec 3> "$HOME/.ssh/x"`,
+  // `exec 3>|$HOME/.ssh/x`, `cp key ~/.ssh/id_rsa`.
+  regex: new RegExp(
+    `(?:\\d*(?:>>?\\|?|&>)\\s*["']?|\\b(?:tee|cp|mv|install)\\b${B}\\s["']?)(?:~|\\$HOME|\\$\\{HOME\\})\\/\\.ssh\\/`,
+  ),
   category: "persistence",
   reason: "Writing into ~/.ssh establishes persistent SSH access",
 };
@@ -349,10 +408,27 @@ const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
  * Classify a bash command string against known dangerous TTP patterns.
  *
  * Pattern sets cover MITRE ATT&CK categories: reverse shells, privilege
- * escalation, persistence, and reconnaissance.
+ * escalation, persistence, and reconnaissance. Complex destructive patterns
+ * (rm, chmod, git) run as token-based linear-time checks to avoid regex-DoS
+ * and catch split-flag bypasses that a single regex cannot handle.
  *
  * Returns the first matched threat with full diagnostic context.
  */
 export function classifyCommand(command: string): ClassificationResult {
-  return matchPatterns(command, ALL_CLASSIFIER_PATTERNS);
+  if (command.length > MAX_INPUT_LENGTH) {
+    return {
+      ok: false,
+      reason: `Input exceeds ${MAX_INPUT_LENGTH} chars; reject to avoid regex-DoS`,
+      pattern: `length:${command.length}`,
+      category: "injection",
+    };
+  }
+  const normalized = normalizeForMatch(command);
+  const rmResult = checkDestructiveRm(normalized);
+  if (!rmResult.ok) return rmResult;
+  const chmodResult = checkDestructiveChmod(normalized);
+  if (!chmodResult.ok) return chmodResult;
+  const gitResult = checkDestructiveGit(normalized);
+  if (!gitResult.ok) return gitResult;
+  return matchPatterns(normalized, ALL_CLASSIFIER_PATTERNS);
 }

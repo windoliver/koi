@@ -119,6 +119,38 @@ describe("detectInjection", () => {
       expect(detectInjection("echo ok; source /tmp/evil.sh").ok).toBe(false);
       expect(detectInjection("  source /tmp/evil.sh").ok).toBe(false);
     });
+
+    test("BUG regression: source inside subshell must block", () => {
+      expect(detectInjection("( source /tmp/evil.sh )").ok).toBe(false);
+    });
+
+    test("BUG regression: source inside command substitution must block", () => {
+      expect(detectInjection("$(source /tmp/evil.sh)").ok).toBe(false);
+    });
+
+    test("BUG regression: source after reserved word (if) must block", () => {
+      expect(detectInjection("if source /tmp/evil.sh; then :; fi").ok).toBe(false);
+    });
+
+    test("BUG regression: source after ! negation must block", () => {
+      expect(detectInjection("! source /tmp/evil.sh").ok).toBe(false);
+    });
+
+    test("BUG regression: source inside brace group must block", () => {
+      expect(detectInjection("{ source /tmp/evil.sh; }").ok).toBe(false);
+    });
+  });
+
+  describe("input-length guard (ReDoS defense)", () => {
+    test("oversize input is rejected with length diagnostic", () => {
+      const input = "a".repeat(10000);
+      const result = detectInjection(input);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.category).toBe("injection");
+        expect(result.reason).toMatch(/exceeds .* chars/);
+      }
+    });
   });
 
   describe("unicode obfuscation normalization", () => {
