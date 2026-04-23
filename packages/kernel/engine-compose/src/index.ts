@@ -74,12 +74,14 @@ export {
   DEFAULT_TOOL_EXECUTION,
 } from "./guard-types.js";
 // guards
-export type { CreateSpawnGuardOptions } from "./guards.js";
+export type { CreateSpawnGuardOptions, IterationGuardHandle } from "./guards.js";
 export {
   createIterationGuard,
   createLoopDetector,
   createSpawnGuard,
   detectRepeatingPattern,
+  ITERATION_GUARD_BRAND,
+  isIterationGuardHandle,
 } from "./guards.js";
 // structured output guard
 export type { StructuredOutputGuardConfig } from "./structured-output-guard.js";
