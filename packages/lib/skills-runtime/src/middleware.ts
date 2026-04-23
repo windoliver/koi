@@ -112,16 +112,30 @@ function collectSkillNames(
  * Only injects skills with non-empty content (full bodies). Empty-content skills
  * (MCP metadata-only or progressive-mode components) are silently ignored here —
  * the progressive path handles those via an <available_skills> XML block.
- * Returns the original request unchanged when no non-empty skills are attached.
+ *
+ * Graceful mismatch handling: if runtimeBacked skills are present (indicating the
+ * provider was configured progressive: true) but the middleware is non-progressive,
+ * inject an <available_skills> XML block for them so they are not silently dropped.
+ * This prevents a misconfigured setup from making skills invisible to the model.
+ *
+ * Returns the original request unchanged when no skills contribute any content.
  */
 function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
   const sorted = sortedSkills(agent);
   if (sorted.length === 0) return request;
 
   const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
-  if (bodies.length === 0) return request;
+  // Fallback for provider/middleware progressive mismatch: include runtimeBacked
+  // skills via XML block so they are not silently dropped.
+  const runtimeBackedSkills = sorted.filter((s) => s.runtimeBacked === true);
 
-  const content = bodies.join(SEPARATOR);
+  if (bodies.length === 0 && runtimeBackedSkills.length === 0) return request;
+
+  const parts: string[] = [];
+  if (runtimeBackedSkills.length > 0) parts.push(generateAvailableSkillsBlock(runtimeBackedSkills));
+  if (bodies.length > 0) parts.push(bodies.join(SEPARATOR));
+  const content = parts.join("\n\n");
+
   const existing = request.systemPrompt;
   const systemPrompt =
     existing !== undefined && existing.length > 0 ? `${content}\n\n${existing}` : content;

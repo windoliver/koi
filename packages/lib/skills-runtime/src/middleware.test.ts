@@ -360,4 +360,28 @@ describe("createSkillInjectorMiddleware — progressive mode", () => {
     expect(prompt).toMatch(/^<available_skills>/);
     expect(prompt).toContain("You are a helpful assistant.");
   });
+
+  test("non-progressive middleware injects XML fallback for runtimeBacked skills (provider/middleware mismatch)", async () => {
+    // When the provider is progressive (runtimeBacked: true, content: "") but the middleware
+    // is non-progressive (progressive: false / default), runtimeBacked skills must NOT be
+    // silently dropped — the middleware injects an <available_skills> XML block as a fallback.
+    const skills = new Map([progressiveSkill("commit"), progressiveSkill("review")]);
+    const agent = mockAgent(skills);
+    // Middleware is non-progressive (default) but skills have runtimeBacked: true
+    const mw = createSkillInjectorMiddleware({ agent });
+    const { wrapModelCall } = assertHooks(mw);
+    const request = mockRequest();
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), request, async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    // Should inject XML block rather than silently dropping the skills
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain('name="commit"');
+    expect(prompt).toContain('name="review"');
+  });
 });
