@@ -83,6 +83,16 @@ export const PERMISSION_PROMPT_NARROW_THRESHOLD = 30;
  */
 export const PERMISSION_PROMPT_MIN_SAFE_WIDTH = 20;
 
+/**
+ * Minimum terminal row count at which the prompt can display enough vertical
+ * approval context to be safely interactive. The modal top offset is row 2;
+ * the minimum readable prompt body (title + tool + args + 2 key hints) is
+ * ~10 rows. Below this threshold approval keys y/a/! are suppressed so users
+ * cannot grant access when the prompt is vertically clipped off-screen.
+ * Exported for unit testing.
+ */
+export const PERMISSION_PROMPT_MIN_SAFE_HEIGHT = 14;
+
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
   medium: COLORS.amber,
@@ -113,6 +123,13 @@ export interface PermissionPromptProps {
    * Defaults to PERMISSION_PROMPT_WIDTH when not provided.
    */
   readonly terminalWidth?: number | undefined;
+  /**
+   * Current terminal row count, forwarded from the parent that owns
+   * useTerminalDimensions(). Used to suppress approval keys when the terminal
+   * is too short to show the full prompt context (#1913).
+   * Defaults to PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 1 (always safe) when not provided.
+   */
+  readonly terminalHeight?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,15 +210,18 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
   // horizontal hint rows would overflow. (#1913)
   const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
 
-  // Below the minimum safe width the prompt cannot display enough context to
-  // make an informed decision. Approval keys are suppressed; only Escape/deny
-  // remains active so the user can dismiss and resize the terminal. (#1913)
+  // Below the minimum safe width or height the prompt cannot display enough
+  // context to make an informed decision. Approval keys are suppressed; only
+  // Escape/deny remains active so the user can fail closed. (#1913)
   const isTooNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_MIN_SAFE_WIDTH);
+  const isTooShort = createMemo(() =>
+    (props.terminalHeight ?? PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 1) < PERMISSION_PROMPT_MIN_SAFE_HEIGHT
+  );
 
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
-    if (isTooNarrow()) {
+    if (isTooNarrow() || isTooShort()) {
       // Context is unreadable: suppress approval (y/a/!) but keep explicit
       // deny (n) and dismiss (Escape) so the user can fail closed immediately.
       const name = key.name.toLowerCase();

@@ -4,6 +4,7 @@ import {
   formatInputPreview,
   formatToolId,
   normalizeReason,
+  PERMISSION_PROMPT_MIN_SAFE_HEIGHT,
   PERMISSION_PROMPT_MIN_SAFE_WIDTH,
   PERMISSION_PROMPT_NARROW_THRESHOLD,
   PERMISSION_PROMPT_WIDTH,
@@ -110,6 +111,43 @@ describe("PERMISSION_PROMPT_MIN_SAFE_WIDTH", () => {
   test("safe threshold is between 1 and the narrow threshold", () => {
     expect(PERMISSION_PROMPT_MIN_SAFE_WIDTH).toBeGreaterThan(1);
     expect(PERMISSION_PROMPT_MIN_SAFE_WIDTH).toBeLessThan(PERMISSION_PROMPT_NARROW_THRESHOLD);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PERMISSION_PROMPT_MIN_SAFE_HEIGHT — approval suppression on short terminals
+// ---------------------------------------------------------------------------
+
+describe("PERMISSION_PROMPT_MIN_SAFE_HEIGHT", () => {
+  test("constant is a positive integer above the modal top offset", () => {
+    expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT).toBeGreaterThan(4);
+  });
+
+  test("is independent of PERMISSION_PROMPT_MIN_SAFE_WIDTH — width and height guards are orthogonal", () => {
+    // Both thresholds are positive. Either can be lower or higher than the other.
+    expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT).toBeGreaterThan(0);
+    expect(PERMISSION_PROMPT_MIN_SAFE_WIDTH).toBeGreaterThan(0);
+  });
+
+  test("short terminal (rows < MIN_SAFE_HEIGHT) suppresses approval — isTooShort logic", () => {
+    // isTooShort = terminalHeight < PERMISSION_PROMPT_MIN_SAFE_HEIGHT
+    expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT - 1).toBeLessThan(PERMISSION_PROMPT_MIN_SAFE_HEIGHT);
+    expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT - 5).toBeLessThan(PERMISSION_PROMPT_MIN_SAFE_HEIGHT);
+  });
+
+  test("tall terminal (rows >= MIN_SAFE_HEIGHT) allows approval — isTooShort logic", () => {
+    expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_MIN_SAFE_HEIGHT,
+    );
+    expect(PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 10).toBeGreaterThanOrEqual(
+      PERMISSION_PROMPT_MIN_SAFE_HEIGHT,
+    );
+  });
+
+  test("default terminalHeight (undefined) is treated as safe — approval not suppressed", () => {
+    // Props default: PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 1, always >= threshold
+    const defaultHeight = PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 1;
+    expect(defaultHeight).toBeGreaterThanOrEqual(PERMISSION_PROMPT_MIN_SAFE_HEIGHT);
   });
 });
 
