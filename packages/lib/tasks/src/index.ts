@@ -17,7 +17,11 @@ export { createFileTaskBoardStore, type FileTaskBoardStoreConfig } from "./file-
 export { matchesFilter } from "./filter.js";
 // Lifecycles
 export { registerDefaultLifecycles } from "./lifecycles/defaults.js";
-export { createLocalAgentLifecycle, type LocalAgentConfig } from "./lifecycles/local-agent.js";
+export {
+  createLocalAgentLifecycle,
+  type LocalAgentConfig,
+  type LocalAgentLifecycleOptions,
+} from "./lifecycles/local-agent.js";
 export { createLocalShellLifecycle, type LocalShellConfig } from "./lifecycles/local-shell.js";
 export {
   createUnsupportedLifecycle,

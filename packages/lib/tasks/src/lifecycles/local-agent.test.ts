@@ -312,6 +312,79 @@ describe("createLocalAgentLifecycle", () => {
     expect(signalAborted).toBe(true);
   });
 
+  test("non-cooperative agent: output stops after timeout even if iterator keeps yielding", async () => {
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      timeout: 100,
+      onExit: (code) => {
+        exitCode = code;
+      },
+      // Deliberately ignores abort and keeps yielding
+      run: async function* () {
+        let i = 0;
+        for (;;) {
+          yield `chunk-${String(i++)}`;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      },
+    };
+    const task = await lifecycle.start(taskItemId("task_11"), output, config);
+    runningTasks.push(task);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    runningTasks.pop();
+
+    expect(exitCode).toBe(1);
+    const combined = output
+      .read(0)
+      .map((c) => c.content)
+      .join("");
+    // Timed out is reported
+    expect(combined).toContain("[timed out]");
+    // No success marker despite iterator still running
+    expect(combined).not.toContain("[exit code: 0]");
+  });
+
+  test("hardKill is called when drain window expires on permanently-stuck iterator", async () => {
+    // Short drain timeout so the test doesn't take 2s
+    const shortDrainLifecycle = createLocalAgentLifecycle({ drainTimeoutMs: 80 });
+    const output = createOutputStream();
+    let hardKillCalled = false;
+
+    // External latch: never resolves — simulates an agent that ignores abort
+    // and stays stuck on an external resource indefinitely.
+    let stuckResolve!: () => void;
+    const stuckLatch = new Promise<void>((r) => {
+      stuckResolve = r;
+    });
+
+    const config: LocalAgentConfig = {
+      agentType: "worker",
+      inputs: {},
+      hardKill: () => {
+        hardKillCalled = true;
+        stuckResolve(); // unblock the generator so the test can clean up
+      },
+      // Iterator yields once, then blocks on the external latch — never returns.
+      run: async function* () {
+        yield "start";
+        await stuckLatch;
+      },
+    };
+    const task = await shortDrainLifecycle.start(taskItemId("task_12"), output, config);
+    // Yield to the event loop so the pipe advances past "start" and into the
+    // stuck await — ensuring stop() finds the loop blocked between next() calls.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // stop() blocks for drainTimeoutMs (80ms) then fires hardKill
+    await shortDrainLifecycle.stop(task);
+
+    expect(hardKillCalled).toBe(true);
+  });
+
   test("inputs are forwarded to run callback", async () => {
     const output = createOutputStream();
     let capturedAgentType: string | undefined;
