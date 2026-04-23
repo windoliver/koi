@@ -13,14 +13,16 @@
 
 ## 1. Thesis
 
-**Cairn** is a stand‑alone, harness‑agnostic agent memory framework. It gives any agent loop — local or cloud, open‑source or proprietary — a shared substrate for per‑turn extraction, nightly consolidation, trajectory→playbook learning, hot‑memory prefix injection, typed taxonomy, consent‑gated propagation, and a privacy‑first local default. Its external contract is a tiny MCP surface — **eight core verbs** (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) plus opt‑in extension namespaces for aggregates / admin / federation (§8). Its default backend is **Nexus `sandbox` profile** — a Python sidecar that brings SQLite + BM25S + `sqlite-vec` semantic search in a single `nexus.db` file with zero external services; scale happens through federation to a Nexus `full` hub, not through swapping adapters. The `MemoryStore` contract is still swappable if a team already runs a different store. It is lightweight enough to `bunx cairn` on a laptop and industrial enough to run behind an enterprise gateway — **same interfaces, same Nexus, different topology**.
+**Cairn** is a stand‑alone, harness‑agnostic agent memory framework. It gives any agent loop — local or cloud, open‑source or proprietary — a shared substrate for per‑turn extraction, nightly consolidation, trajectory→playbook learning, hot‑memory prefix injection, typed taxonomy, consent‑gated propagation, and a privacy‑first local default. Its external contract is a tiny MCP surface — **eight core verbs** (`ingest`, `search`, `retrieve`, `summarize`, `assemble_hot`, `capture_trace`, `lint`, `forget`) plus opt‑in extension namespaces for aggregates / admin / federation (§8). Its default backend is **Nexus `sandbox` profile** — a Python sidecar that brings SQLite + BM25S + `sqlite-vec` semantic search in a single `nexus.db` file with zero external services; scale happens through federation to a Nexus `full` hub, not through swapping adapters. The `MemoryStore` contract is still swappable if a team already runs a different store. It is lightweight enough to install as a single Rust binary (`brew install cairn` / `cargo install cairn`) on a laptop and industrial enough to run behind an enterprise gateway — **same interfaces, same Nexus, different topology**.
 
 ### 1.a What the end user actually does (KISS)
 
 The rest of this doc is architecture. From the user's seat, Cairn is five things:
 
 ```
-1. Install once          bunx cairn init                       (30 seconds)
+1. Install once          brew install cairn   |   cargo install cairn
+                         (Rust static binary — ~15 MB, no runtime deps)
+                         then:    cairn init                       (30 seconds)
 
 2. Ignore it              — memory just happens on every turn —
                          (no commands, no schema, no config required)
@@ -55,7 +57,7 @@ That's the whole user surface. Everything under this is optional:
 2. **One contract, one door.** MCP is the only public entry point (eight core verbs + opt‑in extensions). CLI, hooks, library calls — all route through the same verbs.
 3. **Schema is YAML frontmatter.** No migrations. Add or disable `MemoryKind`s in `.cairn/config.yaml`; the pipeline follows.
 4. **Plugins, not forks.** Every non‑trivial component is behind a typed contract; swapping is a config line. The default plugins and third‑party plugins use the same registration path.
-5. **Local‑first, cloud‑optional.** `bunx cairn` works on a fresh laptop with zero credentials. Cloud is opt‑in per sensor and per write path.
+5. **Local‑first, cloud‑optional.** The `cairn` Rust static binary works on a fresh laptop with zero credentials. Cloud is opt‑in per sensor and per write path.
 6. **Failures become skills.** Skillify (§11.b) turns any observed failure into a tested, durable skill. The agent gets better from use, not from retraining.
 7. **No hidden state.** Every mutation goes through the WAL (§5.6); every promotion goes through the nine‑gate predicate (§11.3); every consent decision lands in the append‑only journal (§14).
 
@@ -67,7 +69,7 @@ These are the load‑bearing invariants — everything else in this doc is conse
 
 1. **Harness‑agnostic.** Works with any agent loop that can speak MCP.
 2. **Default to one backend; scale by federation, not by swapping.** Nexus `sandbox` profile is the default `MemoryStore` at every tier (embedded, local, cloud). Scale‑up is federation from sandbox → Nexus `full` hub over HTTP — not a code change in Cairn. The contract is still swappable if a team already runs a different store, but Cairn does not "multi‑backend for multi‑backend's sake".
-3. **Stand‑alone.** `bunx cairn` on a fresh laptop with zero cloud credentials works end‑to‑end.
+3. **Stand‑alone.** A single Rust static binary (`brew install cairn` or `cargo install cairn`) on a fresh laptop with zero cloud credentials works end‑to‑end.
 4. **Local‑first, cloud‑optional.** The vault lives on disk. Cloud is opt‑in per sensor, per write path.
 5. **Narrow typed contracts.** Five real interfaces. Fifteen pure functions. Everything else is composition.
 6. **Continuous learning off the request path.** A durable `WorkflowOrchestrator` runs Dream / Reflect / Promote / Consolidate / Propagate / Expire / Evaluate in the background. Default v0.1 implementation is `tokio` + a SQLite job table; Temporal is an optional adapter. Harness latency is untouched in either case.
@@ -1277,7 +1279,7 @@ Sessions carry metadata (`channel`, `priority`, `tags`), emit a `session_ended` 
 | `PreCompact` | before context compaction | snapshot the transcript to `raw/trace_*.md` for later ACE distillation |
 | `Stop` | end of session | trigger end‑of‑session Dream pass + orphan check |
 
-Hooks are plain scripts executed via `bunx cairn hook <name>`. A single Cairn binary wires identically into CC's `.claude/settings.json`, Codex's `.codex/hooks.json`, and Gemini's `.gemini/settings.json`.
+Hooks are plain scripts executed via `cairn hook <name>` (Rust binary on `$PATH`). A single Cairn binary wires identically into CC's `.claude/settings.json`, Codex's `.codex/hooks.json`, and Gemini's `.gemini/settings.json`.
 
 ---
 
@@ -1717,7 +1719,7 @@ cairn snapshot                   weekly archive into .cairn/snapshots/YYYY-MM-DD
 | Durable job runner (default) | Rust | `tokio` + SQLite‑backed job table; crash‑safe; single binary, no external service |
 | Temporal worker (optional cloud) | Rust *or* TypeScript | Rust via `temporalio-sdk` / `temporalio-client` (prerelease, on crates.io) when users accept prerelease; TS sidecar with the GA Temporal TS SDK when they don't |
 | Pipeline orchestration + MCP server | Rust | single binary for the core |
-| CLI (Ink TUI, slash commands, dev loop) | TypeScript / Bun | ecosystem, fast iteration, bunx distribution |
+| CLI (Ink TUI, slash commands, dev loop) | TypeScript / Bun *optional companion* | ecosystem, fast iteration, `bunx`/`npx` distribution for the optional companion TUI — not the main `cairn` binary |
 | Electron shell / renderer | TypeScript + React | Electron is Node; renderer is web |
 | Hook scripts | TypeScript | same as every harness's scripting ecosystem |
 | Cairn internal libs consumed by harnesses | TypeScript | L0/L1/L2 package pattern stays TS so harnesses can import in‑process |
@@ -2016,10 +2018,11 @@ Every new contract, new taxonomy, new workflow, or new adapter ships with an eva
 
 ## 16. Distribution and Packaging
 
-- `bunx cairn` — zero‑install ephemeral CLI; bundled with the Rust core binary for the host platform.
-- `npm i -g cairn` — global CLI install.
-- **DMG / MSI / AppImage / deb** for the Electron desktop shell; a slim Tauri build is available for air‑gap / bandwidth‑constrained users.
+- `brew install cairn` (macOS / Linux) — Homebrew tap; single static Rust binary (~15 MB), no runtime deps.
+- `cargo install cairn` — install from crates.io for Rust users.
+- **DMG / MSI / AppImage / deb / static tarball** — platform packages for the Rust binary plus the Electron desktop shell; a slim Tauri build is available for air‑gap / bandwidth‑constrained users.
 - `cairn mcp` — stdio MCP server (Rust core) that any harness registers in its MCP config.
+- `winget install cairn` / Scoop bucket — Windows package managers.
 - Koi integrates via a thin L2 package that bridges the harness's internal middleware to Cairn MCP.
 
 **Monorepo shape (polyglot: Rust core + TypeScript shell + Electron renderer).** Everything outside `cairn-core` is a plugin using the registration path from §4.1 — no internal shortcuts. Third‑party plugins live in their own repos and are listed in `.cairn/config.yaml` exactly like the bundled ones.
@@ -2114,7 +2117,7 @@ Nothing in these migrations requires the legacy system to change. Cairn runs as 
 ## 18. Success Criteria
 
 1. **Adoption.** Three independent harnesses speak Cairn MCP in v0.1; ten by v1.0.
-2. **Standalone proof.** `bunx cairn` on a fresh laptop, no network, works end‑to‑end.
+2. **Standalone proof.** `cairn init` on a fresh laptop (no network), works end‑to‑end.
 3. **Latency.** p95 harness turn with Cairn MCP hot‑assembly < 50 ms.
 4. **Privacy.** `forget-me` on a 1M‑record vault: reader‑invisible within 1 s p95 (Phase A tombstones + fence closed), physical purge within 30 s p95 (Phase B); append‑only consent log survives GDPR review.
 5. **Evaluation.** Golden queries + multi‑session coherence + orphan / conflict / staleness metrics all regression‑tested in CI.
