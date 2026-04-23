@@ -2,18 +2,19 @@
  * Channel wiring for bridge auth notifications.
  *
  * Converts BridgeNotification events from transport.subscribe() into
- * user-facing channel messages during inline OAuth flows.
+ * structured OAuthChannel callbacks (auth_required, auth_complete) and
+ * channel text messages (auth_progress keepalives).
  *
  * Usage:
  *   const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
- *   const handler = createAuthNotificationHandler(channel);
+ *   const handler = createAuthNotificationHandler(oauthChannel, channel);
  *   const unsubscribe = transport.subscribe(handler);
  *   // on teardown:
  *   unsubscribe();
  *   handler.dispose();            // cancel pending timers + drop late callbacks
  */
 
-import type { ChannelAdapter } from "@koi/core";
+import type { ChannelAdapter, OAuthChannel } from "@koi/core";
 import type { BridgeNotification } from "./types.js";
 
 /** Strip query parameters from an OAuth URL before logging — they carry anti-CSRF state. */
@@ -37,8 +38,9 @@ export type AuthNotificationHandler = ((n: BridgeNotification) => void) & {
 };
 
 /**
- * Creates a BridgeNotification handler that sends user-facing messages to a
- * channel when OAuth authorization is required, in progress, or complete.
+ * Creates a BridgeNotification handler that routes auth lifecycle events to an
+ * OAuthChannel (auth_required, auth_complete) and sends progress keepalives to
+ * a channel (auth_progress).
  *
  * Wire the returned function to `transport.subscribe()` and call
  * `.dispose()` on the returned handler when the transport is closed so that
@@ -46,10 +48,14 @@ export type AuthNotificationHandler = ((n: BridgeNotification) => void) & {
  * the session (notifications dispatched before `unsubscribe()` can still
  * execute the handler via queued microtasks).
  *
- * The handler is non-blocking — channel.send() is fire-and-forget via void.
- * Errors from channel.send() are swallowed to avoid breaking the reader loop.
+ * The handler is non-blocking — all async calls are fire-and-forget.
+ * Errors from oauthChannel callbacks and channel.send() are swallowed to
+ * avoid breaking the reader loop.
  */
-export function createAuthNotificationHandler(channel: ChannelAdapter): AuthNotificationHandler {
+export function createAuthNotificationHandler(
+  oauthChannel: OAuthChannel,
+  channel: ChannelAdapter,
+): AuthNotificationHandler {
   // Per-provider lifecycle state for auth_progress dedup.
   //   idle    — no progress shown in current flow; next heartbeat emits
   //   pending — channel.send() in flight; subsequent heartbeats skip
@@ -99,28 +105,25 @@ export function createAuthNotificationHandler(channel: ChannelAdapter): AuthNoti
       progressState.delete(n.params.provider);
       bumpEpoch(n.params.provider);
       const { provider, auth_url, message, mode, instructions } = n.params;
-      const remoteHint =
-        mode === "remote" && instructions !== undefined ? `\n\n_${instructions}_` : "";
-      void channel
-        .send({
-          content: [
-            {
-              kind: "text",
-              text: `**${message}**\n\nOpen this link in your browser to authorize ${provider}:\n${auth_url}${remoteHint}`,
-            },
-          ],
-        })
-        .catch((err: unknown) => {
-          if (!active) return;
-          // auth_required delivery failure means the user never sees the OAuth URL.
-          // Log the provider and a redacted URL (origin + path only — no query params,
-          // which carry anti-CSRF state and account identifiers).
-          // eslint-disable-next-line no-console
-          console.error(
-            `[koi/fs-nexus] Failed to deliver auth_required for ${provider}: ${String(err)}. ` +
-              `User will not see the authorization link (redacted: ${redactUrl(auth_url)})`,
-          );
-        });
+      void Promise.resolve(
+        oauthChannel.onAuthRequired({
+          provider,
+          authUrl: auth_url,
+          message,
+          mode,
+          instructions,
+        }),
+      ).catch((err: unknown) => {
+        if (!active) return;
+        // auth_required delivery failure means the user never sees the OAuth URL.
+        // Log the provider and a redacted URL (origin + path only — no query params,
+        // which carry anti-CSRF state and account identifiers).
+        // eslint-disable-next-line no-console
+        console.error(
+          `[koi/fs-nexus] Failed to deliver auth_required for ${provider}: ${String(err)}. ` +
+            `User will not see the authorization link (redacted: ${redactUrl(auth_url)})`,
+        );
+      });
     } else if (n.method === "auth_progress") {
       const { provider, message, elapsed_seconds } = n.params;
       const existing = progressState.get(provider);
@@ -183,18 +186,9 @@ export function createAuthNotificationHandler(channel: ChannelAdapter): AuthNoti
       progressState.delete(n.params.provider);
       bumpEpoch(n.params.provider);
       const { provider } = n.params;
-      void channel
-        .send({
-          content: [
-            {
-              kind: "text",
-              text: `${provider} authorization complete. Continuing...`,
-            },
-          ],
-        })
-        .catch(() => {
-          // Completion notice — decorative; operation will succeed regardless
-        });
+      void Promise.resolve(oauthChannel.onAuthComplete({ provider })).catch(() => {
+        // Completion notice — decorative; operation will succeed regardless
+      });
     }
   }) as AuthNotificationHandler;
 
