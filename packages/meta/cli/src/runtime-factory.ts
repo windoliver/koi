@@ -1505,8 +1505,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // Load .koi/settings cascade and convert per-layer settings to SourcedRules.
   // Errors in non-policy layers are logged but do not abort startup.
   const settingsRules: SourcedRule[] = [];
+  let settingsDefaultMode: "default" | "bypass" | "plan" | "auto" = "default";
   if (config.permissionBackend === undefined) {
-    const { sources, errors: settingsErrors } = await loadSettings({ cwd });
+    const {
+      settings: cascadedSettings,
+      sources,
+      errors: settingsErrors,
+    } = await loadSettings({ cwd });
     for (const err of settingsErrors) {
       console.warn(`[koi/${hostId}] settings validation warning: ${err.file}: ${err.message}`);
     }
@@ -1515,6 +1520,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       if (layerSettings != null) {
         settingsRules.push(...mapSettingsToSourcedRules(layerSettings, source));
       }
+    }
+    if (cascadedSettings.permissions?.defaultMode != null) {
+      settingsDefaultMode = cascadedSettings.permissions.defaultMode;
+    }
+    // Command-scoped rules (pattern contains ":") require a marker-aware backend.
+    // The default TUI backend uses single-key mode (allowLegacyBackendBashFallback),
+    // so enriched-resource patterns are never evaluated. Warn operators whose settings
+    // include command-scoped rules so they know to use `koi start` (pattern backend).
+    const commandScopedCount = settingsRules.filter((r) => r.pattern.includes(":")).length;
+    if (commandScopedCount > 0) {
+      console.warn(
+        `[koi/${hostId}] ${String(commandScopedCount)} command-scoped settings rule(s) (e.g. Bash(rm -rf*)) ` +
+          `require a marker-aware backend and will not be enforced in TUI mode. ` +
+          `Use \`koi start\` or set permissionBackend to createPatternPermissionBackend.`,
+      );
     }
   }
 
@@ -1536,7 +1556,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const permBackend =
     config.permissionBackend ??
     createPermissionBackend({
-      mode: "default",
+      mode: settingsDefaultMode,
       rules: [...sortedSettingsRules, ...tuiAllowRules],
     });
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
