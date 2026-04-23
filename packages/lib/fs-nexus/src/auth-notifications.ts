@@ -79,7 +79,9 @@ export function createAuthNotificationHandler(
   // so heartbeats resume. Picked > bridge heartbeat interval (15s, see
   // AUTH_PROGRESS_INTERVAL_S in bridge.py) to avoid racing routine delivery.
   const PENDING_TIMEOUT_MS = 45_000;
+  // let: monotonically incremented per send attempt; cannot be const
   let attemptCounter = 0;
+  // let: toggled to false on dispose; cannot be const
   let active = true;
 
   const bumpEpoch = (provider: string): number => {
@@ -187,7 +189,11 @@ export function createAuthNotificationHandler(
       bumpEpoch(n.params.provider);
       const { provider } = n.params;
       void Promise.resolve(oauthChannel.onAuthComplete({ provider })).catch((_err: unknown) => {
-        // Completion notice — decorative; operation will succeed regardless
+        // auth_complete delivery failure is non-blocking — auth is already done.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[koi/fs-nexus] auth_complete delivery failed for ${provider}: ${String(_err)}`,
+        );
       });
     }
   }) as AuthNotificationHandler;

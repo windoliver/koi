@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
-import type { AuthCompleteNotification, AuthRequiredNotification } from "@koi/core";
+import type { AuthCompleteNotification, AuthRequiredNotification, ChannelAdapter } from "@koi/core";
 import { createAuthNotificationHandler } from "./auth-notifications.js";
 import type { BridgeNotification } from "./types.js";
 
@@ -46,24 +46,22 @@ function makeChannel(sendImpl?: () => Promise<void>) {
 }
 
 function makeOAuthChannel() {
-  const calls: { method: string; arg: unknown }[] = [];
   const oauthChannel = {
-    onAuthRequired: mock(async (n: AuthRequiredNotification) => {
-      calls.push({ method: "onAuthRequired", arg: n });
-    }),
-    onAuthComplete: mock(async (n: AuthCompleteNotification) => {
-      calls.push({ method: "onAuthComplete", arg: n });
-    }),
+    onAuthRequired: mock(async (_n: AuthRequiredNotification) => {}),
+    onAuthComplete: mock(async (_n: AuthCompleteNotification) => {}),
     submitAuthCode: mock((_url: string) => {}),
   };
-  return { oauthChannel, calls };
+  return { oauthChannel };
 }
 
 describe("createAuthNotificationHandler", () => {
   test("auth_required — calls oauthChannel.onAuthRequired with correct fields", async () => {
     const { oauthChannel } = makeOAuthChannel();
     const { channel, sent } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -94,7 +92,10 @@ describe("createAuthNotificationHandler", () => {
   test("auth_required — maps auth_url to authUrl in notification", async () => {
     const { oauthChannel } = makeOAuthChannel();
     const { channel } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -119,7 +120,10 @@ describe("createAuthNotificationHandler", () => {
   test("auth_required — passes instructions when present", async () => {
     const { oauthChannel } = makeOAuthChannel();
     const { channel } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -145,7 +149,10 @@ describe("createAuthNotificationHandler", () => {
   test("auth_progress — sends waiting message with elapsed time via channel.send", async () => {
     const { oauthChannel } = makeOAuthChannel();
     const { channel, sent } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -172,7 +179,10 @@ describe("createAuthNotificationHandler", () => {
   test("auth_complete — calls oauthChannel.onAuthComplete with provider", async () => {
     const { oauthChannel } = makeOAuthChannel();
     const { channel, sent } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -200,7 +210,10 @@ describe("createAuthNotificationHandler", () => {
       throw new Error("onAuthRequired failed");
     });
     const { channel } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -226,7 +239,10 @@ describe("createAuthNotificationHandler", () => {
       throw new Error("onAuthComplete failed");
     });
     const { channel } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -239,12 +255,14 @@ describe("createAuthNotificationHandler", () => {
 
     expect(() => handler(n)).not.toThrow();
     await new Promise<void>((r) => setTimeout(r, 10));
+    // Confirm the callback was actually invoked (test would pass vacuously if branch was removed)
+    expect(oauthChannel.onAuthComplete).toHaveBeenCalledTimes(1);
   });
 
   test("pre-authed — zero send() and oauthChannel calls when no notifications arrive", async () => {
     const { oauthChannel } = makeOAuthChannel();
     const { channel, sent } = makeChannel();
-    createAuthNotificationHandler(oauthChannel, channel as never);
+    createAuthNotificationHandler(oauthChannel, channel as unknown as ChannelAdapter);
     // Handler created but no notifications fired
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(sent).toHaveLength(0);
@@ -259,7 +277,10 @@ describe("createAuthNotificationHandler", () => {
       throw new Error("boom");
     });
     const { channel } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -291,7 +312,10 @@ describe("createAuthNotificationHandler", () => {
         }),
     );
     const { channel } = makeChannel();
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
@@ -319,7 +343,10 @@ describe("createAuthNotificationHandler", () => {
     const { channel } = makeChannel(async () => {
       throw new Error("send failed during progress");
     });
-    const handler = createAuthNotificationHandler(oauthChannel, channel as never);
+    const handler = createAuthNotificationHandler(
+      oauthChannel,
+      channel as unknown as ChannelAdapter,
+    );
 
     const n: BridgeNotification = {
       jsonrpc: "2.0",
