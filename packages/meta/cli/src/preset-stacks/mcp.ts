@@ -63,6 +63,7 @@ export const mcpStack: PresetStack = {
         ...(pluginMcpSetup !== undefined
           ? { mcpPluginTransportByName: pluginMcpSetup.transportByName }
           : {}),
+        ...(userMcpSetup !== undefined ? { mcpAuthProviders: userMcpSetup.authProviders } : {}),
       },
       onShutdown: () => {
         // Best-effort dispose. Neither setup has background work that

@@ -77,6 +77,13 @@ export interface McpSetup {
   readonly transportByName: ReadonlyMap<string, "http" | "stdio" | "sse">;
   /** Server names with a usable OAuth config — `needs-auth` is only valid for these. */
   readonly oauthCapableNames: ReadonlySet<string>;
+  /**
+   * Live OAuth provider instances keyed by server name. Only populated for
+   * HTTP servers with an `oauth` field. Used by nav:mcp-auth to re-auth
+   * through the same provider instance wired into the live MCP connection,
+   * so token refreshes are reflected without restarting the connection.
+   */
+  readonly authProviders: ReadonlyMap<string, OAuthAuthProvider>;
 }
 
 /** Absolute path of `~/.koi/hooks.json` — the single user-tier hook source. */
@@ -248,6 +255,7 @@ export async function loadUserMcpSetup(
         .filter((s) => s.kind === "http" && s.oauth !== undefined)
         .map((s) => s.name),
     ),
+    authProviders,
   };
 }
 
@@ -303,6 +311,7 @@ export function buildPluginMcpSetup(
     oauthCapableNames: new Set(
       pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined).map((s) => s.name),
     ),
+    authProviders,
   };
 }
 

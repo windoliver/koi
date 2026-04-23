@@ -950,6 +950,17 @@ export interface KoiRuntimeHandle {
    */
   readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
   /**
+   * Trigger interactive OAuth for an MCP server using the live auth provider
+   * wired into the existing connection. This is the correct path for nav:mcp-auth
+   * — it reuses the same provider instance so in-memory token caches are cleared
+   * before startAuthFlow(), rather than creating a parallel provider that only
+   * updates storage. Returns true when auth succeeded.
+   */
+  readonly triggerMcpServerAuth: (
+    serverName: string,
+    channel: import("@koi/core").OAuthChannel,
+  ) => Promise<boolean>;
+  /**
    * Plugin discovery summary — loaded plugins + any errors.
    * Static for the lifetime of the runtime. Used by the TUI to populate
    * the /plugins view and inject plugin awareness into the system prompt.
@@ -2275,6 +2286,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
+    const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
+      | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
+      | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
     // and the onViolation callback need a LIVE session id (rotates on
@@ -3150,6 +3164,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
         return entries;
+      },
+      triggerMcpServerAuth: async (
+        serverName: string,
+        channel: import("@koi/core").OAuthChannel,
+      ): Promise<boolean> => {
+        const provider = mcpAuthProviders?.get(serverName);
+        if (provider === undefined) return false;
+        await Promise.resolve(
+          channel.onAuthRequired({
+            provider: serverName,
+            message: `${serverName} requires authorization`,
+            mode: "local",
+          }),
+        ).catch(() => {});
+        await provider.handleUnauthorized();
+        const authed = await provider.startAuthFlow();
+        if (authed) {
+          await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
+        }
+        return authed;
       },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];

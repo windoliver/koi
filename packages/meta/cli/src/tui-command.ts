@@ -4501,8 +4501,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         case "nav:mcp-auth":
           // Triggered by pressing Enter on a needs-auth server in /mcp view.
-          // Runs the full OAuth flow inline: clears stale tokens, opens the browser,
-          // stores fresh tokens. The live connection picks them up on its next tool call.
+          // Delegates to runtimeHandle.triggerMcpServerAuth which reuses the live
+          // OAuthAuthProvider wired into the existing MCP connection, ensuring
+          // in-memory token caches are cleared before startAuthFlow() is called.
           void (async (): Promise<void> => {
             const rawName = args.trim();
             if (rawName === "") return;
@@ -4520,83 +4521,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             if (mcpAuthInFlight.has(serverName)) return;
             mcpAuthInFlight.add(serverName);
             try {
-              const { loadMcpJsonFile } = await import("@koi/mcp");
-              const { join } = await import("node:path");
-              const { homedir } = await import("node:os");
-              const { createSecureStorage } = await import("@koi/secure-storage");
-              const { createCliOAuthRuntime } = await import("./commands/mcp-oauth-runtime.js");
-              const { createOAuthAuthProvider } = await import("@koi/mcp");
-
-              const authProjectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
-              const authConfigs: Awaited<ReturnType<typeof loadMcpJsonFile>>[] = [];
-              if (authProjectResult.ok) {
-                authConfigs.push(authProjectResult);
-              } else if (authProjectResult.error.code === "NOT_FOUND") {
-                const authHomeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
-                if (authHomeResult.ok) authConfigs.push(authHomeResult);
-              }
-              let authMatched = false;
-              for (const r of authConfigs) {
-                if (!r.ok) continue;
-                const server = r.value.servers.find((s) => s.name === serverName);
-                if (server === undefined || server.kind !== "http" || server.oauth === undefined)
-                  continue;
-                authMatched = true;
-
-                const storage = createSecureStorage();
-                const runtime = createCliOAuthRuntime();
-                const provider = createOAuthAuthProvider({
-                  serverName: server.name,
-                  serverUrl: server.url,
-                  oauthConfig: server.oauth,
-                  runtime,
-                  storage,
+              if (runtimeHandle === null) return;
+              const success = await runtimeHandle.triggerMcpServerAuth(serverName, tuiOAuthChannel);
+              if (success) {
+                // Tokens are now stored. getMcpStatus() calls resolver.discover()
+                // → listTools() → ensureConnected(): from auth-needed state,
+                // ensureConnected() calls connect() which fetches fresh tokens
+                // from storage — the live connection reconnects without restart.
+                const live = await runtimeHandle.getMcpStatus();
+                store.dispatch({
+                  kind: "set_mcp_status",
+                  servers: live.map((l) => ({
+                    name: l.name,
+                    status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage,
+                  })),
                 });
-
-                // Clear stale tokens first, then notify user auth is starting.
-                await provider.handleUnauthorized();
-                await tuiOAuthChannel.onAuthRequired({
-                  provider: serverName,
-                  message: `${serverName} requires authorization`,
-                  mode: "local",
-                });
-
-                const success = await provider.startAuthFlow();
-                if (success) {
-                  await tuiOAuthChannel.onAuthComplete({ provider: serverName });
-                  // Tokens are now stored. getMcpStatus() calls resolver.discover()
-                  // → listTools() → ensureConnected(): from auth-needed state,
-                  // ensureConnected() calls connect() which fetches fresh tokens
-                  // from storage — the live connection reconnects without restart.
-                  const live = await runtimeHandle?.getMcpStatus();
-                  if (live !== undefined) {
-                    store.dispatch({
-                      kind: "set_mcp_status",
-                      servers: live.map((l) => ({
-                        name: l.name,
-                        status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
-                        toolCount: l.toolCount,
-                        detail: l.failureMessage,
-                      })),
-                    });
-                  }
-                } else {
-                  store.dispatch({
-                    kind: "add_error",
-                    code: "MCP_AUTH",
-                    message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
-                  });
-                }
-                break;
-              }
-              if (!authMatched) {
+              } else {
                 store.dispatch({
                   kind: "add_error",
                   code: "MCP_AUTH",
-                  message:
-                    `Cannot authenticate "${serverName}" from this view — ` +
-                    `server is not in .mcp.json (likely plugin-provided). ` +
-                    `Plugin-backed OAuth must be completed through the plugin's own flow.`,
+                  message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
                 });
               }
             } catch (e: unknown) {
