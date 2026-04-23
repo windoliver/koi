@@ -42,34 +42,32 @@ export async function loadSettings(opts: SettingsLoadOptions = {}): Promise<Sett
   const layers = opts.layers ?? ALL_LAYERS;
 
   const errors: ValidationError[] = [];
+
+  // Build per-layer results immutably
+  const layerResults = layers.flatMap((layer): [SettingsLayer, KoiSettings][] => {
+    const filePath = paths[layer];
+    if (filePath == null) return [];
+    const parsed = readSettingsFile(filePath, layer, errors);
+    if (parsed == null) return [];
+    return [[layer, parsed]];
+  });
+
   const sources: Record<SettingsLayer, KoiSettings | null> = {
     user: null,
     project: null,
     local: null,
     flag: null,
     policy: null,
+    ...Object.fromEntries(layerResults),
   };
 
-  const regularLayers: KoiSettings[] = [];
-  let policyLayer: KoiSettings | null = null;
+  const nonPolicySettings = layerResults
+    .filter(([layer]) => layer !== "policy")
+    .map(([, settings]) => settings);
 
-  for (const layer of layers) {
-    const filePath = paths[layer];
-    if (filePath == null) continue;
+  const policySettings = layerResults.find(([layer]) => layer === "policy")?.[1] ?? null;
 
-    const parsed = readSettingsFile(filePath, layer, errors);
-    if (parsed == null) continue;
-
-    sources[layer] = parsed;
-
-    if (layer === "policy") {
-      policyLayer = parsed;
-    } else {
-      regularLayers.push(parsed);
-    }
-  }
-
-  const settings = mergeSettings(regularLayers, policyLayer);
+  const settings = mergeSettings(nonPolicySettings, policySettings);
 
   return { settings, errors, sources };
 }
@@ -119,10 +117,5 @@ function readSettingsFile(
 }
 
 function isENOENT(e: unknown): boolean {
-  return (
-    typeof e === "object" &&
-    e !== null &&
-    "code" in e &&
-    (e as Record<string, unknown>).code === "ENOENT"
-  );
+  return e instanceof Error && "code" in e && Reflect.get(e, "code") === "ENOENT";
 }

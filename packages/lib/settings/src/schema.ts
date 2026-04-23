@@ -47,7 +47,7 @@ const hooksSchema = z.object({
 // Top-level schema
 // ---------------------------------------------------------------------------
 
-const koiSettingsSchema = z
+const koiSettingsSchema: z.ZodType<KoiSettings> = z
   .object({
     $schema: z.string().optional(),
     permissions: permissionsSchema.optional(),
@@ -71,11 +71,7 @@ const koiSettingsSchema = z
  * Returns Result<KoiSettings, KoiError> — never throws.
  */
 export function validateKoiSettings(raw: unknown): Result<KoiSettings, KoiError> {
-  const result = validateWith(koiSettingsSchema, raw, "KoiSettings validation failed");
-  if (result.ok) {
-    return { ok: true, value: result.value as KoiSettings };
-  }
-  return result;
+  return validateWith(koiSettingsSchema, raw, "KoiSettings validation failed");
 }
 
 /** JSON Schema representation for IDE autocompletion. */

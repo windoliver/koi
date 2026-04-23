@@ -82,6 +82,7 @@ describe("loadSettings", () => {
     expect(result.settings).toEqual({});
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]?.file).toMatch(/settings\.json$/);
+    expect(result.errors[0]?.message).toMatch(/Invalid JSON/);
   });
 
   test("schema-invalid field in non-policy layer is skipped with ValidationError", async () => {
