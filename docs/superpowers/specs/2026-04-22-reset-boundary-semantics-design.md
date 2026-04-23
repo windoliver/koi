@@ -120,26 +120,27 @@ function resetRunBoundary(
 ): void {
   for (const mw of guards) {
     if (isIterationGuardHandle(mw)) {
+      // Branded iteration guard — reset it.
       mw.resetForRun(runStartedAt)
-    } else if (isLegacyIterationGuard(mw)) {
-      // A legacy guard reached this point — either through dynamic composition (forge/
-      // applyRecomposition) or a bug in the construction-time check. Fail closed: throw
-      // rather than emit a false run_reset that would claim a stale guard was reset.
+    } else if (hasIterationGuardBrand(mw)) {
+      // Has the brand but no resetForRun() — broken contract. Fail closed.
       throw new Error(
-        `Legacy iteration guard "${mw.name}" reached run boundary reset. ` +
-        `Upgrade the guard to implement resetForRun() before using resetBudgetPerRun.`
+        `Middleware carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
+        `All branded iteration guards must implement IterationGuardHandle. ` +
+        `Guard: ${mw.name ?? "(unnamed)"}`
       )
     }
+    // Unbranded middleware: not declared as an iteration guard. Not our concern.
   }
   governance.record({ kind: "run_reset", source: "engine", boundaryId })
 }
 ```
 
-**`run_reset` is emitted unconditionally at every run boundary where `resetBudgetPerRun: true`** — or the function throws. There is no code path that silently skips the event or silently skips a guard reset. Two complementary gates enforce this:
-1. **Construction-time gate:** `createKoi()` throws `KoiError` if `resetBudgetPerRun: true` and the initial middleware set contains any legacy guard.
-2. **Runtime gate:** `resetRunBoundary()` throws if a legacy guard appears in the snapshot (catching any dynamically composed guard added by forge/`applyRecomposition()` after construction).
+**Capability contract (explicit):** `ITERATION_GUARD_BRAND` is the declaration that a middleware owns run-scoped mutable state and participates in run-boundary resets. Any middleware that carries the brand MUST implement `resetForRun()` — enforced at runtime by the helper. Middleware that does NOT carry the brand is not an iteration guard; the reset loop does not touch it and makes no assumptions about its state. This is the correct boundary: unbranded middleware that happens to track time or budget is a user-code concern, not a reset-contract concern.
 
-Where `isLegacyIterationGuard(mw)` matches the actual compatibility surface in the engine today: a guard whose `name` is `"koi:iteration-guard"` but which lacks `ITERATION_GUARD_BRAND` and `resetForRun()` (i.e., pre-brand guards, detected via `mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)`). This matches the name-based fallback at `koi.ts:654-660`. The predicate lives in `engine-compose/src/guards.ts` alongside `isIterationGuardHandle`.
+**Replacing the name-based legacy predicate:** `hasIterationGuardBrand(mw)` checks for `ITERATION_GUARD_BRAND` ownership (the symbol check already in `isIterationGuardHandle`). The old name-based `isLegacyIterationGuard` predicate (matching `mw.name === "koi:iteration-guard"`) is removed — it was the wrong abstraction. The brand IS the contract; names are not. Legacy guards that predate the brand will not be caught by this helper — they must be migrated to carry the brand + `resetForRun()` before `resetBudgetPerRun: true` is set.
+
+**Construction-time gate** remains: `createKoi()` throws `KoiError` if `resetBudgetPerRun: true` and any middleware in the initial set carries `ITERATION_GUARD_BRAND` without `resetForRun()`. The runtime gate in `resetRunBoundary()` catches dynamically composed guards (from forge/`applyRecomposition()`) that slip through construction-time validation.
 
 No `run_reset_partial` kind — `run_reset` always represents a complete successful reset.
 
@@ -152,19 +153,31 @@ These timings are not unified — they are intentionally different because the s
 - **Non-cooperating adapter**: the guard set is fixed at `run_start` (no dynamic composition). `resetRunBoundary()` is called immediately at run entry.
 - **Cooperating adapter**: forge and `dynamicMiddleware()` can introduce new guards during `applyRecomposition()`. `resetRunBoundary()` is called as the last step of `applyRecomposition()`, targeting the final middleware snapshot. This ensures every guard that will execute in the new run is reset before the first turn.
 
-**Hard invariant for cooperating adapters (not just prose — enforced by the invariant test in 3b Case 2):** `applyRecomposition()` must not read any mutable guard state (`turns`, `startedAt`, `lastActivityMs`) at any point. It reads only middleware metadata, forge outputs, and manifests. This invariant makes deferred reset safe: recomposition cannot observe stale state because it does not touch guard counters.
+**Cooperating-adapter invariant — enforced by type signature, not just prose:**
+
+`applyRecomposition()` accepts `readonly` middleware descriptors (manifests, forge outputs, middleware config), never live guard instances. The function signature is:
+
+```typescript
+function applyRecomposition(
+  previousDescriptors: readonly MiddlewareDescriptor[],
+  dynamicDescriptors: readonly MiddlewareDescriptor[],
+  cachedTerminals: readonly Terminal[],
+): ReadonlySet<KoiMiddleware>  // returns new snapshot; resetRunBoundary() called on this
+```
+
+`MiddlewareDescriptor` is a `readonly` value type (factory function + config). It does not contain live guard instances. Live guard instances (`KoiMiddleware`) are only created when `applyRecomposition()` instantiates them from descriptors, after which `resetRunBoundary()` resets them. This type boundary makes it structurally impossible for recomposition logic to read mutable guard state: it doesn't have access to the live instances until after it returns them to `resetRunBoundary()`.
 
 **What `resetRunBoundary()` unifies:** the reset logic (predicate, governance emit, deterministic boundaryId, fail-closed on unresettable guards). The call site timing differs per adapter but is now documented and tested explicitly.
 
-#### 2b. Rename config option
+#### 2b. Rename config option (hard rename, no alias)
 
 `CreateKoiOptions.resetIterationBudgetPerRun` → `resetBudgetPerRun`
 
-Keep the old name as a `@deprecated` alias for one release:
+Hard rename, same philosophy as the event kind rename. All callers are internal to the monorepo; TypeScript compile errors enforce the update. No deprecated alias — accepting both names without defined precedence creates a misconfiguration hazard (callers could set old and new fields to different values with unpredictable behavior).
 
 ```typescript
-/** @deprecated Use resetBudgetPerRun */
-readonly resetIterationBudgetPerRun?: boolean
+// In CreateKoiOptions — old field removed, new field only:
+readonly resetBudgetPerRun?: boolean
 ```
 
 #### 2c. Add `boundaryId` to `session_reset` emission
@@ -262,7 +275,7 @@ All producers (engine paths, `cycleSession()`) and all consumers are updated tog
 |------|--------|
 | `packages/kernel/core/src/governance.ts` | Rename event, add provenance fields, add `RESET_BOUNDARIES` const |
 | `packages/kernel/engine/src/koi.ts` | Extract `resetRunBoundary()`, wire both adapter paths, add `boundaryId` to `cycleSession()`, add legacy-guard fail-closed check at `createKoi()` |
-| `packages/kernel/engine/src/types.ts` | Rename `resetIterationBudgetPerRun` → `resetBudgetPerRun` (hard rename, same PR) |
+| `packages/kernel/engine/src/types.ts` | Rename `resetIterationBudgetPerRun` → `resetBudgetPerRun` (hard rename, no alias); add `MiddlewareDescriptor` readonly type for `applyRecomposition()` signature |
 | `packages/kernel/engine-compose/src/guards.test.ts` | New `describe` block for reset regression |
 | `packages/meta/runtime/src/__tests__/reset-boundary.integration.test.ts` | New integration test file |
 | `packages/meta/runtime/scripts/record-cassettes.ts` | New `multi-submit` query config |
