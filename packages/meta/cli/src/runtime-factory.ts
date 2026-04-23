@@ -1537,6 +1537,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       toolId.toLowerCase() === "bash" && typeof input.command === "string"
         ? input.command
         : undefined,
+    // Activate the bash spec guard so refused/partial specs trigger the
+    // exact-argv guard and complex shell forms ratchet allow→ask regardless
+    // of whether the backend is marker-aware. Semantic Write/Read/Network rules
+    // additionally fire for marker-aware backends (e.g. `koi start`'s
+    // createPatternPermissionBackend), but NOT for the TUI default backend
+    // (createPermissionBackend), which uses ask-on-no-match and is not
+    // marker-aware — hence allowLegacyBackendBashFallback: true below.
+    enableBashSpecGuard: true,
     allowLegacyBackendBashFallback: true,
     resolveToolPath: (
       toolId: string,
