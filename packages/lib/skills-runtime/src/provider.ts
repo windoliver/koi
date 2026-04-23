@@ -89,8 +89,13 @@ async function attachEager(runtime: SkillsRuntime): Promise<AttachResult> {
 
 async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> {
   // Use discover() only — no body loading at attach time.
-  // Blocked skills are not surfaced as skipped entries (discover() excludes them);
-  // operator visibility of blocked skills requires the eager path or direct telemetry.
+  // Known limitations vs. eager attach (both require a SkillsRuntime API change to fix):
+  //   1. Blocked/permission-denied skills are not surfaced in AttachResult.skipped;
+  //      discover() intentionally excludes them, so they silently disappear.
+  //   2. Skills whose frontmatter discover() degrades to fallback metadata can still be
+  //      advertised in <available_skills> even if runtime.load() would return VALIDATION;
+  //      the failure is deferred to first invocation. Using loadAll() would restore full
+  //      validation parity but defeats the prompt-size optimization (bodies loaded up front).
   const discoverResult = await runtime.discover();
   const components = new Map<string, unknown>();
   const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
