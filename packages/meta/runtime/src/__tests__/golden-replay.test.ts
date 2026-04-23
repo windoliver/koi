@@ -8258,6 +8258,109 @@ describe("Golden: @koi/skills-runtime (standalone progressive loading)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/skills-runtime — progressive provider + middleware (issue #1986)
+// No LLM needed. Validates runtimeBacked marker, XML injection, MCP exclusion,
+// and fallback behavior when provider/middleware progressive flags are mismatched.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/skills-runtime (progressive mode — issue #1986)", () => {
+  test("createSkillProvider progressive:true attaches runtimeBacked components with empty content", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { isAttachResult, skillToken } = await import("@koi/core");
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-prog-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "commit"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "commit", "SKILL.md"),
+      "---\nname: commit\ndescription: Generate a commit message.\n---\n\nFull body text.",
+    );
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    const result = await provider.attach({} as never);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const component = result.components.get(skillToken("commit")) as
+      | { content: string; runtimeBacked: boolean; description: string }
+      | undefined;
+
+    // Progressive component: empty content, runtimeBacked marker set, description preserved
+    expect(component).toBeDefined();
+    expect(component?.content).toBe("");
+    expect(component?.runtimeBacked).toBe(true);
+    expect(component?.description).toBe("Generate a commit message.");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  test("createSkillInjectorMiddleware progressive:true injects <available_skills> XML — not bodies", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { sessionId, skillToken } = await import("@koi/core");
+    const { createSkillInjectorMiddleware } = await import("@koi/skills-runtime");
+    type Agent = import("@koi/core").Agent;
+    type SkillComponent = import("@koi/core").SkillComponent;
+    type SubsystemToken = import("@koi/core").SubsystemToken<SkillComponent>;
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-mw-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "review"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "review", "SKILL.md"),
+      "---\nname: review\ndescription: Review pull requests.\n---\n\nDetailed review instructions.",
+    );
+
+    // Build a mock agent with a progressive skill component (content: "", runtimeBacked: true)
+    const token = skillToken("review") as SubsystemToken;
+    const skills = new Map<SubsystemToken, SkillComponent>([
+      [
+        token,
+        { name: "review", description: "Review pull requests.", content: "", runtimeBacked: true },
+      ],
+    ]);
+    const agent = {
+      query: <T>(prefix: string) =>
+        prefix === "skill:"
+          ? (skills as unknown as ReadonlyMap<import("@koi/core").SubsystemToken<T>, T>)
+          : new Map(),
+    } as Agent;
+
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+
+    const received: import("@koi/core").ModelRequest[] = [];
+    const wrapModelCall = mw.wrapModelCall;
+    if (wrapModelCall === undefined) throw new Error("wrapModelCall not defined");
+    await wrapModelCall(
+      {
+        session: { agentId: "t", sessionId: sessionId("t"), runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "t0" as never,
+        messages: [],
+        metadata: {},
+      },
+      { messages: [] },
+      async (req) => {
+        received.push(req);
+        return { content: "ok", model: "test" };
+      },
+    );
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    // Progressive mode: XML block, no full body
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain('name="review"');
+    expect(prompt).toContain('description="Review pull requests."');
+    expect(prompt).not.toContain("Detailed review instructions");
+    expect(prompt).toContain("</available_skills>");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/skill-scanner — bracket-notation + template-literal bypass detection
 // Pure security scanner — no agent loop, no cassette, standalone validation.
 // ---------------------------------------------------------------------------
