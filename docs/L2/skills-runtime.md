@@ -449,9 +449,13 @@ system prompt. The passthrough guard uses reference equality
 ## Progressive Mode
 
 By default the provider eagerly loads every skill body into `systemPrompt` at session start.
-Enable progressive mode to defer body loading until the model explicitly invokes the `Skill` tool.
+Progressive mode keeps the same startup I/O (both modes call `loadAll()` for full validation and
+blocked-skill visibility in `AttachResult.skipped`), but dramatically reduces **per-call token cost**:
+instead of concatenating full bodies into `systemPrompt` on every model call, the middleware injects
+a compact `<available_skills>` XML block (~100 tokens). Skill bodies are loaded from the LRU cache
+only when the model explicitly invokes the `Skill` tool.
 
-### Phase 1 — Discovery (session start, ~100 tokens)
+### Phase 1 — Discovery (session start, ~100 tokens per model call)
 
 ```typescript
 import { createSkillProvider, createSkillInjectorMiddleware } from "@koi/skills-runtime";
@@ -483,11 +487,12 @@ subsequent invocations without a disk read.
 
 ### Token savings
 
-| Setup | 10 skills × 3K body | 10 skills (progressive) |
-|-------|--------------------|-----------------------|
-| systemPrompt tokens | ~30K | ~100 |
+| Metric | Eager (default) | Progressive |
+|--------|----------------|-------------|
+| Startup I/O | loadAll() (both modes equal) | loadAll() (both modes equal) |
+| systemPrompt tokens per call | ~30K (10 × 3K bodies) | ~100 (XML metadata only) |
 | Cost per turn | 30K × N turns | 100 × N turns |
-| Body load cost | 0 (paid upfront) | 3K when Skill() called |
+| Body token cost | injected at every turn | 3K when Skill() called |
 
 ### Backward compatibility
 

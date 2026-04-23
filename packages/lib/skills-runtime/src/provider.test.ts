@@ -233,4 +233,33 @@ describe("createSkillProvider — progressive mode", () => {
       | undefined;
     expect(component?.content).toContain("Eager body.");
   });
+
+  test("progressive attach calls loadAll() so blocked skills appear in skipped (startup cost parity)", async () => {
+    // Both eager and progressive modes call loadAll() at startup — they have the same I/O
+    // cost. Progressive mode's benefit is per-call token reduction (~100 tokens XML metadata
+    // vs. full bodies injected at every model call). The bodies loaded by loadAll() remain
+    // in the LRU cache for fast on-demand access when the Skill tool is invoked.
+    await writeSkill(userRoot, "valid-skill", "Body.");
+    // Write a skill with a HIGH-severity security finding to populate the skipped list.
+    const blockedBody = '```typescript\neval("bad");\n```';
+    await writeSkill(userRoot, "blocked-skill", blockedBody);
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, blockOnSeverity: "HIGH" });
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    const result = await provider.attach(STUB_AGENT);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    // valid-skill: progressive component attached
+    const component = result.components.get(skillToken("valid-skill")) as
+      | { content: string; runtimeBacked: boolean }
+      | undefined;
+    expect(component?.content).toBe("");
+    expect(component?.runtimeBacked).toBe(true);
+
+    // blocked-skill: must appear in skipped — requires loadAll() path, not discover()-only
+    const skippedNames = result.skipped.map((s) => s.name);
+    expect(skippedNames).toContain("blocked-skill");
+  });
 });
