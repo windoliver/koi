@@ -10966,6 +10966,125 @@ describe("Golden: @koi/governance-defaults", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/engine — reset boundary semantics (#1939)
+//
+// Standalone — no cassette replay. Exercises the run_reset / session_reset
+// governance events emitted by @koi/engine's resetRunBoundary() helper.
+// Two tests: (1) run_reset provenance on sequential runs, (2) session_reset
+// provenance on cycleSession(). These mirror the integration-test coverage
+// but live here so CI enforces the golden query contract for @koi/engine.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/engine — reset boundary semantics", () => {
+  test("run_reset fires with source:engine and deterministic boundaryId per run", async () => {
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: { name: "Golden Reset", version: "0.1.0", model: { name: "test-model" } },
+      adapter: {
+        engineId: "golden-reset-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push(ev);
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    const resets = recorded.filter((e) => e.kind === "run_reset");
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+    expect(r0.source).toBe("engine");
+    expect(r0.boundaryId).toMatch(/:run:\d+$/);
+    expect(r0.boundaryId).not.toBe(r1.boundaryId);
+  });
+
+  test("session_reset fires with source:host and monotonically increasing boundaryId", async () => {
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+
+    const runtime = await createKoi({
+      manifest: { name: "Golden Session Reset", version: "0.1.0", model: { name: "test-model" } },
+      adapter: {
+        engineId: "golden-session-reset-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push(ev);
+      return original(ev);
+    };
+
+    await runtime.cycleSession?.();
+    await runtime.cycleSession?.();
+
+    const sessionResets = recorded.filter((e) => e.kind === "session_reset");
+    expect(sessionResets.length).toBe(2);
+    const sr0 = sessionResets[0];
+    const sr1 = sessionResets[1];
+    if (sr0 === undefined || sr0.kind !== "session_reset")
+      throw new Error("expected session_reset[0]");
+    if (sr1 === undefined || sr1.kind !== "session_reset")
+      throw new Error("expected session_reset[1]");
+    expect(sr0.source).toBe("host");
+    expect(sr0.boundaryId).toMatch(/:session:0$/);
+    expect(sr1.boundaryId).toMatch(/:session:1$/);
+  });
+});
+
 describe("Golden: @koi/daemon", () => {
   test("supervisor starts and shuts down a subprocess worker", async () => {
     const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");

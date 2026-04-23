@@ -4198,6 +4198,21 @@ const queries: readonly QueryConfig[] = [
     afterRecord: recordAgentSummarySidecar,
   },
 
+  // multi-submit: exercises resetBudgetPerRun=true between two sequential runs.
+  // Records a single-run trajectory. The run_reset event fires at the START of
+  // each run (non-cooperating adapter path), so it appears at trajectory index 0.
+  // Standalone golden tests in golden-replay.test.ts cover the full two-run
+  // provenance assertions (no cassette required).
+  {
+    name: "multi-submit",
+    prompt: "Say 'hello' in exactly one word.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+  },
+
   // @koi/middleware-feedback-loop — model validation + tool-health middleware.
   // Exercises wrapModelCall with a pass-through validator and wrapToolCall
   // health tracking path. The validator always passes so the trajectory captures
