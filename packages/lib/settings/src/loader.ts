@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { mergeSettings } from "./merge.js";
 import { resolveSettingsPaths } from "./paths.js";
-import { validateKoiSettings } from "./schema.js";
+import { validateKoiSettings, validatePolicySettings } from "./schema.js";
 import type {
   KoiSettings,
   SettingsLayer,
@@ -129,7 +129,9 @@ function readSettingsFile(
     return null;
   }
 
-  const result = validateKoiSettings(parsed);
+  // Policy layer uses strict validation (unknown keys rejected) so admins
+  // cannot believe an unsupported key like disabledMcpServers is enforced.
+  const result = isFatal ? validatePolicySettings(parsed) : validateKoiSettings(parsed);
   if (!result.ok) {
     if (isFatal) {
       throw new Error(

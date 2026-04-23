@@ -8,7 +8,7 @@ export { loadSettings } from "./loader.js";
 export { mergeSettings } from "./merge.js";
 export type { SettingsPaths } from "./paths.js";
 export { resolveSettingsPaths } from "./paths.js";
-export { getSettingsJsonSchema, validateKoiSettings } from "./schema.js";
+export { getSettingsJsonSchema, validateKoiSettings, validatePolicySettings } from "./schema.js";
 export type {
   KoiSettings,
   SettingsLayer,

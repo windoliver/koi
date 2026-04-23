@@ -44,14 +44,19 @@ export function resolveSettingsPaths(opts: ResolvePathsOptions = {}): SettingsPa
 /**
  * Walk up from `startDir` to find the project root.
  *
- * Stops at the first ancestor that contains a `.git` directory (git repo root)
- * or a `.koi/` directory (explicit koi workspace). Falls back to `startDir`
- * if neither is found before the filesystem root.
+ * Stops at the first ancestor that contains a `.git` directory (reliable repo
+ * marker) or a `.koi/` directory that actually contains settings files. An empty
+ * `.koi/` directory is ignored so a nested empty dir cannot shadow parent project
+ * settings. Falls back to `startDir` if neither is found before the filesystem root.
  */
 function findProjectRoot(startDir: string): string {
   let dir = startDir;
   while (true) {
-    if (existsSync(join(dir, ".git")) || existsSync(join(dir, ".koi"))) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    if (
+      existsSync(join(dir, ".koi", "settings.json")) ||
+      existsSync(join(dir, ".koi", "settings.local.json"))
+    ) {
       return dir;
     }
     const parent = dirname(dir);

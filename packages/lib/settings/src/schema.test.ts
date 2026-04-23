@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getSettingsJsonSchema, validateKoiSettings } from "./schema.js";
+import { getSettingsJsonSchema, validateKoiSettings, validatePolicySettings } from "./schema.js";
 
 describe("validateKoiSettings", () => {
   test("empty object passes", () => {
@@ -60,6 +60,28 @@ describe("validateKoiSettings", () => {
     if (result.ok) {
       expect((result.value as Record<string, unknown>).unknownKey).toBeUndefined();
     }
+  });
+});
+
+describe("validatePolicySettings", () => {
+  test("valid policy passes", () => {
+    const result = validatePolicySettings({ permissions: { deny: ["Bash(rm *)"] } });
+    expect(result.ok).toBe(true);
+  });
+
+  test("unknown top-level key is rejected (not stripped)", () => {
+    const result = validatePolicySettings({ permissions: {}, disabledMcpServers: ["risky"] });
+    expect(result.ok).toBe(false);
+  });
+
+  test("env key is rejected", () => {
+    const result = validatePolicySettings({ env: { KEY: "value" } });
+    expect(result.ok).toBe(false);
+  });
+
+  test("hooks key is rejected", () => {
+    const result = validatePolicySettings({ hooks: { PreToolUse: [] } });
+    expect(result.ok).toBe(false);
   });
 });
 

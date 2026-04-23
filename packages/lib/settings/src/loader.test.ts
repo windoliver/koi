@@ -180,4 +180,34 @@ describe("loadSettings", () => {
       }),
     ).rejects.toThrow();
   });
+
+  test("policy unknown key rejected (strict mode prevents false enforcement)", async () => {
+    const policyPath = join(tmpDir, "policy-unknown.json");
+    writeFileSync(policyPath, JSON.stringify({ disabledMcpServers: ["risky-server"] }));
+    await expect(
+      loadSettings({
+        cwd: tmpDir,
+        homeDir: tmpDir,
+        layers: ["policy"],
+        policyPath,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("nested empty .koi/ does not shadow parent project settings", async () => {
+    // Parent project has a settings file
+    const parentKoi = join(tmpDir, ".koi");
+    writeJson(parentKoi, "settings.json", { permissions: { deny: ["Bash(rm *)"] } });
+    // A subdirectory has an empty .koi/ (no settings files inside)
+    const subdir = join(tmpDir, "src", "components");
+    const subdirKoi = join(subdir, ".koi");
+    mkdirSync(subdirKoi, { recursive: true });
+    // Load from subdirectory — should find parent settings, not stop at empty .koi/
+    const result = await loadSettings({
+      cwd: subdir,
+      homeDir: join(tmpDir, "nohome"),
+      layers: ["project"],
+    });
+    expect(result.settings.permissions?.deny).toContain("Bash(rm *)");
+  });
 });

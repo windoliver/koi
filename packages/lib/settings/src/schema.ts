@@ -3,11 +3,16 @@
  *
  * Provides:
  * - `validateKoiSettings` for validation with Result<T, KoiError> return
+ * - `validatePolicySettings` for strict policy validation (rejects unknown keys)
  * - `getSettingsJsonSchema` for JSON Schema export (IDE autocompletion)
  *
  * Only fields that are actively consumed by the runtime are included.
- * Fields are added here when their enforcement path is wired in; until
- * then, silently accepting them creates a false sense of enforcement.
+ * Fields are added here when their enforcement path is wired in.
+ *
+ * Two validation modes:
+ *   - user/project/local/flag layers: strip unknown keys (backwards compatible)
+ *   - policy layer: strict (unknown keys are rejected) — prevents admins from
+ *     believing a setting like `disabledMcpServers` is active when it is not.
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -73,16 +78,19 @@ const permissionsSchema = z
   .readonly();
 
 // ---------------------------------------------------------------------------
-// Top-level schema
+// Top-level schemas (strip vs strict)
 // ---------------------------------------------------------------------------
 
-const koiSettingsSchema: z.ZodType<KoiSettings> = z
-  .object({
-    $schema: z.string().optional(),
-    permissions: permissionsSchema.optional(),
-  })
-  .strip()
-  .readonly();
+const koiSettingsBase = z.object({
+  $schema: z.string().optional(),
+  permissions: permissionsSchema.optional(),
+});
+
+/** Strip mode: unknown top-level keys are silently dropped. Used for user/project/local/flag. */
+const koiSettingsSchema: z.ZodType<KoiSettings> = koiSettingsBase.strip().readonly();
+
+/** Strict mode: unknown top-level keys produce a validation error. Used for policy. */
+const koiSettingsStrictSchema: z.ZodType<KoiSettings> = koiSettingsBase.strict().readonly();
 
 // ---------------------------------------------------------------------------
 // Exports
@@ -90,11 +98,21 @@ const koiSettingsSchema: z.ZodType<KoiSettings> = z
 
 /**
  * Validate raw input against the KoiSettings schema.
- * Unknown top-level keys are stripped (not rejected).
+ * Unknown top-level keys are stripped (not rejected) — for user/project/local/flag.
  * Returns Result<KoiSettings, KoiError> — never throws.
  */
 export function validateKoiSettings(raw: unknown): Result<KoiSettings, KoiError> {
   return validateWith(koiSettingsSchema, raw, "KoiSettings validation failed");
+}
+
+/**
+ * Validate raw input for the policy layer.
+ * Unknown top-level keys are rejected — prevents admins from believing
+ * unsupported settings keys (e.g. `disabledMcpServers`) are enforced.
+ * Returns Result<KoiSettings, KoiError> — never throws.
+ */
+export function validatePolicySettings(raw: unknown): Result<KoiSettings, KoiError> {
+  return validateWith(koiSettingsStrictSchema, raw, "Policy settings validation failed");
 }
 
 /** JSON Schema representation for IDE autocompletion. */
