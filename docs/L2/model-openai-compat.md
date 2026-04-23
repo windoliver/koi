@@ -60,8 +60,10 @@ Two flags extend `ResolvedCompat` with model-specific defaults:
 
 | Flag | Type | Default | Purpose |
 |------|------|---------|---------|
-| `supportsToolStreaming` | `boolean` | `true` | When `false`, tool-call deltas are buffered and emitted in one burst after the final stream chunk instead of progressively. Use for provider×model combos that emit malformed or partial `tool_calls` mid-stream. |
-| `thinkingDisplay` | `"full" \| "summarized" \| "hidden"` | `"full"` | Controls how reasoning output is requested. `"full"` = current behavior; `"summarized"` = request thinking summaries (Anthropic via OpenRouter); `"hidden"` = exclude reasoning entirely. Only applied when `supportsReasoning` is true. |
+| `supportsToolStreaming` | `boolean` | `true` | When `false`, tool-call deltas are buffered and emitted in one burst after the final stream chunk instead of progressively. Use for provider×model combos that emit malformed or partial `tool_calls` mid-stream. Post-tool text and thinking are also buffered and replayed as `text_delta`/`thinking_delta` chunks at `finish()` time so downstream consumers see a consistent stream ordering. |
+| `thinkingDisplay` | `"full" \| "summarized" \| "hidden"` | `"full"` | Controls how reasoning output is requested. `"full"` = current behavior (`reasoning: { effort }`); `"summarized"` = request thinking summaries (`thinking: { type: "summarized" }` + `reasoning: { effort }`, Anthropic via OpenRouter); `"hidden"` = exclude reasoning from response (requires `supportsReasoningExclude`). Only applied when `supportsReasoning` is true. |
+| `supportsReasoningExclude` | `boolean` | `false` | Whether the provider supports `reasoning: { exclude: true }` to suppress reasoning tokens from the response. OpenRouter supports this; direct Anthropic API does not. Only used when `thinkingDisplay === "hidden"`. |
+| `supportsThinkingType` | `boolean` | `false` | Whether the provider supports `thinking: { type: "summarized" }` as a top-level request field (OpenRouter + Anthropic routing only). Only used when `thinkingDisplay === "summarized"` and the model ID starts with `"anthropic/"`. |
 
 ### Per-Model Override Table
 
@@ -128,3 +130,5 @@ include conversation messages (which change every turn by definition).
 > **Maintenance note (PR #1506):** Replaced `!` non-null assertions in `request-mapper.ts` with proper null checks in bounds-checked loops, following the project `noNonNullAssertion` rule. No functional changes.
 
 > **Maintenance note (PR #1560):** Added missing `@koi/hash` project reference to `tsconfig.json`. Required after PR #1554 added `@koi/hash` as a dependency but omitted the TypeScript project reference. No functional changes.
+
+> **Per-model compat overrides + streaming fixes (PR #2032):** Added `supportsReasoningExclude` and `supportsThinkingType` to `ResolvedCompat`. `applyModelCompatRules` resets `lastIndex` before each `RegExp.test()` call to guard against stateful `/g` flags. SSE errors are now deferred via `pendingErrors` and flushed only after `parser.finish()` so buffered tool calls are always emitted before terminal errors. Post-tool `text_delta`/`thinking_delta` in buffered mode are suppressed during `feed()` and replayed as chunks from `flushBufferedItems()` at finish time, ensuring consistent ordering for both streaming and `complete()` callers. Empty-slot tool calls (no name, no args) now surface a `VALIDATION` error instead of silently skipping.
