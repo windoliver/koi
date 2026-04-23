@@ -160,12 +160,32 @@ Nexus is the platform; **Cairn is the memory layer** that does not exist in Nexu
 ### Operational notes
 
 - **No `memory` brick in Nexus today.** Cairn owns memory. If a future Nexus `memory` brick ships, Cairn's adapter can delegate.
-- **One file on disk.** `nexus.db` holds records, vectors, FTS, metadata. Back up by copying one file (or use `snapshot`).
+- **Two files on disk (backup covers both).** Nexus owns `<vault>/nexus.db` (records, vectors, FTS, metadata); the Rust core owns `.cairn/cairn.db` (control‑plane state — see schema below). Back up by copying both files atomically (or use `cairn snapshot`, which sequences both with a filesystem snapshot).
 - **Semantic search is opt‑in.** With an embedding API key (`OPENAI_API_KEY` or any `litellm` provider), `sqlite-vec` is primary. Without a key, BM25S results are stamped `semantic_degraded=true` end to end.
 - **Records land through `filesystem` + `search`.** A memory = a markdown file with frontmatter at `/<vault>/raw/<kind>_<slug>.md`. `search` indexes body; `rebac` + `access_manifest` enforce scope; `snapshot` + `versioning` cover backup and undo. Cairn's Rust core **does not speak to the Nexus memory‑store SQLite file directly** — all memory mutations are HTTP calls to the Nexus sidecar. See "Durability topology" below for the full atomicity model.
 - **Durability topology (two SQLite files, one ownership line):**
   - **`nexus.db`** — owned by the Nexus Python sidecar. Holds records, vectors, FTS, metadata. Cairn reaches it only over HTTP + MCP.
-  - **`.cairn/cairn.db`** — owned by the Rust core, opened directly from the Cairn process. Small (typically < 50 MB). Holds three tables: `wal_ops` (§5.6 state machine rows), `used` + `issuer_seq` + `outstanding_challenges` (§4.2 replay ledger), `consent_journal` (audit rows before async materialization to `.cairn/consent.log`). These are **local control‑plane state** the Rust core must access natively for single‑host atomicity. They are never shared with Nexus.
+  - **`.cairn/cairn.db`** — owned by the Rust core, opened directly from the Cairn process. Small (typically < 50 MB). Canonical control‑plane schema (all tables in one DB; this is the authoritative list referenced everywhere else in this doc):
+
+    ```sql
+    -- WAL state machine (§5.6)
+    CREATE TABLE wal_ops    (operation_id TEXT PK, state TEXT, envelope JSONB, …);
+    CREATE TABLE wal_steps  (operation_id TEXT, step_ord INT, state TEXT, PK(operation_id, step_ord));
+
+    -- Replay ledger (§4.2)
+    CREATE TABLE used                   (operation_id TEXT, nonce BLOB, issuer TEXT, sequence INT, committed_at INT, UNIQUE(operation_id, nonce));
+    CREATE TABLE issuer_seq             (issuer TEXT PK, high_water INT);
+    CREATE TABLE outstanding_challenges (issuer TEXT, challenge BLOB, expires_at INT, PK(issuer, challenge));
+
+    -- Concurrency control (§5.6, §10.1)
+    CREATE TABLE locks        (scope_kind TEXT, scope_key TEXT, mode TEXT, holder_count INT, lock_id TEXT, leased_until INT, PK(scope_kind, scope_key));
+    CREATE TABLE reader_fence (session_id TEXT PK, op_id TEXT, state TEXT);
+
+    -- Audit
+    CREATE TABLE consent_journal (row_id INTEGER PK AUTOINCREMENT, op_id TEXT, actor TEXT, kind TEXT, payload JSONB, committed_at INT);
+    ```
+
+    These are **local control‑plane state** the Rust core must access natively for single‑host atomicity. They are never shared with Nexus.
   - **Atomicity model.** Cairn uses a durable‑messaging pattern, not a distributed transaction: (1) Rust core commits a local SQLite transaction in `cairn.db` that atomically writes the WAL `PREPARE` row + replay consumption. **No `consent_journal` row is written at PREPARE time** — consent is linearized with the state transition, not with PREPARE. (2) Rust calls the Nexus HTTP apply endpoint, keyed by `operation_id`, which performs its own single local SQLite transaction inside `nexus.db`. (3) On success, the Rust core commits a second short local transaction that atomically marks `wal_ops.state = 'COMMITTED'` **and** writes the `consent_journal` row. This ordering means `consent_journal` only records operations that are reader‑visible (or, for deletes, operations that made data reader‑invisible); a crash between (1) and (2) leaves no consent entry. Crash between (1) and (2) ⇒ recovery re‑calls Nexus with the same `operation_id` (idempotent). Crash between (2) and (3) ⇒ recovery observes Nexus has already applied, then runs step (3) to both promote `COMMITTED` and append the `consent_journal` row in one transaction. Nexus's own durability is guaranteed by its internal SQLite transaction; Cairn's guarantee is that every PREPARED row is either COMMITTED or ABORTED after bounded recovery, and every `consent_journal` row corresponds to a reader‑visible state transition.
   - **No cross‑process two‑phase commit required.** The idempotency key is the linearization primitive; SQLite provides atomicity inside each process. This is strictly weaker than distributed 2PC, and we call it out rather than pretending otherwise.
   - Canonical on‑disk paths: `<vault>/nexus.db` (Nexus memory store) and `.cairn/cairn.db` (Cairn control plane: `wal_ops`, `used`, `issuer_seq`, `outstanding_challenges`, `consent_journal`, `locks`, `reader_fence`). Any other `.cairn/*.db` path in this doc is a typo against these two.
@@ -704,7 +724,7 @@ Consolidation also fans into `ReflectionWorkflow`, `PropagationWorkflow`, and `E
 - Read path and write path share **no mutable state**; the agent can query while writes are in flight.
 - Capture → Store is always on‑path and bounded; everything from Consolidate onward is off‑path.
 - Every stage is a pure function that takes `MemoryRecord[]` (or a `Query`) and returns `MemoryRecord[]` (+ side effects through one of the five contracts).
-- Any stage can fail without losing data; Temporal replays from the last persisted step.
+- Any stage can fail without losing data; the `WorkflowOrchestrator` (default tokio + SQLite; Temporal optional in v0.2+) replays from the last persisted step.
 - Discard is **never silent** — every `no` from Filter writes a row to `.cairn/metrics.jsonl` with the reason code.
 
 ### 5.5 Plan, then apply
@@ -813,6 +833,10 @@ COMMIT;
 ```
 
 A stale worker whose lease expired cannot commit a chunk transaction — the CAS fails, the transaction rolls back, the worker self‑aborts. Heartbeats renew the lease every 10 s; a chunk takes at most `max_chunk_duration` (default 500 ms) so the lease margin is always ≥ 20×. If a worker detects a heartbeat failure (network partition, process stall), it stops issuing further chunks; the next acquirer sees the expired lease and reclaims. No two holders can produce durable mutations — the CAS gate is the single choke point.
+
+**Single lock‑authority clock — epoch counter, not wall clock.** `leased_until` is not wall‑clock ms — it is a **lease epoch counter** stored in the `locks` table (SQLite row‑level). Every heartbeat increments the issuer's per‑process `epoch` column; the CAS compares `:expected_epoch == locks.epoch`, not timestamps. The lock authority is the `locks` table in `.cairn/cairn.db` — the only clock that matters is the serial order of SQLite commits on that table. NTP jumps, DST changes, container clock drift, and suspend/resume events cannot trigger false reclaims or liveness stalls because the protocol does not read wall clocks. For operator‑facing dashboards a wall‑clock `last_heartbeat_at` is logged alongside the epoch — but never read by the fencing path.
+
+`max_chunk_duration` is enforced by the worker counting SQLite commits on its own lock row, not by wall‑clock. A concurrency test asserts the invariant "no chunk commits after a newer epoch has been published" across synthetic clock‑skew + NTP‑step schedules; this test is part of the §15 gate.
 
 This is the Martin Kleppmann / Chubby fencing pattern applied to the single lock authority (Rust‑owned `.cairn/cairn.db`) at chunk granularity, not just at the PREPARED→apply boundary.
 
@@ -1295,9 +1319,17 @@ Memory without evolution stagnates. `EvolutionWorkflow` takes existing artifacts
                      (review gate — autonomous or human) ──► replace artifact + append to consent.log
 ```
 
-### 11.3 Constraint gates (all must pass before promotion)
+### 11.3 Constraint gates (version‑scoped promotion predicate)
 
-Every artifact promoted via `EvolutionWorkflow` or created via Skillify (§11.b) goes through the **same single promotion predicate**: all nine gates must pass. No alternate path to `live`.
+Every artifact promoted via `EvolutionWorkflow` or created via Skillify (§11.b) goes through the **same single promotion predicate** — the predicate's gate set is version‑scoped to match the v0.1 / v0.2 / v0.3+ capability matrix (§18.c):
+
+| Version | Required gates | Skillify output status if remaining gates absent |
+|---------|-----------------|---------------------------------------------------|
+| v0.1 | gates 1–6 | `live` is permitted once 1–6 pass. Skills that also need shared‑tier promotion, adversarial held‑out, or canary rollout must wait for v0.3+. |
+| v0.2 | gates 1–7 (adds held‑out adversarial) | `live` permitted once 1–7 pass. |
+| v0.3+ | gates 1–9 | full predicate; no alternate path to `live`. |
+
+There is no "bypass" — a skill that cannot satisfy the predicate for the current version stays in `candidate` status, runs in dry‑run mode, and is surfaced in `lint`. CI enforces the version‑appropriate gate subset in `cairn promote --check`.
 
 1. **Test suite** — any behavioral test the artifact has (golden queries, contract tests, replay cassettes) must pass 100%.
 2. **Size limits** — skills ≤ 15 KB, tool descriptions ≤ 500 chars, hot‑memory prefix ≤ 25 KB / 200 lines.
@@ -1488,7 +1520,7 @@ Cairn is local‑*first* but distributed‑*ready* — scaling from laptop to or
 
 ### 13.2 Why Electron + Rust + TipTap (primary desktop stack)
 
-- **Rust core** owns everything hot‑path: `MemoryStore` I/O, embedding, ANN, squash, hot‑memory assembly, and the Temporal worker. Ships as a single static binary that Electron spawns as a sidecar. Exposes MCP over stdio to the renderer.
+- **Rust core** owns everything hot‑path: `MemoryStore` I/O, embedding, ANN, squash, hot‑memory assembly, and the `WorkflowOrchestrator` (tokio + SQLite default; Temporal adapter optional in v0.2+). Ships as a single static binary that Electron spawns as a sidecar. Exposes MCP over stdio to the renderer.
 - **Electron shell** gives a consistent Chromium runtime across macOS / Windows / Linux — rendering parity matters for the graph view and the editor, and the same webview is already the target of every reference editor (Obsidian, VS Code, Notion, Linear). No surprise WebKit / WebView2 divergence.
 - **TipTap (ProseMirror)** for memory editing — wikilink autocomplete, slash commands, inline frontmatter, collaborative‑ready even though Cairn is single‑user by default. Markdown in / markdown out through TipTap's markdown extensions.
 - **IPC boundary** is MCP. The Rust core speaks the same eight core verbs (plus declared extensions) to the Electron renderer as it does to any external harness. One transport, one schema. The GUI is not a special client.
