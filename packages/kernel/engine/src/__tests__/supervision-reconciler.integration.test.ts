@@ -156,6 +156,50 @@ describe("SupervisionReconciler", () => {
       expect(registry.lookup(agentId("child-c"))?.status.phase).toBe("running");
     });
 
+    test("temporary child never spawned → gets spawned on first reconcile (OTP initial-start)", async () => {
+      // Regression for #1866 — prior to the fix, the reconciler skipped
+      // initial spawns for `restart: temporary` children, diverging from
+      // Erlang/OTP semantics (temporary = start once, never restart).
+      const config: SupervisionConfig = {
+        strategy: { kind: "one_for_one" },
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        children: [
+          makeChildSpec("a", "permanent"),
+          makeChildSpec("b", "transient"),
+          makeChildSpec("c", "temporary"),
+        ],
+      };
+
+      const { spawnChild, spawnedIds } = createMockSpawnChild(registry);
+      const reconciler = createSupervisionReconciler({
+        registry,
+        processTree: tree,
+        spawnChild,
+        clock,
+      });
+
+      // Register ONLY the supervisor — no children yet. The reconciler's
+      // first pass must spawn all three specs unconditionally.
+      registry.register(makeEntry("sup", undefined, "running", 0));
+
+      const manifest = supervisedManifest(config);
+      await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+
+      // All three children spawned on the initial reconcile.
+      expect(spawnedIds).toHaveLength(3);
+
+      // Now terminate the temporary child — it must NOT come back.
+      // Mock spawnChild spawns in spec order, so spawnedIds[2] corresponds
+      // to child "c" (the temporary one).
+      const cId = spawnedIds[2];
+      if (cId === undefined) throw new Error("unreachable");
+      registry.transition(cId, "terminated", 0, { kind: "error" });
+
+      await reconciler.reconcile(agentId("sup"), makeContext(manifest));
+      expect(spawnedIds).toHaveLength(3);
+    });
+
     test("temporary child dies → not restarted", async () => {
       const config: SupervisionConfig = {
         strategy: { kind: "one_for_one" },

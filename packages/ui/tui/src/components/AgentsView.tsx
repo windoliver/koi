@@ -1,17 +1,18 @@
 /**
- * AgentsView — shows active and recently-finished spawned agents (#1792).
+ * AgentsView — shows active and recently-finished spawned agents (#1792) plus
+ * any manifest-declared supervised children (#1866).
  *
  * Accessible via /agents command (nav:agents). Reads activeSpawns and
- * finishedSpawns from the store. Active agents show live elapsed time and
- * their current sub-tool; finished agents show final duration and outcome
- * (complete / failed). Keeps the last MAX_FINISHED_SPAWNS per session so
- * short-lived children remain visible after completion.
+ * finishedSpawns from the store for ad-hoc user-triggered spawns, and
+ * supervisedChildren for children declared via manifest.supervision. Active
+ * agents show live elapsed time and their current sub-tool; finished agents
+ * show final duration and outcome (complete / failed).
  */
 
 import type { JSX } from "solid-js";
 import { createMemo, For, Show } from "solid-js";
 import { useTuiStore } from "../store-context.js";
-import type { SpawnRecord } from "../state/types.js";
+import type { SpawnRecord, SupervisedChildEntry } from "../state/types.js";
 import { COLORS } from "../theme.js";
 
 function formatDuration(ms: number): string {
@@ -19,13 +20,31 @@ function formatDuration(ms: number): string {
   return `${ms}ms`;
 }
 
+function phaseColor(phase: SupervisedChildEntry["phase"]): string {
+  switch (phase) {
+    case "running":
+      return COLORS.green;
+    case "terminated":
+      return COLORS.red;
+    case "created":
+    case "waiting":
+    case "suspended":
+    case "idle":
+      return COLORS.textMuted;
+  }
+}
+
 export function AgentsView(): JSX.Element {
   const activeSpawns = useTuiStore((s) => s.activeSpawns);
   const finishedSpawns = useTuiStore((s) => s.finishedSpawns);
+  const supervisedChildren = useTuiStore((s) => s.supervisedChildren);
 
   const active = createMemo(() => Array.from(activeSpawns().entries()));
   const finished = createMemo(() => finishedSpawns());
-  const hasAny = createMemo(() => active().length > 0 || finished().length > 0);
+  const supervised = createMemo(() => supervisedChildren());
+  const hasAny = createMemo(
+    () => active().length > 0 || finished().length > 0 || supervised().length > 0,
+  );
 
   return (
     <box flexDirection="column" flexGrow={1} paddingLeft={2} paddingTop={1}>
@@ -42,6 +61,32 @@ export function AgentsView(): JSX.Element {
           </box>
         }
       >
+        <Show when={supervised().length > 0}>
+          <box flexDirection="column" paddingTop={1}>
+            <text fg={COLORS.textSecondary}>
+              <b>{`Supervised (${supervised().length})`}</b>
+            </text>
+            <box flexDirection="column" paddingTop={1}>
+              <For each={supervised()}>
+                {(child: SupervisedChildEntry) => (
+                  <box flexDirection="column" paddingLeft={1}>
+                    <box flexDirection="row" gap={1}>
+                      <text fg={phaseColor(child.phase)}>{"●"}</text>
+                      <text>
+                        <b>{child.childSpecName}</b>
+                      </text>
+                      <text fg={COLORS.textMuted}>{child.phase}</text>
+                    </box>
+                    <box paddingLeft={2}>
+                      <text fg={COLORS.fgDim}>{child.agentId}</text>
+                    </box>
+                  </box>
+                )}
+              </For>
+            </box>
+          </box>
+        </Show>
+
         <Show when={active().length > 0}>
           <box flexDirection="column" paddingTop={1}>
             <text fg={COLORS.textSecondary}>

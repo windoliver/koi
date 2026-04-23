@@ -76,6 +76,11 @@ describe("parseBgFlags", () => {
     expect(flags.help).toBe(true);
     expect(flags.subcommand).toBeUndefined();
   });
+
+  it("defaults --all to false and accepts the flag on ps", () => {
+    expect(parseBgFlags(["ps"]).all).toBe(false);
+    expect(parseBgFlags(["ps", "--all"]).all).toBe(true);
+  });
 });
 
 describe("defaultRegistryDir", () => {
@@ -151,6 +156,54 @@ describe("bg ps", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  // D7: default ps view hides terminal entries older than 24h so operators
+  // scanning for live work aren't buried in yesterday's crashes. `--all`
+  // restores the unfiltered list for post-mortems.
+  it("hides terminal records older than 24h by default, shows them with --all", async () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const staleEnded = Date.now() - 25 * 60 * 60 * 1000;
+    const freshEnded = Date.now() - 60_000;
+    await writeSession(dir, {
+      workerId: workerId("w-stale"),
+      status: "exited",
+      startedAt: staleEnded - 60_000,
+      endedAt: staleEnded,
+      exitCode: 0,
+    });
+    await writeSession(dir, {
+      workerId: workerId("w-fresh"),
+      status: "exited",
+      startedAt: freshEnded - 60_000,
+      endedAt: freshEnded,
+      exitCode: 0,
+    });
+
+    const captureJson = async (args: readonly string[]): Promise<string> => {
+      const writes: string[] = [];
+      const spy = spyOn(process.stdout, "write").mockImplementation((c: unknown) => {
+        writes.push(String(c));
+        return true;
+      });
+      try {
+        await run(parseBgFlags([...args, "--registry-dir", dir]));
+        return writes.join("");
+      } finally {
+        spy.mockRestore();
+      }
+    };
+
+    const defaultView = await captureJson(["ps", "--json"]);
+    expect(defaultView).toContain("w-fresh");
+    expect(defaultView).not.toContain("w-stale");
+
+    const allView = await captureJson(["ps", "--json", "--all"]);
+    expect(allView).toContain("w-fresh");
+    expect(allView).toContain("w-stale");
+
+    // Hint to the linter that `dayMs` is load-bearing.
+    expect(dayMs).toBe(24 * 60 * 60 * 1000);
   });
 });
 

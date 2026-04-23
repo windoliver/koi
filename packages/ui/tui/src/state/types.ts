@@ -305,6 +305,26 @@ export interface SpawnRecord {
 /** Maximum number of finished spawns retained for the /agents view. */
 export const MAX_FINISHED_SPAWNS = 20;
 
+/**
+ * Summary entry for a supervised child declared via `manifest.supervision`
+ * (#1866 wire-up). Distinct from SpawnRecord/SpawnProgress which track ad-hoc
+ * sub-agents the user's agent spawns at runtime.
+ */
+export interface SupervisedChildEntry {
+  /** Stable agent identifier assigned by the supervision reconciler. */
+  readonly agentId: string;
+  /** Name from the originating ChildSpec — stable across restarts. */
+  readonly childSpecName: string;
+  /** Parent (supervisor) agent id. */
+  readonly parentId: string;
+  /**
+   * Lifecycle phase mirrored from the registry. Typical transitions:
+   *   created → running → terminated (on crash or parent-initiated stop).
+   * Restarts appear as a brand-new entry with a fresh agentId.
+   */
+  readonly phase: "created" | "running" | "terminated" | "waiting" | "suspended" | "idle";
+}
+
 /** A single block within an assistant message. */
 export type TuiAssistantBlock =
   | { readonly kind: "text"; readonly text: string }
@@ -498,6 +518,13 @@ export interface TuiState {
    * otherwise disappear from activeSpawns the moment they finish.
    */
   readonly finishedSpawns: readonly SpawnRecord[];
+  /**
+   * Supervised children declared via manifest.supervision (#1866). The
+   * runtime bridge (wire-manifest-supervision.ts) pushes snapshots whenever
+   * the underlying AgentRegistry transitions. Empty when no manifest was
+   * loaded or when the manifest omits `supervision:`.
+   */
+  readonly supervisedChildren: readonly SupervisedChildEntry[];
   /** Max context tokens for the current model — used for context % indicator (#17). */
   readonly maxContextTokens: number | null;
   /** Live retry countdown — set by the bridge when the engine retries (#20). */
@@ -689,6 +716,15 @@ export type TuiAction =
       /** Fallback metadata for recovery when spawn_requested dispatch was lost (#1855). */
       readonly agentName?: string | undefined;
       readonly description?: string | undefined;
+    }
+  | {
+      /**
+       * Replace the supervised-children snapshot. The runtime bridge fires
+       * this on every registry transition, so the TUI always renders the
+       * current live set without needing its own diff logic.
+       */
+      readonly kind: "set_supervised_children";
+      readonly children: readonly SupervisedChildEntry[];
     }
   | { readonly kind: "set_slash_query"; readonly query: string | null }
   | {
