@@ -17,9 +17,8 @@ import type { ToolsetDefinition } from "@koi/core";
 export const BUILTIN_TOOLSETS: readonly ToolsetDefinition[] = [
   {
     name: "safe",
-    description:
-      "Read-only research — web and filesystem, no shell, no writes (safe for untrusted channels)",
-    tools: ["web_search", "web_fetch", "Glob", "Grep", "Read"],
+    description: "Read-only web + filesystem — no shell, no writes, safe for untrusted channels",
+    tools: ["web_fetch", "Glob", "Grep", "fs_read"],
     includes: [],
   },
   {
@@ -30,8 +29,8 @@ export const BUILTIN_TOOLSETS: readonly ToolsetDefinition[] = [
   },
   {
     name: "researcher",
-    description: "Research without mutation — web, read-only filesystem, and tool discovery",
-    tools: ["web_search", "web_fetch", "Glob", "Grep", "Read", "ToolSearch"],
+    description: "Research without mutation — read-only web, filesystem, and tool discovery",
+    tools: ["web_fetch", "Glob", "Grep", "fs_read", "ToolSearch"],
     includes: [],
   },
   {

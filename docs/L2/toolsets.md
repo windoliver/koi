@@ -44,12 +44,15 @@ Merges multiple registries. Later entries win on name collision.
 
 | Name | Tools | Use case |
 |------|-------|----------|
-| `safe` | `web_search`, `web_fetch`, `Glob`, `Grep`, `Read` | Read-only web + filesystem, no shell, no writes |
+| `safe` | `web_fetch`, `Glob`, `Grep`, `fs_read` | Read-only web + filesystem, no shell, no writes |
 | `developer` | `*` → `{ mode: "all" }` | Full access for coding agents |
-| `researcher` | `web_search`, `web_fetch`, `Glob`, `Grep`, `Read`, `ToolSearch` | Research without mutation — extends safe with tool discovery |
+| `researcher` | `web_fetch`, `Glob`, `Grep`, `fs_read`, `ToolSearch` | Research without mutation — extends safe with tool discovery |
 | `minimal` | `AskUserQuestion` | Conversation only — no tool access beyond user interaction |
 
-Tool names use Koi's primordial PascalCase convention (`Glob`, `Grep`, `Read`, `AskUserQuestion`).
+Tool names match Koi's default wiring: `Glob`, `Grep`, `ToolSearch`, `AskUserQuestion` (PascalCase);
+`fs_read` (prefix `"fs"` from `@koi/tools-builtin`); `web_fetch` (prefix `"web"` from `@koi/tools-web`).
+`"*"` in `developer` is a sentinel: `resolveToolset` validates it is the sole tool with no `includes`,
+then returns `{ mode: "all" }` — it cannot be combined with other tools or accidentally smuggled via composition.
 Web tools use the `web_` prefix from `@koi/tools-web` configured with `prefix: "web"`.
 Custom MCP or forged tools have different names — extend the registry with custom presets.
 

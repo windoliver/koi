@@ -52,6 +52,16 @@ function resolveToStrings(
     return { ok: false, error };
   }
 
+  if (def.tools.includes("*") && (def.tools.length > 1 || def.includes.length > 0)) {
+    const error: KoiError = {
+      code: "VALIDATION",
+      message: `Toolset "${name}" uses "*" but it must be the sole tool with no includes — mixing "*" with other tools or includes is not allowed`,
+      retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      context: { name },
+    };
+    return { ok: false, error };
+  }
+
   const nextPath = [...path, name];
   const collected = new Set<string>(def.tools);
 

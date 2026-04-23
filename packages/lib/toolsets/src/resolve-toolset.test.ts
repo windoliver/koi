@@ -95,6 +95,27 @@ describe("resolveToolset", () => {
     // mode:all has no tools property — caller cannot accidentally filter on "*"
     expect("tools" in result.value).toBe(false);
   });
+
+  test("rejects * mixed with other tools in the same preset", () => {
+    const reg = makeRegistry([
+      { name: "bad", description: "Mixed", tools: ["*", "web_fetch"], includes: [] },
+    ]);
+    const result = resolveToolset("bad", reg);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects * in a preset that also has includes", () => {
+    const reg = makeRegistry([
+      { name: "base", description: "Base", tools: ["web_fetch"], includes: [] },
+      { name: "bad", description: "Mixed", tools: ["*"], includes: ["base"] },
+    ]);
+    const result = resolveToolset("bad", reg);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
 });
 
 describe("createBuiltinRegistry", () => {
@@ -106,7 +127,7 @@ describe("createBuiltinRegistry", () => {
     expect(reg.has("minimal")).toBe(true);
   });
 
-  test("safe preset is read-only — no Bash, Write, or Edit tools", () => {
+  test("safe preset is read-only — no Bash, Write, Edit, or fs_write/fs_edit", () => {
     const reg = createBuiltinRegistry();
     const result = resolveToolset("safe", reg);
     expect(result.ok).toBe(true);
@@ -114,8 +135,10 @@ describe("createBuiltinRegistry", () => {
     expect(result.value.mode).toBe("allowlist");
     if (result.value.mode !== "allowlist") return;
     for (const tool of result.value.tools) {
-      expect(tool).not.toMatch(/^Bash$|^Write$|^Edit$/);
+      expect(tool).not.toMatch(/^Bash$|^Write$|^Edit$|fs_write|fs_edit/);
     }
+    expect(result.value.tools).toContain("fs_read");
+    expect(result.value.tools).toContain("web_fetch");
   });
 
   test("developer preset resolves to mode:all", () => {
@@ -135,8 +158,10 @@ describe("createBuiltinRegistry", () => {
     if (result.value.mode !== "allowlist") return;
     expect(result.value.tools).toContain("Glob");
     expect(result.value.tools).toContain("Grep");
+    expect(result.value.tools).toContain("fs_read");
+    expect(result.value.tools).toContain("web_fetch");
     for (const tool of result.value.tools) {
-      expect(tool).not.toMatch(/^Bash$|^Write$|^Edit$/);
+      expect(tool).not.toMatch(/^Bash$|^Write$|^Edit$|fs_write|fs_edit/);
     }
   });
 
