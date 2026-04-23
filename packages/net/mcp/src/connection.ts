@@ -403,7 +403,7 @@ export function createMcpConnection(
                   inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
                 }));
                 return { ok: true, value: tools };
-              } catch {
+              } catch (_err: unknown) {
                 // Retry failed — fall through to return the original auth error
               }
             }
@@ -440,35 +440,7 @@ export function createMcpConnection(
         name,
         arguments: args as Record<string, unknown>,
       });
-
-      const content = result.content as readonly Record<string, unknown>[] | undefined;
-
-      if (result.isError === true) {
-        const errorText =
-          content
-            ?.filter(
-              (
-                c,
-              ): c is Record<string, unknown> & {
-                readonly type: "text";
-                readonly text: string;
-              } => c.type === "text" && typeof c.text === "string",
-            )
-            .map((c) => c.text)
-            .join("\n") ?? "unknown error";
-
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `MCP tool "${name}" on "${config.name}": ${errorText}`,
-            retryable: false,
-            context: { serverName: config.name, toolName: name },
-          },
-        };
-      }
-
-      return { ok: true, value: content };
+      return parseCallToolResult(result, name, config.name);
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
       // 401 mid-session → auth-needed. 403 (insufficient scope, ACL denial)
@@ -488,34 +460,8 @@ export function createMcpConnection(
                   name,
                   arguments: args as Record<string, unknown>,
                 });
-                const retryContent = retryResult.content as
-                  | readonly Record<string, unknown>[]
-                  | undefined;
-                if (retryResult.isError === true) {
-                  const errorText =
-                    retryContent
-                      ?.filter(
-                        (
-                          c,
-                        ): c is Record<string, unknown> & {
-                          readonly type: "text";
-                          readonly text: string;
-                        } => c.type === "text" && typeof c.text === "string",
-                      )
-                      .map((c) => c.text)
-                      .join("\n") ?? "unknown error";
-                  return {
-                    ok: false,
-                    error: {
-                      code: "EXTERNAL",
-                      message: `MCP tool "${name}" on "${config.name}": ${errorText}`,
-                      retryable: false,
-                      context: { serverName: config.name, toolName: name },
-                    },
-                  };
-                }
-                return { ok: true, value: retryContent };
-              } catch {
+                return parseCallToolResult(retryResult, name, config.name);
+              } catch (_err: unknown) {
                 // Retry failed — fall through to return the original auth error
               }
             }
@@ -603,6 +549,38 @@ export function createMcpConnection(
       };
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Call tool result parser
+// ---------------------------------------------------------------------------
+
+function parseCallToolResult(
+  result: { readonly content?: unknown; readonly isError?: boolean | undefined },
+  toolName: string,
+  serverName: string,
+): Result<unknown, KoiError> {
+  const content = result.content as readonly Record<string, unknown>[] | undefined;
+  if (result.isError === true) {
+    const errorText =
+      content
+        ?.filter(
+          (c): c is Record<string, unknown> & { readonly type: "text"; readonly text: string } =>
+            c.type === "text" && typeof c.text === "string",
+        )
+        .map((c) => c.text)
+        .join("\n") ?? "unknown error";
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL",
+        message: `MCP tool "${toolName}" on "${serverName}": ${errorText}`,
+        retryable: false,
+        context: { serverName, toolName },
+      },
+    };
+  }
+  return { ok: true, value: content };
 }
 
 // ---------------------------------------------------------------------------
