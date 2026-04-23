@@ -286,17 +286,25 @@ export async function evaluateSpecGuard(opts: {
     };
   }
   if (analysis.kind !== "simple") {
-    // too-complex: semantic analysis is unavailable.
-    // If the current decision is allow, ratchet to ask so the operator
-    // confirms the command — complex shell forms can hide side effects.
+    // too-complex / multi-command: semantic analysis is unavailable.
+    // Apply the same exact-argv allowlist check as refused specs — operators who
+    // deliberately allowlist a complex form get it auto-approved; all others require
+    // human review. This prevents wrapping forbidden operations in complex shell syntax
+    // to downgrade a potential semantic deny into an approval prompt.
     if (currentDecision.effect === "allow") {
-      return {
-        kind: "spec-evaluated",
-        decision: specGuardAsk(
-          "complex shell form: semantic analysis unavailable, requires review",
-        ),
-        specKind: "refused",
-      };
+      const exactResource = `${toolId}:${rawCommand.trim()}`;
+      const hasExplicit = await hasExplicitExactArgvRule(exactResource, resolveQuery, baseQuery);
+      if (!hasExplicit) {
+        return {
+          kind: "spec-evaluated",
+          decision: specGuardAsk(
+            "complex shell form: semantic analysis unavailable; exact-argv Run(...) rule required",
+          ),
+          specKind: "refused",
+        };
+      }
+      // Operator explicitly allowlisted this complex form — honor it.
+      return { kind: "spec-evaluated", decision: currentDecision, specKind: "refused" };
     }
     return { kind: "skipped", reason: analysis.kind };
   }
@@ -306,11 +314,18 @@ export async function evaluateSpecGuard(opts: {
   // semantics span commands. Treat same as too-complex above.
   if (analysis.commands.length > 1) {
     if (currentDecision.effect === "allow") {
-      return {
-        kind: "spec-evaluated",
-        decision: specGuardAsk("multi-command: semantic analysis unavailable, requires review"),
-        specKind: "refused",
-      };
+      const exactResource = `${toolId}:${rawCommand.trim()}`;
+      const hasExplicit = await hasExplicitExactArgvRule(exactResource, resolveQuery, baseQuery);
+      if (!hasExplicit) {
+        return {
+          kind: "spec-evaluated",
+          decision: specGuardAsk(
+            "multi-command: semantic analysis unavailable; exact-argv Run(...) rule required",
+          ),
+          specKind: "refused",
+        };
+      }
+      return { kind: "spec-evaluated", decision: currentDecision, specKind: "refused" };
     }
     return { kind: "skipped", reason: "multi-command" };
   }
@@ -362,6 +377,44 @@ export async function evaluateSpecGuard(opts: {
         decision: stricter(currentDecision, semanticDecision),
         specKind: "partial",
       };
+    }
+
+    // For refused specs, try basename-based semantic evaluation when `backendSupportsDualKey`.
+    // Path-qualified commands (/usr/bin/curl, /bin/rm) produce "refused" because we don't
+    // pass verifiedBaseName (binary identity is not verified — /tmp/curl could impersonate
+    // /usr/bin/curl). However, we CAN use the basename spec to enforce Write/Read/Network
+    // deny rules conservatively: an operator who said `deny: network blocked.example.com`
+    // should have that deny apply to `/usr/bin/curl blocked.example.com` as well.
+    // Over-denying is safe; over-allowing is not.
+    if (specResult.kind === "refused" && backendSupportsDualKey) {
+      const argv0 = cmd.argv[0];
+      if (argv0 !== undefined && argv0.includes("/")) {
+        const basename = argv0.split("/").pop();
+        if (basename !== undefined && basename.length > 0) {
+          const basenameResult = evaluateBashCommand(
+            {
+              argv: [basename, ...cmd.argv.slice(1)],
+              envVars: cmd.envVars,
+              redirects: cmd.redirects,
+            },
+            registry,
+          );
+          if (basenameResult.kind === "complete" || basenameResult.kind === "partial") {
+            const semanticDecision = await evaluateSemanticRules(
+              basenameResult.semantics,
+              resolveQuery,
+              baseQuery,
+            );
+            if (semanticDecision.effect !== "allow") {
+              return {
+                kind: "spec-evaluated",
+                decision: stricter(currentDecision, semanticDecision),
+                specKind: "refused",
+              };
+            }
+          }
+        }
+      }
     }
 
     return { kind: "spec-evaluated", decision: currentDecision, specKind: specResult.kind };
