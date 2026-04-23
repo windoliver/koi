@@ -308,10 +308,10 @@ function processToolCallDelta(
 
   if (tc.function?.arguments !== undefined) {
     active.argBuffer += tc.function.arguments;
-    // Only emit delta if start was already emitted (name is known).
+    // Only emit delta if start was already emitted (name is known) and args are non-empty.
     // If name hasn't arrived yet, buffer args silently — no lifecycle
     // events until the tool call can be identified.
-    if (active.startEmitted) {
+    if (active.startEmitted && tc.function.arguments.length > 0) {
       chunks.push({
         kind: "tool_call_delta",
         callId: toolCallId(active.id),
@@ -341,6 +341,86 @@ function closeActiveToolCalls(
   return chunks;
 }
 
+function accumulateToolCallDelta(
+  tc: ChatCompletionChunkToolCall,
+  activeToolCalls: Map<
+    number,
+    { id: string; name: string; argBuffer: string; startEmitted: boolean }
+  >,
+): void {
+  const idx = tc.index;
+  // let is justified: starts undefined, gets assigned from map or newly created
+  let active = activeToolCalls.get(idx);
+  if (active === undefined || (tc.id !== undefined && active.id !== tc.id)) {
+    const callId = tc.id ?? `call_${idx}`;
+    const name = tc.function?.name ?? "";
+    active = { id: callId, name, argBuffer: "", startEmitted: false };
+    activeToolCalls.set(idx, active);
+  }
+  if (tc.function?.name !== undefined && active.name.length === 0) {
+    active.name = tc.function.name;
+  }
+  if (tc.function?.arguments !== undefined) {
+    active.argBuffer += tc.function.arguments;
+  }
+}
+
+function flushBufferedToolCalls(
+  activeToolCalls: Map<
+    number,
+    { id: string; name: string; argBuffer: string; startEmitted: boolean }
+  >,
+  acc: MutableAccumulator,
+): readonly ModelChunk[] {
+  const chunks: ModelChunk[] = [];
+  for (const [, active] of activeToolCalls) {
+    if (active.name === "") {
+      chunks.push(
+        { kind: "tool_call_start", toolName: "", callId: toolCallId(active.id) },
+        {
+          kind: "error",
+          message: `Tool call "${active.id}" has no function name — cannot dispatch`,
+          code: "VALIDATION",
+        },
+      );
+      continue;
+    }
+    const result = parseToolArguments(active.argBuffer);
+    if (result.ok) {
+      acc.richContent.push({
+        kind: "tool_call",
+        id: toolCallId(active.id),
+        name: active.name,
+        arguments: result.args,
+      });
+      chunks.push({
+        kind: "tool_call_start",
+        toolName: active.name,
+        callId: toolCallId(active.id),
+      });
+      if (active.argBuffer.length > 0) {
+        chunks.push({
+          kind: "tool_call_delta",
+          callId: toolCallId(active.id),
+          delta: active.argBuffer,
+        });
+      }
+      chunks.push({ kind: "tool_call_end", callId: toolCallId(active.id) });
+    } else {
+      chunks.push(
+        { kind: "tool_call_start", toolName: active.name, callId: toolCallId(active.id) },
+        {
+          kind: "error",
+          message: `Invalid tool call arguments for "${active.name}": ${result.raw}`,
+          code: "VALIDATION",
+        },
+      );
+    }
+  }
+  activeToolCalls.clear();
+  return chunks;
+}
+
 // ---------------------------------------------------------------------------
 // Stream parser internals
 // ---------------------------------------------------------------------------
@@ -352,6 +432,7 @@ interface ParserContext {
     number,
     { id: string; name: string; argBuffer: string; startEmitted: boolean }
   >;
+  readonly bufferToolCalls: boolean;
 }
 
 function flushCurrentSegment(ctx: ParserContext): void {
@@ -404,17 +485,22 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
   }
 
   if (delta.tool_calls !== undefined) {
-    // Flush any in-progress text/thinking segment before processing tool calls
     if (ctx.state.kind === "text" || ctx.state.kind === "thinking") {
       flushCurrentSegment(ctx);
       ctx.state = { kind: "idle" };
     }
-    for (const tc of delta.tool_calls) {
-      output.push(...processToolCallDelta(tc, ctx.activeToolCalls, ctx.acc));
-    }
-    const lastEntry = [...ctx.activeToolCalls.values()].at(-1);
-    if (lastEntry !== undefined) {
-      ctx.state = { kind: "tool_call", callId: lastEntry.id, argBuffer: lastEntry.argBuffer };
+    if (ctx.bufferToolCalls) {
+      for (const tc of delta.tool_calls) {
+        accumulateToolCallDelta(tc, ctx.activeToolCalls);
+      }
+    } else {
+      for (const tc of delta.tool_calls) {
+        output.push(...processToolCallDelta(tc, ctx.activeToolCalls, ctx.acc));
+      }
+      const lastEntry = [...ctx.activeToolCalls.values()].at(-1);
+      if (lastEntry !== undefined) {
+        ctx.state = { kind: "tool_call", callId: lastEntry.id, argBuffer: lastEntry.argBuffer };
+      }
     }
   }
 
@@ -422,9 +508,10 @@ function feedChunk(ctx: ParserContext, chunk: ChatCompletionChunk): readonly Mod
 }
 
 function finishParsing(ctx: ParserContext): readonly ModelChunk[] {
-  // Flush any in-progress text/thinking segment before closing tool calls
   flushCurrentSegment(ctx);
-  const output = [...closeActiveToolCalls(ctx.activeToolCalls, ctx.acc)];
+  const output = ctx.bufferToolCalls
+    ? [...flushBufferedToolCalls(ctx.activeToolCalls, ctx.acc)]
+    : [...closeActiveToolCalls(ctx.activeToolCalls, ctx.acc)];
   ctx.state = { kind: "idle" };
   return output;
 }
@@ -437,7 +524,10 @@ function finishParsing(ctx: ParserContext): readonly ModelChunk[] {
  * Stateful stream parser. Feed it SSE chunks one at a time; it emits
  * ModelChunk events and updates the accumulator.
  */
-export function createStreamParser(initialAccumulator: AccumulatedResponse): {
+export function createStreamParser(
+  initialAccumulator: AccumulatedResponse,
+  options?: { readonly supportsToolStreaming?: boolean },
+): {
   feed: (chunk: ChatCompletionChunk) => readonly ModelChunk[];
   finish: () => readonly ModelChunk[];
   getAccumulator: () => AccumulatedResponse;
@@ -453,6 +543,7 @@ export function createStreamParser(initialAccumulator: AccumulatedResponse): {
       receivedUsage: false,
     },
     activeToolCalls: new Map(),
+    bufferToolCalls: !(options?.supportsToolStreaming ?? true),
   };
 
   return {
