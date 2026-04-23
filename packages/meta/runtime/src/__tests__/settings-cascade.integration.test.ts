@@ -135,7 +135,7 @@ describe("settings cascade → permission enforcement", () => {
     expect(decision.effect).toBe("deny");
   });
 
-  test("settings policy deny precedes built-in TUI policy allow (admin policy wins)", async () => {
+  test("settings deny (any layer) overrides built-in TUI allow (TUI rules are fallback)", async () => {
     // Simulate a built-in TUI allow rule (source: "policy", like TUI_ALLOW_RULES entries)
     const tuiAllowRule = {
       pattern: "Glob**",
@@ -143,23 +143,23 @@ describe("settings cascade → permission enforcement", () => {
       effect: "allow" as const,
       source: "policy" as const,
     };
-    // Admin policy settings deny for the same tool
-    const policySettingsRules = mapSettingsToSourcedRules(
-      { permissions: { deny: ["Glob"] } },
-      "policy",
-    );
 
-    // Runtime ordering: settings policy rules first, then TUI built-ins
-    const backend = createPermissionBackend({
-      mode: "default",
-      rules: [...policySettingsRules, tuiAllowRule],
-    });
+    // Test with each non-policy layer: all must beat the TUI allow fallback
+    for (const layer of ["user", "project", "local", "flag", "policy"] as const) {
+      const settingsRules = mapSettingsToSourcedRules({ permissions: { deny: ["Glob"] } }, layer);
 
-    const decision = await backend.check({
-      resource: "Glob",
-      action: "invoke",
-      principal: "agent",
-    });
-    expect(decision.effect).toBe("deny");
+      // Runtime ordering: all settings rules first, TUI built-ins as fallback last
+      const backend = createPermissionBackend({
+        mode: "default",
+        rules: [...settingsRules, tuiAllowRule],
+      });
+
+      const decision = await backend.check({
+        resource: "Glob",
+        action: "invoke",
+        principal: "agent",
+      });
+      expect(decision.effect).toBe("deny");
+    }
   });
 });

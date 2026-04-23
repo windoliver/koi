@@ -1523,23 +1523,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // mode so existing TUI behavior is preserved.
   //
   // Rule ordering (first-match-wins evaluation):
-  //   1. Settings policy rules (mapSettingsToSourcedRules emits deny-first, so
-  //      admin policy denies from /etc/koi/settings.json precede any TUI allows)
-  //   2. Built-in TUI allow rules (always-on defaults, all source:"policy")
-  //   3. Settings flag/local/project/user rules (sorted by SOURCE_PRECEDENCE)
+  //   1. All settings rules, sorted by SOURCE_PRECEDENCE (policy→flag→local→project→user)
+  //      Within each layer, deny/ask rules precede allows (from mapSettingsToSourcedRules).
+  //   2. Built-in TUI allow rules as fallback defaults — only fire when no settings rule matched.
   //
-  // Separating settings policy from TUI built-ins ensures an admin policy deny
-  // is not shadowed by a same-tier built-in allow.
+  // Placing TUI built-ins LAST ensures any settings deny (even project/local/user layers)
+  // can override a built-in default allow for the same tool.
   const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
-  const settingsPolicyRules = settingsRules.filter((r) => r.source === "policy");
-  const settingsOtherRules = settingsRules
-    .filter((r) => r.source !== "policy")
-    .sort((a, b) => precedenceIdx(a) - precedenceIdx(b));
+  const sortedSettingsRules = [...settingsRules].sort(
+    (a, b) => precedenceIdx(a) - precedenceIdx(b),
+  );
   const permBackend =
     config.permissionBackend ??
     createPermissionBackend({
       mode: "default",
-      rules: [...settingsPolicyRules, ...tuiAllowRules, ...settingsOtherRules],
+      rules: [...sortedSettingsRules, ...tuiAllowRules],
     });
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
