@@ -121,6 +121,14 @@ export type GovernanceEvent =
       readonly source: "host" | "engine";
       readonly reason?: string | undefined;
       readonly boundaryId: string;
+      /**
+       * Wall-clock ms (Date.now()) at the true run boundary — the moment the engine
+       * decided to reset, before any async middleware or controller I/O. Controllers
+       * MUST use this value to anchor duration-budget windows rather than calling
+       * `Date.now()` themselves; the latter drifts when the record() call is delayed
+       * by I/O or middleware latency.
+       */
+      readonly boundaryTimestamp: number;
     }
   /**
    * Emitted by `runtime.cycleSession()` at a host-driven conversation boundary
@@ -128,14 +136,16 @@ export type GovernanceEvent =
    * windows so a fresh conversation doesn't inherit tool-error history. Token usage,
    * cost, and spawn counts remain CUMULATIVE across the runtime lifetime.
    *
-   * `source`     — "host" (cycleSession() call), "engine" (internal restart)
-   * `boundaryId` — deterministic `${sessionId}:session:${sessionCycleIndex}`
+   * `source`          — "host" (cycleSession() call), "engine" (internal restart)
+   * `boundaryId`      — deterministic `${sessionId}:session:${sessionCycleIndex}`
+   * `boundaryTimestamp` — wall-clock ms at the boundary; use for duration accounting
    */
   | {
       readonly kind: "session_reset";
       readonly source: "host" | "engine";
       readonly reason?: string | undefined;
       readonly boundaryId: string;
+      readonly boundaryTimestamp: number;
     };
 
 /**

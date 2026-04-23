@@ -705,13 +705,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
       // Record the governance event BEFORE mutating guard state so that a
       // rejecting async controller aborts the run without leaving guards reset
-      // and governance stale (partial-reset divergence).
-      await governance.record({ kind: "run_reset", source: "engine", boundaryId });
-      // Guards reset only after governance commit succeeds.
-      for (const mw of guards) {
-        if (isIterationGuardHandle(mw)) {
-          mw.resetForRun(runStartedAt);
+      // and governance stale (partial-reset divergence). Pass boundaryTimestamp
+      // so controllers anchor duration windows to the true boundary, not record time.
+      await governance.record({
+        kind: "run_reset",
+        source: "engine",
+        boundaryId,
+        boundaryTimestamp: runStartedAt,
+      });
+      // Guards reset only after governance commit succeeds. If any guard's
+      // resetForRun throws (extraordinary — it's a sync pure operation), we
+      // poison the runtime so subsequent runs cannot proceed with mixed state.
+      try {
+        for (const mw of guards) {
+          if (isIterationGuardHandle(mw)) {
+            mw.resetForRun(runStartedAt);
+          }
         }
+      } catch (e) {
+        poisoned = true;
+        throw e;
       }
     }
 
@@ -2413,6 +2426,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               kind: "session_reset",
               source: "host",
               boundaryId: sessionBoundaryId,
+              boundaryTimestamp: Date.now(),
             });
           }
           // #1742: rotate the engine sessionId and rebuild the runtime-scoped

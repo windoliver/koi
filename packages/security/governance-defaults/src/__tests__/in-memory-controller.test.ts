@@ -617,6 +617,7 @@ describe("createInMemoryController", () => {
         kind: "run_reset",
         source: "engine",
         boundaryId: "sess:run:0",
+        boundaryTimestamp: Date.now(),
       });
 
       expect(controller.reading("turn_count")?.current).toBe(0);
@@ -639,6 +640,7 @@ describe("createInMemoryController", () => {
         kind: "session_reset",
         source: "host",
         boundaryId: "test:session:0",
+        boundaryTimestamp: Date.now(),
       });
 
       expect(controller.reading("turn_count")?.current).toBe(0);

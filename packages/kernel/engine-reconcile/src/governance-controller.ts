@@ -301,8 +301,12 @@ export function createGovernanceController(
         // INTENTIONALLY NOT reset — they back runtime-wide spend safety
         // caps. Spawn counts and rolling error-rate windows are also
         // runtime-scoped and unaffected.
+        // Use boundaryTimestamp (the true boundary time) instead of Date.now()
+        // so duration windows are anchored to when the run started, not when
+        // the async record() call was processed — eliminating drift from
+        // forge-refresh and middleware I/O latency.
         turnCount = 0;
-        startedAt = Date.now();
+        startedAt = event.boundaryTimestamp;
         break;
       case "session_reset":
         // #1742: reset per-session state at a host-driven conversation
@@ -313,7 +317,7 @@ export function createGovernanceController(
         // accumulated cost, and spawn counts remain CUMULATIVE so
         // process-level spend / fan-out ceilings still hold.
         turnCount = 0;
-        startedAt = Date.now();
+        startedAt = event.boundaryTimestamp;
         errorWindow.clear();
         totalCallsWindow.clear();
         break;

@@ -274,6 +274,7 @@ describe("createGovernanceController", () => {
       kind: "session_reset",
       source: "host",
       boundaryId: "test:session:0",
+      boundaryTimestamp: Date.now(),
     });
 
     // Per-session state cleared — turn count + error rate windows:
@@ -321,6 +322,7 @@ describe("createGovernanceController", () => {
       kind: "run_reset",
       source: "engine",
       boundaryId: "sess:run:0",
+      boundaryTimestamp: Date.now(),
     });
 
     // Turn count cleared (per-iteration UX budget reopens):
