@@ -162,7 +162,13 @@ Nexus is the platform; **Cairn is the memory layer** that does not exist in Nexu
 - **No `memory` brick in Nexus today.** Cairn owns memory. If a future Nexus `memory` brick ships, Cairn's adapter can delegate.
 - **One file on disk.** `nexus.db` holds records, vectors, FTS, metadata. Back up by copying one file (or use `snapshot`).
 - **Semantic search is opt‑in.** With an embedding API key (`OPENAI_API_KEY` or any `litellm` provider), `sqlite-vec` is primary. Without a key, BM25S results are stamped `semantic_degraded=true` end to end.
-- **Records land through `filesystem` + `search`.** A memory = a markdown file with frontmatter at `/<vault>/raw/<kind>_<slug>.md`. `search` indexes body; `rebac` + `access_manifest` enforce scope; `snapshot` + `versioning` cover backup and undo. Cairn's Rust core never touches SQLite directly.
+- **Records land through `filesystem` + `search`.** A memory = a markdown file with frontmatter at `/<vault>/raw/<kind>_<slug>.md`. `search` indexes body; `rebac` + `access_manifest` enforce scope; `snapshot` + `versioning` cover backup and undo. Cairn's Rust core **does not speak to the Nexus memory‑store SQLite file directly** — all memory mutations are HTTP calls to the Nexus sidecar. See "Durability topology" below for the full atomicity model.
+- **Durability topology (two SQLite files, one ownership line):**
+  - **`nexus.db`** — owned by the Nexus Python sidecar. Holds records, vectors, FTS, metadata. Cairn reaches it only over HTTP + MCP.
+  - **`.cairn/cairn.db`** — owned by the Rust core, opened directly from the Cairn process. Small (typically < 50 MB). Holds three tables: `wal_ops` (§5.6 state machine rows), `used` + `issuer_seq` + `outstanding_challenges` (§4.2 replay ledger), `consent_journal` (audit rows before async materialization to `.cairn/consent.log`). These are **local control‑plane state** the Rust core must access natively for single‑host atomicity. They are never shared with Nexus.
+  - **Atomicity model.** Cairn uses a durable‑messaging pattern, not a distributed transaction: (1) Rust core commits a local SQLite transaction in `cairn.db` that atomically writes the WAL `PREPARE` row + replay consumption + consent journal row; (2) Rust calls the Nexus HTTP apply endpoint, keyed by `operation_id`, which performs its own single local SQLite transaction inside `nexus.db`; (3) on success the Rust core marks `wal_ops.state = 'COMMITTED'` in another short transaction. Crash between (1) and (2) ⇒ recovery re‑calls Nexus with the same `operation_id` (idempotent). Crash between (2) and (3) ⇒ recovery observes Nexus has already applied, then promotes the row to `COMMITTED`. Nexus's own durability is guaranteed by its internal SQLite transaction; Cairn's guarantee is that every PREPARED row is either COMMITTED or ABORTED after bounded recovery.
+  - **No cross‑process two‑phase commit required.** The idempotency key is the linearization primitive; SQLite provides atomicity inside each process. This is strictly weaker than distributed 2PC, and we call it out rather than pretending otherwise.
+  - There is no `.cairn/vault.db` — any lingering reference is an error; a single example in the Appendix Glossary is corrected there.
 - **Federation, not re‑platforming, scales.** A sandbox on a laptop can federate `search` queries to a remote Nexus `full` hub (PostgreSQL + Dragonfly + Zoekt + txtai). Hub unreachable → graceful BM25S fallback, never a boot failure.
 - **Process boundary.** Nexus is Python; Cairn core is Rust. They communicate over HTTP + MCP. `cairn-nexus-supervisor` spawns Nexus, tails logs, health‑checks, restarts.
 
@@ -474,7 +480,7 @@ The two statements run inside one short `BEGIN` transaction — no `FOR UPDATE`,
 
 **Signature‑first rejection.** Signature verification runs **before** any disk write in `replay.db`. An attacker replaying a valid signature hits step 5's unique constraint; an attacker sending junk never reaches step 5 because signature check rejects first. This prevents ledger pollution by unauthenticated traffic.
 
-**Replay consumption is coupled to WAL `PREPARE`, not independent.** `replay.db` and the WAL op log (§5.6) **must be the same SQLite database file** — `.cairn/cairn.db` holds `used`, `issuer_seq`, and `wal_ops` tables in one durability domain. The transaction above is extended so step 5's atomic body includes the WAL `PREPARE` marker row:
+**Replay consumption is coupled to WAL `PREPARE`, not independent.** The replay ledger (`used`, `issuer_seq`, `outstanding_challenges`) and the WAL op log (`wal_ops`, `consent_journal`) all live in the same SQLite file — `.cairn/cairn.db` — owned directly by the Rust core (see "Durability topology" in §3). Nexus has its own `nexus.db` for memory state; the two files are coordinated via idempotency keys (§5.6), not via a distributed transaction. The transaction below is a single local SQLite commit that atomically couples replay consumption with the WAL `PREPARE` row:
 
 ```
 BEGIN;
@@ -739,7 +745,7 @@ Every mutation — single upsert, promotion, session delete fan‑out, skill evo
 **Lifecycle — one WAL op as a finite‑state machine:**
 
 ```
-ISSUED ──acquire locks──► PREPARED ──fan‑out to store + index + consent.log──► COMMITTED
+ISSUED ──acquire locks──► PREPARED ──fan-out: nexus store/index + consent_journal──► COMMITTED
    │                          │                                                     │
    │  validation fail         │  any side‑effect fails                               │
    │  / lock conflict         │                                                      │
@@ -750,13 +756,52 @@ REJECTED (never applied)   ABORTED (WAL entry marked, side‑effects compensated
 | Transition | Requires | What happens |
 |------------|----------|--------------|
 | `ISSUED → PREPARED` | signature valid, idempotency key unused, principal/issuer policy ok, locks acquired (see below) | writes `PREPARE <op>` marker at end of WAL; locks held under `(scope, entity_id)` |
-| `PREPARED → COMMITTED` | all fan‑out side effects succeeded (store upsert, vector upsert, FTS upsert, edge upsert, `consent.log` append) | writes `COMMIT <op>` marker; releases locks |
+| `PREPARED → COMMITTED` | all fan‑out side effects succeeded (Nexus store upsert, vector upsert, FTS upsert, edge upsert, and the `consent_journal` row atomically committed in the same SQLite transaction as the state change that triggers it). `.cairn/consent.log` file is updated by the async `consent_log_materializer` — never on the request path. | writes `COMMIT <op>` marker; releases locks |
 | `PREPARED → ABORTED` | any side effect failed OR supervisor crashed | compensating ops run (delete partial rows, remove vectors); writes `ABORT <op>` marker; releases locks |
 | `ISSUED → REJECTED` | signature invalid / idempotency key reused / policy deny | writes `REJECT <op>` + reason; no locks ever taken |
 
 **Idempotency.** `operation_id` is the idempotency key — second `PREPARE` with the same id returns the first commit's outcome without re‑doing side effects. Third‑party writers collide safely on retries; broken networks can't double‑apply.
 
-**Lock granularity and compatibility matrix.** Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and session locks `(tenant, workspace, session:<id>)`. Every write acquires an entity lock; a write that carries a `session_id` in its scope **also** acquires the session lock in **shared** mode. `forget_session` acquires the session lock in **exclusive** mode for the full Phase A (§5.6 delete row).
+**Lock granularity and compatibility matrix — implemented as a lock table, not advisory.** SQLite does not provide cross‑process row‑level advisory locks, so Cairn implements lock acquisition as ordinary inserts/updates in a `locks` table inside `.cairn/cairn.db`, protected by the SQLite write serialization. Every lock is a row; every lock has a **fencing token** (`lock_id` = ULID) and a **lease TTL** (default 30 s, heartbeat every 10 s). The lock table:
+
+```sql
+CREATE TABLE locks (
+  scope_kind   TEXT NOT NULL,      -- 'entity' | 'session'
+  scope_key    TEXT NOT NULL,      -- "(tenant, workspace, entity)" or "(tenant, workspace, session)"
+  mode         TEXT NOT NULL,      -- 'shared' | 'exclusive'
+  holder_count INTEGER NOT NULL,   -- number of shared holders (exclusive ⇒ 1)
+  lock_id      TEXT NOT NULL,      -- fencing token, renewed every heartbeat
+  leased_until INTEGER NOT NULL,   -- epoch ms
+  waiters      BLOB,               -- small queue of pending acquirers
+  PRIMARY KEY (scope_kind, scope_key)
+);
+```
+
+Cairn defines two lock scopes: entity locks `(tenant, workspace, entity_id)` and session locks `(tenant, workspace, session:<id>)`. Every write acquires an entity lock in exclusive mode; a write that carries a `session_id` in its scope **also** acquires the session lock in **shared** mode. `forget_session` acquires the session lock in **exclusive** mode for the full Phase A (§5.6 delete row).
+
+**Acquisition protocol (one SQLite transaction per lock):**
+
+```
+BEGIN;
+  SELECT mode, holder_count, leased_until FROM locks
+    WHERE scope_kind = ? AND scope_key = ?;
+  -- If missing: INSERT with this acquirer as sole holder.
+  -- If held in compatible mode + lease valid: UPDATE holder_count += 1, refresh lease.
+  -- If held in compatible mode + lease expired: reclaim (see crash recovery below).
+  -- If held in incompatible mode: return WAIT; caller enqueues in waiters and retries
+  --   with exponential backoff; no busy-loop.
+COMMIT;
+```
+
+**Lease + fencing semantics.** Every held lock carries a `lock_id` generated at acquisition; every write the holder emits includes `lock_id` in its WAL op. When Nexus receives a mutation keyed by `operation_id`, it verifies `lock_id` is still current against the `locks` table (done inside the same transaction as the apply) and rejects stale writes. This is the Martin Kleppmann / Chubby fencing pattern — a holder that crashed and lost its lease cannot keep writing once the lease expired, even if its TCP connection is still open.
+
+**Crash recovery.** A lock with `leased_until < now` is a "zombie" — a prior holder crashed without releasing. The next acquirer can reclaim by deleting the row (or decrementing `holder_count` in shared mode) and taking the lock with a new `lock_id`. Zombie reclaim rejects any in‑flight writes from the old holder by the fencing check above.
+
+**Why `forget_session` exclusive blocks child writes.** A write to a session child opens two SQLite transactions: one to acquire the entity lock and one to acquire the session lock in shared mode. If `forget_session` holds the session lock exclusive, the shared acquisition returns WAIT, and the child write blocks (with a configurable timeout — default 5 s, after which it fails with `SessionLockUnavailable`). The planner refuses to retry with a stale session lock — once `forget_session` commits, the session is gone and retries fail fast.
+
+**Serialization bound.** Because every lock op is a short transaction on `.cairn/cairn.db`, the bottleneck is that one SQLite file's write throughput. Measured: 10 k lock ops/s on NVMe, 1 k/s on HDD. For sandbox scale (< 100 concurrent agents) this is not limiting. Hub deployments (v0.3+) shard the lock table per tenant, producing O(tenant) parallelism.
+
+### Lock compatibility
 
 | Op (wants)                 | Entity lock       | Session lock        |
 |----------------------------|-------------------|----------------------|
@@ -782,8 +827,8 @@ Deadlock avoidance: locks are always acquired in `(session, entity)` lexicograph
 |----|---------------------------|------------------------|
 | `upsert` | 1. `snapshot.stage` [snapshot] — if the target already exists, capture its pre‑image (primary row + all index entries) into the WAL entry; for a pure insert, stage a sentinel "absent" marker → 2. `primary.upsert_cow` [idem] — copy‑on‑write; new version lives at `(target_id, version=N+1)` with `active: false`; the old `active: true` row at version N is untouched → 3. `vector.upsert(version=N+1)` [idem] → 4. `fts.upsert(version=N+1)` [idem] → 5. `edges.upsert(version=N+1)` [idem] → 6. `primary.activate` — single SQLite transaction: `UPDATE rows SET active = (version = N+1) WHERE target_id = :id; INSERT INTO consent_journal (…) VALUES (…);` The row‑pointer swap and the consent journal row commit atomically in the same DB transaction. This is the linearization point for readers. → 7. `consent_log_materializer` — background writer tails the `consent_journal` table and appends each row to `.cairn/consent.log` using crash‑safe `fsync(file)` + monotonic rowid as the last‑appended cursor; the file is a faithful **async materialization** of the DB journal, not the source of truth. If the daemon dies mid‑append, the next start replays from the last‑appended cursor — no duplicates, no gaps. | on abort **before step 6**: drop the `(version=N+1, active=false)` row + its indexes; old version `N` (active=true) is never touched; compensation is a pure delete of staged rows. On abort **at step 6**: the SQLite transaction itself rolls back; no partial state. After step 6: the consent row is durable in the DB; if step 7 lags or crashes, the file is caught up at next materializer tick — recovery invariant is "DB journal rows are the truth; `.cairn/consent.log` is eventually consistent with the journal." |
 | `delete` / `forget_record` / `forget_session` | **Phase A — fast logical tombstone commit (sets the reader‑visible outcome, chunked to keep SQLite write windows short):** 1. `snapshot.stage` [snapshot] — serialize full record + all index entries per child into the WAL entry (streamed; for a session with N children, the stage is itself chunked at `forget_chunk = 1024` records per SQLite write so total transaction size is bounded) → 2. `session.fence.open` — insert a row into the `reader_fence` table with `(session_id, op_id, state='tombstoning')`; every subsequent read plan joins on this table and filters out any row whose `session_id` has an open fence, whether or not its own tombstone mark has landed yet → 3. `primary.mark_tombstone` — in `forget_chunk`‑sized transactions, mark each child record tombstoned; on the last chunk only, close the fence inside the same transaction by flipping `reader_fence` to `state='closed'` and appending to `consent_journal`. From this transaction onward, readers neither see the session's children directly nor fall through the fence. **Phase B — asynchronous physical purge GC (separate idempotent WAL child op per record):** 4. `vector.drain` → 5. `fts.drain` → 6. `edges.drain` → 7. `primary.purge` — each runs as its own child op; all retriable; none can re‑introduce content because the reader fence is already closed at Phase A end. | on abort **before the fence‑close chunk of step 3**: drop all tombstones written in earlier chunks, delete the `reader_fence` row; readers revert to seeing the session. On abort **after the fence‑close chunk**: Phase A is durable; Phase B children are retried idempotently. If a Phase B child exhausts retries, that record is flagged `PURGE_PENDING` in `lint` with operator escalation — readers still don't see it because the fence is closed. Bound Phase A duration by `forget_chunk` (default 1024) × per‑row write cost; backpressure signal exposed to callers as `estimated_phase_a_ms`. |
-| `promote` | 1. `snapshot.stage` → 2. `policy.verify_receipt` → 3. `primary.update_tier` → 4. `rebac.add_relation` → 5. `consent.log.append(promote)` | on abort before step 3: no‑op. After step 3: reverse tier update using `[snapshot]`; revoke rebac relation added in step 4. Consent entry for the promote remains with its abort marker. |
-| `expire` | 1. `snapshot.stage` → 2. `primary.mark_expired` → 3. `vector.drain` → 4. `fts.drain` → 5. `edges.drain` → 6. `consent.log.append(expire)` | identical rollback rules as `delete`, but step 6 is `mark_expired` not `purge` — expiration can be reversed by future writes (un‑expire via `upsert` of a later version) until a subsequent `forget` hits point of no return. |
+| `promote` | 1. `snapshot.stage` → 2. `policy.verify_receipt` → 3. `primary.update_tier` → 4. `rebac.add_relation` → 5. `consent_journal.append(promote)` — commits atomically with steps 3 + 4 in one SQLite transaction; the async materializer tails the journal into `.cairn/consent.log` | on abort before step 3: no‑op. After step 3: reverse tier update using `[snapshot]`; revoke rebac relation added in step 4. The consent journal row commits with the state change — any abort marker is a subsequent journal row. |
+| `expire` | 1. `snapshot.stage` → 2. `primary.mark_expired` → 3. `vector.drain` → 4. `fts.drain` → 5. `edges.drain` → 6. `consent_journal.append(expire)` — atomic with step 2 in one SQLite transaction | identical rollback rules as `delete` Phase A, but step 2 is `mark_expired` not `mark_tombstone` — expiration can be reversed by future writes (un‑expire via `upsert` of a later version) until a subsequent `forget` runs. |
 | `evolve` | per‑candidate steps from §11.3 canary rollout; each candidate is its own child op with its own WAL entry and its own compensation | parent op records `child_op_ids`; parent COMMIT requires all children COMMITTED; any child ABORT triggers parent ABORT which compensates all earlier children via their own rollback steps |
 
 **Drain completion criteria (deletes / expirations only):** a step is "drained" when the corresponding index emits a checkpoint whose sequence number is past the tombstone sequence number. Until drained, `search` / `retrieve` run an auxiliary tombstone filter so stale results never surface. The drain fence is what makes delete atomicity observable — the moment the Phase A transaction commits, every reader query is guaranteed to miss the record.
@@ -1485,10 +1530,12 @@ Frontend edits can only mutate user‑content fields. Policy‑sensitive fields 
    - `binary_hash` (sha256 over every plugin file) matches the installed binary.
    - `capabilities_requested` is a strict subset of what this user's policy allows.
    - `manifest_signature` verifies over the full YAML. Any field change (including capabilities) requires **re‑attestation** — the user is prompted again whenever the publisher pushes a new manifest or the binary hash changes.
-   At runtime, the plugin signs each handshake challenge with its manifest‑bound key. `binary_hash` verification is **event‑driven**, not per‑handshake:
-   - The daemon establishes an OS file‑watcher (`fsevents` on macOS, `inotify` on Linux, `ReadDirectoryChangesW` on Windows) on the plugin binary at handshake start. If the watcher reports `modify / rename / replace`, the daemon recomputes `binary_hash` against the new file and revokes the plugin session if it diverges from the manifest.
-   - A full recomputation runs at most once per plugin session (on attach) and on any watcher‑reported change event; handshakes themselves do not recompute. Handshake cadence is capped at 1 Hz per plugin (configurable) with prior‑attestation caching — a hot‑reload or update flow takes the atomic upgrade protocol path (below), not a revoke‑then‑reattest cycle.
-   - **Atomic upgrade protocol.** When a manifest or binary is updated, the old plugin session continues serving queued requests for up to `upgrade_grace` (default 5 s) while the daemon re‑verifies the new manifest + new `binary_hash` + prompts the user for re‑attestation if capabilities changed. On approval, the new session takes over atomically; on rejection, the old session is revoked and the new binary is quarantined. No request is dropped; no revoke‑thrash loop is possible.
+   At runtime, the plugin signs each handshake challenge with its manifest‑bound key. `binary_hash` verification uses an **attestation‑epoch model**, not a per‑handshake recompute — but every handshake still verifies against the current epoch, closing the TOCTOU window:
+   - Each plugin session carries an **attestation epoch** — a monotonic counter that increments on every verified attestation. The current epoch + expected `binary_hash` are held in memory and sealed behind a short‑lived file‑descriptor to the plugin binary, opened at attestation time and used for every subsequent read to defeat rename/swap attacks.
+   - Every handshake must present the current epoch; a handshake that presents a stale epoch is rejected. This binds each handshake to a specific, still‑verified plugin binary without recomputing the hash per request.
+   - The daemon establishes an OS file‑watcher (`fsevents` on macOS, `inotify` on Linux, `ReadDirectoryChangesW` on Windows) on the plugin binary. Any `modify / rename / replace` / watcher‑overflow / missed‑event signal → **immediate suspension of intent minting for that plugin**, the epoch is invalidated, and pending requests queued on the plugin return `PluginSuspended`. Re‑attestation must complete before minting resumes.
+   - **Fail‑closed on watcher uncertainty.** Watcher overflows, missed events, or watcher restart are treated the same as detected changes: revoke the epoch, force re‑attestation. We would rather disrupt a plugin session than mint intents on a plugin whose integrity we can't currently assert.
+   - **Atomic upgrade protocol.** When a manifest or binary is updated, the daemon enters `UPGRADING` state: the old epoch is frozen (continues serving reads from already‑queued requests up to `upgrade_grace`, default 5 s, **but mints no new intents**), the new binary + manifest + binary_hash are verified, the user is re‑prompted if capabilities changed, and on approval a new epoch replaces the old. On rejection, the old epoch is revoked and the new binary is quarantined. At no point does the daemon mint an intent under a stale or unverified epoch.
    Per‑plugin intent minting is audit‑logged to `consent.log`; operators can run `cairn plugin revoke <id>` for immediate revocation.
 3. The Cairn desktop GUI which runs inside its own trust boundary — tokens minted there carry a `gui_trusted: true` claim and can only mint intents for edits that originated through the GUI's own event bus, not from arbitrary filesystem writes.
 
@@ -1917,10 +1964,10 @@ Every user story below maps to existing Cairn sections. Where a story asked for 
 - Sections: §8 MCP Surface, §5.1 Read path, §4.2 Identity + rebac, §6.3 Visibility.
 
 **US8 — Delete a specific session and memories (Customer + SRE).**
-- `cairn forget --session <id>` drops the entire session: all turn records, all child `trace` records, the raw transcript, derived summaries, embeddings, and search‑index entries. Nexus `forget-me` workflow handles the fan‑out; embeddings are overwritten with zeros, not marked deleted (prevents index‑level recovery).
-- Irretrievable: `search` and `retrieve` return `not_found` the instant the forget workflow acks.
-- Immutable audit: every delete writes an entry to `.cairn/consent.log` (append‑only; §14) with `{actor, target_session_id, reason, policy_reference, timestamp, signature}`. The deletion itself is auditable forever; the *content* deleted is unrecoverable.
-- Session vs. record delete: `cairn forget --record <id>` and `cairn forget --session <id>` are separate verbs; session delete is a transactional fan‑out over every child record under §5.6 WAL.
+- **Record‑level delete ships in v0.1.** `cairn forget --record <id>` — or the MCP verb `forget` with `mode: "record"` — runs the full §5.6 `delete` Phase A (logical tombstone + index drains committed atomically) plus Phase B physical purge. Irretrievable: `search` and `retrieve` return `not_found` as soon as Phase A commits.
+- **Session‑level delete ships in v0.2.** `cairn forget --session <id>` (MCP `forget` with `mode: "session"`) is advertised only by v0.2+ runtimes via `handshake.capabilities` (see §8 verb 8 row). v0.1 clients receive `CapabilityUnavailable` if they attempt a session mode. Session delete adds the chunked fan‑out, `reader_fence` closure in the last chunk's transaction, and exclusive session lock (§5.6 delete row + lock compatibility matrix).
+- Immutable audit (both modes): every delete writes an entry to the `consent_journal` table inside `.cairn/cairn.db` atomically with the state change; the `consent_log_materializer` then appends it to `.cairn/consent.log` asynchronously. The deletion itself is auditable forever; the *content* deleted is unrecoverable after Phase B purge.
+- Record vs. session delete semantics are identical per child; the only difference is the transaction boundary (one record vs. a chunked fan‑out under exclusive session lock).
 - Sections: §14 Privacy and Consent, §10 Workflows (forget‑me fan‑out), §5.6 WAL.
 
 ### Personas — explicit coverage
