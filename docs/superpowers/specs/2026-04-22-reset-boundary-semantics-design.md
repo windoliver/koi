@@ -37,9 +37,9 @@ This table is the canonical reset contract. All guard resets and governance coun
 
 **File:** `packages/kernel/core/src/governance.ts`
 
-#### 1a. Rename `iteration_reset` → `run_reset`
+#### 1a. Rename `iteration_reset` → `run_reset` (hard rename, no deprecated alias)
 
-The event fires at `run_start`, not at any "iteration" boundary. Rename aligns with Claude Code SDK vocabulary (`run()` call) and the issue's own boundary table.
+The event fires at `run_start`, not at any "iteration" boundary. All `iteration_reset` consumers are internal to koi v2 — there are no external API consumers. The rename happens in one PR: producers and all consumers updated together, no dual-emit, no deprecated union member. Section 1c details scope.
 
 New payload shape — flat provenance fields, consistent with Claude Code's `SessionStartHookInput.source` pattern and Koi v2's existing flat `reason` field on tool step metadata:
 
@@ -48,7 +48,7 @@ New payload shape — flat provenance fields, consistent with Claude Code's `Ses
     readonly kind: "run_reset"
     readonly source: "host" | "guard" | "engine"
     readonly reason?: string
-    readonly boundaryId: string  // opaque ID, not chained — generated at reset site
+    readonly boundaryId: string  // deterministic: `${sessionId}:run:${runIndex}` — stable across replays
   }
 ```
 
@@ -59,9 +59,13 @@ New payload shape — flat provenance fields, consistent with Claude Code's `Ses
     readonly kind: "session_reset"
     readonly source: "host" | "engine"
     readonly reason?: string
-    readonly boundaryId: string
+    readonly boundaryId: string  // deterministic: `${sessionId}:session:${sessionIndex}`
   }
 ```
+
+**Deterministic `boundaryId`:** IDs are derived from existing engine state, not random UUIDs, so golden replay snapshots are stable across runs. Format: `${sessionId}:run:${runIndex}` for `run_reset`, `${sessionId}:session:${sessionIndex}` for `session_reset`.
+
+**No `run_reset_partial` event.** Legacy guards (those without `resetForRun()`) are incompatible with `resetBudgetPerRun: true`. `createKoi()` throws at construction time if both are present. This is fail-closed: stale guard state can never silently persist into a new run.
 
 #### 1b. Add `ResetBoundary` vocabulary constant
 
@@ -75,9 +79,19 @@ export const RESET_BOUNDARIES = {
 
 This constant is the machine-readable form of the mapping table above. Agents and tools can import it; docs reference it.
 
-#### 1c. Deprecate `iteration_reset` kind
+#### 1c. Remove `iteration_reset` — rename everywhere in this PR
 
-Keep `iteration_reset` as a `@deprecated` union member for one release to avoid hard breaks in any existing governance controller consumers. Remove in the follow-up cleanup PR.
+All `iteration_reset` consumers are internal to koi v2 (governance-controller, golden-replay tests, in-memory-controller). There are no external consumers. Dual-writing two events for one boundary creates a double-counting hazard for any consumer that scans reset events generically — a problem that documentation and dedup contracts cannot reliably prevent.
+
+**Approach: hard rename in one PR.**
+
+- `iteration_reset` kind removed from `GovernanceEvent` union
+- `governance-controller.ts` `record()` dispatch updated to handle `run_reset` and `run_reset_partial`
+- Golden replay trajectory assertions updated to expect `run_reset`
+- `resetIterationBudgetPerRun` renamed to `resetBudgetPerRun` in `CreateKoiOptions`
+- No deprecated aliases, no dual-write, no consumer dedup burden
+
+This is safe because the rename is contained entirely within the koi v2 monorepo.
 
 ---
 
@@ -94,29 +108,37 @@ function resetRunBoundary(
   guards: ReadonlySet<KoiMiddleware>,
   governance: GovernanceController,
   runStartedAt: number,
-): { legacyGuardFound: boolean } {
-  let legacyGuardFound = false
+  boundaryId: string,  // deterministic, passed by caller: `${sessionId}:run:${runIndex}`
+): void {
   for (const mw of guards) {
     if (isIterationGuardHandle(mw)) {
       mw.resetForRun(runStartedAt)
-    } else if (isLegacyIterationGuard(mw)) {
-      legacyGuardFound = true
     }
+    // Legacy guards (name-based, no brand) are rejected at createKoi() time when
+    // resetBudgetPerRun: true — they cannot appear here at runtime.
   }
-  if (!legacyGuardFound) {
-    governance.record({
-      kind: "run_reset",
-      source: "engine",
-      boundaryId: crypto.randomUUID(),
-    })
-  }
-  return { legacyGuardFound }
+  governance.record({ kind: "run_reset", source: "engine", boundaryId })
 }
 ```
 
-Where `isLegacyIterationGuard(mw)` detects a guard that carries `ITERATION_GUARD_BRAND` but has no `resetForRun()` method — the inverse of the existing `isIterationGuardHandle` predicate. Both predicates live in `engine-compose/src/guards.ts`.
+**`run_reset` is emitted unconditionally at every run boundary where `resetBudgetPerRun: true`.** There is no code path that suppresses the event. Legacy guards cannot reach `resetRunBoundary()` at runtime because `createKoi()` throws a `KoiError` at construction time when `resetBudgetPerRun: true` and any middleware in the initial set matches `isLegacyIterationGuard()`. This fail-closed gate ensures the vocabulary table invariant holds: `run_start` always maps to exactly one `run_reset` event.
 
-Both adapter paths replace their current inline duplicate sequences with a single `resetRunBoundary(...)` call. The timing difference (immediate vs deferred via `applyRecomposition`) stays — that is intentional adapter-specific behavior. Only the duplicated logic is consolidated.
+Where `isLegacyIterationGuard(mw)` matches the actual compatibility surface in the engine today: a guard whose `name` is `"koi:iteration-guard"` but which lacks `ITERATION_GUARD_BRAND` and `resetForRun()` (i.e., pre-brand guards, detected via `mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)`). This matches the name-based fallback at `koi.ts:654-660`. The predicate lives in `engine-compose/src/guards.ts` alongside `isIterationGuardHandle`.
+
+No `run_reset_partial` kind — `run_reset` always represents a complete successful reset.
+
+Both adapter paths replace their current inline duplicate sequences with a single `resetRunBoundary(...)` call.
+
+**Timing: non-cooperating adapters reset at `run_start`; cooperating adapters reset at end of `applyRecomposition()`.**
+
+These timings are not unified — they are intentionally different because the set of guards that must be reset differs:
+
+- **Non-cooperating adapter**: the guard set is fixed at `run_start` (no dynamic composition). `resetRunBoundary()` is called immediately at run entry.
+- **Cooperating adapter**: forge and `dynamicMiddleware()` can introduce new guards during `applyRecomposition()`. `resetRunBoundary()` is called as the last step of `applyRecomposition()`, targeting the final middleware snapshot. This ensures every guard that will execute in the new run is reset before the first turn.
+
+**Hard invariant for cooperating adapters (not just prose — enforced by the invariant test in 3b Case 2):** `applyRecomposition()` must not read any mutable guard state (`turns`, `startedAt`, `lastActivityMs`) at any point. It reads only middleware metadata, forge outputs, and manifests. This invariant makes deferred reset safe: recomposition cannot observe stale state because it does not touch guard counters.
+
+**What `resetRunBoundary()` unifies:** the reset logic (predicate, governance emit, deterministic boundaryId, fail-closed on unresettable guards). The call site timing differs per adapter but is now documented and tested explicitly.
 
 #### 2b. Rename config option
 
@@ -131,7 +153,7 @@ readonly resetIterationBudgetPerRun?: boolean
 
 #### 2c. Add `boundaryId` to `session_reset` emission
 
-`koi.ts:2348` (inside `cycleSession()`) — add `source: "host"` and `boundaryId: crypto.randomUUID()` to the existing `session_reset` record call.
+`koi.ts:2348` (inside `cycleSession()`) — add `source: "host"` and a deterministic `boundaryId` to the existing `session_reset` record call. Format: `${currentSessionId}:session:${sessionCycleIndex}` where `sessionCycleIndex` is a per-runtime monotonic counter incremented on each `cycleSession()` call. This keeps replay fixtures stable, consistent with the `run_reset` derivation contract.
 
 ---
 
@@ -146,14 +168,27 @@ Drive `createIterationGuard` through 2 sequential `resetForRun()` calls with rea
 
 #### 3b. Integration — `reset-boundary.integration.test.ts` (new file, alongside `activity-timeout.integration.test.ts`)
 
-Full `createKoi()` with mock adapter (no LLM):
+Three test cases, all using `createKoi()` with mock adapters (no LLM):
 
-- Call `runtime.run()` twice sequentially — first run hits max turns, second run succeeds
-- Spy on governance `record()` — assert `run_reset` fires between runs with `source: "engine"` and a non-empty `boundaryId`
-- Assert `session_reset` fires on `runtime.cycleSession()` with `source: "host"` and a non-empty `boundaryId`
-- Assert the two `boundaryId` values are distinct (each reset is a unique event)
+**Case 1 — Non-cooperating adapter, full reset:**
+- Call `runtime.run()` twice sequentially — first run exhausts max turns, second run succeeds
+- Assert `run_reset` fires between runs with `source: "engine"` and deterministic `boundaryId` (`${sessionId}:run:1`)
+- Assert no guard state from run 1 (turns, duration) is visible during run 2
+- Assert `session_reset` fires on `runtime.cycleSession()` with `source: "host"` and `boundaryId` (`${sessionId}:session:1`)
+- Assert the two `boundaryId` values are distinct
 
-This is the primary regression test the issue requires.
+**Case 2 — Cooperating adapter, full reset:**
+- Same as Case 1 but using a cooperating adapter with at least one dynamic middleware guard
+- Asserts that the dynamically added guard from run 2 is included in the reset sweep (not just guards present at run_start)
+- Verifies reset occurs after `applyRecomposition()` completes, before first turn of run 2
+
+**Case 3 — Legacy guard, fail-closed at construction:**
+- Attempt to `createKoi({ resetBudgetPerRun: true, middleware: [legacyGuard] })` where `legacyGuard` has `name === "koi:iteration-guard"` but no `resetForRun()`
+- Assert `createKoi()` throws a `KoiError` at construction time
+- Assert the error message identifies the incompatible guard by name
+- Assert no `run_reset` event is emitted (the runtime never starts)
+
+This is the primary regression test matrix the issue requires.
 
 #### 3c. Golden replay — `multi-submit` cassette (new entry)
 
@@ -185,10 +220,21 @@ Documents the canonical boundary → event mapping table, the `RESET_BOUNDARIES`
 
 ---
 
+## Schema Migration Safety
+
+The new required fields (`source`, `boundaryId`) and optional `reason` are wire-format changes. Wire compatibility is not a risk here for three reasons:
+
+1. **Single-process, same-deploy:** `@koi/engine` and all governance consumers (`governance-controller.ts`, `in-memory-controller.ts`, golden replay) are compiled and deployed as one monorepo build. There is no rolling-deploy window where old consumers coexist with a new producer. Producer and all consumers change atomically in the same PR.
+
+2. **TypeScript compile-time enforcement:** The `GovernanceEvent` union is a discriminated union with exhaustive `switch` in all consumers. Adding required fields causes a compile error in every consumer that constructs or destructures the event. The PR cannot pass `bun run typecheck` until every consumer is updated — it is mechanically impossible to ship a mismatched pair.
+
+3. **No persisted payloads:** Governance events are in-memory only in v2. No historical event payloads exist that could be deserialized against the old schema. Replay cassettes are re-recorded as part of the PR.
+
+All producers (engine paths, `cycleSession()`) and all consumers are updated together in the same commit set.
+
 ## What This Does Not Do
 
 - Does not add a `turn_reset` event — not in the issue's acceptance criteria
-- Does not remove `iteration_reset` kind immediately — one-release deprecation window
 - Does not add parent event chaining (`parentBoundaryId`) — no precedent in CC or v1; YAGNI
 - Does not change error-rate reset boundary (session-scoped by design, documented as intentional)
 
@@ -199,8 +245,8 @@ Documents the canonical boundary → event mapping table, the `RESET_BOUNDARIES`
 | File | Change |
 |------|--------|
 | `packages/kernel/core/src/governance.ts` | Rename event, add provenance fields, add `RESET_BOUNDARIES` const |
-| `packages/kernel/engine/src/koi.ts` | Extract `resetRunBoundary()`, wire both adapter paths, add `boundaryId` to `cycleSession()` |
-| `packages/kernel/engine/src/types.ts` | Rename `resetIterationBudgetPerRun` → `resetBudgetPerRun` with deprecated alias |
+| `packages/kernel/engine/src/koi.ts` | Extract `resetRunBoundary()`, wire both adapter paths, add `boundaryId` to `cycleSession()`, add legacy-guard fail-closed check at `createKoi()` |
+| `packages/kernel/engine/src/types.ts` | Rename `resetIterationBudgetPerRun` → `resetBudgetPerRun` (hard rename, same PR) |
 | `packages/kernel/engine-compose/src/guards.test.ts` | New `describe` block for reset regression |
 | `packages/meta/runtime/src/__tests__/reset-boundary.integration.test.ts` | New integration test file |
 | `packages/meta/runtime/scripts/record-cassettes.ts` | New `multi-submit` query config |
