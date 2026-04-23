@@ -321,44 +321,41 @@ describe("evaluateSpecGuard — exact-argv detection with canary suffix", () => 
 });
 
 describe("evaluateSpecGuard — path-qualified binaries (#1919 regression)", () => {
-  test("/bin/rm /etc/passwd → resolves to complete spec + Write deny applies", async () => {
-    // Without verifiedBaseName, /bin/rm would return refused spec (no semantic check).
-    // With the fix, basename "rm" is extracted and the complete spec fires Write rules.
+  test("/bin/rm /etc/passwd + allow → downgrade to ask (refused spec, no verifiedBaseName)", async () => {
+    // Path-qualified argv[0] → evaluateBashCommand returns refused (identity not verified).
+    // We intentionally do NOT pass verifiedBaseName: basename alone is insufficient
+    // (/tmp/rm could impersonate /bin/rm). Refused → exact-argv guard → ask.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "/bin/rm /etc/passwd",
       currentDecision: allowDecision,
-      resolveQuery: async (q) => {
-        if (q.action === "write" && q.resource.startsWith("/etc/"))
-          return hardDeny("writes to /etc denied");
-        return allowDecision;
-      },
+      resolveQuery: async (_q) => allowDecision, // broad allow, canary also allows
       baseQuery,
       registry,
       backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
-    expect(result.decision.effect).toBe("deny");
-    expect(result.specKind).toBe("complete");
+    // Refused + broad allow → downgrade to ask (exact-argv guard fires)
+    expect(result.decision.effect).toBe("ask");
+    expect(result.specKind).toBe("refused");
   });
 
-  test("/usr/bin/curl https://evil.com → Network deny applies via verifiedBaseName", async () => {
+  test("/usr/bin/curl https://evil.com + allow → downgrade to ask (refused spec)", async () => {
+    // Same principle: path-qualified binary gets refused spec → exact-argv guard.
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "/usr/bin/curl https://evil.com/path",
       currentDecision: allowDecision,
-      resolveQuery: async (q) => {
-        if (q.action === "network" && q.resource === "evil.com") return hardDeny("blocked");
-        return allowDecision;
-      },
+      resolveQuery: async (_q) => allowDecision,
       baseQuery,
       registry,
       backendSupportsDualKey: true,
     });
     expect(result.kind).toBe("spec-evaluated");
     if (result.kind !== "spec-evaluated") return;
-    expect(result.decision.effect).toBe("deny");
+    expect(result.decision.effect).toBe("ask");
+    expect(result.specKind).toBe("refused");
   });
 });
 
@@ -391,7 +388,7 @@ describe("evaluateSpecGuard — public default-deny field detection (#1919 regre
     expect(result.decision.effect).toBe("allow");
   });
 
-  test("backend with defaultDeny:true field skips Write rule (not explicit deny)", async () => {
+  test("defaultDeny:true field skips Write rule (not explicit deny)", async () => {
     const result = await evaluateSpecGuard({
       toolId: "bash",
       rawCommand: "rm /tmp/safe",

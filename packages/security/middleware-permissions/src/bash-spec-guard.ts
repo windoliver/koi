@@ -170,7 +170,18 @@ export async function evaluateSpecGuard(opts: {
   // calls return the cached promise and complete in O(1) once warm. Awaiting
   // here guarantees no parse-unavailable(not-initialized) denies from a
   // startup race between middleware construction and the first bash request.
-  await initializeBashAst();
+  // Wrap in try/catch: WASM/I/O failures must produce a controlled hard deny,
+  // not an unhandled exception that escapes wrapToolCall's middleware path.
+  try {
+    await initializeBashAst();
+  } catch (e: unknown) {
+    const reason = e instanceof Error ? e.message : String(e);
+    return {
+      kind: "spec-evaluated",
+      decision: { effect: "deny", reason: `bash-ast init failed: ${reason}` },
+      specKind: "refused",
+    };
+  }
 
   const analysis = await analyzeBashCommand(rawCommand);
   if (analysis.kind === "parse-unavailable") {
@@ -225,17 +236,15 @@ export async function evaluateSpecGuard(opts: {
     return { kind: "skipped", reason: "empty-command-list" };
   }
 
-  // If argv[0] is a path-qualified binary (e.g. /bin/rm, /usr/bin/curl), the
-  // bash-classifier has already normalized it and confirmed executable identity.
-  // Extract the basename and pass as verifiedBaseName so evaluateBashCommand can
-  // match the correct spec instead of falling back to refused/parse-error.
-  const argv0 = cmd.argv[0] ?? "";
-  const verifiedBaseName = argv0.includes("/") ? (argv0.split("/").pop() ?? argv0) : undefined;
-
+  // Do NOT pass verifiedBaseName for path-qualified argv[0] (e.g. /bin/rm).
+  // evaluateBashCommand requires consumer-side executable-identity verification
+  // before accepting a verifiedBaseName — basename alone is insufficient because
+  // /tmp/rm or ./curl could impersonate /bin/rm. Path-qualified commands fall
+  // through to the refused spec path, which triggers the exact-argv guard and
+  // keeps them in the ask/deny trust tier until an explicit exact rule exists.
   const specResult = evaluateBashCommand(
     { argv: cmd.argv, envVars: cmd.envVars, redirects: cmd.redirects },
     registry,
-    verifiedBaseName !== undefined ? { verifiedBaseName } : undefined,
   );
 
   if (specResult.kind === "refused" || specResult.kind === "partial") {
