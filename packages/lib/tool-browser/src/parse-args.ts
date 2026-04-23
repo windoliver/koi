@@ -254,14 +254,14 @@ export function parseUploadFiles(
     }
     // Upload MIME priority:
     //  1. Strong magic-byte detection — always authoritative; prevents mislabeling
-    //     arbitrary bytes as image/png to bypass accept filters/MIME validators
+    //     arbitrary bytes as image/png to bypass accept filters/MIME validators.
     //  2. Extension-based detection via detectFromPath — derives MIME from the
-    //     caller-supplied filename; equally caller-controlled, but at least
-    //     grounded in the file's stated type rather than an arbitrary string.
-    //     Provides useful MIME for text/csv, application/json, etc.
-    //  3. application/octet-stream — safe final default
+    //     caller-supplied filename; grounded in the file's stated type rather
+    //     than an arbitrary opaque string.
+    //  3. application/octet-stream — safe final default (via detectFromPath).
     // The caller-supplied `mimeType` field is intentionally not used: it is
-    // an opaque string with no validation against content or filename.
+    // an unvalidated string that could be used to bypass accept filters/MIME
+    // validators on the server side.
     const bytes = new Uint8Array(Buffer.from(content, "base64"));
     const detected = detectFromBytes(bytes);
     const resolvedMime =

@@ -3513,8 +3513,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // Use formatAtReferencesForModel (cleanText + injected content) only when
         // text refs were actually resolved. Otherwise send the original text so
         // the model sees @-references and can attempt its own resolution via tools.
-        const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+        // When BOTH text and binary refs are present, formatAtReferencesForModel
+        // uses cleanText which strips ALL @-tokens — append a note so the model
+        // knows binary refs exist and can access them via tools.
+        let modelText: string;
+        if (resolved.injections.length > 0) {
+          modelText = formatAtReferencesForModel(resolved);
+          if (resolved.binaryInjections.length > 0) {
+            const binaryRefs = resolved.binaryInjections
+              .map((b) => (b.filePath.includes(" ") ? `@"${b.filePath}"` : `@${b.filePath}`))
+              .join(", ");
+            modelText += `\n\n[Binary files referenced but not attached — use tools to access: ${binaryRefs}]`;
+          }
+        } else {
+          modelText = text;
+        }
 
         let stream: AsyncIterable<EngineEvent>;
         try {
