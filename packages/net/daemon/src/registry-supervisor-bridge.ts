@@ -17,6 +17,7 @@
  */
 
 import type {
+  BackgroundSessionRecord,
   BackgroundSessionRegistry,
   BackgroundSessionStatus,
   Supervisor,
@@ -38,6 +39,27 @@ import type { KoiError } from "@koi/core/errors";
  * straying into "effectively forever" territory.
  */
 const TERMINATING_FRESHNESS_MS = 30_000;
+
+/**
+ * Retention window for terminal session records (#1866 / 3b-5c D7). Entries
+ * older than this age are swept opportunistically on every terminal-status
+ * update. Provides a post-mortem window for operators (review overnight
+ * crashes the next morning) while keeping disk usage bounded.
+ *
+ * Opportunistic means "no dedicated process": the sweep runs inline when the
+ * bridge writes an `exited`/`crashed` status. Amortized cost is O(N) per
+ * terminal event, trivial in practice.
+ */
+const TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Minimum gap between opportunistic sweeps. Without this, a burst of terminal
+ * events during a shutdown triggers `list() + N * unregister()` on every
+ * event — quadratic-ish on workloads with many workers. Clamped to 10s so a
+ * scheduler running continuously for a day still runs ~8640 sweeps even if
+ * terminal events never stop arriving, vs. one-per-event.
+ */
+const SWEEP_COALESCE_MS = 10_000;
 
 export interface RegistryBridge {
   /** Stop the bridge and release the underlying watchAll iterator. */
@@ -78,6 +100,33 @@ export function attachRegistry(config: AttachRegistryConfig): RegistryBridge {
   // terminal event would cause the bridge to abandon the event mid-flight
   // and leave sessions stuck in non-terminal status.
   let drainDeadline = 0;
+  // Last wall-clock time the retention sweep ran. Used to coalesce bursts
+  // of terminal events so the list+unregister loop doesn't repeat on every
+  // event in a shutdown cascade.
+  let lastSweepAt = 0;
+
+  const maybeSweepExpired = async (): Promise<void> => {
+    const now = Date.now();
+    if (now - lastSweepAt < SWEEP_COALESCE_MS) return;
+    lastSweepAt = now;
+    let records: readonly BackgroundSessionRecord[];
+    try {
+      records = await registry.list();
+    } catch {
+      return; // Non-fatal: sweep failure doesn't block the main update
+    }
+    const cutoff = now - TERMINAL_RETENTION_MS;
+    for (const record of records) {
+      const ended = record.endedAt;
+      if (ended === undefined || !Number.isFinite(ended)) continue;
+      if (ended >= cutoff) continue;
+      // Fire-and-forget: a single unregister failure (raced, permissions,
+      // stolen lockfile) must not stop us from sweeping the rest.
+      void registry.unregister(record.workerId).catch(() => {
+        /* intentionally swallowed — sweep is advisory */
+      });
+    }
+  };
 
   const handle = async (event: WorkerEvent): Promise<void> => {
     const mapped = mapEvent(event);
@@ -132,6 +181,12 @@ export function attachRegistry(config: AttachRegistryConfig): RegistryBridge {
     if (!result.ok) {
       lastErr = result.error;
       if (onError !== undefined) onError(result.error, event);
+    }
+    // Opportunistic 24h retention sweep (#1866 D7). Run only when writing a
+    // terminal status — that's when the entry count would otherwise grow
+    // unbounded. Coalesced by SWEEP_COALESCE_MS so bursts don't repeat.
+    if (status === "exited" || status === "crashed") {
+      await maybeSweepExpired();
     }
   };
 

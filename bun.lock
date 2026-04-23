@@ -960,6 +960,10 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-reconcile": "workspace:*",
+      },
     },
     "packages/net/mcp": {
       "name": "@koi/mcp",

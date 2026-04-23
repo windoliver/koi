@@ -40,7 +40,15 @@
 
 import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
 import { loadConfig } from "@koi/config";
-import type { FileSystemConfig } from "@koi/core";
+import type {
+  ChildIsolation,
+  ChildSpec,
+  FileSystemConfig,
+  RestartType,
+  SupervisionConfig,
+  SupervisionStrategy,
+} from "@koi/core";
+import { validateSupervisionConfig } from "@koi/core";
 import { validateFileSystemConfig } from "@koi/runtime";
 
 /**
@@ -262,6 +270,25 @@ export interface ManifestConfig {
    *     alertThresholds: [0.7, 0.9]
    */
   readonly governance: ManifestGovernanceConfig | undefined;
+  /**
+   * Optional supervision tree declaration. When present, the runtime
+   * auto-activates the supervision subsystem (#1866) — children listed
+   * here are spawned and restart-managed per the declared strategy.
+   *
+   *   supervision:
+   *     strategy: { kind: one_for_one }
+   *     maxRestarts: 5
+   *     maxRestartWindowMs: 60000
+   *     children:
+   *       - name: worker-a
+   *         restart: permanent
+   *         isolation: in-process
+   *
+   * `undefined` means supervision is NOT activated for this manifest.
+   * Shape-validated against `@koi/core`'s `validateSupervisionConfig`
+   * at parse time so malformed configs fail fast.
+   */
+  readonly supervision: SupervisionConfig | undefined;
 }
 
 /**
@@ -405,6 +432,11 @@ export async function loadManifestConfig(
     return governanceResult;
   }
 
+  const supervisionResult = parseManifestSupervision(raw.supervision);
+  if (!supervisionResult.ok) {
+    return supervisionResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -505,8 +537,149 @@ export async function loadManifestConfig(
       filesystem,
       middleware: middlewareResult.value,
       governance: governanceResult.value,
+      supervision: supervisionResult.value,
     },
   };
+}
+
+/**
+ * Parse the manifest `supervision:` section. Accepts:
+ *   strategy: one_for_one | one_for_all | rest_for_one
+ *     (accepts the bare string or the explicit { kind: ... } form)
+ *   maxRestarts: non-negative integer (default 5)
+ *   maxRestartWindowMs: positive number (default 60_000)
+ *   children: list of { name, restart, shutdownTimeoutMs?, isolation? }
+ *
+ * Returns `{ ok: true, value: undefined }` when the section is absent so
+ * manifests without supervision stay opt-out.
+ */
+function parseManifestSupervision(
+  raw: unknown,
+):
+  | { readonly ok: true; readonly value: SupervisionConfig | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        "manifest.supervision must be an object with keys: strategy, maxRestarts, maxRestartWindowMs, children",
+    };
+  }
+  const obj = raw as Record<string, unknown>;
+
+  // Strategy accepts either a bare string (`strategy: one_for_one`) or the
+  // discriminated form (`strategy: { kind: one_for_one }`). The canonical
+  // shape is the object form; the bare string is a YAML ergonomic shortcut
+  // that matches how operators typically write it.
+  const strategyRaw = obj.strategy;
+  let strategy: SupervisionStrategy;
+  if (typeof strategyRaw === "string") {
+    if (
+      strategyRaw !== "one_for_one" &&
+      strategyRaw !== "one_for_all" &&
+      strategyRaw !== "rest_for_one"
+    ) {
+      return {
+        ok: false,
+        error: `manifest.supervision.strategy must be one of: one_for_one, one_for_all, rest_for_one (got "${strategyRaw}")`,
+      };
+    }
+    strategy = { kind: strategyRaw };
+  } else if (typeof strategyRaw === "object" && strategyRaw !== null) {
+    const kind = (strategyRaw as Record<string, unknown>).kind;
+    if (kind !== "one_for_one" && kind !== "one_for_all" && kind !== "rest_for_one") {
+      return {
+        ok: false,
+        error: `manifest.supervision.strategy.kind must be one of: one_for_one, one_for_all, rest_for_one (got "${String(kind)}")`,
+      };
+    }
+    strategy = { kind };
+  } else {
+    return {
+      ok: false,
+      error:
+        "manifest.supervision.strategy is required — use e.g. `strategy: one_for_one` or `strategy: { kind: one_for_one }`",
+    };
+  }
+
+  const maxRestartsRaw = obj.maxRestarts;
+  const maxRestarts: number = maxRestartsRaw === undefined ? 5 : Number(maxRestartsRaw);
+  const maxRestartWindowMsRaw = obj.maxRestartWindowMs;
+  const maxRestartWindowMs: number =
+    maxRestartWindowMsRaw === undefined ? 60_000 : Number(maxRestartWindowMsRaw);
+
+  const childrenRaw = obj.children;
+  if (!Array.isArray(childrenRaw)) {
+    return {
+      ok: false,
+      error:
+        "manifest.supervision.children must be a list of child specs (may be empty). Each entry requires `name` and `restart`.",
+    };
+  }
+  const children: ChildSpec[] = [];
+  for (const [i, entry] of childrenRaw.entries()) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return {
+        ok: false,
+        error: `manifest.supervision.children[${i}] must be an object with at least { name, restart }`,
+      };
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.name !== "string" || e.name.length === 0) {
+      return {
+        ok: false,
+        error: `manifest.supervision.children[${i}].name must be a non-empty string`,
+      };
+    }
+    if (e.restart !== "permanent" && e.restart !== "transient" && e.restart !== "temporary") {
+      return {
+        ok: false,
+        error: `manifest.supervision.children[${i}].restart must be one of: permanent, transient, temporary (got "${String(e.restart)}")`,
+      };
+    }
+    const restart: RestartType = e.restart;
+    const child: {
+      name: string;
+      restart: RestartType;
+      shutdownTimeoutMs?: number;
+      isolation?: ChildIsolation;
+    } = { name: e.name, restart };
+    if (e.shutdownTimeoutMs !== undefined) {
+      const n = Number(e.shutdownTimeoutMs);
+      if (!Number.isFinite(n) || n < 0) {
+        return {
+          ok: false,
+          error: `manifest.supervision.children[${i}].shutdownTimeoutMs must be a non-negative number`,
+        };
+      }
+      child.shutdownTimeoutMs = n;
+    }
+    if (e.isolation !== undefined) {
+      if (e.isolation !== "in-process" && e.isolation !== "subprocess") {
+        return {
+          ok: false,
+          error: `manifest.supervision.children[${i}].isolation must be "in-process" or "subprocess"`,
+        };
+      }
+      child.isolation = e.isolation;
+    }
+    children.push(child);
+  }
+
+  const config: SupervisionConfig = {
+    strategy,
+    maxRestarts,
+    maxRestartWindowMs,
+    children,
+  };
+  const valid = validateSupervisionConfig(config);
+  if (!valid.ok) {
+    return { ok: false, error: `manifest.supervision: ${valid.error.message}` };
+  }
+  return { ok: true, value: valid.value };
 }
 
 /**

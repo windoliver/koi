@@ -500,4 +500,89 @@ describe("attachRegistry", () => {
     await supervisor.shutdown("test-done");
     await bridge.close();
   });
+
+  it("sweeps terminal records older than the 24h retention window on terminal events", async () => {
+    const { backend, exit } = createFakeBackend();
+    const supResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 1000,
+      backends: { "in-process": backend },
+    });
+    if (!supResult.ok) return;
+    const supervisor = supResult.value;
+
+    const registry = createFileSessionRegistry({ dir });
+    const bridge = attachRegistry({ supervisor, registry });
+
+    // Pre-seed an "old" terminal record: endedAt is 25h in the past. The
+    // bridge's opportunistic sweep (D7) should evict it the next time it
+    // writes a terminal status for any worker.
+    const stale = workerId("w-stale");
+    const dayMs = 24 * 60 * 60 * 1000;
+    await registry.register({
+      workerId: stale,
+      agentId: agentId("a"),
+      pid: 99,
+      status: "exited",
+      startedAt: Date.now() - 26 * 60 * 60 * 1000,
+      endedAt: Date.now() - 25 * 60 * 60 * 1000,
+      exitCode: 0,
+      logPath: "",
+      command: ["noop"],
+      backendKind: "in-process",
+    });
+    expect(await registry.get(stale)).toBeDefined();
+
+    // A fresh terminal record (endedAt inside the window) must survive.
+    const recent = workerId("w-recent");
+    await registry.register({
+      workerId: recent,
+      agentId: agentId("a"),
+      pid: 100,
+      status: "exited",
+      startedAt: Date.now() - 60_000,
+      endedAt: Date.now() - 60_000,
+      exitCode: 0,
+      logPath: "",
+      command: ["noop"],
+      backendKind: "in-process",
+    });
+
+    // Live worker to trigger a real exited event, which invokes the sweep.
+    const live = workerId("w-live");
+    await registry.register({
+      workerId: live,
+      agentId: agentId("a"),
+      pid: 1,
+      status: "starting",
+      startedAt: Date.now(),
+      logPath: "",
+      command: ["noop"],
+      backendKind: "in-process",
+    });
+    await supervisor.start({
+      workerId: live,
+      agentId: agentId("a"),
+      command: ["noop"],
+    });
+    await waitForStatus(registry, live, "running");
+    exit(live, 0);
+    await waitForStatus(registry, live, "exited");
+
+    // Sweep is fire-and-forget (`void registry.unregister(...).catch(...)`);
+    // poll until the stale record is gone rather than asserting synchronously.
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if ((await registry.get(stale)) === undefined) break;
+      await Bun.sleep(10);
+    }
+    expect(await registry.get(stale)).toBeUndefined();
+    expect(await registry.get(recent)).toBeDefined();
+    // Hint to the linter that `dayMs` is load-bearing: the retention window
+    // length is the contract this test encodes.
+    expect(dayMs).toBe(24 * 60 * 60 * 1000);
+
+    await supervisor.shutdown("test-done");
+    await bridge.close();
+  });
 });

@@ -38,6 +38,20 @@ export type SupervisionStrategy =
 export type RestartType = "permanent" | "transient" | "temporary";
 
 // ---------------------------------------------------------------------------
+// Child isolation mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Isolation mode for a supervised child. Default "in-process" — child runs
+ * in the same Bun runtime as the parent. "subprocess" isolates the child in
+ * a separate Bun process via @koi/daemon (activated in 3b-5c).
+ */
+export type ChildIsolation = "in-process" | "subprocess";
+
+/** Default isolation when ChildSpec.isolation is omitted. */
+export const DEFAULT_CHILD_ISOLATION: ChildIsolation = "in-process";
+
+// ---------------------------------------------------------------------------
 // Child spec — declares a child within a supervision tree
 // ---------------------------------------------------------------------------
 
@@ -46,6 +60,8 @@ export interface ChildSpec {
   readonly restart: RestartType;
   /** Shutdown timeout in ms before force-terminating. Default: 5000. */
   readonly shutdownTimeoutMs?: number;
+  /** Process isolation mode. Default: "in-process". */
+  readonly isolation?: ChildIsolation;
 }
 
 // ---------------------------------------------------------------------------

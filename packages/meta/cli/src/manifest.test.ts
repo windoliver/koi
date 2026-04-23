@@ -339,3 +339,138 @@ describe("loadManifestConfig: governance block (gov-10)", () => {
     expect(result.error).toContain("governance");
   });
 });
+
+describe("loadManifestConfig: supervision block", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-supervision-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits supervision when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.supervision).toBeUndefined();
+  });
+
+  test("parses full supervision block with explicit strategy object", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "supervision:",
+        "  strategy: { kind: one_for_one }",
+        "  maxRestarts: 3",
+        "  maxRestartWindowMs: 30000",
+        "  children:",
+        "    - name: worker-a",
+        "      restart: permanent",
+        "      isolation: in-process",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.supervision).toEqual({
+      strategy: { kind: "one_for_one" },
+      maxRestarts: 3,
+      maxRestartWindowMs: 30000,
+      children: [{ name: "worker-a", restart: "permanent", isolation: "in-process" }],
+    });
+  });
+
+  test("accepts bare-string strategy shortcut", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "supervision:",
+        "  strategy: one_for_all",
+        "  children:",
+        "    - name: a",
+        "      restart: transient",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.supervision?.strategy).toEqual({ kind: "one_for_all" });
+    // Defaults: maxRestarts=5, maxRestartWindowMs=60000
+    expect(result.value.supervision?.maxRestarts).toBe(5);
+    expect(result.value.supervision?.maxRestartWindowMs).toBe(60_000);
+  });
+
+  test("rejects unknown strategy", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "supervision:",
+        "  strategy: bogus",
+        "  children: []",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("strategy");
+  });
+
+  test("rejects unknown restart type", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "supervision:",
+        "  strategy: one_for_one",
+        "  children:",
+        "    - name: w",
+        "      restart: forever",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("restart");
+  });
+
+  test("rejects duplicate child names (validator catches it)", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "supervision:",
+        "  strategy: one_for_one",
+        "  children:",
+        "    - name: dup",
+        "      restart: permanent",
+        "    - name: dup",
+        "      restart: permanent",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("duplicate");
+  });
+
+  test("rejects non-object supervision block", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "supervision: not-an-object"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("supervision");
+  });
+});
