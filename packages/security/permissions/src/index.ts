@@ -28,4 +28,8 @@ export {
   PLAN_SAFE_VOCABULARY,
   SOURCE_PRECEDENCE,
 } from "./rule-types.js";
-export { mapSettingsToSourcedRules } from "./settings-bridge.js";
+export type { TuiRuleNormalizationResult } from "./settings-bridge.js";
+export {
+  mapSettingsToSourcedRules,
+  widenCommandScopedRulesForTui,
+} from "./settings-bridge.js";

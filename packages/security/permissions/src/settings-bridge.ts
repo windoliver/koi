@@ -102,3 +102,56 @@ export function mapSettingsToSourcedRules(
 
   return rules;
 }
+
+/**
+ * Result of `widenCommandScopedRulesForTui`.
+ * `hadCommandScoped` is true when at least one rule was widened or stripped,
+ * so callers can emit a warning without repeating the detection logic.
+ */
+export interface TuiRuleNormalizationResult {
+  readonly rules: readonly SourcedRule[];
+  readonly hadCommandScoped: boolean;
+}
+
+/**
+ * Normalize `SourcedRule[]` for use with the single-key TUI permission backend
+ * (`createPermissionBackend`), which never receives enriched `"Tool:command"`
+ * resource strings — only plain tool ids.
+ *
+ * Command-scoped rules (pattern has `":"` but NOT the bare enriched suffix `":**"`)
+ * cannot be evaluated as-is by the single-key backend:
+ *
+ *   deny/ask  → widened to tool-level (`"Bash:rm -rf*"` → `"Bash**"`)
+ *               fail-closed: the whole tool is blocked when a command is restricted
+ *   allow     → stripped entirely
+ *               fail-open widening (`"Bash:git *"` → allow all Bash) would over-permit
+ *
+ * The enriched-wildcard suffix `":**"` (e.g. `"Read:**"`) is NOT command-scoped —
+ * it is the bare-tool enriched pattern emitted by `mapSettingsToSourcedRules` to
+ * match any enriched resource for that tool. It passes through unchanged.
+ *
+ * Rules without `":"` are returned unchanged.
+ * Use `koi start` (marker-aware `createPatternPermissionBackend`) for precise
+ * command-scoped enforcement without widening.
+ */
+export function widenCommandScopedRulesForTui(
+  rules: readonly SourcedRule[],
+): TuiRuleNormalizationResult {
+  let hadCommandScoped = false;
+  const normalized: SourcedRule[] = [];
+  for (const rule of rules) {
+    // ":**" suffix is the bare-tool enriched wildcard, not a command-scoped pattern.
+    if (!rule.pattern.includes(":") || rule.pattern.endsWith(":**")) {
+      normalized.push(rule);
+      continue;
+    }
+    hadCommandScoped = true;
+    if (rule.effect === "allow") {
+      // Strip: widening a command-scoped allow to the whole tool would over-permit.
+      continue;
+    }
+    const toolName = rule.pattern.slice(0, rule.pattern.indexOf(":"));
+    normalized.push({ ...rule, pattern: `${toolName}**` });
+  }
+  return { rules: normalized, hadCommandScoped };
+}

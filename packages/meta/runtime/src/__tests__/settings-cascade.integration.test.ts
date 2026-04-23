@@ -12,7 +12,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PermissionQuery } from "@koi/core";
-import { createPermissionBackend, mapSettingsToSourcedRules } from "@koi/permissions";
+import {
+  createPermissionBackend,
+  mapSettingsToSourcedRules,
+  SOURCE_PRECEDENCE,
+  widenCommandScopedRulesForTui,
+} from "@koi/permissions";
 import { loadSettings } from "@koi/settings";
 
 let tmpDir: string;
@@ -165,18 +170,42 @@ describe("settings cascade → permission enforcement", () => {
   });
 
   test("command-scoped deny widened to tool-level in TUI single-key mode (fail-closed)", async () => {
-    // Simulates createKoiRuntime's transformation for legacy backend:
-    // "Bash(rm -rf*)" → deny pattern "Bash:rm -rf*" → widened to "Bash**"
+    // Uses the production widenCommandScopedRulesForTui helper (same code createKoiRuntime calls).
     const rawRules = mapSettingsToSourcedRules(
       { permissions: { deny: ["Bash(rm -rf*)"] } },
       "local",
     );
-    const widenedRules = rawRules.flatMap((r) => {
-      if (!r.pattern.includes(":")) return [r];
-      const toolName = r.pattern.slice(0, r.pattern.indexOf(":"));
-      if (r.effect === "allow") return [];
-      return [{ ...r, pattern: `${toolName}**` }];
+    const { rules: widenedRules, hadCommandScoped } = widenCommandScopedRulesForTui(rawRules);
+    expect(hadCommandScoped).toBe(true);
+
+    const backend = createPermissionBackend({ mode: "default", rules: widenedRules });
+    const decision = await backend.check({
+      resource: "Bash",
+      action: "invoke",
+      principal: "agent",
     });
+    expect(decision.effect).toBe("deny");
+  });
+
+  test("full production chain: settings file → widenCommandScopedRulesForTui → backend denies Bash", async () => {
+    // Exercises loadSettings → mapSettingsToSourcedRules → widenCommandScopedRulesForTui
+    // → createPermissionBackend — the same sequence createKoiRuntime now calls.
+    const chainCwd = join(tmpDir, "chain-cwd");
+    mkdirSync(join(chainCwd, ".koi"), { recursive: true });
+    writeFileSync(
+      join(chainCwd, ".koi", "settings.local.json"),
+      JSON.stringify({ permissions: { deny: ["Bash(rm -rf*)"] } }),
+    );
+
+    const { sources } = await loadSettings({ cwd: chainCwd, layers: ["local"] });
+
+    const settingsRules = SOURCE_PRECEDENCE.flatMap((source) => {
+      const layerSettings = sources[source];
+      return layerSettings != null ? mapSettingsToSourcedRules(layerSettings, source) : [];
+    });
+
+    const { rules: widenedRules, hadCommandScoped } = widenCommandScopedRulesForTui(settingsRules);
+    expect(hadCommandScoped).toBe(true);
 
     const backend = createPermissionBackend({ mode: "default", rules: widenedRules });
     const decision = await backend.check({

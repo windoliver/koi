@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { KoiSettings } from "@koi/settings";
-import { mapSettingsToSourcedRules } from "./settings-bridge.js";
+import { mapSettingsToSourcedRules, widenCommandScopedRulesForTui } from "./settings-bridge.js";
 
 describe("mapSettingsToSourcedRules", () => {
   test("empty permissions returns empty array", () => {
@@ -107,5 +107,51 @@ describe("mapSettingsToSourcedRules", () => {
     const denyIdx = rules.findIndex((r) => r.effect === "deny");
     const allowIdx = rules.findIndex((r) => r.effect === "allow");
     expect(denyIdx).toBeLessThan(allowIdx);
+  });
+});
+
+describe("widenCommandScopedRulesForTui", () => {
+  test("no-op when no command-scoped rules present", () => {
+    const rules = mapSettingsToSourcedRules({ permissions: { deny: ["Bash"] } }, "local");
+    const { rules: result, hadCommandScoped } = widenCommandScopedRulesForTui(rules);
+    expect(hadCommandScoped).toBe(false);
+    expect(result).toEqual(rules);
+  });
+
+  test("command-scoped deny widened to ToolName** (fail-closed)", () => {
+    const rules = mapSettingsToSourcedRules({ permissions: { deny: ["Bash(rm -rf*)"] } }, "local");
+    const { rules: result, hadCommandScoped } = widenCommandScopedRulesForTui(rules);
+    expect(hadCommandScoped).toBe(true);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.pattern).toBe("Bash**");
+    expect(result[0]?.effect).toBe("deny");
+  });
+
+  test("command-scoped allow stripped entirely (no over-permitting)", () => {
+    const rules = mapSettingsToSourcedRules({ permissions: { allow: ["Bash(git *)"] } }, "local");
+    const { rules: result, hadCommandScoped } = widenCommandScopedRulesForTui(rules);
+    expect(hadCommandScoped).toBe(true);
+    expect(result).toHaveLength(0);
+  });
+
+  test("command-scoped ask widened to tool-level (fail-closed)", () => {
+    const rules = mapSettingsToSourcedRules({ permissions: { ask: ["Bash(git push*)"] } }, "local");
+    const { rules: result, hadCommandScoped } = widenCommandScopedRulesForTui(rules);
+    expect(hadCommandScoped).toBe(true);
+    expect(result[0]?.pattern).toBe("Bash**");
+    expect(result[0]?.effect).toBe("ask");
+  });
+
+  test("bare-tool rules pass through unchanged", () => {
+    const rules = mapSettingsToSourcedRules(
+      { permissions: { deny: ["Read"], allow: ["Glob"] } },
+      "project",
+    );
+    const { rules: result, hadCommandScoped } = widenCommandScopedRulesForTui(rules);
+    expect(hadCommandScoped).toBe(false);
+    // "Read:**" and "Glob:**" are enriched-wildcard patterns (not command-scoped) — pass through
+    expect(result).toHaveLength(rules.length);
+    // No command-scoped patterns (colon not followed by "**")
+    expect(result.every((r) => !r.pattern.includes(":") || r.pattern.endsWith(":**"))).toBe(true);
   });
 });
