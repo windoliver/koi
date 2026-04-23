@@ -192,6 +192,15 @@ export function isIterationGuardHandle(mw: KoiMiddleware): mw is IterationGuardH
   return typeof candidate.resetForRun === "function";
 }
 
+/**
+ * Returns true if `mw` carries ITERATION_GUARD_BRAND, regardless of whether
+ * it also implements resetForRun(). Use this to detect branded-but-broken
+ * guards (missing resetForRun) and fail closed at the reset boundary.
+ */
+export function hasIterationGuardBrand(mw: KoiMiddleware): boolean {
+  return Object.hasOwn(mw, ITERATION_GUARD_BRAND);
+}
+
 export function createIterationGuard(config?: Partial<IterationLimits>): IterationGuardHandle {
   const limits: IterationLimits = {
     ...DEFAULT_ITERATION_LIMITS,

@@ -22,6 +22,8 @@ import {
   createLoopDetector,
   createSpawnGuard,
   detectRepeatingPattern,
+  hasIterationGuardBrand,
+  ITERATION_GUARD_BRAND,
 } from "./guards.js";
 
 // ---------------------------------------------------------------------------
@@ -3049,5 +3051,30 @@ describe("onSessionStart resets guard state", () => {
     // Session 2: warning should fire again
     await wrap(ctx, mockToolRequest("forge_agent"), next);
     expect(warnings).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasIterationGuardBrand
+// ---------------------------------------------------------------------------
+
+describe("hasIterationGuardBrand", () => {
+  test("returns true for branded guard without resetForRun", () => {
+    const brandedNoReset = Object.defineProperty(
+      { name: "test-guard", describeCapabilities: () => undefined } as KoiMiddleware,
+      ITERATION_GUARD_BRAND,
+      { value: true, enumerable: false, configurable: false, writable: false },
+    ) as KoiMiddleware;
+    expect(hasIterationGuardBrand(brandedNoReset)).toBe(true);
+  });
+
+  test("returns false for unbranded middleware", () => {
+    const plain: KoiMiddleware = { name: "plain", describeCapabilities: () => undefined };
+    expect(hasIterationGuardBrand(plain)).toBe(false);
+  });
+
+  test("returns true for a full IterationGuardHandle (brand + resetForRun)", () => {
+    const guard = createIterationGuard();
+    expect(hasIterationGuardBrand(guard)).toBe(true);
   });
 });
