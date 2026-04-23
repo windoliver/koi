@@ -6,7 +6,7 @@
  */
 
 import type { BrowserConsoleLevel, JsonObject } from "@koi/core";
-import { detectFromBytes } from "@koi/file-type";
+import { detectFromBytes, detectFromPath } from "@koi/file-type";
 
 interface ValidationError {
   readonly error: string;
@@ -252,15 +252,16 @@ export function parseUploadFiles(
         err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
       };
     }
-    // MIME is derived from magic bytes only — caller-supplied values are
-    // never trusted. When sniffing is inconclusive, application/octet-stream
-    // is the only safe fallback: accepting a caller label like "image/png" for
-    // bytes without a PNG signature can bypass page accept filters or back-end
-    // MIME validators that rely on the uploaded file's content-type.
+    // Strong magic-byte detection is authoritative and overrides any caller-
+    // supplied mimeType — callers can label arbitrary bytes as image/png to
+    // bypass page accept filters or MIME validators. When no strong signature
+    // matches, detectFromPath provides an extension-derived fallback (derived
+    // from the caller-controlled filename, which is equally trusted) rather
+    // than degrading all text/csv/json uploads to application/octet-stream.
     const bytes = new Uint8Array(Buffer.from(content, "base64"));
     const detected = detectFromBytes(bytes);
     const resolvedMime =
-      detected?.confidence === "strong" ? detected.mimeType : "application/octet-stream";
+      detected?.confidence === "strong" ? detected.mimeType : detectFromPath(name, bytes).mimeType;
     files.push({ content, name, mimeType: resolvedMime });
   }
   return { ok: true, value: files };

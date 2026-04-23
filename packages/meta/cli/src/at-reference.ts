@@ -218,8 +218,14 @@ export function resolveAtReferences(text: string, cwd: string): ResolvedAtRefere
       // extension. A file named foo.json with binary content must go the binary
       // path; detectFromPath's extension fallback would label it application/json
       // and send binary bytes through the UTF-8 read path.
+      // UTF-16 files (detected by BOM) are intentionally excluded from the text
+      // path even though they are technically text: readFileSync with utf8 would
+      // produce mojibake. Transcoding is not yet implemented; treat as binary.
       const detectedByBytes = detectFromBytes(head);
+      const hasUtf16Bom =
+        (head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff);
       const isText =
+        !hasUtf16Bom &&
         detectedByBytes !== null &&
         (detectedByBytes.mimeType === "text/plain" ||
           detectedByBytes.mimeType.startsWith("text/") ||
