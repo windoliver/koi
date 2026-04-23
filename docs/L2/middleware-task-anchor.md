@@ -32,8 +32,9 @@ Session end   → drop session state
 **Idle counter:** Increments on every `onBeforeTurn`. Any `wrapToolCall` whose
 `toolId` matches `isTaskTool(toolId)` resets it to 0 (default match:
 `toolId.startsWith("task_")`). When `idle >= idleTurnThreshold`, the next
-`wrapModelCall`/`wrapModelStream` prepends a `system:task-anchor` message and
-resets the counter to 0.
+`wrapModelCall`/`wrapModelStream` prepends a `system:task-anchor` message,
+resets the counter to 0, and calls `ctx.reportDecision?.({ action: "inject",
+promptLength: N })` so the TUI trajectory view shows `[inject:Nch]`.
 
 **Empty-board nudge:** When the board is empty but at least one tool call has
 happened in the session (signal: "complex work in progress"), the reminder
@@ -103,12 +104,57 @@ Don't mention this reminder to the user.
 </system-reminder>
 ```
 
+## Trajectory Observability
+
+Both `wrapModelCall` and `wrapModelStream` call `ctx.reportDecision?.(…)` so the TUI trajectory view shows the outcome of each injection decision instead of always falling through to `[pass]`.
+
+### Inject decision
+
+Emitted when a reminder is prepended to the model request:
+
+```json
+{
+  "action": "inject",
+  "promptLength": 312,
+  "reminderKind": "task-list",
+  "forced": false,
+  "idle": 4,
+  "taskCount": 2
+}
+```
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `reminderKind` | `"task-list"` \| `"empty-board-nudge"` | Whether the reminder contained live tasks or the task_create prompt |
+| `forced` | `true` \| `false` | `true` when injected due to a stop-gate rollback (`forceInjectNextTurn`) rather than normal idle threshold |
+| `idle` | number | Idle turn count at the time of injection (before reset to 0) |
+| `taskCount` | number | Total tasks on the board at injection time |
+
+### Suppress decision
+
+Emitted when the board was observed but no reminder was injected:
+
+```json
+{
+  "action": "suppress",
+  "reason": "noPriorTaskTool",
+  "boardState": "empty"
+}
+```
+
+| `reason` | Cause |
+|----------|-------|
+| `"forceRequiresTasks"` | Stop-gate rollback latch suppressed nudge to avoid recreating just-completed work |
+| `"nudgeDisabled"` | `nudgeOnEmptyBoard: false` in config |
+| `"noPriorTaskTool"` | Nudge enabled but no successful task-tool call seen yet this session (`sawTaskTool=false`) |
+
 ## Error Handling
 
 | Scenario | Behavior |
 |----------|----------|
 | `getBoard` throws or rejects | Reminder skipped this turn, idle counter untouched, error swallowed |
 | `isTaskTool` throws | Treated as non-match — idle counter unchanged |
+| `reportDecision` throws | Error swallowed via `swallowError`; injection and model call proceed normally |
 | No session state at model-call time | Pass through unchanged (session missed `onSessionStart`) |
 | Board present but no tasks, `nudgeOnEmptyBoard: false` | Pass through, counter unchanged |
 

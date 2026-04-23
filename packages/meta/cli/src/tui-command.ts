@@ -68,6 +68,7 @@ import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
+import { createBrowserProvider, createMockDriver } from "@koi/tool-browser";
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -82,6 +83,7 @@ import {
   createStore,
   createTuiApp,
 } from "@koi/tui";
+import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import { mergeGovernanceFlags } from "./args/governance-flags.js";
 import type { TuiFlags } from "./args.js";
@@ -111,6 +113,10 @@ import {
   SIGUSR1_EXIT_CODE,
   SIGUSR1_SUPPORTED,
 } from "./tui-sigusr1.js";
+import {
+  type ManifestSupervisionHandle,
+  wireManifestSupervision,
+} from "./wire-manifest-supervision.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1059,6 +1065,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestFilesystemConfig: import("@koi/core").FileSystemConfig | undefined;
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
+  let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
   if (flags.manifest !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
@@ -1073,6 +1080,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
     manifestGovernance = manifestResult.value.governance;
+    manifestSupervision = manifestResult.value.supervision;
 
     if (manifestResult.value.filesystem !== undefined) {
       // Store the full config for async resolution before runtime assembly.
@@ -1391,11 +1399,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
 
+  // Keep a reference so teardown can call .dispose() — cancels pending
+  // auth_progress watchdog timers and gates late channel.send() callbacks,
+  // preventing stale auth notifications from running after shutdown.
+  let tuiAuthNotificationHandler: ReturnType<typeof createAuthNotificationHandler> | undefined;
   if (manifestFilesystemConfig !== undefined) {
+    tuiAuthNotificationHandler = createAuthNotificationHandler(tuiChannelForAuth);
     const fsResolved = await resolveFileSystemAsync(
       manifestFilesystemConfig,
       process.cwd(),
-      createAuthNotificationHandler(tuiChannelForAuth),
+      tuiAuthNotificationHandler,
     );
     resolvedFilesystemBackend = fsResolved.backend;
     // If `fsResolved.operations` is set, it overrides the manifest-derived ops
@@ -1422,6 +1435,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  // Manifest-declared supervision (#1866). Populated only when the loaded
+  // koi.yaml carries a `supervision:` block. Disposed in reverse-construction
+  // order in the teardown chain below.
+  let supervisionHandle: ManifestSupervisionHandle | undefined;
   // Declared ahead of interim teardown so a SIGUSR1 arriving during boot
   // can safely inspect it without tripping a TDZ error. Assigned below,
   // once the advisory lock has been acquired.
@@ -1517,9 +1534,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           runtimeHandle?.shutdownBackgroundTasks();
         } catch {}
         try {
+          await supervisionHandle?.dispose();
+        } catch {}
+        try {
           if (runtimeHandle !== null) {
             await runtimeHandle.runtime.dispose();
           }
+        } catch {}
+        // Dispose the auth notification handler synchronously first: the
+        // filesystem dispose below unsubscribes then awaits, and that yield
+        // can still run a pre-queued notification microtask. Handler dispose
+        // races ahead of the yield so late callbacks short-circuit on the
+        // `active` flag.
+        try {
+          tuiAuthNotificationHandler?.dispose();
         } catch {}
         try {
           await resolvedFilesystemBackend?.dispose?.();
@@ -1603,6 +1631,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  if (process.env.KOI_BROWSER_MOCK === "1") {
+    // Require explicit confirmation to prevent accidental enablement via inherited env vars.
+    // Both variables must be present together; KOI_BROWSER_MOCK alone is not enough.
+    if (process.env.KOI_BROWSER_MOCK_CONFIRM !== "1") {
+      process.stderr.write(
+        "\nError: KOI_BROWSER_MOCK=1 requires KOI_BROWSER_MOCK_CONFIRM=1 to also be set.\n" +
+          "  This prevents browser mock mode from being enabled by an inherited environment.\n" +
+          "  To activate: set both KOI_BROWSER_MOCK=1 KOI_BROWSER_MOCK_CONFIRM=1\n\n",
+      );
+      process.exit(2);
+    }
+    process.stderr.write(
+      "\n⚠️  KOI_BROWSER_MOCK=1 — browser tools use a SIMULATED (mock) driver.\n" +
+        "   No real browser is launched. All browser_* results are canned test responses.\n" +
+        "   Do NOT use this mode to verify real browser automation outcomes.\n\n",
+    );
+  }
+
+  // Declared before runtimeReady to avoid Temporal Dead Zone: the .then()
+  // callback registered on runtimeReady can fire during the `await
+  // createCostBridge` below, before the original `let` at line 2055 is reached.
+  let governanceBridge: GovernanceBridge | undefined;
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1677,7 +1728,57 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // @koi/artifacts tools — wired when the advisory lock was acquired at
     // boot. When construction failed (concurrent TUI, FS issue) the array
     // is empty and the artifact_* tools are simply absent from the agent.
-    ...(artifactExtraProviders.length > 0 ? { extraProviders: artifactExtraProviders } : {}),
+    //
+    // The mock browser provider (KOI_BROWSER_MOCK) is single-agent by
+    // design: createBrowserProvider throws if a second distinct agent
+    // tries to attach. This is safe here because extraProviders are only
+    // assembled onto the root TUI agent — create-agent-spawn-fn.ts does
+    // NOT propagate extraProviders into childProviders for spawned agents.
+    // Limitation: browser_* tools are therefore NOT available in spawned
+    // sub-agents. Workflows that delegate browser work to a child agent
+    // will lose those tools after the spawn. This is a known scope
+    // restriction of the mock dev/test path, not a bug in production.
+    ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
+      ? {
+          extraProviders: [
+            ...artifactExtraProviders,
+            ...(process.env.KOI_BROWSER_MOCK === "1"
+              ? [
+                  createBrowserProvider({
+                    backend: createMockDriver(),
+                    // Mock driver never opens a real connection, so SSRF
+                    // protection only needs to block IP literals and known
+                    // metadata hostnames — no DNS resolution required.
+                    // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
+                    // so mDNS/RFC6762 names are still rejected by design.
+                    isUrlAllowed: (url) => {
+                      try {
+                        const { protocol, hostname } = new URL(url);
+                        if (protocol !== "http:" && protocol !== "https:") return false;
+                        // Strip IPv6 brackets then lower-case + strip trailing DNS root
+                        // dot so `localhost.` / `metadata.google.internal.` can't
+                        // bypass suffix/host checks (same canonicalization as isSafeUrl).
+                        const h = hostname
+                          .replace(/^\[|\]$/g, "")
+                          .toLowerCase()
+                          .replace(/\.$/, "");
+                        if (isBlockedIp(h)) return false;
+                        if (BLOCKED_HOSTS.includes(h)) return false;
+                        // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
+                        // "local" matches ".local" — endsWith alone misses these.
+                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
+                          return false;
+                        return true;
+                      } catch {
+                        return false;
+                      }
+                    },
+                  }),
+                ]
+              : []),
+          ],
+        }
+      : {}),
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -1719,10 +1820,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // durable persistence (#1842) lands. Hosts that accept the
     // limitation can opt in today.
     ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
+    // KOI_FEEDBACK_LOOP_ENABLED=true opts into @koi/middleware-feedback-loop.
+    // Activates model-response validation + tool-health tracking with an
+    // empty config (observe-only, no validators, no quarantine thresholds).
+    ...(process.env.KOI_FEEDBACK_LOOP_ENABLED === "true" ? { feedbackLoop: {} } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
+      // Delegate to the current drain's spawn tracker for SIGINT grace.
+      // Null between drains so cross-drain survivors from earlier turns cannot
+      // influence the grace policy of a later, unrelated turn (#1999 r14).
+      currentDrainSpawnHandler?.(event);
       // Defense-in-depth: store.dispatch can throw if the reducer or
       // SolidJS reactivity hits an edge case. A throwing callback must
       // not crash the spawn flow — the engine wraps this in safeSpawnEvent
@@ -1762,7 +1871,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         console.warn("[koi:tui] onSpawnEvent dispatch failed — spawn UI may be stale", e);
       }
     },
-  }).then((handle) => {
+  }).then(async (handle) => {
     // If an interim SIGUSR1 teardown started while createKoiRuntime was
     // in flight (#1906 R10), the teardown couldn't dispose `handle`
     // because it wasn't assigned yet. Dispose it here directly and do
@@ -1807,6 +1916,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           ...(handle.governanceAlertThresholds !== undefined
             ? { alertThresholds: handle.governanceAlertThresholds }
             : {}),
+          ...(handle.violationStore !== undefined ? { violationStore: handle.violationStore } : {}),
           // Static capability mirror — matches the createGovernanceMiddleware's
           // describeCapabilities() output. Hardcoded here to avoid plumbing the
           // middleware instance back from runtime-factory just for one string.
@@ -1822,11 +1932,59 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         for (const alert of recent) {
           store.dispatch({ kind: "add_governance_alert", alert });
         }
+        // Seed up to 10 most-recent persisted violations for the current
+        // session so /governance's "Recent violations" panel is populated
+        // on restart / resume. Load is async (SQLite) — fire-and-forget
+        // so startup isn't blocked on history backfill.
+        void governanceBridge
+          .loadRecentViolations(10)
+          .then((violations) => {
+            // Synthesize UI-shape fields: id is per-entry counter, ts
+            // is load-time (the ViolationStore row timestamp is not
+            // exposed in the Violation shape — it would need an L0
+            // widening to surface). Order is preserved from the DB.
+            for (const v of violations) {
+              store.dispatch({
+                kind: "add_governance_violation",
+                violation: {
+                  id: `backfill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  ts: Date.now(),
+                  variable: v.rule,
+                  reason: v.message,
+                },
+              });
+            }
+          })
+          .catch((err: unknown) => {
+            console.warn("[tui-command] violation backfill failed:", err);
+          });
         // Initial snapshot push so the view has data before the first turn.
         governanceBridge.pollSnapshot();
       }
     } catch (err: unknown) {
       console.warn("[tui-command] governance bridge init failed:", err);
+    }
+    // Manifest-driven supervision wiring (#1866). When the loaded manifest
+    // declares `supervision:`, activate the subsystem here so the declared
+    // children appear in the runtime's AgentRegistry and in the /agents
+    // view. The returned handle is retained so shutdown can dispose it in
+    // reverse construction order (see the SIGINT / system:quit chain
+    // below). The helper is safe to call with `undefined` supervision —
+    // it's skipped at the call site.
+    if (manifestSupervision !== undefined) {
+      try {
+        const supHandle = await wireManifestSupervision({
+          runtime: handle.runtime,
+          supervisorManifestName: flags.manifest ?? "supervisor",
+          supervision: manifestSupervision,
+          onChange: (children) => {
+            store.dispatch({ kind: "set_supervised_children", children });
+          },
+        });
+        supervisionHandle = supHandle;
+      } catch (err: unknown) {
+        console.warn("[tui-command] supervision wiring failed:", err);
+      }
     }
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
@@ -1918,6 +2076,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+  // Session-level live-spawn tracker: agentIds whose spawn_requested has fired
+  // but whose terminal agent_status_changed has not yet arrived. Updated directly
+  // by onSpawnEvent (no per-drain delegate) so cross-drain children — a child
+  // spawned by drain A that outlives the drain — remain visible to the
+  // onWindowElapse grace probe. The engine's pre-start abort guard in
+  // createSpawnExecutor prevents stale spawn_requested events from cancelled
+  // turns from entering this set, so no per-drain scoping is needed (#1999 r12).
+  // Per-drain live-spawn tracking for the SIGINT grace probe. A fresh Set is
+  // created at each drain start and both references point to it. The delegate is
+  // cleared to null at drain end so events that arrive BETWEEN drains are no-ops
+  // — cross-drain survivors from earlier turns must NOT influence grace policy of
+  // a later, unrelated turn (#1999 r14). The engine's pre-start abort guard
+  // (createSpawnExecutor) prevents stale spawn_requested from polluting the set.
+  let currentDrainSpawnIds: Set<string> = new Set<string>();
+  let currentDrainSpawnHandler:
+    | ((event: { readonly kind: string; readonly agentId: string }) => void)
+    | null = null;
+  // let: one-shot flag — true after the first double-tap window elapses with an
+  // active spawn. Provides exactly one grace reset-to-idle to protect against the
+  // accidental second Ctrl+C (#1999). Once used, stays true so subsequent windows
+  // revert to stay-armed and the force-exit path remains reachable. Reset each drain.
+  let spawnGraceUsed = false;
   // let: preflight latch — set synchronously at onSubmit entry before the
   // first await (runtimeReady / resetBarrier), cleared in finally. Closes
   // the submit-then-switch race where `activeController` is still null
@@ -1954,9 +2134,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // bridge is undefined and all governanceBridge?.xxx() call sites no-op.
   // Future work (e.g. --max-spend CLI flag) will instantiate a controller
   // and the bridge will start surfacing alerts in /governance.
-  // let: justified — set inside the optional block (runtimeReady.then), read by
-  // call sites below that execute after the runtime resolves.
-  let governanceBridge: GovernanceBridge | undefined;
+  // (Declaration moved before runtimeReady — see comment there for why.)
 
   // ---------------------------------------------------------------------------
   // 4. Helpers
@@ -2081,6 +2259,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       const forceDispose = async (): Promise<void> => {
         const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
         try {
+          await supervisionHandle?.dispose();
+        } catch {
+          // Best-effort — must not block force-quit.
+        }
+        try {
           await runtimeHandle?.runtime.dispose();
         } catch (disposeErr: unknown) {
           // Log but don't block — force-quit must always terminate.
@@ -2120,9 +2303,56 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     write: (msg: string) => {
       process.stderr.write(msg);
     },
+    // #1912: route SIGINT hints through the toast surface (transient, keyed,
+    // auto-dismiss) instead of raw stderr or add_info. Raw stderr writes during
+    // an active OpenTUI frame cause row duplication and character-level overlay;
+    // add_info would pollute conversation history with stale control-flow banners.
+    onInterruptHint: (_msg: string) => {
+      store.dispatch({
+        kind: "add_toast",
+        toast: {
+          id: `sigint-interrupt-${Date.now()}`,
+          kind: "info",
+          key: "sigint:interrupt",
+          title: "Interrupting…",
+          body: "Ctrl+C again to force",
+          ts: Date.now(),
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS,
+        },
+      });
+    },
+    onBgExitHint: (_msg: string) => {
+      store.dispatch({
+        kind: "add_toast",
+        toast: {
+          id: `sigint-bg-exit-${Date.now()}`,
+          kind: "warn",
+          key: "sigint:bg-exit",
+          title: "Background tasks still running",
+          body: "Press Ctrl+C again to exit (background tasks will be terminated).",
+          ts: Date.now(),
+          autoDismissMs: TUI_DOUBLE_TAP_WINDOW_MS,
+        },
+      });
+    },
     doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
+    // #1999: one-shot grace period for spawns that outlive the double-tap window.
+    // When the CURRENT drain's child is still running 2s after Ctrl+C, a second
+    // tap is likely not intentional — reset to idle so it becomes a fresh cancel
+    // instead of a force-exit. Only children from THIS drain's set are consulted
+    // (currentDrainSpawnIds), so survivors from unrelated earlier turns cannot
+    // grant grace for the current interrupted turn. Grace is one-shot per drain
+    // (spawnGraceUsed): once used, subsequent windows revert to stay-armed so
+    // the force-exit path remains reachable for truly stuck spawns.
+    onWindowElapse: (): "stay-armed" | "reset-to-idle" => {
+      if (currentDrainSpawnIds.size > 0 && !spawnGraceUsed) {
+        spawnGraceUsed = true;
+        return "reset-to-idle";
+      }
+      return "stay-armed";
+    },
   });
   // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
   // prop) and the `agent:interrupt` command both route through here.
@@ -2378,6 +2608,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
     activeController = null;
+
+    // Drop the per-drain spawn delegate and reset the grace flag so the
+    // new session starts with a clean SIGINT state (#1999).
+    currentDrainSpawnHandler = null;
+    currentDrainSpawnIds = new Set<string>();
+    spawnGraceUsed = false;
 
     // Cancel any pending permission prompts and dismiss the modal so a
     // session reset (`agent:clear`, `session:new`, resume) doesn't leave
@@ -2686,6 +2922,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       if (hadLiveTasks) {
         await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
       }
+      // Dispose manifest-declared supervision before the runtime itself so
+      // the reconcile runner/process tree can observe a live registry during
+      // their own teardown.
+      try {
+        await supervisionHandle?.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] supervision dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
       // #1742 loop-2 round 10: dispose now fails closed on settle
       // timeout. Catch the throw so the rest of shutdown (approval
       // store close, process.exit) still runs. The hard-exit timer
@@ -2780,6 +3028,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       batcher.dispose();
       approvalStore?.close();
+      // Dispose auth notification handler synchronously first so late
+      // channel.send() callbacks queued before transport unsubscribe
+      // short-circuit on the active flag.
+      try {
+        tuiAuthNotificationHandler?.dispose();
+      } catch {
+        /* best effort */
+      }
       // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
       // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
       // complete before the transport is closed.
@@ -3240,8 +3496,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
         const resolved = resolveAtReferences(text, process.cwd());
-        const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+
+        // Warn for each binary @-reference. Do NOT strip the @-token from the
+        // model prompt: keeping the original text lets the model recover via tools
+        // (fs_read, glob) since multimodal block attachment is not yet wired.
+        // Only text injections produce cleanText-based output.
+        if (resolved.binaryInjections.length > 0) {
+          for (const b of resolved.binaryInjections) {
+            store.dispatch({
+              kind: "add_info",
+              message: `@${b.filePath} (${b.mimeType}) — binary file; multimodal attachment not yet supported. The model will see the reference and may use tools to read it.`,
+            });
+          }
+        }
+
+        // Use formatAtReferencesForModel (cleanText + injected content) only when
+        // text refs were actually resolved. Otherwise send the original text so
+        // the model sees @-references and can attempt its own resolution via tools.
+        // When BOTH text and binary refs are present, formatAtReferencesForModel
+        // uses cleanText which strips ALL @-tokens — append a note so the model
+        // knows binary refs exist and can access them via tools.
+        let modelText: string;
+        if (resolved.injections.length > 0) {
+          modelText = formatAtReferencesForModel(resolved);
+          if (resolved.binaryInjections.length > 0) {
+            const binaryRefs = resolved.binaryInjections
+              .map((b) => (b.filePath.includes(" ") ? `@"${b.filePath}"` : `@${b.filePath}`))
+              .join(", ");
+            modelText += `\n\n[Binary files referenced but not attached — use tools to access: ${binaryRefs}]`;
+          }
+        } else {
+          modelText = text;
+        }
 
         let stream: AsyncIterable<EngineEvent>;
         try {
@@ -3291,6 +3577,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const fallbackActive = fallbackModels.length > 0;
         const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
         const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
+        // Install per-drain spawn tracking for the SIGINT grace probe.
+        // Fresh set each drain so only THIS turn's spawns are counted.
+        // Grace is one-shot: reset here since each drain is a new turn.
+        const drainSpawnIds = new Set<string>();
+        currentDrainSpawnIds = drainSpawnIds;
+        currentDrainSpawnHandler = (event): void => {
+          if (event.kind === "spawn_requested") {
+            drainSpawnIds.add(event.agentId);
+          } else {
+            drainSpawnIds.delete(event.agentId);
+          }
+        };
+        spawnGraceUsed = false;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         const drainOutcome = await drainPromise;
@@ -3386,13 +3685,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           activeController = null;
           activeRunPromise = null;
         }
-        // The active run has settled. Reset the double-tap window so a
-        // later Ctrl+C is treated as a fresh first tap rather than a
-        // late-arriving second tap of a cancellation that already
-        // completed. Only safe when this run is still the active one —
-        // a stale finally from a reset-and-replaced run must not
-        // disarm SIGINT state that now belongs to a newer turn.
+        // The active run has settled. Clear the interrupt-time spawn snapshot
+        // so the next turn starts fresh (no stale snapshot from a completed
+        // interrupt sequence). Then reset the double-tap window so a later
+        // Ctrl+C is treated as a fresh first tap rather than a late-arriving
+        // second tap of a cancellation that already completed.
+        // Both guarded: stale finally from a reset-and-replaced run must not
+        // disarm SIGINT state belonging to a newer turn.
         if (isStillActive) {
+          // Drop the per-drain spawn delegate so events arriving between drains
+          // (after this finally and before the next drain's start) are no-ops.
+          currentDrainSpawnHandler = null;
+          currentDrainSpawnIds = new Set<string>(); // empty sentinel between drains
           sigintHandler.complete();
         }
       }

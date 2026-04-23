@@ -80,3 +80,29 @@ model:
 # `koi start` rejects `true` — use `koi tui` for background subprocess flows.
 #
 # backgroundSubprocesses: false
+
+# ---- Optional: OTP-style supervision tree (#1866) --------------------------
+
+# Declare supervised child agents. The runtime activates a full OTP-style
+# reconciler (one_for_one / one_for_all / rest_for_one) and shows live
+# child status in the TUI `/agents` view. Disabled when the block is absent.
+#
+# `strategy` accepts either a bare string (e.g. `one_for_one`) or an object
+# form (`{ kind: one_for_one }`). `restart` per child is one of:
+#   permanent  — always respawn
+#   transient  — respawn only on abnormal exit (error / stale)
+#   temporary  — start once; never restart after death
+#
+# supervision:
+#   strategy: one_for_one
+#   maxRestarts: 5                  # max restarts inside the window
+#   maxRestartWindowMs: 60000       # intensity window; exceed → escalate
+#   children:
+#     - name: log-ingester
+#       restart: permanent
+#     - name: summary-worker
+#       restart: transient
+#       shutdownTimeoutMs: 5000     # optional; graceful-stop budget
+#     - name: oneshot-backfill
+#       restart: temporary
+#       isolation: in-process       # or `subprocess` (requires @koi/daemon)

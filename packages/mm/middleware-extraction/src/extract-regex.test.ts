@@ -18,7 +18,7 @@ describe("mapCategoryToMemoryType", () => {
     expect(mapCategoryToMemoryType("pattern")).toBe("feedback");
   });
 
-  test("maps preference to user", () => {
+  test("maps preference to user (not persisted until user-scoped store exists)", () => {
     expect(mapCategoryToMemoryType("preference")).toBe("user");
   });
 
@@ -149,5 +149,57 @@ describe("createDefaultExtractor", () => {
   test("returns empty for output with no learnings", () => {
     const result = extractor.extract("The function returned 42. Build succeeded.");
     expect(result).toHaveLength(0);
+  });
+
+  describe("plain-text extraction correctness (issue #1966)", () => {
+    // Raw JSON is pre-processed by extractJsonStringContent in the middleware
+    // layer before reaching the extractor, so the extractor only sees clean
+    // plain-text strings. These tests verify that the extractor handles edge
+    // cases in plain-text content correctly.
+
+    test("marker extraction preserves embedded quotes in valid learnings", () => {
+      const output = `[LEARNING:pattern] Pass "--force" when replaying`;
+      const result = extractor.extract(output);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.content).toBe(`Pass "--force" when replaying`);
+    });
+
+    test("marker extraction preserves learning ending with quoted JSON-like token", () => {
+      const result = extractor.extract(`[LEARNING:gotcha] Watch for the closing "}"`);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.content).toBe(`Watch for the closing "}"`);
+    });
+
+    test("marker extraction stops at newline boundary", () => {
+      const output = "[LEARNING:gotcha] Check nulls carefully\nsome other line";
+      const result = extractor.extract(output);
+      const markerResult = result.find((r) => r.confidence === 1.0);
+      expect(markerResult?.content).toBe("Check nulls carefully");
+    });
+
+    test("heuristic extraction preserves embedded quotes in valid learnings", () => {
+      const result = extractor.extract(`learned that "bun test" is the right runner`);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.content).toBe(`"bun test" is the right runner`);
+    });
+
+    test("heuristic extraction preserves learning ending in a quoted token", () => {
+      const result = extractor.extract(`learned that the command is "bun test"`);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.content).toBe(`the command is "bun test"`);
+    });
+
+    test('heuristic extraction preserves learning ending with quoted "}"', () => {
+      const result = extractor.extract(`learned that the sentinel is "]"`);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.content).toBe(`the sentinel is "]"`);
+    });
+
+    test("heuristic extraction stops at newline boundary", () => {
+      const output = "learned that: keep functions small\nmore text here";
+      const result = extractor.extract(output);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.content).not.toContain("more text here");
+    });
   });
 });

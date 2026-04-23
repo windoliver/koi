@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import * as childProcessMod from "node:child_process";
 import type {
   SandboxAdapter,
   SandboxAdapterResult,
@@ -201,4 +202,233 @@ describe("execSandboxed — callback threading", () => {
     expect(captured.onStdout).toBeUndefined();
     expect(captured.onStderr).toBeUndefined();
   });
+});
+
+// ---------------------------------------------------------------------------
+// spawnBash — abort signal / process cleanup (regression for #1914)
+//
+// Investigation outcome: the production kill logic in exec.ts was already
+// correct — `detached: true` + `process.kill(-pid, "SIGTERM")` + SIGKILL
+// escalation. These tests are regression coverage that proves the existing
+// behavior is correct and will catch future breakage (not a runtime fix).
+//
+// Proof strategy: the stdout/stderr pipe has a write end held by every
+// process in the spawned group. drainStream blocks until ALL write ends
+// are closed. If any child survives the abort (orphan), spawnBash hangs
+// and the test times out. Returning == all processes dead.
+//
+// For fd-redirecting children (those that close/redirect inherited fds),
+// a PID-based assertion after abort provides additional proof that the
+// process-group kill reached them even when pipe closure cannot.
+//
+// For the pre-abort case, a node:child_process.spawn spy provides an
+// executable assertion that no spawn syscall was issued.
+// ---------------------------------------------------------------------------
+
+// Polls `chunks` for `pattern` with a bounded timeout so tests cannot hang
+// indefinitely if callback delivery regresses (which would leak subprocesses).
+function waitForPattern(
+  chunks: string[],
+  pattern: RegExp,
+  timeoutMs: number,
+): Promise<RegExpExecArray> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = (): void => {
+      const match = pattern.exec(chunks.join(""));
+      if (match !== null) {
+        resolve(match);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`pattern ${String(pattern)} not seen within ${timeoutMs}ms`));
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  });
+}
+
+describe("spawnBash — abort signal kills child processes (no orphan)", () => {
+  // Restore any spies created within individual tests so they don't bleed
+  // into sibling tests that exercise the real node:child_process.spawn path.
+  afterEach(() => {
+    mock.restore();
+  });
+
+  test("abort resolves spawnBash for a long-running command", async () => {
+    // Readiness handshake: echo READY before the long sleep so we know
+    // the process is actually running before we abort. If any process
+    // survives and keeps the pipe open, drainStream hangs and this test
+    // times out. Returning proves cleanup was complete.
+    const controller = new AbortController();
+    const stdoutChunks: string[] = [];
+
+    const promise = spawnBash(
+      "echo READY; sleep 100",
+      process.cwd(),
+      7_000, // below test timeout of 10s so spawnBash timer cleans up on regressions
+      1_000_000,
+      controller.signal,
+      undefined,
+      { onStdout: (c) => stdoutChunks.push(c) },
+    );
+
+    try {
+      await waitForPattern(stdoutChunks, /READY/, 5_000);
+      controller.abort();
+      const result = await promise;
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      // Ensure the process group is killed on all paths (timeout, assertion failure).
+      controller.abort();
+      await promise.catch(() => {});
+    }
+  }, 10_000);
+
+  test("abort kills child processes spawned by the bash script", async () => {
+    // Forces bash to fork a background sleep child and emit its PID.
+    // We confirm the child is alive (process.kill(pid, 0) succeeds) BEFORE
+    // aborting, so the test cannot pass vacuously by killing only the shell.
+    // If the child survives abort it holds the pipe open and the test times out.
+    const controller = new AbortController();
+    const stderrChunks: string[] = [];
+
+    const promise = spawnBash(
+      // Background sleep; print its PID so the test can verify it's alive.
+      'sleep 100 & echo "CHILD:$!" >&2; wait',
+      process.cwd(),
+      7_000, // below test timeout of 10s
+      1_000_000,
+      controller.signal,
+      undefined,
+      { onStderr: (c) => stderrChunks.push(c) },
+    );
+
+    try {
+      const match = await waitForPattern(stderrChunks, /CHILD:(\d+)/, 5_000);
+      const rawPid = match[1];
+      if (rawPid === undefined) throw new Error("CHILD pattern matched but capture group missing");
+      const childPid = Number(rawPid);
+
+      // Hard precondition: child MUST be alive before we abort.
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+
+      controller.abort();
+      const result = await promise;
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
+    }
+  }, 10_000);
+
+  test("abort kills fd-redirecting descendants that do not hold the inherited pipe", async () => {
+    // A child that redirects all its fds away from inherited pipes does NOT keep
+    // the stdout/stderr pipe open, so pipe closure alone cannot detect its death.
+    // Without process-group kill, spawnBash could return (pipe closed by bash's
+    // death via `wait`) while the fd-redirecting sleep is still alive. This test
+    // verifies the group SIGTERM reaches that child.
+    const controller = new AbortController();
+    const stderrChunks: string[] = [];
+
+    const promise = spawnBash(
+      // sleep redirects all fds to /dev/null (detached from inherited pipe).
+      // bash stays alive via `wait`, keeping the pipe open until abort kills it.
+      'sleep 100 >/dev/null 2>&1 & echo "DETACHED:$!" >&2; wait',
+      process.cwd(),
+      12_000, // below test timeout of 15s
+      1_000_000,
+      controller.signal,
+      undefined,
+      { onStderr: (c) => stderrChunks.push(c) },
+    );
+
+    try {
+      const match = await waitForPattern(stderrChunks, /DETACHED:(\d+)/, 5_000);
+      const rawPid = match[1];
+      if (rawPid === undefined)
+        throw new Error("DETACHED pattern matched but capture group missing");
+      const childPid = Number(rawPid);
+
+      // Hard precondition: child must be alive and pipe-detached before abort.
+      expect(() => process.kill(childPid, 0)).not.toThrow();
+
+      controller.abort();
+      await promise; // pipe closes when bash (the waiter) dies
+
+      // Poll until the fd-redirecting child is gone. It received SIGTERM via
+      // process-group kill and has no signal handler, so it dies quickly.
+      // Surviving past 2 s means process-group kill is broken.
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(childPid, 0);
+        } catch {
+          break;
+        }
+        await new Promise<void>((r) => setTimeout(r, 20));
+      }
+      expect(() => process.kill(childPid, 0)).toThrow();
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
+    }
+  }, 15_000);
+
+  test("already-aborted signal throws AbortError without spawning any process", async () => {
+    // Spy on node:child_process.spawn to assert it is never invoked.
+    // Both this test and exec.ts share the same module instance, so spyOn
+    // intercepts the spawn binding that exec.ts holds as `spawnChild`.
+    const spawnSpy = spyOn(childProcessMod, "spawn");
+
+    const controller = new AbortController();
+    controller.abort();
+
+    let thrownError: unknown;
+    try {
+      await spawnBash("sleep 999", process.cwd(), 60_000, 1_000_000, controller.signal);
+    } catch (e: unknown) {
+      thrownError = e;
+    }
+
+    // Must throw AbortError — callers (turn-runner) rely on this contract
+    expect(thrownError).toBeDefined();
+    expect((thrownError as { name?: string }).name).toBe("AbortError");
+
+    // Executable no-spawn proof: if spawnChild had been called before
+    // throwIfAborted(), the spy would have recorded it.
+    expect(spawnSpy).not.toHaveBeenCalled();
+  });
+
+  test("SIGKILL escalation terminates SIGTERM-immune processes", async () => {
+    // bash ignores SIGTERM via trap '' TERM; only SIGKILL (after SIGKILL_ESCALATION_MS)
+    // can kill it. If escalation is broken, drainStream hangs and this test times out.
+    // Timeout budget: 5s readiness wait + ~3s escalation + 7s slack = 15s total.
+    // Readiness handshake: echo READY to stderr after the trap is installed so we abort
+    // only once the immune loop is guaranteed running.
+    const controller = new AbortController();
+    const stderrChunks: string[] = [];
+
+    const promise = spawnBash(
+      "trap '' TERM; echo READY >&2; while true; do sleep 0.05; done",
+      process.cwd(),
+      12_000, // below test timeout of 15s; spawnBash timer escalates to SIGKILL on regression
+      1_000_000,
+      controller.signal,
+      undefined,
+      { onStderr: (c) => stderrChunks.push(c) },
+    );
+
+    try {
+      await waitForPattern(stderrChunks, /READY/, 5_000);
+      controller.abort();
+      // Returns only after SIGKILL escalation (~3 s). Timing out = escalation broken.
+      await promise;
+    } finally {
+      controller.abort();
+      await promise.catch(() => {});
+    }
+  }, 15_000);
 });

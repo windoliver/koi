@@ -32,7 +32,11 @@ import { createBoundedQueue } from "./queue.js";
 import type { SigningHandle } from "./signing.js";
 import { createEphemeralSigningHandle } from "./signing.js";
 
-const SCHEMA_VERSION = 1;
+// v2: `compliance_event` kind added to AuditEntry.kind union. v1 readers
+// that exhaustively switch on `kind` would reject the new variant, so
+// producers advertise v2 explicitly per the L0 contract ("increment
+// when the shape changes. Readers gate on this field").
+const SCHEMA_VERSION = 2;
 const DEFAULT_MAX_ENTRY_SIZE = 10_000;
 const DEFAULT_MAX_QUEUE_DEPTH = 1000;
 
@@ -240,6 +244,7 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
           agentId: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           kind: "tool_call",
+          toolName: request.toolId,
           request: config.redactRequestBodies ? "[redacted]" : redactPayload(request),
           response: response !== undefined ? redactPayload(response) : undefined,
           error: error !== undefined ? redactPayload(serializeError(error)) : undefined,

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "cassette-v1",
+  "name": "feedback-loop-pass",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1776852800945,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "add_numbers",
+      "callId": "tool_add_numbers_14abqlvEJlc5OnPKo1QG"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_add_numbers_14abqlvEJlc5OnPKo1QG",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_add_numbers_14abqlvEJlc5OnPKo1QG",
+      "delta": "{\"b\":4,\"a\":3}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 39,
+      "outputTokens": 7
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_add_numbers_14abqlvEJlc5OnPKo1QG"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1776852800-POtUnt4pIaR2BbAVp5TL",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_add_numbers_14abqlvEJlc5OnPKo1QG",
+            "name": "add_numbers",
+            "arguments": {
+              "b": 4,
+              "a": 3
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 39,
+          "outputTokens": 7
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "94c9ce4a5dd3dbd873615e79b098f1dc085e56b81cb8c45a5755cb60347e6554"
+        }
+      }
+    }
+  ]
+}

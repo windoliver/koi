@@ -1,8 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GovernanceController, GovernanceSnapshot, SensorReading } from "@koi/core";
+import type {
+  GovernanceController,
+  GovernanceSnapshot,
+  SensorReading,
+  ViolationStore,
+} from "@koi/core";
 import { createGovernanceBridge } from "./governance-bridge.js";
 
 let tmpDir: string;
@@ -195,6 +200,49 @@ describe("governance-bridge", () => {
     bridge.dispose();
   });
 
+  test("regression #2016: bridge initializes when runtimeReady resolves before a subsequent await", async () => {
+    // Reproduces the Temporal Dead Zone race in tui-command.ts: the
+    // runtimeReady.then() callback fires during `await createCostBridge` when
+    // runtimeReady is already settled. If `let governanceBridge` were declared
+    // AFTER that await, the assignment inside .then() would hit TDZ and throw.
+    // The fix: declare governanceBridge BEFORE registering .then().
+    const store = { dispatch: () => {} };
+    const controller = makeController({
+      timestamp: 1,
+      healthy: true,
+      violations: [],
+      readings: [],
+    });
+
+    // Declared BEFORE the .then() registration — the fix that prevents TDZ.
+    let bridge: ReturnType<typeof createGovernanceBridge> | undefined;
+    let initError: unknown;
+
+    // runtimeReady resolves immediately (already-settled promise).
+    const runtimeReady = Promise.resolve({ controller });
+    runtimeReady.then(({ controller: ctrl }) => {
+      try {
+        bridge = createGovernanceBridge({
+          store: store as never,
+          controller: ctrl,
+          sessionId: "s-tdz",
+          alertsPath,
+        });
+      } catch (e) {
+        initError = e;
+      }
+    });
+
+    // Simulate the `await createCostBridge(...)` that sits between the .then()
+    // registration and the original `let governanceBridge` declaration. When
+    // this await yields, the microtask queue drains and the .then() fires.
+    await Promise.resolve();
+
+    expect(initError).toBeUndefined();
+    expect(bridge).toBeDefined();
+    bridge?.dispose();
+  });
+
   test("tailEvict trims JSONL file when it exceeds max lines", () => {
     const store = { dispatch: () => {} };
     const bridge = createGovernanceBridge({
@@ -217,5 +265,67 @@ describe("governance-bridge", () => {
       .filter((l) => l.length > 0);
     expect(lines.length).toBeLessThanOrEqual(200);
     bridge.dispose();
+  });
+});
+
+describe("loadRecentViolations", () => {
+  test("returns [] when violationStore is absent", async () => {
+    const store = { dispatch: () => {} };
+    const bridge = createGovernanceBridge({
+      store: store as never,
+      controller: makeController({ timestamp: 1, healthy: true, violations: [], readings: [] }),
+      sessionId: "s1",
+      alertsPath,
+    });
+    const page = await bridge.loadRecentViolations(10);
+    expect(page).toEqual([]);
+    bridge.dispose();
+  });
+
+  test("queries the store with current sessionId + limit", async () => {
+    let seenFilter: unknown;
+    const violationStore: ViolationStore = {
+      getViolations: async (filter) => {
+        seenFilter = filter;
+        return { items: [{ rule: "r1", severity: "warning", message: "m" }] };
+      },
+    };
+    const store = { dispatch: () => {} };
+    const bridge = createGovernanceBridge({
+      store: store as never,
+      controller: makeController({ timestamp: 1, healthy: true, violations: [], readings: [] }),
+      sessionId: "S",
+      alertsPath,
+      violationStore,
+    });
+    const page = await bridge.loadRecentViolations(5);
+    expect(page).toHaveLength(1);
+    expect(seenFilter).toMatchObject({ sessionId: "S", limit: 5 });
+    bridge.dispose();
+  });
+
+  test("returns [] and warns when store throws", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const violationStore: ViolationStore = {
+        getViolations: async () => {
+          throw new Error("db gone");
+        },
+      };
+      const store = { dispatch: () => {} };
+      const bridge = createGovernanceBridge({
+        store: store as never,
+        controller: makeController({ timestamp: 1, healthy: true, violations: [], readings: [] }),
+        sessionId: "s1",
+        alertsPath,
+        violationStore,
+      });
+      const page = await bridge.loadRecentViolations(5);
+      expect(page).toEqual([]);
+      expect(warn).toHaveBeenCalled();
+      bridge.dispose();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

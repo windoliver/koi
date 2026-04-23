@@ -31,11 +31,13 @@
     { "path": "../../lib/spawn-tools" },
     { "path": "../../lib/task-tools" },
     { "path": "../../lib/tasks" },
+    { "path": "../../lib/toolsets" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/tools-core" },
     { "path": "../../lib/tool-exec" },
     { "path": "../../lib/tools-web" },
     { "path": "../../lib/url-safety" },
+    { "path": "../../lib/file-type" },
     { "path": "../../lib/tool-browser" },
     { "path": "../../lib/tool-notebook" },
     { "path": "../../lib/lsp" },
@@ -51,6 +53,7 @@
     { "path": "../../net/daemon" },
     { "path": "../../net/mcp" },
     { "path": "../../net/mcp-server" },
+    { "path": "../../lib/middleware-feedback-loop" },
     { "path": "../../lib/middleware-plan-persist" },
     { "path": "../../lib/middleware-planning" },
     { "path": "../../lib/middleware-report" },
@@ -78,6 +81,7 @@
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../security/audit-sink-ndjson" },
+    { "path": "../../security/violation-store-sqlite" },
     { "path": "../../lib/validation" }
   ]
 }

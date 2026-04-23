@@ -116,6 +116,15 @@ WHERE kind = 'permission_decision'
 
 ---
 
+## Compliance events
+
+When this sink is wired via `--audit-sqlite`, `runtime-factory.ts` also wraps
+it in `createAuditSinkComplianceRecorder` from `@koi/governance-defaults`.
+Every governance verdict produces an additional row with
+`kind = 'compliance_event'`, discoverable via the existing time+kind index.
+
+---
+
 ## See Also
 
 - `@koi/middleware-audit` — the middleware that writes to this sink

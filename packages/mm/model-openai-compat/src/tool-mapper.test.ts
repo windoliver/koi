@@ -8,7 +8,7 @@ import { mapToolDescriptors } from "./tool-mapper.js";
 import type { ResolvedCompat } from "./types.js";
 import { resolveCompat } from "./types.js";
 
-const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1");
+const DEFAULT_COMPAT: ResolvedCompat = resolveCompat("https://openrouter.ai/api/v1", "test-model");
 
 describe("mapToolDescriptors", () => {
   test("maps a single tool descriptor", () => {
@@ -57,7 +57,7 @@ describe("mapToolDescriptors", () => {
     const tools: readonly ToolDescriptor[] = [
       { name: "fn", description: "d", inputSchema: { type: "object" } },
     ];
-    const compat = resolveCompat("https://openrouter.ai/api/v1");
+    const compat = resolveCompat("https://openrouter.ai/api/v1", "test-model");
     const result = mapToolDescriptors(tools, compat);
     expect(result[0]?.function.strict).toBe(false);
   });
@@ -66,7 +66,7 @@ describe("mapToolDescriptors", () => {
     const tools: readonly ToolDescriptor[] = [
       { name: "fn", description: "d", inputSchema: { type: "object" } },
     ];
-    const compat = resolveCompat("https://openrouter.ai/api/v1", {
+    const compat = resolveCompat("https://openrouter.ai/api/v1", "test-model", {
       supportsStrictMode: false,
     });
     const result = mapToolDescriptors(tools, compat);

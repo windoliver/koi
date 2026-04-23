@@ -265,6 +265,7 @@ router.dispose();
 | `retry.maxRetries` | `number` | `3` | Max retries per target |
 | `retry.initialDelayMs` | `number` | `1000` | Initial backoff delay |
 | `circuitBreaker.failureThreshold` | `number` | `5` | Failures to open circuit |
+| `circuitBreaker.failureWindowMs` | `number` | `300000` | Window to count failures in (ms). Set higher than `failureThreshold × expected_turn_latency_ms` to avoid failures expiring before threshold is reached. |
 | `circuitBreaker.cooldownMs` | `number` | `60000` | Cooldown before half-open probe |
 | `healthProbe.intervalMs` | `number` | `30000` | Health probe interval (local providers only) |
 

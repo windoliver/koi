@@ -646,3 +646,266 @@ describe("adapter: CRLF SSE event boundaries", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Buffered tool streaming: retry suppression after tool_calls seen
+// ---------------------------------------------------------------------------
+
+describe("adapter: buffered tool streaming retry suppression", () => {
+  test("truncated stream after buffered tool_calls yields non-retryable error", async () => {
+    // Stream sends tool_calls data then closes without finish_reason or [DONE].
+    // With supportsToolStreaming:false (buffered mode), the adapter must NOT mark
+    // the error as retryable — retrying would re-execute the tool call.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"bt","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"my_fn","arguments":""}}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends without finish_reason or [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      expect(error.retryable).toBe(false);
+      expect(error.message).toContain("truncation");
+    }
+  });
+
+  test("truncated stream with no tool_calls data yields retryable error", async () => {
+    // Same truncation scenario but no tool calls seen — should still be retryable.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [`data: {"id":"bt2","choices":[{"index":0,"delta":{},"finish_reason":null}]}`, ``].join(
+        "\n",
+      ),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      expect(error.retryable).toBe(true);
+    }
+  });
+
+  test("truncated buffered stream with partial JSON args yields retryable transport error", async () => {
+    // Stream sends tool name + partial JSON args, then dies. The partial args fail
+    // JSON parsing at finish() time, but since the stream was truncated (not the
+    // provider sending bad data), the error should be a retryable EXTERNAL error —
+    // not a non-retryable VALIDATION error that hides the transport failure.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"bpj","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"my_fn","arguments":"{\\"a\\":"}}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends with partial JSON — no finish_reason, no [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      // Truncation is a retryable transport failure, not a validation error
+      expect(error.code).toBe("EXTERNAL");
+      expect(error.retryable).toBe(true);
+      expect(error.message).toContain("truncation");
+    }
+  });
+
+  test("truncated buffered stream with partial fragment (no name yet) yields retryable error", async () => {
+    // Provider sent a tool_calls delta with only an index and id but no function name yet,
+    // then the stream died. No complete tool call was dispatched, so retry must be allowed.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        // Delta has id but no function name — incomplete fragment
+        `data: {"id":"btp","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x"}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends without finish_reason or [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      // Partial fragment only — no complete call was dispatched, so retryable
+      expect(error.retryable).toBe(true);
+    }
+  });
+
+  test("complete buffered tool call followed by malformed SSE still emits tool call", async () => {
+    // A complete tool call is buffered, then a malformed SSE event arrives.
+    // The hadError path must flush complete buffered calls before returning —
+    // previously, the entire buffered state was silently discarded.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"bcf","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_ok","function":{"name":"do_x","arguments":"{\\"n\\":1}"}}]},"finish_reason":null}]}`,
+        ``,
+        `data: {malformed_json_here`,
+        ``,
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const kinds = chunks.map((c) => c.kind);
+    // Tool call must appear before (or without) the error — it was complete
+    expect(kinds).toContain("tool_call_start");
+    expect(kinds).toContain("tool_call_end");
+    expect(kinds).toContain("error");
+    const startIdx = kinds.indexOf("tool_call_start");
+    const endIdx = kinds.indexOf("tool_call_end");
+    expect(endIdx).toBeGreaterThan(startIdx);
+  });
+
+  test("id-only buffered tool call with normal finish_reason surfaces validation error", async () => {
+    // Provider sends finish_reason: "tool_calls" but the only delta had just an
+    // index/id with no function name or args — the normal success path should
+    // surface a validation error rather than silently dropping the call.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"vid","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_empty"}]},"finish_reason":null}]}`,
+        ``,
+        `data: {"id":"vid","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+        ``,
+        `data: [DONE]`,
+        ``,
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const error = chunks.find((c) => c.kind === "error");
+    expect(error).toBeDefined();
+    if (error?.kind === "error") {
+      expect(error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("truncated buffered stream flushes complete tool calls before the error", async () => {
+    // Stream sends a complete tool call (all args received) but no finish_reason.
+    // The adapter must emit the tool call lifecycle events before the truncation error
+    // so callers can act on complete tool calls even on a truncated stream.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"btf","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","function":{"name":"do_it","arguments":"{\\"k\\":1}"}}]},"finish_reason":null}]}`,
+        ``,
+        // Stream ends — no finish_reason, no [DONE]
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const kinds = chunks.map((c) => c.kind);
+    const startIdx = kinds.indexOf("tool_call_start");
+    const endIdx = kinds.indexOf("tool_call_end");
+    const errorIdx = kinds.indexOf("error");
+
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    expect(errorIdx).toBeGreaterThan(endIdx);
+  });
+
+  test("buffered mode replays post-tool text_delta before done", async () => {
+    // text → tool → text in a buffered stream: streaming consumers must receive
+    // all text_delta chunks (including the trailing one) before the done event.
+    // Previously post-tool text was suppressed and never replayed as chunks.
+    routes.set("/v1/chat/completions", {
+      status: 200,
+      body: [
+        `data: {"id":"ptt","choices":[{"index":0,"delta":{"content":"before"},"finish_reason":null}]}`,
+        ``,
+        `data: {"id":"ptt","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"fn","arguments":"{\\"x\\":1}"}}]},"finish_reason":null}]}`,
+        ``,
+        `data: {"id":"ptt","choices":[{"index":0,"delta":{"content":"after"},"finish_reason":"stop"}]}`,
+        ``,
+        `data: [DONE]`,
+        ``,
+      ].join("\n"),
+    });
+
+    const adapter = createOpenAICompatAdapter({
+      retry: { maxRetries: 0 },
+      apiKey: "test-key",
+      baseUrl: `${baseUrl}/v1`,
+      model: "test-model",
+      compat: { supportsToolStreaming: false },
+    });
+
+    const chunks = await collectChunks(adapter.stream(makeRequest("hi")));
+    const kinds = chunks.map((c) => c.kind);
+
+    // Both text_deltas must be present
+    const textDeltas = chunks.filter((c) => c.kind === "text_delta");
+    expect(textDeltas.length).toBeGreaterThanOrEqual(2);
+
+    // trailing text_delta must come after tool_call_end
+    const lastTextDeltaIdx = kinds.lastIndexOf("text_delta");
+    const toolEndIdx = kinds.lastIndexOf("tool_call_end");
+    expect(lastTextDeltaIdx).toBeGreaterThan(toolEndIdx);
+
+    // done must be the final meaningful event
+    expect(kinds.at(-1)).toBe("done");
+  });
+});

@@ -15,6 +15,7 @@
 
 import { trace } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { defaultResource, type Resource, resourceFromAttributes } from "@opentelemetry/resources";
 import {
   BasicTracerProvider,
   BatchSpanProcessor,
@@ -24,6 +25,166 @@ import {
 
 /** Standard OTLP HTTP traces endpoint — the OTel SDK default. */
 const DEFAULT_OTLP_TRACES_URL = "http://localhost:4318/v1/traces";
+
+/**
+ * Write a structured JSON diagnostic line to stderr.
+ *
+ * Keeps the stderr stream parseable as NDJSON when StderrSpanExporter is
+ * active — plain text warning lines would corrupt downstream JSON parsers.
+ */
+function otelDiag(level: "warn" | "error", msg: string): void {
+  // type: "otel-diag" lets consumers distinguish diagnostics from span records
+  // in the shared NDJSON stream — both are valid JSON but have different shapes.
+  process.stderr.write(
+    `${JSON.stringify({ type: "otel-diag", level, source: "koi/otel", msg })}\n`,
+  );
+}
+
+/**
+ * Build an OTel Resource from env vars and Koi-specific defaults.
+ *
+ * Priority (highest wins): OTEL_SERVICE_NAME > OTEL_RESOURCE_ATTRIBUTES key
+ * override > Koi defaults > OTel SDK defaults (telemetry.sdk.*).
+ *
+ * Exported for unit testing — not part of the public CLI API.
+ */
+export function buildResource(mode: "tui" | "headless"): Resource {
+  // Start with Koi defaults — env vars overwrite these below.
+  const attrs: Record<string, string> = {
+    "service.name": "koi",
+    "koi.mode": mode,
+    "process.runtime.name": "bun",
+    "process.runtime.version": Bun.version,
+  };
+
+  // Only emit service.version when KOI_VERSION is explicitly set by the build.
+  // Defaulting to a fake "dev" string collapses all unversioned builds into one
+  // bucket and makes rollout/rollback triage by version misleading.
+  // Trim KOI_VERSION before storing so whitespace-only build injections (e.g.
+  // from CI template vars that resolve to spaces) don't pass the length guard
+  // and then get restored from koiSnapshot in the guard loop below.
+  const koiVersion = process.env.KOI_VERSION?.trim();
+  if (koiVersion !== undefined && koiVersion.length > 0) {
+    attrs["service.version"] = koiVersion;
+  }
+
+  // Snapshot Koi-computed defaults before applying operator overrides.
+  // Used to restore identity keys if an override resolves to empty.
+  const koiSnapshot = { ...attrs };
+
+  // OTEL_RESOURCE_ATTRIBUTES — comma-separated key=value pairs, values may be
+  // percent-encoded per OTel spec. Overwrites any matching default above.
+  //
+  // Fail-closed: any malformed pair or decode error discards the entire env var.
+  // Partial application (some pairs applied, some skipped) creates split service
+  // identity that is harder to detect than a clean "no overrides" baseline.
+  const rawAttrs = process.env.OTEL_RESOURCE_ATTRIBUTES;
+  if (rawAttrs !== undefined && rawAttrs.length > 0) {
+    const parsed = parseOtelResourceAttributes(rawAttrs);
+    if (parsed === undefined) {
+      otelDiag(
+        "warn",
+        "OTEL_RESOURCE_ATTRIBUTES is malformed — ignoring entire value to avoid partial resource identity.",
+      );
+    } else {
+      for (const [k, v] of Object.entries(parsed)) {
+        attrs[k] = v;
+      }
+    }
+  }
+
+  // OTEL_SERVICE_NAME takes highest priority for service.name.
+  // Reject whitespace-only values — they collapse traces into blank service
+  // buckets which are indistinguishable from unlabeled builds in collectors.
+  // Trim before storing so padded values like "koi-prod " don't create a
+  // different service bucket from "koi-prod".
+  const serviceName = process.env.OTEL_SERVICE_NAME?.trim();
+  if (serviceName !== undefined && serviceName.length > 0) {
+    attrs["service.name"] = serviceName;
+  }
+
+  // Guard and normalize Koi-owned semantic keys:
+  //   - Reject all-whitespace overrides (restore from snapshot or delete).
+  //   - Trim padded values so "koi-prod " and "koi-prod" land in the same bucket.
+  // Templated env vars that resolve to empty/whitespace would silently collapse
+  // telemetry identity (service, version, mode) into unlabeled buckets.
+  const guardKeys = [
+    "service.name",
+    "service.version",
+    "koi.mode",
+    "process.runtime.name",
+    "process.runtime.version",
+  ] as const;
+  for (const key of guardKeys) {
+    const val = attrs[key];
+    if (val === undefined) continue;
+    const trimmed = val.trim();
+    if (trimmed.length === 0) {
+      otelDiag(
+        "warn",
+        `"${key}" was set to an empty or whitespace-only string — ignoring override.`,
+      );
+      const koiValue = koiSnapshot[key];
+      if (koiValue !== undefined) {
+        attrs[key] = koiValue;
+      } else {
+        delete attrs[key];
+      }
+    } else if (trimmed !== val) {
+      attrs[key] = trimmed; // normalize surrounding whitespace
+    }
+  }
+
+  return defaultResource().merge(resourceFromAttributes(attrs));
+}
+
+/** Max key/value length enforced by the OTel JS EnvDetector. */
+const OTEL_MAX_ATTR_LENGTH = 255;
+
+/**
+ * Parse OTEL_RESOURCE_ATTRIBUTES into a key→value map.
+ *
+ * Faithfully mirrors the OTel JS EnvDetector grammar from
+ * @opentelemetry/resources@2.6.1:
+ *   - Comma-separated key=value pairs; "," and "=" MUST be percent-encoded.
+ *   - Each pair must contain exactly one unencoded "=" (trailing/double commas fail closed).
+ *   - Both keys and values are percent-decoded.
+ *   - Keys and decoded values must be ≤ 255 characters.
+ *   - Empty values are allowed per spec.
+ *
+ * Returns `undefined` on any error (empty/missing key, wrong "=" count,
+ * decode failure, or length overflow) — fail-closed so operators see a
+ * clean warning rather than partially-wrong resource metadata.
+ *
+ * Exported for unit testing — not part of the public CLI API.
+ */
+export function parseOtelResourceAttributes(raw: string): Record<string, string> | undefined {
+  const result: Record<string, string> = {};
+  for (const pair of raw.split(",")) {
+    const trimmed = pair.trim();
+    const parts = trimmed.split("=");
+    if (parts.length !== 2) return undefined; // missing "=" or unencoded "=" in value → malformed
+    const part0 = parts[0];
+    const part1 = parts[1];
+    if (part0 === undefined || part1 === undefined) return undefined; // unreachable, satisfies noUncheckedIndexedAccess
+    const rawKey = part0.trim();
+    if (rawKey.length === 0) return undefined; // empty key → malformed
+    const rawValue = part1.trim();
+    let decodedKey: string;
+    let decodedValue: string;
+    try {
+      decodedKey = decodeURIComponent(rawKey);
+      decodedValue = decodeURIComponent(rawValue); // empty value is allowed per spec
+    } catch {
+      return undefined; // percent-decode failure → malformed
+    }
+    if (decodedKey.trim().length === 0) return undefined; // decoded key is empty/whitespace → malformed
+    if (decodedKey.length > OTEL_MAX_ATTR_LENGTH) return undefined;
+    if (decodedValue.length > OTEL_MAX_ATTR_LENGTH) return undefined;
+    result[decodedKey] = decodedValue;
+  }
+  return result;
+}
 
 /** Return value from initOtelSdk — call shutdown() for graceful flush. */
 export interface OtelSdkHandle {
@@ -80,6 +241,7 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
   }
 
   const provider = new BasicTracerProvider({
+    resource: buildResource(mode),
     spanProcessors: [new BatchSpanProcessor(exporter)],
   });
 
@@ -145,9 +307,9 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
 
   // Unsupported explicit value — warn and disable.
   if (envExporter !== undefined) {
-    process.stderr.write(
-      `[koi] OTel: unsupported OTEL_TRACES_EXPORTER="${envExporter}". ` +
-        'Supported: "console", "otlp", "none". OTel export disabled.\n',
+    otelDiag(
+      "warn",
+      `unsupported OTEL_TRACES_EXPORTER="${envExporter}". Supported: "console", "otlp", "none". OTel export disabled.`,
     );
     return undefined;
   }
@@ -164,10 +326,9 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
   // won't stall exit — it just means spans are lost (acceptable for local dev).
   const url = otlpUrl ?? DEFAULT_OTLP_TRACES_URL;
   if (otlpUrl === undefined) {
-    process.stderr.write(
-      `[koi] OTel: using default OTLP endpoint ${DEFAULT_OTLP_TRACES_URL}\n` +
-        "  If no collector is running, spans will be silently lost.\n" +
-        "  Set OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_TRACES_EXPORTER=console\n",
+    otelDiag(
+      "warn",
+      `using default OTLP endpoint ${DEFAULT_OTLP_TRACES_URL} — if no collector is running, spans will be silently lost. Set OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_TRACES_EXPORTER=console`,
     );
   }
   return new OTLPTraceExporter({ url });
@@ -185,10 +346,32 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
  * uses `process.stderr.write()` so span dumps stay on the diagnostic
  * stream where redirection (`2>/tmp/spans.log`) captures them cleanly.
  */
-class StderrSpanExporter implements SpanExporter {
+/** Koi-owned identity keys safe to emit in default headless logs. */
+const STDERR_RESOURCE_ALLOWLIST = [
+  "service.name",
+  "service.version",
+  "koi.mode",
+  "process.runtime.name",
+  "process.runtime.version",
+] as const;
+
+export class StderrSpanExporter implements SpanExporter {
   export(spans: readonly ReadableSpan[], resultCallback: (result: { code: number }) => void): void {
     for (const span of spans) {
+      // Only emit the Koi-owned identity keys in the resource field.
+      // Operator-supplied OTEL_RESOURCE_ATTRIBUTES may include routing tags,
+      // tenant IDs, or accidentally leaked secrets — emitting them verbatim
+      // on every span line would replicate them into all persistent stderr logs.
+      // Full resource metadata is always available via the OTLP exporter path.
+      const resource: Record<string, unknown> = {};
+      for (const k of STDERR_RESOURCE_ALLOWLIST) {
+        if (span.resource.attributes[k] !== undefined) {
+          resource[k] = span.resource.attributes[k];
+        }
+      }
       const obj = {
+        type: "otel-span", // discriminator — matches "otel-diag" from otelDiag()
+        resource,
         traceId: span.spanContext().traceId,
         spanId: span.spanContext().spanId,
         parentSpanId: span.parentSpanContext?.spanId,

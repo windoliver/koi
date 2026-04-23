@@ -26,6 +26,12 @@ export interface BgFlags extends BaseFlags {
   readonly follow: boolean;
   /** `--json` output for `ps`. */
   readonly json: boolean;
+  /**
+   * `--all` for `ps`: include terminal entries older than the 24h retention
+   * window in the listing. Default hides them so operators see only live
+   * sessions plus recent post-mortem entries. See #1866 D7.
+   */
+  readonly all: boolean;
   /** Override the default registry directory (defaults to `$KOI_STATE_DIR/daemon/sessions`). */
   readonly registryDir: string | undefined;
 }
@@ -38,6 +44,7 @@ export function parseBgFlags(rest: readonly string[]): BgFlags {
   type V = {
     readonly follow: boolean | undefined;
     readonly json: boolean | undefined;
+    readonly all: boolean | undefined;
     readonly "registry-dir": string | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
@@ -48,6 +55,7 @@ export function parseBgFlags(rest: readonly string[]): BgFlags {
       options: {
         follow: { type: "boolean", short: "f", default: false },
         json: { type: "boolean", default: false },
+        all: { type: "boolean", default: false },
         "registry-dir": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
@@ -82,6 +90,7 @@ export function parseBgFlags(rest: readonly string[]): BgFlags {
     workerId,
     follow: values.follow ?? false,
     json: values.json ?? false,
+    all: values.all ?? false,
     registryDir: values["registry-dir"],
   };
 }

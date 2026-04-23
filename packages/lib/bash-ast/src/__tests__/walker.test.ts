@@ -775,3 +775,129 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     expect(result.primaryCategory).toBe("scope-trackable");
   });
 });
+
+describe("walker — wrapper-command unwrapping", () => {
+  test("sudo rm -rf /tmp → argv=['rm',…], wrappedBy=['sudo']", () => {
+    const result = analyzeBashCommand("sudo rm -rf /tmp");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv).toEqual(["rm", "-rf", "/tmp"]);
+    expect(result.commands[0]?.wrappedBy).toEqual(["sudo"]);
+  });
+
+  test("nohup curl http://x.com → argv=['curl',…], wrappedBy=['nohup']", () => {
+    const result = analyzeBashCommand("nohup curl http://x.com");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv).toEqual(["curl", "http://x.com"]);
+    expect(result.commands[0]?.wrappedBy).toEqual(["nohup"]);
+  });
+
+  test("timeout 30 wget http://x → argv=['wget',…], wrappedBy=['timeout']", () => {
+    const result = analyzeBashCommand("timeout 30 wget http://x");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv).toEqual(["wget", "http://x"]);
+    expect(result.commands[0]?.wrappedBy).toEqual(["timeout"]);
+  });
+
+  test("env FOO=bar ls → argv=['ls'], envVars includes FOO=bar, wrappedBy=['env']", () => {
+    const result = analyzeBashCommand("env FOO=bar ls");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv).toEqual(["ls"]);
+    expect(result.commands[0]?.wrappedBy).toEqual(["env"]);
+    expect(result.commands[0]?.envVars).toEqual([{ name: "FOO", value: "bar" }]);
+  });
+
+  test("nested: timeout 5 nohup rm /x → wrappedBy=['timeout','nohup']", () => {
+    const result = analyzeBashCommand("timeout 5 nohup rm /x");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv).toEqual(["rm", "/x"]);
+    expect(result.commands[0]?.wrappedBy).toEqual(["timeout", "nohup"]);
+  });
+
+  test("non-wrapper command has no wrappedBy field", () => {
+    const result = analyzeBashCommand("ls -la");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.wrappedBy).toBeUndefined();
+  });
+
+  test("sudo with unknown flag leaves command untouched (fail-closed)", () => {
+    const result = analyzeBashCommand("sudo -Z ls");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv[0]).toBe("sudo");
+    expect(result.commands[0]?.wrappedBy).toBeUndefined();
+  });
+
+  test("sudo -e /etc/passwd — edit mode must not unwrap (sudo stays argv[0])", () => {
+    const result = analyzeBashCommand("sudo -e /etc/passwd");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv[0]).toBe("sudo");
+    expect(result.commands[0]?.wrappedBy).toBeUndefined();
+  });
+
+  test("sudo -l — list mode must not unwrap", () => {
+    const result = analyzeBashCommand("sudo -l");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv[0]).toBe("sudo");
+    expect(result.commands[0]?.wrappedBy).toBeUndefined();
+  });
+
+  test("nohup sudo rm — double-unwrap: argv[0]=rm, wrappedBy=[nohup,sudo]", () => {
+    const result = analyzeBashCommand("nohup sudo rm -rf /tmp");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    const cmd = result.commands[0];
+    expect(cmd?.argv[0]).toBe("rm");
+    expect(cmd?.wrappedBy).toEqual(["nohup", "sudo"]);
+  });
+
+  test("sudo nohup rm — double-unwrap in opposite order: argv[0]=rm, wrappedBy=[sudo,nohup]", () => {
+    const result = analyzeBashCommand("sudo nohup rm -rf /tmp");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    const cmd = result.commands[0];
+    expect(cmd?.argv[0]).toBe("rm");
+    expect(cmd?.wrappedBy).toEqual(["sudo", "nohup"]);
+  });
+
+  test("timeout 30 sudo rm — unwraps through both wrappers", () => {
+    const result = analyzeBashCommand("timeout 30 sudo rm -rf /tmp");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    const cmd = result.commands[0];
+    expect(cmd?.argv[0]).toBe("rm");
+    expect(cmd?.wrappedBy).toEqual(["timeout", "sudo"]);
+  });
+
+  test("timeout 30 — no inner command, stays as-is (fail-closed)", () => {
+    const result = analyzeBashCommand("timeout 30");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv[0]).toBe("timeout");
+    expect(result.commands[0]?.wrappedBy).toBeUndefined();
+  });
+
+  test("env -i sudo rm — env clears env then chains to sudo rm", () => {
+    const result = analyzeBashCommand("env -i sudo rm /tmp/foo");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    const cmd = result.commands[0];
+    expect(cmd?.argv[0]).toBe("rm");
+    expect(cmd?.wrappedBy).toEqual(["env", "sudo"]);
+  });
+
+  test("sudo -U alice rm — other-user flag is listing-mode only, must not unwrap", () => {
+    const result = analyzeBashCommand("sudo -U alice rm -rf /tmp");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.argv[0]).toBe("sudo");
+    expect(result.commands[0]?.wrappedBy).toBeUndefined();
+  });
+});

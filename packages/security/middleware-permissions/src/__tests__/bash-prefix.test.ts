@@ -108,6 +108,7 @@ describe("bash prefix resource enrichment", () => {
       backend,
       resolveBashCommand: (_toolId, input) =>
         typeof input.command === "string" ? (input.command as string) : undefined,
+      enableBashSpecGuard: false,
     });
     await mw.wrapToolCall?.(
       makeTurnContext(),
@@ -125,6 +126,7 @@ describe("bash prefix resource enrichment", () => {
     const mw = createPermissionsMiddleware({
       backend,
       resolveBashCommand: (_toolId, input) => input.cmd as string,
+      enableBashSpecGuard: false,
     });
     await mw.wrapToolCall?.(
       makeTurnContext(),
@@ -159,6 +161,7 @@ describe("bash prefix resource enrichment", () => {
     const mw = createPermissionsMiddleware({
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
+      enableBashSpecGuard: false,
     });
 
     // allowed
@@ -183,6 +186,7 @@ describe("bash prefix resource enrichment", () => {
     const mw = createPermissionsMiddleware({
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
+      enableBashSpecGuard: false,
     });
 
     for (const cmd of ["git push origin main", "git status", "git log --oneline"]) {
@@ -260,6 +264,7 @@ describe("bash prefix — backward compatibility", () => {
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
       allowLegacyBackendBashFallback: true,
+      enableBashSpecGuard: false,
     });
     const result = await mw.wrapToolCall?.(
       makeTurnContext(),
@@ -368,6 +373,7 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
       backend,
       denialEscalation: { threshold: 2, windowMs: 60_000 },
       resolveBashCommand: (_toolId, input) => input.command as string,
+      enableBashSpecGuard: false,
     });
     const ctx = makeTurnContext({ sessionId: "s-escalation" });
 
@@ -727,6 +733,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
   const mw = createPermissionsMiddleware({
     backend,
     resolveBashCommand: (_toolId, input) => input.command as string,
+    enableBashSpecGuard: false,
   });
 
   const bypasses: readonly { readonly label: string; readonly command: string }[] = [
@@ -779,6 +786,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     const mwNarrow = createPermissionsMiddleware({
       backend: narrow,
       resolveBashCommand: (_toolId, input) => input.command as string,
+      enableBashSpecGuard: false,
     });
     // `git status` alone: allowed
     await mwNarrow.wrapToolCall?.(
@@ -966,6 +974,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
 
     // 1. Model-time: bash passes the filter.
@@ -1013,6 +1022,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
     // Plain `bash` allow + no enriched rule → allow (no surprise deny).
     await mw.wrapToolCall?.(
@@ -1082,6 +1092,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
 
     // Plain `allow: bash` is honored; enriched default-deny (via
@@ -1149,6 +1160,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
     const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
@@ -1222,6 +1234,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
     const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
@@ -1282,6 +1295,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
 
     await expect(
@@ -1332,6 +1346,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend: broadBackend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
     const ctxBroad = makeTurnContext({ requestApproval: approvalHandler });
     await expect(
@@ -1351,6 +1366,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend: narrowBackend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
     const ctxNarrow = makeTurnContext({ requestApproval: approvalHandler });
     const rNarrow = await mwNarrow.wrapToolCall?.(
@@ -1369,6 +1385,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       backend: exactBackend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
+      enableBashSpecGuard: false,
     });
     const ctxExact = makeTurnContext({ requestApproval: approvalHandler });
     const r = await mwExact.wrapToolCall?.(

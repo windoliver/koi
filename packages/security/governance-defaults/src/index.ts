@@ -1,3 +1,8 @@
+export type { AuditSinkComplianceRecorderCtx } from "./compliance-recorder.js";
+export {
+  createAuditSinkComplianceRecorder,
+  fanOutComplianceRecorder,
+} from "./compliance-recorder.js";
 export type { CostCalculator, PricingEntry } from "./cost-calculator.js";
 export { createFlatRateCostCalculator } from "./cost-calculator.js";
 export { DEFAULT_PRICING } from "./default-pricing.js";

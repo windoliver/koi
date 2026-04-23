@@ -25,7 +25,7 @@ import {
 import { createStreamParser, parseSSELines } from "./stream-parser.js";
 import { mapToolDescriptors } from "./tool-mapper.js";
 import type { ChatCompletionTool, OpenAICompatAdapterConfig, ResolvedConfig } from "./types.js";
-import { resolveConfig } from "./types.js";
+import { resolveCompat, resolveConfig } from "./types.js";
 
 /** Stream idle timeout — abort hung streams after 90s of no data. */
 const STREAM_IDLE_TIMEOUT_MS = 90_000;
@@ -228,9 +228,19 @@ async function* streamOnce(
   request: ModelRequest,
   getDisableKeepAlive: () => boolean,
 ): AsyncIterable<ModelChunk> {
+  // Re-resolve model-specific compat when request.model differs from the adapter's
+  // default model — model-compat rules may differ per model within the same provider.
+  const effectiveModel = request.model ?? config.model;
+  const streamCompat =
+    effectiveModel !== config.model
+      ? resolveCompat(config.baseUrl, effectiveModel, config.rawCompat)
+      : config.compat;
+  const streamConfig: ResolvedConfig =
+    streamCompat !== config.compat ? { ...config, compat: streamCompat } : config;
+
   const tools =
-    request.tools !== undefined ? mapToolDescriptors(request.tools, config.compat) : undefined;
-  const body = buildRequestBody(request, config, tools);
+    request.tools !== undefined ? mapToolDescriptors(request.tools, streamCompat) : undefined;
+  const body = buildRequestBody(request, streamConfig, tools);
   // Fingerprint the actual wire payload (sorted tools + system prompt) so
   // diagnostics accurately reflect provider-visible prefix changes.
   const promptPrefixFingerprint = computePrefixFingerprint(request.systemPrompt, tools);
@@ -339,13 +349,18 @@ async function* streamOnce(
     return;
   }
 
-  const effectiveModel = request.model ?? config.model;
   const accumulator = createEmptyAccumulator(effectiveModel);
-  const parser = createStreamParser(accumulator);
+  const parser = createStreamParser(accumulator, {
+    supportsToolStreaming: streamCompat.supportsToolStreaming,
+  });
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDone = false;
   let hadError = false;
+  // Accumulate error chunks instead of yielding immediately so that buffered
+  // complete tool calls can be flushed first. complete() throws on the first
+  // error chunk, so errors must come after any salvageable tool call events.
+  const pendingErrors: ModelChunk[] = [];
 
   // Reset idle timer — headers arrived, now timing body chunks
   resetIdleTimer();
@@ -371,17 +386,21 @@ async function* streamOnce(
       for (const part of parts) {
         for (const sseResult of parseSSELines(`${part}\n`)) {
           if (!sseResult.ok) {
-            yield {
+            pendingErrors.push({
               kind: "error",
               message: `Malformed SSE payload: ${sseResult.raw}`,
               code: "EXTERNAL",
-            };
+            });
             hadError = true;
             continue;
           }
           for (const chunk of parser.feed(sseResult.chunk)) {
-            if (chunk.kind === "error") hadError = true;
-            yield chunk;
+            if (chunk.kind === "error") {
+              hadError = true;
+              pendingErrors.push(chunk);
+            } else {
+              yield chunk;
+            }
           }
         }
       }
@@ -394,32 +413,59 @@ async function* streamOnce(
       if (buffer.includes("[DONE]")) sawDone = true;
       for (const sseResult of parseSSELines(`${buffer}\n`)) {
         if (!sseResult.ok) {
-          yield {
+          pendingErrors.push({
             kind: "error",
             message: `Malformed SSE payload: ${sseResult.raw}`,
             code: "EXTERNAL",
-          };
+          });
           hadError = true;
           continue;
         }
         for (const chunk of parser.feed(sseResult.chunk)) {
-          if (chunk.kind === "error") hadError = true;
-          yield chunk;
+          if (chunk.kind === "error") {
+            hadError = true;
+            pendingErrors.push(chunk);
+          } else {
+            yield chunk;
+          }
         }
       }
     }
 
-    if (hadError) return;
+    if (hadError) {
+      // Flush buffered complete tool calls BEFORE the errors. In buffered mode,
+      // calls are held until finish(); errors must not be emitted first or
+      // complete() will throw before consuming salvageable tool call events.
+      for (const chunk of parser.finish()) {
+        if (chunk.kind !== "error") yield chunk;
+      }
+      for (const err of pendingErrors) yield err;
+      return;
+    }
 
     const acc = parser.getAccumulator();
     if (!acc.receivedFinishReason) {
+      // Flush buffered tool calls first — if only the finish_reason was cut off,
+      // complete tool calls should not be silently dropped.
+      let hadCompleteToolCall = false;
+      for (const chunk of parser.finish()) {
+        if (chunk.kind === "tool_call_end") hadCompleteToolCall = true;
+        // Skip validation errors from finish() — on a truncated stream, parse
+        // failures are symptoms of truncation, not provider data bugs. The
+        // transport error below is the authoritative failure signal.
+        if (chunk.kind === "error") continue;
+        yield chunk;
+      }
+      // Retryable unless at least one complete tool call was dispatched — retrying
+      // after a complete call would re-execute non-idempotent tool side effects.
+      // A partial fragment (sawToolCallDelta but no tool_call_end) is still retryable.
       yield {
         kind: "error",
         message: sawDone
           ? "Stream sent [DONE] without a finish_reason — possible truncation"
           : "Stream terminated without [DONE] marker or finish_reason — possible truncation",
         code: "EXTERNAL",
-        retryable: true,
+        retryable: !hadCompleteToolCall,
       };
       return;
     }
@@ -444,13 +490,23 @@ async function* streamOnce(
     clearIdleTimer();
     if (request.signal?.aborted === true) return;
 
+    // Flush buffered tool calls — emit any complete calls before the error and
+    // determine retryability (non-retryable only if a complete call was dispatched).
+    let hadCompleteToolCall = false;
+    for (const chunk of parser.finish()) {
+      if (chunk.kind === "tool_call_end") hadCompleteToolCall = true;
+      // Skip validation errors — transport failure is the authoritative signal
+      if (chunk.kind === "error") continue;
+      yield chunk;
+    }
+
     // Idle timeout fired → aborted the body read → threw AbortError
     if (idleController.signal.aborted) {
       yield {
         kind: "error",
         message: `Stream idle for ${STREAM_IDLE_TIMEOUT_MS / 1000}s — aborting hung connection`,
         code: "TIMEOUT",
-        retryable: true,
+        retryable: !hadCompleteToolCall,
       };
       return;
     }
@@ -460,7 +516,7 @@ async function* streamOnce(
       kind: "error",
       message: error instanceof Error ? error.message : String(error),
       code: "EXTERNAL",
-      retryable: isConnReset,
+      retryable: isConnReset && !hadCompleteToolCall,
     };
   }
 }

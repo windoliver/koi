@@ -183,6 +183,9 @@ export async function scanMemoryDirectory(
       filePath: relativePath,
       createdAt: entry.modifiedAt ?? 0,
       updatedAt: entry.modifiedAt ?? 0,
+      ...(parsed.frontmatter.confidence !== undefined
+        ? { confidence: parsed.frontmatter.confidence }
+        : {}),
     };
 
     memories.push({ record, fileSize: readResult.value.size });

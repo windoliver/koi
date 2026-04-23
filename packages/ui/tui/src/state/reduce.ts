@@ -712,6 +712,15 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_mcp_status":
       return { ...state, mcpServers: action.servers };
 
+    case "set_supervised_children":
+      // Reference-equality shortcut: the runtime bridge can push identical
+      // snapshots on no-op registry events (e.g. `watch` firing on
+      // observer-only listeners). Skip the state rebuild in that case so
+      // downstream effect hooks don't re-run for free.
+      return action.children === state.supervisedChildren
+        ? state
+        : { ...state, supervisedChildren: action.children };
+
     case "set_modal":
       return action.modal === null && state.modal === null
         ? state
@@ -937,12 +946,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         };
       }
 
-      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
-      const agentName = progress?.agentName ?? existingRecord!.agentName;
-      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
-      const description = progress?.description ?? existingRecord!.description;
-      // biome-ignore lint/style/noNonNullAssertion: existingRecord narrowed by outer guard; safe to assert
-      const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
+      // At least one of `progress`/`existingRecord` is defined — the
+      // `!progress && !existingRecord` branch above already returned.
+      const fallback = progress ?? existingRecord;
+      if (fallback === undefined) return state;
+      const agentName = fallback.agentName;
+      const description = fallback.description;
+      const startedAt = fallback.startedAt;
       const finishedAt = Date.now();
       const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };

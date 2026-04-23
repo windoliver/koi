@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { PermissionQuery } from "@koi/core";
 
-import { compileGlob, evaluateRules, normalizeResource } from "./rule-evaluator.js";
+import { compileGlob, evaluateRules, IS_DEFAULT_ASK, normalizeResource } from "./rule-evaluator.js";
 import type { CompiledRule } from "./rule-types.js";
 
 function makeRule(
@@ -268,9 +268,10 @@ describe("evaluateRules", () => {
     expect(decision.effect).toBe("ask");
   });
 
-  test("no matching rules returns ask fallback", () => {
+  test("no matching rules returns ask fallback stamped with IS_DEFAULT_ASK", () => {
     const decision = evaluateRules(query, []);
-    expect(decision).toEqual({ effect: "ask", reason: "No matching permission rule" });
+    expect(decision.effect).toBe("ask");
+    expect((decision as Record<symbol, unknown>)[IS_DEFAULT_ASK]).toBe(true);
   });
 
   test("non-matching pattern is skipped", () => {

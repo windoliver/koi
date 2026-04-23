@@ -1792,6 +1792,94 @@ describe("createKoi duration fix", () => {
 });
 
 // ---------------------------------------------------------------------------
+// createKoi — resetIterationBudgetPerRun (issue #1917)
+// ---------------------------------------------------------------------------
+
+describe("createKoi resetIterationBudgetPerRun", () => {
+  test("second run() does not fail with stale duration accumulator", async () => {
+    // Regression for #1917: the iteration guard's startedAt/lastActivityMs
+    // accumulated across run() calls. With a tight maxDurationMs, the second
+    // run would immediately throw TIMEOUT because the guard thought ~60ms had
+    // elapsed when only milliseconds had.
+    //
+    // Uses a cooperating adapter (adapter.terminals present) so the
+    // if (adapter.terminals) path in koi.ts is exercised and resetForRun()
+    // is actually called between runs.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    // Budget is 120ms. We sleep 150ms between runs.
+    // Without resetForRun(): startedAt is stale from the first run; the guard
+    // sees 150ms+ elapsed on the second run, immediately trips the 120ms limit.
+    // With resetForRun(): startedAt is refreshed to "now", so the second run
+    // starts with a full 120ms budget.
+    const guard = createIterationGuard({
+      maxTurns: 100,
+      maxDurationMs: 120,
+      maxTokens: 100_000,
+    });
+
+    const modelTerminal = mock(() =>
+      Promise.resolve({ content: "ok", model: "test" } as import("@koi/core").ModelResponse),
+    );
+    const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [guard],
+      resetIterationBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const firstEvents = await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    expect(firstEvents.at(-1)?.kind).toBe("done");
+
+    // Sleep past the budget so a stale startedAt would cause the second run
+    // to immediately exceed maxDurationMs without the fix.
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Second run must not throw TIMEOUT. With resetForRun(), startedAt is
+    // refreshed after forge startup so the guard starts counting from zero.
+    const secondEvents = await collectEvents(runtime.run({ kind: "text", text: "second" }));
+    expect(secondEvents.at(-1)?.kind).toBe("done");
+  });
+
+  test("legacy guard (canonical name, no brand) emits console.warn instead of silent no-op", async () => {
+    // Regression guard for version-skew scenario: pre-#1917 @koi/engine-compose
+    // guards carry no ITERATION_GUARD_BRAND and no resetForRun(). The engine must
+    // warn loudly so operators notice rather than getting silent stale timeouts.
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    // Simulate a legacy guard using the canonical middleware name.
+    const legacyGuard: KoiMiddleware = {
+      name: "koi:iteration-guard",
+      describeCapabilities: () => undefined,
+    };
+
+    const modelTerminal = mock(() =>
+      Promise.resolve({ content: "ok", model: "test" } as import("@koi/core").ModelResponse),
+    );
+    const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [legacyGuard],
+      resetIterationBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Engine must have warned about the unresettable legacy guard.
+    const warnCalls = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === "string" && args[0].includes("resetIterationBudgetPerRun"),
+    );
+    expect(warnCalls.length).toBeGreaterThan(0);
+    warnSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // createKoi — streaming terminal wiring
 // ---------------------------------------------------------------------------
 

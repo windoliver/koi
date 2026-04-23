@@ -100,6 +100,8 @@ export interface StartFlags extends BaseFlags {
   readonly allowTools: readonly string[];
   /** Hard timeout in ms. undefined = no timeout. Headless-only. */
   readonly maxDurationMs: number | undefined;
+  /** Path to a JSON Schema file. Validates agent text output. Headless-only. */
+  readonly resultSchema: string | undefined;
   /**
    * Governance CLI surface (gov-10). Bundled object keeps the flag module
    * free-standing — per-flag validation, conflict detection, and defaults
@@ -128,6 +130,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     readonly headless: boolean | undefined;
     readonly "allow-tool": string[] | undefined;
     readonly "max-duration-ms": string | undefined;
+    readonly "result-schema": string | undefined;
     readonly "max-spend": string | undefined;
     readonly "max-turns": string | undefined;
     readonly "max-spawn-depth": string | undefined;
@@ -158,6 +161,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
         headless: { type: "boolean", default: false },
         "allow-tool": { type: "string", multiple: true },
         "max-duration-ms": { type: "string" },
+        "result-schema": { type: "string" },
         "max-spend": { type: "string" },
         "max-turns": { type: "string" },
         "max-spawn-depth": { type: "string" },
@@ -298,6 +302,11 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
         "--max-duration-ms requires --headless: interactive sessions do not time out",
       );
     }
+    if (!headless && values["result-schema"] !== undefined) {
+      throw new ParseError(
+        "--result-schema requires --headless: result schema validation is only meaningful in non-interactive one-shot mode",
+      );
+    }
     if (headless && untilPass.length > 0) {
       throw new ParseError(
         "--headless cannot be combined with --until-pass: loop mode writes non-NDJSON banners to stdout",
@@ -347,6 +356,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     headless,
     allowTools,
     maxDurationMs,
+    resultSchema: values["result-schema"],
     governance,
   };
 }

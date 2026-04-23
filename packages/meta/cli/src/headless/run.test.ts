@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { EngineEvent, EngineInput } from "@koi/core";
 import { toolCallId } from "@koi/core";
 import type { HeadlessOutcome } from "./run.js";
-import { emitHeadlessSessionStart, emitPreRunTimeoutResult, runHeadless } from "./run.js";
+import {
+  emitHeadlessSessionStart,
+  emitPreRunTimeoutResult,
+  HEADLESS_EXIT,
+  runHeadless,
+} from "./run.js";
 
 /**
  * Wrapper that mirrors what start.ts does: emit session_start, run the
@@ -10,15 +15,18 @@ import { emitHeadlessSessionStart, emitPreRunTimeoutResult, runHeadless } from "
  * session_start / result-emission refactor (session_start moved out of
  * runHeadless and into the caller so the deadline backstop cannot
  * double-emit a session header).
+ *
+ * Returns the full HeadlessOutcome so callers can invoke emitResult again
+ * after the fact (e.g. to test validationFailed serialisation).
  */
 async function runAndEmit(
   opts: Parameters<typeof runHeadless>[0],
   override?: Parameters<HeadlessOutcome["emitResult"]>[0],
-): Promise<number> {
+): Promise<HeadlessOutcome> {
   emitHeadlessSessionStart(opts.sessionId, opts.writeStdout);
   const outcome = await runHeadless(opts);
   outcome.emitResult(override);
-  return outcome.exitCode;
+  return outcome;
 }
 
 type FakeRuntime = {
@@ -104,7 +112,7 @@ describe("emitPreRunTimeoutResult", () => {
 describe("runHeadless", () => {
   test("emits session_start then result on successful run", async () => {
     const stdout: string[] = [];
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "sess-1",
       prompt: "ping",
       maxDurationMs: undefined,
@@ -260,7 +268,7 @@ describe("runHeadless", () => {
   test("returns exit code 4 on max-duration-ms timeout and the engine receives the abort", async () => {
     const stdout: string[] = [];
     let sawAbort = false;
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "slow",
       maxDurationMs: 10,
@@ -288,7 +296,7 @@ describe("runHeadless", () => {
 
   test("returns exit code 2 when runtime throws a PERMISSION KoiError", async () => {
     const stdout: string[] = [];
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -363,7 +371,7 @@ describe("runHeadless", () => {
     // stderr is the same exfiltration vector. Both streams must emit
     // only a classification + length marker.
     const stderr: string[] = [];
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -385,7 +393,7 @@ describe("runHeadless", () => {
 
   test("returns exit code 1 when engine stream ends without 'done'", async () => {
     const stdout: string[] = [];
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -398,7 +406,7 @@ describe("runHeadless", () => {
 
   test("done event with stopReason=max_turns → exit 3 (BUDGET_EXCEEDED)", async () => {
     const stdout: string[] = [];
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -430,7 +438,7 @@ describe("runHeadless", () => {
     // Matches the headlessDenyHandler in start.ts: fail-closed deny reason
     // for paths that fall through the permission BACKEND to the approval
     // HANDLER (Bash uncertain-AST elicit, MCP tools requesting approval).
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -464,7 +472,7 @@ describe("runHeadless", () => {
     // done event (koi.ts:1458). If our deadline timer fired, that must
     // surface as TIMEOUT regardless.
     const stdout: string[] = [];
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: 10,
@@ -499,7 +507,7 @@ describe("runHeadless", () => {
 
   test("done event with stopReason=max_turns + 'Duration limit exceeded' → exit 4 (not BUDGET)", async () => {
     // Engine wall-clock guard message shape (engine-compose/src/guards.ts).
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -533,7 +541,7 @@ describe("runHeadless", () => {
     // metadata.terminatedBy. Headless must surface this as TIMEOUT (4)
     // rather than AGENT_FAILURE (1), so retry/automation logic can
     // distinguish inactivity/wall-clock timeouts from user cancels.
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -569,7 +577,7 @@ describe("runHeadless", () => {
     // The engine catch path remaps KoiRuntimeError(TIMEOUT) to stopReason
     // "max_turns" and embeds the timeout message in metadata. Headless
     // must surface this as TIMEOUT (4), not BUDGET_EXCEEDED (3).
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -685,7 +693,7 @@ describe("runHeadless", () => {
   });
 
   test("done event with stopReason=interrupted → exit 1", async () => {
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -712,7 +720,7 @@ describe("runHeadless", () => {
   });
 
   test("done event with stopReason=error + permission marker → exit 2", async () => {
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -740,7 +748,7 @@ describe("runHeadless", () => {
   });
 
   test("done event with stopReason=error + default-deny marker → exit 2", async () => {
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -768,7 +776,7 @@ describe("runHeadless", () => {
   });
 
   test("done event with stopReason=error → exit 1 (AGENT_FAILURE)", async () => {
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -969,7 +977,7 @@ describe("runHeadless", () => {
 
   test("externalSignal abort under --max-duration-ms → exit 1 (AGENT_FAILURE), not 4", async () => {
     const external = new AbortController();
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: 10_000, // long timeout, will NOT fire
@@ -1000,7 +1008,7 @@ describe("runHeadless", () => {
     const external = new AbortController();
     external.abort();
     let engineStartedRun = false;
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -1021,7 +1029,7 @@ describe("runHeadless", () => {
   test("externalSignal aborts the engine (SIGINT-style)", async () => {
     const external = new AbortController();
     let sawAbort = false;
-    const exitCode = await runAndEmit({
+    const { exitCode } = await runAndEmit({
       sessionId: "s",
       prompt: "x",
       maxDurationMs: undefined,
@@ -1046,5 +1054,148 @@ describe("runHeadless", () => {
     expect(sawAbort).toBe(true);
     // No --max-duration-ms, so external abort is treated as agent failure / internal.
     expect([1, 5]).toContain(exitCode);
+  });
+});
+
+describe("runHeadless — onRawAssistantText callback", () => {
+  const SESSION = "sess-raw-test";
+
+  test("fires with raw (unredacted) delta text for schema validation", async () => {
+    // onRawAssistantText receives the raw model output before banner redaction so that
+    // schema validation operates on the agent's actual output. Banner redaction is applied
+    // only to the emitted NDJSON assistant_text event written to stdout. A valid JSON payload
+    // that contains a banner-shaped string must still validate correctly.
+    const raw: string[] = [];
+    await runAndEmit({
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        { kind: "text_delta", delta: "[Turn failed: secret-token-abc.]" },
+        DONE,
+      ]),
+      onRawAssistantText: (t) => {
+        raw.push(t);
+      },
+    });
+    // Raw (unredacted) text is passed to the schema accumulator
+    expect(raw.join("")).toContain("secret-token-abc");
+  });
+
+  test("fires via done.output.content fallback when no deltas were emitted", async () => {
+    const raw: string[] = [];
+    await runAndEmit({
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        {
+          kind: "done",
+          output: {
+            content: [{ kind: "text", text: '{"count":1}' }],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        },
+      ]),
+      onRawAssistantText: (t) => {
+        raw.push(t);
+      },
+    });
+    expect(raw.join("")).toBe('{"count":1}');
+  });
+
+  test("done.output.content fallback fires for final segment even after narration pre-tool", async () => {
+    // Regression: if text_delta fires before a tool, emittedAssistantText was permanently set,
+    // causing the done.output.content fallback to be skipped for the final segment.
+    const cid = toolCallId("c1");
+    const raw: string[] = [];
+    const stdout: string[] = [];
+    await runAndEmit({
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: (s) => stdout.push(s),
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        { kind: "text_delta", delta: "I will look this up..." },
+        { kind: "tool_call_start", callId: cid, toolName: "fs_read", args: {} },
+        { kind: "tool_result", callId: cid, output: "file contents" },
+        {
+          kind: "done",
+          output: {
+            content: [{ kind: "text", text: '{"result":"ok"}' }],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        },
+      ]),
+      onRawAssistantText: (t) => {
+        raw.push(t);
+      },
+      onToolResult: () => {
+        raw.length = 0; // simulate schema buffer reset
+      },
+    });
+    // Final segment from done.output.content should have fired
+    expect(raw.join("")).toBe('{"result":"ok"}');
+    // And been emitted to stdout as assistant_text
+    const assistantLines = stdout.filter((l) => l.includes('"assistant_text"'));
+    expect(assistantLines.length).toBeGreaterThanOrEqual(2); // narration + final answer
+  });
+
+  test("onToolResult fires after each tool_result event", async () => {
+    const cid2 = toolCallId("c2");
+    const resets: number[] = [];
+    let resetCount = 0;
+    await runAndEmit({
+      sessionId: SESSION,
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: () => {},
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([
+        { kind: "text_delta", delta: "thinking..." },
+        { kind: "tool_call_start", callId: cid2, toolName: "fs_read", args: {} },
+        { kind: "tool_result", callId: cid2, output: "file contents" },
+        { kind: "text_delta", delta: '{"done":true}' },
+        DONE,
+      ]),
+      onRawAssistantText: () => {},
+      onToolResult: () => {
+        resetCount += 1;
+        resets.push(resetCount);
+      },
+    });
+    expect(resets).toEqual([1]);
+  });
+
+  test("emitResult with validationFailed: true serialises the field in the result event", async () => {
+    const lines: string[] = [];
+    // Use runHeadless directly so we control when emitResult is called.
+    const outcome = await runHeadless({
+      sessionId: "sess-vf",
+      prompt: "test",
+      maxDurationMs: undefined,
+      writeStdout: (s) => {
+        lines.push(s);
+      },
+      writeStderr: () => {},
+      runtime: runtimeFromEvents([DONE]),
+    });
+    outcome.emitResult({
+      exitCode: HEADLESS_EXIT.SCHEMA_VALIDATION,
+      validationFailed: true,
+      error: "schema validation failed: .",
+    });
+    const resultLine = lines.find((l) => l.includes('"kind":"result"'));
+    expect(resultLine).toBeDefined();
+    const parsed = JSON.parse(resultLine ?? "{}") as Record<string, unknown>;
+    expect(parsed.validationFailed).toBe(true);
+    expect(parsed.exitCode).toBe(6);
   });
 });

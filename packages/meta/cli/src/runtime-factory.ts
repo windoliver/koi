@@ -26,9 +26,9 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
@@ -37,6 +37,8 @@ import type { BudgetConfig } from "@koi/context-manager";
 import type {
   Agent,
   ApprovalHandler,
+  AuditSink,
+  ComplianceRecorder,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
@@ -44,14 +46,17 @@ import type {
   FileSystemBackend,
   GovernanceBackend,
   GovernanceController,
+  GovernanceVerdict,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
   PermissionBackend,
+  PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
   SessionId,
   SessionTranscript,
+  ViolationStore,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, GOVERNANCE, agentId as makeAgentId } from "@koi/core";
 import { DEFAULT_PRICING, resolvePricing } from "@koi/cost-aggregator";
@@ -63,10 +68,18 @@ import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
 import type { PatternRule } from "@koi/governance-defaults";
-import { createPatternBackend } from "@koi/governance-defaults";
+import {
+  createAuditSinkComplianceRecorder,
+  createPatternBackend,
+  fanOutComplianceRecorder,
+} from "@koi/governance-defaults";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import {
+  createFeedbackLoopMiddleware,
+  type FeedbackLoopConfig,
+} from "@koi/middleware-feedback-loop";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -77,6 +90,7 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
+import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
 import {
   buildInheritedMiddlewareForChildren,
   composeRuntimeMiddleware,
@@ -717,6 +731,14 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditSqlitePath?: string | undefined;
+  /** Path to the SQLite DB backing the ViolationStore.
+   *  - `undefined` (default): auto-wires to `~/.koi/violations.db` when
+   *    governance is enabled — mirrors the `~/.koi/governance-alerts.jsonl`
+   *    convention from gov-9 so `/governance` history works out of the box.
+   *  - Non-empty string: explicit override path.
+   *  - Empty string `""`: disables the store entirely (violations only
+   *    surfaced in-memory via the governance bridge for the current session). */
+  readonly violationSqlitePath?: string | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -733,6 +755,15 @@ export interface KoiRuntimeConfig {
    * no-op default when it lands.
    */
   readonly planningEnabled?: boolean | undefined;
+  /**
+   * Opt-in: activate `@koi/middleware-feedback-loop` for model-response
+   * validation and tool-health tracking. When set, the middleware is wired
+   * into the outer middleware zone alongside the audit/report middlewares.
+   * Surface via `KOI_FEEDBACK_LOOP_ENABLED=true` in the TUI, which
+   * activates the middleware with an empty config (no validators, no
+   * quarantine thresholds — observe-only posture).
+   */
+  readonly feedbackLoop?: FeedbackLoopConfig | undefined;
   /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
@@ -909,6 +940,23 @@ export interface KoiRuntimeHandle {
    * `--no-governance` fails open on the TUI toast + alerts-file paths.
    */
   readonly governanceEnabled: boolean;
+  /**
+   * Optional SQLite violation store — present when `config.violationSqlitePath`
+   * is set. Passed to `createGovernanceBridge` so the TUI governance view can
+   * query recent persisted violations via `bridge.loadRecentViolations()`.
+   * Undefined when violations persistence is not configured.
+   */
+  readonly violationStore: ViolationStore | undefined;
+  /**
+   * The assembled governance backend — present when governance is enabled
+   * (`governanceEnabled === true`). Exposes `.compliance` (ComplianceRecorder)
+   * when `auditSqlitePath` is set, and `.violations` (ViolationStore) when
+   * `violationSqlitePath` is set. Undefined when `governanceDisabled: true`.
+   *
+   * Integration tests use this field to verify wiring without synthesising
+   * a full verdict (Task 13 / #1393).
+   */
+  readonly governanceBackend: GovernanceBackend | undefined;
 }
 
 /** Status entry for a single MCP server (used by /mcp TUI command). */
@@ -1474,11 +1522,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // so non-bash tools and malformed inputs fall through to the
   // plain tool id.
   //
-  // `allowLegacyBackendBashFallback: true` opts into single-key
-  // evaluation for the TUI's default `createPermissionBackend`,
-  // which is not marker-aware (see docs/L2/permissions.md). The
-  // pattern backend used by `koi start` advertises the marker and
-  // gets full dual-key enrichment automatically.
+  // createPermissionBackend now sets supportsDefaultDenyMarker: true and stamps
+  // fall-through ask decisions with IS_DEFAULT_ASK, enabling full dual-key semantic
+  // enforcement. allowLegacyBackendBashFallback is no longer needed here.
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
@@ -1489,7 +1535,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       toolId.toLowerCase() === "bash" && typeof input.command === "string"
         ? input.command
         : undefined,
-    allowLegacyBackendBashFallback: true,
+    enableBashSpecGuard: true,
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
@@ -2051,6 +2097,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | ReadonlySet<string>
       | undefined;
 
+    // Hoisted above the audit/governance blocks: compliance recorders
+    // and the onViolation callback need a LIVE session id (rotates on
+    // cycleSession / rebindSessionId) rather than the static
+    // construction-time `config.session.sessionId`. Assigned at line
+    // ~2601 after createKoi returns; the getters below only dereference
+    // it when recordCompliance / onViolation fire, which happens after
+    // the runtime is built.
+    // let: justified — single mutable ref shared across closures.
+    let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
+    const getLiveSessionId = (): string =>
+      runtimeForRotation?.sessionId ?? config.session?.sessionId ?? "no-session";
+
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
     // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
@@ -2061,6 +2119,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
       | undefined;
     const auditPresetExtras: KoiMiddleware[] = [];
+    // Compliance recorders accumulated from each active audit sink.
+    // Used later to populate governanceBackend.compliance.
+    const complianceRecorders: ComplianceRecorder[] = [];
+    // Audit sink passed into createDecisionLedger so /trajectory shows
+    // audit:ok and surfaces compliance_event / permission_decision rows
+    // in the audit lane. Only the SQLite sink is captured: NDJSON's
+    // `.query(sessionId)` re-parses the entire file on every call, and
+    // the TUI refreshes the ledger after every settled turn — NDJSON
+    // would degrade to O(n²) cumulative work over a long session.
+    // NDJSON-only setups therefore see `audit:n/a` by design; enable
+    // SQLite for live ledger access.
+    let ledgerAuditSink: AuditSink | undefined;
     if (config.auditNdjsonPath !== undefined) {
       // Collision guard: refuse to start if the legacy host-level
       // audit path (env-driven KOI_AUDIT_NDJSON / config.auditNdjsonPath)
@@ -2094,7 +2164,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(auditSink, {
+          sessionId: getLiveSessionId,
+        }),
+      );
       auditPresetExtras.push(auditMw);
+      // Deliberately NOT captured into `ledgerAuditSink`. The ledger is
+      // refreshed after every settled turn; NDJSON `.query(sessionId)`
+      // re-parses the entire file on each call, so long sessions would
+      // degrade to O(n²) cumulative work. NDJSON-only setups accept
+      // `audit:n/a` in /trajectory — point KOI_AUDIT_SQLITE at a DB (or
+      // enable both) to get the live audit lane. NDJSON remains the
+      // right sink for offline compliance export and forensic replay.
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
         close: () => auditSink.close(),
@@ -2150,7 +2232,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
+      complianceRecorders.push(
+        createAuditSinkComplianceRecorder(sqliteSink, {
+          sessionId: getLiveSessionId,
+        }),
+      );
       auditPresetExtras.push(sqliteAuditMw);
+      ledgerAuditSink = sqliteSink;
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
         close: async () => sqliteSink.close(),
@@ -2177,6 +2265,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // TODO(#1858): expose reportHandle.getReport / getProgress on
       // KoiRuntimeHandle so the TUI can surface progress in a status
       // bar or /report command.
+    }
+
+    // --- Feedback-loop middleware (opt-in via config.feedbackLoop) ---
+    // Model-response validation + tool-health tracking. No shutdown resources.
+    if (config.feedbackLoop !== undefined) {
+      auditPresetExtras.push(createFeedbackLoopMiddleware(config.feedbackLoop));
     }
 
     // --- Pre-build shared GovernanceController so it is shared between:
@@ -2248,11 +2342,136 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // in observer mode (observerOnly silences record() only, not
     // evaluator.evaluate()). Absent --policy-file, fall back to the default-
     // allow backend so /governance renders the synthetic descriptor.
-    const governanceBackend = governanceEnabled
+    // --- Violation store ---
+    // Auto-wires to ~/.koi/violations.db when governance is enabled (mirrors
+    // the governance-alerts.jsonl convention established by gov-9 — zero
+    // config required for /governance history backfill to work).
+    // Operators can override via --violation-sqlite=<path>.
+    // Explicit "" (empty string) disables the default.
+    // Violation store is a governance surface — if governance is
+    // disabled (`--no-governance`), we never open the DB even when an
+    // explicit `--violation-sqlite` path was passed. This prevents a
+    // configuration mismatch from hard-failing startup during incident
+    // mitigation: the operator disabling governance expects governance
+    // side-effects (including durable violation writes) to be off. An
+    // explicit path combined with `--no-governance` is ambiguous; we
+    // warn so the contradiction is visible and move on without the
+    // store.
+    let resolvedViolationPath: string | undefined;
+    if (!governanceEnabled) {
+      if (config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0) {
+        console.warn(
+          `[koi-runtime] ignoring --violation-sqlite="${config.violationSqlitePath}" — governance is disabled. ` +
+            "Enable governance to persist violations.",
+        );
+      }
+      resolvedViolationPath = undefined;
+    } else {
+      resolvedViolationPath =
+        config.violationSqlitePath !== undefined
+          ? config.violationSqlitePath.length > 0
+            ? config.violationSqlitePath
+            : undefined
+          : join(homedir(), ".koi", "violations.db");
+    }
+    // Degrade gracefully if the default DB path is unreachable. Auto-
+    // wiring runs whenever governance is enabled, but `~/.koi` may be
+    // unwritable (containers, read-only runners, restricted service
+    // users, missing $HOME). A hard failure here would abort runtime
+    // startup for a FEATURE — governance history backfill — that is
+    // strictly additive. Catch FS/SQLite open failures, continue with
+    // `violationStore: undefined`, and log a warning so operators can
+    // investigate without losing the rest of the runtime.
+    let violationStore: ReturnType<typeof createSqliteViolationStore> | undefined;
+    if (resolvedViolationPath !== undefined) {
+      try {
+        const parent = dirname(resolvedViolationPath);
+        if (!existsSync(parent)) {
+          mkdirSync(parent, { recursive: true });
+        }
+        violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
+        // Register close on manifest shutdown so `runtime.dispose()`
+        // drains the buffer and releases the SQLite handle. Without
+        // this, non-TUI embeddings that use `runtime.dispose()` as the
+        // terminal lifecycle boundary would leak the timer/handle and
+        // drop the final buffered entries — `shutdownBackgroundTasks()`
+        // below is TUI-specific. close() is idempotent so the parallel
+        // call paths are safe.
+        //
+        // Explicit-path fail-closed signaling: if close() reports a
+        // non-zero `droppedCount` AND the operator supplied the path
+        // explicitly, we throw so the aggregate shutdown surface marks
+        // dispose as failed. Operators who asked for durable violation
+        // logging must see the loss as an error, not a warn-line.
+        // The implicit default path still swallows with a warning —
+        // best-effort, same convention as the graceful-open branch.
+        const storeForHook = violationStore;
+        const explicitStorePath =
+          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
+        manifestMiddlewareShutdownHooks.push(() => {
+          try {
+            const { droppedCount } = storeForHook.close();
+            if (droppedCount > 0 && explicitStorePath) {
+              throw new Error(
+                `violation store: ${droppedCount} violation(s) were dropped on shutdown for explicitly-configured path "${resolvedViolationPath}". ` +
+                  "Durable persistence failed during this run; inspect prior warnings for the underlying SQLite error.",
+              );
+            }
+          } catch (err) {
+            if (explicitStorePath) throw err;
+            console.warn(
+              `[koi/${hostId}] ViolationStore dispose-time close failed (default path, continuing): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        });
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Explicit operator configuration is honored fail-closed: when
+        // `config.violationSqlitePath` was supplied and non-empty, a
+        // failure to open that path is a configuration error, not a
+        // best-effort degradation. Operators who asked for durable
+        // violation logging get a hard error rather than a silent
+        // downgrade that would hide compliance failures.
+        //
+        // The implicit default (~/.koi/violations.db) still degrades
+        // gracefully — missing $HOME, read-only runners, containers —
+        // because no one EXPLICITLY asked for persistence there.
+        const explicitPath =
+          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
+        if (explicitPath) {
+          throw new Error(
+            `violation store: failed to open explicitly-configured path "${resolvedViolationPath}": ${message}. ` +
+              'Fix the path, make it writable, or pass --violation-sqlite="" to disable persistence explicitly.',
+            { cause: err },
+          );
+        }
+        console.warn(
+          `[koi-runtime] violation store disabled — could not open default "${resolvedViolationPath}": ${message}. ` +
+            'Pass --violation-sqlite=<path> to a writable location, or --violation-sqlite="" to silence this.',
+        );
+        violationStore = undefined;
+      }
+    }
+
+    const rawGovernanceBackend = governanceEnabled
       ? config.governanceRules !== undefined && config.governanceRules.length > 0
         ? createPatternBackend({ rules: config.governanceRules, defaultDeny: false })
         : createDefaultPatternBackend()
       : undefined;
+
+    const complianceRecorder =
+      complianceRecorders.length > 0 ? fanOutComplianceRecorder(complianceRecorders) : undefined;
+
+    const governanceBackend =
+      rawGovernanceBackend !== undefined
+        ? {
+            ...rawGovernanceBackend,
+            ...(complianceRecorder !== undefined ? { compliance: complianceRecorder } : {}),
+            ...(violationStore !== undefined ? { violations: violationStore } : {}),
+          }
+        : rawGovernanceBackend;
     const governanceRules: readonly RuleDescriptor[] =
       governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
     const governanceMw =
@@ -2269,6 +2488,25 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             // list and falls back to its default when undefined.
             ...(config.governanceAlertThresholds !== undefined
               ? { alertThresholds: config.governanceAlertThresholds }
+              : {}),
+            // Persist every violation to the SQLite store when configured.
+            // Additive — does not remove any other subscribers (e.g. bridge).
+            // sessionId is resolved from the live runtime at callback time
+            // so `cycleSession` / `rebindSessionId` keep persisted rows
+            // attributed to the current session — the bridge's
+            // `loadRecentViolations({ sessionId })` query can find them
+            // against the rotated id, and pre-runtime fires fall back
+            // to the startup id (or "no-session" if the host omitted one).
+            ...(violationStore !== undefined
+              ? {
+                  onViolation: (verdict: GovernanceVerdict, request: PolicyRequest) => {
+                    if (verdict.ok) return;
+                    const sid = getLiveSessionId();
+                    for (const v of verdict.violations) {
+                      violationStore.record(v, request.agentId, sid, request.timestamp);
+                    }
+                  },
+                }
               : {}),
           })
         : undefined;
@@ -2372,8 +2610,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // returns; the engine never invokes `rotateSessionId` during
     // construction, only during a later `cycleSession()`, so the
     // ref is always populated by the time the callback fires.
-    // let justified: assigned on the line below
-    let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
+    // (`runtimeForRotation` is declared above the audit wiring.)
     const runtime = await createKoi({
       manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
       adapter: engineAdapter,
@@ -2602,6 +2839,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       governanceRules,
       governanceAlertThresholds: config.governanceAlertThresholds,
       governanceEnabled,
+      violationStore,
+      governanceBackend,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a
@@ -2614,6 +2853,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 ? trajectoryStore.getDocument(trajectoryDocId)
                 : Promise.resolve([]),
           },
+          auditSink: ledgerAuditSink,
         }),
       getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
         // Merge user + plugin MCP resolvers — key by (source, name)
@@ -2860,6 +3100,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               );
             }
           })();
+        }
+        if (violationStore !== undefined) {
+          try {
+            violationStore.close();
+          } catch (err) {
+            console.warn(
+              `[koi/${hostId}] ViolationStore shutdown failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         }
         return hadWork;
       },

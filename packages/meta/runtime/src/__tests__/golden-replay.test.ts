@@ -39,6 +39,7 @@ import type {
   ToolCallId,
   ToolRequest,
   ToolResponse,
+  ToolsetDefinition,
   TurnContext,
 } from "@koi/core";
 import { createSingleToolProvider, runId, sessionId } from "@koi/core";
@@ -1467,12 +1468,16 @@ describe("audit-log entries sidecar (golden file)", () => {
     expect(kinds).toContain("session_end");
   });
 
-  test("all entries have schema_version=1 and required fields", async () => {
+  test("all entries have schema_version=2 and required fields", async () => {
+    // v2 introduced the `compliance_event` kind (PR #1393). Producers
+    // bumped per the L0 contract ("increment when the shape changes");
+    // the fixture tracks the current producer output so deviations are
+    // caught as a cassette-vs-code drift.
     const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
       readonly entries: readonly Record<string, unknown>[];
     };
     for (const entry of sidecar.entries) {
-      expect(entry.schema_version).toBe(1);
+      expect(entry.schema_version).toBe(2);
       expect(typeof entry.agentId).toBe("string");
       expect(typeof entry.sessionId).toBe("string");
       expect(typeof entry.durationMs).toBe("number");
@@ -2413,6 +2418,30 @@ describe("Golden: @koi/url-safety", () => {
 
     // IPv6 — public (Google public DNS v6)
     expect(isBlockedIp("2001:4860:4860::8888")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/file-type — magic-byte detection (2 standalone queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/file-type", () => {
+  test("file-type-png-sniff: detectFromBytes identifies PNG magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const result = detectFromBytes(pngHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("image/png");
+    expect(result?.confidence).toBe("strong");
+  });
+
+  test("file-type-pdf-sniff: detectFromBytes identifies PDF magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
+    const result = detectFromBytes(pdfHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("application/pdf");
+    expect(result?.confidence).toBe("strong");
   });
 });
 
@@ -9389,7 +9418,7 @@ describe("Golden: @koi/middleware-extraction", () => {
     expect(mapCategoryToMemoryType("correction")).toBe("feedback");
     expect(mapCategoryToMemoryType("heuristic")).toBe("feedback"); // regression #1964: was "reference"
     expect(mapCategoryToMemoryType("pattern")).toBe("feedback"); // regression #1964: was "reference"
-    expect(mapCategoryToMemoryType("preference")).toBe("user");
+    expect(mapCategoryToMemoryType("preference")).toBe("user"); // correct type; not persisted until user-scoped store exists
     expect(mapCategoryToMemoryType("context")).toBe("project");
 
     // Extractor combines markers + heuristics
@@ -11695,6 +11724,83 @@ describe("Golden: @koi/artifacts-s3 — createArtifactStore override", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/violation-store-sqlite — record + getViolations roundtrip
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/violation-store-sqlite", () => {
+  test("record + flush + getViolations roundtrip", async () => {
+    const { tmpdir } = await import("node:os");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { createSqliteViolationStore } = await import("@koi/violation-store-sqlite");
+    const { agentId, sessionId } = await import("@koi/core");
+
+    const dir = mkdtempSync(join(tmpdir(), "gq-vstore-"));
+    const dbPath = join(dir, "v.db");
+    try {
+      const store = createSqliteViolationStore({ dbPath });
+      store.record(
+        { rule: "no-external-api", severity: "warning", message: "denied" },
+        agentId("agent-gold"),
+        "sess-gold",
+        1_000,
+      );
+      store.flush();
+      const page = await store.getViolations({
+        sessionId: sessionId("sess-gold"),
+        limit: 10,
+      });
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]?.rule).toBe("no-external-api");
+      expect(page.items[0]?.severity).toBe("warning");
+      expect(page.items[0]?.message).toBe("denied");
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("multiple records with different agents are queryable by agentId", async () => {
+    const { tmpdir } = await import("node:os");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { createSqliteViolationStore } = await import("@koi/violation-store-sqlite");
+    const { agentId } = await import("@koi/core");
+
+    const dir = mkdtempSync(join(tmpdir(), "gq-vstore-multi-"));
+    const dbPath = join(dir, "v.db");
+    try {
+      const store = createSqliteViolationStore({ dbPath });
+      store.record(
+        { rule: "rule-a", severity: "critical", message: "agent-1 violation" },
+        agentId("agent-1"),
+        undefined,
+        2_000,
+      );
+      store.record(
+        { rule: "rule-b", severity: "info", message: "agent-2 violation" },
+        agentId("agent-2"),
+        undefined,
+        3_000,
+      );
+      store.flush();
+
+      const page1 = await store.getViolations({ agentId: agentId("agent-1"), limit: 10 });
+      expect(page1.items).toHaveLength(1);
+      expect(page1.items[0]?.rule).toBe("rule-a");
+
+      const page2 = await store.getViolations({ agentId: agentId("agent-2"), limit: 10 });
+      expect(page2.items).toHaveLength(1);
+      expect(page2.items[0]?.rule).toBe("rule-b");
+
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/tool-exec (standalone, no LLM needed)
 // ---------------------------------------------------------------------------
 
@@ -12006,5 +12112,253 @@ describe("Golden: @koi/runtime — createBrowserBackend wiring", () => {
     expect(typeof driver.attachLoopbackBridge).toBe("function");
     expect(typeof driver.selectTargetTab).toBe("function");
     await driver.dispose?.();
+  });
+});
+
+describe("Golden: @koi/middleware-feedback-loop", () => {
+  test("createFeedbackLoopMiddleware returns a KoiMiddleware with correct priority and name", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const mw = createFeedbackLoopMiddleware({});
+    expect(mw.name).toBe("feedback-loop");
+    expect(mw.priority).toBe(450);
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapToolCall).toBe("function");
+  });
+
+  test("shouldFlush returns false when not dirty", async () => {
+    const { shouldFlush } = await import("@koi/middleware-feedback-loop");
+    expect(
+      shouldFlush(
+        {
+          dirty: false,
+          flushing: false,
+          invocationsSinceFlush: 100,
+          errorRateSinceFlush: 0,
+          lastFlushedErrorRate: 0,
+        },
+        10,
+        0.05,
+      ),
+    ).toBe(false);
+  });
+
+  test("MW composes through createKoi with feedback-loop-pass cassette", async () => {
+    const { createFeedbackLoopMiddleware } = await import("@koi/middleware-feedback-loop");
+    const cassette = await loadCassette(`${FIXTURES}/feedback-loop-pass.cassette.json`);
+    const trajDir = `/tmp/koi-feedback-loop-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-feedback-loop";
+
+    const store = createAtifDocumentStore(
+      { agentName: "feedback-loop-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "feedback-loop-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    const feedbackHandle = createFeedbackLoopMiddleware({
+      validators: [{ name: "pass-through", validate: (_response) => ({ valid: true }) }],
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks, { secondCallText: "7" });
+
+    const runtime = await createKoi({
+      manifest: { name: "feedback-loop-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, feedbackHandle, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 3 + 4. After getting the result, respond with just the number.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+
+    // feedback-loop spans present
+    expect(mwNames.has("feedback-loop")).toBe(true);
+
+    // permissions still works alongside
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool call executed successfully through feedback-loop chain
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Model steps present
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // wrapModelStream span present (validator ran)
+    const feedbackSpans = mwSpans.filter((s) => s.metadata?.middlewareName === "feedback-loop");
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span present (tool health check ran)
+    expect(feedbackSpans.some((s) => s.metadata?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (pass-through validator)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  }, 15000);
+
+  test("feedback-loop-pass trajectory: middleware spans appear for both wrapModelStream and wrapToolCall", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const raw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "feedback-loop-pass.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+        };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // At least one agent step (model response)
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    // At least one tool step (add_numbers executed)
+    expect(trajectory.steps.some((s) => s.source === "tool")).toBe(true);
+
+    // feedback-loop middleware spans are present
+    const feedbackSpans = trajectory.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra.middlewareName === "feedback-loop",
+    );
+    expect(feedbackSpans.length).toBeGreaterThanOrEqual(2);
+
+    // wrapModelStream span is present (validator ran on model response)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+
+    // wrapToolCall span is present (tool health tracking ran)
+    expect(feedbackSpans.some((s) => s.extra?.hook === "wrapToolCall")).toBe(true);
+
+    // All feedback-loop spans resolved successfully (validator passed)
+    expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/toolsets (standalone — pure resolver, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/toolsets", () => {
+  test("resolveToolset resolves built-in presets to correct modes", async () => {
+    const { createBuiltinRegistry, resolveToolset } = await import("@koi/toolsets");
+
+    const reg = createBuiltinRegistry();
+
+    // developer resolves to mode:all
+    const dev = resolveToolset("developer", reg);
+    expect(dev.ok).toBe(true);
+    if (dev.ok) {
+      expect(dev.value.mode).toBe("all");
+      expect("tools" in dev.value).toBe(false);
+    }
+
+    // safe resolves to allowlist with expected tools
+    const safe = resolveToolset("safe", reg);
+    expect(safe.ok).toBe(true);
+    if (safe.ok && safe.value.mode === "allowlist") {
+      expect(safe.value.tools).toContain("fs_read");
+      expect(safe.value.tools).toContain("web_fetch");
+      expect(safe.value.tools).not.toContain("Bash");
+      expect(safe.value.tools).not.toContain("*");
+    }
+
+    // minimal resolves to allowlist with only AskUserQuestion
+    const minimal = resolveToolset("minimal", reg);
+    expect(minimal.ok).toBe(true);
+    if (minimal.ok && minimal.value.mode === "allowlist") {
+      expect(minimal.value.tools).toEqual(["AskUserQuestion"]);
+    }
+  });
+
+  test("resolutionToToolAllowlist, mergeRegistries, and cycle/wildcard guards work end-to-end", async () => {
+    const { createBuiltinRegistry, mergeRegistries, resolveToolset, resolutionToToolAllowlist } =
+      await import("@koi/toolsets");
+
+    const builtins = createBuiltinRegistry();
+
+    // resolutionToToolAllowlist: developer → undefined (full access), safe → string[]
+    const devResolution = resolveToolset("developer", builtins);
+    if (devResolution.ok) {
+      expect(resolutionToToolAllowlist(devResolution.value)).toBeUndefined();
+    }
+    const safeResolution = resolveToolset("safe", builtins);
+    if (safeResolution.ok) {
+      expect(Array.isArray(resolutionToToolAllowlist(safeResolution.value))).toBe(true);
+    }
+
+    // mergeRegistries: distinct names succeed, collisions throw
+    const custom = new Map<string, ToolsetDefinition>([
+      ["custom", { name: "custom", description: "Custom", tools: ["my_tool"], includes: [] }],
+    ]);
+    const merged = mergeRegistries([builtins, custom]);
+    expect(merged.has("custom")).toBe(true);
+    expect(merged.has("safe")).toBe(true);
+
+    // Cycle detection
+    const cycleReg = new Map<string, ToolsetDefinition>([
+      ["a", { name: "a", description: "", tools: [], includes: ["b"] }],
+      ["b", { name: "b", description: "", tools: [], includes: ["a"] }],
+    ]);
+    const cycleResult = resolveToolset("a", cycleReg);
+    expect(cycleResult.ok).toBe(false);
+    if (!cycleResult.ok) expect(cycleResult.error.code).toBe("VALIDATION");
+
+    // Wildcard inheritance guard
+    const sneakyReg = new Map<string, ToolsetDefinition>([
+      ["dev", { name: "dev", description: "", tools: ["*"], includes: [] }],
+      ["sneaky", { name: "sneaky", description: "", tools: ["fs_read"], includes: ["dev"] }],
+    ]);
+    const sneakyResult = resolveToolset("sneaky", sneakyReg);
+    expect(sneakyResult.ok).toBe(false);
+    if (!sneakyResult.ok) expect(sneakyResult.error.code).toBe("VALIDATION");
   });
 });

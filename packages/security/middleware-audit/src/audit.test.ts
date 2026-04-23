@@ -149,7 +149,7 @@ describe("createAuditMiddleware", () => {
     expect(sink.entries).toHaveLength(1);
     expect(sink.entries[0]?.kind).toBe("session_start");
     expect(sink.entries[0]?.sessionId).toBe("test-session");
-    expect(sink.entries[0]?.schema_version).toBe(1);
+    expect(sink.entries[0]?.schema_version).toBe(2);
   });
 
   test("logs session_end on onSessionEnd and flushes", async () => {
@@ -171,7 +171,7 @@ describe("createAuditMiddleware", () => {
     if (entry === undefined) throw new Error("expected entry");
     expect(entry.kind).toBe("model_call");
     expect(entry.durationMs).toBeGreaterThanOrEqual(0);
-    expect(entry.schema_version).toBe(1);
+    expect(entry.schema_version).toBe(2);
   });
 
   test("logs model error and re-throws", async () => {
@@ -194,6 +194,14 @@ describe("createAuditMiddleware", () => {
     if (entry === undefined) throw new Error("expected entry");
     expect(entry.kind).toBe("tool_call");
     expect(entry.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("tool_call entry has top-level toolName populated from toolId", async () => {
+    await mw.wrapToolCall?.(ctx, { toolId: "Bash", input: {} }, makeToolHandler());
+    await mw.flush();
+    const entry = sink.entries[0];
+    if (entry === undefined) throw new Error("expected entry");
+    expect(entry.toolName).toBe("Bash");
   });
 
   test("logs tool error and re-throws", async () => {
@@ -260,6 +268,16 @@ describe("createAuditMiddleware", () => {
   // Redaction + truncation
   // ---------------------------------------------------------------------------
 
+  test("tool_call entry retains toolName even when redactRequestBodies is true", async () => {
+    const redactMw = createAuditMiddleware({ sink, redactRequestBodies: true });
+    await redactMw.wrapToolCall?.(ctx, { toolId: "Bash", input: {} }, makeToolHandler());
+    await redactMw.flush();
+    const entry = sink.entries[0];
+    if (entry === undefined) throw new Error("expected entry");
+    expect(entry.toolName).toBe("Bash");
+    expect(entry.request).toBe("[redacted]");
+  });
+
   test("redactRequestBodies replaces request with [redacted]", async () => {
     const redactMw = createAuditMiddleware({ sink, redactRequestBodies: true });
     await redactMw.wrapModelCall?.(
@@ -316,7 +334,7 @@ describe("createAuditMiddleware", () => {
       await mw.flush();
       const entry = sink.entries.find((e) => e.kind === "permission_decision");
       expect(entry).toBeDefined();
-      expect(entry?.schema_version).toBe(1);
+      expect(entry?.schema_version).toBe(2);
       expect(entry?.turnIndex).toBe(2);
     });
 
@@ -337,7 +355,7 @@ describe("createAuditMiddleware", () => {
       await mw.flush();
       const entry = sink.entries.find((e) => e.kind === "config_change");
       expect(entry).toBeDefined();
-      expect(entry?.schema_version).toBe(1);
+      expect(entry?.schema_version).toBe(2);
       expect(entry?.turnIndex).toBe(-1);
     });
 

@@ -2770,6 +2770,146 @@ describe("composed guards interaction", () => {
 });
 
 // ---------------------------------------------------------------------------
+// resetPerRun — per-run duration/inactivity timer reset (issue #1917)
+// ---------------------------------------------------------------------------
+
+describe("resetPerRun resets timers at run boundaries", () => {
+  test("resetForRun() resets turn counter for fresh per-run budget", async () => {
+    const guard = createIterationGuard({ maxTurns: 2 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() =>
+      Promise.resolve(mockModelResponse({ inputTokens: 10, outputTokens: 10 })),
+    );
+
+    // First submit: exhaust the 2-turn budget
+    await wrap(ctx, mockModelRequest(), next);
+    await wrap(ctx, mockModelRequest(), next);
+    // Third call on first submit exceeds limit
+    await expect(wrap(ctx, mockModelRequest(), next)).rejects.toMatchObject({ code: "TIMEOUT" });
+
+    // resetForRun() gives a fresh 2-turn budget for the next submit
+    guard.resetForRun();
+    await wrap(ctx, mockModelRequest(), next);
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(4); // 2 first submit + 2 second (rejected call never reaches next)
+  });
+
+  test("turn counter accumulates without resetForRun() call (existing batch behavior)", async () => {
+    const guard = createIterationGuard({ maxTurns: 2 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() =>
+      Promise.resolve(mockModelResponse({ inputTokens: 10, outputTokens: 10 })),
+    );
+
+    // Exhaust budget — no resetForRun
+    await wrap(ctx, mockModelRequest(), next);
+    await wrap(ctx, mockModelRequest(), next);
+    // Next call still sees exhausted budget
+    await expect(wrap(ctx, mockModelRequest(), next)).rejects.toMatchObject({ code: "TIMEOUT" });
+  });
+
+  test("resetForRun() resets duration timer — fresh wall-clock for each submit", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 50 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+
+    const slowNext: ModelNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return mockModelResponse();
+    });
+    await wrap(ctx, mockModelRequest(), slowNext); // 30ms elapsed
+
+    // Wait another 30ms — 60ms total since original startedAt
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Without resetForRun, next call would trip the 50ms limit
+    // With resetForRun, startedAt is fresh
+    guard.resetForRun();
+    const fastNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    await wrap(ctx, mockModelRequest(), fastNext);
+    expect(fastNext).toHaveBeenCalledTimes(1);
+  });
+
+  test("duration timer accumulates without resetForRun() (existing behavior)", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 50 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+
+    const slowNext: ModelNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return mockModelResponse();
+    });
+    await wrap(ctx, mockModelRequest(), slowNext);
+    await new Promise((r) => setTimeout(r, 30));
+    // 60ms total, no resetForRun — should throw
+    await expect(wrap(ctx, mockModelRequest(), slowNext)).rejects.toMatchObject({
+      code: "TIMEOUT",
+    });
+  });
+
+  test("resetForRun() resets inactivity timer", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 60_000, maxInactivityMs: 50 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+
+    const fastNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    await wrap(ctx, mockModelRequest(), fastNext);
+
+    // Idle 60ms — beyond inactivity limit
+    await new Promise((r) => setTimeout(r, 60));
+
+    // resetForRun resets lastActivityMs so inactivity check passes
+    guard.resetForRun();
+    await wrap(ctx, mockModelRequest(), fastNext);
+    expect(fastNext).toHaveBeenCalledTimes(2);
+  });
+
+  test("duration timer accumulates across turns within a single run", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 40 });
+    const wrap = getModelWrap(guard);
+    const ctx0 = mockTurnContext({ turnIndex: 0 });
+    const ctx1 = mockTurnContext({ turnIndex: 1 });
+
+    const slowNext: ModelNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      return mockModelResponse();
+    });
+
+    await wrap(ctx0, mockModelRequest(), slowNext); // 25ms elapsed in same run
+    // No reset between turns — 25ms already consumed, next call exceeds 40ms
+    await expect(wrap(ctx1, mockModelRequest(), slowNext)).rejects.toMatchObject({
+      code: "TIMEOUT",
+    });
+  });
+
+  test("stale accumulator without resetForRun trips duration check (existing behavior)", async () => {
+    // Without resetForRun, the guard accumulates across runs — existing behavior preserved
+    const guard = createIterationGuard({ maxDurationMs: 50 });
+    const wrap = getModelWrap(guard);
+    const ctx0 = mockTurnContext({ turnIndex: 0 });
+
+    const slowNext: ModelNext = mock(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return mockModelResponse();
+    });
+
+    // First run
+    await wrap(ctx0, mockModelRequest(), slowNext);
+
+    // 30ms elapsed from startedAt; wait 30ms more → 60ms total
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Second run — turnIndex 0 again but resetPerRun=false, so no reset
+    // Duration > 50ms limit → should throw
+    await expect(wrap(ctx0, mockModelRequest(), slowNext)).rejects.toMatchObject({
+      code: "TIMEOUT",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // onSessionStart — guard state reset across sessions
 // ---------------------------------------------------------------------------
 

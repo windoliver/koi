@@ -165,10 +165,19 @@ export { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 // delivery policy
 export type { ApplyDeliveryPolicyConfig, DeliveryHandle } from "./delivery-policy.js";
 export { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
+// dispatching spawn child fn
+export type { CreateDispatchingSpawnChildFnOptions } from "./dispatching-spawn-child-fn.js";
+export { createDispatchingSpawnChildFn } from "./dispatching-spawn-child-fn.js";
 // dispose
 export { disposeAll } from "./dispose.js";
 // group operations
 export { listByGroup, signalGroup } from "./group-operations.js";
+// in-process spawn child fn adapter
+export type {
+  CreateInProcessSpawnChildFnOptions,
+  InProcessSpawnDelegate,
+} from "./in-process-spawn-child-fn.js";
+export { createInProcessSpawnChildFn } from "./in-process-spawn-child-fn.js";
 // inbox queue
 export { createInboxQueue } from "./inbox-queue.js";
 // inherited channel proxy
@@ -206,3 +215,6 @@ export type {
   SpawnChildOptions,
   SpawnChildResult,
 } from "./types.js";
+// wire supervision
+export type { SupervisionWiring, WireSupervisionOptions } from "./wire-supervision.js";
+export { wireSupervision } from "./wire-supervision.js";
