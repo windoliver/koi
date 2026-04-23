@@ -690,3 +690,69 @@ describe("MCP OAuth inline flow — full path", () => {
     expect(callCount).toBe(2);
   });
 });
+
+describe("auth-needed state machine — reconnect transition", () => {
+  test("connect() succeeds from auth-needed state (state machine allows auth-needed→connecting)", async () => {
+    // Regression: after inline OAuth, the connection is in auth-needed and must
+    // be able to reconnect via connect() without requiring an intermediate state.
+    // This validates the ensureConnected() path at line 304 in connection.ts.
+    let connectCallCount = 0;
+    let listCallCount = 0;
+    const mockClient = {
+      connect: mock(async (_transport: unknown) => {
+        connectCallCount++;
+      }),
+      close: mock(async () => {}),
+      listTools: mock(async () => {
+        listCallCount++;
+        if (listCallCount === 1) throw new Error("401 Unauthorized");
+        return { tools: [] as { name: string }[] };
+      }),
+      callTool: mock(async () => ({ content: [] })),
+    };
+    const mockTransport = createMockTransport();
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => mockClient) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onAuthNeeded: mock(async () => true),
+    });
+
+    await conn.connect();
+    // First listTools → 401 → auth-needed → onAuthNeeded → connect() → retry
+    const result = await conn.listTools();
+
+    // Connection successfully reconnected and retried from auth-needed state
+    expect(result.ok).toBe(true);
+    // connect was called twice: once at startup, once after onAuthNeeded returned true
+    expect(connectCallCount).toBe(2);
+  });
+
+  test("onAuthNeeded rejection is caught — returns AUTH_REQUIRED result, does not throw", async () => {
+    const mockTransport = createMockTransport();
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => ({
+        connect: mock(async (_transport: unknown) => {}),
+        close: mock(async () => {}),
+        listTools: mock(async () => {
+          throw new Error("401 Unauthorized");
+        }),
+        callTool: mock(async () => {
+          throw new Error("401 Unauthorized");
+        }),
+      })) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onAuthNeeded: mock(async () => {
+        throw new Error("channel send failed");
+      }),
+    });
+
+    await conn.connect();
+    const listResult = await conn.listTools();
+    expect(listResult.ok).toBe(false);
+    if (!listResult.ok) {
+      expect(listResult.error.code).toBe("AUTH_REQUIRED");
+    }
+  });
+});
