@@ -283,8 +283,18 @@ export function createGateway(
             }
           }
         })
-        .catch((err: unknown) => {
+        .catch(async (err: unknown) => {
           swallowError(err, { package: "gateway", operation: "disconnect.seq.persist" });
+          // Thrown exception: durable disconnect state (seq + disconnectedAt) could not be
+          // committed. Fail closed — delete so reconnects start fresh rather than resuming
+          // from stale TTL or seq state. Same invariant as the { ok: false } path above.
+          ownedSessionIds.delete(id);
+          await Promise.resolve(store.delete(id)).catch((deleteErr: unknown) => {
+            swallowError(deleteErr, {
+              package: "gateway",
+              operation: "disconnect.seq.persist.cleanup",
+            });
+          });
         })
         .finally(() => {
           pendingSeqPersists.delete(id);
@@ -921,6 +931,11 @@ export function createGateway(
             // called in the reconnect path, but the sweep could fire between reconnect
             // store.set() and the delete() call. Guard here as defense-in-depth.
             if (connBySession.has(sessionId)) continue;
+            // Only evict sessions this gateway created. Resumed sessions (isNewSession=false)
+            // remain in ownedSessionIds iff this gateway created them originally; skipping
+            // non-owned sessions prevents clobbering records owned by another gateway process
+            // in a shared/persistent store.
+            if (!ownedSessionIds.has(sessionId)) continue;
             if (now - ts > ttl) {
               // Sequential get→check→delete→check to reduce (not eliminate; atomic CAS
               // would be needed for that) the window where a reconnecting session's record
@@ -1162,6 +1177,7 @@ export function createGateway(
         // concurrent in-flight write completing after the delete.
         const chainedAfter = pendingSeqPersists.get(sidTarget) ?? Promise.resolve();
         const sendPersist: Promise<void> = chainedAfter.then(async (): Promise<void> => {
+          let persistFailed = false;
           try {
             const current = await Promise.resolve(store.get(sidTarget));
             if (!current.ok) return; // session gone (destroyed or TTL evicted)
@@ -1174,27 +1190,38 @@ export function createGateway(
                 package: "gateway",
                 operation: "send.seq.persist",
               });
-              // Fail closed: stored seq is now behind the in-memory counter. Remove the
-              // session from the store so a post-crash reconnect starts fresh rather than
-              // resuming from a stale seq that would collide with already-issued frame IDs.
-              // The live in-memory connection is unaffected (same-process lastKnownOutboundSeq
-              // still provides the correct watermark for reconnects within this process).
-              ownedSessionIds.delete(sidTarget);
-              await Promise.resolve(store.delete(sidTarget)).catch((err: unknown) => {
-                swallowError(err, { package: "gateway", operation: "send.seq.persist.cleanup" });
-              });
+              persistFailed = true;
             }
           } catch (err: unknown) {
             swallowError(err, { package: "gateway", operation: "send.seq.persist" });
-            // Thrown exception: same fail-closed response as { ok: false } — the stored seq
-            // is indeterminate. Delete so post-crash reconnects start fresh.
+            persistFailed = true;
+          }
+          if (persistFailed) {
+            // Fail closed: stored seq is behind or indeterminate. Delete the session and
+            // close the live connection so it cannot continue serving traffic with durable
+            // sequencing state already gone. Without closing the conn, a process crash in
+            // this window leaves no safe reconnect state for the client.
             ownedSessionIds.delete(sidTarget);
-            await Promise.resolve(store.delete(sidTarget)).catch((deleteErr: unknown) => {
-              swallowError(deleteErr, {
-                package: "gateway",
-                operation: "send.seq.persist.cleanup",
-              });
+            await Promise.resolve(store.delete(sidTarget)).catch((err: unknown) => {
+              swallowError(err, { package: "gateway", operation: "send.seq.persist.cleanup" });
             });
+            const activeConnId = connBySession.get(sidTarget);
+            const activeConn = activeConnId !== undefined ? connMap.get(activeConnId) : undefined;
+            if (activeConn !== undefined) {
+              activeConn.send(
+                createErrorFrame(
+                  nextServerSeq(activeConn),
+                  "SESSION_STORE_FAILURE",
+                  "Outbound sequence durability lost",
+                  nextId,
+                ),
+              );
+              cleanupConn(activeConn, "seq persist failure");
+              activeConn.close(
+                CLOSE_CODES.SESSION_STORE_FAILURE,
+                "Outbound sequence durability lost",
+              );
+            }
           }
         });
         pendingSeqPersists.set(sidTarget, sendPersist);
