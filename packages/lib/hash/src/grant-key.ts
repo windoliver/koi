@@ -3,6 +3,8 @@ import type { PolicyRequestKind } from "@koi/core/governance-backend";
 
 /**
  * Compute a stable SHA-256 hex digest for a (kind, payload) pair.
+ * Used as the session-scoped grant key so approving one (kind, payload)
+ * cannot bleed into a materially different call.
  *
  * Canonicalization rules:
  *   - Object keys are sorted recursively.
