@@ -1670,11 +1670,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // so non-bash tools and malformed inputs fall through to the
   // plain tool id.
   //
-  // `allowLegacyBackendBashFallback: true` opts into single-key
-  // evaluation for the TUI's default `createPermissionBackend`,
-  // which is not marker-aware (see docs/L2/permissions.md). The
-  // pattern backend used by `koi start` advertises the marker and
-  // gets full dual-key enrichment automatically.
+  // createPermissionBackend now sets supportsDefaultDenyMarker: true and stamps
+  // fall-through ask decisions with IS_DEFAULT_ASK, enabling full dual-key semantic
+  // enforcement. allowLegacyBackendBashFallback is no longer needed here.
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
@@ -1685,7 +1683,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       toolId.toLowerCase() === "bash" && typeof input.command === "string"
         ? input.command
         : undefined,
-    allowLegacyBackendBashFallback: true,
+    enableBashSpecGuard: true,
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
@@ -2214,6 +2212,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               [LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory]:
                 perChildManifestMiddlewareFactory,
             }
+          : {}),
+        ...(earlyContribution.exports.getTaskBoard !== undefined
+          ? { [LATE_PHASE_HOST_KEYS.getTaskBoard]: earlyContribution.exports.getTaskBoard }
+          : {}),
+        ...(earlyContribution.exports.getStore !== undefined
+          ? { [LATE_PHASE_HOST_KEYS.getStore]: earlyContribution.exports.getStore }
           : {}),
       },
     };

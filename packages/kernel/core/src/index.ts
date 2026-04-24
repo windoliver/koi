@@ -1171,6 +1171,8 @@ export type {
   ToolHealthSnapshot,
   ToolHealthState,
 } from "./tool-health-types.js";
+// toolset — named composable tool presets (resolution logic in @koi/toolsets L2)
+export type { ToolsetDefinition, ToolsetRegistry, ToolsetResolution } from "./toolset.js";
 // transcript — append-only message log for crash recovery
 export type {
   CompactResult,

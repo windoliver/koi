@@ -39,6 +39,7 @@ import type {
   ToolCallId,
   ToolRequest,
   ToolResponse,
+  ToolsetDefinition,
   TurnContext,
 } from "@koi/core";
 import { createSingleToolProvider, runId, sessionId } from "@koi/core";
@@ -2417,6 +2418,30 @@ describe("Golden: @koi/url-safety", () => {
 
     // IPv6 — public (Google public DNS v6)
     expect(isBlockedIp("2001:4860:4860::8888")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/file-type — magic-byte detection (2 standalone queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/file-type", () => {
+  test("file-type-png-sniff: detectFromBytes identifies PNG magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+    const result = detectFromBytes(pngHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("image/png");
+    expect(result?.confidence).toBe("strong");
+  });
+
+  test("file-type-pdf-sniff: detectFromBytes identifies PDF magic bytes", async () => {
+    const { detectFromBytes } = await import("@koi/file-type");
+    const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
+    const result = detectFromBytes(pdfHeader);
+    expect(result).not.toBeNull();
+    expect(result?.mimeType).toBe("application/pdf");
+    expect(result?.confidence).toBe("strong");
   });
 });
 
@@ -12255,5 +12280,85 @@ describe("Golden: @koi/middleware-feedback-loop", () => {
 
     // All feedback-loop spans resolved successfully (validator passed)
     expect(feedbackSpans.every((s) => s.outcome === "success")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/toolsets (standalone — pure resolver, no LLM needed)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/toolsets", () => {
+  test("resolveToolset resolves built-in presets to correct modes", async () => {
+    const { createBuiltinRegistry, resolveToolset } = await import("@koi/toolsets");
+
+    const reg = createBuiltinRegistry();
+
+    // developer resolves to mode:all
+    const dev = resolveToolset("developer", reg);
+    expect(dev.ok).toBe(true);
+    if (dev.ok) {
+      expect(dev.value.mode).toBe("all");
+      expect("tools" in dev.value).toBe(false);
+    }
+
+    // safe resolves to allowlist with expected tools
+    const safe = resolveToolset("safe", reg);
+    expect(safe.ok).toBe(true);
+    if (safe.ok && safe.value.mode === "allowlist") {
+      expect(safe.value.tools).toContain("fs_read");
+      expect(safe.value.tools).toContain("web_fetch");
+      expect(safe.value.tools).not.toContain("Bash");
+      expect(safe.value.tools).not.toContain("*");
+    }
+
+    // minimal resolves to allowlist with only AskUserQuestion
+    const minimal = resolveToolset("minimal", reg);
+    expect(minimal.ok).toBe(true);
+    if (minimal.ok && minimal.value.mode === "allowlist") {
+      expect(minimal.value.tools).toEqual(["AskUserQuestion"]);
+    }
+  });
+
+  test("resolutionToToolAllowlist, mergeRegistries, and cycle/wildcard guards work end-to-end", async () => {
+    const { createBuiltinRegistry, mergeRegistries, resolveToolset, resolutionToToolAllowlist } =
+      await import("@koi/toolsets");
+
+    const builtins = createBuiltinRegistry();
+
+    // resolutionToToolAllowlist: developer → undefined (full access), safe → string[]
+    const devResolution = resolveToolset("developer", builtins);
+    if (devResolution.ok) {
+      expect(resolutionToToolAllowlist(devResolution.value)).toBeUndefined();
+    }
+    const safeResolution = resolveToolset("safe", builtins);
+    if (safeResolution.ok) {
+      expect(Array.isArray(resolutionToToolAllowlist(safeResolution.value))).toBe(true);
+    }
+
+    // mergeRegistries: distinct names succeed, collisions throw
+    const custom = new Map<string, ToolsetDefinition>([
+      ["custom", { name: "custom", description: "Custom", tools: ["my_tool"], includes: [] }],
+    ]);
+    const merged = mergeRegistries([builtins, custom]);
+    expect(merged.has("custom")).toBe(true);
+    expect(merged.has("safe")).toBe(true);
+
+    // Cycle detection
+    const cycleReg = new Map<string, ToolsetDefinition>([
+      ["a", { name: "a", description: "", tools: [], includes: ["b"] }],
+      ["b", { name: "b", description: "", tools: [], includes: ["a"] }],
+    ]);
+    const cycleResult = resolveToolset("a", cycleReg);
+    expect(cycleResult.ok).toBe(false);
+    if (!cycleResult.ok) expect(cycleResult.error.code).toBe("VALIDATION");
+
+    // Wildcard inheritance guard
+    const sneakyReg = new Map<string, ToolsetDefinition>([
+      ["dev", { name: "dev", description: "", tools: ["*"], includes: [] }],
+      ["sneaky", { name: "sneaky", description: "", tools: ["fs_read"], includes: ["dev"] }],
+    ]);
+    const sneakyResult = resolveToolset("sneaky", sneakyReg);
+    expect(sneakyResult.ok).toBe(false);
+    if (!sneakyResult.ok) expect(sneakyResult.error.code).toBe("VALIDATION");
   });
 });

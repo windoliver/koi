@@ -48,6 +48,7 @@ import { loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
+import { resolveManifestPath } from "../resolve-manifest-path.js";
 import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
@@ -386,8 +387,51 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("../manifest.js").ManifestGovernanceConfig | undefined;
-  if (flags.manifest !== undefined) {
-    const manifestResult = await loadManifestConfig(flags.manifest);
+  // When resuming without an explicit --manifest, bypass auto-discovery
+  // entirely so the cwd's manifest cannot silently override the model, stacks,
+  // plugins, filesystem scope, or governance that produced the original session.
+  // The operator must explicitly provide --manifest to apply a manifest on resume.
+  const skipManifestDiscovery =
+    flags.noManifest || (flags.resume !== undefined && flags.manifest === undefined);
+  const resolvedManifestResult = resolveManifestPath(
+    process.cwd(),
+    flags.manifest,
+    skipManifestDiscovery,
+  );
+  if (!resolvedManifestResult.ok) {
+    // Redact filesystem paths from the structured error in headless mode —
+    // hard discovery errors (EACCES/EPERM/ELOOP) include the candidate path
+    // which would leak workspace layout into machine-consumed NDJSON logs.
+    const discoveryErr = flags.headless
+      ? resolvedManifestResult.error.replace(
+          /:\s*(?:\/|[A-Za-z]:[/\\])[^\s]*/g,
+          ": <path-redacted>",
+        )
+      : resolvedManifestResult.error;
+    return bail(discoveryErr);
+  }
+  // Fail closed whenever discovery was requested and found nothing — this
+  // applies both inside and outside a project boundary so that markerless
+  // deployments (tarballs, containers, CI workspaces) cannot silently skip
+  // a parent manifest. Pass --no-manifest to explicitly opt into built-in defaults.
+  // Resume without an explicit manifest skips discovery (skipManifestDiscovery above)
+  // so it can never trigger this guard.
+  if (
+    resolvedManifestResult.path === undefined &&
+    flags.manifest === undefined &&
+    !skipManifestDiscovery
+  ) {
+    const tried =
+      !flags.headless && resolvedManifestResult.searched.length > 0
+        ? `\n  Searched:\n${resolvedManifestResult.searched.map((p) => `    ${p}`).join("\n")}`
+        : "";
+    return bail(
+      `no koi.yaml found — pass --manifest <path>, create one with koi init, or pass --no-manifest to run with built-in defaults${tried}`,
+    );
+  }
+  const resolvedManifestPath = resolvedManifestResult.path;
+  if (resolvedManifestPath !== undefined) {
+    const manifestResult = await loadManifestConfig(resolvedManifestPath);
     if (!manifestResult.ok) {
       // Manifest error can include filesystem paths, user-provided values,
       // or schema diagnostics. Safe to classify but don't forward raw text

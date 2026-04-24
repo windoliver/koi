@@ -13,13 +13,14 @@ export type DeriveBasenamesResult =
   | { readonly ok: false; readonly detail: string };
 
 export function deriveBasenames(prefix: string, srcs: readonly string[]): DeriveBasenamesResult {
+  const normalizedPrefix = prefix.replace(/\/+$/, "");
   const paths: string[] = [];
   for (const src of srcs) {
     const base = posixBasename(src);
     if (!base.ok) {
       return { ok: false, detail: `unable to derive basename for src '${src}'` };
     }
-    paths.push(`${prefix}/${base.value}`);
+    paths.push(`${normalizedPrefix}/${base.value}`);
   }
   return { ok: true, paths };
 }

@@ -1,5 +1,11 @@
 # @koi/tool-browser — Browser Tool Provider
 
+## Recent updates
+
+**`@koi/file-type` MIME detection for uploads (#1935)**: `parseUploadFiles` now resolves the MIME type of each uploaded file using `@koi/file-type` rather than forwarding the caller-supplied `mimeType` string. Priority: (1) strong magic-byte detection — always authoritative; (2) extension-based detection via `detectFromPath` using the caller-supplied filename; (3) `application/octet-stream` fallback. The caller-supplied `mimeType` field is intentionally excluded from the resolution chain — it is an unvalidated string that could bypass server-side accept-filter or MIME validators. New dep: `@koi/file-type` (L0u).
+
+---
+
 Gives Koi agents the ability to control a web browser through a pluggable `BrowserDriver`. Attaches `browser_*` tools to the agent component map, enforces trust-tier access control, and injects a `SkillComponent` that teaches agents the snapshot-first workflow, form filling, wait strategies, tab management, and token-cost awareness.
 
 ---

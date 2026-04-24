@@ -138,7 +138,8 @@ export function specTar(argv: readonly string[]): SpecResult {
     };
   }
 
-  const parsed = parseFlags(expandTarBundles(argv), TAR_ALLOW);
+  const expandedArgv = expandTarBundles(argv);
+  const parsed = parseFlags(expandedArgv, TAR_ALLOW);
   if (!parsed.ok) {
     return { kind: "refused", cause: "parse-error", detail: parsed.detail };
   }
@@ -177,7 +178,7 @@ export function specTar(argv: readonly string[]): SpecResult {
     // recursively reads every descendant — argv alone cannot tell. Reported
     // operands act as subtree roots; the consumer rule is the same as for
     // other recursive forms (a path rule on a root applies transitively).
-    const reads = collectCreateReads(expandTarBundles(argv));
+    const reads = collectCreateReads(expandedArgv);
     const semantics = {
       reads,
       writes: [archive],

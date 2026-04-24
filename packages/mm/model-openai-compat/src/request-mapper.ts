@@ -429,7 +429,22 @@ export function buildRequestBody(
   // `reasoning_content` in the SSE stream when this field is present.
   // Models without reasoning capability ignore it silently.
   if (config.compat.supportsReasoning) {
-    body.reasoning = { effort: config.compat.defaultReasoningEffort };
+    const td = config.compat.thinkingDisplay;
+    if (td === "hidden") {
+      if (config.compat.supportsReasoningExclude) {
+        // Provider supports the exclude shape (OpenRouter) — suppress reasoning tokens.
+        body.reasoning = { exclude: true };
+      }
+      // else: fail closed — caller requested hidden reasoning; don't request
+      // reasoning at all on endpoints that lack the exclude shape.
+    } else if (td === "summarized") {
+      if (config.compat.supportsThinkingType && effectiveModel.startsWith("anthropic/")) {
+        body.thinking = { type: "summarized" };
+      }
+      body.reasoning = { effort: config.compat.defaultReasoningEffort };
+    } else {
+      body.reasoning = { effort: config.compat.defaultReasoningEffort };
+    }
   }
 
   return body;

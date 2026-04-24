@@ -15,6 +15,12 @@ export type StartMode =
 export interface StartFlags extends BaseFlags {
   readonly command: "start";
   readonly manifest: string | undefined;
+  /**
+   * Skip manifest auto-discovery and run with built-in defaults.
+   * Useful in directories that have a koi.yaml you want to ignore.
+   * Mutually exclusive with --manifest.
+   */
+  readonly noManifest: boolean;
   readonly mode: StartMode;
   /**
    * Session ID for resume mode. Stubbed — blocked on @koi/session (#1504).
@@ -120,6 +126,7 @@ export interface StartFlags extends BaseFlags {
 export function parseStartFlags(rest: readonly string[]): StartFlags {
   type V = {
     readonly manifest: string | undefined;
+    readonly "no-manifest": boolean | undefined;
     readonly prompt: string | undefined;
     readonly resume: string | undefined;
     readonly verbose: boolean | undefined;
@@ -152,6 +159,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
       args: rest,
       options: {
         manifest: { type: "string" },
+        "no-manifest": { type: "boolean", default: false },
         prompt: { type: "string", short: "p" },
         resume: { type: "string" },
         verbose: { type: "boolean", short: "v", default: false },
@@ -193,6 +201,15 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
   const versionRequested = values.version ?? false;
   const skipValidators = helpRequested || versionRequested;
 
+  // Use the effective manifest value (named flag or positional) for all checks.
+  const effectiveManifest = values.manifest ?? positionals[0];
+  if (!skipValidators && effectiveManifest !== undefined && (values["no-manifest"] ?? false)) {
+    throw new ParseError(
+      "koi start: --manifest/positional and --no-manifest are mutually exclusive — pass one or the other, not both",
+    );
+  }
+
+  const headlessFlag = values.headless ?? false;
   const untilPass = values["until-pass"] ?? [];
   if (!skipValidators && untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
     throw new ParseError("--until-pass tokens must be non-empty");
@@ -252,7 +269,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     }
   }
 
-  const headless = values.headless ?? false;
+  const headless = headlessFlag;
   const allowTools = values["allow-tool"] ?? [];
   const rawMaxDurationMs = values["max-duration-ms"];
 
@@ -343,7 +360,8 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     command: "start" as const,
     version: versionRequested,
     help: helpRequested,
-    manifest: values.manifest ?? positionals[0],
+    manifest: effectiveManifest,
+    noManifest: values["no-manifest"] ?? false,
     mode,
     resume: values.resume,
     verbose: values.verbose ?? false,

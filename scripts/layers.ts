@@ -47,6 +47,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/replay",
   "@koi/task-board",
   "@koi/test",
+  "@koi/file-type",
   "@koi/token-estimator",
   "@koi/tools-core",
   "@koi/url-safety",
