@@ -413,6 +413,29 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
+  test("query() filter by priority returns only matching tasks", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", { priority: 1 });
+    await sched.submit(A1, { kind: "text", text: "lo" }, "dispatch", { priority: 9 });
+    const highPri = await sched.query({ priority: 1 });
+    expect(highPri).toHaveLength(1);
+    const lowPri = await sched.query({ priority: 9 });
+    expect(lowPri).toHaveLength(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("query() limit caps returned task count", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "a" }, "dispatch");
+    await sched.submit(A1, { kind: "text", text: "b" }, "dispatch");
+    await sched.submit(A1, { kind: "text", text: "c" }, "dispatch");
+    const limited = await sched.query({ limit: 2 });
+    expect(limited).toHaveLength(2);
+    await sched[Symbol.asyncDispose]();
+  });
+
   test("describe error is swallowed — task stays pending", async () => {
     const client: TemporalClientLike = {
       workflow: {

@@ -35,6 +35,21 @@ describe("mapTemporalError", () => {
     expect(result).toEqual(koiErr);
   });
 
+  test("ApplicationFailure with unknown code in embedded payload falls back to mapped error", () => {
+    const badPayload = { code: "UNKNOWN_CODE", message: "bad", retryable: true };
+    const err = { name: "ApplicationFailure", message: "wrapped", details: [badPayload] };
+    const result = mapTemporalError(err);
+    expect(result.code).toBe("INTERNAL");
+    expect(result.message).toBe("wrapped");
+  });
+
+  test("ApplicationFailure with non-boolean retryable in payload falls back to mapped error", () => {
+    const badPayload = { code: "TIMEOUT", message: "slow", retryable: "yes" };
+    const err = { name: "ApplicationFailure", message: "wrapped", details: [badPayload] };
+    const result = mapTemporalError(err);
+    expect(result.code).toBe("INTERNAL");
+  });
+
   test("ServerFailure → INTERNAL retryable", () => {
     const err = { name: "ServerFailure", message: "server down" };
     const result = mapTemporalError(err);

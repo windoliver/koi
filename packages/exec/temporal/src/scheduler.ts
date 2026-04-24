@@ -378,6 +378,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
         results = results.filter((t) => statuses.includes(t.status));
       }
+      if (filter.priority !== undefined) {
+        const priority = filter.priority;
+        results = results.filter((t) => t.priority === priority);
+      }
+      if (filter.limit !== undefined) {
+        results = results.slice(0, filter.limit);
+      }
       return results;
     },
 

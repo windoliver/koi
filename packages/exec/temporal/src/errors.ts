@@ -103,8 +103,31 @@ function isTemporalFailureLike(e: unknown): e is TemporalFailureLike {
   );
 }
 
+const VALID_KOI_CODES = new Set<string>([
+  "VALIDATION",
+  "NOT_FOUND",
+  "PERMISSION",
+  "CONFLICT",
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "EXTERNAL",
+  "INTERNAL",
+  "STALE_REF",
+  "AUTH_REQUIRED",
+  "RESOURCE_EXHAUSTED",
+  "UNAVAILABLE",
+  "HEARTBEAT_TIMEOUT",
+]);
+
 function isKoiErrorPayload(v: unknown): v is KoiError {
-  return typeof v === "object" && v !== null && "code" in v && "message" in v && "retryable" in v;
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r["code"] === "string" &&
+    VALID_KOI_CODES.has(r["code"]) &&
+    typeof r["message"] === "string" &&
+    typeof r["retryable"] === "boolean"
+  );
 }
 
 function resolveRetryable(e: TemporalFailureLike): boolean {
