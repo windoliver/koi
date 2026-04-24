@@ -64,16 +64,21 @@ async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAn
   const { Worker, NativeConnection } = await import("@temporalio/worker");
 
   const connection = await NativeConnection.connect({ address: params.serverUrl });
-  const worker = await Worker.create({
-    connection,
-    namespace: params.namespace,
-    taskQueue: params.taskQueue,
-    maxCachedWorkflows: params.maxCachedWorkflows,
-    workflowsPath: params.workflowsPath,
-    activities: params.activities,
-  });
-
-  return { worker, connection };
+  try {
+    const worker = await Worker.create({
+      connection,
+      namespace: params.namespace,
+      taskQueue: params.taskQueue,
+      maxCachedWorkflows: params.maxCachedWorkflows,
+      workflowsPath: params.workflowsPath,
+      activities: params.activities,
+    });
+    return { worker, connection };
+  } catch (e: unknown) {
+    // Close the gRPC connection to avoid leaking it on worker creation failure.
+    await connection.close();
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------

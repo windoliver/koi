@@ -143,9 +143,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       const rawId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const id = taskId(rawId);
       const task = buildTask(id, agentId, input, mode, options);
-      tasks.set(id, task);
 
       const messages = mapEngineInputToMessages(input, rawId);
+      // Register only after a confirmed start so a failed start leaves no
+      // phantom entry in local tracking and callers can retry with a new ID.
       await config.client.workflow.start(workflowType, {
         taskQueue: config.taskQueue,
         workflowId: rawId,
@@ -157,8 +158,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         }),
       });
 
-      // Keep as pending: we have no real execution-start signal from Temporal,
-      // so promoting to running here would misrepresent delayed/queued work.
+      // Keep as pending: no real execution-start signal from Temporal, so
+      // promoting to running here would misrepresent delayed/queued work.
+      tasks.set(id, task);
       emit({ kind: "task:submitted", task });
       return id;
     },

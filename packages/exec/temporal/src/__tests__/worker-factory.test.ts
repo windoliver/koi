@@ -98,4 +98,13 @@ describe("createTemporalWorker", () => {
     expect(params.namespace).toBe("default");
     expect(params.maxCachedWorkflows).toBe(100);
   });
+
+  test("factory error propagates: createWorkerFn throw rejects createTemporalWorker", async () => {
+    const badFactory = mock(async (_params: WorkerCreateParams): Promise<WorkerAndConnection> => {
+      throw new Error("worker create failed");
+    });
+    await expect(
+      createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", badFactory),
+    ).rejects.toThrow("worker create failed");
+  });
 });
