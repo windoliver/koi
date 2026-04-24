@@ -25,10 +25,11 @@ function buildAuthRequiredText(n: AuthRequiredNotification): string {
     return `**${n.message}**\n\nOpen this link in your browser to authorize ${n.provider}:\n${n.authUrl}${remoteHint}`;
   }
 
-  // mode:"local" — the OAuth callback listener runs on 127.0.0.1 so the
-  // browser should open automatically. Include the URL as a fallback for
-  // headless or SSH sessions where the browser launch may fail silently.
-  return `**${n.message}**\n\n_If the browser does not open automatically, copy this link to authorize ${n.provider}:_\n${n.authUrl}`;
+  // mode:"local" — the OAuth callback listener runs on 127.0.0.1, so the
+  // authorization URL cannot be completed from a remote/SSH session. Do NOT
+  // present it as a manual fallback: it will time out. Instead, surface a
+  // CLI recovery command that works regardless of environment.
+  return `**${n.message}**\n\n_If the browser does not open automatically, run: \`koi mcp auth ${n.provider}\`_`;
 }
 
 export function createOAuthChannel(options: {

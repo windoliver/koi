@@ -35,7 +35,7 @@ function makeChannel(sendImpl?: () => Promise<void>) {
 
 describe("createOAuthChannel", () => {
   describe("onAuthRequired", () => {
-    test("sends formatted message with URL when authUrl is present", async () => {
+    test("mode:local with authUrl shows CLI recovery instruction, not the URL", async () => {
       const { channel, sent } = makeChannel();
       const oauthChannel = createOAuthChannel({
         channel: channel as unknown as ChannelAdapter,
@@ -52,10 +52,13 @@ describe("createOAuthChannel", () => {
       const text = sent[0]?.content[0]?.text ?? "";
       expect(text).toContain("Authorize Google Drive to continue");
       expect(text).toContain("google-drive");
-      expect(text).toContain("https://accounts.google.com/auth?test=1");
+      // URL must NOT appear — it's a 127.0.0.1 callback that cannot complete from SSH/remote
+      expect(text).not.toContain("https://accounts.google.com/auth?test=1");
+      // CLI fallback must be present
+      expect(text).toContain("koi mcp auth google-drive");
     });
 
-    test("sends message without URL line when authUrl is absent (MCP local mode)", async () => {
+    test("sends plain message when authUrl is absent (no browser-open event)", async () => {
       const { channel, sent } = makeChannel();
       const oauthChannel = createOAuthChannel({
         channel: channel as unknown as ChannelAdapter,
@@ -70,7 +73,6 @@ describe("createOAuthChannel", () => {
       expect(sent).toHaveLength(1);
       const text = sent[0]?.content[0]?.text ?? "";
       expect(text).toBe("**Authorization required**");
-      expect(text).not.toContain("browser");
       expect(text).not.toContain("http");
     });
 
