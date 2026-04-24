@@ -449,7 +449,9 @@ export function createRemoteAgentLifecycle(
         if (pipeError) return;
 
         // Process any remaining raw bytes (done frame with no trailing newline).
-        if (!stopped && !timedOut && !receivedDone && rawBuf.byteLength > 0) {
+        // Do NOT skip this on timeout: these bytes were received before the abort,
+        // so a done frame in rawBuf is pre-deadline data and should win.
+        if (!stopped && !receivedDone && rawBuf.byteLength > 0) {
           processLineBytes(rawBuf);
         }
 

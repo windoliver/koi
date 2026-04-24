@@ -121,28 +121,44 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
 
   /**
    * Inject an onExit callback into task configs that support it.
-   * When a process-based task exits naturally, the runner transitions the
-   * board to completed (exit 0) or failed (non-zero).
+   * Returns both the enriched config and a mutable ref that the caller
+   * must populate with the started state's attemptId (if any) before the
+   * async pipe can fire. This lets the exit handler skip stale-attempt exits
+   * when the board reuses taskId across retries (e.g. remote_agent).
    */
-  function enrichConfigWithExitHandler(taskId: TaskItemId, taskConfig: unknown): unknown {
-    if (typeof taskConfig !== "object" || taskConfig === null) {
-      return {
-        onExit: (code: number) => {
-          void handleNaturalExit(taskId, code);
-        },
+  function enrichConfigWithExitHandler(
+    taskId: TaskItemId,
+    taskConfig: unknown,
+  ): { config: unknown; attemptRef: { value: string | undefined } } {
+    const attemptRef: { value: string | undefined } = { value: undefined };
+
+    const makeOnExit =
+      (callerOnExit?: (code: number) => void) =>
+      (code: number): void => {
+        // Attempt-scoped validation: if the active task for this taskId has a
+        // different attemptId, this exit belongs to a stale attempt (the board
+        // has already moved on to a retry). Ignore it to avoid double-failing.
+        if (attemptRef.value !== undefined) {
+          const active = activeTasks.get(taskId);
+          if (
+            active !== undefined &&
+            "attemptId" in active &&
+            (active as { attemptId: string }).attemptId !== attemptRef.value
+          ) {
+            return;
+          }
+        }
+        void handleNaturalExit(taskId, code);
+        callerOnExit?.(code);
       };
+
+    if (typeof taskConfig !== "object" || taskConfig === null) {
+      return { config: { onExit: makeOnExit() }, attemptRef };
     }
     const cfg = taskConfig as Readonly<Record<string, unknown>>;
     const callerOnExit =
       typeof cfg.onExit === "function" ? (cfg.onExit as (code: number) => void) : undefined;
-    return {
-      ...cfg,
-      onExit: (code: number) => {
-        // Always run runner reconciliation, then chain the caller's callback
-        void handleNaturalExit(taskId, code);
-        callerOnExit?.(code);
-      },
-    };
+    return { config: { ...cfg, onExit: makeOnExit(callerOnExit) }, attemptRef };
   }
 
   /**
@@ -260,10 +276,15 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
 
     // Inject an onExit callback so the runner can transition the board when
     // a process-based task exits naturally (without explicit stop()).
-    const enrichedConfig = enrichConfigWithExitHandler(taskId, taskConfig);
+    const { config: enrichedConfig, attemptRef } = enrichConfigWithExitHandler(taskId, taskConfig);
 
     try {
       const state = await lifecycle.start(taskId, output, enrichedConfig);
+      // Populate the attemptRef before registering in activeTasks so the exit
+      // handler can validate stale-attempt exits for attempt-scoped lifecycles.
+      if ("attemptId" in state && typeof state.attemptId === "string") {
+        attemptRef.value = state.attemptId;
+      }
       activeTasks.set(taskId, state);
 
       // Drain any exit that arrived before activeTasks.set() (fast-exit race)
