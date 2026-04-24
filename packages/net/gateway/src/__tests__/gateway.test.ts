@@ -392,6 +392,64 @@ describe("createGateway", () => {
       expect(stored?.remoteSeq).toBe(1); // frame 0 persisted, frame 1 replay starts here
     });
 
+    test("store failure during progress persist destroys the session to prevent stale-watermark reconnect", async () => {
+      // If the progress persist's store.set fails, the session must be destroyed so
+      // the client cannot transparently reconnect from a stale remoteSeq watermark and
+      // silently receive duplicate frames from already-delivered handlers.
+      const base = createInMemorySessionStore();
+      const faultyStore: SessionStore = {
+        get: (id) => base.get(id),
+        set: (session) => {
+          // Fail any store.set that tries to advance remoteSeq — this is exactly what
+          // the progress persist does (targetRemoteSeq = 1 for frame 0 success).
+          if (session.remoteSeq > 0) {
+            return {
+              ok: false,
+              error: {
+                code: "EXTERNAL" as const,
+                message: "injected store failure",
+                retryable: false,
+                context: {},
+              },
+            };
+          }
+          return base.set(session);
+        },
+        has: (id) => base.has(id),
+        delete: (id) => base.delete(id),
+        size: () => base.size(),
+        entries: () => base.entries(),
+      };
+
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-prog-fail",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth, store: faultyStore });
+      await gateway.start(0);
+
+      let callCount = 0;
+      gateway.onFrame("a1", () => {
+        callCount++;
+        // Fail on the second call so frame 0 succeeds and frame 1 fails,
+        // triggering the progress persist path with lastGoodSeq = 0.
+        if (callCount >= 2) throw new Error("handler fails on frame 1");
+      });
+
+      const conn = await authenticateConn(transport, gateway, "s-prog-fail");
+
+      // Send seq 1 first (buffers), then seq 0 (flushes both: ready = [frame0, frame1]).
+      transport.simulateMessage(conn.id, frameStr({ seq: 1, id: "p1" }));
+      transport.simulateMessage(conn.id, frameStr({ seq: 0, id: "p0" }));
+
+      await waitForCondition(() => conn.closed);
+      // Session must be destroyed (not just disconnected) since progress persist failed.
+      await waitForCondition(() => !storeHas(gateway.sessions(), "s-prog-fail"));
+      expect(storeHas(gateway.sessions(), "s-prog-fail")).toBe(false);
+    });
+
     test("malformed frame sends error response, not dispatched", async () => {
       const auth = createTestAuthenticator({
         ok: true,

@@ -437,25 +437,39 @@ export function createGateway(
           const targetRemoteSeq = lastGoodSeq + 1;
           const chainedAfter = pendingSeqPersists.get(sessionId) ?? Promise.resolve();
           const progressPersist: Promise<void> = chainedAfter.then(async (): Promise<void> => {
-            const current = await Promise.resolve(store.get(sessionId));
-            if (!current.ok) return; // session destroyed concurrently — nothing to do
-            if (current.value.remoteSeq >= targetRemoteSeq) return; // already at watermark
-            const updated: Session = { ...current.value, remoteSeq: targetRemoteSeq };
-            await Promise.resolve(store.set(updated))
-              .then((r) => {
-                if (!r.ok) {
-                  swallowError(new Error(r.error.message), {
-                    package: "gateway",
-                    operation: "handler.failure.progress.persist",
-                  });
-                }
-              })
-              .catch((err: unknown) => {
-                swallowError(err, {
+            let persistFailed = false;
+            try {
+              const current = await Promise.resolve(store.get(sessionId));
+              if (!current.ok) return; // session destroyed concurrently — nothing to do
+              if (current.value.remoteSeq >= targetRemoteSeq) return; // already at watermark
+              const updated: Session = { ...current.value, remoteSeq: targetRemoteSeq };
+              const r = await Promise.resolve(store.set(updated));
+              if (!r.ok) {
+                persistFailed = true;
+                swallowError(new Error(r.error.message), {
                   package: "gateway",
                   operation: "handler.failure.progress.persist",
                 });
+              }
+            } catch (err: unknown) {
+              persistFailed = true;
+              swallowError(err, {
+                package: "gateway",
+                operation: "handler.failure.progress.persist",
               });
+            }
+            // Store failure means remoteSeq is unresolvable. Destroy the session so
+            // the client cannot silently reconnect from a stale watermark and receive
+            // duplicate frames. Better to force a clean reconnect than silent corruption.
+            if (persistFailed) {
+              ownedSessionIds.delete(sessionId);
+              await Promise.resolve(store.delete(sessionId)).catch((err: unknown) => {
+                swallowError(err, {
+                  package: "gateway",
+                  operation: "handler.failure.progress.persist.cleanup",
+                });
+              });
+            }
           });
           pendingSeqPersists.set(sessionId, progressPersist);
           void progressPersist.finally(() => {
@@ -1067,14 +1081,28 @@ export function createGateway(
       const latestSeq = connOutboundSeq.get(connId) ?? 0;
       lastKnownOutboundSeq.set(sessionId, latestSeq);
       // Fire-and-forget store persist so the outbound seq survives process crashes.
-      // Uses the session cache to avoid a store.get() round-trip per send.
+      // Reads first so only seq is updated — spreading the cached session would carry
+      // stale remoteSeq if a concurrent handler-failure progress persist has already
+      // advanced it, overwriting the updated watermark with 0.
       const cachedSession = connSessionCache.get(connId);
       if (cachedSession !== undefined && cachedSession.seq < latestSeq) {
-        const updated: Session = { ...cachedSession, seq: latestSeq };
-        connSessionCache.set(connId, updated);
-        void Promise.resolve(store.set(updated)).catch((err: unknown) => {
-          swallowError(err, { package: "gateway", operation: "send.seq.persist" });
-        });
+        connSessionCache.set(connId, { ...cachedSession, seq: latestSeq });
+        const seqTarget = latestSeq;
+        const sidTarget = sessionId;
+        void (async () => {
+          try {
+            const current = await Promise.resolve(store.get(sidTarget));
+            if (!current.ok) return; // session gone (destroyed or TTL evicted)
+            if (current.value.seq >= seqTarget) return; // already at or past target
+            await Promise.resolve(store.set({ ...current.value, seq: seqTarget })).catch(
+              (err: unknown) => {
+                swallowError(err, { package: "gateway", operation: "send.seq.persist" });
+              },
+            );
+          } catch (err: unknown) {
+            swallowError(err, { package: "gateway", operation: "send.seq.persist" });
+          }
+        })();
       }
       return { ok: true, value: bytes };
     },
