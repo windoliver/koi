@@ -257,14 +257,30 @@ export function createMcpConnection(
     return authInFlight;
   };
 
-  // User-initiated auth: goes straight to onAuthNeeded (skips silent refresh)
-  // and shares authInFlight so concurrent user clicks are coalesced.
+  // User-initiated auth: tries silent token refresh first, then falls through to
+  // interactive browser auth (onAuthNeeded). Shares authInFlight so concurrent
+  // user-triggered attempts are coalesced. Unlike runAuthFlow, transient-failure
+  // falls through to browser auth — an explicit user request is an escape hatch.
   const triggerAuth: McpConnection["triggerAuth"] =
     onAuthNeeded !== undefined
       ? (): Promise<Result<void, KoiError>> => {
           if (authInFlight !== undefined) return authInFlight;
           authInFlight = (async (): Promise<Result<void, KoiError>> => {
             try {
+              // Try silent refresh first; only open browser if tokens are stale.
+              const refreshOutcome = await Promise.resolve(onUnauthorized?.()).catch(
+                (): UnauthorizedOutcome => "transient-failure",
+              );
+              if (refreshOutcome === "refreshed") {
+                const silentResult = await connect(true);
+                if (silentResult.ok) {
+                  await Promise.resolve(onAuthComplete?.()).catch(() => {});
+                  return { ok: true, value: undefined };
+                }
+                // Fresh token but reconnect failed — fall through to browser auth
+                // so the user gets an actionable path.
+              }
+              // "needs-auth" or "transient-failure": open browser flow.
               const authed = await onAuthNeeded();
               if (!authed) return { ok: false, error: authDeclinedError() };
               const reconnResult = await connect(true);

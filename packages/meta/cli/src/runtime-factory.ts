@@ -3187,60 +3187,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         const connection = mcpConnections?.get(serverName);
         const resolver = mcpResolver;
 
-        // Helper: rebuild the live transport and force a resolver rediscovery so
-        // real tools replace pseudo-tools immediately.
-        // Uses connection.reconnect() which transitions through "reconnecting"
-        // state — HTTP MCP bakes the bearer token into transport headers at
-        // creation time, so a token refresh requires a full transport rebuild
-        // even when the connection currently reports "connected".
-        // Returns false if the reconnect failed (fail closed).
-        const reconnectAndRediscover = async (): Promise<boolean> => {
-          if (connection !== undefined) {
-            const reconnResult = await connection
-              .reconnect()
-              .catch((): import("@koi/core").Result<void, import("@koi/core").KoiError> => ({
-                ok: false,
-                error: {
-                  code: "EXTERNAL",
-                  message: "reconnect failed",
-                  retryable: true,
-                  context: {},
-                },
-              }));
-            if (!reconnResult.ok) return false;
-          }
-          // Rediscovery is best-effort — a discovery miss doesn't prevent auth.
-          await resolver?.discover().catch(() => {});
-          return true;
-        };
-
-        const refreshOutcome = await provider.handleUnauthorized();
-        if (refreshOutcome === "refreshed") {
-          // Silent token refresh succeeded — no browser flow needed.
-          const reconnected = await reconnectAndRediscover();
-          if (!reconnected) {
-            void Promise.resolve(
-              channel.onAuthFailure?.({
-                provider: serverName,
-                reason:
-                  "Authorized but could not reconnect to the server. Retry or restart the session.",
-              }),
-            ).catch(() => {});
-            return false;
-          }
-          await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
-          return true;
-        }
-        // "needs-auth" or "transient-failure" — route to interactive OAuth.
-        // For transient-failure, silent refresh failed but tokens still exist.
-        // Automatic paths (runAuthFlow, listTools) skip browser auth on transient
-        // failures. This is an EXPLICIT user-triggered request, so fall through to
-        // triggerAuth to give the user a manual re-consent escape hatch even when
-        // the refresh endpoint is temporarily unavailable.
-        // Route through the connection's triggerAuth to serialize against any
-        // in-flight automatic 401-recovery and prevent duplicate browser windows.
-        // triggerAuth fires onAuthComplete internally via ConnectionDeps after
-        // a successful reconnect, so we skip the manual channel call here.
+        // Route everything through connection.triggerAuth() so the singleflight
+        // serializes concurrent automatic 401-recovery and explicit user auth.
+        // triggerAuth tries silent token refresh first, then falls through to
+        // browser auth if tokens are stale — no separate handleUnauthorized call
+        // needed here. onAuthComplete fires internally after reconnect.
         if (connection?.triggerAuth !== undefined) {
           const result = await connection.triggerAuth();
           if (!result.ok) {
