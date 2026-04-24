@@ -412,3 +412,49 @@ output across chunk boundaries, stop-verify via `proc.exited` timing, and natura
 - After: **159** tests (+86)
 
 <!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
+
+## RemoteAgentTask lifecycle hardening (#2043)
+
+### Composite stop key (`taskId:attemptId`)
+
+`TaskRunner.stoppedTaskIds` now keys on `${taskId}:${attemptId}` for attempt-scoped
+lifecycles. Previously, an explicit `stop()` on attempt A would suppress the natural
+exit from retry B sharing the same `taskId`, causing the board to remain
+`in_progress`. The composite key scopes suppression to the specific attempt that was
+stopped.
+
+### `stoppingTaskIds` double-stop guard
+
+A new `stoppingTaskIds: Set<TaskItemId>` sentinel blocks `handleStoreEvent` from
+invoking `lifecycle.stop()` a second time while an explicit `stop()` is already in
+flight. Without this guard, an external board kill arriving during the
+`lifecycle.stop()` await window (while the task is still in `activeTasks` for
+output readability) would double-invoke the lifecycle's stop handler.
+
+### Lifecycle-before-delete ordering in `stop()`
+
+`lifecycle.stop()` now runs before `activeTasks.delete()`. This preserves the task's
+output stream for `readOutput()` callers during the stop window, so cancel-notify
+failure messages written by `lifecycle.stop()` remain readable after the call returns.
+
+### `Promise.race` cancel-notify timeout
+
+`notifyCancel()` races the HTTP delivery against an independent 500 ms timer. This
+ensures the call resolves promptly even when `fetchImpl` does not honour `AbortSignal`
+(e.g. a user-supplied fetch that ignores signal), preventing the lifecycle from
+wedging the task in a terminal-pending state.
+
+### `cancelNotifiers` deferred delivery map
+
+Cancel delivery is now deferred to `lifecycle.stop()` via a `cancelNotifiers: Map<string,
+() => Promise<void>>` keyed by `attemptId`. Previously, natural-exit paths called
+`void notifyCancel()` and the failure note might not land in the output snapshot before
+`handleNaturalExit` flushed it. Deferring ensures failure messages are always captured
+in the output before the board transition.
+
+### `.finally()` race guard
+
+The pipe's `.finally()` handler now guards `cancelNotifiers.delete(attemptId)` with
+`if (!stopped)`. When a pipe settles during `drainPipe()` — before `lifecycle.stop()`
+reads the notifier — the guard prevents premature deletion, ensuring `lifecycle.stop()`
+can still consume and await the notifier.
