@@ -56,8 +56,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
   const maxMessages = rawMax;
   const messages: AgentMessage[] = [];
   const subscribers = new Set<(message: AgentMessage) => void | Promise<void>>();
-  // let rather than const: closed flag is explicitly mutable state
+  // let rather than const: both are explicitly mutable state
   let closed = false;
+  // Incremented by drain() to invalidate microtasks queued before the drain.
+  let drainGeneration = 0;
   // Self-reference for identity check in close()
   let self:
     | (MailboxComponent & {
@@ -175,9 +177,18 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       });
 
       messages.push(msg);
+      // Capture generation so drain() can invalidate this delivery.
+      const gen = drainGeneration;
       // Decouple delivery from the send() call stack via microtask to prevent
       // re-entrant delivery loops when subscribers send cross-agent messages.
       queueMicrotask(() => {
+        if (drainGeneration !== gen) return;
+        // Retire from inbox when there are subscribers — keeps capacity available
+        // for long-lived agents that use onMessage() rather than list() polling.
+        if (subscribers.size > 0) {
+          const idx = messages.indexOf(msg);
+          if (idx !== -1) messages.splice(idx, 1);
+        }
         dispatchToSubscribers(msg);
       });
 
@@ -206,6 +217,7 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     },
 
     drain(): void {
+      drainGeneration++;
       messages.length = 0;
     },
 

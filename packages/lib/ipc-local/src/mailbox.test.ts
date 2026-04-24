@@ -396,6 +396,32 @@ describe("createLocalMailbox — local specifics", () => {
     mailbox.close();
   });
 
+  test("drain() cancels already-queued microtask deliveries", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+    // fire-and-forget: send() runs synchronously, queues microtask, but returns a Promise
+    void mailbox.send(makeInput("should-not-arrive"));
+    mailbox.drain(); // increments generation before microtask fires
+    await Bun.sleep(10);
+    expect(received).toHaveLength(0);
+    mailbox.close();
+  });
+
+  test("messages are retired from inbox after delivery to subscribers", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 2 });
+    mailbox.onMessage(() => {}); // attach subscriber
+    await mailbox.send(makeInput("a"));
+    await mailbox.send(makeInput("b"));
+    // Both messages delivered and retired — inbox empty, capacity restored
+    expect(await mailbox.list()).toHaveLength(0);
+    const result = await mailbox.send(makeInput("c"));
+    expect(result.ok).toBe(true);
+    mailbox.close();
+  });
+
   test("drain() frees capacity so subsequent sends succeed", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 2 });
     await mailbox.send(makeInput("a"));
