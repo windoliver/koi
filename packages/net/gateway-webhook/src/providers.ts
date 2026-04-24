@@ -67,6 +67,18 @@ function extractSlackEventId(rawBody: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Body-digest dedup helper (used when the delivery header is unsigned)
+// ---------------------------------------------------------------------------
+
+async function bodyDigestKey(prefix: string, rawBody: string): Promise<string> {
+  // Derive the dedup key from the authenticated raw body so an attacker cannot
+  // replay a valid signed body with a different delivery header to bypass dedup.
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest("SHA-256", enc.encode(rawBody));
+  return `${prefix}:${Buffer.from(buf).toString("hex")}`;
+}
+
+// ---------------------------------------------------------------------------
 // Built-in providers
 // ---------------------------------------------------------------------------
 
@@ -74,8 +86,11 @@ const githubProvider: WebhookProvider = {
   kind: "github",
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGitHubSignature(secret, rawBody, request);
-    // X-GitHub-Delivery is a stable GUID supplied by GitHub for every delivery.
-    const dedupKey = request.headers.get("x-github-delivery") ?? undefined;
+    if (!ok) return { ok: false };
+    // Dedup key is a digest of the authenticated raw body. X-GitHub-Delivery is
+    // not covered by the HMAC, so trusting it would let a replayer bypass dedup
+    // by mutating only the unsigned header.
+    const dedupKey = await bodyDigestKey("github", rawBody);
     return { ok, dedupKey };
   },
 };
@@ -105,8 +120,10 @@ const genericProvider: WebhookProvider = {
   kind: "generic",
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGenericSignature(secret, rawBody, request);
-    // X-Webhook-ID is the Standard Webhooks delivery identifier.
-    const dedupKey = request.headers.get("x-webhook-id") ?? undefined;
+    if (!ok) return { ok: false };
+    // Dedup key is a digest of the authenticated body. X-Webhook-ID is not
+    // covered by the Standard Webhooks HMAC, so it cannot be trusted for dedup.
+    const dedupKey = await bodyDigestKey("generic", rawBody);
     return { ok, dedupKey };
   },
 };

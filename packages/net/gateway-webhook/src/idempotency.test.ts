@@ -88,4 +88,17 @@ describe("createIdempotencyStore", () => {
     store.prune();
     expect(store.tryBegin("key-expire")).toBe(true);
   });
+
+  test("expired processing reservation is pruned — hung request cannot permanently burn a key", () => {
+    // processingTtlMs=1 simulates a lease expiry for a hung/cancelled request.
+    // After the TTL passes, tryBegin should accept the key as a fresh delivery.
+    const store = createIdempotencyStore({ processingTtlMs: 1 });
+    store.tryBegin("key-hung"); // reserve but never commit/abort (simulates a hang)
+    const deadline = Date.now() + 50;
+    while (Date.now() < deadline) {
+      /* spin */
+    }
+    // The stale processing entry should be evicted by tryBegin's internal prune.
+    expect(store.tryBegin("key-hung")).toBe(true);
+  });
 });

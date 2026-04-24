@@ -46,9 +46,10 @@ export interface WebhookConfig {
    * or a WebhookAuthenticator instead.
    */
   readonly allowUnauthenticated?: boolean | undefined;
-  /** Idempotency store options. Omit to use defaults (24h TTL, 10k entries). */
+  /** Idempotency store options. Omit to use defaults (24h TTL, 30s processing TTL, 10k entries). */
   readonly idempotency?: {
     readonly ttlMs?: number | undefined;
+    readonly processingTtlMs?: number | undefined;
     readonly maxSize?: number | undefined;
   };
 }

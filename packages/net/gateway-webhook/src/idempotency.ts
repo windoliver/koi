@@ -9,11 +9,14 @@
  *   3. `abort(key)` — releases the reservation after a transient failure so
  *      provider retries are accepted.
  *
- * Entries expire after `ttlMs` (default: 24 hours). Bounded by `maxSize`
+ * Processing reservations expire after `processingTtlMs` (default: 30 s) so that
+ * hung or cancelled requests cannot permanently black-hole a delivery key.
+ * Committed entries expire after `ttlMs` (default: 24 h). Bounded by `maxSize`
  * (default: 10 000) to cap memory; oldest committed entries evicted first.
  */
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_PROCESSING_TTL_MS = 30_000;
 const DEFAULT_MAX_SIZE = 10_000;
 
 type EntryState = "processing" | "committed";
@@ -25,6 +28,9 @@ interface IdempotencyEntry {
 
 export interface IdempotencyStoreOptions {
   readonly ttlMs?: number | undefined;
+  /** TTL for in-flight (processing) reservations. Expired processing entries are
+   *  pruned so hung/cancelled requests cannot permanently black-hole a delivery key. */
+  readonly processingTtlMs?: number | undefined;
   readonly maxSize?: number | undefined;
 }
 
@@ -48,6 +54,7 @@ export interface IdempotencyStore {
 
 export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): IdempotencyStore {
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+  const processingTtlMs = options.processingTtlMs ?? DEFAULT_PROCESSING_TTL_MS;
   const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE;
 
   const store = new Map<string, IdempotencyEntry>();
@@ -55,10 +62,10 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
   function prune(): void {
     const now = Date.now();
     for (const [key, entry] of store) {
-      if (entry.state === "committed" && entry.expiresAt <= now) {
+      if (entry.expiresAt <= now) {
+        // Remove expired entries regardless of state: expired processing entries
+        // from hung/cancelled requests must not permanently burn a delivery key.
         store.delete(key);
-      } else {
-        break;
       }
     }
   }
@@ -70,11 +77,11 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
       // Already committed (and not expired) or in-flight → reject
       if (existing.state === "processing") return false;
       if (existing.expiresAt > Date.now()) return false;
-      // Expired committed entry — allow retry
+      // Expired entry — allow retry
       store.delete(key);
     }
-    // Reserve as in-progress (no TTL yet — set on commit)
-    store.set(key, { state: "processing", expiresAt: Number.POSITIVE_INFINITY });
+    // Reserve with a processing TTL so hung requests cannot permanently tombstone a key.
+    store.set(key, { state: "processing", expiresAt: Date.now() + processingTtlMs });
     return true;
   }
 
