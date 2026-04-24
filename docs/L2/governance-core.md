@@ -48,8 +48,11 @@ pauses the call and routes an `ApprovalRequest` to the host's `ApprovalHandler`
 - Missing handler → `KoiRuntimeError.from("PERMISSION", ...)` (deny).
 - Handler throws → propagates as deny (fail closed, matches existing rule-level
   contract).
-- Timeout → `ApprovalTimeoutError` → deny. Default `DEFAULT_APPROVAL_TIMEOUT_MS
-  = 60_000`, overridable via `GovernanceMiddlewareConfig.approvalTimeoutMs`.
+- Timeout → `ApprovalTimeoutError` re-thrown as
+  `KoiRuntimeError.from("TIMEOUT", ...)` (distinct from `PERMISSION` so hosts
+  catching by error code can distinguish "user took too long" from "user said
+  no"). Default `DEFAULT_APPROVAL_TIMEOUT_MS = 60_000`, overridable via
+  `GovernanceMiddlewareConfig.approvalTimeoutMs`.
 
 ### Decision mapping
 
@@ -58,10 +61,10 @@ pauses the call and routes an `ApprovalRequest` to the host's `ApprovalHandler`
 | Decision | Behavior |
 |----------|----------|
 | `allow` | Proceed once; no caching |
-| `always-allow` (session) | Record session grant keyed by `computeGrantKey(kind, payload)`; subsequent identical asks skip the handler for the rest of the session |
-| `always-allow` (permanent) | Same session grant + one-shot `onApprovalPersist(PersistentGrant)` callback for the host to persist |
+| `always-allow` (scope: `session`) | Record session grant keyed by `computeGrantKey(kind, payload)`; subsequent identical asks skip the handler for the rest of the session |
+| `always-allow` (scope: `always`) | Same session grant + one-shot `onApprovalPersist(PersistentGrant)` callback for the host to persist |
 | `deny` | `KoiRuntimeError.from("PERMISSION", ...)` — turn fails |
-| `modify` | Currently treated as deny; modify-path is a follow-up |
+| `modify` | Not yet implemented — denied for now (follow-up will rewrite the request payload before proceeding) |
 
 ### Inflight coalescing and session lifecycle
 
@@ -102,11 +105,10 @@ key without re-hashing.
 
 ### Architectural note — why the middleware owns ask routing
 
-There is only one interposition layer (`KoiMiddleware`). The governance
-middleware already sees every model/tool call; routing asks from here keeps
-verdict handling in one place and avoids a parallel `EngineHooks` channel.
-TUI/CLI hosts surface asks through the existing `TurnContext.requestApproval`
-primitive — no new L0 contract is required.
+Koi has one interposition layer (`KoiMiddleware`); adding a parallel
+`EngineHooks` channel for asks would violate that invariant and split verdict
+handling across two surfaces. TUI/CLI hosts surface asks through the existing
+`TurnContext.requestApproval` primitive — no new L0 contract is required.
 
 ## Per-variable alert thresholds (gov-9)
 
