@@ -117,21 +117,6 @@ export interface CreateKoiOptions {
   /** Governance controller configuration. Defaults to DEFAULT_GOVERNANCE_CONFIG. */
   readonly governance?: Partial<GovernanceConfig>;
   /**
-   * When `true`, fire `run_reset` on the governance controller at the
-   * start of every `runtime.run()` invocation, giving each run a fresh
-   * per-run turn count and duration window. Token usage, cost, spawn
-   * counts, and rolling error-rate windows are NOT reset — those continue to
-   * accumulate across runs because they track runtime/session-scoped
-   * resources. To reset everything, call `cycleSession()` (which fires
-   * `session_reset`) instead.
-   *
-   * Defaults to `false` so cumulative session-level enforcement remains the
-   * default contract for batch / headless / `koi start` hosts. Interactive
-   * hosts that expose user-visible run boundaries (e.g. the TUI, where each
-   * user submit is logically a fresh request) opt in by setting `true`.
-   * #1742.
-   */
-  /**
    * When `true`, fire `run_reset` on the governance controller at the start of
    * each `run()` call and reset all `IterationGuardHandle` guards so each user
    * submit gets a fresh turn/duration budget. Token usage, accumulated cost, and
@@ -141,6 +126,11 @@ export interface CreateKoiOptions {
    * throws at construction time if a branded guard is missing `resetForRun()`.
    */
   readonly resetBudgetPerRun?: boolean;
+  /**
+   * @deprecated Renamed to `resetBudgetPerRun` in #1939. This field has no effect.
+   * Set `resetBudgetPerRun: true` instead. Will be removed in the next major release.
+   */
+  readonly resetIterationBudgetPerRun?: boolean;
   /** Optional approval handler for HITL permission gating. */
   readonly approvalHandler?: ApprovalHandler;
   /** Optional live forge runtime — enables forged tools/middleware without agent re-assembly. */

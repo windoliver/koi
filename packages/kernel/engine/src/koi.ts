@@ -146,23 +146,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const debugInstrumentation: DebugInstrumentation | undefined =
     options.debug?.enabled === true ? createDebugInstrumentation(options.debug) : undefined;
 
-  // Compatibility shim for the renamed option. TypeScript callers get a compile error;
-  // untyped JS/JSON hosts are warned and the old value is remapped so they don't silently
-  // lose reset behavior after upgrading the package.
+  // Warn JS/JSON hosts using the old key name; TypeScript callers see a compile error.
+  // The old key has no effect — hosts must set `resetBudgetPerRun: true` explicitly
+  // to opt in to the new fail-closed per-run reset semantics.
   const legacyOpts = options as unknown as Record<string, unknown>;
-  const hasLegacyKey = "resetIterationBudgetPerRun" in legacyOpts;
-  if (hasLegacyKey && !("resetBudgetPerRun" in legacyOpts)) {
+  if ("resetIterationBudgetPerRun" in legacyOpts && !("resetBudgetPerRun" in legacyOpts)) {
     console.warn(
-      "[koi] createKoi: option `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
-        "The value has been remapped automatically. Update your config to silence this warning.",
+      "[koi] createKoi: option `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` " +
+        "in #1939 and has no effect. Set `resetBudgetPerRun: true` to enable per-run reset.",
     );
   }
-  // Effective value: new key wins if present; fall back to legacy key.
-  const resetBudgetPerRun =
-    options.resetBudgetPerRun === true ||
-    (hasLegacyKey &&
-      !("resetBudgetPerRun" in legacyOpts) &&
-      legacyOpts.resetIterationBudgetPerRun === true);
+  const resetBudgetPerRun = options.resetBudgetPerRun === true;
 
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {

@@ -4198,11 +4198,10 @@ const queries: readonly QueryConfig[] = [
     afterRecord: recordAgentSummarySidecar,
   },
 
-  // multi-submit: exercises resetBudgetPerRun=true between two sequential runs.
-  // Records a single-run trajectory. The run_reset event fires at the START of
-  // each run (non-cooperating adapter path), so it appears at trajectory index 0.
-  // Standalone golden tests in golden-replay.test.ts cover the full two-run
-  // provenance assertions (no cassette required).
+  // multi-submit: records a single run with resetBudgetPerRun=true active so
+  // the run_reset event fires at trajectory index 0 (non-cooperating adapter path).
+  // Full two-run provenance assertions (guard+governance alignment, boundaryId
+  // stability) are covered by standalone golden tests in golden-replay.test.ts.
   {
     name: "multi-submit",
     prompt: "Say 'hello' in exactly one word.",
