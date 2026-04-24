@@ -38,7 +38,8 @@
  *                                  #   per-host.
  */
 
-import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { loadConfig } from "@koi/config";
 import type {
   ChildIsolation,
@@ -289,6 +290,42 @@ export interface ManifestConfig {
    * at parse time so malformed configs fail fast.
    */
   readonly supervision: SupervisionConfig | undefined;
+  /**
+   * Optional audit sink configuration. Each field supplies a default for the
+   * matching env var (`KOI_AUDIT_NDJSON`, `KOI_AUDIT_SQLITE`). Env vars, when
+   * set, win over manifest values. Paths are anchored to the manifest directory.
+   * Parent directories must already exist — audit sinks never silently create them.
+   *
+   *   audit:
+   *     ndjson: ./logs/audit.ndjson
+   *     sqlite: ./logs/audit.db
+   *     violations: ./logs/violations.db
+   */
+  readonly audit: ManifestAuditConfig | undefined;
+}
+
+/**
+ * Audit sink paths lifted from the manifest. Each field is the absolute path
+ * (anchored to manifest dir at parse time) for the corresponding sink.
+ * Precedence: env var → manifest → default (violations only).
+ *
+ * `present` is always `true` — indicates the `audit:` block was present in the
+ * manifest even when all three sink fields are undefined (e.g. `audit: {}`).
+ * Hosts use this to detect the block regardless of which fields were set.
+ */
+export interface ManifestAuditConfig {
+  readonly present: true;
+  /**
+   * True when the audit block had an unrecognized shape in lenient mode:
+   * unknown keys, wrong-type values at the block level, or a non-object.
+   * The tui-command gate-off check uses this to emit a clear "fix the
+   * manifest" error rather than requiring unrelated KOI_AUDIT_* overrides
+   * for sinks the manifest author never intended to configure.
+   */
+  readonly malformed?: true;
+  readonly ndjson: string | undefined;
+  readonly sqlite: string | undefined;
+  readonly violations: string | undefined;
 }
 
 /**
@@ -318,6 +355,29 @@ export interface LoadManifestOptions {
    * keep the default `false` so OAuth-gated schemes fail fast at parse time.
    */
   readonly allowOAuthSchemes?: boolean | undefined;
+  /**
+   * When `true`, the `audit:` block is parsed leniently — block presence is
+   * detected and the `present: true` marker is set, but field values and unknown
+   * keys are NOT validated. Use this on hosts where the feature gate is off so a
+   * malformed `audit:` stanza in a shared manifest cannot deny startup. Hosts
+   * that actually wire audit sinks (where `KOI_ALLOW_MANIFEST_FILE_SINKS=1`)
+   * must pass `false` (the default) so typos and invalid paths are caught early.
+   */
+  readonly skipAuditValidation?: boolean | undefined;
+  /**
+   * Per-sink validation skip flags for use when the gate is ON but specific
+   * sinks are already covered by `KOI_AUDIT_*` env vars (or disabled by
+   * `--no-governance`). Skipped sinks return `undefined` without path
+   * validation — stale manifest paths that will never be opened must not
+   * abort startup.
+   */
+  readonly skipAuditValidationFor?:
+    | {
+        readonly ndjson?: boolean | undefined;
+        readonly sqlite?: boolean | undefined;
+        readonly violations?: boolean | undefined;
+      }
+    | undefined;
 }
 
 /**
@@ -437,6 +497,16 @@ export async function loadManifestConfig(
     return supervisionResult;
   }
 
+  const auditResult = parseManifestAudit(
+    raw.audit,
+    path,
+    options?.skipAuditValidation === true,
+    options?.skipAuditValidationFor,
+  );
+  if (!auditResult.ok) {
+    return auditResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -538,6 +608,7 @@ export async function loadManifestConfig(
       middleware: middlewareResult.value,
       governance: governanceResult.value,
       supervision: supervisionResult.value,
+      audit: auditResult.value,
     },
   };
 }
@@ -680,6 +751,399 @@ function parseManifestSupervision(
     return { ok: false, error: `manifest.supervision: ${valid.error.message}` };
   }
   return { ok: true, value: valid.value };
+}
+
+const AUDIT_KNOWN_KEYS = new Set(["ndjson", "sqlite", "violations"]);
+
+// Required filename suffixes for each manifest audit field. Mirrors the
+// .audit.ndjson suffix already enforced by resolveAuditFilePath in
+// middleware-registry.ts. Prevents repo-authored config from pointing at
+// arbitrary in-tree files (package.json, bun.lock, source files) and
+// accidentally corrupting them when the sink opens for writing.
+const AUDIT_FIELD_SUFFIX: Readonly<Record<string, string>> = {
+  ndjson: ".audit.ndjson",
+  sqlite: ".audit.db",
+  violations: ".violations.db",
+} as const;
+
+/**
+ * Parse the manifest `audit:` section.
+ *
+ * When `lenient` is true (gate off): block presence is detected and the
+ * `present: true` marker is set, but field values and unknown keys are NOT
+ * validated. Use this on hosts where the feature gate is not enabled so a
+ * malformed stanza cannot deny startup.
+ *
+ * When `lenient` is false (strict, gate on): unknown keys are rejected,
+ * field values are validated, and paths are anchored to the manifest dir.
+ *
+ * Returns `{ ok: true, value: undefined }` only when the block is absent.
+ * Returns a non-undefined `ManifestAuditConfig` (with `present: true`) when
+ * the block is present — even for `audit: {}` — so hosts can always detect
+ * block presence for rejection/warning.
+ */
+function parseManifestAudit(
+  raw: unknown,
+  manifestPath: string,
+  lenient: boolean,
+  skipFor?: {
+    readonly ndjson?: boolean | undefined;
+    readonly sqlite?: boolean | undefined;
+    readonly violations?: boolean | undefined;
+  },
+): ParseResult<ManifestAuditConfig | undefined> {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+
+  // Lenient mode: detect key presence without validating values so the
+  // gate-off fail-closed check in tui-command.ts can refuse startup whenever
+  // the manifest author clearly attempted to configure a sink — even when the
+  // value is the wrong type (ndjson: 42), an empty string, or a typo'd key.
+  // Rules:
+  //   • Known key exists (any value) → set field to the string value if it is a
+  //     non-empty string, otherwise "" (sentinel: key attempted, value unusable)
+  //   • Unknown/typo'd key exists → mark ALL three known fields "" so the
+  //     gate-off check fires regardless of which env-var override path applies
+  // These strings are NOT validated — callers must not use them as trusted paths.
+  if (lenient) {
+    // Non-object audit blocks (audit: "string", audit: 42, audit: []) signal
+    // authorial intent without a usable shape — mark malformed so tui-command
+    // can emit a clear "fix the manifest" error rather than a per-sink override
+    // requirement for sinks that were never individually specified.
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return {
+        ok: true,
+        value: {
+          present: true,
+          malformed: true,
+          ndjson: undefined,
+          sqlite: undefined,
+          violations: undefined,
+        },
+      };
+    }
+    const rec = raw as Record<string, unknown>;
+    const knownKeys = new Set(["ndjson", "sqlite", "violations"]);
+    const hasUnknownKey = Object.keys(rec).some((k) => !knownKeys.has(k));
+    // Unknown/typo'd keys → malformed marker, no sentinel fabrication for
+    // unrelated known sinks. Known-key sentinels ("") still signal key presence
+    // even when the value is a wrong type or empty string.
+    if (hasUnknownKey) {
+      const lNdjson =
+        "ndjson" in rec
+          ? typeof rec.ndjson === "string" && rec.ndjson.length > 0
+            ? rec.ndjson
+            : ""
+          : undefined;
+      const lSqlite =
+        "sqlite" in rec
+          ? typeof rec.sqlite === "string" && rec.sqlite.length > 0
+            ? rec.sqlite
+            : ""
+          : undefined;
+      const lViolations =
+        "violations" in rec
+          ? typeof rec.violations === "string" && rec.violations.length > 0
+            ? rec.violations
+            : ""
+          : undefined;
+      return {
+        ok: true,
+        value: {
+          present: true,
+          malformed: true,
+          ndjson: lNdjson,
+          sqlite: lSqlite,
+          violations: lViolations,
+        },
+      };
+    }
+    // Object with only known keys: per-key presence sentinels, no malformed flag.
+    const lNdjson =
+      "ndjson" in rec
+        ? typeof rec.ndjson === "string" && rec.ndjson.length > 0
+          ? rec.ndjson
+          : ""
+        : undefined;
+    const lSqlite =
+      "sqlite" in rec
+        ? typeof rec.sqlite === "string" && rec.sqlite.length > 0
+          ? rec.sqlite
+          : ""
+        : undefined;
+    const lViolations =
+      "violations" in rec
+        ? typeof rec.violations === "string" && rec.violations.length > 0
+          ? rec.violations
+          : ""
+        : undefined;
+    return {
+      ok: true,
+      value: { present: true, ndjson: lNdjson, sqlite: lSqlite, violations: lViolations },
+    };
+  }
+
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        "manifest.audit must be an object, e.g. audit: { ndjson: ./logs/audit.ndjson, sqlite: ./logs/audit.db }",
+    };
+  }
+  const rec = raw as Record<string, unknown>;
+
+  // Reject unknown keys so typos are caught, not silently ignored.
+  for (const key of Object.keys(rec)) {
+    if (!AUDIT_KNOWN_KEYS.has(key)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit: unknown key "${key}". Recognized keys: ndjson, sqlite, violations. ` +
+          "Check for typos — unknown keys are rejected to prevent silent audit misconfiguration.",
+      };
+    }
+  }
+
+  const manifestDir = dirname(resolvePath(manifestPath));
+
+  // Validate a manifest-supplied audit path:
+  //   1. Reject absolute paths.
+  //   2. Reject lexical `..` traversal out of the manifest directory.
+  //   3. If the parent directory exists, resolve it via `realpathSync` and
+  //      confirm it is still inside the real manifest directory (blocks
+  //      symlink-escape where a repo commits `logs/` as a symlink to an
+  //      external location that passes lexical checks).
+  //   4. If the file itself already exists, confirm it is not a symlink.
+  const anchorPath = (field: string, value: unknown): ParseResult<string | undefined> => {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (typeof value !== "string" || value.length === 0) {
+      return {
+        ok: false,
+        error: `manifest.audit.${field} must be a non-empty string path`,
+      };
+    }
+    if (isAbsolute(value)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: absolute path "${value}" is not allowed — ` +
+          "manifest audit paths must be relative to the manifest directory. " +
+          "Use a relative path (e.g. ./logs/audit.ndjson) or the KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars for absolute paths.",
+      };
+    }
+
+    // Require a dedicated audit-only suffix to prevent repo-authored config
+    // from targeting arbitrary in-tree files (package.json, bun.lock, etc.)
+    // and corrupting them when the sink opens for writing.
+    const requiredSuffix = AUDIT_FIELD_SUFFIX[field];
+    if (requiredSuffix !== undefined && !value.endsWith(requiredSuffix)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: "${value}" must end with "${requiredSuffix}". ` +
+          "The suffix requirement prevents manifest config from targeting arbitrary in-tree files. " +
+          `Example: ./logs/audit${requiredSuffix}`,
+      };
+    }
+
+    // Lexical `..` check — catches traversal before any filesystem access.
+    // Use exact segment matching (rel === ".." or starts with "../") rather
+    // than a plain startsWith("..") prefix so directory names like "..logs/"
+    // are not incorrectly rejected.
+    const lexicalResolved = resolvePath(manifestDir, value);
+    const lexicalRel = relative(manifestDir, lexicalResolved);
+    if (lexicalRel === ".." || lexicalRel.startsWith(`..${sep}`) || isAbsolute(lexicalRel)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: path "${value}" escapes the manifest directory via ".." traversal. ` +
+          "Audit paths must stay within the manifest directory when configured from manifest content. " +
+          "Use the KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars to point at paths outside the manifest directory.",
+      };
+    }
+
+    // Symlink-aware containment: resolve the parent directory to its real path
+    // and verify it is still inside the real manifest directory.
+    let realManifestDir: string;
+    try {
+      realManifestDir = realpathSync(manifestDir);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code ?? "unknown";
+      return {
+        ok: false,
+        error:
+          `manifest.audit: cannot resolve manifest directory "${manifestDir}" (${code}): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    const parentDir = dirname(lexicalResolved);
+    let realParentDir: string;
+    try {
+      realParentDir = realpathSync(parentDir);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        // Require the parent directory to exist at load time. Accepting a
+        // missing parent would let sessions start with audit "enabled" while
+        // writes fail later — an undetected gap in a compliance feature.
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: parent directory "${parentDir}" does not exist. ` +
+            "Create the directory before running koi tui with this manifest, or remove the audit path.",
+        };
+      }
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: cannot resolve parent directory "${parentDir}" (${code ?? "unknown"}): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    const parentRel = relative(realManifestDir, realParentDir);
+    if (parentRel === ".." || parentRel.startsWith(`..${sep}`) || isAbsolute(parentRel)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: path "${value}" resolves through a symlinked parent directory ` +
+          `that escapes the manifest directory (real parent: "${realParentDir}", real manifest dir: "${realManifestDir}"). ` +
+          "Audit paths must stay within the manifest directory when configured from manifest content.",
+      };
+    }
+
+    // If the file itself already exists, verify it is neither a symlink nor a
+    // hard link to an inode outside the manifest tree. Hard links (nlink > 1)
+    // pass parent-directory containment checks because they live inside the
+    // manifest dir, but their inode may be shared with a file outside that
+    // tree, redirecting audit writes to an arbitrary host path.
+    try {
+      const stat = lstatSync(lexicalResolved);
+      if (stat.isSymbolicLink()) {
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: "${value}" is a symlink — audit files cannot be written via ` +
+            "symlinks when configured from manifest content. Replace the symlink with a regular file path.",
+        };
+      }
+      if (stat.nlink > 1) {
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: "${value}" is a hard link (nlink=${stat.nlink}) — audit files ` +
+            "must have a unique inode when configured from manifest content. Remove the hard link or " +
+            "delete the file so koi can create it fresh.",
+        };
+      }
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: cannot stat "${lexicalResolved}" (${code ?? "unknown"}): ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      // File doesn't exist yet — expected happy path.
+    }
+
+    return { ok: true, value: lexicalResolved };
+  };
+
+  // Per-sink skip: when a sink is already covered by a KOI_AUDIT_* env var
+  // (or violations is disabled by --no-governance), do not validate the
+  // manifest path — it will never be opened, so a stale or missing path must
+  // not block startup.
+  const ndjsonResult =
+    skipFor?.ndjson === true
+      ? ({ ok: true, value: undefined } as const)
+      : anchorPath("ndjson", rec.ndjson);
+  if (!ndjsonResult.ok) return ndjsonResult;
+
+  const sqliteResult =
+    skipFor?.sqlite === true
+      ? ({ ok: true, value: undefined } as const)
+      : anchorPath("sqlite", rec.sqlite);
+  if (!sqliteResult.ok) return sqliteResult;
+
+  const violationsResult =
+    skipFor?.violations === true
+      ? ({ ok: true, value: undefined } as const)
+      : anchorPath("violations", rec.violations);
+  if (!violationsResult.ok) return violationsResult;
+
+  return {
+    ok: true,
+    value: {
+      present: true,
+      ndjson: ndjsonResult.value,
+      sqlite: sqliteResult.value,
+      violations: violationsResult.value,
+    },
+  };
+}
+
+/**
+ * Re-validate a manifest-derived audit path immediately before use to close
+ * the TOCTOU window between manifest load and sink creation. Uses the same
+ * canonical containment check as `anchorPath` (realpathSync on parent + lstat
+ * on file), so ancestor symlink swaps that are missed by a plain lstat of only
+ * the terminal parent are caught.
+ *
+ * Returns `undefined` when the path is still safe, or an error string if the
+ * path has been compromised (symlinked parent, symlinked file, or the canonical
+ * parent is now outside the manifest directory).
+ */
+export function revalidateAuditPathContainment(
+  resolvedPath: string,
+  manifestPath: string,
+): string | undefined {
+  const manifestDir = dirname(resolvePath(manifestPath));
+
+  let realManifestDir: string;
+  try {
+    realManifestDir = realpathSync(manifestDir);
+  } catch {
+    return `cannot resolve manifest directory "${manifestDir}"`;
+  }
+
+  const parentDir = dirname(resolvedPath);
+  let realParentDir: string;
+  try {
+    realParentDir = realpathSync(parentDir);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return `parent directory "${parentDir}" no longer exists`;
+    }
+    return `cannot check parent directory "${parentDir}" (${code ?? "unknown"}): ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  const parentRel = relative(realManifestDir, realParentDir);
+  if (parentRel === ".." || parentRel.startsWith(`..${sep}`) || isAbsolute(parentRel)) {
+    return `"${resolvedPath}" now resolves through a symlinked ancestor that escapes the manifest directory (real parent: "${realParentDir}", real manifest dir: "${realManifestDir}")`;
+  }
+
+  try {
+    const stat = lstatSync(resolvedPath);
+    if (stat.isSymbolicLink()) {
+      return `"${resolvedPath}" is now a symlink`;
+    }
+    if (stat.nlink > 1) {
+      return `"${resolvedPath}" is now a hard link (nlink=${stat.nlink}) — inode may be shared with a path outside the manifest tree`;
+    }
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      return `cannot stat "${resolvedPath}" (${code ?? "unknown"}): ${err instanceof Error ? err.message : String(err)}`;
+    }
+    // File does not exist yet — expected.
+  }
+
+  return undefined;
 }
 
 /**

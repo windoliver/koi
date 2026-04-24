@@ -96,7 +96,7 @@ import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
 import { createGovernanceBridge, type GovernanceBridge } from "./governance-bridge.js";
-import { loadManifestConfig } from "./manifest.js";
+import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { loadPolicyFile } from "./policy-file.js";
@@ -104,7 +104,7 @@ import { resolveManifestPath } from "./resolve-manifest-path.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
-import { resumeSessionFromJsonl } from "./shared-wiring.js";
+import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 import {
@@ -1067,6 +1067,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
+  let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
+  let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
   // stacks, plugins, filesystem scope, or governance of the original session.
@@ -1095,8 +1097,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
+    // manifest.audit is a declarative intent marker — actual sink paths always
+    // come from KOI_AUDIT_* env vars. Skip strict audit path validation when
+    // the env var for a given sink is already set (the manifest path is never
+    // opened, so stale paths must not block startup). Always skip for
+    // --no-governance (violations sink disabled at runtime anyway).
     const manifestResult = await loadManifestConfig(resolvedManifestPath, {
       allowOAuthSchemes: true,
+      skipAuditValidation: false,
+      skipAuditValidationFor: {
+        ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+        sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+        violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+      },
     });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
@@ -1109,6 +1122,65 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
     manifestGovernance = manifestResult.value.governance;
     manifestSupervision = manifestResult.value.supervision;
+    manifestAudit = manifestResult.value.audit;
+    manifestLoadPath = resolvedManifestPath;
+
+    // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
+    // manifest.audit paths are never used as actual file paths (atomic containment
+    // requires openat-style APIs unavailable in Node.js/Bun). The manifest block
+    // is a declarative intent marker: its presence requires matching KOI_AUDIT_*
+    // env vars so the operator explicitly controls every declared sink.
+    // KOI_AUDIT_NDJSON="" / KOI_AUDIT_SQLITE="" / KOI_AUDIT_VIOLATIONS="" are
+    // authoritative overrides that satisfy the intent check — undefined is the failure
+    // case. For violations, empty string is passed through to the runtime which treats
+    // length===0 as explicit disable (no fallback to ~/.koi/violations.db).
+    //
+    // Two cases based on block shape:
+    //   Malformed — require all three env vars (can't infer per-sink intent)
+    //   Well-formed — per-sink check; violations skipped when governance disabled
+    if (manifestAudit !== undefined) {
+      if (manifestAudit.malformed === true) {
+        const allCoveredByEnv =
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+        if (!allCoveredByEnv) {
+          const missingVars = [
+            process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+            process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+            flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+              ? "KOI_AUDIT_VIOLATIONS"
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" + ");
+          process.stderr.write(
+            "koi tui: manifest.audit has an unrecognized format (unknown fields or invalid value) — " +
+              "refusing to start because audit intent cannot be determined. " +
+              `Fix the manifest, or set ${missingVars} to control all active audit sinks, or remove the audit: block.\n`,
+          );
+          process.exit(1);
+        }
+      } else {
+        const ndjsonExposed =
+          manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+        const sqliteExposed =
+          manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+        const violationsExposed =
+          flags.governance.enabled &&
+          manifestAudit.violations !== undefined &&
+          process.env.KOI_AUDIT_VIOLATIONS === undefined;
+        if (ndjsonExposed || sqliteExposed || violationsExposed) {
+          process.stderr.write(
+            "koi tui: manifest.audit declares audit sinks but the matching KOI_AUDIT_* env vars are absent — " +
+              "refusing to start to prevent silently dropping declared audit logging. " +
+              "Set each matching KOI_AUDIT_* env var (empty string disables that sink — for violations, empty string prevents the ~/.koi/violations.db fallback), " +
+              "or remove the sink key from manifest.audit.\n",
+          );
+          process.exit(1);
+        }
+      }
+    }
 
     if (manifestResult.value.filesystem !== undefined) {
       // Store the full config for async resolution before runtime assembly.
@@ -1311,6 +1383,90 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.stderr.write(
         `koi tui: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
       );
+    }
+  }
+
+  // Persist manifest provenance so future resumes can enforce audit intent
+  // against the original session's manifest, not the cwd at resume time.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
+      manifestPath: resolvedManifestPath,
+    });
+  }
+
+  // Resume-path audit intent enforcement using stored session provenance.
+  // The check mirrors the new-session path but is keyed on the manifest that
+  // actually governed the original session, not a cwd rediscovery.
+  if (flags.resume !== undefined) {
+    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(tuiSessionId));
+    if (resumeMeta.manifestPath !== undefined) {
+      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+        allowOAuthSchemes: true,
+        skipAuditValidation: false,
+        skipAuditValidationFor: {
+          ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+          sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+          violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+        },
+      });
+      if (!resumeAuditResult.ok) {
+        const allCoveredByEnv =
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+        if (!allCoveredByEnv) {
+          process.stderr.write(
+            "koi tui: original session manifest cannot be parsed — " +
+              "refusing to resume because audit intent cannot be verified. " +
+              "Set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS to cover all " +
+              "audit sinks, or pass --manifest to re-specify the manifest explicitly.\n",
+          );
+          process.exit(1);
+        }
+      } else if (resumeAuditResult.value.audit !== undefined) {
+        const resumeAudit = resumeAuditResult.value.audit;
+        if (resumeAudit.malformed === true) {
+          const allCoveredByEnv =
+            process.env.KOI_AUDIT_NDJSON !== undefined &&
+            process.env.KOI_AUDIT_SQLITE !== undefined &&
+            (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+          if (!allCoveredByEnv) {
+            const missingVars = [
+              process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+              process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+              flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+                ? "KOI_AUDIT_VIOLATIONS"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" + ");
+            process.stderr.write(
+              "koi tui: original session manifest.audit has an unrecognized format — " +
+                "refusing to resume because audit intent cannot be determined. " +
+                `Fix the manifest, or set ${missingVars} to cover all active audit sinks.\n`,
+            );
+            process.exit(1);
+          }
+        } else {
+          const ndjsonExposed =
+            resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+          const sqliteExposed =
+            resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+          const violationsExposed =
+            flags.governance.enabled &&
+            resumeAudit.violations !== undefined &&
+            process.env.KOI_AUDIT_VIOLATIONS === undefined;
+          if (ndjsonExposed || sqliteExposed || violationsExposed) {
+            process.stderr.write(
+              "koi tui: original session manifest.audit declares audit sinks but the matching " +
+                "KOI_AUDIT_* env vars are absent — refusing to resume to prevent silently " +
+                "dropping declared audit logging. Set each matching KOI_AUDIT_* env var " +
+                "(empty string disables that sink), or pass --manifest and re-specify the manifest.\n",
+            );
+            process.exit(1);
+          }
+        }
+      }
     }
   }
 
@@ -1682,6 +1838,52 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // createCostBridge` below, before the original `let` at line 2055 is reached.
   let governanceBridge: GovernanceBridge | undefined;
 
+  // Re-validate manifest-derived audit paths immediately before use to close
+  // the TOCTOU window between manifest load and sink creation. Without this
+  // a symlink swap after parseManifestAudit() could redirect writes outside
+  // the manifest tree despite the load-time containment checks.
+  // Only manifest paths are re-checked here — env-var paths are operator-supplied
+  // and already outside the repo-authored trust boundary.
+  if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1") {
+    // Skip violations revalidation when governance is disabled: runtime-factory
+    // ignores violationSqlitePath entirely in that case, so a post-load FS
+    // change to that path cannot cause a real security issue and must not abort
+    // the incident-mitigation path that --no-governance enables.
+    const governanceEnabledForRevalidation = flags.governance.enabled;
+    const auditPathsToRevalidate: ReadonlyArray<readonly [string | undefined, string]> = [
+      [
+        (process.env.KOI_AUDIT_NDJSON ?? "").length === 0 ? manifestAudit.ndjson : undefined,
+        "manifest.audit.ndjson",
+      ],
+      [
+        (process.env.KOI_AUDIT_SQLITE ?? "").length === 0 ? manifestAudit.sqlite : undefined,
+        "manifest.audit.sqlite",
+      ],
+      [
+        governanceEnabledForRevalidation && (process.env.KOI_AUDIT_VIOLATIONS ?? "").length === 0
+          ? manifestAudit.violations
+          : undefined,
+        "manifest.audit.violations",
+      ],
+    ];
+    for (const [resolvedPath, label] of auditPathsToRevalidate) {
+      if (resolvedPath === undefined) continue;
+      // Re-validate using full canonical containment (realpathSync on parent +
+      // lstat on file), not just a direct lstat on the terminal parent.
+      // This catches ancestor symlink swaps (e.g. logs/ → /external) that a
+      // plain lstatSync(dirname(path)) misses by following the intermediate link.
+      // manifestLoadPath is always defined here because manifestAudit is only
+      // set when resolvedManifestPath !== undefined (same code block above).
+      const violation = revalidateAuditPathContainment(resolvedPath, manifestLoadPath ?? "");
+      if (violation !== undefined) {
+        process.stderr.write(
+          `koi tui: ${label}: filesystem changed after manifest validation — aborting: ${violation}.\n`,
+        );
+        process.exit(1);
+      }
+    }
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1828,17 +2030,60 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // initOtelSdk() registers a global TracerProvider so middleware-otel's
     // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
     ...(otelEnabled ? { otel: true as const } : {}),
-    // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
-    // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
-    // every model/tool call is recorded as a hash-chained NDJSON entry.
-    ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
-      ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+    // KOI_AUDIT_NDJSON=<path> opts into security-grade audit logging.
+    // Manifest audit.ndjson is the fallback when the env var is absent.
+    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 (repo-authored path).
+    // Precedence: env var (present, even "") → manifest (gate required) → off.
+    // Setting the env var to "" is an explicit disable that wins over manifest.
+    ...(process.env.KOI_AUDIT_NDJSON !== undefined
+      ? process.env.KOI_AUDIT_NDJSON !== ""
+        ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+        : {}
+      : manifestAudit?.ndjson !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { auditNdjsonPath: manifestAudit.ndjson }
+        : {}),
+    // KOI_AUDIT_SQLITE=<path> opts into SQLite-backed audit logging.
+    // Same precedence/disable semantics as KOI_AUDIT_NDJSON above.
+    ...(process.env.KOI_AUDIT_SQLITE !== undefined
+      ? process.env.KOI_AUDIT_SQLITE !== ""
+        ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+        : {}
+      : manifestAudit?.sqlite !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { auditSqlitePath: manifestAudit.sqlite }
+        : {}),
+    // KOI_AUDIT_VIOLATIONS=<path> overrides the violations DB path.
+    // Manifest audit.violations is the fallback when the env var is absent.
+    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 for manifest paths.
+    // Precedence: env var (present, even "") → manifest (gate required) → default (~/.koi/violations.db).
+    // Setting the env var to "" passes the empty string through — runtime-factory treats
+    // length===0 as an explicit disable (no violations DB), preventing the default fallback.
+    ...(process.env.KOI_AUDIT_VIOLATIONS !== undefined
+      ? { violationSqlitePath: process.env.KOI_AUDIT_VIOLATIONS }
+      : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { violationSqlitePath: manifestAudit.violations }
+        : {}),
+    // Per-sink manifest provenance: only pass the source path for sinks that
+    // actually came from the manifest (not from operator env vars). This lets
+    // createKoiRuntime run a final containment check immediately before each
+    // manifest-derived sink open, without incorrectly revalidating env-var
+    // sourced paths against the manifest directory.
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+    process.env.KOI_AUDIT_NDJSON === undefined &&
+    manifestAudit?.ndjson !== undefined &&
+    manifestLoadPath !== undefined
+      ? { manifestNdjsonSourcePath: manifestLoadPath }
       : {}),
-    // KOI_AUDIT_SQLITE=<absolute path> opts into SQLite-backed audit
-    // logging. Wires @koi/middleware-audit + @koi/audit-sink-sqlite so
-    // every model/tool call is recorded in a WAL-mode SQLite database.
-    ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
-      ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+    process.env.KOI_AUDIT_SQLITE === undefined &&
+    manifestAudit?.sqlite !== undefined &&
+    manifestLoadPath !== undefined
+      ? { manifestSqliteSourcePath: manifestLoadPath }
+      : {}),
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+    process.env.KOI_AUDIT_VIOLATIONS === undefined &&
+    manifestAudit?.violations !== undefined &&
+    manifestLoadPath !== undefined
+      ? { manifestViolationsSourcePath: manifestLoadPath }
       : {}),
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.

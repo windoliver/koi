@@ -756,6 +756,24 @@ export interface KoiRuntimeConfig {
    *    surfaced in-memory via the governance bridge for the current session). */
   readonly violationSqlitePath?: string | undefined;
   /**
+   * Per-sink manifest provenance — set to the manifest file path when the
+   * corresponding audit path was derived from `manifest.audit.*` (not from an
+   * operator env var). `createKoiRuntime` calls `revalidateAuditPathContainment`
+   * immediately before opening each manifest-derived sink to narrow the TOCTOU
+   * window between the pre-runtime check in `tui-command.ts` and the actual
+   * filesystem open syscall.
+   *
+   * A residual race remains because Bun/Node do not expose `openat` /
+   * `O_NOFOLLOW` for intermediate path components — full atomicity would require
+   * L2 sink API changes. The narrowed window is the best-effort mitigation.
+   *
+   * Leave each field `undefined` for env-var-sourced paths: those are operator-
+   * trusted and are NOT subject to manifest containment revalidation.
+   */
+  readonly manifestNdjsonSourcePath?: string | undefined;
+  readonly manifestSqliteSourcePath?: string | undefined;
+  readonly manifestViolationsSourcePath?: string | undefined;
+  /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
    */
@@ -2316,6 +2334,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
+      // manifest.audit.ndjson is rejected at tui-command.ts before this point —
+      // ancestor-symlink swaps between revalidation and open cannot be blocked
+      // without openat-style APIs unavailable in Node.js/Bun. All manifest-derived
+      // audit paths require env var overrides; manifestNdjsonSourcePath is therefore
+      // always undefined here. The guard below is defensive only.
+      if (config.manifestNdjsonSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.ndjson: manifest-derived paths are not supported. " +
+            "Set KOI_AUDIT_NDJSON instead.",
+        );
+      }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       complianceRecorders.push(
@@ -2383,6 +2412,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }
           }
         }
+      }
+      // manifest.audit.sqlite is rejected at tui-command.ts before this point
+      // (manifest-derived SQLite paths are not supported — SQLite must open by
+      // pathname for WAL/SHM sidecars, making atomic containment impossible).
+      // manifestSqliteSourcePath is therefore always undefined here; the check
+      // below is a defensive belt-and-suspenders guard only.
+      if (config.manifestSqliteSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.sqlite: manifest-derived SQLite paths are not supported. " +
+            "Set KOI_AUDIT_SQLITE instead.",
+        );
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
@@ -2540,8 +2580,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     if (resolvedViolationPath !== undefined) {
       try {
         const parent = dirname(resolvedViolationPath);
+        const manifestDerived = config.manifestViolationsSourcePath !== undefined;
         if (!existsSync(parent)) {
+          // Manifest-derived paths must already have their parent present —
+          // auto-creating directories for repo-authored paths expands the
+          // write-capability trust boundary. Operator-supplied explicit paths
+          // (--violation-sqlite flag) and the implicit default (~/.koi/)
+          // retain the previous auto-create behavior.
+          if (manifestDerived) {
+            throw new Error(
+              `manifest.audit.violations: parent directory "${parent}" does not exist. ` +
+                "Create it before starting koi tui, or remove the violations: key from manifest.audit.",
+            );
+          }
           mkdirSync(parent, { recursive: true });
+        }
+        // manifest.audit.violations is rejected at tui-command.ts before this
+        // point (same WAL/SHM atomic-open limitation as manifest.audit.sqlite).
+        // manifestDerived is therefore always false here; the guard below is
+        // defensive only.
+        if (manifestDerived) {
+          throw new Error(
+            "manifest.audit.violations: manifest-derived SQLite paths are not supported. " +
+              "Set KOI_AUDIT_VIOLATIONS instead.",
+          );
         }
         violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
         // Register close on manifest shutdown so `runtime.dispose()`

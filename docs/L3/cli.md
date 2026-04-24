@@ -246,6 +246,37 @@ koi tui
 | `KOI_FEEDBACK_LOOP_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-feedback-loop` in observe-only mode (`feedbackLoop: {}`). The middleware intercepts every model response and tool call: validators run against each response chunk sequence (pass-through by default), transport errors are classified and counted against per-category retry budgets, and tool health is tracked via a ring-buffer quarantine tracker. No validators are registered by default so the middleware is a no-op fence until validators or a custom `FeedbackLoopConfig` are supplied at the programmatic API level. |
 | `KOI_WEB_CACHE_TTL_MS` | no | `60000` | Response-cache TTL (milliseconds) for `web_fetch` GET/HEAD without custom headers and without a request body. `@koi/tools-web` ships disabled (TTL `0`) as an L2 opt-in contract; the CLI opts in with a 60 s default so back-to-back identical fetches within a session return `cached: true` instead of re-issuing live network calls. Only `200` responses without revalidation directives (`no-store`, `no-cache`, `private`, `must-revalidate`, `max-age=0`, `Pragma: no-cache`, past `Expires`, or any `Vary`) are stored; each entry's lifetime is capped to origin's remaining freshness (`max-age − Age`). `web_fetch` also accepts a per-call `noCache: true` that forces a live fetch with no stale fallback (evicts the entry; failures leave the key empty). Accepts any non-negative integer; `0` disables the cache for a run. **Malformed values (non-integer, negative, non-numeric) fail startup loudly** — an operator fixing staleness during an incident deserves an obvious error, not a silent 60 s stale-read window. (#1903) |
 
+**Manifest `audit:` block (#1994):** Audit sinks can be configured in `koi.yaml` so projects enable
+audit logging without shell/init plumbing. All paths anchor to the manifest directory (not the shell
+cwd). Parent directories must exist — audit sinks never silently create them.
+
+`koi tui` only: manifest audit paths are gated behind `KOI_ALLOW_MANIFEST_FILE_SINKS=1` (same gate
+as zone-B `manifest.middleware` file sinks) because `koi.yaml` is repo-authored content that can
+open files at arbitrary host paths. Without the gate, `koi tui` refuses to start if `audit:` is
+present and any manifest-configured sink is not covered by its `KOI_AUDIT_*` env var — this
+prevents silently disabling audit logging when the operator clearly expressed audit intent in the
+manifest. To opt out of manifest-driven sinks without setting the gate, either remove the `audit:`
+block or set the corresponding `KOI_AUDIT_*` env vars. `koi start` rejects manifests that contain `audit:`.
+
+```yaml
+audit:
+  ndjson: ./logs/session.audit.ndjson      # fallback for KOI_AUDIT_NDJSON; relative to manifest dir
+  sqlite: ./logs/session.audit.db          # field accepted but NOT usable as manifest path (see below)
+  violations: ./logs/session.violations.db # field accepted but NOT usable as manifest path (see below)
+```
+
+**`manifest.audit` is a declarative intent marker, not a path provider.** The paths listed under `audit:` are validated for correct format but are NOT used as actual sink paths — atomic containment against ancestor-symlink swaps requires `openat`-style APIs not available in Node.js/Bun. All actual sink paths must come from `KOI_AUDIT_*` env vars. The value of `manifest.audit` is fail-closed enforcement: if any sink is declared in the manifest but its corresponding env var is absent (and the gate is off), `koi tui` refuses to start rather than silently dropping audit records.
+
+Paths must use audit-only filename suffixes (`.audit.ndjson`, `.audit.db`, `.violations.db`) and
+must be relative — no `..` traversal, no symlinks. Paths are validated at load time so typos are caught early, even though the values are not used as open targets.
+
+Precedence and override rules:
+- `KOI_AUDIT_NDJSON` set (even to `""`) → authoritative; `""` explicitly disables (does not fall back to manifest)
+- `KOI_AUDIT_NDJSON` absent + `manifest.audit.ndjson` present → startup refuses (gate off) or refuses (gate on, path not usable)
+- Same for `KOI_AUDIT_SQLITE` / `audit.sqlite`
+- `KOI_AUDIT_VIOLATIONS` set (even to `""`) → authoritative; `""` falls through to `~/.koi/violations.db` default
+- `KOI_AUDIT_VIOLATIONS` absent + `manifest.audit.violations` present → startup refuses unless governance disabled
+
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
 so the key is not forwarded to OpenRouter.
