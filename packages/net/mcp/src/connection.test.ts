@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { resolveServerConfig } from "./config.js";
-import type { ConnectionDeps } from "./connection.js";
+import type { ConnectionDeps, UnauthorizedOutcome } from "./connection.js";
 import { createMcpConnection } from "./connection.js";
 import type { TransportState } from "./state.js";
 import type { KoiMcpTransport, TransportEventListener } from "./transport.js";
@@ -907,5 +907,99 @@ describe("McpConnection triggerAuth", () => {
     expect(r2.ok).toBe(true);
     // Singleflight: onAuthNeeded must only fire once despite concurrent calls
     expect(onAuthNeeded).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// callTool transient-failure does not strand connection in auth-needed
+// ---------------------------------------------------------------------------
+
+describe("callTool transient refresh failure resets auth-needed state", () => {
+  test("mid-session 401 with transient refresh failure transitions to error, not stuck in auth-needed", async () => {
+    // Scenario: connected → callTool → 401 → onUnauthorized returns transient-failure
+    // Expected: state must NOT stay in auth-needed; must transition to error (retryable)
+    let callToolCount = 0;
+    const mockClient = {
+      connect: mock(async (_transport: unknown) => {}),
+      close: mock(async () => {}),
+      listTools: mock(async () => ({ tools: [] as { name: string }[] })),
+      callTool: mock(async () => {
+        callToolCount++;
+        if (callToolCount === 1) throw new Error("401 Unauthorized");
+        return { content: [{ type: "text", text: "ok" }] };
+      }),
+    };
+    const onUnauthorized = mock(async () => "transient-failure" as const);
+    const onAuthNeeded = mock(async () => true);
+    const mockTransport = createMockTransport();
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => mockClient) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onUnauthorized,
+      onAuthNeeded,
+    });
+
+    await conn.connect();
+    expect(conn.state.kind).toBe("connected");
+
+    const result = await conn.callTool("echo", {});
+
+    // The call must fail with the transient EXTERNAL error
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.retryable).toBe(true);
+    }
+    // State must NOT be stuck in auth-needed — it should be error (retryable)
+    expect(conn.state.kind).toBe("error");
+    // Browser auth must NOT have been triggered for a transient refresh failure
+    expect(onAuthNeeded).not.toHaveBeenCalled();
+  });
+
+  test("auth-needed from prior passive discovery resets to error on transient refresh failure", async () => {
+    // Scenario: listTools → 401 → onUnauthorized returns needs-auth → auth-needed.
+    // Then callTool → runAuthFlow → onUnauthorized returns transient-failure → escape auth-needed.
+    let unauthorizedCallCount = 0;
+    let listCallCount = 0;
+    const mockClient = {
+      connect: mock(async (_transport: unknown) => {}),
+      close: mock(async () => {}),
+      listTools: mock(async () => {
+        listCallCount++;
+        if (listCallCount === 1) throw new Error("401 Unauthorized");
+        return { tools: [] as { name: string }[] };
+      }),
+      callTool: mock(async () => ({ content: [{ type: "text", text: "ok" }] })),
+    };
+    // First call (from listTools): needs-auth → falls through to auth-needed transition
+    // Second call (from callTool runAuthFlow): transient-failure → escape auth-needed
+    const onUnauthorized = mock(async (): Promise<UnauthorizedOutcome> => {
+      unauthorizedCallCount++;
+      return unauthorizedCallCount === 1 ? "needs-auth" : "transient-failure";
+    });
+    const onAuthNeeded = mock(async () => true);
+    const mockTransport = createMockTransport();
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => mockClient) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onUnauthorized,
+      onAuthNeeded,
+    });
+
+    await conn.connect();
+    // listTools → 401 → onUnauthorized returns needs-auth → auth-needed
+    await conn.listTools();
+    expect(conn.state.kind).toBe("auth-needed");
+
+    // callTool sees auth-needed → runs runAuthFlow → onUnauthorized returns transient-failure →
+    // escapes auth-needed. ensureConnected() then attempts a plain reconnect.
+    await conn.callTool("echo", {});
+
+    // State must NOT stay stuck in auth-needed — transient outage cleared it
+    expect(conn.state.kind).not.toBe("auth-needed");
+    // Browser auth must NOT have been triggered for a transient refresh failure
+    expect(onAuthNeeded).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,7 +115,7 @@ describe("buildPluginMcpSetup", () => {
     setup?.dispose();
   });
 
-  test("filters OAuth-bearing HTTP servers per-entry and logs error (other servers proceed)", () => {
+  test("wires OAuth-bearing HTTP plugin servers with auth tools (oauthCapableNames populated)", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -131,22 +131,20 @@ describe("buildPluginMcpSetup", () => {
       name: "plugin-stdio",
       command: "/bin/echo",
     };
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     const setup = buildPluginMcpSetup([oauthServer, stdioServer]);
 
-    // OAuth server stripped; stdio server retained — other plugin servers proceed
+    // Both servers wired; OAuth server tracked in oauthCapableNames
     expect(setup).toBeDefined();
-    expect(setup?.oauthCapableNames.size).toBe(0);
-    // Explicit error logged for the skipped OAuth server
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-    expect((errorSpy.mock.calls[0] as string[])[0]).toContain("plugin-oauth");
+    expect(setup?.oauthCapableNames.has("plugin-oauth")).toBe(true);
+    expect(setup?.oauthCapableNames.size).toBe(1);
+    // No error logged — OAuth plugin servers are now supported
+    // (auth flows through the standard auth-tool path)
 
     setup?.dispose();
-    errorSpy.mockRestore();
   });
 
-  test("returns undefined when all servers have OAuth (all filtered)", () => {
+  test("returns setup with OAuth server and populates oauthCapableNames when all servers have OAuth", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -157,13 +155,12 @@ describe("buildPluginMcpSetup", () => {
         tokenEndpoint: "https://example.com/token",
       },
     } as unknown as McpServerConfig;
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
     const setup = buildPluginMcpSetup([oauthServer]);
-    expect(setup).toBeUndefined();
-    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(setup).toBeDefined();
+    expect(setup?.oauthCapableNames.has("plugin-oauth")).toBe(true);
 
-    errorSpy.mockRestore();
+    setup?.dispose();
   });
 });
 

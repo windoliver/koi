@@ -667,7 +667,18 @@ export function createMcpConnection(
     ) {
       // runAuthFlow now includes connect() so the full auth+reconnect is
       // atomic in one singleflight promise.
-      await runAuthFlow();
+      const preCallFlowResult = await runAuthFlow();
+      // If the flow returned a transient outage (EXTERNAL) rather than a real auth
+      // failure, escape auth-needed so future calls don't keep trying interactive auth.
+      if (!preCallFlowResult.ok && preCallFlowResult.error.code !== "AUTH_REQUIRED") {
+        if (stateMachine.canTransitionTo("error")) {
+          stateMachine.transition({
+            kind: "error",
+            error: preCallFlowResult.error,
+            retryable: preCallFlowResult.error.retryable,
+          });
+        }
+      }
     }
     const connResult = await ensureConnected();
     if (!connResult.ok) return connResult;
@@ -695,6 +706,18 @@ export function createMcpConnection(
         // runAuthFlow includes connect() in its singleflight, so after it
         // resolves, client is either set (auth+reconnect succeeded) or undefined.
         const authResult = await runAuthFlow();
+        // Transient refresh failure (EXTERNAL) must not strand the connection in
+        // auth-needed — a network blip must not require browser re-consent.
+        if (!authResult.ok && authResult.error.code !== "AUTH_REQUIRED") {
+          if (stateMachine.canTransitionTo("error")) {
+            stateMachine.transition({
+              kind: "error",
+              error: authResult.error,
+              retryable: authResult.error.retryable,
+            });
+          }
+          return { ok: false, error: authResult.error };
+        }
         if (authResult.ok && client !== undefined) {
           try {
             const retryResult = await client.callTool({
