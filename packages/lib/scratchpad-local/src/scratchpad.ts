@@ -45,6 +45,17 @@ export interface LocalScratchpad {
   readonly close: () => void;
 }
 
+// Process-wide shared storage keyed by groupId so all scratchpad instances within
+// the same group observe each other's writes, CAS conflicts, and change events.
+interface GroupStore {
+  entries: Map<ScratchpadPath, MutableEntry>;
+  subscribers: Set<(event: ScratchpadChangeEvent) => void>;
+  refCount: number;
+  timer: ReturnType<typeof setInterval> | null;
+}
+
+const groupRegistry = new Map<string, GroupStore>();
+
 // Deep-clone via JSON round-trip: constrains metadata to JSON-safe primitives
 // and breaks all shared references so stored state cannot be mutated out-of-band.
 function cloneMetadata(m: Record<string, unknown>): Record<string, unknown> {
@@ -126,12 +137,35 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   const { groupId, authorId } = config;
   const sweepIntervalMs = config.sweepIntervalMs ?? 60_000;
 
-  const entries = new Map<ScratchpadPath, MutableEntry>();
-  const subscribers = new Set<(event: ScratchpadChangeEvent) => void>();
+  let sharedStore = groupRegistry.get(groupId as string);
+  if (sharedStore === undefined) {
+    const newStore: GroupStore = {
+      entries: new Map(),
+      subscribers: new Set(),
+      refCount: 0,
+      timer: null,
+    };
+    if (sweepIntervalMs > 0) {
+      const t = setInterval(() => {
+        for (const [path, entry] of newStore.entries) {
+          if (isExpired(entry)) newStore.entries.delete(path);
+        }
+      }, sweepIntervalMs);
+      if (t && typeof t === "object" && "unref" in t) {
+        (t as { unref: () => void }).unref();
+      }
+      newStore.timer = t;
+    }
+    groupRegistry.set(groupId as string, newStore);
+    sharedStore = newStore;
+  }
+  sharedStore.refCount++;
+  const store = sharedStore;
+
   let closed = false;
 
   function notify(event: ScratchpadChangeEvent): void {
-    for (const sub of subscribers) {
+    for (const sub of store.subscribers) {
       try {
         sub(event);
       } catch {
@@ -141,16 +175,8 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   }
 
   function sweep(): void {
-    for (const [path, entry] of entries) {
-      if (isExpired(entry)) entries.delete(path);
-    }
-  }
-
-  let timer: ReturnType<typeof setInterval> | null = null;
-  if (sweepIntervalMs > 0) {
-    timer = setInterval(sweep, sweepIntervalMs);
-    if (timer && typeof timer === "object" && "unref" in timer) {
-      (timer as { unref: () => void }).unref();
+    for (const [path, entry] of store.entries) {
+      if (isExpired(entry)) store.entries.delete(path);
     }
   }
 
@@ -171,7 +197,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       };
     }
 
-    const existing = entries.get(input.path);
+    const existing = store.entries.get(input.path);
     const liveExisting = existing && !isExpired(existing) ? existing : undefined;
 
     if (input.expectedGeneration === 0) {
@@ -211,7 +237,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     // Check file limit (sweep first to avoid false rejections)
     if (!liveExisting) {
       sweep();
-      if (entries.size >= SCRATCHPAD_DEFAULTS.MAX_FILES_PER_GROUP) {
+      if (store.entries.size >= SCRATCHPAD_DEFAULTS.MAX_FILES_PER_GROUP) {
         return {
           ok: false,
           error: {
@@ -244,7 +270,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
         : {}),
     };
 
-    entries.set(input.path, entry);
+    store.entries.set(input.path, entry);
 
     notify({ kind: "written", path: input.path, generation, authorId, groupId, timestamp: now });
 
@@ -253,9 +279,9 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function read(path: ScratchpadPath): Result<ScratchpadEntry, KoiError> {
     if (closed) return { ok: false, error: CLOSED_ERROR };
-    const entry = entries.get(path);
+    const entry = store.entries.get(path);
     if (!entry || isExpired(entry)) {
-      if (entry) entries.delete(path);
+      if (entry) store.entries.delete(path);
       return {
         ok: false,
         error: { code: "NOT_FOUND", message: `Path '${path}' not found`, retryable: false },
@@ -269,9 +295,9 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     const now = Date.now();
     let results: ScratchpadEntrySummary[] = [];
 
-    for (const [path, entry] of entries) {
+    for (const [path, entry] of store.entries) {
       if (entry.expiresAt !== undefined && now >= entry.expiresAt) {
-        entries.delete(path);
+        store.entries.delete(path);
         continue;
       }
       if (filter?.authorId !== undefined && entry.authorId !== filter.authorId) continue;
@@ -288,16 +314,16 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function del(path: ScratchpadPath): Result<void, KoiError> {
     if (closed) return { ok: false, error: CLOSED_ERROR };
-    const entry = entries.get(path);
+    const entry = store.entries.get(path);
     if (!entry || isExpired(entry)) {
-      if (entry) entries.delete(path);
+      if (entry) store.entries.delete(path);
       return {
         ok: false,
         error: { code: "NOT_FOUND", message: `Path '${path}' not found`, retryable: false },
       };
     }
     const { generation } = entry;
-    entries.delete(path);
+    store.entries.delete(path);
     const now = new Date().toISOString();
     notify({
       kind: "deleted",
@@ -316,18 +342,22 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function onChange(handler: (event: ScratchpadChangeEvent) => void): () => void {
     if (closed) return () => {};
-    subscribers.add(handler);
+    store.subscribers.add(handler);
     return () => {
-      subscribers.delete(handler);
+      store.subscribers.delete(handler);
     };
   }
 
   function close(): void {
-    if (timer !== null) clearInterval(timer);
-    timer = null;
-    entries.clear();
-    subscribers.clear();
+    if (closed) return;
     closed = true;
+    store.refCount--;
+    if (store.refCount <= 0) {
+      if (store.timer !== null) clearInterval(store.timer);
+      store.entries.clear();
+      store.subscribers.clear();
+      groupRegistry.delete(groupId as string);
+    }
   }
 
   return { write, read, list, delete: del, flush, onChange, close };

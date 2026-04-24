@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type {
   AgentId,
   KoiError,
@@ -30,6 +30,14 @@ interface WorkspaceMarker {
 export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): WorkspaceBackend {
   const registry = new Map<WorkspaceId, RegistryEntry>();
   const basePath = resolveWorktreeBasePath(config.repoPath, config.worktreeBasePath);
+
+  const resolvedRepo = resolve(config.repoPath);
+  const resolvedBase = resolve(basePath);
+  if (resolvedBase === resolvedRepo || resolvedBase.startsWith(resolvedRepo + sep)) {
+    throw new Error(
+      `worktreeBasePath must not be inside the repository: ${resolvedBase} is under ${resolvedRepo}`,
+    );
+  }
 
   // Scan git worktree list and on-disk markers to recover an entry that
   // survived a process restart and is no longer in the in-memory registry.

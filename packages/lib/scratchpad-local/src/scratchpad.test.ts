@@ -267,5 +267,80 @@ describe("createLocalScratchpad", () => {
       sp.close();
       expect(sp.list().length).toBe(0);
     });
+
+    it("write returns VALIDATION error after close", () => {
+      sp.close();
+      const r = sp.write({ path: scratchpadPath("a"), content: "x" });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.code).toBe("VALIDATION");
+    });
+
+    it("read returns VALIDATION error after close", () => {
+      sp.close();
+      const r = sp.read(scratchpadPath("a"));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.code).toBe("VALIDATION");
+    });
+  });
+
+  describe("group-shared storage", () => {
+    it("two instances with same groupId share writes", () => {
+      const sp2 = createLocalScratchpad({ groupId: gid, authorId: agentId("agent-2") });
+      try {
+        sp.write({ path: scratchpadPath("shared/key"), content: "hello" });
+        const r = sp2.read(scratchpadPath("shared/key"));
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.value.content).toBe("hello");
+      } finally {
+        sp2.close();
+      }
+    });
+
+    it("CAS conflict visible across instances", () => {
+      const sp2 = createLocalScratchpad({ groupId: gid, authorId: agentId("agent-2") });
+      try {
+        sp.write({ path: scratchpadPath("lock"), content: "v1" });
+        // Both try to create-only (expectedGeneration=0) — one must conflict
+        sp2.write({ path: scratchpadPath("lock"), content: "v2" });
+        const r = sp.write({
+          path: scratchpadPath("lock"),
+          content: "v3",
+          expectedGeneration: 0,
+        });
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error.code).toBe("CONFLICT");
+      } finally {
+        sp2.close();
+      }
+    });
+
+    it("change event from one instance fires on subscriber registered in another", () => {
+      const sp2 = createLocalScratchpad({ groupId: gid, authorId: agentId("agent-2") });
+      try {
+        let fired = false;
+        const unsub = sp2.onChange(() => {
+          fired = true;
+        });
+        sp.write({ path: scratchpadPath("notify-test"), content: "ping" });
+        expect(fired).toBe(true);
+        unsub();
+      } finally {
+        sp2.close();
+      }
+    });
+
+    it("different groupIds are isolated", () => {
+      const otherGid = agentGroupId("group-other");
+      const sp2 = createLocalScratchpad({ groupId: otherGid, authorId: aid });
+      try {
+        sp.write({ path: scratchpadPath("isolated"), content: "secret" });
+        const r = sp2.read(scratchpadPath("isolated"));
+        expect(r.ok).toBe(false);
+      } finally {
+        sp2.close();
+      }
+    });
   });
 });

@@ -124,8 +124,9 @@ describe("createGitWorktreeBackend", () => {
     await backend.dispose(result.value.id);
   });
 
-  it("supports worktreeBasePath override", async () => {
-    const customBase = join(repoPath, "custom-worktrees");
+  it("supports worktreeBasePath override outside the repo", async () => {
+    // Base path must be outside the repo — use a sibling directory
+    const customBase = join(repoPath, "..", `custom-worktrees-${Date.now()}`);
     const backend = createGitWorktreeBackend({ repoPath, worktreeBasePath: customBase });
     const result = await backend.create(aid, defaultConfig);
     expect(result.ok).toBe(true);
@@ -133,5 +134,13 @@ describe("createGitWorktreeBackend", () => {
 
     expect(result.value.path.startsWith(customBase)).toBe(true);
     await backend.dispose(result.value.id);
+    await rm(customBase, { recursive: true, force: true });
+  });
+
+  it("rejects worktreeBasePath inside the repository", () => {
+    const insideRepo = join(repoPath, "custom-worktrees");
+    expect(() => createGitWorktreeBackend({ repoPath, worktreeBasePath: insideRepo })).toThrow(
+      "must not be inside the repository",
+    );
   });
 });
