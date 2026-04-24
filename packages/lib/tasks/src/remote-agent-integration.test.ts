@@ -17,6 +17,7 @@ import { createRemoteAgentLifecycle } from "./lifecycles/remote-agent.js";
 import { createManagedTaskBoard } from "./managed-board.js";
 import { createMemoryTaskBoardStore } from "./memory-store.js";
 import { createOutputStream } from "./output-stream.js";
+import type { TaskKindLifecycle } from "./task-registry.js";
 import { createTaskRegistry } from "./task-registry.js";
 import { createTaskRunner } from "./task-runner.js";
 
@@ -31,7 +32,7 @@ type FrameSpec =
   | { readonly kind: "hang" };
 
 interface TestServer {
-  readonly server: Server;
+  readonly server: Server<undefined>;
   readonly url: string;
   readonly cancelUrl: string;
   readonly cancelHits: () => number;
@@ -693,7 +694,7 @@ describe("TaskRunner + RemoteAgentLifecycle integration", () => {
         endpoint: serverUrl,
         cancelEndpoint: cancelUrl,
         drainTimeoutMs: 100,
-      }),
+      }) as unknown as TaskKindLifecycle,
     );
     const runner = createTaskRunner({ board, store, registry, agentId: AGENT });
     const taskId = await store.nextId();
@@ -761,7 +762,12 @@ describe("TaskRunner + RemoteAgentLifecycle integration", () => {
 
     // Attempt A with srvA
     const registryA = createTaskRegistry();
-    registryA.register(createRemoteAgentLifecycle({ endpoint: srvA.url, drainTimeoutMs: 100 }));
+    registryA.register(
+      createRemoteAgentLifecycle({
+        endpoint: srvA.url,
+        drainTimeoutMs: 100,
+      }) as unknown as TaskKindLifecycle,
+    );
     const runnerA = createTaskRunner({ board, store, registry: registryA, agentId: AGENT });
 
     await runnerA.start(taskId, "remote_agent");
@@ -775,7 +781,12 @@ describe("TaskRunner + RemoteAgentLifecycle integration", () => {
 
     // Attempt B with srvB — a *different* runner on the same board
     const registryB = createTaskRegistry();
-    registryB.register(createRemoteAgentLifecycle({ endpoint: srvB.url, drainTimeoutMs: 100 }));
+    registryB.register(
+      createRemoteAgentLifecycle({
+        endpoint: srvB.url,
+        drainTimeoutMs: 100,
+      }) as unknown as TaskKindLifecycle,
+    );
     const runnerB = createTaskRunner({ board, store, registry: registryB, agentId: AGENT });
 
     await runnerB.start(taskId2, "remote_agent");
@@ -803,9 +814,9 @@ describe("TaskRunner + RemoteAgentLifecycle integration", () => {
       start: innerLifecycle.start,
       stop: async (state) => {
         stopCount++;
-        await innerLifecycle.stop(state);
+        await innerLifecycle.stop(state as Parameters<typeof innerLifecycle.stop>[0]);
       },
-    });
+    } as TaskKindLifecycle);
 
     const runner = createTaskRunner({ board, store, registry, agentId: AGENT });
     await runner.start(taskId, "remote_agent");
