@@ -78,10 +78,10 @@ export function createMemoryToolProvider(
     async attach(agent) {
       const result = await inner.attach(agent);
       const components = isAttachResult(result) ? result.components : result;
-      const merged = new Map(components);
+      const merged = new Map<string, unknown>(components as ReadonlyMap<string, unknown>);
       merged.set(skillToken(MEMORY_SKILL_NAME) as string, skill);
       const skipped = isAttachResult(result) ? result.skipped : [];
-      return { components: merged, skipped };
+      return { components: merged as ReadonlyMap<string, unknown>, skipped };
     },
   };
 

@@ -393,6 +393,8 @@ createRuntime({
 
 <!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
 
+> **Progressive skill disclosure (PR #1986, issue #1986):** `@koi/skills-runtime`'s `createSkillProvider()` and `createSkillInjectorMiddleware()` now accept `{ progressive: true }`. In progressive mode the provider attaches skills with `runtimeBacked: true` and `content: ""` (no body loaded into the system prompt at startup). The injector middleware instead injects a compact `<available_skills>` XML block listing skill names and descriptions (~100 tokens) before each model call; the full body is loaded on-demand when the model invokes the `Skill` tool. The `skill-load` golden cassette re-recorded: `MW:skill-injector` span now shows `contentLength: 0` and a `systemPrompt` that opens with `<available_skills>` XML rather than the full body. New `loop-until-pass` cassette added (feedback-loop retry pattern). No `RuntimeConfig` surface change — hosts opt in by passing `{ progressive: true }` to both factories.
+
 ---
 
 ## @koi/tasks RemoteAgentTask lifecycle hardening (#2043)

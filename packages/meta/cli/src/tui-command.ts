@@ -37,6 +37,7 @@ import { createAgentSummary } from "@koi/agent-summary";
 import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
 import { microcompact } from "@koi/context-manager";
 import type {
+  Agent,
   AuditEntry,
   ComponentProvider,
   ContentBlock,
@@ -47,6 +48,8 @@ import type {
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
+  SkillComponent,
+  SubsystemToken,
   TranscriptEntry,
   TranscriptEntryId,
 } from "@koi/core";
@@ -66,7 +69,11 @@ import {
 } from "@koi/model-router";
 import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
-import { createSkillsRuntime } from "@koi/skills-runtime";
+import {
+  createProgressiveSkillProvider,
+  createSkillInjectorMiddleware,
+  createSkillsRuntime,
+} from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { createBrowserProvider, createMockDriver } from "@koi/tool-browser";
 import type {
@@ -1487,24 +1494,73 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 3. Assemble runtime (A1-A: delegate to createKoiRuntime)
   // ---------------------------------------------------------------------------
 
-  // --- Load skills before runtime creation (same as koi start on main) ---
-  // Skills prepend project/user workflow rules to the system prompt.
-  const skillRuntime = createSkillsRuntime();
-  const skillContent = await (async (): Promise<string> => {
-    const outer = await skillRuntime.loadAll();
-    if (!outer.ok) return "";
-    const parts: string[] = [];
-    for (const [, result] of outer.value) {
-      if (result.ok) parts.push(result.value.body);
-    }
-    return parts.sort().join("\n\n---\n\n");
-  })();
+  // --- Skills: progressive mode ---
+  // Phase 1: provider attaches skill components (metadata only, no bodies).
+  // Phase 2: middleware injects <available_skills> XML per model call.
+  // The Skill tool loads full bodies on-demand from the same runtime.
+  // Startup I/O matches the old eager path (loadAll() still runs for
+  // blocked-skill visibility); benefit is per-call token reduction.
+  // createProgressiveSkillProvider bundles session-snapshot pinning: bodies
+  // loaded at attach time are stored in a session-local Map that is not subject
+  // to LRU eviction, ensuring the Skill tool always returns the body that was
+  // valid at session start.
+  const {
+    provider: skillProvider,
+    pinnedRuntime: skillRuntime,
+    reload: reloadSkillComponents,
+  } = createProgressiveSkillProvider(createSkillsRuntime());
+  // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
+  const skillAgentRef: { current: Agent | undefined } = { current: undefined };
+  // Mutable live skill component map — refreshed on session reset via reloadSkillComponents().
+  // Initially populated from the agent ECS after createKoiRuntime wires skillAgentRef.current.
+  // The middleware reads from this map (not the static ECS) so session resets can refresh
+  // the advertised skill inventory without rebuilding the entire agent.
+  // let: justified — replaced on each session reset
+  let liveSkillComponents: ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent> = new Map();
+  const skillInjectorMw = createSkillInjectorMiddleware({
+    agent: (): Agent => {
+      if (skillAgentRef.current === undefined) throw new Error("skill agent ref not yet wired");
+      const real = skillAgentRef.current;
+      // Return a wrapped agent that reads skills from the mutable liveSkillComponents
+      // map instead of the static ECS. This allows session resets to refresh the
+      // advertised skill inventory by updating liveSkillComponents.
+      return {
+        ...real,
+        query: <T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> =>
+          prefix === "skill:"
+            ? (liveSkillComponents as unknown as ReadonlyMap<SubsystemToken<T>, T>)
+            : real.query<T>(prefix),
+      } as Agent;
+    },
+    progressive: true,
+  });
+  // Child skill injector: same progressive XML block, but filtered to only
+  // runtimeBacked skills — body-backed skills (browser, memory helpers) belong
+  // to root-only providers whose tools are NOT inherited by spawned children.
+  // Using the full liveSkillComponents would advertise tools children can't use.
+  const childSkillInjectorMw = createSkillInjectorMiddleware({
+    agent: (): Agent => {
+      if (skillAgentRef.current === undefined) throw new Error("skill agent ref not yet wired");
+      const real = skillAgentRef.current;
+      return {
+        ...real,
+        query: <T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> =>
+          prefix === "skill:"
+            ? (new Map(
+                [...liveSkillComponents.entries()].filter(
+                  ([, comp]) => (comp as { runtimeBacked?: boolean }).runtimeBacked === true,
+                ),
+              ) as unknown as ReadonlyMap<SubsystemToken<T>, T>)
+            : real.query<T>(prefix),
+      } as Agent;
+    },
+    progressive: true,
+  });
   // Manifest instructions replace DEFAULT_SYSTEM_PROMPT when supplied —
-  // mirrors `koi start --manifest` behavior. Skills still prepend
-  // because they're filesystem-discovered, not part of the manifest.
+  // mirrors `koi start --manifest` behavior. Skills are injected by
+  // skillInjectorMw, not concatenated into systemPrompt.
   const baseSystemPrompt = manifestInstructions ?? DEFAULT_SYSTEM_PROMPT;
-  const systemPrompt =
-    skillContent.length > 0 ? `${skillContent}\n\n${baseSystemPrompt}` : baseSystemPrompt;
+  const systemPrompt = baseSystemPrompt;
 
   // Loop mode (--until-pass): each user turn becomes a runUntilPass
   // invocation that iterates the agent against the verifier until
@@ -1927,6 +1983,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Loop mode is a self-correcting execution, not a conversation.
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
     skillsRuntime: skillRuntime,
+    skillsProgressive: true,
     mcpOAuthChannel: tuiOAuthChannel,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
@@ -1976,47 +2033,52 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // sub-agents. Workflows that delegate browser work to a child agent
     // will lose those tools after the spawn. This is a known scope
     // restriction of the mock dev/test path, not a bug in production.
-    ...(artifactExtraProviders.length > 0 || process.env.KOI_BROWSER_MOCK === "1"
-      ? {
-          extraProviders: [
-            ...artifactExtraProviders,
-            ...(process.env.KOI_BROWSER_MOCK === "1"
-              ? [
-                  createBrowserProvider({
-                    backend: createMockDriver(),
-                    // Mock driver never opens a real connection, so SSRF
-                    // protection only needs to block IP literals and known
-                    // metadata hostnames — no DNS resolution required.
-                    // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
-                    // so mDNS/RFC6762 names are still rejected by design.
-                    isUrlAllowed: (url) => {
-                      try {
-                        const { protocol, hostname } = new URL(url);
-                        if (protocol !== "http:" && protocol !== "https:") return false;
-                        // Strip IPv6 brackets then lower-case + strip trailing DNS root
-                        // dot so `localhost.` / `metadata.google.internal.` can't
-                        // bypass suffix/host checks (same canonicalization as isSafeUrl).
-                        const h = hostname
-                          .replace(/^\[|\]$/g, "")
-                          .toLowerCase()
-                          .replace(/\.$/, "");
-                        if (isBlockedIp(h)) return false;
-                        if (BLOCKED_HOSTS.includes(h)) return false;
-                        // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
-                        // "local" matches ".local" — endsWith alone misses these.
-                        if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
-                          return false;
-                        return true;
-                      } catch {
-                        return false;
-                      }
-                    },
-                  }),
-                ]
-              : []),
-          ],
-        }
-      : {}),
+    // Post-permissions slot: runs inside the security layers so request.tools
+    // is permissions-filtered when the injector checks for the Skill tool.
+    skillInjector: skillInjectorMw,
+    // Propagate skill injection into spawned children so they receive the
+    // <available_skills> XML block in progressive mode. Uses a filtered injector
+    // that only includes runtimeBacked skills — body-backed skills (browser,
+    // memory) belong to root-only providers not available in children.
+    childSkillInjector: childSkillInjectorMw,
+    extraProviders: [
+      skillProvider,
+      ...artifactExtraProviders,
+      ...(process.env.KOI_BROWSER_MOCK === "1"
+        ? [
+            createBrowserProvider({
+              backend: createMockDriver(),
+              // Mock driver never opens a real connection, so SSRF
+              // protection only needs to block IP literals and known
+              // metadata hostnames — no DNS resolution required.
+              // Note: BLOCKED_HOST_SUFFIXES includes .local/.internal,
+              // so mDNS/RFC6762 names are still rejected by design.
+              isUrlAllowed: (url) => {
+                try {
+                  const { protocol, hostname } = new URL(url);
+                  if (protocol !== "http:" && protocol !== "https:") return false;
+                  // Strip IPv6 brackets then lower-case + strip trailing DNS root
+                  // dot so `localhost.` / `metadata.google.internal.` can't
+                  // bypass suffix/host checks (same canonicalization as isSafeUrl).
+                  const h = hostname
+                    .replace(/^\[|\]$/g, "")
+                    .toLowerCase()
+                    .replace(/\.$/, "");
+                  if (isBlockedIp(h)) return false;
+                  if (BLOCKED_HOSTS.includes(h)) return false;
+                  // h === s.slice(1) blocks bare apex hosts: "internal" matches ".internal",
+                  // "local" matches ".local" — endsWith alone misses these.
+                  if (BLOCKED_HOST_SUFFIXES.some((s) => h.endsWith(s) || h === s.slice(1)))
+                    return false;
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            }),
+          ]
+        : []),
+    ],
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -2167,6 +2229,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       return;
     }
     runtimeHandle = handle;
+    // Resolve lazy skill agent ref so the injector middleware can query
+    // skill components on every subsequent model call.
+    skillAgentRef.current = handle.runtime.agent;
+    // Seed the mutable live skill map from the ECS components attached during
+    // createKoiRuntime. Subsequent session resets update liveSkillComponents via
+    // reloadSkillComponents() without touching the static ECS.
+    liveSkillComponents = handle.runtime.agent.query<SkillComponent>("skill:");
     // Wire governance bridge when the agent has a GovernanceController
     // component attached. In default sessions (no --max-spend or equivalent
     // future flag), component() returns undefined and the bridge stays unset,
@@ -3012,6 +3081,46 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               kind: "add_error",
               code: "SESSION_CLEAR_PERSIST_FAILED",
               message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+            });
+          }
+        }
+        // Refresh the live skill component map for the new session.
+        // reloadSkillComponents() clears pinned bodies (evicting base LRU entries),
+        // re-runs loadAll() to pick up edits/deletions, and returns a map of all
+        // skills-runtime entries (progressive file-based + currently-live MCP).
+        // Non-fatal: if reload fails, liveSkillComponents retains previous state.
+        try {
+          const fresh = await reloadSkillComponents();
+          const realSkills = skillAgentRef.current?.query<SkillComponent>("skill:") ?? new Map();
+          // Seed from fresh (authoritative for progressive and MCP skills).
+          // Then restore non-runtimeBacked, non-mcpBacked skills from realSkills —
+          // those are body-backed root skills (e.g. browser, memory) from providers
+          // that are unaffected by reset. They override any same-token entry in fresh
+          // to preserve the original ECS assembly precedence (first-writer-wins:
+          // root providers attach before skills-runtime). Removed MCP skills are
+          // excluded by the mcpBacked marker that was set at attach time.
+          const merged = new Map<SubsystemToken<SkillComponent>, SkillComponent>(fresh);
+          for (const [token, comp] of realSkills) {
+            const c = comp as { runtimeBacked?: boolean; mcpBacked?: boolean };
+            if (!c.runtimeBacked && !c.mcpBacked) {
+              merged.set(token, comp);
+            }
+          }
+          liveSkillComponents = merged;
+        } catch (skillReloadErr) {
+          // reload() throws on discovery failure and restores the previous pinned snapshot.
+          // Preserve the current liveSkillComponents — the catalog stays consistent with
+          // what the Skill tool can serve. Surface a visible error so the user knows
+          // their skill inventory may reflect the previous session.
+          console.error(
+            "[skills] Session reset: skill catalog refresh failed, retaining previous inventory.",
+            skillReloadErr,
+          );
+          if (myGeneration === resetGeneration) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SKILL_RELOAD_FAILED",
+              message: `Skill catalog refresh failed — ${skillReloadErr instanceof Error ? skillReloadErr.message : String(skillReloadErr)}. Skills from the previous session may still be shown.`,
             });
           }
         }

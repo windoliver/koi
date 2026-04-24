@@ -20,6 +20,8 @@ import type { PresetStack, StackContribution } from "../preset-stacks.js";
 
 /** Key under `StackActivationContext.host` for the skills runtime pointer. */
 export const SKILLS_RUNTIME_HOST_KEY = "skillsRuntime";
+/** Key under `StackActivationContext.host` to enable progressive Skill tool description. */
+export const SKILLS_PROGRESSIVE_HOST_KEY = "skillsProgressive";
 
 export const skillsStack: PresetStack = {
   id: "skills",
@@ -29,12 +31,14 @@ export const skillsStack: PresetStack = {
     if (skillsRuntime === undefined) {
       return { middleware: [], providers: [] };
     }
+    const progressive = ctx.host?.[SKILLS_PROGRESSIVE_HOST_KEY] === true;
     // AbortController for skill loading — lives for the stack's lifetime.
     // Not rotated on session reset (skill loading is stateless file reads).
     const abortController = new AbortController();
     const skillToolResult = await createSkillTool({
       resolver: skillsRuntime,
       signal: abortController.signal,
+      progressive,
     });
     if (!skillToolResult.ok) {
       return { middleware: [], providers: [] };
