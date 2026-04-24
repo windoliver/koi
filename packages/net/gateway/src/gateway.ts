@@ -665,15 +665,17 @@ export function createGateway(
             // those frames run before the barrier, while the session mapping is still intact.
             savedTracker = trackers.get(prevConnId);
             const drainQueue = msgQueues.get(prevConnId) ?? Promise.resolve();
-            // Barrier: drain any in-flight processMessage calls on the old connection so
-            // store operations below are not interleaved with concurrent frame writes.
-            // We intentionally do NOT clear sessionByConn/trackers here: frames arriving
-            // on the old socket during store I/O are processed normally so they are not
-            // silently rejected as NOT_AUTHORIZED if we later need to abort the reconnect
-            // (which would restore the old conn as the live socket).
-            // sessionByConn/trackers are cleared in Phase 2 after store.set() succeeds.
+            const pId = prevConnId; // capture for closure
             const barrierDone = drainQueue.then((): void => {
-              /* drain only */
+              // Fence the old connection before the reconnect path snapshots store state.
+              // Any message arriving on the old socket AFTER this barrier is queued after
+              // it and runs after sessionByConn is gone, so it exits processMessage early
+              // (no session → no store write). This prevents old-socket frames from racing
+              // the reconnect's store.get/set and advancing watermarks after the snapshot.
+              // Already-queued frames run BEFORE the barrier and see the intact mapping
+              // (at-least-once delivery preserved for those frames).
+              sessionByConn.delete(pId);
+              trackers.delete(pId);
             });
             msgQueues.set(prevConnId, barrierDone);
             await barrierDone;
@@ -695,7 +697,13 @@ export function createGateway(
           // If a prior disconnect for this session fired an on-disconnect seq persist, await
           // it now so store.get() below sees the fully persisted outbound seq counter rather
           // than a stale value from the last processMessage write.
+          // Track whether a prior seq-persist was in flight before we await it. A failed
+          // persist may have deleted the session from the store; if store.get() returns
+          // NOT_FOUND after we awaited a prior persist, the absence is due to the persist
+          // failure rather than a genuinely new session — we must abort rather than silently
+          // reset remoteSeq/seq to 0 and replay already-delivered frames.
           const priorPersist = pendingSeqPersists.get(result.session.id);
+          const hadPriorPersist = priorPersist !== undefined;
           if (priorPersist !== undefined) {
             await priorPersist;
           }
@@ -738,8 +746,14 @@ export function createGateway(
                 isNewSession = false; // session already existed in the store
               }
               // isExpired → treat as new session (start at 0, isNewSession stays true)
+            } else if (hadPriorPersist) {
+              // NOT_FOUND after a prior seq-persist completed: the persist likely failed and
+              // deleted the session. Abort rather than resetting to seq 0, which would mask
+              // the failure and risk duplicate delivery or outbound seq reuse.
+              abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session lost during persist");
+              return;
             }
-            // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
+            // !prev.ok + !hadPriorPersist → genuinely new session, start at 0
           } catch {
             abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure on resume");
             return;
@@ -789,12 +803,6 @@ export function createGateway(
 
           // Phase 2: Persistence succeeded — complete eviction of the old connection.
           if (prevConnId !== undefined && prevConnId !== conn.id) {
-            // Now that the new session state is durably committed, tear down the old
-            // connection's session mapping. Deferring from the drain barrier means frames
-            // that arrived on the old socket during store I/O were processed normally
-            // instead of being rejected as NOT_AUTHORIZED.
-            sessionByConn.delete(prevConnId);
-            if (savedTracker !== undefined) trackers.delete(prevConnId);
             const prevConn = connMap.get(prevConnId);
             connMap.delete(prevConnId);
             bp.remove(prevConnId);
