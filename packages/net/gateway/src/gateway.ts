@@ -178,9 +178,14 @@ export function createGateway(
           if (startSeq > 0) tracker.reset(startSeq);
           trackers.set(conn.id, tracker);
 
+          // Carry recovered remoteSeq into the persisted session so subsequent reconnects
+          // restore the correct window even if no new frames arrive before next disconnect.
+          const sessionToStore: Session =
+            startSeq > 0 ? { ...result.session, remoteSeq: startSeq } : result.session;
+
           let storeResult: Result<void, KoiError>;
           try {
-            storeResult = await Promise.resolve(store.set(result.session));
+            storeResult = await Promise.resolve(store.set(sessionToStore));
           } catch {
             conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
             cleanupConn(conn, "session store failure");
@@ -328,7 +333,8 @@ export function createGateway(
       }
       const encoded = encodeFrame(frame);
       const bytes = conn.send(encoded);
-      bp.record(connId, encoded.length);
+      // Only track bytes that were actually buffered; -1 means send failed.
+      if (bytes >= 0) bp.record(connId, encoded.length);
       return { ok: true, value: bytes };
     },
 

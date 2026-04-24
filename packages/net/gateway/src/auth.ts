@@ -52,6 +52,7 @@ export function handleHandshake(
 ): Promise<HandshakeResult> {
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
+    let connectFrameSeen = false;
 
     function settle(action: () => void): void {
       if (settled) return;
@@ -70,6 +71,10 @@ export function handleHandshake(
 
     onMessage((data: string) => {
       if (settled) return;
+      // Consume exactly one connect frame; silently discard any subsequent pre-ack messages
+      // (e.g. early client frames sent during slow authenticate()) instead of re-parsing them.
+      if (connectFrameSeen) return;
+      connectFrameSeen = true;
 
       const parseResult = parseConnectFrame(data);
       if (!parseResult.ok) {
