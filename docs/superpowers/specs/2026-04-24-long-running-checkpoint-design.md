@@ -110,19 +110,22 @@ without false reclamation. Defaults satisfy this (90s vs. 30s).
 
 ```ts
 /**
- * Unforgeable ownership capability for the currently-active session.
+ * Opaque ownership capability for the currently-active session.
  *
- * Construction is private to `@koi/long-running`; callers receive a
- * SessionLease from start()/resume() and pass it back unchanged. The interface
- * is intentionally not structurally constructible from plain fields.
+ * A SessionLease is a runtime-identified object. The harness maintains a
+ * WeakSet of leases it has minted; validation checks object identity against
+ * that set, not structural shape. TypeScript branding is documentation only —
+ * the real capability boundary is runtime identity.
+ *
+ * The only callable surface on the lease itself is `abort()` (attached to an
+ * internal AbortController). `sessionId` and `generation` are exposed for
+ * debugging/logging only; mutation APIs ignore these fields and check the
+ * WeakSet.
  */
-declare const __leaseBrand: unique symbol;
 interface SessionLease {
-  readonly [__leaseBrand]: "SessionLease";
-  readonly sessionId: string;          // must equal HarnessSnapshot.lastSessionId
-  readonly generation: number;         // must equal HarnessSnapshot.generation
-  readonly abort: AbortController;     // revoked when lease is invalidated
-  readonly revoked: () => boolean;     // fast local check before any write
+  readonly abort: AbortSignal;     // fires when the lease is revoked
+  readonly sessionId: string;      // read-only, debugging/logging
+  readonly generation: number;     // read-only, debugging/logging
 }
 
 interface LongRunningHarness {
@@ -157,17 +160,26 @@ interface LongRunningHarness {
 `StartResult` and `ResumeResult` both carry a fresh `SessionLease`. Callers
 pass it back on every mutating call; the harness validates:
 
-1. `lease.revoked() === false` (fast local check).
-2. `lease.sessionId === currentSnapshot.lastSessionId` (binds to the specific
-   activation, not just the generation counter).
-3. `lease.generation === currentSnapshot.generation` (fences superseded runs).
+1. `activeLeases.has(lease) === true` — WeakSet membership test. The harness
+   constructs every lease via a private factory and inserts it into a
+   `WeakSet<SessionLease>`. A forged object (even one with correct
+   `sessionId`/`generation`/`abort` fields) is not in the set and is rejected.
+2. `lease === currentLease` — identity equality against the single in-memory
+   reference the harness considers authoritative.
 
 Any failure → `KoiError { code: "STALE_SESSION", retryable: false }`.
 
-Leases are branded (`__leaseBrand` is `unique symbol`, not exported) so they
-cannot be structurally forged by callers. Internal revocation sets
-`revoked()` true and aborts `lease.abort`, propagating to any engine work
-holding the signal.
+Revocation (on timeout, durability loss, supersession, or dispose):
+
+- Remove from `activeLeases`.
+- Fire `lease.abort` via the internal controller.
+- Any subsequent mutating call holding the old reference fails identity
+  check immediately.
+
+Because leases are checked by runtime identity (not structural fields), a
+caller that reads the snapshot store and learns `lastSessionId`/`generation`
+cannot construct a valid lease. This is the runtime capability boundary; the
+TypeScript type is documentation only.
 
 ## Behavior
 
@@ -210,19 +222,29 @@ protocol combines CAS fencing with startup reconciliation against
 **Activation ordering (crash-safe):** every state-advancing operation follows
 session-first, then snapshot. On `start()` / successful `resume()`:
 
-1. Write a session record with `status = "starting"` via
-   `sessionPersistence.saveSession` **before** any harness snapshot advance.
+1. Write a session record with `status = "starting"` AND
+   `lastHeartbeatAt = Date.now()` via `sessionPersistence.saveSession`
+   **before** any harness snapshot advance. Seeding the heartbeat at creation
+   is critical: it starts the TTL clock immediately so reclamation is
+   bounded, but `"starting"` alone is not a dead-owner signal until the TTL
+   elapses.
    If this fails → abort with `CHECKPOINT_WRITE_FAILED`; harness head is
    unchanged, no orphan is possible.
-2. CAS-advance harness snapshot to `active` with the new generation + new
+2. Start the heartbeat loop (so `lastHeartbeatAt` stays fresh during the
+   short window between step 1 and step 4).
+3. CAS-advance harness snapshot to `active` with the new generation + new
    `lastSessionId` pointing at the record just written.
-3. Mark the session `"running"` via `setSessionStatus`.
-4. Mint and return the `SessionLease`.
+4. Mark the session `"running"` via `setSessionStatus`.
+5. Mint the `SessionLease`, add to `activeLeases` WeakSet, and return.
 
-A crash between (1) and (2) leaves an orphan session record with no pointer
+A crash between (1) and (3) leaves an orphan session record with no pointer
 from the harness — harmless, pruned by reconciliation (below). A crash between
-(2) and (3) leaves an `active` harness pointing at a `"starting"` session
-record — reclaimable because `"starting"` implies "never observed running".
+(3) and (4) leaves an `active` harness pointing at a `"starting"` session
+record — NOT immediately reclaimable: reclamation treats `"starting"` with
+the same TTL rule as `"running"` (see Reclamation check below). A live owner
+in the middle of a normal activation continues heartbeating and cannot be
+fenced; a crashed owner's heartbeat goes stale within `leaseTtlMs` and is
+reclaimed.
 
 **Resume flow:**
 
@@ -250,12 +272,17 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      harness; **dead**. Reclaim.
    - `record.status === "idle"` → owner cleanly exited without calling
      `pause`; **dead**. Reclaim.
-   - `record.status === "starting"` → owner crashed during activation;
-     **dead**. Reclaim.
-   - `record.status === "running"` AND `now - record.lastHeartbeatAt > leaseTtlMs`
-     (default 90s) → owner's heartbeat is stale; **dead**. Reclaim.
-   - `record.status === "running"` AND heartbeat fresh → **live**.
-     `ALREADY_ACTIVE`.
+   - `record.status ∈ { "starting", "running" }` — apply TTL rule:
+     - `now - record.lastHeartbeatAt > leaseTtlMs` (default 90s) → owner's
+       heartbeat is stale; **dead**. Reclaim.
+     - Heartbeat fresh → **live**. `ALREADY_ACTIVE`.
+
+Rationale: `"starting"` is NOT an immediate dead-owner signal, only an
+informational marker ("session never observed in running state"). A live
+owner mid-activation heartbeats (loop started in step 2 of activation) and
+holds the lease; a crashed mid-activation owner goes stale within TTL.
+This closes the race where store latency between `active` snapshot publish
+and `"running"` status flip could let a peer fence a live owner.
 3. To reclaim: CAS-advance `prev` → `next` with
    `phase = "suspended"`, `generation = prev.generation + 1`,
    `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. This fences the dead owner's
@@ -342,14 +369,30 @@ Derived from `HarnessStatus`, not stored separately:
 
 ### Cleanup on Abandonment
 
-`dispose()` is idempotent:
+`dispose()` is idempotent and follows the same quiesce-before-publish rule as
+durability-loss handling. It MUST NOT publish a `suspended` snapshot while
+the engine is still producing side effects — that would let a replacement
+process resume in parallel with the original run.
 
-1. Clear any pending timeout timers.
-2. If phase is `active`: attempt one last snapshot with phase=`suspended`,
-   `failureReason="disposed before completion"`. Best-effort — errors logged, not thrown.
+Steps:
+
+1. Stop the heartbeat timer and the timeout timer.
+2. If phase is `active`:
+   - Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
+   - Wait up to `abortTimeoutMs` for the engine adapter to quiesce.
+   - **On quiescence:** CAS-advance to `suspended` with
+     `failureReason = "disposed before completion"`. Best-effort — a failed
+     write leaves the `active` snapshot in place; reclamation via heartbeat
+     staleness will collect it. This is safe because the engine is already
+     stopped.
+   - **On abort timeout:** do NOT publish `suspended`. Keep the snapshot
+     `active` and stop heartbeats so the orphan is eventually reclaimable
+     via TTL. Return `KoiError { code: "ABORT_TIMEOUT" }` from `dispose`.
 3. Release references to stores (callers own their lifecycle).
 
 No process-level cleanup (kill subprocess, close sockets) — that's `@koi/daemon`.
+But no safety rule is softened: dispose never advertises a resumable state
+while execution is ongoing.
 
 ### Checkpoint Middleware
 
@@ -460,7 +503,12 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - `completeTask()` updates task board, emits `onCompleted` when all tasks done.
 - `failTask()` with retryable error returns task to `pending`.
 - `timeout` fires `fail()` with `TIMEOUT` error and attempts final snapshot.
-- `dispose()` is idempotent and writes abandonment snapshot.
+- `dispose()` on an active harness revokes the lease, aborts the engine,
+  and only publishes `suspended` after quiescence.
+- `dispose()` on an active harness whose engine refuses to quiesce returns
+  `ABORT_TIMEOUT`, does NOT publish `suspended`, and stops heartbeats so
+  the orphan is reclaimable via TTL.
+- `dispose()` is idempotent across repeated calls.
 - `status()` returns current state without mutation.
 
 ### Unit: `checkpoint-middleware.test.ts`
@@ -493,9 +541,10 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 
 ### Unit: crash recovery (`harness.test.ts`)
 
-- **Crash after activation, before first heartbeat:** snapshot=`active` + session
-  record=`"starting"`. Second process calls `resume()` → reclamation detects
-  dead owner via `"starting"` status → fences + reclaims → new session runs.
+- **Crash mid-activation, heartbeat stale:** snapshot=`active` + session
+  record=`"starting"` + `lastHeartbeatAt < now - leaseTtlMs`. Second process
+  calls `resume()` → reclamation detects dead owner via TTL staleness
+  (not `"starting"` alone) → fences + reclaims.
 - **Crash mid-run with stale heartbeat:** snapshot=`active` + session record
   `status="running"`, `lastHeartbeatAt < now - leaseTtlMs`. `resume()` reclaims.
 - **Live owner blocks reclaim:** snapshot=`active` + fresh heartbeat →
@@ -518,10 +567,15 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - **Heartbeat loop lifecycle:** heartbeat starts on `start()`/`resume()` and
   stops on `pause()`/`fail()`/`dispose()`; no heartbeats emitted outside
   active phase.
-- **Lease forgery rejection:** a structurally-similar object that does not
-  carry the internal brand is rejected at the type level (compile-time); a
-  lease with tampered `sessionId` (not matching `lastSessionId`) is rejected
-  at runtime with `STALE_SESSION`.
+- **Lease forgery rejection (runtime):** a structurally-identical object
+  constructed outside the harness (same `sessionId`, `generation`, and a
+  caller-provided `AbortSignal`) is rejected because it is not in the
+  `activeLeases` WeakSet. Runtime identity check is the real capability
+  boundary, not the TS type.
+- **Mid-activation reclaim blocked:** inject artificial delay between
+  `active`-snapshot publish and `"running"` status flip. A concurrent
+  `resume()` observing `"starting"` status during this window must return
+  `ALREADY_ACTIVE` (heartbeat fresh), NOT reclaim.
 - **abortActive contract:** invoking `abortActive` revokes the lease,
   propagates via `lease.abort.signal`, waits up to `abortTimeoutMs`, returns
   `Ok` on quiescence or `KoiError { code: "ABORT_TIMEOUT" }` otherwise. A
