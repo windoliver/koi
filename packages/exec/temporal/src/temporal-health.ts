@@ -92,6 +92,10 @@ export interface TemporalHealthSnapshot {
 
 export interface TemporalHealthConfig {
   readonly url: string;
+  // Explicit HTTP health endpoint. When provided, defaultHealthCheck uses this URL
+  // directly instead of deriving one from the gRPC port (grpcPort + 1000 convention).
+  // Required for Temporal Cloud, TLS, reverse-proxied, or non-standard deployments.
+  readonly healthUrl?: string | undefined;
   readonly pollIntervalMs: number;
   readonly failureThreshold: number;
   readonly cooldownMs: number;
@@ -172,7 +176,7 @@ export function createTemporalHealthMonitor(
       lastCheckAt = clock();
       circuit.allowProbe(); // OPEN → HALF_OPEN if cooldown elapsed (before, not after, the probe)
       try {
-        const ok = await checkHealth(config.url, config.timeoutMs);
+        const ok = await checkHealth(config.healthUrl ?? config.url, config.timeoutMs);
         if (ok) {
           consecutiveFailures = 0;
           circuit.recordSuccess();
@@ -224,11 +228,20 @@ const TEMPORAL_HTTP_PORT_OFFSET = 1000;
 
 async function defaultHealthCheck(url: string, timeoutMs: number): Promise<boolean> {
   try {
-    const portMatch = url.match(/:(\d+)$/);
-    const grpcPort = portMatch !== null ? Number.parseInt(portMatch[1] ?? "7233", 10) : 7233;
-    const httpPort = grpcPort + TEMPORAL_HTTP_PORT_OFFSET;
-    const host = url.replace(/:\d+$/, "");
-    const response = await fetch(`http://${host}:${httpPort}/api/v1/namespaces`, {
+    // If a full HTTP(S) URL is provided (via healthUrl), use it directly to support
+    // Temporal Cloud, TLS, and reverse-proxied setups where grpcPort + 1000 is wrong.
+    const endpoint =
+      url.startsWith("http://") || url.startsWith("https://")
+        ? url
+        : (() => {
+            const portMatch = url.match(/:(\d+)$/);
+            const grpcPort =
+              portMatch !== null ? Number.parseInt(portMatch[1] ?? "7233", 10) : 7233;
+            const httpPort = grpcPort + TEMPORAL_HTTP_PORT_OFFSET;
+            const host = url.replace(/:\d+$/, "");
+            return `http://${host}:${httpPort}/api/v1/namespaces`;
+          })();
+    const response = await fetch(endpoint, {
       signal: AbortSignal.timeout(timeoutMs),
     });
     return response.ok;

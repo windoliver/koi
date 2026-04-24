@@ -499,6 +499,21 @@ describe("schedule / unschedule", () => {
     expect(payload).toEqual({ kind: "text", text: "hello" });
   });
 
+  test("schedule() rejects payload with non-JSON-serializable content (circular reference)", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular; // circular ref causes JSON.stringify to throw
+    const badInput = {
+      kind: "messages",
+      messages: [
+        { content: [{ kind: "text", text: "ok", extra: circular }], senderId: "u1", timestamp: 1 },
+      ],
+    } as unknown as EngineInput;
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(scheduler.schedule("0 0 * * *", AGENT_ID, badInput, "spawn")).rejects.toThrow(
+      "non-JSON-serializable",
+    );
+  });
+
   test("spawn schedule omits sessionId so each run uses its own execution id", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));

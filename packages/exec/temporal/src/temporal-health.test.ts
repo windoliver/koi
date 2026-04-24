@@ -197,6 +197,35 @@ describe("circuit breaker — isAvailable is side-effect free", () => {
   });
 });
 
+describe("healthUrl config", () => {
+  let monitor: TemporalHealthMonitor;
+
+  afterEach(() => {
+    monitor?.dispose();
+  });
+
+  test("passes healthUrl directly to health check function when configured", async () => {
+    const healthCheck = mock(async () => true);
+    monitor = createTemporalHealthMonitor(
+      makeConfig({ url: "localhost:7233", healthUrl: "https://temporal.example.com/health" }),
+      healthCheck,
+    );
+    monitor.start();
+    await new Promise((r) => setTimeout(r, 30));
+    const callArgs = (healthCheck as ReturnType<typeof mock>).mock.calls[0];
+    expect(callArgs?.[0]).toBe("https://temporal.example.com/health");
+  });
+
+  test("falls back to url when healthUrl is not configured", async () => {
+    const healthCheck = mock(async () => true);
+    monitor = createTemporalHealthMonitor(makeConfig({ url: "localhost:7233" }), healthCheck);
+    monitor.start();
+    await new Promise((r) => setTimeout(r, 30));
+    const callArgs = (healthCheck as ReturnType<typeof mock>).mock.calls[0];
+    expect(callArgs?.[0]).toBe("localhost:7233");
+  });
+});
+
 describe("single-flight poll guard", () => {
   let monitor: TemporalHealthMonitor;
 

@@ -61,6 +61,20 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
   }
 }
 
+// Verify the payload is JSON-serializable before passing it to Temporal.
+// Catches nested functions, Symbols, and circular refs that shallow field-stripping misses.
+function assertJsonSerializable(value: unknown): void {
+  try {
+    JSON.stringify(value);
+  } catch (err: unknown) {
+    throw new Error(
+      "schedule() payload contains non-JSON-serializable values. " +
+        "Strip functions, Symbols, and circular references from message content before scheduling. " +
+        `Cause: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 // Strip non-serializable EngineInputBase fields (callHandlers, AbortSignal) before
 // embedding the input into a Temporal schedule definition.
 function mapEngineInputToScheduledPayload(input: EngineInput): ScheduledInputPayload {
@@ -381,9 +395,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         paused: false,
       };
 
-      // Strip non-serializable EngineInput fields (callHandlers, AbortSignal) before
-      // passing the payload into Temporal's durable schedule store.
+      // Strip non-serializable EngineInput fields (callHandlers, AbortSignal) then
+      // deep-validate JSON safety before passing to Temporal's durable schedule store.
       const scheduledPayload = mapEngineInputToScheduledPayload(input);
+      assertJsonSerializable(scheduledPayload);
 
       // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the
       //   serialized payload; the workflow generates fresh IncomingMessage IDs and
