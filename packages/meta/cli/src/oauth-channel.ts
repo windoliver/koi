@@ -14,13 +14,16 @@ import type {
 } from "@koi/core";
 
 function buildAuthRequiredText(n: AuthRequiredNotification): string {
-  if (n.authUrl === undefined) {
-    // MCP local mode — browser opens automatically, no URL to show
+  // For mode:"local", the OAuth callback listener is on 127.0.0.1 — the URL
+  // is only completable from the machine running Koi, not from a remote/SSH
+  // session. Showing it as a copy-pastable link misleads remote operators and
+  // leaks OAuth state parameters into transcript history. Only render the URL
+  // for mode:"remote" flows where the callback is explicitly reachable.
+  if (n.authUrl === undefined || n.mode !== "remote") {
     return `**${n.message}**`;
   }
 
-  const remoteHint =
-    n.mode === "remote" && n.instructions !== undefined ? `\n\n_${n.instructions}_` : "";
+  const remoteHint = n.instructions !== undefined ? `\n\n_${n.instructions}_` : "";
 
   return `**${n.message}**\n\nOpen this link in your browser to authorize ${n.provider}:\n${n.authUrl}${remoteHint}`;
 }
