@@ -257,15 +257,15 @@ describe("createOAuthAwareMcpConnection", () => {
       onBrowserOpen(testAuthUrl);
 
       // channel.onAuthRequired fires WITH authUrl so the user can copy-paste it
-      // if browser auto-open fails. The message field also includes a CLI recovery
-      // command for SSH/remote sessions where the loopback callback won't work.
+      // if browser auto-open fails. The message is kept concise — authUrl renders
+      // the copy-paste fallback link separately via oauth-channel buildAuthRequiredText.
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string; message: string };
       expect(reqArg.provider).toBe("test-http");
       expect(reqArg.authUrl).toBe(testAuthUrl);
       expect(reqArg.mode).toBe("local");
-      expect(reqArg.message).toContain("koi mcp auth test-http");
+      expect(reqArg.message).toContain("test-http");
     });
   });
 });

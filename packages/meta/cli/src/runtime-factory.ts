@@ -3183,7 +3183,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           ? qualifiedName.slice(5)
           : qualifiedName;
         const provider = mcpAuthProviders?.get(serverName);
-        if (provider === undefined) return false;
+        if (provider === undefined) {
+          // Server was added to .mcp.json after this session started — the
+          // runtime was not built with a live connection for it. The CLI path
+          // (koi mcp auth <server>) reads .mcp.json fresh and will work.
+          void Promise.resolve(
+            channel.onAuthRequired({
+              provider: serverName,
+              message: `"${serverName}" was added after this session started. Run \`koi mcp auth ${serverName}\` in a terminal to authorize it, then reload the session.`,
+              mode: "local",
+            }),
+          ).catch(() => {});
+          return false;
+        }
         const connection = mcpConnections?.get(serverName);
         const resolver = mcpResolver;
 

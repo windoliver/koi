@@ -67,7 +67,7 @@ export function createOAuthAwareMcpConnection(
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,
-                  message: `Opening browser to authorize ${server.name}. If the browser does not open, run: \`koi mcp auth ${server.name}\``,
+                  message: `Opening browser to authorize ${server.name}.`,
                   mode: "local",
                   authUrl: authorizationUrl,
                 }),
