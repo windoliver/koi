@@ -8,6 +8,7 @@ export default defineConfig({
       composite: false,
     },
   },
+  external: [/^@temporalio\//],
   clean: true,
   treeshake: true,
   target: "node22",

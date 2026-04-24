@@ -13,10 +13,6 @@
   "dependencies": {
     "@koi/core": "workspace:*"
   },
-  "devDependencies": {
-    "@temporalio/client": "^1.11.0",
-    "@temporalio/worker": "^1.11.0"
-  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
