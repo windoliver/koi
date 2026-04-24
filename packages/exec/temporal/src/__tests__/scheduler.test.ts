@@ -133,4 +133,52 @@ describe("createTemporalScheduler", () => {
     const stats = sched.stats();
     expect(stats.running).toBe(0);
   });
+
+  test("schedule passes sessionId in workflow args (same shape as submit)", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch");
+    const createCall = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const action = createCall[1]["action"] as Record<string, unknown>;
+    const args = action["args"] as [Record<string, unknown>];
+    expect(args[0]).toHaveProperty("sessionId");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("pause updates in-memory state — stats reflect change", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch");
+    expect(sched.stats().activeSchedules).toBe(1);
+    expect(sched.stats().pausedSchedules).toBe(0);
+    await sched.pause(id);
+    expect(sched.stats().activeSchedules).toBe(0);
+    expect(sched.stats().pausedSchedules).toBe(1);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("resume updates in-memory state — stats reflect change", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch");
+    await sched.pause(id);
+    await sched.resume(id);
+    expect(sched.stats().activeSchedules).toBe(1);
+    expect(sched.stats().pausedSchedules).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("pause emits schedule:paused event", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch");
+    await sched.pause(id);
+    expect(events).toContain("schedule:paused");
+    await sched[Symbol.asyncDispose]();
+  });
 });

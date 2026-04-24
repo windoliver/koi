@@ -24,20 +24,69 @@ describe("createTemporalWorker", () => {
     expect(params.namespace).toBe("default");
   });
 
-  test("returns worker, connection, and dispose", async () => {
+  test("returns worker, connection, run, and dispose", async () => {
     const factory = makeWorkerFactory();
     const handle = await createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", factory);
     expect(typeof handle.worker.run).toBe("function");
     expect(typeof handle.worker.shutdown).toBe("function");
     expect(typeof handle.connection.close).toBe("function");
+    expect(typeof handle.run).toBe("function");
     expect(typeof handle.dispose).toBe("function");
   });
 
-  test("dispose calls shutdown and connection.close", async () => {
+  test("dispose without run: calls shutdown then connection.close", async () => {
     const factory = makeWorkerFactory();
     const handle = await createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", factory);
     await handle.dispose();
     expect(handle.worker.shutdown).toHaveBeenCalledTimes(1);
+    expect(handle.connection.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("dispose after run: drains worker before closing connection", async () => {
+    const order: string[] = [];
+    let resolveRun!: () => void;
+    const worker = {
+      run: mock(
+        () =>
+          new Promise<void>((res) => {
+            resolveRun = () => {
+              order.push("run-settled");
+              res();
+            };
+          }),
+      ),
+      shutdown: mock(() => {
+        order.push("shutdown");
+        resolveRun();
+      }),
+    };
+    const connection = {
+      close: mock(async () => {
+        order.push("connection-close");
+      }),
+    };
+    const factory = mock(async () => ({ worker, connection }));
+    const handle = await createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", factory);
+
+    void handle.run();
+    await handle.dispose();
+
+    // shutdown must precede connection.close, and run must settle before close
+    expect(order).toEqual(["shutdown", "run-settled", "connection-close"]);
+  });
+
+  test("dispose swallows run rejection (intentional shutdown)", async () => {
+    const worker = {
+      run: mock(async () => {
+        throw new Error("worker crashed");
+      }),
+      shutdown: mock(() => {}),
+    };
+    const connection = { close: mock(async () => {}) };
+    const factory = mock(async () => ({ worker, connection }));
+    const handle = await createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", factory);
+    void handle.run().catch(() => {});
+    await expect(handle.dispose()).resolves.toBeUndefined();
     expect(handle.connection.close).toHaveBeenCalledTimes(1);
   });
 

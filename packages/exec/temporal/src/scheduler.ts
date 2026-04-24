@@ -173,7 +173,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           type: "startWorkflow",
           workflowType,
           taskQueue: config.taskQueue,
-          args: [{ agentId, messages, mode }],
+          args: [{ agentId, sessionId: rawId, messages, mode }],
         },
         memo: { agentId, mode, metadata: options?.metadata },
       });
@@ -207,6 +207,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async pause(id): Promise<boolean> {
       try {
         await config.client.schedule.pause(id);
+        const existing = schedules.get(id);
+        if (existing !== undefined) {
+          schedules.set(id, { ...existing, paused: true });
+          emit({ kind: "schedule:paused", scheduleId: id });
+        }
         return true;
       } catch (_e: unknown) {
         return false;
@@ -216,6 +221,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async resume(id): Promise<boolean> {
       try {
         await config.client.schedule.unpause(id);
+        const existing = schedules.get(id);
+        if (existing !== undefined) {
+          schedules.set(id, { ...existing, paused: false });
+          emit({ kind: "schedule:resumed", scheduleId: id });
+        }
         return true;
       } catch (_e: unknown) {
         return false;

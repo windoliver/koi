@@ -42,6 +42,16 @@ export interface WorkerAndConnection {
 export interface WorkerHandle {
   readonly worker: WorkerLike;
   readonly connection: NativeConnectionLike;
+  /**
+   * Start the worker and track its run promise so dispose() can drain before
+   * closing the connection. Equivalent to worker.run() but drain-aware.
+   */
+  readonly run: () => Promise<void>;
+  /**
+   * Gracefully shut down: signal stop, wait for drain, then close connection.
+   * Safe to call before or after run() — if run() was never called, shutdown
+   * is signalled and connection closed immediately.
+   */
   readonly dispose: () => Promise<void>;
 }
 
@@ -87,11 +97,29 @@ export async function createTemporalWorker(
     activities,
   });
 
+  // Tracks the promise returned by worker.run() so dispose() can drain.
+  let runPromise: Promise<void> | undefined;
+
   return {
     worker,
     connection,
+
+    run(): Promise<void> {
+      runPromise = worker.run();
+      return runPromise;
+    },
+
     async dispose(): Promise<void> {
       worker.shutdown();
+      // Wait for the worker loop to drain before closing the transport.
+      // If run() was never called, shutdown is a no-op on a stopped worker.
+      if (runPromise !== undefined) {
+        await runPromise.catch(() => {
+          // Worker.run() rejects on unhandled errors — swallow here since we
+          // are shutting down intentionally and the error is surfaced to the
+          // caller of run().
+        });
+      }
       await connection.close();
     },
   };
