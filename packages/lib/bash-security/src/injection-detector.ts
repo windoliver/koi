@@ -1,15 +1,45 @@
-import { matchPatterns } from "./match.js";
+import { MAX_INPUT_LENGTH, matchPatterns } from "./match.js";
 import type { ClassificationResult, ThreatPattern } from "./types.js";
 
 /**
- * Injection patterns — compiled once at module load.
+ * Obfuscation signals that must be detected on the RAW pre-normalization
+ * input. `normalizeForMatch` decodes `$'\x72\x6d'` into `rm`, which is the
+ * correct behavior for destructive classification but erases the "this input
+ * uses an obfuscation encoding" signal. These patterns preserve that signal.
+ */
+const RAW_OBFUSCATION_PATTERNS: readonly ThreatPattern[] = [
+  {
+    // ANSI-C hex/octal/unicode escapes like $'\x72\x6d' / $'rm' /
+    // $'\U00000072\U0000006d' obfuscate dangerous commands
+    regex: /\$'(?:\\x[0-9a-fA-F]{2}|\\[0-7]{3}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})/,
+    category: "injection",
+    reason: "Hex/octal/unicode-escaped ANSI-C string can obfuscate shell commands",
+  },
+  {
+    // Null bytes can bypass naive string-boundary security checks
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — security pattern detects null byte injection
+    regex: /\u0000/,
+    category: "injection",
+    reason: "Null byte can bypass string-based security checks",
+  },
+  {
+    // Unicode escape sequences (rm) obfuscate commands
+    regex: /\\u00[0-9a-fA-F]{2}/,
+    category: "injection",
+    reason: "Unicode escape sequences can obfuscate shell commands",
+  },
+] as const;
+
+/**
+ * Injection patterns — compiled once at module load. Applied to NORMALIZED
+ * input, so obfuscation forms like `$'\x72\x6d'` have already been decoded
+ * before these patterns run. Raw-input obfuscation detection lives in
+ * RAW_OBFUSCATION_PATTERNS above.
  *
- * Covers: eval, base64-decode-to-shell pipelines, hex-escaped ANSI-C strings,
- * null byte injection, and Unicode escape obfuscation.
- *
- * Intentionally excludes $() and backticks — those are standard shell features
- * used heavily in legitimate scripts. The bash-classifier covers the dangerous
- * higher-level patterns that use them (reverse shells, etc.).
+ * Covers: eval, source/. at command position, base64-decode-to-shell, and
+ * directory traversal. Intentionally excludes $() and backticks — those are
+ * standard shell features used in legitimate scripts; the bash-classifier
+ * handles the dangerous higher-level patterns that use them.
  */
 const INJECTION_PATTERNS: readonly ThreatPattern[] = [
   {
@@ -20,14 +50,22 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
   },
   {
     // source / dot-command executes arbitrary scripts from the filesystem.
-    // The dot-command pattern requires `.` at a command boundary (start of line,
-    // after ; | && || or a newline) to avoid false positives on `.` inside
-    // quoted strings (e.g., MIT license text: "Software"), to deal...").
-    // \n is included so multiline payloads like "echo ok\n. /tmp/evil.sh"
-    // are caught even without a semicolon separator.
-    // ^\s* allows leading whitespace at the start of input so "  . /tmp/evil.sh"
-    // is blocked even when the dot is not at column 0.
-    regex: /\bsource\b|(?:^\s*|[;|&\n]\s*)\.\s+\S/,
+    // Command-position anchor (start-of-input or command-separator) so that
+    // `find . -name '*.ts'` does not match — the `.` there is a path
+    // argument, not a dot-source command. Legitimate command positions are:
+    //   ^          start-of-input
+    //   ;          statement separator
+    //   | & (){ !  pipe, background, subshell, brace group, bang negation
+    //   \n         newline
+    //   && ||      short-circuit operators
+    // The trailing alternation matches either `\s+\S` (regular `source /path`)
+    // OR an immediately-adjacent `$VAR`/backtick expansion. The latter covers
+    // the `source$IFS/path` and `.${IFS}/path` bypass — bash word-splits $IFS
+    // into whitespace before the builtin runs, so `source$IFS/path` executes
+    // as `source /path`. We can't tell at classify time what $IFS expands to,
+    // so any expansion adjacent to source/dot is treated as unsafe.
+    regex:
+      /(?:^|[;|&(){!\n]|&&|\|\||\b(?:if|then|else|elif|do|while|until|case|esac|command|builtin|time|exec|nohup|env|sudo|doas)\s+)\s*(?:source|\.)(?:\s+\S|\$[A-Za-z_{(]|`)/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },
@@ -45,31 +83,42 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
     category: "injection",
     reason: "Directory traversal sequence (../) in command can access files outside workspace",
   },
-  {
-    // ANSI-C hex-escaped strings like $'\x72\x6d' obfuscate dangerous commands
-    regex: /\$'(\\x[0-9a-fA-F]{2}|\\[0-7]{3})/,
-    category: "injection",
-    reason: "Hex/octal-escaped ANSI-C string can obfuscate shell commands",
-  },
-  {
-    // Null bytes can bypass naive string-boundary security checks
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — security pattern detects null byte injection
-    regex: /\u0000/,
-    category: "injection",
-    reason: "Null byte can bypass string-based security checks",
-  },
-  {
-    // Unicode escape sequences (\u0072\u006d) obfuscate commands
-    regex: /\\u00[0-9a-fA-F]{2}/,
-    category: "injection",
-    reason: "Unicode escape sequences can obfuscate shell commands",
-  },
 ] as const;
 
 /**
  * Detect command injection patterns in a shell command string.
- * Returns the first match found with full diagnostic context.
+ *
+ * Two-phase scan:
+ *   1. Raw-input obfuscation detection (hex/octal ANSI-C, null bytes, Unicode
+ *      escape sequences). These signals disappear after normalization decodes
+ *      them, so they must run against the original input.
+ *   2. Normalized pattern matching for everything else (eval, source at
+ *      command position, base64-pipe-sh, directory traversal).
  */
 export function detectInjection(command: string): ClassificationResult {
+  if (command.length > MAX_INPUT_LENGTH) {
+    return {
+      ok: false,
+      reason: `Input exceeds ${MAX_INPUT_LENGTH} chars; reject to avoid regex-DoS`,
+      pattern: `length:${command.length}`,
+      category: "injection",
+    };
+  }
+  for (const { regex, category, reason } of RAW_OBFUSCATION_PATTERNS) {
+    if (regex.test(command)) {
+      return { ok: false, reason, pattern: regex.source, category };
+    }
+  }
   return matchPatterns(command, INJECTION_PATTERNS);
+}
+
+/**
+ * Run INJECTION_PATTERNS against an already-normalized/resolved string.
+ * Used by `classifyCommand` so that `x=s; y=ource; $x$y /tmp/evil.sh` —
+ * which resolves to `source /tmp/evil.sh` after assignment substitution —
+ * is caught by the source/eval guards. Skips RAW_OBFUSCATION_PATTERNS
+ * because those were already decoded in normalization.
+ */
+export function detectInjectionOnResolved(resolved: string): ClassificationResult {
+  return matchPatterns(resolved, INJECTION_PATTERNS, { normalize: false });
 }

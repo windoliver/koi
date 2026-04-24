@@ -400,12 +400,21 @@ The new pipeline:
      transitional compatibility shim until `#1622` ships three-state permissions with an
      `ask-user` verdict
 6. `parse-unavailable` (init timeout, over-length, panic) → fail-closed hard-deny,
-   NEVER falls through
+   NEVER falls through. The over-length guard runs ahead of the byte-level prefilter
+   so its cap (`MAX_COMMAND_LENGTH`) dictates the rejection category instead of
+   `@koi/bash-security`'s lower regex-DoS cap leaking a generic `length:N` pattern
+   through this pipeline (PR #2040).
 
 End-to-end behaviour is unchanged for common commands (`git status`, `ls -la`, `echo hi`,
 `ls | head -3`) — they flow through the AST walker as `kind: "simple"`. Commands with
 `$VAR`, `$(cmd)`, loops, or `&&` with standalone assignments fall through to the regex
 classifier, preserving current behaviour.
+
+The path validator fail-closes when `workspaceRoot` (or any caller-supplied base dir) is
+missing, is not a real directory, or is a dangling symlink, preventing TOCTOU bypass
+where an attacker could race a symlink into place between validation and the subsequent
+`spawn` (PR #2040). CLI wiring passes `process.cwd()` — already realpath-resolved — so
+the invariant is satisfied by default.
 
 Codex adversarial review of the PR surfaced six real bugs (2 P1 security bypasses + 4
 P2 defects in walker escape handling, init-retry semantics, matcher regex flags, and
