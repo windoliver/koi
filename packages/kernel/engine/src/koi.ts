@@ -163,6 +163,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         "The value has been remapped. Update your config to silence this warning.",
     );
   }
+  // Warn when both keys are present with conflicting values so the override is not silent.
+  // Most dangerous case: resetBudgetPerRun=false overrides resetIterationBudgetPerRun=true,
+  // silently disabling per-run resets for a host that set the legacy key.
+  if (
+    newKeyExplicitlySet &&
+    "resetIterationBudgetPerRun" in legacyOpts &&
+    Boolean(legacyOpts.resetIterationBudgetPerRun) !== Boolean(legacyOpts.resetBudgetPerRun)
+  ) {
+    console.warn(
+      `[koi] createKoi: both resetBudgetPerRun (${String(legacyOpts.resetBudgetPerRun)}) and ` +
+        `resetIterationBudgetPerRun (${String(legacyOpts.resetIterationBudgetPerRun)}) are set ` +
+        `with different values. resetBudgetPerRun takes precedence. ` +
+        `Remove resetIterationBudgetPerRun from your config.`,
+    );
+  }
   const resetBudgetPerRun =
     options.resetBudgetPerRun === true ||
     (legacyOpts.resetIterationBudgetPerRun === true && usingLegacyOption);
