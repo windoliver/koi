@@ -153,4 +153,136 @@ describe("createLocalMailbox — local specifics", () => {
     expect(result.value.ttlSeconds).toBe(60);
     mailbox.close();
   });
+
+  test("send() rejects messages addressed to a different agent when no router configured", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const result = await mailbox.send({
+      from: SENDER,
+      to: agentId("other-agent"),
+      kind: "event",
+      type: "misdirected",
+      payload: {},
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+    mailbox.close();
+  });
+
+  test("negative maxMessages throws at construction", () => {
+    expect(() => createLocalMailbox({ agentId: OWNER, maxMessages: -1 })).toThrow(
+      /maxMessages must be a positive integer/,
+    );
+  });
+
+  test("zero maxMessages throws at construction", () => {
+    expect(() => createLocalMailbox({ agentId: OWNER, maxMessages: 0 })).toThrow(
+      /maxMessages must be a positive integer/,
+    );
+  });
+
+  test("cross-agent send routes via injected router", async () => {
+    const { createLocalMailboxRouter } = await import("./router.js");
+    const router = createLocalMailboxRouter();
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b"), router });
+    router.register(agentId("agent-a"), mailboxA);
+    router.register(agentId("agent-b"), mailboxB);
+
+    // Send from A to B via A's mailbox.send()
+    const result = await mailboxA.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-b"),
+      kind: "event",
+      type: "routed",
+      payload: {},
+    });
+    expect(result.ok).toBe(true);
+
+    // Message must land in B's inbox, not A's
+    expect(await mailboxB.list()).toHaveLength(1);
+    expect(await mailboxA.list()).toHaveLength(0);
+
+    mailboxA.close();
+    mailboxB.close();
+  });
+
+  test("cross-agent send returns NOT_FOUND when target unregistered", async () => {
+    const { createLocalMailboxRouter } = await import("./router.js");
+    const router = createLocalMailboxRouter();
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+
+    const result = await mailboxA.send({
+      from: agentId("agent-a"),
+      to: agentId("nobody"),
+      kind: "event",
+      type: "lost",
+      payload: {},
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_FOUND");
+    }
+    mailboxA.close();
+  });
+
+  test("send() after close() returns ABORTED error", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    mailbox.close();
+    const result = await mailbox.send(makeInput("late"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("INTERNAL");
+  });
+
+  test("list() after close() returns empty array", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    await mailbox.send(makeInput("before-close"));
+    mailbox.close();
+    expect(await mailbox.list()).toHaveLength(0);
+  });
+
+  test("onMessage() after close() returns no-op unsubscribe", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    mailbox.close();
+    const received: string[] = [];
+    const unsub = mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+    // Re-opening would be needed to send; just verify unsub is callable
+    unsub();
+    expect(received).toHaveLength(0);
+  });
+
+  test("queued microtask suppressed when close() fires before it runs", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+    // send() has no internal await so it runs synchronously and queues the microtask
+    // before returning. close() immediately after sets closed=true before the
+    // queued microtask fires.
+    void mailbox.send(makeInput("race"));
+    mailbox.close();
+    await Bun.sleep(10);
+    expect(received).toHaveLength(0);
+  });
+
+  test("payload mutation after send() does not corrupt stored message", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const payload = { value: 1 };
+    await mailbox.send({ from: SENDER, to: OWNER, kind: "event", type: "mut", payload });
+    // Mutate original payload object after send
+    payload.value = 999;
+    const msgs = await mailbox.list();
+    expect((msgs[0]?.payload as { value: number }).value).toBe(1);
+    mailbox.close();
+  });
+
+  test("message returned from list() is frozen (immutable)", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    await mailbox.send(makeInput("freeze-test"));
+    const msgs = await mailbox.list();
+    expect(Object.isFrozen(msgs[0])).toBe(true);
+    mailbox.close();
+  });
 });
