@@ -1097,10 +1097,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
-    // Always validate the audit block (no skipAuditValidation) so malformed
-    // paths are caught regardless of whether the feature gate is on.
+    // Use skipAuditValidation when the gate is off: a malformed audit: block
+    // in a shared repo must not abort startup for operators who have already
+    // provided KOI_AUDIT_* env-var overrides and are not relying on manifest
+    // paths at all. The gate-off fail-closed check below handles the case
+    // where the operator has NOT provided those overrides.
     const manifestResult = await loadManifestConfig(resolvedManifestPath, {
       allowOAuthSchemes: true,
+      skipAuditValidation: process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1",
     });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
@@ -1116,27 +1120,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestAudit = manifestResult.value.audit;
     manifestLoadPath = resolvedManifestPath;
 
-    // Fail closed when at least one manifest-derived audit path would be used
-    // but the host gate is off. Operator env vars (KOI_AUDIT_NDJSON, etc.) take
-    // precedence and fully neutralise the corresponding manifest sink, so we only
-    // block when a manifest path is not covered by an env var override.
-    // This preserves the operator escape hatch (set all KOI_AUDIT_* env vars to
-    // keep gate off but honour your own audit destinations) while preventing
-    // silent compliance downgrades from shared repo manifests.
+    // Fail closed when manifest.audit is present and the host gate is off,
+    // unless the operator has fully superseded all manifest sinks with env vars.
+    // In lenient (gate-off) mode, manifest paths are not resolved, so we use
+    // the block-presence marker: if the block exists and all three KOI_AUDIT_*
+    // overrides are not set, refuse to start rather than silently running with
+    // no manifest-configured audit trail.
+    // If all three are set, the operator has taken explicit control of every
+    // audit sink — the manifest audit block is fully neutralised and we proceed.
     if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1") {
-      const manifestNdjsonExposed =
-        manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
-      const manifestSqliteExposed =
-        manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
-      const manifestViolationsExposed =
-        manifestAudit.violations !== undefined && process.env.KOI_AUDIT_VIOLATIONS === undefined;
-      if (manifestNdjsonExposed || manifestSqliteExposed || manifestViolationsExposed) {
+      const allAuditSinksCoveredByEnv =
+        process.env.KOI_AUDIT_NDJSON !== undefined &&
+        process.env.KOI_AUDIT_SQLITE !== undefined &&
+        process.env.KOI_AUDIT_VIOLATIONS !== undefined;
+      if (!allAuditSinksCoveredByEnv) {
         process.stderr.write(
           "koi tui: manifest.audit is set but KOI_ALLOW_MANIFEST_FILE_SINKS is not 1 — " +
             "refusing to start to prevent silently disabled audit logging. " +
             "Set KOI_ALLOW_MANIFEST_FILE_SINKS=1 to enable manifest-configured audit sinks, " +
-            "or override each manifest sink with KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE / " +
-            "KOI_AUDIT_VIOLATIONS env vars, or remove the audit: block from the manifest.\n",
+            "or set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS to override " +
+            "all three sinks, or remove the audit: block from the manifest.\n",
         );
         process.exit(1);
       }
