@@ -151,6 +151,23 @@ describe("createWorkspaceProvider", () => {
     expect(backend.disposed.length).toBe(1);
   });
 
+  it("reattach after on_success non-disposal reclaims old workspace", async () => {
+    const provider = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+    const agent = makeAgent();
+    const failedAgent = { ...agent, terminationOutcome: "error" } as unknown as Agent;
+    await provider.attach(failedAgent);
+    expect(backend.created.length).toBe(1);
+    // detach with error outcome — workspace preserved, still tracked
+    await provider.detach?.(failedAgent);
+    expect(backend.disposed.length).toBe(0);
+
+    // reattach — stale workspace reclaimed before creating a new one
+    await provider.attach(agent);
+    expect(backend.disposed.length).toBe(1); // old workspace disposed
+    expect(backend.created.length).toBe(2); // new workspace created
+    await provider.detach?.(agent);
+  });
+
   it("postCreate + dispose both fail: tracks workspace for retry and throws combined error", async () => {
     const failDisposeBackend = makeBackend({
       async dispose(): Promise<Result<void, KoiError>> {

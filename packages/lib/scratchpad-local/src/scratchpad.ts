@@ -162,6 +162,19 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   sharedStore.refCount++;
   const store = sharedStore;
 
+  // Re-arm sweep timer if it was stopped by the last close()
+  if (store.timer === null && sweepIntervalMs > 0) {
+    const t = setInterval(() => {
+      for (const [path, entry] of store.entries) {
+        if (isExpired(entry)) store.entries.delete(path);
+      }
+    }, sweepIntervalMs);
+    if (t && typeof t === "object" && "unref" in t) {
+      (t as { unref: () => void }).unref();
+    }
+    store.timer = t;
+  }
+
   let closed = false;
 
   function notify(event: ScratchpadChangeEvent): void {

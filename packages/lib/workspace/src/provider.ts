@@ -107,7 +107,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       if (!wsId) return;
 
       if (!shouldDispose(agent)) {
-        attached.delete(agentId);
+        // Intentionally preserved — keep tracking so a later attach for the
+        // same agent can reclaim the workspace before creating a new one.
         return;
       }
 
