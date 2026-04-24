@@ -86,7 +86,7 @@ export function createOAuthAwareMcpConnection(
               void Promise.resolve(
                 oauthChannel.onAuthFailure?.({
                   provider: server.name,
-                  reason: "Authorization was cancelled or failed. Run: koi mcp auth " + server.name,
+                  reason: "Authorization was cancelled or failed. Retry via the /mcp panel.",
                 }),
               ).catch(() => {});
             }

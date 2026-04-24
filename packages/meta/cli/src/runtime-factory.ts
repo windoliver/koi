@@ -2291,14 +2291,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
       | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
       | undefined;
-    const mcpConnections = stackContribution.exports.mcpConnections as
-      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
-      | undefined;
     const mcpPluginAuthProviders = stackContribution.exports.mcpPluginAuthProviders as
       | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
-      | undefined;
-    const mcpPluginConnections = stackContribution.exports.mcpPluginConnections as
-      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
       | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
@@ -3188,9 +3182,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           ? mcpPluginAuthProviders?.get(serverName)
           : mcpAuthProviders?.get(serverName);
         if (provider === undefined) return false;
-        const connection = isPlugin
-          ? mcpPluginConnections?.get(serverName)
-          : mcpConnections?.get(serverName);
         // Fire-and-forget — renderer latency must not block the browser opening.
         void Promise.resolve(
           channel.onAuthRequired({
@@ -3203,9 +3194,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         const authed = await provider.startAuthFlow();
         if (authed) {
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
-          // Force-reconnect the live connection so it transitions out of
-          // auth-needed and picks up fresh tokens before getMcpStatus() runs.
-          await connection?.connect().catch(() => {});
+          // Do NOT call connection.connect() here. If a callTool-triggered
+          // runAuthFlow() is also waiting on provider.startAuthFlow() (singleflight),
+          // both would call connect() simultaneously and interleave, closing each
+          // other's fresh client. The connection self-heals when getMcpStatus() runs
+          // (via listTools → ensureConnected → connect) or on the next tool call.
         }
         return authed;
       },
