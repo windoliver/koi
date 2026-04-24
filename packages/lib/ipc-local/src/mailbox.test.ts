@@ -734,7 +734,8 @@ describe("isLocalMailboxInstance", () => {
     const mailbox = createLocalMailbox({ agentId: OWNER });
     const symbols = Object.getOwnPropertySymbols(mailbox);
     expect(symbols).toHaveLength(1);
-    const brandSymbol = symbols[0]!;
+    const brandSymbol = symbols[0];
+    if (brandSymbol === undefined) throw new Error("expected brand symbol");
     expect(brandSymbol.toString()).toBe("Symbol(@koi/ipc-local/local-mailbox)");
     expect((mailbox as unknown as Record<symbol, unknown>)[brandSymbol]).toBe(true);
     mailbox.close();
@@ -835,13 +836,15 @@ describe("createLocalMailbox — corner cases", () => {
     const router = createLocalMailboxRouter();
     const mailbox = createLocalMailbox({ agentId: OWNER, router });
     router.register(OWNER, mailbox);
-    const view1 = router.getView(OWNER)!;
+    const view1 = router.getView(OWNER);
+    if (view1 === undefined) throw new Error("expected view1");
     expect(view1.revoked).toBe(false);
 
     router.register(OWNER, mailbox);
     // Old view is revoked; a new view is minted for the same mailbox.
     expect(view1.revoked).toBe(true);
-    const view2 = router.getView(OWNER)!;
+    const view2 = router.getView(OWNER);
+    if (view2 === undefined) throw new Error("expected view2");
     expect(view2).not.toBe(view1);
     expect(view2.revoked).toBe(false);
     mailbox.close();

@@ -45,6 +45,7 @@ import type {
 import { createSingleToolProvider, runId, sessionId } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
+import { createGateway, createInMemorySessionStore, DEFAULT_GATEWAY_CONFIG } from "@koi/gateway";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
@@ -12809,6 +12810,84 @@ describe("Golden: @koi/toolsets", () => {
     const sneakyResult = resolveToolset("sneaky", sneakyReg);
     expect(sneakyResult.ok).toBe(false);
     if (!sneakyResult.ok) expect(sneakyResult.error.code).toBe("VALIDATION");
+  });
+});
+
+// Golden: @koi/gateway — transport infrastructure, standalone API tests
+// (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/gateway", () => {
+  test("DEFAULT_GATEWAY_CONFIG has safe production defaults", () => {
+    expect(DEFAULT_GATEWAY_CONFIG.minProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxProtocolVersion).toBe(1);
+    expect(DEFAULT_GATEWAY_CONFIG.maxConnections).toBe(10_000);
+    expect(DEFAULT_GATEWAY_CONFIG.authTimeoutMs).toBe(5_000);
+    expect(DEFAULT_GATEWAY_CONFIG.backpressureCriticalTimeoutMs).toBe(30_000);
+    expect(DEFAULT_GATEWAY_CONFIG.disconnectedSessionTtlMs).toBe(300_000);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.compression).toBe(false);
+    expect(DEFAULT_GATEWAY_CONFIG.capabilities.maxFrameBytes).toBe(1_048_576);
+  });
+
+  test("createInMemorySessionStore satisfies SessionStore contract", async () => {
+    const store = createInMemorySessionStore();
+    const session = {
+      id: "s1",
+      agentId: "a1",
+      connectedAt: Date.now(),
+      lastHeartbeat: Date.now(),
+      seq: 0,
+      remoteSeq: 0,
+      metadata: {},
+    } as const;
+
+    const before = await Promise.resolve(store.has("s1"));
+    expect(before).toEqual({ ok: true, value: false });
+
+    await Promise.resolve(store.set(session));
+
+    const r = await Promise.resolve(store.get("s1"));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.id).toBe("s1");
+      expect(r.value.agentId).toBe("a1");
+      expect(r.value.seq).toBe(0);
+    }
+
+    await Promise.resolve(store.delete("s1"));
+    const after = await Promise.resolve(store.has("s1"));
+    expect(after).toEqual({ ok: true, value: false });
+  });
+
+  test("createGateway returns a Gateway with the required interface", () => {
+    const store = createInMemorySessionStore();
+    const gateway = createGateway(
+      {},
+      {
+        transport: {
+          listen: async () => {},
+          close: () => {},
+          connections: () => 0,
+        },
+        auth: {
+          authenticate: async () => ({
+            ok: false as const,
+            code: "INVALID_TOKEN" as const,
+            message: "test-only stub",
+          }),
+        },
+        store,
+      },
+    );
+
+    expect(typeof gateway.start).toBe("function");
+    expect(typeof gateway.stop).toBe("function");
+    expect(typeof gateway.send).toBe("function");
+    expect(typeof gateway.onFrame).toBe("function");
+    expect(typeof gateway.dispatch).toBe("function");
+    expect(typeof gateway.destroySession).toBe("function");
+    expect(typeof gateway.onSessionEvent).toBe("function");
+    expect(gateway.sessions()).toBe(store);
   });
 });
 

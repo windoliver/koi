@@ -79,3 +79,7 @@ interface LocalMailboxConfig {
 - **Layer**: L2
 - **Imports from**: `@koi/core` (L0) only
 - **Runtime dependency**: Bun (uses microtask scheduling via `queueMicrotask`)
+
+---
+
+> **Maintenance note (PR #2046):** Replaced `!` non-null assertions in `mailbox.ts` (delivery function lookup in `send()` — `self!` → explicit `if (self === undefined) throw` guard) and test files (`symbols[0]!`, `router.getView()!` → explicit undefined checks) to comply with `noNonNullAssertion` Biome rule. No functional change.

@@ -1,0 +1,1352 @@
+/**
+ * Gateway factory: wires transport, auth, sessions, sequencing, and backpressure
+ * into a minimal WebSocket control-plane entry point.
+ *
+ * Intentionally omits: node registry, tool routing, channel binding, scheduler,
+ * heartbeat sweep, and per-route onFrame handler isolation (routing enforcement
+ * lives in the node-registry layer) — those belong in future issues.
+ */
+
+import type { KoiError, Result } from "@koi/core";
+import { notFound } from "@koi/core";
+import { swallowError } from "@koi/errors";
+import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
+import { handleHandshake } from "./auth.js";
+import { createBackpressureMonitor } from "./backpressure.js";
+import { CLOSE_CODES } from "./close-codes.js";
+import {
+  createAckFrame,
+  createErrorFrame,
+  createFrameIdGenerator,
+  encodeFrame,
+  parseFrame,
+} from "./protocol.js";
+import { createSequenceTracker } from "./sequence-tracker.js";
+import type { SessionStore } from "./session-store.js";
+import { createInMemorySessionStore } from "./session-store.js";
+import type { Transport, TransportConnection, TransportHandler } from "./transport.js";
+import type { GatewayConfig, GatewayFrame, Session } from "./types.js";
+import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Session events
+// ---------------------------------------------------------------------------
+
+export type SessionEvent =
+  | { readonly kind: "created"; readonly session: Session }
+  | { readonly kind: "disconnected"; readonly sessionId: string; readonly reason: string }
+  | { readonly kind: "destroyed"; readonly sessionId: string; readonly reason: string };
+
+// ---------------------------------------------------------------------------
+// Gateway interface
+// ---------------------------------------------------------------------------
+
+export interface Gateway {
+  readonly start: (port: number) => Promise<void>;
+  readonly stop: () => Promise<Result<void, KoiError>>;
+  readonly sessions: () => SessionStore;
+  readonly onFrame: (
+    agentId: string,
+    handler: (session: Session, frame: GatewayFrame) => void | Promise<void>,
+  ) => () => void;
+  readonly send: (
+    agentId: string,
+    sessionId: string,
+    frame: GatewayFrame,
+  ) => Result<number, KoiError>;
+  readonly dispatch: (session: Session, frame: GatewayFrame) => void;
+  readonly destroySession: (sessionId: string, reason?: string) => Promise<Result<void, KoiError>>;
+  readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Deps
+// ---------------------------------------------------------------------------
+
+export interface GatewayDeps {
+  readonly transport: Transport;
+  readonly auth: GatewayAuthenticator;
+  readonly store?: SessionStore | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createGateway(
+  configOverrides: Readonly<Partial<GatewayConfig>>,
+  deps: GatewayDeps,
+): Gateway {
+  const config: GatewayConfig = { ...DEFAULT_GATEWAY_CONFIG, ...configOverrides };
+  const store = deps.store ?? createInMemorySessionStore();
+  const bp = createBackpressureMonitor(config);
+  const nextId = createFrameIdGenerator();
+
+  const connMap = new Map<string, TransportConnection>();
+  const sessionByConn = new Map<string, string>(); // connId → sessionId
+  const connBySession = new Map<string, string>(); // sessionId → connId
+  const trackers = new Map<string, ReturnType<typeof createSequenceTracker>>();
+  const pendingHandshakes = new Map<string, (data: string) => void>();
+  // Per-connection serial queues: each new message chains onto the previous so frames
+  // from the same socket are processed one-at-a-time through the async store path,
+  // preventing remoteSeq regression from interleaved store.set() completions.
+  const msgQueues = new Map<string, Promise<void>>();
+  // Per-connection inbound sequence-buffer pressure. SequenceTracker holds GatewayFrame
+  // objects for out-of-order gaps; without a byte cap this is an unbounded OOM path.
+  // Key: connId → Map<seq, frameBytes> — precise per-seq tracking so bytes are discharged
+  // only when a frame actually leaves the reorder buffer (appears in ready[1..]).
+  const inboundBufferedSeqs = new Map<string, Map<number, number>>();
+  // Monotonic per-connection server outbound seq counter. All server-originated frames
+  // (handshake ack, protocol errors, dup/oow acks) use this so the client can dedup them
+  // using the same sliding-window contract as client→server traffic.
+  const connOutboundSeq = new Map<string, number>();
+  // Disconnect timestamps for TTL sweep of retained sessions (connId-less, in-store).
+  const disconnectedAt = new Map<string, number>(); // sessionId → ms since epoch
+  // Session IDs created by this gateway instance. stop() only deletes owned sessions
+  // so a shared/persistent store is not clobbered by an unrelated gateway shutdown.
+  const ownedSessionIds = new Set<string>();
+  // In-flight handleHandshake continuations. stop() awaits these so a mid-auth client
+  // cannot complete store.set() after shutdown cleanup.
+  const pendingHandshakePromises = new Set<Promise<void>>();
+  // Per-connection abort callbacks for pending handshakes. stop() calls these so
+  // handshakes fail immediately rather than waiting for the auth timeout to fire.
+  const handshakeAborts = new Map<string, () => void>();
+  // On-disconnect seq persists: store.get → store.set(seq) fired from cleanupConn to
+  // capture outbound seq advanced by gateway.send() after the last inbound frame.
+  // destroySession and reconnect await these before touching the store to prevent races.
+  const pendingSeqPersists = new Map<string, Promise<void>>();
+  // Per-connection outbound transport-buffer bytes. Tracked separately from inbound
+  // reorder-buffer bytes so onDrain discharges only the outbound portion and inbound
+  // buffered frames remain charged until they are actually flushed from the reorder buffer.
+  const connOutboundBp = new Map<string, number>();
+  // In-memory authoritative outbound seq snapshot captured on disconnect. Used by the
+  // reconnect path as the primary source for prevOutboundSeq, falling back to the store
+  // only if no in-memory entry exists. This prevents seq reuse when the async
+  // disconnect persist fails or has not completed before the reconnect reads the store.
+  const lastKnownOutboundSeq = new Map<string, number>();
+  // Per-connection session snapshot kept in sync with the last store.set() call.
+  // Used by send() to fire a best-effort outbound-seq persist without a store.get()
+  // round-trip, reducing the seq-reuse window after a process crash.
+  const connSessionCache = new Map<string, Session>();
+  // Set to true by stop() so pending handshake continuations bail out before store.set().
+  let stopped = false;
+
+  // Frame handlers keyed by agentId. Delivery is scoped: emitFrames only fans out to
+  // handlers whose agentId matches the session's agentId, preventing cross-tenant/agent
+  // observation. The caller must supply the agentId they own; there is no global wildcard.
+  const frameHandlers = new Map<
+    string,
+    Set<(session: Session, frame: GatewayFrame) => void | Promise<void>>
+  >();
+  const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
+
+  let criticalSweep: ReturnType<typeof setInterval> | undefined;
+
+  function nextServerSeq(conn: TransportConnection): number {
+    const seq = connOutboundSeq.get(conn.id) ?? 0;
+    connOutboundSeq.set(conn.id, seq + 1);
+    return seq;
+  }
+
+  function emitSessionEvent(event: SessionEvent): void {
+    for (const handler of sessionEventHandlers) {
+      try {
+        handler(event);
+      } catch (err: unknown) {
+        swallowError(err, { package: "gateway", operation: "onSessionEvent" });
+      }
+    }
+  }
+
+  // Deliver a single frame to all registered handlers for the session's agentId.
+  // Per-handler isolation: one failure does not skip later subscribers. Returns false
+  // if any handler threw or returned a rejected promise — caller must NOT advance
+  // remoteSeq for this frame (fail-closed at-least-once delivery).
+  async function emitFrame(session: Session, frame: GatewayFrame): Promise<boolean> {
+    const handlers = frameHandlers.get(session.agentId);
+    if (handlers === undefined) return true;
+    let allOk = true;
+    for (const handler of handlers) {
+      try {
+        await Promise.resolve(handler(session, frame));
+      } catch (err: unknown) {
+        swallowError(err, { package: "gateway", operation: "onFrame" });
+        allOk = false;
+      }
+    }
+    return allOk;
+  }
+
+  // Public batch emit used by dispatch() — errors are swallowed, no replay contract.
+  // Fire-and-forget: async handler rejections are caught per-handler.
+  function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
+    for (const frame of frames) {
+      void emitFrame(session, frame).catch((err: unknown) => {
+        swallowError(err, { package: "gateway", operation: "onFrame.dispatch" });
+      });
+    }
+  }
+
+  // Single send path for established-session writes so every outbound byte is
+  // backpressure-accounted, including error/ack frames that bypass gateway.send().
+  // Returns false when the transport rejected the write (-1) or the connection is
+  // already at or above its per-connection buffer limit; callers should abort any
+  // further processing for that connection.
+  function sendFrame(conn: TransportConnection, data: string): boolean {
+    // Pre-write projected admission control: reject when this frame would push the
+    // per-connection or global buffer past its configured limit, not just when already
+    // at it, so a large frame near the limit cannot overshoot by its full size.
+    const frameBytes = Buffer.byteLength(data, "utf8");
+    if (
+      bp.buffered(conn.id) + frameBytes > config.maxBufferBytesPerConnection ||
+      bp.globalUsage() + frameBytes > config.globalBufferLimitBytes
+    ) {
+      conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Buffer limit exceeded");
+      cleanupConn(conn, "buffer limit exceeded");
+      return false;
+    }
+    const bytes = conn.send(data);
+    if (bytes < 0) {
+      conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
+      cleanupConn(conn, "transport send failure");
+      return false;
+    }
+    // Only charge bp when bytes > 0: the transport actually buffered data.
+    // bytes === 0 means the write was accepted synchronously with nothing queued;
+    // charging it would inflate bp.buffered() for traffic that was never held.
+    if (bytes > 0) {
+      bp.record(conn.id, bytes);
+      connOutboundBp.set(conn.id, (connOutboundBp.get(conn.id) ?? 0) + bytes);
+    }
+    return true;
+  }
+
+  function cleanupConn(conn: TransportConnection, reason: string): void {
+    const sessionId = sessionByConn.get(conn.id);
+    // Capture before deleting: the current server outbound counter for this connection.
+    const seqToSave = connOutboundSeq.get(conn.id) ?? 0;
+    pendingHandshakes.delete(conn.id);
+    trackers.delete(conn.id);
+    msgQueues.delete(conn.id);
+    inboundBufferedSeqs.delete(conn.id);
+    connOutboundSeq.delete(conn.id);
+    connOutboundBp.delete(conn.id);
+    connSessionCache.delete(conn.id);
+    sessionByConn.delete(conn.id);
+    connMap.delete(conn.id);
+    bp.remove(conn.id);
+
+    if (sessionId !== undefined) {
+      connBySession.delete(sessionId);
+      // Session record is intentionally retained in the store so remoteSeq survives
+      // network flaps and can be restored on reconnect. Explicit purge happens in
+      // destroySession() and stop() or via the disconnected-session TTL sweep.
+      disconnectedAt.set(sessionId, Date.now());
+
+      // Persist the final outbound seq so reconnects restore the correct server window.
+      // processMessage only persists seq on inbound frames; gateway.send()-only traffic
+      // after the last inbound frame would be lost without this on-disconnect write.
+      // We also stamp disconnectedAt so TTL eviction survives process restarts — the
+      // reconnect path rejects sessions whose stored disconnectedAt is past TTL.
+      const id = sessionId; // stable capture
+      if (seqToSave > 0) {
+        // In-memory snapshot is the primary source for same-process reconnects.
+        // The async persist below covers cross-process/restart cases.
+        lastKnownOutboundSeq.set(id, seqToSave);
+      }
+      const disconnectTs = Date.now();
+      // Chain after any in-flight send.seq.persist so destroySession() awaits the full
+      // serialized chain before store.delete(), preventing the earlier persist from
+      // completing after the delete and resurrecting the session as a ghost record.
+      const chainedAfter = pendingSeqPersists.get(id) ?? Promise.resolve();
+      const persist: Promise<void> = chainedAfter
+        .then(async (): Promise<void> => {
+          const r = await Promise.resolve(store.get(id));
+          if (r.ok) {
+            const updated: Session = {
+              ...r.value,
+              seq: r.value.seq < seqToSave ? seqToSave : r.value.seq,
+              disconnectedAt: disconnectTs,
+            };
+            const setResult = await Promise.resolve(store.set(updated));
+            if (!setResult.ok) {
+              swallowError(new Error(setResult.error.message), {
+                package: "gateway",
+                operation: "disconnect.seq.persist",
+              });
+              // Fail closed: disconnect state (seq + disconnectedAt) could not be durably
+              // committed. Delete the session so reconnects after a crash/restart start
+              // fresh rather than resuming from stale TTL or seq state.
+              ownedSessionIds.delete(id);
+              await Promise.resolve(store.delete(id)).catch((err: unknown) => {
+                swallowError(err, {
+                  package: "gateway",
+                  operation: "disconnect.seq.persist.cleanup",
+                });
+              });
+            }
+          }
+        })
+        .catch(async (err: unknown) => {
+          swallowError(err, { package: "gateway", operation: "disconnect.seq.persist" });
+          // Thrown exception: durable disconnect state (seq + disconnectedAt) could not be
+          // committed. Fail closed — delete so reconnects start fresh rather than resuming
+          // from stale TTL or seq state. Same invariant as the { ok: false } path above.
+          ownedSessionIds.delete(id);
+          await Promise.resolve(store.delete(id)).catch((deleteErr: unknown) => {
+            swallowError(deleteErr, {
+              package: "gateway",
+              operation: "disconnect.seq.persist.cleanup",
+            });
+          });
+        })
+        .finally(() => {
+          pendingSeqPersists.delete(id);
+        });
+      pendingSeqPersists.set(id, persist);
+
+      // Emit 'disconnected' (not 'destroyed') — the session still exists in the store
+      // and may reconnect. Reserve 'destroyed' for paths that permanently delete the record.
+      emitSessionEvent({ kind: "disconnected", sessionId, reason });
+    }
+  }
+
+  async function processMessage(conn: TransportConnection, data: string): Promise<void> {
+    if (Buffer.byteLength(data, "utf8") > config.capabilities.maxFrameBytes) {
+      // Use the connection's outbound seq counter if already authenticated so the client
+      // dedup window treats this error as a distinct frame rather than a dup of seq 0.
+      const errSeq = trackers.has(conn.id) ? nextServerSeq(conn) : 0;
+      conn.send(
+        createErrorFrame(errSeq, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
+      );
+      cleanupConn(conn, "Frame too large");
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Frame too large");
+      return;
+    }
+
+    const handshakeHandler = pendingHandshakes.get(conn.id);
+    if (handshakeHandler !== undefined) {
+      handshakeHandler(data);
+      return;
+    }
+
+    const sessionId = sessionByConn.get(conn.id);
+    if (sessionId === undefined) {
+      // Connection is fenced (mid-reconnect cutover) or not yet authenticated.
+      // Send an explicit error so the client can retry rather than silently losing the frame.
+      conn.send(
+        createErrorFrame(
+          nextServerSeq(conn),
+          "NOT_AUTHORIZED",
+          "No active session; retry after reconnect",
+          nextId,
+        ),
+      );
+      return;
+    }
+
+    let sessionResult: Result<Session, KoiError>;
+    try {
+      sessionResult = await Promise.resolve(store.get(sessionId));
+    } catch {
+      sendFrame(
+        conn,
+        createErrorFrame(
+          nextServerSeq(conn),
+          "SESSION_STORE_FAILURE",
+          "Session lookup failed",
+          nextId,
+        ),
+      );
+      cleanupConn(conn, "Session lookup failed");
+      conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session lookup failed");
+      return;
+    }
+    if (!sessionResult.ok) {
+      sendFrame(
+        conn,
+        createErrorFrame(nextServerSeq(conn), "SESSION_STORE_FAILURE", "Session not found", nextId),
+      );
+      cleanupConn(conn, "Session not found");
+      conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
+      return;
+    }
+
+    const frameResult = parseFrame(data);
+    if (!frameResult.ok) {
+      sendFrame(
+        conn,
+        createErrorFrame(
+          nextServerSeq(conn),
+          frameResult.error.code,
+          frameResult.error.message,
+          nextId,
+        ),
+      );
+      return;
+    }
+
+    const tracker = trackers.get(conn.id);
+    if (tracker === undefined) return;
+
+    const { result, ready } = tracker.accept(frameResult.value);
+
+    if (result === "duplicate" || result === "out_of_window") {
+      // Use the server's outbound seq (not the client's) so the ack is in the correct
+      // monotonic sequence space; the client's frame ID is preserved in the ref field.
+      sendFrame(conn, createAckFrame(nextServerSeq(conn), frameResult.value.id, null, nextId));
+      return;
+    }
+
+    if (result === "buffered") {
+      // Charge buffered bytes against per-connection inbound cap AND global bp so that
+      // globalBufferLimitBytes covers coordinated out-of-order inbound flooding.
+      // Track per-seq so bytes are discharged precisely when a frame leaves the reorder
+      // buffer (appears in ready[1..]) rather than resetting to 0 on partial progress —
+      // which would allow remaining frames to escape the cap.
+      const frameBytes = Buffer.byteLength(data, "utf8");
+      let seqBytes = inboundBufferedSeqs.get(conn.id);
+      if (seqBytes === undefined) {
+        seqBytes = new Map<number, number>();
+        inboundBufferedSeqs.set(conn.id, seqBytes);
+      }
+      seqBytes.set(frameResult.value.seq, frameBytes);
+      bp.record(conn.id, frameBytes);
+      // Synchronous global admission check so coordinated flooding across many
+      // connections is rejected immediately rather than waiting for the 5s sweep.
+      if (bp.globalUsage() > config.globalBufferLimitBytes) {
+        sendFrame(
+          conn,
+          createErrorFrame(
+            nextServerSeq(conn),
+            "BUFFER_LIMIT",
+            "Global inbound buffer limit exceeded",
+            nextId,
+          ),
+        );
+        cleanupConn(conn, "Global inbound buffer limit exceeded");
+        conn.close(CLOSE_CODES.BUFFER_LIMIT, "Global inbound buffer limit exceeded");
+        return;
+      }
+      let total = 0;
+      for (const b of seqBytes.values()) total += b;
+      if (total > config.maxBufferBytesPerConnection) {
+        sendFrame(
+          conn,
+          createErrorFrame(
+            nextServerSeq(conn),
+            "BUFFER_LIMIT",
+            "Inbound sequence buffer exceeded",
+            nextId,
+          ),
+        );
+        cleanupConn(conn, "Inbound sequence buffer exceeded");
+        conn.close(CLOSE_CODES.BUFFER_LIMIT, "Inbound sequence buffer exceeded");
+        return;
+      }
+      return;
+    }
+
+    // Discharge bytes for previously-buffered frames that were flushed into ready[1..].
+    // ready[0] is the just-received frame (never buffered); ready[1..] were in the tracker.
+    const seqBytes = inboundBufferedSeqs.get(conn.id);
+    if (seqBytes !== undefined) {
+      let discharged = 0;
+      for (const f of ready.slice(1)) {
+        discharged += seqBytes.get(f.seq) ?? 0;
+        seqBytes.delete(f.seq);
+      }
+      if (discharged > 0) bp.drain(conn.id, discharged);
+      if (seqBytes.size === 0) inboundBufferedSeqs.delete(conn.id);
+    }
+
+    // Process frames one at a time so a handler failure is bounded to the first bad
+    // frame. ready[] contains one or more sequentially-ordered frames; earlier entries
+    // may have already been delivered to healthy subscribers before the failure fires.
+    // Persisting per-frame progress before closing ensures the reconnect replay window
+    // starts at the failed frame, not at the entire batch start (at-least-once, minimal
+    // duplication).
+    let lastGoodSeq: number | undefined;
+    for (const frame of ready) {
+      // Build session snapshot for this specific frame so handlers see the correct
+      // remoteSeq watermark (one past the frame they are receiving).
+      const frameSession: Session = {
+        ...sessionResult.value,
+        remoteSeq: frame.seq + 1,
+      };
+      const frameOk = await emitFrame(frameSession, frame);
+      if (!frameOk) {
+        // Fence/close BEFORE any persistence so the socket is not held open in a
+        // split-brain state while store I/O blocks.
+        conn.close(CLOSE_CODES.ADMIN_CLOSED, "Frame handler failure");
+        cleanupConn(conn, "frame handler failure");
+        // Chain the progress persist AFTER cleanupConn's on-disconnect persist so the
+        // two writes don't race. cleanupConn's persist reads-then-writes seq; our persist
+        // chains after it, does a fresh read, then stamps remoteSeq — preserving whatever
+        // seq cleanupConn committed. Register in pendingSeqPersists so destroySession
+        // can await it too (prevents ghost resurrection after handler-failure disconnect).
+        if (lastGoodSeq !== undefined) {
+          const targetRemoteSeq = lastGoodSeq + 1;
+          const chainedAfter = pendingSeqPersists.get(sessionId) ?? Promise.resolve();
+          const progressPersist: Promise<void> = chainedAfter.then(async (): Promise<void> => {
+            let persistFailed = false;
+            try {
+              const current = await Promise.resolve(store.get(sessionId));
+              if (!current.ok) return; // session destroyed concurrently — nothing to do
+              if (current.value.remoteSeq >= targetRemoteSeq) return; // already at watermark
+              const updated: Session = { ...current.value, remoteSeq: targetRemoteSeq };
+              const r = await Promise.resolve(store.set(updated));
+              if (!r.ok) {
+                persistFailed = true;
+                swallowError(new Error(r.error.message), {
+                  package: "gateway",
+                  operation: "handler.failure.progress.persist",
+                });
+              }
+            } catch (err: unknown) {
+              persistFailed = true;
+              swallowError(err, {
+                package: "gateway",
+                operation: "handler.failure.progress.persist",
+              });
+            }
+            // Store failure means remoteSeq is unresolvable. Destroy the session so
+            // the client cannot silently reconnect from a stale watermark and receive
+            // duplicate frames. Better to force a clean reconnect than silent corruption.
+            if (persistFailed) {
+              ownedSessionIds.delete(sessionId);
+              await Promise.resolve(store.delete(sessionId)).catch((err: unknown) => {
+                swallowError(err, {
+                  package: "gateway",
+                  operation: "handler.failure.progress.persist.cleanup",
+                });
+              });
+            }
+          });
+          pendingSeqPersists.set(sessionId, progressPersist);
+          void progressPersist.finally(() => {
+            if (pendingSeqPersists.get(sessionId) === progressPersist) {
+              pendingSeqPersists.delete(sessionId);
+            }
+          });
+        }
+        return;
+      }
+      lastGoodSeq = frame.seq;
+    }
+
+    // Guard: if the connection was cleaned up during frame handling (e.g., backpressure
+    // critical timeout, handler error, remote close), skip the post-handler persist.
+    // cleanupConn's persist is already chained into pendingSeqPersists and owns the
+    // last write; writing here would overwrite disconnectedAt with a stale snapshot
+    // that does not carry the disconnect timestamp, defeating crash-durable TTL.
+    if (!connMap.has(conn.id)) return;
+
+    if (lastGoodSeq !== undefined) {
+      // Snapshot outbound seq AFTER all handlers run: handlers may call gateway.send()
+      // which advances connOutboundSeq; capturing earlier would persist a stale value.
+      const updatedSession: Session = {
+        ...sessionResult.value,
+        remoteSeq: lastGoodSeq + 1,
+        seq: connOutboundSeq.get(conn.id) ?? 0,
+      };
+
+      let storeRes: Result<void, KoiError>;
+      try {
+        storeRes = await Promise.resolve(store.set(updatedSession));
+      } catch {
+        sendFrame(
+          conn,
+          createErrorFrame(
+            nextServerSeq(conn),
+            "SESSION_STORE_FAILURE",
+            "Session update failed",
+            nextId,
+          ),
+        );
+        cleanupConn(conn, "session store failure");
+        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+        return;
+      }
+      if (!storeRes.ok) {
+        sendFrame(
+          conn,
+          createErrorFrame(
+            nextServerSeq(conn),
+            "SESSION_STORE_FAILURE",
+            "Session update failed",
+            nextId,
+          ),
+        );
+        cleanupConn(conn, "session store failure");
+        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+        return;
+      }
+      // Keep the per-connection session cache in sync so send() can persist the
+      // latest outbound seq without a round-trip store.get().
+      connSessionCache.set(conn.id, updatedSession);
+    }
+  }
+
+  const transportHandler: TransportHandler = {
+    onOpen(conn: TransportConnection): void {
+      if (connMap.size >= config.maxConnections) {
+        conn.send(
+          createErrorFrame(
+            nextServerSeq(conn),
+            "MAX_CONNECTIONS",
+            "Max connections exceeded",
+            nextId,
+          ),
+        );
+        conn.close(CLOSE_CODES.MAX_CONNECTIONS, "Max connections exceeded");
+        return;
+      }
+
+      if (!bp.canAccept()) {
+        conn.send(
+          createErrorFrame(
+            nextServerSeq(conn),
+            "BUFFER_LIMIT",
+            "Global buffer limit exceeded",
+            nextId,
+          ),
+        );
+        conn.close(CLOSE_CODES.BUFFER_LIMIT, "Global buffer limit exceeded");
+        return;
+      }
+
+      connMap.set(conn.id, conn);
+
+      const handshakeOptions: HandshakeOptions = {
+        minProtocolVersion: config.minProtocolVersion,
+        maxProtocolVersion: config.maxProtocolVersion,
+        capabilities: config.capabilities,
+        ...(config.includeSnapshot
+          ? { snapshot: { serverTime: Date.now(), activeConnections: connMap.size } }
+          : {}),
+      };
+
+      const handshakeChain: Promise<void> = handleHandshake(
+        conn,
+        deps.auth,
+        config.authTimeoutMs,
+        handshakeOptions,
+        (handler) => {
+          pendingHandshakes.set(conn.id, handler);
+        },
+        (abort) => {
+          handshakeAborts.set(conn.id, abort);
+        },
+      )
+        .then(async (result) => {
+          pendingHandshakes.delete(conn.id);
+          handshakeAborts.delete(conn.id);
+
+          // Bail out if stop() was called while auth was in flight.
+          if (stopped || !connMap.has(conn.id)) return;
+
+          // Two-phase reconnect cutover:
+          //   Phase 1 — fence the old connection so it can no longer write to the store,
+          //             then drain any already-running processMessage() work. We save the old
+          //             tracker so we can restore it if the store operations below fail and we
+          //             need to keep the old connection alive rather than losing the session.
+          //   Phase 2 — after persistence succeeds, complete eviction by closing the socket.
+          //   On any store failure between the two phases, un-fence the old connection so it
+          //             continues serving rather than dropping the session entirely.
+          const prevConnId = connBySession.get(result.session.id);
+          let savedTracker: ReturnType<typeof createSequenceTracker> | undefined;
+          if (prevConnId !== undefined && prevConnId !== conn.id) {
+            // Remove connBySession immediately so send() fails fast with "not connected"
+            // during the entire cutover window instead of routing frames to the stale socket.
+            // The entry is restored by abortReconnect() if any store operation fails.
+            connBySession.delete(result.session.id);
+            // Install the sever operation as the new queue tail (the "barrier") before
+            // awaiting. Any message that arrives on the old socket during the drain is then
+            // chained after the barrier, so it runs only AFTER sessionByConn/trackers are
+            // cleared — preventing it from racing the new connection's store operations.
+            // This also preserves at-least-once delivery for already-queued frames because
+            // those frames run before the barrier, while the session mapping is still intact.
+            savedTracker = trackers.get(prevConnId);
+            const drainQueue = msgQueues.get(prevConnId) ?? Promise.resolve();
+            const pId = prevConnId; // capture for closure
+            const barrierDone = drainQueue.then((): void => {
+              // Fence the old connection before the reconnect path snapshots store state.
+              // Any message arriving on the old socket AFTER this barrier is queued after
+              // it and runs after sessionByConn is gone, so it exits processMessage early
+              // (no session → no store write). This prevents old-socket frames from racing
+              // the reconnect's store.get/set and advancing watermarks after the snapshot.
+              // Already-queued frames run BEFORE the barrier and see the intact mapping
+              // (at-least-once delivery preserved for those frames).
+              sessionByConn.delete(pId);
+              trackers.delete(pId);
+            });
+            msgQueues.set(prevConnId, barrierDone);
+            await barrierDone;
+          }
+
+          // Helper: un-fence the old conn and reject the new one on store failure.
+          function abortReconnect(closeCode: number, reason: string): void {
+            if (prevConnId !== undefined && prevConnId !== conn.id) {
+              sessionByConn.set(prevConnId, result.session.id);
+              // Restore connBySession so send() routes to the old conn again.
+              connBySession.set(result.session.id, prevConnId);
+              if (savedTracker !== undefined) trackers.set(prevConnId, savedTracker);
+              msgQueues.set(prevConnId, Promise.resolve());
+            }
+            conn.close(closeCode, reason);
+            cleanupConn(conn, reason);
+          }
+
+          // If a prior disconnect for this session fired an on-disconnect seq persist, await
+          // it now so store.get() below sees the fully persisted outbound seq counter rather
+          // than a stale value from the last processMessage write.
+          // Track whether a prior seq-persist was in flight before we await it. A failed
+          // persist may have deleted the session from the store; if store.get() returns
+          // NOT_FOUND after we awaited a prior persist, the absence is due to the persist
+          // failure rather than a genuinely new session — we must abort rather than silently
+          // reset remoteSeq/seq to 0 and replay already-delivered frames.
+          const priorPersist = pendingSeqPersists.get(result.session.id);
+          const hadPriorPersist = priorPersist !== undefined;
+          if (priorPersist !== undefined) {
+            await priorPersist;
+          }
+
+          // Restore remoteSeq from any previously persisted session to prevent frame replay.
+          // Distinguish NOT_FOUND (new session → start at 0) from a store exception: if the
+          // store throws we cannot safely determine the replay window, so we reject the
+          // reconnect rather than silently downgrading to seq 0 and risking duplicate dispatch.
+          let startSeq = 0;
+          let prevOutboundSeq = 0;
+          // True only when the store returns NOT_FOUND: this gateway instance created
+          // the record and is the rightful owner. For resumed sessions the record already
+          // existed (in this process or another), so this gateway should not delete it.
+          let isNewSession = true;
+          try {
+            const prev = await Promise.resolve(store.get(result.session.id));
+            if (prev.ok) {
+              // Honour stored disconnectedAt for crash-durable TTL: if the session
+              // disconnected before a process restart, the in-memory disconnectedAt map
+              // is gone but the persisted timestamp survives. Treat expired sessions as
+              // NOT_FOUND so the client starts fresh rather than replaying from stale state.
+              const ttl = config.disconnectedSessionTtlMs;
+              const storedDisconnectedAt = prev.value.disconnectedAt;
+              const isExpired =
+                ttl !== undefined &&
+                ttl > 0 &&
+                storedDisconnectedAt !== undefined &&
+                Date.now() - storedDisconnectedAt > ttl;
+              if (!isExpired) {
+                // Identity check: the stored session must belong to the same principal.
+                // A mismatched agentId means the session ID was reused by a different
+                // agent (e.g., store collision or misconfigured authenticator). Reject so
+                // this reconnect cannot hijack another agent's sequencing state.
+                if (prev.value.agentId !== result.session.agentId) {
+                  abortReconnect(CLOSE_CODES.AUTH_FAILED, "session identity mismatch");
+                  return;
+                }
+                startSeq = prev.value.remoteSeq;
+                prevOutboundSeq = prev.value.seq;
+                isNewSession = false; // session already existed in the store
+              }
+              // isExpired → treat as new session (start at 0, isNewSession stays true)
+            } else if (hadPriorPersist) {
+              // NOT_FOUND after a prior seq-persist completed: the persist likely failed and
+              // deleted the session. Abort rather than resetting to seq 0, which would mask
+              // the failure and risk duplicate delivery or outbound seq reuse.
+              abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session lost during persist");
+              return;
+            }
+            // !prev.ok + !hadPriorPersist → genuinely new session, start at 0
+          } catch {
+            abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure on resume");
+            return;
+          }
+          // Prefer the in-memory snapshot over the stored value: it is authoritative for
+          // same-process reconnects and immune to async persist failures. This prevents
+          // seq reuse when the disconnect persist lost a race or the store threw.
+          const memSeq = lastKnownOutboundSeq.get(result.session.id) ?? 0;
+          if (memSeq > prevOutboundSeq) prevOutboundSeq = memSeq;
+          lastKnownOutboundSeq.delete(result.session.id);
+          // Restore outbound seq so server frames continue monotonically after reconnect
+          // rather than resetting to 0 and colliding with pre-reconnect frame IDs.
+          if (prevOutboundSeq > 0) connOutboundSeq.set(conn.id, prevOutboundSeq);
+          const tracker = createSequenceTracker(config.dedupWindowSize);
+          if (startSeq > 0) tracker.reset(startSeq);
+          // Buffered out-of-order frames from the old tracker are NOT migrated: carrying them
+          // into the new tracker without also transferring their inbound byte-accounting entries
+          // would silently bypass the per-connection buffer cap. The client replays any
+          // unacknowledged frames on reconnect, so no data is lost.
+          trackers.set(conn.id, tracker);
+
+          // Carry recovered watermarks into the persisted session so subsequent reconnects
+          // restore both inbound (remoteSeq) and outbound (seq) windows correctly.
+          const sessionToStore: Session =
+            startSeq > 0 || prevOutboundSeq > 0
+              ? { ...result.session, remoteSeq: startSeq, seq: prevOutboundSeq }
+              : result.session;
+
+          let storeResult: Result<void, KoiError>;
+          try {
+            storeResult = await Promise.resolve(store.set(sessionToStore));
+          } catch {
+            abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure");
+            return;
+          }
+          if (!storeResult.ok) {
+            abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure");
+            return;
+          }
+          if (isNewSession) ownedSessionIds.add(result.session.id);
+          // Clear stale disconnectedAt so TTL sweep does not evict this session now
+          // that it is live again. Not clearing would race the sweep: a brief disconnect
+          // followed by reconnect before TTL expiry would silently delete the live session.
+          disconnectedAt.delete(result.session.id);
+          // Seed the session cache so send() can persist seq updates without store.get().
+          connSessionCache.set(conn.id, sessionToStore);
+
+          // Phase 2: Persistence succeeded — complete eviction of the old connection.
+          if (prevConnId !== undefined && prevConnId !== conn.id) {
+            const prevConn = connMap.get(prevConnId);
+            connMap.delete(prevConnId);
+            bp.remove(prevConnId);
+            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
+          }
+
+          // Install maps and send ack only after persistence — prevents read-before-write.
+          if (!connMap.has(conn.id)) return;
+          sessionByConn.set(conn.id, result.session.id);
+          connBySession.set(result.session.id, conn.id);
+          const ackBytes = result.sendAck(nextServerSeq(conn), startSeq);
+          if (ackBytes < 0) {
+            // Transport rejected the ack write — session is unusable before the client
+            // received its sessionId/protocol. Tear down cleanly so the client reconnects.
+            conn.close(CLOSE_CODES.ADMIN_CLOSED, "Ack send failed");
+            cleanupConn(conn, "ack send failed");
+            return;
+          }
+          if (ackBytes > 0) {
+            bp.record(conn.id, ackBytes);
+            connOutboundBp.set(conn.id, (connOutboundBp.get(conn.id) ?? 0) + ackBytes);
+          }
+          emitSessionEvent({ kind: "created", session: result.session });
+        })
+        .catch(() => {
+          pendingHandshakes.delete(conn.id);
+          handshakeAborts.delete(conn.id);
+          connMap.delete(conn.id);
+          bp.remove(conn.id);
+        });
+      pendingHandshakePromises.add(handshakeChain);
+      void handshakeChain.finally(() => {
+        pendingHandshakePromises.delete(handshakeChain);
+      });
+    },
+
+    onMessage(conn: TransportConnection, data: string): void {
+      // Serialize per-connection: chain onto the tail of this connection's queue so
+      // each frame completes parse → accept → persist → emit before the next begins,
+      // preventing remoteSeq regression from interleaved async store.set() completions.
+      const prev = msgQueues.get(conn.id) ?? Promise.resolve();
+      const next = prev.then((): Promise<void> => processMessage(conn, data)).catch((): void => {});
+      msgQueues.set(conn.id, next);
+    },
+
+    onClose(conn: TransportConnection, _code: number, reason: string): void {
+      cleanupConn(conn, reason || "connection closed");
+    },
+
+    onDrain(conn: TransportConnection): void {
+      // Transport write buffer cleared: discharge only the outbound bytes we charged.
+      // Inbound reorder-buffer bytes (charged when OOO frames are held in SequenceTracker)
+      // must stay charged until the frames are actually flushed; zeroing everything here
+      // would let a client reclaim inbound buffer headroom without releasing the frames.
+      const outbound = connOutboundBp.get(conn.id) ?? 0;
+      if (outbound > 0) {
+        bp.drain(conn.id, outbound);
+        connOutboundBp.set(conn.id, 0);
+      }
+    },
+  };
+
+  return {
+    async start(port: number): Promise<void> {
+      await deps.transport.listen(port, transportHandler);
+
+      criticalSweep = setInterval(() => {
+        const now = Date.now();
+        // Backpressure shedding: drop connections that are individually over-budget or
+        // that collectively push global usage over the cap.
+        const globalOverLimit = !bp.canAccept();
+        for (const [connId, conn] of connMap) {
+          const since = bp.criticalSince(connId);
+          const timedOut =
+            since !== undefined && now - since > config.backpressureCriticalTimeoutMs;
+          const globalShed = globalOverLimit && bp.buffered(connId) > 0;
+          if (timedOut || globalShed) {
+            conn.send(
+              createErrorFrame(
+                nextServerSeq(conn),
+                "BUFFER_LIMIT",
+                "Buffer limit exceeded",
+                nextId,
+              ),
+            );
+            cleanupConn(conn, "backpressure timeout");
+            conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
+          }
+        }
+
+        // Auth revocation: if the authenticator provides validate(), call it for each
+        // live session and close any whose credentials have become invalid.
+        if (deps.auth.validate !== undefined) {
+          const validate = deps.auth.validate;
+          for (const [connId, conn] of connMap) {
+            const sessionId = sessionByConn.get(connId);
+            if (sessionId === undefined) continue;
+            let sessionRes: ReturnType<typeof store.get>;
+            try {
+              sessionRes = store.get(sessionId);
+            } catch (err: unknown) {
+              swallowError(err, { package: "gateway", operation: "revocation.store.get" });
+              // Fence immediately — same fail-closed behavior as the async revocation branches.
+              // Without this, the connection stays in sessionByConn/connMap until transport
+              // delivers onClose, so processMessage continues authorizing frames in the gap.
+              cleanupConn(conn, "Revocation check failed");
+              conn.close(CLOSE_CODES.AUTH_FAILED, "Revocation check failed");
+              continue;
+            }
+            void Promise.resolve(sessionRes)
+              .then((r) => {
+                if (!r.ok) {
+                  // Session record gone — fail closed: the authorization state cannot be
+                  // verified and the session record may have been deleted by a concurrent
+                  // destroySession or TTL sweep. Leaving the socket open would allow
+                  // outbound sends and inbound processing without a valid auth context.
+                  cleanupConn(conn, "Session not found during revocation check");
+                  conn.close(CLOSE_CODES.AUTH_FAILED, "Session not found during revocation");
+                  return;
+                }
+                return Promise.resolve(validate(r.value)).then((valid) => {
+                  if (!valid) {
+                    conn.send(
+                      createErrorFrame(
+                        nextServerSeq(conn),
+                        "AUTH_FAILED",
+                        "Session credential revoked",
+                        nextId,
+                      ),
+                    );
+                    // Fence before close so in-flight frames received before onClose cannot
+                    // pass processMessage() authorization after revocation is detected.
+                    cleanupConn(conn, "Session credential revoked");
+                    conn.close(CLOSE_CODES.AUTH_FAILED, "Session credential revoked");
+                  }
+                });
+              })
+              .catch((err: unknown) => {
+                // Revocation check failed — close the session to avoid fail-open authorization.
+                swallowError(err, { package: "gateway", operation: "revocation.validate" });
+                cleanupConn(conn, "Revocation check failed");
+                conn.close(CLOSE_CODES.AUTH_FAILED, "Revocation check failed");
+              });
+          }
+        }
+
+        // Disconnected-session TTL sweep: evict retained sessions whose credentials have
+        // exceeded the configured TTL so stale remoteSeq state doesn't accumulate.
+        const ttl = config.disconnectedSessionTtlMs;
+        if (ttl !== undefined && ttl > 0) {
+          for (const [sessionId, ts] of disconnectedAt) {
+            // Skip sessions that have already reconnected — disconnectedAt.delete() is
+            // called in the reconnect path, but the sweep could fire between reconnect
+            // store.set() and the delete() call. Guard here as defense-in-depth.
+            if (connBySession.has(sessionId)) continue;
+            // Only evict sessions this gateway created. Resumed sessions (isNewSession=false)
+            // remain in ownedSessionIds iff this gateway created them originally; skipping
+            // non-owned sessions prevents clobbering records owned by another gateway process
+            // in a shared/persistent store.
+            if (!ownedSessionIds.has(sessionId)) continue;
+            if (now - ts > ttl) {
+              // Sequential get→check→delete→check to reduce (not eliminate; atomic CAS
+              // would be needed for that) the window where a reconnecting session's record
+              // is clobbered by a concurrent TTL eviction.
+              void (async () => {
+                try {
+                  const snapshot = await Promise.resolve(store.get(sessionId));
+                  if (!snapshot.ok) return; // already gone
+                  // Re-check liveness after get: reconnect may have started during the read.
+                  if (connBySession.has(sessionId)) return;
+                  const r = await Promise.resolve(store.delete(sessionId));
+                  if (!r.ok) return;
+                  // Post-check: reconnect may have completed during the delete.
+                  if (connBySession.has(sessionId)) {
+                    // Delete raced a successful reconnect. The reconnect path already wrote
+                    // fresh session state via store.set(sessionToStore). Re-read to check:
+                    // if the store already has an entry the reconnect won — do nothing, the
+                    // live state is correct. If the store is empty the reconnect's write
+                    // hasn't committed yet or failed; leave it empty so processMessage will
+                    // surface SESSION_STORE_FAILURE and tear the connection down safely rather
+                    // than overwriting reconnect state with the pre-delete stale snapshot.
+                    const currentAfterRace = await Promise.resolve(store.get(sessionId)).catch(
+                      () => null,
+                    );
+                    if (currentAfterRace !== null && !currentAfterRace.ok) {
+                      // Store empty: the reconnect's write is missing. Close the connection
+                      // so the client reconnects cleanly rather than operating without a
+                      // backing store record.
+                      const connId = connBySession.get(sessionId);
+                      const liveConn = connId !== undefined ? connMap.get(connId) : undefined;
+                      if (liveConn !== undefined) {
+                        liveConn.send(
+                          createErrorFrame(
+                            nextServerSeq(liveConn),
+                            "SESSION_STORE_FAILURE",
+                            "Session record lost during TTL eviction; reconnect required",
+                            nextId,
+                          ),
+                        );
+                        cleanupConn(liveConn, "Session store lost after TTL race");
+                        liveConn.close(
+                          CLOSE_CODES.SESSION_STORE_FAILURE,
+                          "Session lost after TTL race",
+                        );
+                      }
+                    }
+                    // currentAfterRace.ok: reconnect state is in the store — nothing to do.
+                  } else {
+                    disconnectedAt.delete(sessionId);
+                    ownedSessionIds.delete(sessionId);
+                  }
+                } catch (err: unknown) {
+                  swallowError(err, { package: "gateway", operation: "ttl.delete" });
+                }
+              })();
+            }
+          }
+        }
+      }, 5_000);
+    },
+
+    async stop(): Promise<Result<void, KoiError>> {
+      // Fence new handshakes immediately so any in-flight authenticate() that resolves
+      // after this point will bail before store.set() and cannot recreate sessions.
+      stopped = true;
+      if (criticalSweep !== undefined) {
+        clearInterval(criticalSweep);
+        criticalSweep = undefined;
+      }
+
+      // Snapshot queues before closing connections. onClose → cleanupConn() deletes queue
+      // entries, so we must capture references first to ensure drain includes in-flight work.
+      const inflightQueues = [...msgQueues.values()];
+
+      // Phase 1: Sever session↔conn mappings BEFORE closing sockets so that when the
+      // transport delivers onClose → cleanupConn(), sessionByConn is already cleared and
+      // no duplicate 'disconnected' events are emitted.
+      for (const [connId, conn] of connMap) {
+        const sessionId = sessionByConn.get(connId);
+        sessionByConn.delete(connId);
+        if (sessionId !== undefined) {
+          connBySession.delete(sessionId);
+          emitSessionEvent({ kind: "destroyed", sessionId, reason: "server shutdown" });
+        }
+        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
+      }
+
+      // Abort all pending handshakes so they fail immediately rather than waiting for
+      // the auth timeout. Then await the promises so stop() does not return before a
+      // mid-auth continuation could call store.set() and race our session deletions.
+      for (const abort of handshakeAborts.values()) abort();
+      handshakeAborts.clear();
+      await Promise.allSettled([...pendingHandshakePromises]);
+
+      // Drain all in-flight per-connection message queues before touching the store so that
+      // any handler currently executing can finish and its store.set() resolves cleanly.
+      await Promise.allSettled(inflightQueues);
+      msgQueues.clear();
+
+      // Drain any on-disconnect seq persists from connections that closed naturally before
+      // stop() was called so they cannot race the owned-session deletions below.
+      await Promise.allSettled([...pendingSeqPersists.values()]);
+      pendingSeqPersists.clear();
+
+      // Phase 2: Delete only sessions owned by this gateway instance. A shared/persistent
+      // store may hold sessions from other gateway processes; we must not clobber them.
+      // Sessions retained for reconnect (cleanupConn keeps them) are included because
+      // ownedSessionIds is populated at handshake persist time and cleared in destroySession.
+      const deletePromises: Promise<Result<boolean, KoiError>>[] = [];
+      for (const sessionId of ownedSessionIds) {
+        deletePromises.push(Promise.resolve(store.delete(sessionId)));
+      }
+      ownedSessionIds.clear();
+      const settled = await Promise.allSettled(deletePromises);
+      let cleanupFailed = false;
+      for (const r of settled) {
+        if (r.status === "rejected") {
+          swallowError(r.reason as unknown, { package: "gateway", operation: "stop.delete" });
+          cleanupFailed = true;
+        } else if (!r.value.ok) {
+          swallowError(new Error(r.value.error.message), {
+            package: "gateway",
+            operation: "stop.delete",
+          });
+          cleanupFailed = true;
+        }
+      }
+
+      connMap.clear();
+      sessionByConn.clear();
+      connBySession.clear();
+      trackers.clear();
+      pendingHandshakes.clear();
+      connOutboundSeq.clear();
+      connOutboundBp.clear();
+      connSessionCache.clear();
+      disconnectedAt.clear();
+      pendingSeqPersists.clear();
+      lastKnownOutboundSeq.clear();
+      deps.transport.close();
+
+      if (cleanupFailed) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: "Gateway stop: one or more session store deletions failed",
+            retryable: false,
+            context: {},
+          },
+        };
+      }
+      return { ok: true, value: undefined };
+    },
+
+    sessions(): SessionStore {
+      return store;
+    },
+
+    // Trust model: onFrame and send() are in-process APIs used by the koi engine whose
+    // callers are trusted (engine owns all session routing). A multi-tenant or plugin
+    // environment should wrap this with a capability handle returned from authentication
+    // rather than exposing the raw agentId/sessionId surface to untrusted code.
+    onFrame(agentId: string, handler: (session: Session, frame: GatewayFrame) => void): () => void {
+      let set = frameHandlers.get(agentId);
+      if (set === undefined) {
+        set = new Set();
+        frameHandlers.set(agentId, set);
+      }
+      set.add(handler);
+      return () => {
+        const s = frameHandlers.get(agentId);
+        if (s !== undefined) {
+          s.delete(handler);
+          if (s.size === 0) frameHandlers.delete(agentId);
+        }
+      };
+    },
+
+    send(agentId: string, sessionId: string, frame: GatewayFrame): Result<number, KoiError> {
+      const connId = connBySession.get(sessionId);
+      if (connId === undefined) {
+        return { ok: false, error: notFound(sessionId, `Session not connected: ${sessionId}`) };
+      }
+      const ownedSession = connSessionCache.get(connId);
+      if (ownedSession === undefined || ownedSession.agentId !== agentId) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Agent ${agentId} is not authorized to send to session: ${sessionId}`,
+            retryable: false,
+            context: { agentId, sessionId },
+          } satisfies KoiError,
+        };
+      }
+      const conn = connMap.get(connId);
+      if (conn === undefined) {
+        return {
+          ok: false,
+          error: notFound(connId, `Connection not found for session: ${sessionId}`),
+        };
+      }
+      // Override caller-supplied seq: the gateway owns monotonic outbound sequencing
+      // so the client-side dedup window sees a single authoritative counter per connection.
+      const outboundFrame: GatewayFrame = { ...frame, seq: nextServerSeq(conn) };
+      const encoded = encodeFrame(outboundFrame);
+      const frameBytes = Buffer.byteLength(encoded, "utf8");
+      if (
+        bp.buffered(connId) + frameBytes > config.maxBufferBytesPerConnection ||
+        bp.globalUsage() + frameBytes > config.globalBufferLimitBytes
+      ) {
+        conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Buffer limit exceeded");
+        cleanupConn(conn, "buffer limit exceeded");
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Buffer limit exceeded for session: ${sessionId}`,
+            retryable: false,
+            context: { sessionId },
+          } satisfies KoiError,
+        };
+      }
+      const bytes = conn.send(encoded);
+      if (bytes < 0) {
+        conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
+        cleanupConn(conn, "transport send failure");
+        const error: KoiError = {
+          code: "EXTERNAL",
+          message: `Transport send failed for session: ${sessionId}`,
+          retryable: false,
+          context: { sessionId },
+        };
+        return { ok: false, error };
+      }
+      if (bytes > 0) {
+        bp.record(connId, bytes);
+        connOutboundBp.set(connId, (connOutboundBp.get(connId) ?? 0) + bytes);
+      }
+      // Keep the in-memory snapshot current for same-process reconnects.
+      const latestSeq = connOutboundSeq.get(connId) ?? 0;
+      lastKnownOutboundSeq.set(sessionId, latestSeq);
+      // Fire-and-forget store persist so the outbound seq survives process crashes.
+      // Reads first so only seq is updated — spreading the cached session would carry
+      // stale remoteSeq if a concurrent handler-failure progress persist has already
+      // advanced it, overwriting the updated watermark with 0.
+      const cachedSession = connSessionCache.get(connId);
+      if (cachedSession !== undefined && cachedSession.seq < latestSeq) {
+        connSessionCache.set(connId, { ...cachedSession, seq: latestSeq });
+        const seqTarget = latestSeq;
+        const sidTarget = sessionId;
+        // Capture the connection ID at send() time. The async persist may run after the
+        // client has reconnected on a new connection; we must not close the replacement.
+        const connIdAtSendTime = connId;
+        // Chain into pendingSeqPersists so destroySession/stop() await this persist
+        // before store.delete(), preventing resurrection of a deleted session by a
+        // concurrent in-flight write completing after the delete.
+        const chainedAfter = pendingSeqPersists.get(sidTarget) ?? Promise.resolve();
+        const sendPersist: Promise<void> = chainedAfter.then(async (): Promise<void> => {
+          let persistFailed = false;
+          try {
+            const current = await Promise.resolve(store.get(sidTarget));
+            if (!current.ok) return; // session gone (destroyed or TTL evicted)
+            if (current.value.seq >= seqTarget) return; // already at or past target
+            const setResult = await Promise.resolve(
+              store.set({ ...current.value, seq: seqTarget }),
+            );
+            if (!setResult.ok) {
+              swallowError(new Error(setResult.error.message), {
+                package: "gateway",
+                operation: "send.seq.persist",
+              });
+              persistFailed = true;
+            }
+          } catch (err: unknown) {
+            swallowError(err, { package: "gateway", operation: "send.seq.persist" });
+            persistFailed = true;
+          }
+          if (persistFailed) {
+            // Fail closed: stored seq is behind or indeterminate. Delete the session and
+            // close the originating connection so it cannot continue serving traffic with
+            // durable sequencing state already gone.
+            // Guard: only close if the same connId is still authoritative. The session may
+            // have reconnected on a new socket by the time this persist resolves; closing
+            // connBySession.get(sidTarget) would kill the replacement connection.
+            ownedSessionIds.delete(sidTarget);
+            await Promise.resolve(store.delete(sidTarget)).catch((err: unknown) => {
+              swallowError(err, { package: "gateway", operation: "send.seq.persist.cleanup" });
+            });
+            if (connBySession.get(sidTarget) === connIdAtSendTime) {
+              const activeConn = connMap.get(connIdAtSendTime);
+              if (activeConn !== undefined) {
+                activeConn.send(
+                  createErrorFrame(
+                    nextServerSeq(activeConn),
+                    "SESSION_STORE_FAILURE",
+                    "Outbound sequence durability lost",
+                    nextId,
+                  ),
+                );
+                cleanupConn(activeConn, "seq persist failure");
+                activeConn.close(
+                  CLOSE_CODES.SESSION_STORE_FAILURE,
+                  "Outbound sequence durability lost",
+                );
+              }
+            }
+          }
+        });
+        pendingSeqPersists.set(sidTarget, sendPersist);
+        void sendPersist.finally(() => {
+          if (pendingSeqPersists.get(sidTarget) === sendPersist) {
+            pendingSeqPersists.delete(sidTarget);
+          }
+        });
+      }
+      return { ok: true, value: bytes };
+    },
+
+    dispatch(session: Session, frame: GatewayFrame): void {
+      emitFrames(session, [frame]);
+    },
+
+    async destroySession(
+      sessionId: string,
+      reason = "administratively closed",
+    ): Promise<Result<void, KoiError>> {
+      const connId = connBySession.get(sessionId);
+      // Save queue BEFORE cleanupConn removes it so we can drain it below.
+      const drainQueue =
+        connId !== undefined ? (msgQueues.get(connId) ?? Promise.resolve()) : Promise.resolve();
+      if (connId !== undefined) {
+        const conn = connMap.get(connId);
+        if (conn !== undefined) {
+          conn.send(createErrorFrame(nextServerSeq(conn), "ADMIN_CLOSED", reason, nextId));
+          conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
+          // Synchronously sever routing so send() fails immediately after this
+          // call resolves, rather than leaking frames until onClose() fires.
+          cleanupConn(conn, reason);
+        }
+      }
+      // Drain any in-flight processMessage that could call store.set(session) after we
+      // delete the session below, which would resurrect ghost state in the store.
+      await drainQueue;
+      // Await any pending on-disconnect seq persist (fired by cleanupConn above) so it
+      // cannot complete after store.delete() and resurrect the session in the store.
+      const pendingPersist = pendingSeqPersists.get(sessionId);
+      if (pendingPersist !== undefined) {
+        await pendingPersist;
+      }
+      // Await deletion so callers get a real success/failure contract. Idempotent —
+      // store.delete is a no-op for unknown sessions.
+      let deleteResult: Result<boolean, KoiError>;
+      try {
+        deleteResult = await Promise.resolve(store.delete(sessionId));
+      } catch {
+        const error: KoiError = {
+          code: "EXTERNAL",
+          message: `Failed to delete session from store: ${sessionId}`,
+          retryable: true,
+          context: { sessionId },
+        };
+        return { ok: false, error };
+      }
+      if (!deleteResult.ok) {
+        return { ok: false, error: deleteResult.error };
+      }
+      disconnectedAt.delete(sessionId);
+      ownedSessionIds.delete(sessionId);
+      lastKnownOutboundSeq.delete(sessionId);
+      emitSessionEvent({ kind: "destroyed", sessionId, reason });
+      return { ok: true, value: undefined };
+    },
+
+    onSessionEvent(handler: (event: SessionEvent) => void): () => void {
+      sessionEventHandlers.add(handler);
+      return () => {
+        sessionEventHandlers.delete(handler);
+      };
+    },
+  };
+}

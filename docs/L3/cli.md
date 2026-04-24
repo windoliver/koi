@@ -808,3 +808,9 @@ See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`ac
 `@koi/tasks` received correctness fixes for the `remote_agent` lifecycle. No CLI
 surface changes. See `docs/L2/tasks.md` for the detailed change log and
 `docs/L3/runtime.md` for the runtime-boundary impact summary.
+
+---
+
+## @koi/mcp `triggerAuth` lint fix (PR #2046)
+
+Replaced `conn.triggerAuth!()` non-null assertions in `connection.test.ts` with explicit `if (conn.triggerAuth === undefined) throw` guards to satisfy `noNonNullAssertion`. No CLI surface change; `triggerAuth?()` remains an optional method on `McpConnection` callable via `koi mcp auth`.

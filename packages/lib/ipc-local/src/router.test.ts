@@ -31,7 +31,8 @@ describe("createLocalMailboxRouter", () => {
     const router = createLocalMailboxRouter();
     const mailbox = createLocalMailbox({ agentId: agentId("agent-1"), router });
     router.register(agentId("agent-1"), mailbox);
-    const view = router.getView(agentId("agent-1"))!;
+    const view = router.getView(agentId("agent-1"));
+    if (view === undefined) throw new Error("expected view");
     expect(view.revoked).toBe(false);
     router.unregister(agentId("agent-1"));
     expect(router.getView(agentId("agent-1"))).toBeUndefined();
