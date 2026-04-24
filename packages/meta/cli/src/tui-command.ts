@@ -2814,10 +2814,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         try {
           const fresh = await reloadSkillComponents();
           const realSkills = skillAgentRef.current?.query<SkillComponent>("skill:") ?? new Map();
-          // Start with real ECS (has body-backed skills), overlay fresh progressive skills.
-          const merged = new Map<SubsystemToken<SkillComponent>, SkillComponent>(realSkills);
-          for (const [token, comp] of fresh) {
-            merged.set(token, comp);
+          // Start with fresh progressive skills — this is the source of truth for
+          // runtimeBacked skills. Deleted/blocked progressive skills are absent from
+          // fresh and must NOT be carried over from the stale startup ECS map.
+          // Then add only body-backed (non-runtimeBacked) skills from the real ECS
+          // — those providers are unchanged by reset and their components remain valid.
+          const merged = new Map<SubsystemToken<SkillComponent>, SkillComponent>(fresh);
+          for (const [token, comp] of realSkills) {
+            if (!(comp as { runtimeBacked?: boolean }).runtimeBacked) {
+              merged.set(token, comp);
+            }
           }
           liveSkillComponents = merged;
         } catch {
