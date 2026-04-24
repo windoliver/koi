@@ -46,7 +46,7 @@ export interface Gateway {
   readonly onFrame: (handler: (session: Session, frame: GatewayFrame) => void) => () => void;
   readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
-  readonly destroySession: (sessionId: string, reason?: string) => Result<void, KoiError>;
+  readonly destroySession: (sessionId: string, reason?: string) => Promise<Result<void, KoiError>>;
   readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
 }
 
@@ -112,9 +112,17 @@ export function createGateway(
 
   // Single send path for established-session writes so every outbound byte is
   // backpressure-accounted, including error/ack frames that bypass gateway.send().
-  function sendFrame(conn: TransportConnection, data: string): void {
-    conn.send(data);
+  // Returns false when the transport rejected the write (-1); callers should abort
+  // any further processing for that connection.
+  function sendFrame(conn: TransportConnection, data: string): boolean {
+    const bytes = conn.send(data);
+    if (bytes === -1) {
+      conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
+      cleanupConn(conn, "transport send failure");
+      return false;
+    }
     bp.record(conn.id, Buffer.byteLength(data, "utf8"));
+    return true;
   }
 
   function cleanupConn(conn: TransportConnection, reason: string): void {
@@ -443,7 +451,10 @@ export function createGateway(
       emitFrames(session, [frame]);
     },
 
-    destroySession(sessionId: string, reason = "administratively closed"): Result<void, KoiError> {
+    async destroySession(
+      sessionId: string,
+      reason = "administratively closed",
+    ): Promise<Result<void, KoiError>> {
       const connId = connBySession.get(sessionId);
       if (connId !== undefined) {
         const conn = connMap.get(connId);
@@ -452,9 +463,19 @@ export function createGateway(
           conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
         }
       }
-      // Purge from store regardless of live connection state so operators can remove
-      // stale disconnected sessions. Idempotent — store.delete is a no-op for unknowns.
-      void Promise.resolve(store.delete(sessionId));
+      // Await deletion so callers get a real success/failure contract. Idempotent —
+      // store.delete is a no-op for unknown sessions.
+      try {
+        await Promise.resolve(store.delete(sessionId));
+      } catch {
+        const error: KoiError = {
+          code: "EXTERNAL",
+          message: `Failed to delete session from store: ${sessionId}`,
+          retryable: true,
+          context: { sessionId },
+        };
+        return { ok: false, error };
+      }
       return { ok: true, value: undefined };
     },
 

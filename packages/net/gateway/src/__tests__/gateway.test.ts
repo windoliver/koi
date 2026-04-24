@@ -398,9 +398,9 @@ describe("createGateway", () => {
   // =========================================================================
 
   describe("destroySession", () => {
-    test("succeeds (idempotent) for unknown session", () => {
+    test("succeeds (idempotent) for unknown session", async () => {
       gateway = createGateway({}, { transport, auth: createTestAuthenticator() });
-      const r = gateway.destroySession("missing");
+      const r = await gateway.destroySession("missing");
       expect(r.ok).toBe(true);
     });
 
@@ -422,8 +422,7 @@ describe("createGateway", () => {
       );
       expect(storeHas(gateway.sessions(), "s-disc-purge")).toBe(true); // retained
 
-      gateway.destroySession("s-disc-purge");
-      await waitForCondition(() => !storeHas(gateway.sessions(), "s-disc-purge"));
+      await gateway.destroySession("s-disc-purge");
       expect(storeHas(gateway.sessions(), "s-disc-purge")).toBe(false);
     });
 
@@ -438,7 +437,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const conn = await authenticateConn(transport, gateway, "s-destroy");
-      const r = gateway.destroySession("s-destroy", "test teardown");
+      const r = await gateway.destroySession("s-destroy", "test teardown");
 
       expect(r.ok).toBe(true);
       expect(conn.closed).toBe(true);
@@ -458,8 +457,7 @@ describe("createGateway", () => {
       await authenticateConn(transport, gateway, "s-destroy-purge");
       expect(storeHas(gateway.sessions(), "s-destroy-purge")).toBe(true);
 
-      gateway.destroySession("s-destroy-purge", "cleanup");
-      await waitForCondition(() => !storeHas(gateway.sessions(), "s-destroy-purge"));
+      await gateway.destroySession("s-destroy-purge", "cleanup");
       expect(storeHas(gateway.sessions(), "s-destroy-purge")).toBe(false);
     });
   });
