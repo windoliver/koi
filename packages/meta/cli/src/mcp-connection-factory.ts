@@ -60,11 +60,14 @@ export function createOAuthAwareMcpConnection(
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (_authorizationUrl: string): void => {
-              // Do NOT pass authUrl to the channel: the channel routes through
-              // add_user_message, which is model-visible. Raw OAuth URLs (including
-              // state params) must not enter the model transcript. The runtime
-              // already logs the URL to console as a local fallback.
+            onBrowserOpen: (authorizationUrl: string): void => {
+              // Write to stderr — not captured by the model-visible channel so
+              // the OAuth URL (including state params) never enters the model
+              // transcript, but still reachable in the terminal as a copy-paste
+              // fallback if the browser doesn't open automatically.
+              process.stderr.write(
+                `[koi mcp] Auth URL for ${server.name} (open in browser if needed):\n  ${authorizationUrl}\n`,
+              );
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,

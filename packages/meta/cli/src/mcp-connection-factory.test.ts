@@ -239,7 +239,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen to fire onAuthRequired (mode:local) without authUrl in channel", () => {
+    test("wires onBrowserOpen: writes URL to stderr (non-transcript fallback) and fires onAuthRequired without authUrl", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -253,13 +253,25 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(typeof onBrowserOpen).toBe("function");
       if (onBrowserOpen === undefined) return;
 
-      // Simulate the runtime calling onBrowserOpen with the authorization URL
-      onBrowserOpen("https://example.com/auth?state=abc");
+      const stderrWrites: string[] = [];
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk: unknown): boolean => {
+        stderrWrites.push(String(chunk));
+        return true;
+      };
 
-      // channel.onAuthRequired fires with provider + mode, but NO authUrl.
-      // authUrl is kept out of the channel to prevent raw OAuth URLs (including
-      // state params) from entering the model-visible add_user_message path.
-      // The runtime already logs the URL to console as a local fallback.
+      const testAuthUrl = "https://example.com/auth?state=abc";
+      try {
+        onBrowserOpen(testAuthUrl);
+      } finally {
+        process.stderr.write = origWrite;
+      }
+
+      // URL written to stderr as a copy-paste fallback — not in the channel
+      // payload so it never reaches the model-visible add_user_message path.
+      expect(stderrWrites.some((s) => s.includes(testAuthUrl))).toBe(true);
+
+      // Channel notification fires with provider + mode only (no authUrl).
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };
