@@ -150,8 +150,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // per-run reset behavior. TypeScript callers see a compile warning from the deprecated
   // field. A host that sets both keys gets the explicit value of the new key.
   const legacyOpts = options as unknown as Record<string, unknown>;
-  const usingLegacyOption =
-    "resetIterationBudgetPerRun" in legacyOpts && !("resetBudgetPerRun" in legacyOpts);
+  // Treat the new key as "explicitly set" only when its value is not `undefined`.
+  // A host that spreads defaults including `resetBudgetPerRun: undefined` (e.g. from
+  // JSON deserialization or option merging) would otherwise mask a legacy
+  // `resetIterationBudgetPerRun: true` — silently regressing to cumulative budgets.
+  const newKeyExplicitlySet =
+    "resetBudgetPerRun" in legacyOpts && legacyOpts.resetBudgetPerRun !== undefined;
+  const usingLegacyOption = "resetIterationBudgetPerRun" in legacyOpts && !newKeyExplicitlySet;
   if (usingLegacyOption) {
     console.warn(
       "[koi] createKoi: `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
@@ -627,6 +632,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: guards already reset for the current run — prevents double-resets across recompositions
     let resetGuardsCurrentRun: Set<IterationGuardHandle> | undefined;
 
+    // let justified: run() entry timestamp — anchors duration budget to submission time, not post-startup.
+    // Startup work (forge refresh, dynamic-mw recomposition) counts against maxDurationMs,
+    // preventing a slow startup from silently extending the effective duration window.
+    let runEntryAt = 0;
+
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
 
@@ -711,13 +721,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         }
       }
       // Two separate timestamps for two distinct purposes:
-      //   boundaryTs — run() entry, used in the governance event so duration accounting
-      //                starts from submission time (not post-startup).
-      // Single authoritative timestamp: both guard resets and governance boundaryTimestamp
-      // use the same value so duration enforcement is never split-brain.
-      // Using post-startup time (after validation) avoids tripping maxInactivityMs before
-      // the first model call — resetForRun(t) sets both startedAt and lastActivityMs to t.
+      //   runEntryAt  — run() entry; anchors duration (guard startedAt + governance
+      //                 boundaryTimestamp) so startup work counts against maxDurationMs.
+      //   resetAt     — post-startup (post-validation); anchors inactivity (guard
+      //                 lastActivityMs) so the first model call gets a full inactivity
+      //                 window regardless of how long forge/dynamic-mw took to settle.
+      // Both anchors use the same closure variable captured before any startup work,
+      // so duration enforcement is never split-brain between guard and governance.
       const resetAt = Date.now();
+      const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
       // Reset all guards FIRST — before committing the governance event — so that
       // `run_reset` is only emitted when the reset is fully complete. If a guard
       // throws, we poison the runtime and re-throw; governance is never told about
@@ -730,7 +742,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         for (const mw of guards) {
           if (isIterationGuardHandle(mw) && !seen.has(mw)) {
             seen.add(mw);
-            mw.resetForRun(resetAt);
+            mw.resetForRun(durationAnchor, resetAt);
           }
         }
       } catch (e) {
@@ -746,7 +758,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           kind: "run_reset",
           source: "engine",
           boundaryId,
-          boundaryTimestamp: resetAt,
+          boundaryTimestamp: durationAnchor,
         });
       } catch (e) {
         poisoned = true;
@@ -866,6 +878,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let unsubRegistryWatch: (() => void) | undefined;
 
     try {
+      // Anchor duration budget to run() entry so startup work (forge refresh,
+      // dynamic-mw recomposition) counts against maxDurationMs.
+      runEntryAt = Date.now();
+
       // #1682: generator body is now executing — ownership of the
       // pre-iteration cleanup transfers to the finally block below.
       // Clear the sweeper so a concurrent cycleSession/dispose doesn't

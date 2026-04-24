@@ -166,9 +166,22 @@ function createTimeoutRace(
  * it to keep guard and governance state in sync.
  */
 export interface IterationGuardHandle extends KoiMiddleware {
-  /** Reset per-run budgets. Pass runStartedAt (ms since epoch) to anchor the
-   * guard clock to the run() entry point rather than the reset call site. */
-  readonly resetForRun: (runStartedAt?: number) => void;
+  /**
+   * Reset per-run budgets.
+   *
+   * `runStartedAt` — ms-since-epoch timestamp for the duration anchor (when
+   * `run()` was entered). Anchoring duration to run() entry means startup
+   * work (forge refresh, dynamic-mw recomposition) counts against the wall-
+   * clock budget, which prevents a slow startup from silently extending the
+   * effective duration window.
+   *
+   * `activityStartedAt` — ms-since-epoch timestamp for the inactivity anchor.
+   * Defaults to `runStartedAt` when omitted. The engine passes the post-
+   * startup timestamp here so the inactivity clock starts AFTER initialization,
+   * giving the first model call its full inactivity window regardless of how
+   * long forge/dynamic-mw took to settle.
+   */
+  readonly resetForRun: (runStartedAt?: number, activityStartedAt?: number) => void;
 }
 
 /**
@@ -285,11 +298,11 @@ export function createIterationGuard(config?: Partial<IterationLimits>): Iterati
       lastActivityMs = Date.now();
     },
 
-    resetForRun: (runStartedAt?: number): void => {
+    resetForRun: (runStartedAt?: number, activityStartedAt?: number): void => {
       const t = runStartedAt ?? Date.now();
       turns = 0;
       startedAt = t;
-      lastActivityMs = t;
+      lastActivityMs = activityStartedAt ?? t;
     },
 
     wrapModelCall: async (_ctx, request, next) => {
