@@ -26,15 +26,7 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import {
-  appendFileSync,
-  closeSync,
-  existsSync,
-  constants as fsConstants,
-  fstatSync,
-  mkdirSync,
-  openSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
@@ -115,7 +107,6 @@ import {
 } from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import type { ManifestMiddlewareEntry } from "./manifest.js";
-import { revalidateAuditPathContainment } from "./manifest.js";
 import {
   canonicalizeAuditSinkPath,
   createBuiltinManifestRegistry,
@@ -2343,42 +2334,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
-      // For manifest-derived paths: open with O_NOFOLLOW so the final-component
-      // symlink swap is caught at open time, not just at pre-check time. Keeping
-      // the fd open until after the sink is created ensures the validated inode
-      // is the one the writer uses — no separate reopen by pathname.
-      let ndjsonFd: number | undefined;
+      // manifest.audit.ndjson is rejected at tui-command.ts before this point —
+      // ancestor-symlink swaps between revalidation and open cannot be blocked
+      // without openat-style APIs unavailable in Node.js/Bun. All manifest-derived
+      // audit paths require env var overrides; manifestNdjsonSourcePath is therefore
+      // always undefined here. The guard below is defensive only.
       if (config.manifestNdjsonSourcePath !== undefined) {
-        const err = revalidateAuditPathContainment(
-          config.auditNdjsonPath,
-          config.manifestNdjsonSourcePath,
+        throw new Error(
+          "manifest.audit.ndjson: manifest-derived paths are not supported. " +
+            "Set KOI_AUDIT_NDJSON instead.",
         );
-        if (err !== undefined) {
-          throw new Error(
-            `manifest.audit.ndjson: path compromised after validation — ${err}. ` +
-              "Refusing to open sink to prevent out-of-manifest writes.",
-          );
-        }
-        // O_NOFOLLOW rejects symlinks at the final path component at open time.
-        // ELOOP from O_NOFOLLOW is indistinguishable from a symlink loop — both
-        // mean the target is not a regular file we can trust.
-        ndjsonFd = openSync(
-          config.auditNdjsonPath,
-          fsConstants.O_CREAT |
-            fsConstants.O_WRONLY |
-            fsConstants.O_APPEND |
-            fsConstants.O_NOFOLLOW,
-        );
-        const ndjsonStat = fstatSync(ndjsonFd);
-        if (ndjsonStat.nlink > 1) {
-          closeSync(ndjsonFd);
-          throw new Error(
-            "manifest.audit.ndjson: file has more than one hard link — " +
-              "refusing to open to prevent writes escaping the manifest directory.",
-          );
-        }
       }
-      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath, fd: ndjsonFd });
+      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(auditSink, {

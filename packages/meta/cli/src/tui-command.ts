@@ -1184,18 +1184,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     }
 
-    // Gate-on: manifest.audit.sqlite and manifest.audit.violations are not yet
-    // supported as manifest-derived paths because SQLite must open by pathname
-    // (WAL/SHM sidecars are named relative to the database path), making an
-    // atomic O_NOFOLLOW-based open impossible without changing bun:sqlite's API.
-    // Manifest-derived ndjson is supported (fd-backed, fully atomic). For
-    // SQLite sinks, operators must use KOI_AUDIT_SQLITE / KOI_AUDIT_VIOLATIONS.
+    // Gate-on: manifest.audit paths are not usable as manifest-derived file
+    // paths. Atomic containment (O_NOFOLLOW-based) only protects the final path
+    // component; ancestor symlink swaps between the containment check and the
+    // file open cannot be blocked without openat-style APIs that Node.js/Bun
+    // do not expose. manifest.audit is therefore a declarative intent marker
+    // only — the presence of any audit: key in the manifest triggers fail-closed
+    // startup (see gate-off check above) unless the operator supplies matching
+    // KOI_AUDIT_* env vars. All actual sink paths must come from env vars.
     if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1") {
+      if (manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined) {
+        process.stderr.write(
+          "koi tui: manifest.audit.ndjson cannot be used as a manifest-derived path — " +
+            "atomic containment against ancestor symlink swaps requires openat-style APIs " +
+            "not available in Node.js/Bun. Set KOI_AUDIT_NDJSON to the desired path instead.\n",
+        );
+        process.exit(1);
+      }
       if (manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined) {
         process.stderr.write(
-          "koi tui: manifest.audit.sqlite is not yet supported as a manifest-derived path — " +
-            "SQLite must open by pathname (WAL/SHM sidecars require it), preventing atomic " +
-            "containment enforcement. Set KOI_AUDIT_SQLITE to the desired path instead.\n",
+          "koi tui: manifest.audit.sqlite cannot be used as a manifest-derived path — " +
+            "SQLite must open by pathname (WAL/SHM sidecars require it) and atomic containment " +
+            "is not possible. Set KOI_AUDIT_SQLITE to the desired path instead.\n",
         );
         process.exit(1);
       }
@@ -1205,9 +1215,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         process.env.KOI_AUDIT_VIOLATIONS === undefined;
       if (violationsWouldBeUsed) {
         process.stderr.write(
-          "koi tui: manifest.audit.violations is not yet supported as a manifest-derived path — " +
-            "SQLite must open by pathname (WAL/SHM sidecars require it), preventing atomic " +
-            "containment enforcement. Set KOI_AUDIT_VIOLATIONS to the desired path instead.\n",
+          "koi tui: manifest.audit.violations cannot be used as a manifest-derived path — " +
+            "SQLite must open by pathname (WAL/SHM sidecars require it) and atomic containment " +
+            "is not possible. Set KOI_AUDIT_VIOLATIONS to the desired path instead.\n",
         );
         process.exit(1);
       }
