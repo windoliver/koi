@@ -603,6 +603,54 @@ describe("createGateway", () => {
   // =========================================================================
 
   describe("outbound server seq counter", () => {
+    test("outbound seq persisted to store on disconnect after send()-only traffic", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-seq-persist",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const conn = await authenticateConn(transport, gateway, "s-seq-persist");
+
+      // Advance the outbound counter via send() with no subsequent inbound frame.
+      // Without the on-disconnect persist, store.seq stays at 0 (set during handshake)
+      // and reconnect would reuse seq numbers already consumed by the send() call.
+      gateway.send("s-seq-persist", createTestFrame());
+
+      // Disconnect without destroySession — session is retained for reconnect.
+      transport.simulateClose(conn.id);
+
+      // The on-disconnect persist should write the updated counter to the store.
+      // seq in the store represents the next outbound seq: ack consumed 0, send() consumed 1 → stored 2.
+      await waitForCondition(() => (storeGet(gateway.sessions(), "s-seq-persist")?.seq ?? 0) >= 2);
+      const stored = storeGet(gateway.sessions(), "s-seq-persist");
+      expect(stored?.seq).toBeGreaterThanOrEqual(2);
+    });
+
+    test("destroySession after send()-only disconnect does not resurrect session", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-seq-destroy-race",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const conn = await authenticateConn(transport, gateway, "s-seq-destroy-race");
+      gateway.send("s-seq-destroy-race", createTestFrame());
+      transport.simulateClose(conn.id);
+
+      // destroySession must await the pending persist before deleting so the persist
+      // cannot complete after the delete and resurrect the session in the store.
+      const r = await gateway.destroySession("s-seq-destroy-race");
+      expect(r.ok).toBe(true);
+      expect(storeHas(gateway.sessions(), "s-seq-destroy-race")).toBe(false);
+    });
+
     test("server error frames use monotonically increasing seq per connection", async () => {
       const auth = createTestAuthenticator({
         ok: true,

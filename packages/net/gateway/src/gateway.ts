@@ -104,6 +104,10 @@ export function createGateway(
   // Per-connection abort callbacks for pending handshakes. stop() calls these so
   // handshakes fail immediately rather than waiting for the auth timeout to fire.
   const handshakeAborts = new Map<string, () => void>();
+  // On-disconnect seq persists: store.get → store.set(seq) fired from cleanupConn to
+  // capture outbound seq advanced by gateway.send() after the last inbound frame.
+  // destroySession and reconnect await these before touching the store to prevent races.
+  const pendingSeqPersists = new Map<string, Promise<void>>();
   // Set to true by stop() so pending handshake continuations bail out before store.set().
   let stopped = false;
 
@@ -178,6 +182,8 @@ export function createGateway(
 
   function cleanupConn(conn: TransportConnection, reason: string): void {
     const sessionId = sessionByConn.get(conn.id);
+    // Capture before deleting: the current server outbound counter for this connection.
+    const seqToSave = connOutboundSeq.get(conn.id) ?? 0;
     pendingHandshakes.delete(conn.id);
     trackers.delete(conn.id);
     msgQueues.delete(conn.id);
@@ -193,6 +199,29 @@ export function createGateway(
       // network flaps and can be restored on reconnect. Explicit purge happens in
       // destroySession() and stop() or via the disconnected-session TTL sweep.
       disconnectedAt.set(sessionId, Date.now());
+
+      // Persist the final outbound seq so reconnects restore the correct server window.
+      // processMessage only persists seq on inbound frames; gateway.send()-only traffic
+      // after the last inbound frame would be lost without this on-disconnect write.
+      // The guard (r.value.seq < seqToSave) avoids a no-op write when processMessage
+      // already persisted an equal or higher value.
+      if (seqToSave > 0) {
+        const id = sessionId; // stable capture
+        const persist = (async (): Promise<void> => {
+          const r = await Promise.resolve(store.get(id));
+          if (r.ok && r.value.seq < seqToSave) {
+            await Promise.resolve(store.set({ ...r.value, seq: seqToSave }));
+          }
+        })()
+          .catch((err: unknown) => {
+            swallowError(err, { package: "gateway", operation: "disconnect.seq.persist" });
+          })
+          .finally(() => {
+            pendingSeqPersists.delete(id);
+          });
+        pendingSeqPersists.set(id, persist);
+      }
+
       // Emit 'disconnected' (not 'destroyed') — the session still exists in the store
       // and may reconnect. Reserve 'destroyed' for paths that permanently delete the record.
       emitSessionEvent({ kind: "disconnected", sessionId, reason });
@@ -498,6 +527,14 @@ export function createGateway(
             cleanupConn(conn, reason);
           }
 
+          // If a prior disconnect for this session fired an on-disconnect seq persist, await
+          // it now so store.get() below sees the fully persisted outbound seq counter rather
+          // than a stale value from the last processMessage write.
+          const priorPersist = pendingSeqPersists.get(result.session.id);
+          if (priorPersist !== undefined) {
+            await priorPersist;
+          }
+
           // Restore remoteSeq from any previously persisted session to prevent frame replay.
           // Distinguish NOT_FOUND (new session → start at 0) from a store exception: if the
           // store throws we cannot safely determine the replay window, so we reject the
@@ -752,6 +789,11 @@ export function createGateway(
       await Promise.allSettled(inflightQueues);
       msgQueues.clear();
 
+      // Drain any on-disconnect seq persists from connections that closed naturally before
+      // stop() was called so they cannot race the owned-session deletions below.
+      await Promise.allSettled([...pendingSeqPersists.values()]);
+      pendingSeqPersists.clear();
+
       // Phase 2: Delete only sessions owned by this gateway instance. A shared/persistent
       // store may hold sessions from other gateway processes; we must not clobber them.
       // Sessions retained for reconnect (cleanupConn keeps them) are included because
@@ -783,6 +825,7 @@ export function createGateway(
       pendingHandshakes.clear();
       connOutboundSeq.clear();
       disconnectedAt.clear();
+      pendingSeqPersists.clear();
       deps.transport.close();
 
       if (cleanupFailed) {
@@ -884,6 +927,12 @@ export function createGateway(
       // Drain any in-flight processMessage that could call store.set(session) after we
       // delete the session below, which would resurrect ghost state in the store.
       await drainQueue;
+      // Await any pending on-disconnect seq persist (fired by cleanupConn above) so it
+      // cannot complete after store.delete() and resurrect the session in the store.
+      const pendingPersist = pendingSeqPersists.get(sessionId);
+      if (pendingPersist !== undefined) {
+        await pendingPersist;
+      }
       // Await deletion so callers get a real success/failure contract. Idempotent —
       // store.delete is a no-op for unknown sessions.
       let deleteResult: Result<boolean, KoiError>;
