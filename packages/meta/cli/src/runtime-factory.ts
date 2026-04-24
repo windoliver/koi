@@ -3196,17 +3196,42 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // Helper: reconnect the live connection (if not already connected) and
         // force a resolver rediscovery so real tools replace pseudo-tools
         // immediately — same recovery steps as the pseudo-tool path.
-        const reconnectAndRediscover = async (): Promise<void> => {
+        // Returns false if the reconnect failed so the caller can report a
+        // degraded result rather than claiming full success.
+        const reconnectAndRediscover = async (): Promise<boolean> => {
           if (connection !== undefined && connection.state.kind !== "connected") {
-            await connection.connect().catch(() => {});
+            const reconnResult = await connection
+              .connect()
+              .catch((): import("@koi/core").Result<void, import("@koi/core").KoiError> => ({
+                ok: false,
+                error: {
+                  code: "EXTERNAL",
+                  message: "reconnect failed",
+                  retryable: true,
+                  context: {},
+                },
+              }));
+            if (!reconnResult.ok) return false;
           }
+          // Rediscovery is best-effort — a discovery miss doesn't prevent auth.
           await resolver?.discover().catch(() => {});
+          return true;
         };
 
         const refreshOutcome = await provider.handleUnauthorized();
         if (refreshOutcome === "refreshed") {
           // Silent token refresh succeeded — no browser flow needed.
-          await reconnectAndRediscover();
+          const reconnected = await reconnectAndRediscover();
+          if (!reconnected) {
+            void Promise.resolve(
+              channel.onAuthFailure?.({
+                provider: serverName,
+                reason:
+                  "Authorized but could not reconnect to the server. Retry or restart the session.",
+              }),
+            ).catch(() => {});
+            return false;
+          }
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
           return true;
         }
@@ -3222,11 +3247,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }
         // "needs-auth" — interactive OAuth required.
         // onBrowserOpen (wired into the provider's runtime via mcp-connection-factory)
-        // fires onAuthRequired with the actual URL when it becomes known — no need
-        // for an early generic notification here.
+        // fires onAuthRequired when the browser is about to open.
         const authed = await provider.startAuthFlow();
         if (authed) {
-          await reconnectAndRediscover();
+          const reconnected = await reconnectAndRediscover();
+          if (!reconnected) {
+            void Promise.resolve(
+              channel.onAuthFailure?.({
+                provider: serverName,
+                reason:
+                  "Authorized but could not reconnect to the server. Retry or restart the session.",
+              }),
+            ).catch(() => {});
+            return false;
+          }
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
         }
         return authed;

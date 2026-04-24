@@ -33,12 +33,11 @@ interface OAuthRuntime {
 
 export interface CliOAuthRuntimeOptions {
   /**
-   * Called with the authorization URL the moment it is known, before the
-   * browser window opens. Use this to surface a fallback link through the
-   * channel for headless/SSH sessions where the browser may not open.
+   * Called just before the browser window opens. Use this to fire a
+   * "browser opening" UX notification through the channel.
    * Invoked fire-and-forget — errors are silently swallowed.
    */
-  readonly onBrowserOpen?: ((authorizationUrl: string) => void) | undefined;
+  readonly onBrowserOpen?: (() => void) | undefined;
 }
 
 export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefined): OAuthRuntime {
@@ -47,11 +46,9 @@ export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefin
       authorizationUrl: string,
       redirectUri: string,
     ): Promise<OAuthCallbackResult> => {
-      // Surface the URL through the channel before opening the browser so
-      // headless/SSH sessions have an actionable fallback link even when
-      // the local browser launch fails or is unavailable.
+      // Notify the channel that the browser is about to open before doing so.
       try {
-        options?.onBrowserOpen?.(authorizationUrl);
+        options?.onBrowserOpen?.();
       } catch {
         // Notification failure must never block the browser from opening.
       }

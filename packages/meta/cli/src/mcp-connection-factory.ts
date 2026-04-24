@@ -51,19 +51,20 @@ export function createOAuthAwareMcpConnection(
     // rather than silently connecting without credentials (which would
     // cause opaque 401s instead of a clear platform error).
     const storage = createStorage();
-    // When a channel is present, surface the authorization URL through it as
-    // soon as the OAuth runtime knows it. This gives headless/SSH sessions an
-    // actionable fallback link in the TUI even when the local browser launch
-    // fails or is unavailable.
+    // Fire onAuthRequired the moment the browser is about to open so the TUI
+    // shows a "browser opening" status without blocking the launch.
+    // MCP uses a local loopback callback (127.0.0.1) that is not reachable from
+    // remote hosts — do NOT include authUrl here since the URL is not a usable
+    // paste-in fallback for headless/SSH sessions. The console already logs it
+    // as a machine-local fallback via startCallbackServer.
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (authorizationUrl: string): void => {
+            onBrowserOpen: (): void => {
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,
-                  message: `Authorize ${server.name} in your browser`,
-                  authUrl: authorizationUrl,
+                  message: `Opening browser to authorize ${server.name}`,
                   mode: "local",
                 }),
               ).catch(() => {});
