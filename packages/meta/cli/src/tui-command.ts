@@ -37,6 +37,7 @@ import { createAgentSummary } from "@koi/agent-summary";
 import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
 import { microcompact } from "@koi/context-manager";
 import type {
+  Agent,
   AuditEntry,
   ComponentProvider,
   ContentBlock,
@@ -47,6 +48,8 @@ import type {
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
+  SkillComponent,
+  SubsystemToken,
   TranscriptEntry,
   TranscriptEntryId,
 } from "@koi/core";
@@ -1316,15 +1319,33 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // loaded at attach time are stored in a session-local Map that is not subject
   // to LRU eviction, ensuring the Skill tool always returns the body that was
   // valid at session start.
-  const { provider: skillProvider, pinnedRuntime: skillRuntime } = createProgressiveSkillProvider(
-    createSkillsRuntime(),
-  );
+  const {
+    provider: skillProvider,
+    pinnedRuntime: skillRuntime,
+    reload: reloadSkillComponents,
+  } = createProgressiveSkillProvider(createSkillsRuntime());
   // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
-  const skillAgentRef: { current: import("@koi/core").Agent | undefined } = { current: undefined };
+  const skillAgentRef: { current: Agent | undefined } = { current: undefined };
+  // Mutable live skill component map — refreshed on session reset via reloadSkillComponents().
+  // Initially populated from the agent ECS after createKoiRuntime wires skillAgentRef.current.
+  // The middleware reads from this map (not the static ECS) so session resets can refresh
+  // the advertised skill inventory without rebuilding the entire agent.
+  // let: justified — replaced on each session reset
+  let liveSkillComponents: ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent> = new Map();
   const skillInjectorMw = createSkillInjectorMiddleware({
-    agent: (): import("@koi/core").Agent => {
+    agent: (): Agent => {
       if (skillAgentRef.current === undefined) throw new Error("skill agent ref not yet wired");
-      return skillAgentRef.current;
+      const real = skillAgentRef.current;
+      // Return a wrapped agent that reads skills from the mutable liveSkillComponents
+      // map instead of the static ECS. This allows session resets to refresh the
+      // advertised skill inventory by updating liveSkillComponents.
+      return {
+        ...real,
+        query: <T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> =>
+          prefix === "skill:"
+            ? (liveSkillComponents as unknown as ReadonlyMap<SubsystemToken<T>, T>)
+            : real.query<T>(prefix),
+      } as Agent;
     },
     progressive: true,
   });
@@ -1907,6 +1928,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Resolve lazy skill agent ref so the injector middleware can query
     // skill components on every subsequent model call.
     skillAgentRef.current = handle.runtime.agent;
+    // Seed the mutable live skill map from the ECS components attached during
+    // createKoiRuntime. Subsequent session resets update liveSkillComponents via
+    // reloadSkillComponents() without touching the static ECS.
+    liveSkillComponents = handle.runtime.agent.query<SkillComponent>("skill:");
     // Wire governance bridge when the agent has a GovernanceController
     // component attached. In default sessions (no --max-spend or equivalent
     // future flag), component() returns undefined and the bridge stays unset,
@@ -2761,6 +2786,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
             });
           }
+        }
+        // Refresh the live skill component map for the new session.
+        // clearPinnedBodies() already ran synchronously above (body LRU cleared);
+        // reloadSkillComponents() re-runs loadAll() to pick up edits/deletions
+        // and returns a fresh typed map that the middleware will read next turn.
+        // Non-fatal: if reload fails, liveSkillComponents retains the previous
+        // session's skills rather than crashing the reset.
+        try {
+          liveSkillComponents = await reloadSkillComponents();
+        } catch {
+          /* skill refresh failure is non-fatal — stale inventory is better than crash */
         }
         // /clear is silent on success — a freshly cleared conversation
         // is its own acknowledgement. The cumulative runtime-wide spend

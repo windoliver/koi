@@ -17,6 +17,7 @@ import type {
   KoiError,
   Result,
   SkillComponent,
+  SubsystemToken,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, skillToken } from "@koi/core";
 import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "./types.js";
@@ -91,10 +92,29 @@ export function createSkillProvider(
 export function createProgressiveSkillProvider(base: SkillsRuntime): {
   readonly provider: ComponentProvider;
   readonly pinnedRuntime: PinnedRuntime;
+  /**
+   * Clears pinned bodies (+ base LRU for all pinned skills), re-runs loadAll()
+   * to pick up edits/deletions, and returns a fresh typed SkillComponent map.
+   *
+   * Use on session reset to refresh the live skill inventory. Because named
+   * invalidate() is used (not full invalidate), the discovery cache and
+   * external-skill registry are preserved — newly added skills require a
+   * process restart.
+   */
+  readonly reload: () => Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>>;
 } {
   const pinnedRuntime = createProgressivePinnedRuntime(base);
   const provider = createSkillProvider(pinnedRuntime, { progressive: true });
-  return { provider, pinnedRuntime };
+
+  const reload = async (): Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>> => {
+    // clearPinnedBodies() now also calls base.invalidate(name) for each pinned key
+    // so base LRU entries are evicted before the fresh loadAll() below.
+    pinnedRuntime.clearPinnedBodies();
+    const result = await attachProgressive(pinnedRuntime);
+    return result.components as ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>;
+  };
+
+  return { provider, pinnedRuntime, reload };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,11 +309,16 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
     // Hosts that need live refresh must start a new session.
     registerExternal: (skills: readonly SkillMetadata[]): void => base.registerExternal(skills),
     clearPinnedBodies: (): void => {
+      // Named invalidate() clears only the body-cache entry for each skill,
+      // preserving the discovery cache and external-skill registration.
+      // This ensures edited/deleted skills are re-read from disk on next
+      // load() while newly-added skills (not yet discovered) require a
+      // full process restart.
+      for (const name of pinned.keys()) {
+        base.invalidate(name);
+      }
       pinned.clear();
       pinnedPopulated = false;
-      // Intentionally does NOT call base.invalidate() — preserves the
-      // underlying runtime's discovery cache and external-skill registry
-      // so the next session's Skill tool calls can still resolve skill names.
     },
   };
 }

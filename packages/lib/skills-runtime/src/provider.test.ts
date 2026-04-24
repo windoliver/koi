@@ -480,24 +480,51 @@ describe("createProgressivePinnedRuntime", () => {
     expect(afterRepopulate.ok && afterRepopulate.value.body).toContain("Updated body.");
   });
 
-  test("clearPinnedBodies() does not call base.invalidate() — preserves discovery cache", async () => {
-    // Full invalidate() would wipe the base runtime's discovery/LRU cache and
-    // external-skill registry. clearPinnedBodies() must not propagate to base.
+  test("clearPinnedBodies() only invalidates pinned skills — non-pinned base LRU entries preserved", async () => {
+    // clearPinnedBodies() calls base.invalidate(name) for each pinned key only.
+    // Skills loaded directly via base.load() (not via runtime.loadAll()) are not
+    // in the pin map and therefore are not invalidated.
     await writeSkill(userRoot, "cached-skill", "Cached body.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const runtime = createProgressivePinnedRuntime(base);
 
     // Pre-populate the base runtime's LRU cache via a direct base.load() call.
+    // This skill is NOT in the pin map (no loadAll() was called on runtime).
     const initial = await base.load("cached-skill");
     expect(initial.ok).toBe(true);
 
-    // Clear session pins only.
+    // Clear session pins (pin map is empty — no loadAll() was called).
     runtime.clearPinnedBodies();
 
-    // Base runtime's cache should remain intact — load() via base still works.
+    // Non-pinned base LRU entry is preserved — only pinned skills are invalidated.
     const afterClear = await base.load("cached-skill");
     expect(afterClear.ok).toBe(true);
     if (afterClear.ok) expect(afterClear.value.body).toContain("Cached body.");
+  });
+
+  test("clearPinnedBodies() calls base.invalidate(name) for each pinned skill", async () => {
+    // Pinned skills (loaded via runtime.loadAll()) get their base LRU entry cleared
+    // so the next session re-reads from disk instead of returning a stale cached body.
+    await writeSkill(userRoot, "pinned-skill", "Original body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    // Pin via loadAll() (session start).
+    await runtime.loadAll();
+
+    // Edit the body on disk.
+    await writeSkill(userRoot, "pinned-skill", "Updated body.");
+
+    // Without clearing, the base LRU still has "Original body.".
+    const cached = await base.load("pinned-skill");
+    expect(cached.ok && cached.value.body).toContain("Original body.");
+
+    // clearPinnedBodies() calls base.invalidate("pinned-skill") → clears base LRU.
+    runtime.clearPinnedBodies();
+
+    // Base LRU is now cleared — next load reads fresh from disk.
+    const afterClear = await base.load("pinned-skill");
+    expect(afterClear.ok && afterClear.value.body).toContain("Updated body.");
   });
 });
 
@@ -567,5 +594,38 @@ describe("createProgressiveSkillProvider", () => {
     const result = await pinnedRuntime.load("shared");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.body).toContain("Shared body.");
+  });
+
+  test("reload() clears pins and returns fresh component map with edited bodies", async () => {
+    // reload() is the session-reset primitive: clears pinned bodies (+ base LRU
+    // for pinned skills), re-runs loadAll(), and returns a typed SkillComponent map.
+    await writeSkill(userRoot, "session-skill", "Original body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const { provider, reload } = createProgressiveSkillProvider(base);
+
+    // Session start: attach pins all skills via loadAll().
+    await provider.attach({} as Agent);
+
+    // Edit on disk.
+    await writeSkill(userRoot, "session-skill", "Updated body.");
+
+    // reload() picks up the update.
+    const components = await reload();
+    // component should be present and typed
+    const token = `skill:session-skill` as never;
+    const component = components.get(token);
+    expect(component).toBeDefined();
+    expect(component?.name).toBe("session-skill");
+    expect(component?.runtimeBacked).toBe(true);
+  });
+
+  test("reload() returns empty map when all skills are skipped or none exist", async () => {
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const { provider, reload } = createProgressiveSkillProvider(base);
+
+    await provider.attach({} as Agent);
+
+    const components = await reload();
+    expect(components.size).toBe(0);
   });
 });
