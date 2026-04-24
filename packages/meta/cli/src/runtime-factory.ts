@@ -3224,15 +3224,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             freshSetup?.dispose();
             return false;
           }
-          // Trigger auth through the fresh connection. On success, the server
-          // will authenticate but the running session's resolver won't know
-          // about it — prompt the user to reload.
+          // Trigger auth through the fresh connection. The live resolver does not
+          // know about this server, so even on success we cannot mark it as available
+          // in this session — fire onAuthFailure with a reload-required message so
+          // the user knows what happened and what to do next.
           const authResult = await freshConnection.triggerAuth?.();
           // freshSetup is non-null here: freshProvider/freshConnection came from it.
           freshSetup?.dispose();
           if (authResult?.ok) {
-            void Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
-            return true;
+            void Promise.resolve(
+              channel.onAuthFailure?.({
+                provider: serverName,
+                reason: `Authorization succeeded. Reload the session to connect to "${serverName}".`,
+              }),
+            ).catch(() => {});
+            // Return false: the server is not usable in this session yet.
+            return false;
           }
           void Promise.resolve(
             channel.onAuthFailure?.({

@@ -200,7 +200,10 @@ export function createMcpConnection(
         if (silentResult.ok) {
           return { ok: true, value: undefined }; // self-healed without browser prompt
         }
-        // Silent reconnect failed despite fresh token — fall through to interactive.
+        // Reconnect failed after a valid token refresh — this is a transport/server
+        // outage, not a credential problem. Return the error directly; launching browser
+        // re-auth would be misleading and waste the freshly acquired token.
+        return silentResult;
       }
       if (outcome === "transient-failure") {
         // Tokens exist but the refresh endpoint is temporarily unavailable.

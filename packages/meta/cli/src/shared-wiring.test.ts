@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,7 +115,7 @@ describe("buildPluginMcpSetup", () => {
     setup?.dispose();
   });
 
-  test("filters out OAuth-bearing HTTP plugin servers and logs error (trust boundary)", () => {
+  test("wires OAuth-bearing plugin servers with auth pseudo-tools but no oauthChannel", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -132,23 +132,20 @@ describe("buildPluginMcpSetup", () => {
       command: "/bin/echo",
     };
 
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const setup = buildPluginMcpSetup([oauthServer, stdioServer]);
+    const setup = buildPluginMcpSetup([oauthServer, stdioServer]);
 
-      // OAuth server filtered; stdio server proceeds; oauthCapableNames empty
-      expect(setup).toBeDefined();
-      expect(setup?.oauthCapableNames.size).toBe(0);
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      expect((errorSpy.mock.calls[0] as string[])[0]).toContain("plugin-oauth");
-
-      setup?.dispose();
-    } finally {
-      errorSpy.mockRestore();
-    }
+    // Both servers wired: OAuth server has auth provider, stdio does not
+    expect(setup).toBeDefined();
+    expect(setup?.connections.has("plugin-oauth")).toBe(true);
+    expect(setup?.connections.has("plugin-stdio")).toBe(true);
+    // oauthCapableNames includes the OAuth server
+    expect(setup?.oauthCapableNames.has("plugin-oauth")).toBe(true);
+    // No rejected servers — OAuth servers are wired, not blocked
+    expect(setup?.rejectedServers).toBeUndefined();
+    setup?.dispose();
   });
 
-  test("returns setup with rejectedServers populated when all plugin servers have OAuth", () => {
+  test("plugin OAuth servers have no oauthChannel — rejectedServers is undefined", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -160,17 +157,12 @@ describe("buildPluginMcpSetup", () => {
       },
     } as unknown as McpServerConfig;
 
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const setup = buildPluginMcpSetup([oauthServer]);
-      // Setup still returned so rejected servers surface in runtime status
-      expect(setup).toBeDefined();
-      expect(setup?.rejectedServers?.has("plugin-oauth")).toBe(true);
-      expect(setup?.oauthCapableNames.size).toBe(0);
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      errorSpy.mockRestore();
-    }
+    const setup = buildPluginMcpSetup([oauthServer]);
+    expect(setup).toBeDefined();
+    // Server is wired — auth possible via pseudo-tool, not TUI browser flow
+    expect(setup?.connections.has("plugin-oauth")).toBe(true);
+    expect(setup?.rejectedServers).toBeUndefined();
+    setup?.dispose();
   });
 });
 
