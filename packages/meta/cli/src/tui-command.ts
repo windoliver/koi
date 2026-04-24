@@ -100,6 +100,7 @@ import { loadManifestConfig } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { loadPolicyFile } from "./policy-file.js";
+import { resolveManifestPath } from "./resolve-manifest-path.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
@@ -1066,10 +1067,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
-  if (flags.manifest !== undefined) {
+  // Mirror start.ts: when resuming without an explicit --manifest, bypass
+  // auto-discovery so the cwd manifest cannot silently override the model,
+  // stacks, plugins, filesystem scope, or governance of the original session.
+  const skipManifestDiscovery =
+    flags.noManifest || (flags.resume !== undefined && flags.manifest === undefined);
+  const resolvedManifestResult = resolveManifestPath(
+    process.cwd(),
+    flags.manifest,
+    skipManifestDiscovery,
+  );
+  if (!resolvedManifestResult.ok) {
+    process.stderr.write(`koi tui: ${resolvedManifestResult.error}\n`);
+    process.exit(1);
+  }
+  // Distinguish auto-discovery miss from explicit --no-manifest opt-out.
+  // When discovery was attempted and found nothing, warn so operators are not
+  // surprised that manifest-controlled stacks/plugins/governance are inactive.
+  if (resolvedManifestResult.path === undefined && !skipManifestDiscovery) {
+    const searched = resolvedManifestResult.searched.length;
+    const hint = searched > 0 ? ` (searched ${searched} location${searched === 1 ? "" : "s"})` : "";
+    process.stderr.write(
+      `koi tui: no manifest found${hint} — running with built-in defaults. Pass --manifest <path> to load one or --no-manifest to suppress this warning.\n`,
+    );
+  }
+  const resolvedManifestPath = resolvedManifestResult.path;
+  if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
-    const manifestResult = await loadManifestConfig(flags.manifest, { allowOAuthSchemes: true });
+    const manifestResult = await loadManifestConfig(resolvedManifestPath, {
+      allowOAuthSchemes: true,
+    });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
       process.exit(1);

@@ -4,6 +4,9 @@ Controls which tools an AI agent is allowed to use. Sits between the LLM and too
 
 ## Recent updates
 
+- **Bash AST spec-guard** (`enableBashSpecGuard`, default on when `resolveBashCommand` is set): integrates `@koi/bash-ast` to parse bash commands before permission evaluation. Commands whose argv cannot be exactly matched by a static allow rule (refused, partial, too-complex, multi-command forms) are downgraded to `ask` even when a broad glob rule (`bash:*`) would have allowed them. Exact-argv rules are honoured via a canary-suffix probe or the `IS_EXACT_MATCH` symbol stamped by `evaluateRules`. Path-qualified binaries (`/usr/bin/curl`) also get basename-matched semantic evaluation for Write/Read/Network deny rules.
+- `enableBashSpecGuard: false` opts a caller out of spec-guard enforcement (migration window escape hatch).
+- `IS_SPEC_GUARD_ASK` symbol exported from `bash-spec-guard.ts` prevents the legacy bash-grant fallback from auto-approving spec-guard-generated ask decisions.
 - `createPatternPermissionBackend` now explicitly exposes `supportsDefaultDenyMarker: true` on the returned backend object, preserving default-deny marker behavior across strict TypeScript builds while keeping the public backend contract unchanged.
 
 ---
@@ -1126,4 +1129,5 @@ When the agent rotates between multiple tools all hitting the same soft-deny rul
 
 ## Changelog
 
+- **Build: `@koi/bash-ast` added to tsconfig project references** (#1827) — `bash-spec-guard.ts` already declared `@koi/bash-ast` in `package.json` but the tsconfig `references` array was missing the entry, causing DTS build failures after the file was merged from main. No behavioral change.
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

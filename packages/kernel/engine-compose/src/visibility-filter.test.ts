@@ -138,6 +138,19 @@ describe("createVisibilityFilter", () => {
       expect(inner.watch).toHaveBeenCalledWith(listener);
     });
 
+    test("delegates optional descriptor when present", async () => {
+      const descriptor = mock(async () => undefined);
+      const inner: AgentRegistry = {
+        ...createStubRegistry([e1]),
+        descriptor,
+      };
+      const perms = createStubPermissions(() => ({ effect: "allow" }));
+      const filtered = createVisibilityFilter(inner, perms);
+
+      await filtered.descriptor?.(agentId("agent-a"));
+      expect(descriptor).toHaveBeenCalledWith(agentId("agent-a"));
+    });
+
     test("delegated methods preserve receiver context", async () => {
       const entries: RegistryEntry[] = [entry("agent-a")];
       const inner = {
@@ -223,6 +236,7 @@ describe("createVisibilityFilter", () => {
 
       const result = await filtered.list();
       expect(result).toHaveLength(0);
+      expect(inner.list).not.toHaveBeenCalled();
     });
   });
 

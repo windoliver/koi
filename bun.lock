@@ -638,6 +638,13 @@
         "@koi/url-safety": "workspace:*",
       },
     },
+    "packages/lib/toolsets": {
+      "name": "@koi/toolsets",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/url-safety": {
       "name": "@koi/url-safety",
       "version": "0.0.0",
@@ -848,6 +855,7 @@
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
+        "@koi/toolsets": "workspace:*",
         "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
         "@koi/violation-store-sqlite": "workspace:*",
@@ -1060,6 +1068,7 @@
       "name": "@koi/middleware-permissions",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/bash-ast": "workspace:*",
         "@koi/bash-classifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
@@ -1114,6 +1123,9 @@
   "trustedDependencies": [
     "esbuild",
   ],
+  "patchedDependencies": {
+    "web-tree-sitter@0.26.8": "patches/web-tree-sitter@0.26.8.patch",
+  },
   "packages": {
     "@ampproject/remapping": ["@ampproject/remapping@2.3.0", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw=="],
 
@@ -1648,6 +1660,8 @@
     "@koi/tools-core": ["@koi/tools-core@workspace:packages/lib/tools-core"],
 
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
+
+    "@koi/toolsets": ["@koi/toolsets@workspace:packages/lib/toolsets"],
 
     "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
 

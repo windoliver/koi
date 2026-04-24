@@ -149,6 +149,24 @@ describe("walker — redirects", () => {
     expect(result.commands[0]?.redirects).toEqual([{ op: "<", target: "input.txt" }]);
   });
 
+  test("extracts redirect on pipeline tail command", () => {
+    const result = analyzeBashCommand("ls | head -3 > out.txt");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands).toHaveLength(2);
+    expect(result.commands[0]?.argv).toEqual(["ls"]);
+    expect(result.commands[0]?.redirects).toEqual([]);
+    expect(result.commands[1]?.argv).toEqual(["head", "-3"]);
+    expect(result.commands[1]?.redirects).toEqual([{ op: ">", target: "out.txt" }]);
+  });
+
+  test("preserves redirected statement source span in command text", () => {
+    const result = analyzeBashCommand("cat file > out.txt");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") return;
+    expect(result.commands[0]?.text).toBe("cat file > out.txt");
+  });
+
   test("rejects heredoc redirect", () => {
     const result = analyzeBashCommand("cat <<EOF\nhello\nEOF");
     expect(result.kind).toBe("too-complex");

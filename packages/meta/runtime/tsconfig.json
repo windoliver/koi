@@ -31,6 +31,7 @@
     { "path": "../../lib/spawn-tools" },
     { "path": "../../lib/task-tools" },
     { "path": "../../lib/tasks" },
+    { "path": "../../lib/toolsets" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/tools-core" },
     { "path": "../../lib/tool-exec" },

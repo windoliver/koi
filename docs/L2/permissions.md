@@ -3,6 +3,12 @@
 Implements the L0 `PermissionBackend` contract with glob-based rules, multi-source
 config precedence, and permission modes (default/bypass/plan/auto).
 
+## Recent updates
+
+- **`IS_EXACT_MATCH` symbol** exported from `rule-evaluator.ts`: stamped on allow decisions where the matching rule pattern contains no glob metacharacters. Enables `bash-spec-guard` to short-circuit the canary probe and treat the decision as an explicit exact-argv rule without an extra backend round-trip.
+- **Bypass mode stamps `IS_EXACT_MATCH`** on all allow decisions so the canary probe short-circuits for bypass backends without needing a separate `bypassAllSpecGuards` flag on the L0 interface.
+- **`rule-loader` DSL key guard**: `permissionRuleSchema` no longer uses `.strict()` (which broke legacy rules with extra metadata fields). Instead, `Write`, `Read`, and `Network` are declared as `z.undefined().optional()` fields — any flat rule that carries a DSL key value is rejected, preventing the silent-strip ambiguity, while extra metadata fields (`description`, `owner`, etc.) are still silently dropped.
+
 ---
 
 ## Why it exists
