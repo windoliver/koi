@@ -294,21 +294,24 @@ export function createGovernanceController(
       case "tool_success":
         totalCallsWindow.record(Date.now());
         break;
-      case "run_reset":
+      case "run_reset": {
         // #1939: reset per-run UX budgets (turn count, run duration)
         // so each `runtime.run()` invocation gets a fresh model-call /
         // wall-clock budget. Token usage and accumulated cost are
         // INTENTIONALLY NOT reset — they back runtime-wide spend safety
         // caps. Spawn counts and rolling error-rate windows are also
         // runtime-scoped and unaffected.
-        // Use boundaryTimestamp (the true boundary time) instead of Date.now()
-        // so duration windows are anchored to when the run started, not when
-        // the async record() call was processed — eliminating drift from
-        // forge-refresh and middleware I/O latency.
+        // Validate boundaryTimestamp before use: must be a finite number not
+        // more than 60s in the future (clock-skew tolerance). Invalid values
+        // fall back to Date.now() so a buggy/malicious caller cannot disable
+        // duration enforcement by injecting NaN or a far-future timestamp.
+        const runNow = Date.now();
+        const runTs = event.boundaryTimestamp;
         turnCount = 0;
-        startedAt = event.boundaryTimestamp;
+        startedAt = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
         break;
-      case "session_reset":
+      }
+      case "session_reset": {
         // #1742: reset per-session state at a host-driven conversation
         // boundary (TUI /clear, session:new). Clears iteration counters
         // (turn count, duration) AND the rolling tool error / total-call
@@ -316,11 +319,14 @@ export function createGovernanceController(
         // error-rate state inherited from the previous one. Token usage,
         // accumulated cost, and spawn counts remain CUMULATIVE so
         // process-level spend / fan-out ceilings still hold.
+        const sessNow = Date.now();
+        const sessTs = event.boundaryTimestamp;
         turnCount = 0;
-        startedAt = event.boundaryTimestamp;
+        startedAt = Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
         errorWindow.clear();
         totalCallsWindow.clear();
         break;
+      }
     }
   }
 

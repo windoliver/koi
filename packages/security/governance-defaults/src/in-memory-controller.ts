@@ -502,23 +502,30 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         state.toolOutcomes.push(true);
         if (state.toolOutcomes.length > errorRateWindow) state.toolOutcomes.shift();
         return;
-      case "run_reset":
+      case "run_reset": {
         // L0 contract: reset per-run UX budgets (turn_count, duration_ms).
         // Token usage, cost, spawn counts, and error-rate windows survive.
-        // Anchor to event.boundaryTimestamp (the true boundary time) so duration
-        // windows don't drift when record() is delayed by async I/O.
+        // Validate boundaryTimestamp: finite, not more than 60s in the future.
+        // Invalid values fall back to now() so a buggy caller cannot disable
+        // duration enforcement by injecting NaN or a far-future timestamp.
+        const runNow = now();
+        const runTs = event.boundaryTimestamp;
         state.turnCount = 0;
-        state.iterationStart = event.boundaryTimestamp;
+        state.iterationStart = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
         return;
-      case "session_reset":
+      }
+      case "session_reset": {
         // L0 contract: reset iteration counters AND rolling error-rate window so
         // a fresh conversation doesn't inherit tool-error history. Token usage,
         // cost, and spawn_count remain cumulative.
-        // Anchor to event.boundaryTimestamp for the same drift-prevention reason.
+        const sessNow = now();
+        const sessTs = event.boundaryTimestamp;
         state.turnCount = 0;
-        state.iterationStart = event.boundaryTimestamp;
+        state.iterationStart =
+          Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
         state.toolOutcomes.length = 0;
         return;
+      }
     }
   }
 

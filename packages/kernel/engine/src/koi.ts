@@ -146,16 +146,23 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const debugInstrumentation: DebugInstrumentation | undefined =
     options.debug?.enabled === true ? createDebugInstrumentation(options.debug) : undefined;
 
-  // Fail-fast for JS/JSON-configured callers using the renamed option.
-  // TypeScript callers get a compile error; untyped hosts would silently lose reset behavior
-  // and the stale-duration bug would reappear with no warning at the right moment.
-  if ("resetIterationBudgetPerRun" in options) {
-    throw KoiRuntimeError.from(
-      "VALIDATION",
+  // Compatibility shim for the renamed option. TypeScript callers get a compile error;
+  // untyped JS/JSON hosts are warned and the old value is remapped so they don't silently
+  // lose reset behavior after upgrading the package.
+  const legacyOpts = options as unknown as Record<string, unknown>;
+  const hasLegacyKey = "resetIterationBudgetPerRun" in legacyOpts;
+  if (hasLegacyKey && !("resetBudgetPerRun" in legacyOpts)) {
+    console.warn(
       "[koi] createKoi: option `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
-        "Replace the key — continuing with reset DISABLED would silently reintroduce the stale-duration bug.",
+        "The value has been remapped automatically. Update your config to silence this warning.",
     );
   }
+  // Effective value: new key wins if present; fall back to legacy key.
+  const resetBudgetPerRun =
+    options.resetBudgetPerRun === true ||
+    (hasLegacyKey &&
+      !("resetBudgetPerRun" in legacyOpts) &&
+      legacyOpts.resetIterationBudgetPerRun === true);
 
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {
@@ -173,7 +180,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   //   (a) Branded guard missing resetForRun() — version-skew on the symbol contract
   //   (b) Unbranded guard with canonical name "koi:iteration-guard" — pre-#1917 legacy
   //       guard that would cause partial-reset divergence at runtime
-  if (options.resetBudgetPerRun === true) {
+  if (resetBudgetPerRun) {
     for (const mw of allMiddleware) {
       if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
         throw KoiRuntimeError.from(
@@ -703,19 +710,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           );
         }
       }
-      // Record the governance event BEFORE mutating guard state so that a
-      // rejecting async controller aborts the run without leaving guards reset
-      // and governance stale (partial-reset divergence). Pass boundaryTimestamp
-      // so controllers anchor duration windows to the true boundary, not record time.
-      await governance.record({
-        kind: "run_reset",
-        source: "engine",
-        boundaryId,
-        boundaryTimestamp: runStartedAt,
-      });
-      // Guards reset only after governance commit succeeds. If any guard's
-      // resetForRun throws (extraordinary — it's a sync pure operation), we
-      // poison the runtime so subsequent runs cannot proceed with mixed state.
+      // Reset all guards FIRST — before committing the governance event — so that
+      // `run_reset` is only emitted when the reset is fully complete. If a guard
+      // throws, we poison the runtime and re-throw; governance is never told about
+      // a reset that didn't happen. If governance later throws after guards are reset,
+      // enforcement is still correct (guards have fresh budgets); only the audit record
+      // is missing, which is recoverable on the next retry.
       try {
         for (const mw of guards) {
           if (isIterationGuardHandle(mw)) {
@@ -726,6 +726,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         poisoned = true;
         throw e;
       }
+      await governance.record({
+        kind: "run_reset",
+        source: "engine",
+        boundaryId,
+        boundaryTimestamp: runStartedAt,
+      });
     }
 
     /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place.
@@ -904,7 +910,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // to applyRecomposition() so forge/dynamic guards are included.
       resetGuardsCurrentRun = undefined;
 
-      if (options.resetBudgetPerRun === true) {
+      if (resetBudgetPerRun) {
         resetGuardsCurrentRun = new Set();
         if (!adapter.terminals) {
           // Non-cooperating adapters: reset immediately at run entry (guard set is fixed).
