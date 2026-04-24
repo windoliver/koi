@@ -18,7 +18,7 @@ import type {
   TaskBoard,
   TaskItemId,
 } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, messageId } from "@koi/core";
 import { sanitizeMcpError } from "../errors.js";
 import { createPlatformTools } from "../platform-tools.js";
 
@@ -47,6 +47,7 @@ function mockMailbox(): MailboxComponent & { calls: readonly unknown[] } {
     }),
     onMessage: () => () => {},
     list: mock(async () => []),
+    drain: () => [],
   };
 }
 
@@ -145,23 +146,27 @@ function makeTask(id: string, status: string): Task {
 // ---------------------------------------------------------------------------
 
 describe("createPlatformTools", () => {
-  test("creates 7 tools when all capabilities provided", () => {
+  test("creates 8 tools when all capabilities provided", () => {
     const tools = createPlatformTools({
       callerId: CALLER,
       mailbox: mockMailbox(),
       taskBoard: mockTaskBoard(),
       registry: mockRegistry(),
     });
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
   });
 
-  test("creates 2 tools for mailbox only", () => {
+  test("creates 3 tools for mailbox only", () => {
     const tools = createPlatformTools({
       callerId: CALLER,
       mailbox: mockMailbox(),
     });
-    expect(tools).toHaveLength(2);
-    expect(tools.map((t) => t.descriptor.name)).toEqual(["koi_send_message", "koi_list_messages"]);
+    expect(tools).toHaveLength(3);
+    expect(tools.map((t) => t.descriptor.name)).toEqual([
+      "koi_send_message",
+      "koi_list_messages",
+      "koi_list_mailbox",
+    ]);
   });
 
   test("creates 4 tools for taskBoard only", () => {
@@ -212,6 +217,34 @@ describe("koi_send_message security", () => {
 
     expect(mb.calls).toHaveLength(1);
     expect((mb.calls[0] as Record<string, unknown>).kind).toBe("event");
+  });
+});
+
+describe("koi_list_mailbox", () => {
+  const fakeMsg: AgentMessage = {
+    id: messageId("msg-x"),
+    from: agentId("a"),
+    to: CALLER,
+    kind: "event",
+    type: "ping",
+    createdAt: "2026-01-01T00:00:00Z",
+    payload: { x: 1 },
+  };
+
+  test("uses list() non-destructively and returns lean envelope (no payload)", async () => {
+    const drainSpy = mock(() => [] as readonly AgentMessage[]);
+    const mb = { ...mockMailbox(), list: () => [fakeMsg], drain: drainSpy };
+    const tools = createPlatformTools({ callerId: CALLER, mailbox: mb });
+    // biome-ignore lint/style/noNonNullAssertion: pre-existing pattern; refactor separately
+    const drainTool = tools.find((t) => t.descriptor.name === "koi_list_mailbox")!;
+
+    const result = (await drainTool.execute({})) as { count: number; messages: unknown[] };
+
+    expect(drainSpy).not.toHaveBeenCalled();
+    expect(result.count).toBe(1);
+    expect(result.messages).toHaveLength(1);
+    expect((result.messages[0] as Record<string, unknown>).type).toBe("ping");
+    expect((result.messages[0] as Record<string, unknown>).payload).toBeUndefined();
   });
 });
 
