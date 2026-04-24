@@ -757,17 +757,23 @@ export interface KoiRuntimeConfig {
    *    surfaced in-memory via the governance bridge for the current session). */
   readonly violationSqlitePath?: string | undefined;
   /**
-   * When `auditNdjsonPath`, `auditSqlitePath`, or `violationSqlitePath` were
-   * derived from a repo-authored manifest (not from operator env vars), set
-   * this to the absolute path of the manifest file. `createKoiRuntime` will
-   * call `revalidateAuditPathContainment` immediately before each manifest-
-   * derived sink is opened, closing the TOCTOU window between the pre-runtime
-   * check in `tui-command.ts` and the actual sink open syscall.
+   * Per-sink manifest provenance — set to the manifest file path when the
+   * corresponding audit path was derived from `manifest.audit.*` (not from an
+   * operator env var). `createKoiRuntime` calls `revalidateAuditPathContainment`
+   * immediately before opening each manifest-derived sink to narrow the TOCTOU
+   * window between the pre-runtime check in `tui-command.ts` and the actual
+   * filesystem open syscall.
    *
-   * Leave `undefined` for env-var-sourced paths (operator-trusted, not subject
-   * to the manifest repo-authored trust boundary).
+   * A residual race remains because Bun/Node do not expose `openat` /
+   * `O_NOFOLLOW` for intermediate path components — full atomicity would require
+   * L2 sink API changes. The narrowed window is the best-effort mitigation.
+   *
+   * Leave each field `undefined` for env-var-sourced paths: those are operator-
+   * trusted and are NOT subject to manifest containment revalidation.
    */
-  readonly manifestAuditSourcePath?: string | undefined;
+  readonly manifestNdjsonSourcePath?: string | undefined;
+  readonly manifestSqliteSourcePath?: string | undefined;
+  readonly manifestViolationsSourcePath?: string | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -2329,13 +2335,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
-      // Final containment check immediately before open — minimizes the TOCTOU
+      // Final containment check immediately before open — narrows the TOCTOU
       // window between the pre-runtime check in tui-command.ts and the actual
-      // file open syscall. Only runs for manifest-derived paths.
-      if (config.manifestAuditSourcePath !== undefined) {
+      // file open syscall. Only runs for manifest-derived paths; env-var paths
+      // are operator-trusted and skip this check.
+      if (config.manifestNdjsonSourcePath !== undefined) {
         const err = revalidateAuditPathContainment(
           config.auditNdjsonPath,
-          config.manifestAuditSourcePath,
+          config.manifestNdjsonSourcePath,
         );
         if (err !== undefined) {
           throw new Error(
@@ -2412,10 +2419,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
-      if (config.manifestAuditSourcePath !== undefined) {
+      if (config.manifestSqliteSourcePath !== undefined) {
         const err = revalidateAuditPathContainment(
           config.auditSqlitePath,
-          config.manifestAuditSourcePath,
+          config.manifestSqliteSourcePath,
         );
         if (err !== undefined) {
           throw new Error(
@@ -2598,10 +2605,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // Final containment check immediately before violation store open.
         // Only applies to manifest-derived paths (explicit violationSqlitePath
         // that came from manifest.audit.violations via tui-command.ts).
-        if (config.manifestAuditSourcePath !== undefined && explicitPath) {
+        if (config.manifestViolationsSourcePath !== undefined && explicitPath) {
           const err = revalidateAuditPathContainment(
             resolvedViolationPath,
-            config.manifestAuditSourcePath,
+            config.manifestViolationsSourcePath,
           );
           if (err !== undefined) {
             throw new Error(
