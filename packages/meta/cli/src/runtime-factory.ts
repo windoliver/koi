@@ -1563,6 +1563,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // Settings may only TIGHTEN on the custom-backend path (koi start).
     // Allow rules would bypass the caller's explicit whitelist (e.g. --allow-tool);
     // only deny/ask rules are applied so operators stay in control.
+    const droppedAllowCount = settingsRules.filter((r) => r.effect === "allow").length;
+    if (droppedAllowCount > 0) {
+      console.warn(
+        `[koi/${hostId}] ${droppedAllowCount} settings allow rule(s) are not enforced when a ` +
+          `custom permission backend is active (koi start). ` +
+          `Only deny and ask rules take effect on this path. ` +
+          `Use \`koi tui\` or remove allow rules from settings.`,
+      );
+    }
     const restrictingRules = sortRules(settingsRules.filter((r) => r.effect !== "allow"));
     if (restrictingRules.length > 0) {
       // Compile rules once at construction — never recompile per-query.
