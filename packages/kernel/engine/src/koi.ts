@@ -174,27 +174,34 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
   // #1939: fail closed if any iteration guard cannot be reset — prevents silent
   // stale-state bugs when resetBudgetPerRun (or its deprecated alias) is enabled.
-  // Two failure modes caught at construction:
-  //   (a) Branded guard missing resetForRun() — version-skew on the symbol contract
-  //   (b) Unbranded guard with canonical name "koi:iteration-guard" — pre-#1917 legacy
-  //       guard that would cause partial-reset divergence at runtime
-  // Both option names get the same hard fail: silently suppressing resets reproduces
-  // the stale-state bug this change is designed to eliminate.
+  // Two failure modes with different severity:
+  //   (a) Branded guard missing resetForRun() — hard fail. The guard opted into the
+  //       new symbol contract but is broken; we cannot know its reset semantics.
+  //   (b) Unbranded "koi:iteration-guard" — warn-and-suppress for one compat window.
+  //       This is a known legacy shape from pre-#1917. Hosts with package version skew
+  //       (engine upgraded, engine-compose not yet) land here and should not brick.
   if (resetBudgetPerRun) {
     for (const mw of allMiddleware) {
-      const badBrandedGuard = hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw);
-      const badLegacyGuard = mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw);
-      if (badBrandedGuard || badLegacyGuard) {
+      if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
         const optionName = usingLegacyOption ? "resetIterationBudgetPerRun" : "resetBudgetPerRun";
-        const detail = badBrandedGuard
-          ? `carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
-            `Upgrade this guard to use IterationGuardHandle before enabling ${optionName}.`
-          : `is a legacy pre-#1917 guard that cannot be reset per-run. ` +
-            `Upgrade @koi/engine-compose or remove ${optionName} from options.`;
         throw KoiRuntimeError.from(
           "VALIDATION",
-          `[koi] Middleware "${mw.name ?? "(unnamed)"}" ${detail}`,
+          `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
+            `not implement resetForRun(). Upgrade this guard to use IterationGuardHandle ` +
+            `before enabling ${optionName}.`,
         );
+      }
+      if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+        // Known legacy shape — warn and disable per-run reset for this instance so the
+        // runtime can still start. Upgrade @koi/engine-compose to restore reset behavior.
+        console.warn(
+          `[koi] createKoi: "koi:iteration-guard" does not implement resetForRun() ` +
+            `(pre-#1917 legacy guard). Per-run budget reset is disabled for this instance. ` +
+            `Upgrade @koi/engine-compose to restore reset behavior.`,
+        );
+        // resetBudgetPerRun stays true for the loop but we skip further checks; the guard
+        // will simply not be reset at runtime (resetRunBoundary skips non-IterationGuardHandle).
+        break;
       }
     }
   }
@@ -694,19 +701,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // Validate all guards first — throw before mutating any state.
       // Two cases caught here (construction gate catches static middleware;
       // this defends against dynamic/forged guards added after construction):
-      //   (a) Branded guard missing resetForRun()
-      //   (b) Unbranded canonical-name "koi:iteration-guard" (pre-#1917 legacy)
+      //   (a) Branded guard missing resetForRun() — hard fail. The guard opted into
+      //       the new symbol contract but is broken; we cannot infer reset semantics.
+      //   (b) Unbranded "koi:iteration-guard" — warn and continue. Known legacy shape;
+      //       the reset loop naturally skips it (isIterationGuardHandle returns false).
       for (const mw of guards) {
-        const badBranded = hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw);
-        const badLegacy = mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw);
-        if (badBranded || badLegacy) {
-          const detail = badBranded
-            ? `carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
-              `All branded iteration guards must implement IterationGuardHandle. ` +
-              `Guard: ${mw.name ?? "(unnamed)"}`
-            : `"koi:iteration-guard" does not implement resetForRun(). ` +
-              `This is a legacy pre-#1917 guard. Remove it or upgrade @koi/engine-compose.`;
-          throw KoiRuntimeError.from("VALIDATION", `[koi] Middleware ${detail}`);
+        if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
+              `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+          );
+        }
+        if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+          console.warn(
+            `[koi] resetRunBoundary: dynamic/forged "koi:iteration-guard" does not implement ` +
+              `resetForRun() (pre-#1917 legacy guard). This guard will not be reset for this run. ` +
+              `Upgrade @koi/engine-compose to restore per-run reset behavior.`,
+          );
         }
       }
       // Two separate timestamps for two distinct purposes:
