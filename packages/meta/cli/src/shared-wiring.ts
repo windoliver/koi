@@ -703,6 +703,57 @@ export async function resumeSessionFromJsonl(
 }
 
 // ---------------------------------------------------------------------------
+// Session provenance metadata
+//
+// A small JSON sidecar stored next to each JSONL transcript allows resume-time
+// audit intent checks to use the ORIGINAL session's manifest rather than a
+// cwd-based re-discovery (which is ambiguous when launched from a different dir).
+// ---------------------------------------------------------------------------
+
+const SESSION_META_VERSION = 1 as const;
+
+/**
+ * Write session provenance metadata to a sidecar file alongside the JSONL
+ * transcript. Non-fatal if the sessions directory does not exist yet — the
+ * transcript's first append creates it; a missing sidecar means "no provenance
+ * recorded" and the resume audit check silently skips.
+ */
+export async function writeSessionMeta(
+  sessionsDir: string,
+  sid: string,
+  meta: { readonly manifestPath?: string },
+): Promise<void> {
+  try {
+    const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+    await Bun.write(path, JSON.stringify({ version: SESSION_META_VERSION, ...meta }));
+  } catch {
+    // Non-fatal: directory may not exist yet on the very first run.
+  }
+}
+
+/**
+ * Read session provenance metadata; returns an empty object if the sidecar is
+ * absent, unreadable, or malformed — callers treat this as "no manifest recorded."
+ */
+export async function readSessionMeta(
+  sessionsDir: string,
+  sid: string,
+): Promise<{ readonly manifestPath?: string }> {
+  const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+  try {
+    const raw = await Bun.file(path).text();
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed !== null && typeof parsed === "object") {
+      const meta = parsed as Record<string, unknown>;
+      if (typeof meta.manifestPath === "string") return { manifestPath: meta.manifestPath };
+    }
+  } catch {
+    // ENOENT or malformed — treat as no provenance
+  }
+  return {};
+}
+
+// ---------------------------------------------------------------------------
 // Shared middleware factory wrappers
 //
 // These are the middleware types that both `koi start` and `koi tui` wire

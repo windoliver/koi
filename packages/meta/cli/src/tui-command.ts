@@ -104,7 +104,7 @@ import { resolveManifestPath } from "./resolve-manifest-path.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
-import { resumeSessionFromJsonl } from "./shared-wiring.js";
+import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 import {
@@ -1383,6 +1383,90 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.stderr.write(
         `koi tui: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
       );
+    }
+  }
+
+  // Persist manifest provenance so future resumes can enforce audit intent
+  // against the original session's manifest, not the cwd at resume time.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
+      manifestPath: resolvedManifestPath,
+    });
+  }
+
+  // Resume-path audit intent enforcement using stored session provenance.
+  // The check mirrors the new-session path but is keyed on the manifest that
+  // actually governed the original session, not a cwd rediscovery.
+  if (flags.resume !== undefined) {
+    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(tuiSessionId));
+    if (resumeMeta.manifestPath !== undefined) {
+      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+        allowOAuthSchemes: true,
+        skipAuditValidation: false,
+        skipAuditValidationFor: {
+          ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+          sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+          violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+        },
+      });
+      if (!resumeAuditResult.ok) {
+        const allCoveredByEnv =
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+        if (!allCoveredByEnv) {
+          process.stderr.write(
+            "koi tui: original session manifest cannot be parsed — " +
+              "refusing to resume because audit intent cannot be verified. " +
+              "Set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS to cover all " +
+              "audit sinks, or pass --manifest to re-specify the manifest explicitly.\n",
+          );
+          process.exit(1);
+        }
+      } else if (resumeAuditResult.value.audit !== undefined) {
+        const resumeAudit = resumeAuditResult.value.audit;
+        if (resumeAudit.malformed === true) {
+          const allCoveredByEnv =
+            process.env.KOI_AUDIT_NDJSON !== undefined &&
+            process.env.KOI_AUDIT_SQLITE !== undefined &&
+            (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+          if (!allCoveredByEnv) {
+            const missingVars = [
+              process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+              process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+              flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+                ? "KOI_AUDIT_VIOLATIONS"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" + ");
+            process.stderr.write(
+              "koi tui: original session manifest.audit has an unrecognized format — " +
+                "refusing to resume because audit intent cannot be determined. " +
+                `Fix the manifest, or set ${missingVars} to cover all active audit sinks.\n`,
+            );
+            process.exit(1);
+          }
+        } else {
+          const ndjsonExposed =
+            resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+          const sqliteExposed =
+            resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+          const violationsExposed =
+            flags.governance.enabled &&
+            resumeAudit.violations !== undefined &&
+            process.env.KOI_AUDIT_VIOLATIONS === undefined;
+          if (ndjsonExposed || sqliteExposed || violationsExposed) {
+            process.stderr.write(
+              "koi tui: original session manifest.audit declares audit sinks but the matching " +
+                "KOI_AUDIT_* env vars are absent — refusing to resume to prevent silently " +
+                "dropping declared audit logging. Set each matching KOI_AUDIT_* env var " +
+                "(empty string disables that sink), or pass --manifest and re-specify the manifest.\n",
+            );
+            process.exit(1);
+          }
+        }
+      }
     }
   }
 

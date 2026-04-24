@@ -50,7 +50,7 @@ import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { resolveManifestPath } from "../resolve-manifest-path.js";
 import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
-import { resumeSessionFromJsonl } from "../shared-wiring.js";
+import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -676,6 +676,37 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       process.stdout.write(`${label}: ${text}\n\n`);
     }
     process.stdout.write("── End of history ──\n\n");
+  }
+
+  // Persist manifest provenance so future resumes can enforce audit intent
+  // against the original session's manifest, not the cwd at resume time.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
+  }
+
+  // Resume-path audit check using stored session provenance.
+  // koi start hard-rejects manifest.audit — check the original session's manifest.
+  if (flags.resume !== undefined) {
+    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(sid));
+    if (resumeMeta.manifestPath !== undefined) {
+      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+        skipAuditValidation: true,
+      });
+      if (!resumeAuditResult.ok) {
+        return bail(
+          "original session manifest cannot be parsed during resume — " +
+            "refusing to start because manifest.audit presence cannot be verified. " +
+            "Fix the manifest to run under koi start, or use koi tui.",
+        );
+      }
+      if (resumeAuditResult.value.audit !== undefined) {
+        return bail(
+          "original session manifest.audit is not supported on this host. " +
+            "koi start does not wire audit sinks — use koi tui to resume this session, " +
+            "or remove the audit: block from the manifest.",
+        );
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
