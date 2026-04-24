@@ -229,17 +229,21 @@ function injectSkillsProgressive(
   request: ModelRequest,
   hasForkSupport: boolean,
 ): ModelRequest {
-  if (request.tools !== undefined && !request.tools.some((t) => t.name === SKILL_TOOL_NAME)) {
-    return request;
-  }
   const sorted = sortedSkills(agent);
+  // Gate only the <available_skills> XML block on Skill tool presence.
+  // Body-backed (non-runtime) skills are always injected — they don't require
+  // the Skill tool; their guidance is embedded directly in systemPrompt.
+  const skillToolPresent =
+    request.tools === undefined || request.tools.some((t) => t.name === SKILL_TOOL_NAME);
   // Runtime-backed progressive skills have runtimeBacked: true (set by attachProgressive).
   // MCP/external metadata-only stubs lack this marker and are excluded from the XML block
   // to prevent Skill() calls that would return empty bodies with no useful guidance.
   // Fork skills are excluded unless hasForkSupport: true (spawnFn wired).
-  const runtimeSkills = sorted.filter(
-    (s) => s.runtimeBacked === true && (hasForkSupport || s.executionMode !== "fork"),
-  );
+  const runtimeSkills = skillToolPresent
+    ? sorted.filter(
+        (s) => s.runtimeBacked === true && (hasForkSupport || s.executionMode !== "fork"),
+      )
+    : [];
   // Non-runtime skills (browser, memory, etc.) carry non-empty bodies.
   // Inject them via the legacy path so their guidance still reaches the model.
   const otherBodies = sorted.map((s) => s.content).filter((c) => c !== "");

@@ -511,4 +511,26 @@ describe("createSkillInjectorMiddleware — Skill tool gate", () => {
 
     expect(received[0]?.systemPrompt).toBeUndefined();
   });
+
+  test("progressive mode: body-backed skills inject even when Skill tool absent", async () => {
+    // Non-runtime (body-backed) skills in a progressive-mode session still
+    // need their guidance in systemPrompt even when the Skill tool is filtered
+    // out (e.g., by a child-agent tool ceiling). The gate only applies to the
+    // <available_skills> XML block for runtimeBacked skills.
+    const agent = mockAgent(
+      new Map([progressiveSkill("cmd"), skill("browser", "## Browser guidance")]),
+    );
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+    const { wrapModelCall } = assertHooks(mw);
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), mockRequestWithTools(["Bash"]), async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    // Body-backed "browser" skill injected; runtimeBacked "cmd" XML block skipped
+    expect(received[0]?.systemPrompt).toContain("## Browser guidance");
+    expect(received[0]?.systemPrompt).not.toContain("<available_skills>");
+  });
 });
