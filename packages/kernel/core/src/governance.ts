@@ -135,12 +135,10 @@ export type GovernanceEvent =
        */
       readonly boundaryId?: string | undefined;
       /**
-       * Wall-clock ms (Date.now()) captured at `runtime.run()` entry — before any
-       * async startup work (forge refresh, dynamic-mw recomposition) — so the
-       * governance duration sensor is anchored to submission time, not boot completion.
-       * Note: iteration guards use a separate post-startup timestamp for their
-       * inactivity window (`lastActivityMs`) so startup latency cannot trip
-       * `maxInactivityMs` before the first model/tool call.
+       * Wall-clock ms (Date.now()) captured after startup work completes (forge refresh,
+       * dynamic-mw recomposition, guard validation) — the same timestamp used for
+       * `resetForRun()` on every iteration guard. Using one authoritative anchor for both
+       * guard and governance enforcement prevents split-brain timeout decisions.
        *
        * Optional for backward compatibility: controllers fall back to `Date.now()`
        * when absent. Future values are clamped to now (non-finite values fall back

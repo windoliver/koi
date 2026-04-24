@@ -627,10 +627,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: guards already reset for the current run — prevents double-resets across recompositions
     let resetGuardsCurrentRun: Set<IterationGuardHandle> | undefined;
 
-    // let justified: wall-clock ms captured at run() entry; used as boundaryTimestamp in
-    // resetRunBoundary() so duration enforcement anchors to submission time, not post-boot time.
-    let runBoundaryEntryAt: number | undefined;
-
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
 
@@ -717,12 +713,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // Two separate timestamps for two distinct purposes:
       //   boundaryTs — run() entry, used in the governance event so duration accounting
       //                starts from submission time (not post-startup).
-      //   resetAt    — post-validation, used for guard resetForRun() so the inactivity
-      //                window does not start until startup work completes. resetForRun(t)
-      //                sets both startedAt and lastActivityMs to t; using a pre-startup
-      //                timestamp would trip maxInactivityMs before the first model call.
-      const boundaryTs = runBoundaryEntryAt ?? Date.now();
-      runBoundaryEntryAt = undefined;
+      // Single authoritative timestamp: both guard resets and governance boundaryTimestamp
+      // use the same value so duration enforcement is never split-brain.
+      // Using post-startup time (after validation) avoids tripping maxInactivityMs before
+      // the first model call — resetForRun(t) sets both startedAt and lastActivityMs to t.
       const resetAt = Date.now();
       // Reset all guards FIRST — before committing the governance event — so that
       // `run_reset` is only emitted when the reset is fully complete. If a guard
@@ -752,7 +746,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           kind: "run_reset",
           source: "engine",
           boundaryId,
-          boundaryTimestamp: boundaryTs,
+          boundaryTimestamp: resetAt,
         });
       } catch (e) {
         poisoned = true;
@@ -910,14 +904,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // factorySessionId block above (#1742) — and uses a separate
       // runtime-scoped ctx because dispose may happen long after any run.
       agent.transition({ kind: "start" });
-
-      // #1939: capture run-entry timestamp BEFORE any async work (including onSessionStart)
-      // so governance duration accounting starts from actual submission time. The timestamp
-      // is consumed later in resetRunBoundary() as boundaryTimestamp. Captured here rather
-      // than inside the resetBudgetPerRun block so it precedes onSessionStart on first run.
-      if (resetBudgetPerRun) {
-        runBoundaryEntryAt = Date.now();
-      }
 
       if (!lifecycleSessionStarted) {
         // #1742: capture this run's sessionCtx so the matching
