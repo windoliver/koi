@@ -186,19 +186,26 @@ export function createMcpConnection(
         // Silent reconnect failed despite fresh token — fall through to interactive.
       }
       if (outcome === "transient-failure") {
-        // Tokens are preserved but the refresh endpoint is temporarily unavailable.
-        // Do NOT launch the browser OAuth flow — the session is still recoverable.
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
-            retryable: true,
-            context: { serverName: config.name },
-          },
-        };
+        // Tokens exist but the refresh endpoint is temporarily unavailable.
+        // If no interactive handler is wired, return a retryable error — the
+        // session may self-heal when the refresh endpoint comes back.
+        // If an onAuthNeeded handler IS wired, fall through to interactive auth
+        // so the same `transient-failure` outcome can be recovered the same way
+        // as an explicit re-auth request (consistent with triggerMcpServerAuth).
+        if (onAuthNeeded === undefined) {
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+              retryable: true,
+              context: { serverName: config.name },
+            },
+          };
+        }
+        // Fall through to interactive auth below.
       }
-      // "needs-auth" (or no handler) — interactive OAuth required.
+      // "needs-auth", "transient-failure" with handler, or fallback — interactive OAuth.
       if (onAuthNeeded === undefined) {
         return { ok: false, error: authDeclinedError() };
       }
