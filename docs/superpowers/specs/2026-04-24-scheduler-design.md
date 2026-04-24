@@ -50,53 +50,110 @@ Total: ~1325 LOC
 ### Public API
 
 ```typescript
-// Factory
+// Dispatcher contract — agentId, EngineInput, mode, AbortSignal.
+// signal is aborted when timeoutMs elapses. Dispatchers SHOULD propagate it.
+// Dispatchers that cannot cooperatively cancel MUST ensure their operations are
+// idempotent — the task ID serves as the idempotency key for at-most-once
+// semantic enforcement by callers. A timed-out attempt is treated as
+// indeterminate: the scheduler will not retry until staleTaskThresholdMs elapses
+// and recovery moves the task back to pending (retries++), providing a natural
+// deduplication window for idempotent dispatchers.
+type TaskDispatcher = (
+  agentId: AgentId,
+  input: EngineInput,
+  mode: "spawn" | "dispatch",
+  signal: AbortSignal,
+) => Promise<void>
+
+// Factory — dbPath is separate (passed to createSqliteTaskStore / createSqliteScheduleStore)
 export function createScheduler(
   config: SchedulerConfig,
   store: TaskStore,
+  dispatcher: TaskDispatcher,
   clock?: Clock,
-  scheduleStore?: ScheduleStore
+  scheduleStore?: ScheduleStore,
 ): TaskScheduler
 
-// Interfaces (defined in @koi/core)
-interface TaskScheduler {
-  submit(agentId: AgentId, input: string, opts?: TaskOptions): Promise<TaskId>
-  cancel(taskId: TaskId, agentId: AgentId): Promise<boolean>
-  schedule(agentId: AgentId, expression: string, input: string, opts?: ScheduleOptions): Promise<ScheduleId>
-  unschedule(scheduleId: ScheduleId, agentId: AgentId): Promise<boolean>
-  pause(scheduleId: ScheduleId, agentId: AgentId): Promise<boolean>
-  resume(scheduleId: ScheduleId, agentId: AgentId): Promise<boolean>
-  query(agentId: AgentId, filter?: TaskFilter): Promise<ScheduledTask[]>
-  stats(): Promise<SchedulerStats>
-  history(agentId: AgentId, filter?: HistoryFilter): Promise<TaskRunRecord[]>
-  watch(listener: (event: SchedulerEvent) => void): () => void
-  [Symbol.asyncDispose](): Promise<void>
+// All interfaces below ARE already defined in @koi/core. Do NOT redefine them.
+// Signatures here are copied verbatim from packages/kernel/core/src/scheduler.ts
+// for reference only. Implementation MUST import from @koi/core.
+//
+// EngineInput (from @koi/core engine.ts) — stored as JSON in SQLite:
+//   { kind: "text"; text: string }
+//   | { kind: "messages"; messages: InboundMessage[] }
+//   | { kind: "resume"; state: EngineState }
+
+// TaskScheduler — full host-facing interface (exact L0 signatures):
+interface TaskScheduler extends AsyncDisposable {
+  // mode is required (no default)
+  readonly submit: (agentId: AgentId, input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions) => TaskId | Promise<TaskId>
+  // cancel/unschedule/pause/resume take only an ID — no agentId (caller-side filter)
+  readonly cancel: (id: TaskId) => boolean | Promise<boolean>
+  // expression is FIRST in schedule()
+  readonly schedule: (expression: string, agentId: AgentId, input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions & { readonly timezone?: string }) => ScheduleId | Promise<ScheduleId>
+  readonly unschedule: (id: ScheduleId) => boolean | Promise<boolean>
+  readonly pause: (id: ScheduleId) => boolean | Promise<boolean>
+  readonly resume: (id: ScheduleId) => boolean | Promise<boolean>
+  // query/history take filter objects (agentId is a field inside, not positional)
+  readonly query: (filter: TaskFilter) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>
+  readonly stats: () => SchedulerStats            // global, host-process only
+  readonly history: (filter: TaskHistoryFilter) => readonly TaskRunRecord[] | Promise<readonly TaskRunRecord[]>
+  readonly watch: (listener: (event: SchedulerEvent) => void) => () => void
 }
 
-interface TaskStore {
-  save(task: ScheduledTask): Promise<void>
-  load(taskId: TaskId): Promise<ScheduledTask | undefined>
-  updateStatus(taskId: TaskId, status: TaskStatus, patch?: Partial<ScheduledTask>): Promise<void>
-  query(filter: TaskFilter): Promise<ScheduledTask[]>
-  loadPending(): Promise<ScheduledTask[]>
-  remove(taskId: TaskId): Promise<void>
-  purge(olderThanMs: number, statuses: TaskStatus[]): Promise<number>
+// SchedulerComponent — agent-facing subset (exact L0 signatures, agentId pinned):
+interface SchedulerComponent {
+  readonly submit: (input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions) => TaskId | Promise<TaskId>
+  readonly cancel: (id: TaskId) => boolean | Promise<boolean>
+  readonly schedule: (expression: string, input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions & { readonly timezone?: string }) => ScheduleId | Promise<ScheduleId>
+  readonly unschedule: (id: ScheduleId) => boolean | Promise<boolean>
+  readonly pause: (id: ScheduleId) => boolean | Promise<boolean>
+  readonly resume: (id: ScheduleId) => boolean | Promise<boolean>
+  readonly query: (filter: TaskFilter) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>
+  readonly stats: () => SchedulerStats | Promise<SchedulerStats>   // MUST be agent-scoped in impl
+  readonly history: (filter: TaskHistoryFilter) => readonly TaskRunRecord[] | Promise<readonly TaskRunRecord[]>
 }
 
-interface ScheduleStore {
-  saveSchedule(entry: ScheduleEntry): Promise<void>
-  removeSchedule(scheduleId: ScheduleId): Promise<void>
-  loadSchedules(): Promise<ScheduleEntry[]>
+// TaskStore — exact L0 signatures (no purge — not in L0 contract):
+interface TaskStore extends AsyncDisposable {
+  readonly save: (task: ScheduledTask) => void | Promise<void>
+  readonly load: (id: TaskId) => ScheduledTask | undefined | Promise<ScheduledTask | undefined>
+  readonly remove: (id: TaskId) => void | Promise<void>
+  readonly updateStatus: (id: TaskId, status: ScheduledTaskStatus, patch?: Partial<Pick<ScheduledTask, "startedAt" | "completedAt" | "lastError" | "retries">>) => void | Promise<void>
+  readonly query: (filter: TaskFilter) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>
+  readonly loadPending: () => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>
+}
+
+// ScheduleStore — exact L0 signatures (uses CronSchedule, not ScheduleEntry):
+interface ScheduleStore extends AsyncDisposable {
+  readonly saveSchedule: (schedule: CronSchedule) => void | Promise<void>
+  readonly removeSchedule: (id: ScheduleId) => void | Promise<void>
+  readonly loadSchedules: () => readonly CronSchedule[] | Promise<readonly CronSchedule[]>
+}
+
+// SchedulerConfig — exact L0 definition (no dbPath — passed to SQLite store factory separately):
+interface SchedulerConfig {
+  readonly maxConcurrent: number           // default: 10
+  readonly defaultPriority: number         // default: 5
+  readonly defaultMaxRetries: number       // default: 3
+  readonly baseRetryDelayMs: number        // default: 1_000
+  readonly maxRetryDelayMs: number         // default: 60_000
+  readonly retryJitterMs: number           // default: 500
+  readonly pollIntervalMs: number          // default: 1_000
+  readonly staleTaskThresholdMs: number    // default: 300_000 (stale "running" recovery)
 }
 ```
 
 ### SQLite Schema
 
 ```sql
+-- input column stores JSON-serialized EngineInput (kind + variant fields)
+-- e.g. {"kind":"text","text":"run daily report"}
+-- Deserialization must validate the discriminant and reject unknown kinds.
 CREATE TABLE koi_tasks (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
-  input TEXT NOT NULL,
+  input TEXT NOT NULL,   -- JSON: EngineInput discriminated union
   mode TEXT NOT NULL,
   priority INTEGER NOT NULL DEFAULT 5,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -115,11 +172,36 @@ CREATE TABLE koi_schedules (
   id TEXT PRIMARY KEY,
   expression TEXT NOT NULL,
   agent_id TEXT NOT NULL,
-  input TEXT NOT NULL,
+  input TEXT NOT NULL,        -- JSON: EngineInput discriminated union
   mode TEXT NOT NULL,
   task_options TEXT,
   timezone TEXT,
-  paused INTEGER NOT NULL DEFAULT 0
+  paused INTEGER NOT NULL DEFAULT 0,
+  run_once INTEGER NOT NULL DEFAULT 0,  -- 1 = fire exactly once then remove
+  next_run_at INTEGER,                  -- Unix ms: next scheduled fire time (null = not yet computed)
+  last_run_at INTEGER,                  -- Unix ms: last fire time (null = never fired)
+  completed_at INTEGER                  -- Unix ms: when run_once schedule completed (null = not done)
+);
+-- Restart semantics:
+-- run_once=1 + completed_at NOT NULL → schedule already fired; skip re-registration on startup.
+-- run_once=0 → re-register croner; if next_run_at < now AND last_run_at IS NULL → fire missed run.
+-- Missed runs for recurring schedules are skipped by default (no backfill).
+-- A one-shot schedule is removed transactionally with task creation (in a single SQLite write).
+
+-- Immutable append-only run history: one row per execution attempt.
+-- Never updated. Rows keyed by (task_id, retry_attempt).
+-- Supports TaskRunRecord[] returned by history() and scheduler_history tool.
+CREATE TABLE koi_task_runs (
+  id TEXT PRIMARY KEY,            -- unique run ID (branded RunId)
+  task_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  status TEXT NOT NULL,           -- "completed" | "failed"
+  started_at INTEGER NOT NULL,
+  completed_at INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  retry_attempt INTEGER NOT NULL,
+  error TEXT,                     -- JSON: KoiError | null
+  result TEXT                     -- JSON: unknown | null
 );
 ```
 
@@ -134,29 +216,59 @@ submit(input, mode, opts)
   → on failure: retry with backoff OR dead-letter after maxRetries
 
 schedule(expression, input, mode, opts)
-  → croner fires → submit() → normal task lifecycle
-  → ScheduleStore.save() for persistence across restart
+  → validateCronExpression(expression) — reject invalid expressions early
+  → ScheduleStore.saveSchedule(entry) — persist FIRST before any in-memory state
+  → register croner in-memory
+  → return scheduleId (caller can trust persistence)
+  → on croner tick: submit() → normal task lifecycle
+
+  Durability invariant: if ScheduleStore.save fails, the whole call fails and
+  no in-memory croner is registered. scheduleId is never returned for
+  unpersisted schedules.
 
 init() on startup
-  → TaskStore.loadPending() → rebuild heap
-  → recover stale "running" tasks → mark failed
-  → ScheduleStore.loadSchedules() → re-register croners
+  → TaskStore.loadPending() → rebuild heap (all pending + delayed tasks)
+  → stale "running" recovery: tasks where startedAt < (now - staleTaskThresholdMs)
+      are reset to pending with retries++ rather than hard-failed
+      (staleTaskThresholdMs default: 300_000ms — from SchedulerConfig in @koi/core)
+      only tasks exceeding maxRetries are dead-lettered
+      emit task:recovered event for each recovered task
+  → ScheduleStore.loadSchedules() → re-register croners for non-paused schedules
+
+timeout enforcement
+  → dispatchTask() creates AbortController, wraps dispatcher call in Promise.race([
+        dispatcher(agentId, input, mode, signal),
+        sleep(timeoutMs).then(() => { controller.abort(); throw new TimeoutError() })
+      ])
+  → semaphore is always released in a finally block — no stuck slots
+  → on timeout: timeout is treated as TERMINAL — task moves directly to dead_letter,
+      NOT retried. Automatic retry of timed-out work is disabled because a
+      non-cooperative dispatcher may still be running, and re-queuing would produce
+      duplicate execution of potentially non-idempotent side effects.
+      emit task:dead_letter with error reason="timeout"
+  → callers who need timeout-with-retry must configure a longer timeoutMs or split
+      work into idempotent units.
 ```
 
-### SchedulerConfig
+### SchedulerConfig and TaskDispatcher
+
+`SchedulerConfig` is defined in `@koi/core` — import it, do not redeclare. See exact definition above in the Public API section. Default values are in `DEFAULT_SCHEDULER_CONFIG` from `@koi/core`.
+
+`TaskDispatcher` is NOT in `@koi/core` — it is a local type defined in `@koi/scheduler`:
 
 ```typescript
-interface SchedulerConfig {
-  readonly pollIntervalMs: number        // default: 1000
-  readonly maxConcurrent: number         // default: 5
-  readonly defaultPriority: number       // default: 5
-  readonly defaultMaxRetries: number     // default: 3
-  readonly maxDeadLetterRetries: number  // default: 0
-  readonly dbPath: string                // SQLite file path
-  readonly dispatcher: TaskDispatcher    // (agentId, input, mode) => Promise<void>
-}
+// signal is aborted when timeoutMs elapses; dispatcher SHOULD propagate it.
+// Dispatchers that cannot cooperatively cancel MUST ensure their work is idempotent —
+// the task ID serves as the idempotency key.
+type TaskDispatcher = (
+  agentId: AgentId,
+  input: EngineInput,
+  mode: "spawn" | "dispatch",
+  signal: AbortSignal,
+) => Promise<void>
+```
 
-type TaskDispatcher = (agentId: AgentId, input: string, mode: DispatchMode) => Promise<void>
+`dbPath` is passed to `createSqliteTaskStore(dbPath)` and `createSqliteScheduleStore(dbPath)` separately, not via `SchedulerConfig`.
 ```
 
 ### What's Stripped vs V1
@@ -194,7 +306,7 @@ Total: ~460 LOC
 
 ### Tool Surface (9 tools)
 
-All tools created by `attach(scheduler, agentId)`. The `agentId` is never in the LLM schema — pinned at attach time.
+All tools created by `attach(component: SchedulerComponent)`. The provider receives a `SchedulerComponent` — the agent-scoped L0 interface — not the raw `TaskScheduler`. Ownership enforcement (cancel/unschedule/pause/resume only affect the attached agent's work) is built into the `SchedulerComponent` implementation in `@koi/scheduler`, not re-implemented in the provider. The `agentId` is pinned inside `SchedulerComponent` at construction time and is never in the LLM tool schemas.
 
 | Tool | Input | Output |
 |------|-------|--------|
@@ -205,15 +317,16 @@ All tools created by `attach(scheduler, agentId)`. The `agentId` is never in the
 | `scheduler_pause` | `scheduleId` | `{ paused: boolean }` |
 | `scheduler_resume` | `scheduleId` | `{ resumed: boolean }` |
 | `scheduler_query` | `status?`, `priority?`, `limit?` (max 50, default 20) | `{ tasks, count }` |
-| `scheduler_stats` | _(none)_ | `{ pending, running, completed, failed, deadLettered, activeSchedules, pausedSchedules }` |
+| `scheduler_stats` | _(none)_ | `{ pending, running, completed, failed, deadLettered, activeSchedules, pausedSchedules }` — all counts are agent-scoped: task counts from `query({agentId})` by status; schedule counts from `ScheduleStore.loadSchedules()` filtered by agentId in the impl |
 | `scheduler_history` | `status?`, `since?`, `limit?` (max 50, default 20) | `{ runs, count }` |
 
 ### Security Model
 
-- `agentId` pinned at `attach()` — never exposed in LLM schemas
-- `query` and `history` auto-filter to owning agent's tasks
-- `cancel` verifies task ownership before cancelling
-- `unschedule`/`pause`/`resume` verify schedule ownership
+- `agentId` pinned inside `SchedulerComponent` at construction — never exposed in LLM schemas
+- Ownership enforcement lives in `SchedulerComponent` impl: `cancel`, `unschedule`, `pause`, `resume` verify the target belongs to the pinned agentId before mutating (using `TaskStore.load()` and `ScheduleStore.loadSchedules()` accessible to the scheduler)
+- `query`, `history`, `stats` pass `{ agentId }` in all filters — no cross-agent data reachable through the component interface
+- `scheduler_stats` derives agent-scoped counts: task counts via `query({ agentId, status })` enumerated by status; schedule counts via schedule store filtered by agentId
+- Global `TaskScheduler.stats()` is host-process only — not exposed through any agent tool
 
 ---
 
