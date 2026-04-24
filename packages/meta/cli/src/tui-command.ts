@@ -1118,16 +1118,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestAudit = manifestResult.value.audit;
     manifestLoadPath = resolvedManifestPath;
 
-    // Warn loudly when manifest.audit is present but the host gate is off.
-    // Silent downgrade is dangerous for compliance features: operators can
-    // believe audit logging is active when it is not.
+    // Fail closed when manifest.audit is present but the host gate is off.
+    // Matches koi start behavior. Silent downgrade is dangerous for compliance:
+    // operators would believe audit logging is active when it is not.
     if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1") {
       process.stderr.write(
         "koi tui: manifest.audit is set but KOI_ALLOW_MANIFEST_FILE_SINKS is not 1 — " +
-          "manifest audit/violation paths are ignored. " +
-          "Set KOI_ALLOW_MANIFEST_FILE_SINKS=1 to honor them, or configure audit via " +
-          "KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars instead.\n",
+          "refusing to start to prevent silently disabled audit logging. " +
+          "Set KOI_ALLOW_MANIFEST_FILE_SINKS=1 to enable manifest-configured audit sinks, " +
+          "or remove the audit: block from the manifest, " +
+          "or configure audit via KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars instead.\n",
       );
+      process.exit(1);
     }
 
     if (manifestResult.value.filesystem !== undefined) {
