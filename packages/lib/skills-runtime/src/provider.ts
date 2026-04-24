@@ -100,15 +100,20 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
   // loadAll() gives full blocked/VALIDATION visibility for the skipped list —
   // the same parity as eager mode.
   //
-  // After collecting validation results, evict each successful skill's body from
-  // the LRU cache via invalidate(name). This ensures Skill tool invocations always
-  // load fresh content from disk rather than the body snapshot taken at attach time.
-  // Without eviction, edits to SKILL.md after session start would be invisible to
-  // the agent for the rest of the session.
+  // Session-snapshot consistency: we intentionally do NOT evict skill bodies
+  // from the LRU cache after attach. The advertised ECS components and the
+  // cached bodies both reflect the same session-start state, so Skill tool
+  // invocations always load the body that was valid when the session started.
   //
-  // Do NOT call invalidate() with no args: full invalidation clears externalSkills
-  // and discovery state, which would break Skill tool load() calls for externally-
-  // registered skills.
+  // This prevents a stale-advertisement hazard where the middleware keeps
+  // injecting a skill into <available_skills> even after its backing file is
+  // deleted or becomes invalid — which would cause confusing NOT_FOUND/
+  // VALIDATION errors from the Skill tool mid-session.
+  //
+  // Tradeoff: edits to SKILL.md after session start are not visible until the
+  // next session. This is the correct model for production: consistency is
+  // preferable to in-session hot-reload, and skill authors can start a new
+  // session to pick up changes.
   const allResult = await runtime.loadAll();
   const components = new Map<string, unknown>();
   const skipped: Array<{ readonly name: string; readonly reason: string }> = [];
@@ -132,7 +137,6 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
       components.set(skillToken(name), skillDefinitionToComponent(result.value));
     } else {
       components.set(skillToken(name), skillDefinitionToProgressiveComponent(result.value));
-      runtime.invalidate(name);
     }
   }
 

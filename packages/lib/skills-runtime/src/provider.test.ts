@@ -263,10 +263,12 @@ describe("createSkillProvider — progressive mode", () => {
     expect(skippedNames).toContain("blocked-skill");
   });
 
-  test("progressive attach evicts body cache so Skill tool always reads fresh content", async () => {
-    // regression: without per-skill invalidate() after loadAll(), Skill tool calls within
-    // the same session would serve the body snapshot taken at attach time rather than
-    // re-reading from disk, making edits to SKILL.md invisible to the agent.
+  test("progressive attach keeps session-snapshot: Skill tool returns attach-time body", async () => {
+    // Session-snapshot consistency: advertised ECS components and cached bodies both
+    // reflect session-start state. This prevents the stale-advertisement hazard where
+    // <available_skills> lists a skill whose backing file was deleted or became invalid
+    // after startup, causing confusing NOT_FOUND errors from the Skill tool.
+    // Tradeoff: edits to SKILL.md after session start are not visible until next session.
     await writeSkill(userRoot, "editable", "Original body.");
     const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
     const provider = createSkillProvider(runtime, { progressive: true });
@@ -276,10 +278,31 @@ describe("createSkillProvider — progressive mode", () => {
     // Overwrite the skill file to simulate an in-session edit.
     await writeSkill(userRoot, "editable", "Updated body.");
 
-    // The Skill tool calls runtime.load() — it must see the updated body.
+    // The Skill tool calls runtime.load() — it must see the session-start snapshot,
+    // not the in-session edit, to maintain advertisement/load consistency.
     const loaded = await runtime.load("editable");
     expect(loaded.ok).toBe(true);
-    if (loaded.ok) expect(loaded.value.body).toContain("Updated body.");
+    if (loaded.ok) expect(loaded.value.body).toContain("Original body.");
+  });
+
+  test("progressive attach consistency: skill deleted after attach still loads from cache", async () => {
+    // A skill deleted from disk after session start must still be loadable via the Skill
+    // tool — its body was cached at attach time. This prevents the model from being told
+    // a skill exists (via <available_skills>) but then getting a NOT_FOUND error.
+    await writeSkill(userRoot, "deletable", "Body before deletion.");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const provider = createSkillProvider(runtime, { progressive: true });
+
+    await provider.attach(STUB_AGENT);
+
+    // Delete the skill file to simulate removal after session start.
+    const { rmSync } = await import("node:fs");
+    rmSync(`${userRoot}/deletable/SKILL.md`, { force: true });
+
+    // Must still be loadable from the LRU cache.
+    const loaded = await runtime.load("deletable");
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) expect(loaded.value.body).toContain("Body before deletion.");
   });
 
   test("progressive attach does not mark MCP external skills as runtimeBacked", async () => {
