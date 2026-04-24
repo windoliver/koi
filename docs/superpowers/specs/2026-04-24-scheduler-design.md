@@ -131,7 +131,7 @@ interface ScheduleStore extends AsyncDisposable {
   // Durability requirement: pause() and resume() MUST call updateSchedule() and await
   // persistence before mutating in-memory croner state or returning to the caller.
   // A process restart must reproduce the paused/active state from the store, not memory.
-  readonly updateSchedule: (id: ScheduleId, patch: Partial<Pick<CronSchedule, "paused" | "last_run_at">>) => void | Promise<void>
+  readonly updateSchedule: (id: ScheduleId, patch: Readonly<{ paused: boolean }>) => void | Promise<void>
 }
 
 // SchedulerConfig — exact L0 definition (no dbPath — passed to SQLite store factory separately):
@@ -179,12 +179,11 @@ CREATE TABLE koi_schedules (
   mode TEXT NOT NULL,
   task_options TEXT,
   timezone TEXT,
-  paused INTEGER NOT NULL DEFAULT 0,
-  last_run_at INTEGER    -- Unix ms: last fire time (null = never fired); updated after each tick
+  paused INTEGER NOT NULL DEFAULT 0
 );
 -- Restart semantics:
 -- On startup, all non-paused schedules are re-registered with croner.
--- Missed recurring runs during downtime are skipped by default (no backfill).
+-- Missed recurring runs during downtime are skipped (croner resumes from now, no backfill).
 -- One-shot execution is modeled as submit() with delayMs, NOT as a schedule row.
 -- koi_schedules only stores recurring cron schedules.
 
@@ -235,10 +234,11 @@ schedule(expression, input, mode, opts)
 
 init() on startup
   → TaskStore.loadPending() → rebuild heap (all pending + delayed tasks)
-  → stale "running" recovery: tasks where startedAt < (now - staleTaskThresholdMs)
-      are moved back to pending with retries++ — these are tasks interrupted by
-      process crash, NOT by timeout (timed-out tasks are already dead_letter before restart)
-      (staleTaskThresholdMs default: 300_000ms — from SchedulerConfig in @koi/core)
+  → crash recovery for "running" tasks: on startup, ALL persisted "running" tasks
+      are immediately moved back to pending with retries++ — after a process restart
+      there are no legitimately still-running dispatchers, so no threshold check applies.
+      This is distinct from staleTaskThresholdMs (which applies only within a live process
+      for detecting hung dispatchers that missed their AbortSignal).
       tasks exceeding maxRetries are dead-lettered instead of re-queued
       emit task:recovered event for each recovered task
   → ScheduleStore.loadSchedules() → re-register croners for non-paused schedules
