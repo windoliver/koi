@@ -283,34 +283,23 @@ export function buildPluginMcpSetup(
   if (pluginMcpServers.length === 0) return undefined;
 
   const authProviders = new Map<string, OAuthAuthProvider>();
-  const authServers = new Map<string, AuthServerEntry>();
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
-  // Plugin servers never receive an oauthChannel — they must not drive the
-  // host's trusted browser OAuth flow without a consent gate.
+  // Plugin servers never receive an oauthChannel and never get auth pseudo-tools.
+  // A plugin-supplied MCP config must not drive the host's browser OAuth flow
+  // without an explicit host-controlled consent gate. authProviders is populated
+  // only so the connection factory can attach silent token refresh; no auth tools
+  // are created from it.
   const connections = pluginMcpServers.map((server) => {
     const conn = createOAuthAwareMcpConnection(server, authProviders);
     connectionsByName.set(server.name, conn);
     return conn;
   });
 
-  for (const server of pluginMcpServers) {
-    const provider = authProviders.get(server.name);
-    const connection = connectionsByName.get(server.name);
-    if (provider !== undefined && connection !== undefined && server.kind === "http") {
-      authServers.set(server.name, { provider, connection, url: server.url });
-    }
-  }
-
   const resolver = createMcpResolver(connections);
 
-  const createAuthTools =
-    authServers.size > 0
-      ? createCliAuthToolFactory({
-          servers: authServers,
-          rediscover: () => resolver.discover(),
-        })
-      : undefined;
+  // No auth pseudo-tools for plugin servers.
+  const createAuthTools = undefined;
 
   const provider = createMcpComponentProvider({ resolver, createAuthTools });
   return {

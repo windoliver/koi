@@ -125,6 +125,13 @@ export interface ConnectionDeps {
    * connection will reconnect and retry the operation automatically.
    */
   readonly onAuthNeeded?: () => Promise<boolean>;
+  /**
+   * Called after a successful interactive auth flow AND a successful reconnect.
+   * Fires after the connection is re-established so consumers receive a true
+   * "auth + connection ready" signal rather than "auth completed" prematurely.
+   * Best-effort — errors are swallowed. Optional.
+   */
+  readonly onAuthComplete?: () => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +149,7 @@ export function createMcpConnection(
     random = Math.random,
     onUnauthorized,
     onAuthNeeded,
+    onAuthComplete,
   } = deps ?? {};
 
   const stateMachine: TransportStateMachine = createTransportStateMachine();
@@ -187,25 +195,21 @@ export function createMcpConnection(
       }
       if (outcome === "transient-failure") {
         // Tokens exist but the refresh endpoint is temporarily unavailable.
-        // If no interactive handler is wired, return a retryable error — the
-        // session may self-heal when the refresh endpoint comes back.
-        // If an onAuthNeeded handler IS wired, fall through to interactive auth
-        // so the same `transient-failure` outcome can be recovered the same way
-        // as an explicit re-auth request (consistent with triggerMcpServerAuth).
-        if (onAuthNeeded === undefined) {
-          return {
-            ok: false,
-            error: {
-              code: "EXTERNAL",
-              message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
-              retryable: true,
-              context: { serverName: config.name },
-            },
-          };
-        }
-        // Fall through to interactive auth below.
+        // Do NOT launch browser auth — a network blip must not trigger user-visible
+        // re-consent. Return a retryable error; the session can self-heal when the
+        // refresh endpoint recovers. Explicit re-auth (triggerMcpServerAuth) falls
+        // through to startAuthFlow even on transient-failure because it is user-initiated.
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+            retryable: true,
+            context: { serverName: config.name },
+          },
+        };
       }
-      // "needs-auth", "transient-failure" with handler, or fallback — interactive OAuth.
+      // "needs-auth" — interactive OAuth required.
       if (onAuthNeeded === undefined) {
         return { ok: false, error: authDeclinedError() };
       }
@@ -220,7 +224,11 @@ export function createMcpConnection(
         const reconnResult = await connect(true);
         // Propagate reconnect failures so callers can surface the real error
         // (transport outage, server 5xx) instead of a misleading AUTH_REQUIRED.
-        return reconnResult.ok ? { ok: true, value: undefined } : reconnResult;
+        if (!reconnResult.ok) return reconnResult;
+        // Fire onAuthComplete only after a successful reconnect so consumers
+        // receive a "auth + connection ready" signal, not a premature success.
+        await Promise.resolve(onAuthComplete?.()).catch(() => {});
+        return { ok: true, value: undefined };
       } catch (e: unknown) {
         // Preserve the real failure cause for observability instead of silently
         // swallowing it. The caller surfaces AUTH_REQUIRED separately; this log

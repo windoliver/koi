@@ -7,6 +7,7 @@ import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 type SpiedConnectionDeps = {
   readonly onUnauthorized?: unknown;
   readonly onAuthNeeded?: unknown;
+  readonly onAuthComplete?: unknown;
 };
 
 // ---------------------------------------------------------------------------
@@ -191,7 +192,7 @@ describe("createOAuthAwareMcpConnection", () => {
       return callArgs[2]?.onAuthNeeded as (() => Promise<boolean>) | undefined;
     }
 
-    test("calls startAuthFlow then onAuthComplete when authed=true", async () => {
+    test("calls startAuthFlow and returns true; onAuthComplete wired separately in ConnectionDeps", async () => {
       const oauthChannel = makeOAuthChannel();
       const provider = makeProvider(true);
       const onAuthNeeded = extractOnAuthNeeded(oauthChannel, provider);
@@ -202,12 +203,25 @@ describe("createOAuthAwareMcpConnection", () => {
 
       const startFlow = provider.startAuthFlow as ReturnType<typeof mock>;
       expect(startFlow).toHaveBeenCalledTimes(1);
-      expect(oauthChannel.onAuthComplete).toHaveBeenCalledTimes(1);
-      const completeArg = (oauthChannel.onAuthComplete as ReturnType<typeof mock>).mock
-        .calls[0]?.[0] as { provider: string };
-      expect(completeArg.provider).toBe("test-http");
-
+      // onAuthComplete is NOT called from onAuthNeeded — it fires from
+      // ConnectionDeps.onAuthComplete after a successful reconnect so consumers
+      // get a "auth + connection ready" signal rather than a premature success.
+      expect(oauthChannel.onAuthComplete).not.toHaveBeenCalled();
       expect(result).toBe(true);
+    });
+
+    test("wires onAuthComplete as ConnectionDeps callback (not from onAuthNeeded)", () => {
+      const oauthChannel = makeOAuthChannel();
+      const localMocks = makeDeps();
+      const server = makeHttpOauthServer();
+      createOAuthAwareMcpConnection(server, undefined, oauthChannel, toDeps(localMocks));
+
+      const callArgs = localMocks.createConnection.mock.calls[0] as [
+        unknown,
+        unknown,
+        SpiedConnectionDeps,
+      ];
+      expect(typeof callArgs[2]?.onAuthComplete).toBe("function");
     });
 
     test("calls startAuthFlow but NOT onAuthComplete when authed=false", async () => {

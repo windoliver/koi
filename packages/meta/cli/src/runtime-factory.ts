@@ -2288,13 +2288,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
       | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
       | undefined;
-    const mcpPluginAuthProviders = stackContribution.exports.mcpPluginAuthProviders as
-      | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
-      | undefined;
     const mcpConnections = stackContribution.exports.mcpConnections as
-      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
-      | undefined;
-    const mcpPluginConnections = stackContribution.exports.mcpPluginConnections as
       | ReadonlyMap<string, import("@koi/mcp").McpConnection>
       | undefined;
 
@@ -3184,22 +3178,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // drive the trusted browser flow without a consent gate.
         if (qualifiedName.startsWith("plugin:")) return false;
 
-        // Route to the correct source map using the namespace prefix so that
-        // user:foo and plugin:foo cannot collide when both sources exist.
-        const isPlugin = qualifiedName.startsWith("plugin:");
-        const serverName = isPlugin
-          ? qualifiedName.slice(7)
-          : qualifiedName.startsWith("user:")
-            ? qualifiedName.slice(5)
-            : qualifiedName;
-        const provider = isPlugin
-          ? mcpPluginAuthProviders?.get(serverName)
-          : mcpAuthProviders?.get(serverName);
+        // Strip user: prefix if present for consistent map lookups.
+        const serverName = qualifiedName.startsWith("user:")
+          ? qualifiedName.slice(5)
+          : qualifiedName;
+        const provider = mcpAuthProviders?.get(serverName);
         if (provider === undefined) return false;
-        const connection = isPlugin
-          ? mcpPluginConnections?.get(serverName)
-          : mcpConnections?.get(serverName);
-        const resolver = isPlugin ? mcpPluginResolver : mcpResolver;
+        const connection = mcpConnections?.get(serverName);
+        const resolver = mcpResolver;
 
         // Helper: rebuild the live transport and force a resolver rediscovery so
         // real tools replace pseudo-tools immediately.

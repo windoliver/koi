@@ -90,17 +90,11 @@ export function createOAuthAwareMcpConnection(
       oauthChannel !== undefined
         ? async (): Promise<boolean> => {
             // onBrowserOpen (wired into the runtime above) fires onAuthRequired
-            // with the actual authorization URL the moment it is known — no need
-            // for an early generic notification here.
+            // the moment the browser opens — no need for an early notification here.
             const authed = await provider.startAuthFlow();
-            if (authed) {
-              // Notify best-effort — auth is already done regardless.
-              await Promise.resolve(oauthChannel.onAuthComplete({ provider: server.name })).catch(
-                () => {},
-              );
-            } else {
-              // Surface the failure reason so the TUI can show actionable info
-              // rather than a generic AUTH_REQUIRED error.
+            if (!authed) {
+              // Surface the failure so the TUI can show actionable info rather
+              // than a generic AUTH_REQUIRED error.
               void Promise.resolve(
                 oauthChannel.onAuthFailure?.({
                   provider: server.name,
@@ -112,9 +106,21 @@ export function createOAuthAwareMcpConnection(
           }
         : undefined;
 
+    // onAuthComplete fires from ConnectionDeps after auth + reconnect both succeed,
+    // so consumers receive a "connection ready" signal rather than a premature success.
+    const onAuthComplete =
+      oauthChannel !== undefined
+        ? async (): Promise<void> => {
+            await Promise.resolve(oauthChannel.onAuthComplete({ provider: server.name })).catch(
+              () => {},
+            );
+          }
+        : undefined;
+
     return createConnection(resolved, provider, {
       onUnauthorized: () => provider.handleUnauthorized(),
       ...(onAuthNeeded !== undefined ? { onAuthNeeded } : {}),
+      ...(onAuthComplete !== undefined ? { onAuthComplete } : {}),
     });
   }
 
