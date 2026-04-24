@@ -3178,4 +3178,26 @@ describe("resetForRun regression (#1917)", () => {
     await wrap(ctx, mockModelRequest(), next);
     expect(next).toHaveBeenCalledTimes(2);
   });
+
+  test("resetForRun falls back to now for NaN/Infinity anchors", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 100, maxInactivityMs: 100 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+
+    await wrap(ctx, mockModelRequest(), next);
+    await new Promise((r) => setTimeout(r, 60));
+
+    // NaN anchors must not disable enforcement — guard falls back to Date.now()
+    guard.resetForRun(NaN, NaN);
+
+    // Elapsed ≈ 0 after fallback reset — should not timeout.
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+
+    // Same for Infinity
+    guard.resetForRun(Infinity, Infinity);
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(3);
+  });
 });

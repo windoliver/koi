@@ -188,11 +188,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     const broken: string[] = [];
     for (const mw of allMiddleware) {
       if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+        // Explicit capability declaration (ITERATION_GUARD_BRAND) without the
+        // required resetForRun() implementation is a hard contract violation.
+        // Unlabeled/unnamed guards that lack resetForRun() are silently skipped
+        // (old behavior preserved; no split-brain risk as they won't be reset).
         broken.push(
           `"${mw.name ?? "(unnamed)"}" (carries ITERATION_GUARD_BRAND but missing resetForRun())`,
         );
-      } else if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-        broken.push(`"koi:iteration-guard" (pre-#1917 legacy guard, missing resetForRun())`);
       }
     }
     if (broken.length > 0) {
@@ -200,7 +202,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         "VALIDATION",
         `[koi] ${optionName} is enabled but the following guards cannot be reset per-run: ` +
           `${broken.join(", ")}. ` +
-          `Upgrade @koi/engine-compose or remove ${optionName} from options.`,
+          `Remove ITERATION_GUARD_BRAND or implement resetForRun() on the middleware.`,
       );
     }
   }
