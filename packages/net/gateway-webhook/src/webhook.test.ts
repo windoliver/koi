@@ -3,6 +3,33 @@ import type { GatewayFrame, Session } from "@koi/gateway-types";
 import type { WebhookAuthenticator, WebhookServer } from "./webhook.js";
 import { createWebhookServer } from "./webhook.js";
 
+describe("WebhookServer — auth guard", () => {
+  test("throws when no authentication is configured", () => {
+    expect(() => createWebhookServer({ port: 0, pathPrefix: "/webhook" }, () => {})).toThrow(
+      "no authentication configured",
+    );
+  });
+
+  test("allowUnauthenticated bypasses the guard (testing only)", () => {
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+        () => {},
+      ),
+    ).not.toThrow();
+  });
+
+  test("authenticator satisfies the guard", () => {
+    const auth: WebhookAuthenticator = async () => ({
+      ok: true,
+      value: { agentId: "test" },
+    });
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/webhook" }, () => {}, auth),
+    ).not.toThrow();
+  });
+});
+
 describe("WebhookServer — core dispatch", () => {
   let server: WebhookServer;
   const dispatched: Array<{ session: Session; frame: GatewayFrame }> = [];
@@ -20,7 +47,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("POST dispatches frame with correct channel/account/peer", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
 
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack/acme`, {
@@ -43,7 +73,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("non-POST returns 405", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, { method: "GET" });
     expect(res.status).toBe(405);
@@ -51,7 +84,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("wrong path returns 404", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/other`, {
       method: "POST",
@@ -62,7 +98,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("path prefix boundary: /webhookadmin does not match /webhook", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhookadmin`, {
       method: "POST",
@@ -73,7 +112,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("invalid JSON body returns 400", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
       method: "POST",
@@ -85,7 +127,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("payload exceeding maxBodyBytes returns 413", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook", maxBodyBytes: 50 }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", maxBodyBytes: 50, allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
       method: "POST",
@@ -97,7 +142,7 @@ describe("WebhookServer — core dispatch", () => {
 
   test("payload within maxBodyBytes is accepted", async () => {
     server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", maxBodyBytes: 500 },
+      { port: 0, pathPrefix: "/webhook", maxBodyBytes: 500, allowUnauthenticated: true },
       dispatcher,
     );
     await server.start();
@@ -110,7 +155,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("default peer is 'webhook' when header not set", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
       method: "POST",
@@ -121,7 +169,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("path prefix with trailing slash works", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook/" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook/", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
       method: "POST",
@@ -132,7 +183,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("exact prefix path dispatches with no channel/account", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook`, {
       method: "POST",
@@ -144,7 +198,10 @@ describe("WebhookServer — core dispatch", () => {
   });
 
   test("empty body dispatches with null payload", async () => {
-    server = createWebhookServer({ port: 0, pathPrefix: "/webhook" }, dispatcher);
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+    );
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
       method: "POST",
@@ -267,12 +324,12 @@ describe("WebhookServer — provider routing", () => {
       { port: 0, pathPrefix: "/webhook", providerRouting: true },
       dispatcher,
       undefined,
-      {}, // no secrets configured
+      { github: "secret" }, // no slack secret
     );
     await server.start();
-    const res = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+    const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
       method: "POST",
-      body: JSON.stringify({ action: "push" }),
+      body: JSON.stringify({ action: "message" }),
     });
     expect(res.status).toBe(401);
     expect(dispatched).toHaveLength(0);
@@ -296,7 +353,7 @@ describe("WebhookServer — provider routing", () => {
   });
 });
 
-describe("WebhookServer — idempotency", () => {
+describe("WebhookServer — idempotency (commit-after-success)", () => {
   let server: WebhookServer;
   const dispatched: Array<{ session: Session; frame: GatewayFrame }> = [];
 
@@ -312,7 +369,7 @@ describe("WebhookServer — idempotency", () => {
     server?.stop();
   });
 
-  test("duplicate GitHub delivery is detected by X-GitHub-Delivery", async () => {
+  test("duplicate GitHub delivery is detected after successful dispatch", async () => {
     const secret = "test-secret";
     const body = JSON.stringify({ action: "push" });
     const sig = await computeGitHubSig(secret, body);
@@ -331,7 +388,7 @@ describe("WebhookServer — idempotency", () => {
       "Content-Type": "application/json",
     };
 
-    // First delivery
+    // First delivery — succeeds and commits dedup key
     const res1 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
       method: "POST",
       headers,
@@ -343,7 +400,7 @@ describe("WebhookServer — idempotency", () => {
     expect(b1.duplicate).toBeUndefined();
     expect(dispatched).toHaveLength(1);
 
-    // Duplicate delivery (same X-GitHub-Delivery)
+    // Duplicate delivery — detected, returns 200 without re-dispatching
     const res2 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
       method: "POST",
       headers,
@@ -353,8 +410,53 @@ describe("WebhookServer — idempotency", () => {
     const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
     expect(b2.ok).toBe(true);
     expect(b2.duplicate).toBe(true);
-    // Duplicate should NOT dispatch again
-    expect(dispatched).toHaveLength(1);
+    expect(dispatched).toHaveLength(1); // not re-dispatched
+  });
+
+  test("failed dispatch does not commit dedup key — retry is accepted", async () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+
+    let dispatchCount = 0;
+    function failingDispatcher(_session: Session, _frame: GatewayFrame): void {
+      dispatchCount++;
+      if (dispatchCount === 1) throw new Error("transient failure");
+    }
+
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      failingDispatcher,
+      undefined,
+      { github: secret },
+    );
+    await server.start();
+
+    const headers = {
+      "X-Hub-Signature-256": sig,
+      "X-GitHub-Delivery": "retry-delivery-id",
+      "Content-Type": "application/json",
+    };
+
+    // First delivery — dispatch fails → dedup key NOT committed
+    const res1 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res1.status).toBe(500);
+
+    // Provider retry — should be accepted (not treated as duplicate)
+    const res2 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res2.status).toBe(200);
+    const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
+    expect(b2.ok).toBe(true);
+    expect(b2.duplicate).toBeUndefined();
+    expect(dispatchCount).toBe(2);
   });
 });
 

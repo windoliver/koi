@@ -3,6 +3,11 @@
  *
  * Entries expire after `ttlMs` (default: 24 hours). Bounded by `maxSize`
  * (default: 10 000) to cap memory use; oldest entries evicted first.
+ *
+ * Two-phase API: `isDuplicate()` checks without committing, `record()` commits.
+ * Always call `record()` only after the request is fully accepted (auth +
+ * dispatch succeeded). Calling them in this order prevents transient failures
+ * from burning the dedup key and silently dropping provider retries.
  */
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -18,9 +23,11 @@ export interface IdempotencyStoreOptions {
 }
 
 export interface IdempotencyStore {
-  /** Returns true if key is new (not a duplicate). Registers key on first call. */
-  readonly check: (key: string) => boolean;
-  /** Prune expired entries. Called automatically by check(); exposed for testing. */
+  /** Returns true if the key has already been recorded (is a duplicate). Does NOT commit. */
+  readonly isDuplicate: (key: string) => boolean;
+  /** Commit a key as seen. Call only after full successful acceptance. */
+  readonly record: (key: string) => void;
+  /** Prune expired entries. Called automatically; exposed for testing. */
   readonly prune: () => void;
 }
 
@@ -29,9 +36,7 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
   const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE;
 
   // Insertion-ordered map: oldest keys at the front.
-  // let allowed per CLAUDE.md since Map is mutated in place (shared mutable state).
-  // biome-ignore lint/style/useConst: intentionally mutable
-  let store = new Map<string, IdempotencyEntry>();
+  const store = new Map<string, IdempotencyEntry>();
 
   function prune(): void {
     const now = Date.now();
@@ -44,23 +49,20 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
     }
   }
 
-  function check(key: string): boolean {
+  function isDuplicate(key: string): boolean {
     prune();
-
     const existing = store.get(key);
-    if (existing !== undefined && existing.expiresAt > Date.now()) {
-      return false; // duplicate
-    }
+    return existing !== undefined && existing.expiresAt > Date.now();
+  }
 
+  function record(key: string): void {
     // Evict oldest entry if at capacity
     if (store.size >= maxSize) {
       const oldest = store.keys().next().value;
       if (oldest !== undefined) store.delete(oldest);
     }
-
     store.set(key, { expiresAt: Date.now() + ttlMs });
-    return true; // new
   }
 
-  return { check, prune };
+  return { isDuplicate, record, prune };
 }

@@ -4,9 +4,11 @@
  *
  * Features:
  * - Built-in signature verification per provider (GitHub, Slack, Stripe, generic)
- * - Replay protection via idempotency keys
+ * - Replay protection via idempotency keys (commit-after-success semantics)
  * - Streaming body parser with size enforcement (prevents OOM on large payloads)
  * - Path boundary safety (prevents "/webhook" matching "/webhookadmin")
+ * - Explicit authentication requirement — unauthenticated operation requires
+ *   setting `allowUnauthenticated: true` to prevent accidental open endpoints
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -37,6 +39,13 @@ export interface WebhookConfig {
    * Unknown provider segments return HTTP 400. Default: false.
    */
   readonly providerRouting?: boolean | undefined;
+  /**
+   * Allow unauthenticated operation — every POST is accepted and dispatched
+   * with attacker-controlled routing. Only set this in controlled/internal
+   * environments. Production deployments must use providerRouting+secrets
+   * or a WebhookAuthenticator instead.
+   */
+  readonly allowUnauthenticated?: boolean | undefined;
   /** Idempotency store options. Omit to use defaults (24h TTL, 10k entries). */
   readonly idempotency?: {
     readonly ttlMs?: number | undefined;
@@ -79,6 +88,22 @@ export function createWebhookServer(
   authenticator?: WebhookAuthenticator,
   providerSecrets?: ProviderSecrets,
 ): WebhookServer {
+  // Guard: require explicit authentication configuration or an opt-out flag.
+  // This prevents accidentally exposing an open event injection endpoint.
+  const hasProviderAuth =
+    config.providerRouting === true &&
+    providerSecrets !== undefined &&
+    Object.keys(providerSecrets).length > 0;
+  const hasAuthenticator = authenticator !== undefined;
+
+  if (!hasProviderAuth && !hasAuthenticator && config.allowUnauthenticated !== true) {
+    throw new Error(
+      "createWebhookServer: no authentication configured. " +
+        "Provide an authenticator, enable providerRouting with secrets, " +
+        "or set allowUnauthenticated: true for internal/testing use only.",
+    );
+  }
+
   let server: ReturnType<typeof Bun.serve> | undefined;
   let resolvedPort: number = config.port;
   let frameCounter = 0;
@@ -132,7 +157,10 @@ export function createWebhookServer(
     }
     const rawBody = bodyResult.raw;
 
-    // Provider-level signature verification (when providerRouting is enabled)
+    // Provider-level signature verification (when providerRouting is enabled).
+    // Dedup key is extracted here but NOT committed until after dispatch succeeds.
+    let pendingDedupKey: string | undefined;
+
     if (provider !== undefined) {
       const secret = providerSecrets !== undefined ? providerSecrets[provider.kind] : undefined;
       if (secret === undefined) {
@@ -142,11 +170,12 @@ export function createWebhookServer(
       if (!verifyResult.ok) {
         return jsonResponse(401, { ok: false, error: "Invalid signature" });
       }
-      // Idempotency check using provider-extracted dedup key
+      // Check idempotency (read-only — do not commit yet)
       if (verifyResult.dedupKey !== undefined) {
-        if (!idempotencyStore.check(verifyResult.dedupKey)) {
+        if (idempotencyStore.isDuplicate(verifyResult.dedupKey)) {
           return jsonResponse(200, { ok: true, duplicate: true });
         }
+        pendingDedupKey = verifyResult.dedupKey;
       }
     }
 
@@ -158,7 +187,9 @@ export function createWebhookServer(
     };
     let metadata: Readonly<Record<string, unknown>> = {};
 
-    // Pluggable authenticator (receives raw body for HMAC verification)
+    // Pluggable authenticator (receives raw body for HMAC verification).
+    // Runs AFTER provider signature check — can additionally authorize the
+    // (provider, account) tuple to prevent cross-tenant injection.
     if (authenticator !== undefined) {
       const authResult = await authenticator(request, rawBody);
       if (!authResult.ok) {
@@ -195,6 +226,12 @@ export function createWebhookServer(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
+    }
+
+    // Commit dedup key only after full successful acceptance (auth + dispatch).
+    // Provider retries after transient failures will not be silently dropped.
+    if (pendingDedupKey !== undefined) {
+      idempotencyStore.record(pendingDedupKey);
     }
 
     return jsonResponse(200, { ok: true, frameId });
