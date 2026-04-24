@@ -1776,11 +1776,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Post-permissions slot: runs inside the security layers so request.tools
     // is permissions-filtered when the injector checks for the Skill tool.
     skillInjector: skillInjectorMw,
-    // Propagate skill injection into spawned children so they also receive
-    // the <available_skills> XML block. The tool:Skill tool is already
-    // inherited by children via InheritedComponentProvider; the middleware
-    // ensures they know which skills exist to call.
-    childSkillInjector: skillInjectorMw,
+    // childSkillInjector intentionally omitted: the root skill injector reads
+    // from the root agent's ECS, which includes root-only body-backed skills
+    // (e.g. browser skills) that spawned children cannot use. Children inherit
+    // the Skill tool via InheritedComponentProvider and can invoke skills; they
+    // rely on the Skill tool descriptor listing rather than the XML block.
     extraProviders: [
       skillProvider,
       ...artifactExtraProviders,

@@ -28,10 +28,15 @@ import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "
 
 /**
  * Config for `createSkillProvider`. Reserved for future eager-mode options.
- * Do not add a `progressive` flag here — progressive mode requires the pinned
- * runtime wrapper that only `createProgressiveSkillProvider()` provides.
+ *
+ * `progressive` is intentionally `never` here — progressive mode requires
+ * the pinned runtime wrapper that only `createProgressiveSkillProvider()`
+ * provides. Passing `{ progressive: true }` is a compile-time error that
+ * directs callers to the correct factory.
  */
-export type SkillProviderConfig = {};
+export interface SkillProviderConfig {
+  readonly progressive?: never;
+}
 
 /**
  * Creates a ComponentProvider that bridges a SkillsRuntime to the agent ECS.
