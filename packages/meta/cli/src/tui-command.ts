@@ -1847,31 +1847,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
     ...(otelEnabled ? { otel: true as const } : {}),
     // KOI_AUDIT_NDJSON=<path> opts into security-grade audit logging.
-    // Manifest audit.ndjson is the fallback when the env var is absent —
-    // gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 because manifest content
-    // is repo-authored and opens a host file at arbitrary paths.
-    // Precedence: env var → manifest (gate required) → off.
-    ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
-      ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+    // Manifest audit.ndjson is the fallback when the env var is absent.
+    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 (repo-authored path).
+    // Precedence: env var (present, even "") → manifest (gate required) → off.
+    // Setting the env var to "" is an explicit disable that wins over manifest.
+    ...(process.env.KOI_AUDIT_NDJSON !== undefined
+      ? process.env.KOI_AUDIT_NDJSON !== ""
+        ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+        : {}
       : manifestAudit?.ndjson !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
         ? { auditNdjsonPath: manifestAudit.ndjson }
         : {}),
     // KOI_AUDIT_SQLITE=<path> opts into SQLite-backed audit logging.
-    // Manifest audit.sqlite gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1
-    // for the same reason as audit.ndjson above.
-    // Precedence: env var → manifest (gate required) → off.
-    ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
-      ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+    // Same precedence/disable semantics as KOI_AUDIT_NDJSON above.
+    ...(process.env.KOI_AUDIT_SQLITE !== undefined
+      ? process.env.KOI_AUDIT_SQLITE !== ""
+        ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+        : {}
       : manifestAudit?.sqlite !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
         ? { auditSqlitePath: manifestAudit.sqlite }
         : {}),
-    // Manifest audit.violations overrides the ~/.koi/violations.db default.
-    // Also gated: violation DB writes are durable, repo-authored path
-    // override must be explicitly unlocked by the operator.
-    // Precedence: manifest (gate required) → default (~/.koi/violations.db).
-    ...(manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
-      ? { violationSqlitePath: manifestAudit.violations }
-      : {}),
+    // KOI_AUDIT_VIOLATIONS=<path> overrides the violations DB path.
+    // Manifest audit.violations is the fallback when the env var is absent.
+    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 for manifest paths.
+    // Precedence: env var (present, even "") → manifest (gate required) → default (~/.koi/violations.db).
+    // Setting the env var to "" is an explicit disable that falls through to the default.
+    ...(process.env.KOI_AUDIT_VIOLATIONS !== undefined
+      ? process.env.KOI_AUDIT_VIOLATIONS !== ""
+        ? { violationSqlitePath: process.env.KOI_AUDIT_VIOLATIONS }
+        : {}
+      : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { violationSqlitePath: manifestAudit.violations }
+        : {}),
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.
     ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),

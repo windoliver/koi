@@ -265,8 +265,12 @@ audit:
 Paths must use audit-only filename suffixes (`.audit.ndjson`, `.audit.db`, `.violations.db`) and
 must be relative — no `..` traversal, no symlinks, parent directory must exist before `koi tui` runs.
 
-Precedence: `KOI_AUDIT_NDJSON` env var → `audit.ndjson` manifest (requires gate) → off; same for
-sqlite. For violations: `audit.violations` manifest (requires gate) → `~/.koi/violations.db` default.
+Precedence and override rules:
+- `KOI_AUDIT_NDJSON` set (even to `""`) → authoritative; `""` explicitly disables (does not fall back to manifest)
+- `KOI_AUDIT_NDJSON` absent → `audit.ndjson` manifest (requires gate) → off
+- Same for `KOI_AUDIT_SQLITE` / `audit.sqlite`
+- `KOI_AUDIT_VIOLATIONS` set (even to `""`) → authoritative; `""` falls through to `~/.koi/violations.db` default
+- `KOI_AUDIT_VIOLATIONS` absent → `audit.violations` manifest (requires gate) → `~/.koi/violations.db` default
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
