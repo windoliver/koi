@@ -116,9 +116,14 @@ export function createGateway(
   // already at or above its per-connection buffer limit; callers should abort any
   // further processing for that connection.
   function sendFrame(conn: TransportConnection, data: string): boolean {
-    // Pre-write admission control: close immediately if already at the per-connection
-    // or global limit rather than waiting for the 5-second sweep.
-    if (bp.state(conn.id) === "critical" || !bp.canAccept()) {
+    // Pre-write projected admission control: reject when this frame would push the
+    // per-connection or global buffer past its configured limit, not just when already
+    // at it, so a large frame near the limit cannot overshoot by its full size.
+    const frameBytes = Buffer.byteLength(data, "utf8");
+    if (
+      bp.buffered(conn.id) + frameBytes > config.maxBufferBytesPerConnection ||
+      bp.globalUsage() + frameBytes > config.globalBufferLimitBytes
+    ) {
       conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Buffer limit exceeded");
       cleanupConn(conn, "buffer limit exceeded");
       return false;
@@ -129,7 +134,7 @@ export function createGateway(
       cleanupConn(conn, "transport send failure");
       return false;
     }
-    bp.record(conn.id, Buffer.byteLength(data, "utf8"));
+    bp.record(conn.id, frameBytes);
     return true;
   }
 
@@ -278,13 +283,22 @@ export function createGateway(
           // rolling the watermark backward and re-opening a replay window.
           const prevConnId = connBySession.get(result.session.id);
           if (prevConnId !== undefined && prevConnId !== conn.id) {
+            // Fence first: remove sessionByConn so any queued processMessage() calls
+            // for the old socket can no longer resolve the sessionId and write to the store.
             sessionByConn.delete(prevConnId);
             trackers.delete(prevConnId);
+            // Drain any in-flight processMessage work before reading the watermark.
+            // processMessage reads sessionByConn (already cleared above), so no new
+            // store writes can start, but a frame mid-execution between store.get() and
+            // store.set() could still complete. Awaiting the tail of the queue ensures the
+            // snapshot we take below reflects the true final remoteSeq.
+            const drainQueue = msgQueues.get(prevConnId) ?? Promise.resolve();
             msgQueues.delete(prevConnId);
             const prevConn = connMap.get(prevConnId);
             connMap.delete(prevConnId);
             bp.remove(prevConnId);
             prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
+            await drainQueue;
           }
 
           // Restore remoteSeq from any previously persisted session to prevent frame replay.
@@ -450,7 +464,12 @@ export function createGateway(
           error: notFound(connId, `Connection not found for session: ${sessionId}`),
         };
       }
-      if (bp.state(connId) === "critical" || !bp.canAccept()) {
+      const encoded = encodeFrame(frame);
+      const frameBytes = Buffer.byteLength(encoded, "utf8");
+      if (
+        bp.buffered(connId) + frameBytes > config.maxBufferBytesPerConnection ||
+        bp.globalUsage() + frameBytes > config.globalBufferLimitBytes
+      ) {
         conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Buffer limit exceeded");
         cleanupConn(conn, "buffer limit exceeded");
         return {
@@ -463,7 +482,6 @@ export function createGateway(
           } satisfies KoiError,
         };
       }
-      const encoded = encodeFrame(frame);
       const bytes = conn.send(encoded);
       if (bytes === -1) {
         conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
@@ -476,7 +494,7 @@ export function createGateway(
         };
         return { ok: false, error };
       }
-      bp.record(connId, Buffer.byteLength(encoded, "utf8"));
+      bp.record(connId, frameBytes);
       return { ok: true, value: bytes };
     },
 
