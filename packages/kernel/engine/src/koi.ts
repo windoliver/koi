@@ -185,22 +185,31 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // Scan the full array and report all offending guards in a single error.
   if (resetBudgetPerRun) {
     const optionName = usingLegacyOption ? "resetIterationBudgetPerRun" : "resetBudgetPerRun";
-    const broken: string[] = [];
+    const hardBroken: string[] = [];
     for (const mw of allMiddleware) {
       if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
-        broken.push(
+        // Third-party code that explicitly declared ITERATION_GUARD_BRAND is bound
+        // by that contract — hard-fail so the bug surfaces at construction time.
+        hardBroken.push(
           `"${mw.name ?? "(unnamed)"}" (carries ITERATION_GUARD_BRAND but missing resetForRun())`,
         );
       } else if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-        broken.push(`"koi:iteration-guard" (pre-#1917 legacy guard, missing resetForRun())`);
+        // Pre-#1917 built-in guard from an older @koi/engine-compose. Warn and
+        // skip rather than bricking hosts that upgrade @koi/engine before the
+        // companion package. Remove this branch in the next major version.
+        console.warn(
+          `[koi] ${optionName}: "koi:iteration-guard" is a pre-#1917 legacy guard that cannot ` +
+            `be reset per-run. Upgrade @koi/engine-compose to fix. Per-run reset will be skipped ` +
+            `for this guard; stale turn/duration state may persist across runs.`,
+        );
       }
     }
-    if (broken.length > 0) {
+    if (hardBroken.length > 0) {
       throw KoiRuntimeError.from(
         "VALIDATION",
         `[koi] ${optionName} is enabled but the following guards cannot be reset per-run: ` +
-          `${broken.join(", ")}. ` +
-          `Upgrade @koi/engine-compose or remove ${optionName} from options.`,
+          `${hardBroken.join(", ")}. ` +
+          `Upgrade the middleware or remove ${optionName} from options.`,
       );
     }
   }
@@ -760,6 +769,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           boundaryId,
           boundaryTimestamp: durationAnchor,
         });
+        // Backward-compat: dual-emit the deprecated alias so controllers built
+        // before #1939 that key off "iteration_reset" still clear their state.
+        // Remove in next major version once all consumers migrate to "run_reset".
+        await governance.record({ kind: "iteration_reset" });
       } catch (e) {
         poisoned = true;
         throw e;
@@ -819,11 +832,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           const resetAt = Date.now();
           const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
           const seen = new Set<IterationGuardHandle>();
-          for (const mw of sorted) {
-            if (isIterationGuardHandle(mw) && !seen.has(mw)) {
-              seen.add(mw);
-              mw.resetForRun(durationAnchor, resetAt);
+          try {
+            for (const mw of sorted) {
+              if (isIterationGuardHandle(mw) && !seen.has(mw)) {
+                seen.add(mw);
+                mw.resetForRun(durationAnchor, resetAt);
+              }
             }
+          } catch (e: unknown) {
+            poisoned = true;
+            throw e;
           }
         }
         resetGuardsCurrentRun = undefined;
@@ -1005,11 +1023,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             const resetAt = Date.now();
             const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
             const seen = new Set<IterationGuardHandle>();
-            for (const g of allMiddleware) {
-              if (isIterationGuardHandle(g) && !seen.has(g)) {
-                seen.add(g);
-                g.resetForRun(durationAnchor, resetAt);
+            try {
+              for (const g of allMiddleware) {
+                if (isIterationGuardHandle(g) && !seen.has(g)) {
+                  seen.add(g);
+                  g.resetForRun(durationAnchor, resetAt);
+                }
               }
+            } catch (e: unknown) {
+              poisoned = true;
+              throw e;
             }
           }
         }
