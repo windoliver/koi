@@ -349,6 +349,14 @@ export interface SkillComponent extends SkillMetadata {
    * the <available_skills> XML block.
    */
   readonly runtimeBacked?: boolean;
+  /**
+   * True when this component was attached by the skills-runtime provider for
+   * an MCP-sourced skill (source === "mcp"). Used to distinguish MCP-backed
+   * skills from body-backed root skills (e.g. browser, memory) during session
+   * reset: MCP skills absent from the refreshed catalog must not survive the
+   * merge, while body-backed root skills from other providers should be preserved.
+   */
+  readonly mcpBacked?: boolean;
 }
 
 /**

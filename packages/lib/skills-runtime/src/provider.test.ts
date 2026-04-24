@@ -426,7 +426,6 @@ describe("createProgressivePinnedRuntime", () => {
         name: "ext-skill",
         description: "Updated external description.",
         source: "mcp",
-        body: "",
         dirPath: "",
       },
     ]);
@@ -581,7 +580,7 @@ describe("createProgressiveSkillProvider", () => {
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const { provider } = createProgressiveSkillProvider(base);
     const result = await provider.attach({} as Agent);
-    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) throw new Error("Expected AttachResult");
     const comp = result.components.get(skillToken("cmd")) as
       | { runtimeBacked?: boolean }
       | undefined;
@@ -689,5 +688,55 @@ describe("createProgressiveSkillProvider", () => {
     // After failed reload, pins are restored — Skill tool still serves session-start body.
     const loaded = await pinnedRuntime.load("stable-skill");
     expect(loaded.ok && loaded.value.body).toContain("Session-start body.");
+  });
+
+  test("MCP skill removed mid-session does not survive reload()", async () => {
+    // Regression: removed MCP skills must not re-appear in the catalog after reload().
+    // The base runtime re-applies only lastExternalSkills on clearPinnedBodies(), so
+    // a skill removed via registerExternal() before reload() must be absent from fresh.
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const { provider, pinnedRuntime, reload } = createProgressiveSkillProvider(base);
+
+    // Session start: server-A and server-B both connected.
+    pinnedRuntime.registerExternal([
+      { name: "mcp-skill-a", description: "Server A skill.", source: "mcp", dirPath: "" },
+      { name: "mcp-skill-b", description: "Server B skill.", source: "mcp", dirPath: "" },
+    ]);
+    await provider.attach(STUB_AGENT);
+
+    // Server A disconnects — bridge calls registerExternal without it.
+    pinnedRuntime.registerExternal([
+      { name: "mcp-skill-b", description: "Server B skill.", source: "mcp", dirPath: "" },
+    ]);
+
+    // reload() runs clearPinnedBodies() which re-applies lastExternalSkills (only server-B).
+    const fresh = await reload();
+
+    // Server-A skill must be absent from the refreshed catalog.
+    const tokenA = skillToken("mcp-skill-a") as string;
+    expect(fresh.has(tokenA as never)).toBe(false);
+
+    // Server-B skill must still be present.
+    const tokenB = skillToken("mcp-skill-b") as string;
+    expect(fresh.has(tokenB as never)).toBe(true);
+  });
+
+  test("non-mcpBacked body-backed skill has mcpBacked: undefined after skillDefinitionToComponent", async () => {
+    // Regression: body-backed root skills (browser, memory) must NOT get mcpBacked: true.
+    // They use skillDefinitionToComponent without the mcpBacked flag, so the merge in
+    // tui-command.ts preserves them across session resets while excluding removed MCP skills.
+    await writeSkill(userRoot, "fs-skill", "Filesystem body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const loaded = await base.load("fs-skill");
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+
+    // Default (no mcpBacked flag) — browser/memory provider path.
+    const comp = skillDefinitionToComponent(loaded.value);
+    expect((comp as { mcpBacked?: boolean }).mcpBacked).toBeUndefined();
+
+    // Explicit mcpBacked: true — skills-runtime MCP path.
+    const mcpComp = skillDefinitionToComponent(loaded.value, true);
+    expect((mcpComp as { mcpBacked?: boolean }).mcpBacked).toBe(true);
   });
 });

@@ -198,7 +198,7 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
     // body. Use the eager helper instead so they are filtered by content === ""
     // in injectSkills, matching eager-mode behavior.
     if (result.value.source === "mcp") {
-      components.set(skillToken(name), skillDefinitionToComponent(result.value));
+      components.set(skillToken(name), skillDefinitionToComponent(result.value, true));
     } else {
       components.set(skillToken(name), skillDefinitionToProgressiveComponent(result.value));
     }
@@ -214,12 +214,19 @@ async function attachProgressive(runtime: SkillsRuntime): Promise<AttachResult> 
 /**
  * Converts a SkillDefinition to a SkillComponent (for consumers that already
  * have a loaded definition and want to attach it directly).
+ *
+ * @param mcpBacked - Set to true for MCP-sourced skills so session-reset merge
+ *   logic can exclude stale MCP entries absent from the refreshed catalog.
  */
-export function skillDefinitionToComponent(skill: SkillDefinition): SkillComponent {
+export function skillDefinitionToComponent(
+  skill: SkillDefinition,
+  mcpBacked = false,
+): SkillComponent {
   return {
     name: skill.name,
     description: skill.description,
     content: skill.body,
+    ...(mcpBacked ? { mcpBacked: true } : {}),
     ...(skill.allowedTools !== undefined ? { tags: skill.allowedTools } : {}),
     ...(skill.requires !== undefined ? { requires: skill.requires as BrickRequires } : {}),
     ...(skill.executionMode !== undefined ? { executionMode: skill.executionMode } : {}),

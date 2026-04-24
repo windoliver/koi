@@ -2805,23 +2805,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         // Refresh the live skill component map for the new session.
         // reloadSkillComponents() clears pinned bodies (evicting base LRU entries),
-        // re-runs loadAll() to pick up edits/deletions, and returns a fresh map of
-        // progressive (runtimeBacked) skills from the skills-runtime provider only.
-        // Merge with body-backed skills (browser, memory) that remain valid from
-        // the real agent ECS — those providers are not rebuilt on reset, so their
-        // components are still accurate. Progressive skills overlay them.
+        // re-runs loadAll() to pick up edits/deletions, and returns a map of all
+        // skills-runtime entries (progressive file-based + currently-live MCP).
         // Non-fatal: if reload fails, liveSkillComponents retains previous state.
         try {
           const fresh = await reloadSkillComponents();
           const realSkills = skillAgentRef.current?.query<SkillComponent>("skill:") ?? new Map();
-          // Start with fresh progressive skills — this is the source of truth for
-          // runtimeBacked skills. Deleted/blocked progressive skills are absent from
-          // fresh and must NOT be carried over from the stale startup ECS map.
-          // Then add only body-backed (non-runtimeBacked) skills from the real ECS
-          // — those providers are unchanged by reset and their components remain valid.
+          // Seed from fresh (authoritative for progressive and MCP skills).
+          // Then restore non-runtimeBacked, non-mcpBacked skills from realSkills —
+          // those are body-backed root skills (e.g. browser, memory) from providers
+          // that are unaffected by reset. They override any same-token entry in fresh
+          // to preserve the original ECS assembly precedence (first-writer-wins:
+          // root providers attach before skills-runtime). Removed MCP skills are
+          // excluded by the mcpBacked marker that was set at attach time.
           const merged = new Map<SubsystemToken<SkillComponent>, SkillComponent>(fresh);
           for (const [token, comp] of realSkills) {
-            if (!(comp as { runtimeBacked?: boolean }).runtimeBacked) {
+            const c = comp as { runtimeBacked?: boolean; mcpBacked?: boolean };
+            if (!c.runtimeBacked && !c.mcpBacked) {
               merged.set(token, comp);
             }
           }
@@ -2829,11 +2829,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         } catch (skillReloadErr) {
           // reload() throws on discovery failure and restores the previous pinned snapshot.
           // Preserve the current liveSkillComponents — the catalog stays consistent with
-          // what the Skill tool can serve. Log so the operator is aware.
+          // what the Skill tool can serve. Surface a visible error so the user knows
+          // their skill inventory may reflect the previous session.
           console.error(
             "[skills] Session reset: skill catalog refresh failed, retaining previous inventory.",
             skillReloadErr,
           );
+          if (myGeneration === resetGeneration) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SKILL_RELOAD_FAILED",
+              message: `Skill catalog refresh failed — ${skillReloadErr instanceof Error ? skillReloadErr.message : String(skillReloadErr)}. Skills from the previous session may still be shown.`,
+            });
+          }
         }
         // /clear is silent on success — a freshly cleared conversation
         // is its own acknowledgement. The cumulative runtime-wide spend
