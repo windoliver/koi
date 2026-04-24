@@ -958,9 +958,34 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           if (govCtl !== undefined) {
             await resetRunBoundary(allMiddleware, govCtl, boundaryId);
           } else {
+            // No governance component — still validate guards and apply dual-anchor
+            // reset so duration/inactivity semantics are identical to the governed path.
+            // Fail closed on broken guards: same invariants must hold whether or not
+            // a controller is installed.
+            for (const mw of allMiddleware) {
+              if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+                throw KoiRuntimeError.from(
+                  "VALIDATION",
+                  `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
+                    `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+                );
+              }
+              if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+                throw KoiRuntimeError.from(
+                  "VALIDATION",
+                  `[koi] Non-cooperating "koi:iteration-guard" does not implement resetForRun(). ` +
+                    `This is a pre-#1917 legacy guard. Remove it or upgrade @koi/engine-compose.`,
+                );
+              }
+            }
             const resetAt = Date.now();
+            const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
+            const seen = new Set<IterationGuardHandle>();
             for (const g of allMiddleware) {
-              if (isIterationGuardHandle(g)) g.resetForRun(resetAt);
+              if (isIterationGuardHandle(g) && !seen.has(g)) {
+                seen.add(g);
+                g.resetForRun(durationAnchor, resetAt);
+              }
             }
           }
         }
