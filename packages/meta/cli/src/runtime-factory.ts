@@ -51,6 +51,8 @@ import type {
   KoiMiddleware,
   ModelAdapter,
   PermissionBackend,
+  PermissionDecision,
+  PermissionQuery,
   PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
@@ -86,9 +88,17 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
-import type { SourcedRule } from "@koi/permissions";
-import { createPermissionBackend } from "@koi/permissions";
+import type { CompiledRule, SourcedRule } from "@koi/permissions";
+import {
+  compileGlob,
+  createPermissionBackend,
+  evaluateRules,
+  mapSettingsToSourcedRules,
+  SOURCE_PRECEDENCE,
+  widenCommandScopedRulesForTui,
+} from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
+import { loadSettings } from "@koi/settings";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
 import {
@@ -639,6 +649,12 @@ export interface KoiRuntimeConfig {
   /** Working directory for file tools (Glob, fs_read, Bash). Defaults to process.cwd(). */
   readonly cwd?: string | undefined;
   /**
+   * Absolute path to a settings file loaded as the `flag` layer — highest priority
+   * below `policy`. Enables per-invocation overrides via `--settings <path>`.
+   * When omitted the flag layer is empty (no per-invocation override).
+   */
+  readonly settingsFlagPath?: string | undefined;
+  /**
    * System prompt injected via createSystemPromptMiddleware.
    * Tells the model it has tools and should use them.
    * When omitted, no system prompt middleware is installed.
@@ -1181,8 +1197,27 @@ export function resolveMaxDurationMs(hostDefault?: number): number {
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
 }
 
+/**
+ * Thrown when the policy settings file fails to parse or load.
+ * `start.ts` catches this specifically to emit `bail(msg, 2)` — the documented
+ * policy-failure exit code — instead of a generic runtime-assembly error.
+ */
+export class PolicyLoadError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PolicyLoadError";
+  }
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
-  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+  const {
+    modelAdapter,
+    modelName,
+    approvalHandler,
+    cwd = process.cwd(),
+    settingsFlagPath,
+    skillsRuntime,
+  } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
   // the agentName in trajectory metadata, and the [koi/X] log prefix.
   // Pulled up from below so preset stack activation (which runs early so
@@ -1472,40 +1507,153 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // `coreSlots.hook` instead.
 
   // --- @koi/permissions + @koi/middleware-permissions ---
-  // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
-  // See TUI_ALLOW_RULES (above) for allowlist reasoning. The
-  // write_plan rule is appended only when planning is opted in so
-  // hosts that do not install @koi/middleware-planning cannot have
-  // a third-party same-named tool silently approved.
-  const tuiAllowRules: readonly SourcedRule[] = [
-    ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true
-      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
-      : []),
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "allow",
-      source: "policy",
-      context: { path: `${cwd}/**` },
-    },
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "ask",
-      source: "policy",
-      reason: "File is outside the workspace — approve to read",
-    },
-  ] as const;
-  // Permission backend: caller may override (koi start passes an
-  // auto-allow pattern backend). Default to the TUI's tiered default
-  // mode so existing TUI behavior is preserved.
-  const permBackend =
-    config.permissionBackend ??
-    createPermissionBackend({
-      mode: "default",
-      rules: tuiAllowRules,
+  // Always load settings — policy-layer rules must be enforced on every startup
+  // path, including koi start which supplies its own custom backend.
+  // Non-policy parse/schema errors are logged and skipped (fail-open for user
+  // layers); a policy-layer error is re-thrown so the top-level handler can
+  // exit with the fail-closed error code rather than produce a generic crash.
+  const settingsRules: SourcedRule[] = [];
+  const settingsDefaultMode = "default" as const;
+  try {
+    const { sources, errors: settingsErrors } = await loadSettings({
+      cwd,
+      ...(settingsFlagPath !== undefined ? { flagPath: settingsFlagPath } : {}),
     });
+    for (const err of settingsErrors) {
+      console.warn(`[koi/${hostId}] settings validation warning: ${err.file}: ${err.message}`);
+    }
+    for (const source of SOURCE_PRECEDENCE) {
+      const layerSettings = sources[source];
+      if (layerSettings != null) {
+        const rules = mapSettingsToSourcedRules(layerSettings, source);
+        // Policy layer is tightening-only: allow entries are dropped to prevent
+        // policy from re-opening tools that lower-precedence layers deny.
+        const filtered = source === "policy" ? rules.filter((r) => r.effect !== "allow") : rules;
+        settingsRules.push(...filtered);
+      }
+    }
+  } catch (err) {
+    // Policy or explicit --settings file is malformed or unreadable — rethrow
+    // so the caller can exit with code 2 (fail-closed).
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new PolicyLoadError(`[koi/${hostId}] fatal: settings failed to load — ${msg}`, {
+      cause: err,
+    });
+  }
+
+  // Sort helpers: highest-precedence source first, then deny < ask < allow.
+  const EFFECT_ORDER: Readonly<Record<string, number>> = { deny: 0, ask: 1, allow: 2 };
+  const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
+  const sortRules = (rules: readonly SourcedRule[]): readonly SourcedRule[] =>
+    [...rules].sort((a, b) => {
+      const srcDiff = precedenceIdx(a) - precedenceIdx(b);
+      if (srcDiff !== 0) return srcDiff;
+      return (EFFECT_ORDER[a.effect] ?? 3) - (EFFECT_ORDER[b.effect] ?? 3);
+    });
+
+  // Build the permission backend:
+  //   Custom backend path (koi start): enforce policy-layer rules first, then
+  //     delegate to the caller's marker-aware backend.  No widening needed —
+  //     the custom backend evaluates enriched command-scoped resources directly.
+  //   TUI path: widen command-scoped rules fail-closed (the TUI backend only
+  //     receives plain tool ids), then add built-in TUI allows as fallback.
+  let permBackend: PermissionBackend;
+  if (config.permissionBackend !== undefined) {
+    const inner = config.permissionBackend;
+    // Settings may only TIGHTEN on the custom-backend path (koi start).
+    // Allow rules would bypass the caller's explicit whitelist (e.g. --allow-tool);
+    // only deny/ask rules are applied so operators stay in control.
+    const droppedAllowCount = settingsRules.filter((r) => r.effect === "allow").length;
+    if (droppedAllowCount > 0) {
+      console.warn(
+        `[koi/${hostId}] ${droppedAllowCount} settings allow rule(s) are not enforced when a ` +
+          `custom permission backend is active (koi start). ` +
+          `Only deny and ask rules take effect on this path. ` +
+          `Use \`koi tui\` or remove allow rules from settings.`,
+      );
+    }
+    const restrictingRules = sortRules(settingsRules.filter((r) => r.effect !== "allow"));
+    if (restrictingRules.length > 0) {
+      // Compile rules once at construction — never recompile per-query.
+      const compiledRules: readonly CompiledRule[] = restrictingRules.map((r) => ({
+        ...r,
+        compiled: compileGlob(r.pattern),
+      }));
+      const wrappedCheck = async (query: PermissionQuery): Promise<PermissionDecision> => {
+        const decision = evaluateRules(query, compiledRules);
+        // Sentinel "No matching permission rule" means settings have no deny/ask opinion.
+        // Delegate to the inner marker-aware backend (e.g. createPatternPermissionBackend).
+        if (decision.effect === "ask" && decision.reason === "No matching permission rule") {
+          return inner.check(query);
+        }
+        return decision;
+      };
+      // Preserve the marker-aware capability flag so koi start retains dual-key evaluation.
+      permBackend = {
+        check: wrappedCheck,
+        ...(inner.dispose != null ? { dispose: inner.dispose } : {}),
+        ...(inner.supportsDefaultDenyMarker === true
+          ? { supportsDefaultDenyMarker: true as const }
+          : {}),
+      };
+    } else {
+      permBackend = inner;
+    }
+  } else {
+    // TUI single-key mode: widen command-scoped rules (fail-closed).
+    const { rules: widenedRules, hadCommandScoped } = widenCommandScopedRulesForTui(settingsRules);
+    if (hadCommandScoped) {
+      console.warn(
+        `[koi/${hostId}] command-scoped settings rules are widened to tool-level in TUI mode ` +
+          `(deny/ask become tool-wide; allow rules are stripped). ` +
+          `Use \`koi start\` for precise command-scoped enforcement.`,
+      );
+    }
+    // Rule ordering: policy settings → non-policy restrict → built-in allows →
+    // fs_read workspace guard → non-policy allows.
+    //
+    // Non-policy deny/ask rules come before built-in TUI allows so that
+    // user/project/local/flag deny rules fire first. Non-policy allow rules come
+    // AFTER the out-of-workspace fs_read guard so that a broad "allow all" rule
+    // in project settings cannot bypass the workspace boundary prompt.
+    // Policy is tightening-only on TUI path as well: allows are already stripped at
+    // collection time, but guard here explicitly to prevent any future regression.
+    const policySettingsRules = sortRules(
+      widenedRules.filter((r) => r.source === "policy" && r.effect !== "allow"),
+    );
+    const subPolicyRestrictRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect !== "allow"),
+    );
+    const subPolicyAllowRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect === "allow"),
+    );
+    permBackend = createPermissionBackend({
+      mode: settingsDefaultMode,
+      rules: [
+        ...policySettingsRules,
+        ...subPolicyRestrictRules,
+        ...TUI_ALLOW_RULES,
+        ...(config.planningEnabled === true
+          ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+          : []),
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "allow",
+          source: "policy",
+          context: { path: `${cwd}/**` },
+        },
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "ask",
+          source: "policy",
+          reason: "File is outside the workspace — approve to read",
+        },
+        ...subPolicyAllowRules,
+      ],
+    });
+  }
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
   // Bash prefix enrichment (#1881). Feeds the raw command to

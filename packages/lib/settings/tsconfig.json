@@ -5,12 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [
-    {
-      "path": "../../kernel/core"
-    },
-    {
-      "path": "../../lib/settings"
-    }
-  ]
+  "references": [{ "path": "../../kernel/core" }, { "path": "../validation" }]
 }

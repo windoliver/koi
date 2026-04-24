@@ -1,11 +1,8 @@
 {
-  "name": "@koi/permissions",
-  "description": "Rule-based tool access control implementing PermissionBackend",
+  "name": "@koi/settings",
+  "description": "Hierarchical settings cascade: user → project → local → flag → policy",
   "version": "0.0.0",
   "private": true,
-  "koi": {
-    "optional": true
-  },
   "type": "module",
   "exports": {
     ".": {
@@ -21,10 +18,11 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
-    "@koi/settings": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "koi": {
+    "optional": true
+  }
 }

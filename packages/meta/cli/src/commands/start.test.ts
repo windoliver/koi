@@ -277,6 +277,7 @@ function makeFlags(
     allowRemoteFs: overrides.allowRemoteFs ?? false,
     headless: overrides.headless ?? false,
     allowTools: [],
+    settingsFlagPath: undefined,
     maxDurationMs: overrides.maxDurationMs,
     resultSchema: overrides.resultSchema,
     governance: {
