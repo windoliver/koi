@@ -67,15 +67,25 @@ function extractSlackEventId(rawBody: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Body-digest dedup helper (used when the delivery header is unsigned)
+// Tenant-scoped HMAC dedup helper
 // ---------------------------------------------------------------------------
 
-async function bodyDigestKey(prefix: string, rawBody: string): Promise<string> {
-  // Derive the dedup key from the authenticated raw body so an attacker cannot
-  // replay a valid signed body with a different delivery header to bypass dedup.
+async function hmacBodyKey(prefix: string, secret: string, rawBody: string): Promise<string> {
+  // HMAC the body with the tenant's secret to produce a dedup key that is:
+  //   1. Authenticated (tied to verified signing material, not unsigned headers)
+  //   2. Tenant-scoped (different secrets → different keys, preventing cross-tenant
+  //      dedup collisions when two tenants receive identical payloads)
+  // Same body + same secret always maps to the same key, so retries dedup correctly.
   const enc = new TextEncoder();
-  const buf = await crypto.subtle.digest("SHA-256", enc.encode(rawBody));
-  return `${prefix}:${Buffer.from(buf).toString("hex")}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
+  return `${prefix}:${Buffer.from(sig).toString("hex")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,10 +97,10 @@ const githubProvider: WebhookProvider = {
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGitHubSignature(secret, rawBody, request);
     if (!ok) return { ok: false };
-    // Dedup key is a digest of the authenticated raw body. X-GitHub-Delivery is
-    // not covered by the HMAC, so trusting it would let a replayer bypass dedup
-    // by mutating only the unsigned header.
-    const dedupKey = await bodyDigestKey("github", rawBody);
+    // HMAC-body key: scoped by secret (tenant) + body, so same payload from two
+    // different tenants produces different dedup keys (no cross-tenant suppression).
+    // X-GitHub-Delivery is excluded — it is not covered by the request HMAC.
+    const dedupKey = await hmacBodyKey("github", secret, rawBody);
     return { ok, dedupKey };
   },
 };
@@ -99,8 +109,11 @@ const slackProvider: WebhookProvider = {
   kind: "slack",
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifySlackSignature(secret, rawBody, request);
-    // Extract event_id from verified Events API payload for dedup.
-    const dedupKey = ok ? extractSlackEventId(rawBody) : undefined;
+    if (!ok) return { ok: false };
+    // For Events API: use the stable event_id so retries deduplicate by event.
+    // For other Slack payloads (slash commands, interactive, etc.) event_id is
+    // absent; fall back to a tenant-scoped HMAC key so signed retries still dedup.
+    const dedupKey = extractSlackEventId(rawBody) ?? (await hmacBodyKey("slack", secret, rawBody));
     return { ok, dedupKey };
   },
 };
@@ -121,9 +134,9 @@ const genericProvider: WebhookProvider = {
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGenericSignature(secret, rawBody, request);
     if (!ok) return { ok: false };
-    // Dedup key is a digest of the authenticated body. X-Webhook-ID is not
-    // covered by the Standard Webhooks HMAC, so it cannot be trusted for dedup.
-    const dedupKey = await bodyDigestKey("generic", rawBody);
+    // Tenant-scoped HMAC key: X-Webhook-ID is not covered by the HMAC signature
+    // and cannot be trusted. The HMAC key prevents cross-tenant dedup collisions.
+    const dedupKey = await hmacBodyKey("generic", secret, rawBody);
     return { ok, dedupKey };
   },
 };
