@@ -25,6 +25,13 @@ const bash = createBashTool({
 // Register with your agent's tool provider
 ```
 
+> **workspaceRoot must exist.** The underlying path validator in
+> `@koi/bash-security` fail-closes when the base directory is missing —
+> otherwise an attacker could race a symlink into place between
+> validation and the subsequent `open`/`spawn`. Callers pointing at a
+> directory that has not yet been created should `mkdir -p` it first
+> (or hand in a realpath'd `tmpdir` for tests).
+
 ## Tool Schema
 
 Input:

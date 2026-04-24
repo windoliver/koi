@@ -54,6 +54,7 @@ describe("task kind type guards", () => {
       kind: "remote_agent" as const,
       endpoint: "https://example.com",
       correlationId: "corr-123",
+      attemptId: "test-attempt-id",
     };
     expect(isRemoteAgentTask(task)).toBe(true);
   });

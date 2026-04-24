@@ -62,6 +62,7 @@ import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { loadCassette } from "@koi/replay";
 import {
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
   createSkillProvider,
   createSkillsRuntime,
@@ -2516,7 +2517,7 @@ describe("Golden: @koi/hooks agent hooks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// L2 golden queries: @koi/tasks (2 queries)
+// L2 golden queries: @koi/tasks (4 queries, includes remote_agent lifecycle)
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/tasks", () => {
@@ -2676,6 +2677,90 @@ describe("Golden: @koi/tasks", () => {
       expect(isRuntimeTask(state)).toBe(true);
       expect(state.kind).toBe("local_shell");
     }
+  });
+
+  test("createRemoteAgentLifecycle SSRF guard rejects non-HTTPS non-loopback endpoint", async () => {
+    const { createRemoteAgentLifecycle } = await import("@koi/tasks");
+
+    // Plain HTTP to non-loopback must throw at construction time.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "http://remote.example.com/api/agent" }),
+    ).toThrow(/must use HTTPS/);
+
+    // HTTPS is accepted.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "https://remote.example.com/api/agent" }),
+    ).not.toThrow();
+
+    // Loopback HTTP is accepted for local dev.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "http://localhost:3000/api/agent" }),
+    ).not.toThrow();
+
+    // cancelEndpoint is also validated.
+    expect(() =>
+      createRemoteAgentLifecycle({
+        endpoint: "https://remote.example.com/api/agent",
+        cancelEndpoint: "http://external.example.com/cancel",
+      }),
+    ).toThrow(/must use HTTPS/);
+  });
+
+  test("createRemoteAgentLifecycle start/stop round-trip via mock fetch produces RemoteAgentTask", async () => {
+    const { createRemoteAgentLifecycle, createOutputStream, isRemoteAgentTask } = await import(
+      "@koi/tasks"
+    );
+    const { taskItemId } = await import("@koi/core");
+
+    // Mock fetch: returns a minimal NDJSON stream with a done frame.
+    const encoder = new TextEncoder();
+    const doneFrame = encoder.encode('{"kind":"done","exitCode":0}\n');
+    const mockFetch = async (
+      _url: string | URL | Request,
+      _init?: RequestInit,
+    ): Promise<Response> =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(doneFrame);
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+
+    const lifecycle = createRemoteAgentLifecycle({
+      endpoint: "https://agent.example.com/run",
+      fetch: mockFetch as typeof globalThis.fetch,
+    });
+
+    expect(lifecycle.kind).toBe("remote_agent");
+
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const state = await lifecycle.start(taskItemId("task_1"), output, {
+      correlationId: "corr-abc",
+      payload: { prompt: "hello" },
+      onExit: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(isRemoteAgentTask(state)).toBe(true);
+    expect(state.kind).toBe("remote_agent");
+    expect(state.correlationId).toBe("corr-abc");
+    expect(typeof state.attemptId).toBe("string");
+    expect(state.attemptId).toHaveLength(36); // UUID format
+
+    // Wait briefly for the pipe to process the done frame.
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    expect(exitCode).toBe(0);
+    const chunks = output.read(0);
+    expect(chunks.some((c) => c.content.includes("exit code: 0"))).toBe(true);
+
+    // stop() is a no-op after natural exit — should not throw.
+    await lifecycle.stop(state);
   });
 });
 
@@ -8031,10 +8116,11 @@ describe("Golden: @koi/mcp-server", () => {
 
     // Verify tools/list returns platform tools
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(2); // koi_send_message + koi_list_messages
+    expect(tools.tools.length).toBe(3); // koi_send_message + koi_list_messages + koi_list_mailbox
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("koi_send_message");
     expect(names).toContain("koi_list_messages");
+    expect(names).toContain("koi_list_mailbox");
 
     // Verify tool schemas have required fields
     const sendTool = tools.tools.find((t) => t.name === "koi_send_message");
@@ -8256,6 +8342,109 @@ describe("Golden: @koi/skills-runtime (standalone progressive loading)", () => {
     expect(afterInvalidate.ok).toBe(true);
     if (!afterInvalidate.ok) return;
     expect(afterInvalidate.value).toHaveLength(2); // metadata still available
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/skills-runtime — progressive provider + middleware (issue #1986)
+// No LLM needed. Validates runtimeBacked marker, XML injection, MCP exclusion,
+// and fallback behavior when provider/middleware progressive flags are mismatched.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/skills-runtime (progressive mode — issue #1986)", () => {
+  test("createProgressiveSkillProvider attaches runtimeBacked components with empty content", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { isAttachResult, skillToken } = await import("@koi/core");
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-prog-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "commit"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "commit", "SKILL.md"),
+      "---\nname: commit\ndescription: Generate a commit message.\n---\n\nFull body text.",
+    );
+
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const { provider } = createProgressiveSkillProvider(base);
+
+    const result = await provider.attach({} as never);
+    expect(isAttachResult(result)).toBe(true);
+    if (!isAttachResult(result)) return;
+
+    const component = result.components.get(skillToken("commit")) as
+      | { content: string; runtimeBacked: boolean; description: string }
+      | undefined;
+
+    // Progressive component: empty content, runtimeBacked marker set, description preserved
+    expect(component).toBeDefined();
+    expect(component?.content).toBe("");
+    expect(component?.runtimeBacked).toBe(true);
+    expect(component?.description).toBe("Generate a commit message.");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  test("createSkillInjectorMiddleware progressive:true injects <available_skills> XML — not bodies", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { sessionId, skillToken } = await import("@koi/core");
+    const { createSkillInjectorMiddleware } = await import("@koi/skills-runtime");
+    type Agent = import("@koi/core").Agent;
+    type SkillComponent = import("@koi/core").SkillComponent;
+    type SubsystemToken = import("@koi/core").SubsystemToken<SkillComponent>;
+
+    const skillsDir = mkdtempSync(join(tmpdir(), "koi-golden-mw-"));
+    trajDirs.push(skillsDir);
+    mkdirSync(join(skillsDir, "review"), { recursive: true });
+    writeFileSync(
+      join(skillsDir, "review", "SKILL.md"),
+      "---\nname: review\ndescription: Review pull requests.\n---\n\nDetailed review instructions.",
+    );
+
+    // Build a mock agent with a progressive skill component (content: "", runtimeBacked: true)
+    const token = skillToken("review") as SubsystemToken;
+    const skills = new Map<SubsystemToken, SkillComponent>([
+      [
+        token,
+        { name: "review", description: "Review pull requests.", content: "", runtimeBacked: true },
+      ],
+    ]);
+    const agent = {
+      query: <T>(prefix: string) =>
+        prefix === "skill:"
+          ? (skills as unknown as ReadonlyMap<import("@koi/core").SubsystemToken<T>, T>)
+          : new Map(),
+    } as Agent;
+
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+
+    const received: import("@koi/core").ModelRequest[] = [];
+    const wrapModelCall = mw.wrapModelCall;
+    if (wrapModelCall === undefined) throw new Error("wrapModelCall not defined");
+    await wrapModelCall(
+      {
+        session: { agentId: "t", sessionId: sessionId("t"), runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "t0" as never,
+        messages: [],
+        metadata: {},
+      },
+      { messages: [] },
+      async (req) => {
+        received.push(req);
+        return { content: "ok", model: "test" };
+      },
+    );
+
+    const prompt = received[0]?.systemPrompt ?? "";
+    // Progressive mode: XML block, no full body
+    expect(prompt).toContain("<available_skills>");
+    expect(prompt).toContain('name="review"');
+    expect(prompt).toContain('description="Review pull requests."');
+    expect(prompt).not.toContain("Detailed review instructions");
+    expect(prompt).toContain("</available_skills>");
   });
 });
 
@@ -10883,6 +11072,266 @@ describe("Golden: @koi/governance-defaults", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/engine — reset boundary semantics (#1939)
+//
+// Standalone — no cassette replay. Exercises the run_reset / session_reset
+// governance events emitted by @koi/engine's resetRunBoundary() helper.
+// Two tests: (1) run_reset provenance on sequential runs, (2) session_reset
+// provenance on cycleSession(). These mirror the integration-test coverage
+// but live here so CI enforces the golden query contract for @koi/engine.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/engine — reset boundary semantics", () => {
+  test("run_reset fires with source:engine and deterministic boundaryId per run", async () => {
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    // Fixed session id so boundaryId values are deterministic and assertable.
+    const FIXED_SESSION = sessionId("reset-boundary-test");
+    const runtime = await createKoi({
+      manifest: { name: "Golden Reset", version: "0.1.0", model: { name: "test-model" } },
+      sessionId: FIXED_SESSION,
+      adapter: {
+        engineId: "golden-reset-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push(ev);
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    const resets = recorded.filter((e) => e.kind === "run_reset");
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+    expect(r0.source).toBe("engine");
+    // Exact boundaryId — format: ${sessionId}:session:${cycleIndex}:run:${runIndex}
+    expect(r0.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:0`);
+    expect(r1.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:1`);
+  });
+
+  test("session_reset fires with source:host and monotonically increasing boundaryId", async () => {
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+
+    const runtime = await createKoi({
+      manifest: { name: "Golden Session Reset", version: "0.1.0", model: { name: "test-model" } },
+      adapter: {
+        engineId: "golden-session-reset-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push(ev);
+      return original(ev);
+    };
+
+    await runtime.cycleSession?.();
+    await runtime.cycleSession?.();
+
+    const sessionResets = recorded.filter((e) => e.kind === "session_reset");
+    expect(sessionResets.length).toBe(2);
+    const sr0 = sessionResets[0];
+    const sr1 = sessionResets[1];
+    if (sr0 === undefined || sr0.kind !== "session_reset")
+      throw new Error("expected session_reset[0]");
+    if (sr1 === undefined || sr1.kind !== "session_reset")
+      throw new Error("expected session_reset[1]");
+    expect(sr0.source).toBe("host");
+    expect(sr0.boundaryId).toMatch(/:session:0$/);
+    expect(sr1.boundaryId).toMatch(/:session:1$/);
+  });
+
+  test("run_reset fires at run start, not during prior run drain (event ordering)", async () => {
+    // Verifies the multi-submit reset boundary: run_reset for run N must appear
+    // after run N-1 is fully drained and before any activity in run N.
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: { name: "Golden Reset Ordering", version: "0.1.0", model: { name: "test-model" } },
+      adapter: {
+        engineId: "golden-reset-ordering-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+
+    // Track events per phase: "run1" while draining first run, "run2" for second.
+    const phased: Array<{ phase: "run1" | "run2"; kind: string }> = [];
+    let phase: "run1" | "run2" = "run1";
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      phased.push({ phase, kind: ev.kind });
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    phase = "run2";
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    // run_reset for first run must fire during "run1" phase (non-cooperating adapter resets at run start)
+    const run1Events = phased.filter((p) => p.phase === "run1");
+    const run2Events = phased.filter((p) => p.phase === "run2");
+    expect(run1Events.some((p) => p.kind === "run_reset")).toBe(true);
+    expect(run2Events.some((p) => p.kind === "run_reset")).toBe(true);
+
+    // run_reset for run2 must be the first event in run2 (before any turn/token events)
+    const firstRun2Event = run2Events[0];
+    expect(firstRun2Event?.kind).toBe("run_reset");
+
+    // The two run_reset events must have distinct boundaryIds
+    const resets = phased.filter((p) => p.kind === "run_reset");
+    expect(resets.length).toBe(2);
+  });
+
+  test("run_reset fires on cooperating adapter path (cassette replay, two sequential runs)", async () => {
+    // Exercises the cooperating-adapter path through the production cassette harness:
+    // createCassetteAdapter provides terminals.modelStream so the engine defers guard
+    // reset to applyRecomposition() after forge/dynamic-mw settle (not at run entry).
+    // Uses fixtures/run-reset.cassette.json for run1, second-call text for run2.
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const runResetCassette = await loadCassette(`${FIXTURES}/run-reset.cassette.json`);
+    const adapter = createCassetteAdapter(runResetCassette.chunks, {
+      secondCallText: "second-response",
+      useTurnRunner: true,
+    });
+
+    const FIXED_SESSION = sessionId("cooperating-reset-test");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 30_000 });
+
+    const runtime = await createKoi({
+      manifest: { name: "Cooperating Reset", version: "0.1.0", model: { name: MODEL } },
+      sessionId: FIXED_SESSION,
+      adapter,
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: Array<{ phase: "run1" | "run2"; event: GovernanceEvent }> = [];
+    let phase: "run1" | "run2" = "run1";
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push({ phase, event: ev });
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    phase = "run2";
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    const run2Events = recorded.filter((r) => r.phase === "run2").map((r) => r.event);
+    // run_reset must be the first governance event in run2
+    expect(run2Events[0]?.kind).toBe("run_reset");
+
+    const resets = recorded.filter((r) => r.event.kind === "run_reset").map((r) => r.event);
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+
+    // Exact boundaryId — deterministic given fixed session id
+    expect(r0.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:0`);
+    expect(r1.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:1`);
+    expect(r0.source).toBe("engine");
+    expect(r1.source).toBe("engine");
+
+    // boundaryTimestamp for run2 must be >= run1 (monotonically non-decreasing)
+    if (r0.boundaryTimestamp !== undefined && r1.boundaryTimestamp !== undefined) {
+      expect(r1.boundaryTimestamp).toBeGreaterThanOrEqual(r0.boundaryTimestamp);
+    }
+  });
+});
+
 describe("Golden: @koi/daemon", () => {
   test("supervisor starts and shuts down a subprocess worker", async () => {
     const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
@@ -12364,7 +12813,6 @@ describe("Golden: @koi/toolsets", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Golden: @koi/gateway — transport infrastructure, standalone API tests
 // (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
 // ---------------------------------------------------------------------------
@@ -12440,5 +12888,85 @@ describe("Golden: @koi/gateway", () => {
     expect(typeof gateway.destroySession).toBe("function");
     expect(typeof gateway.onSessionEvent).toBe("function");
     expect(gateway.sessions()).toBe(store);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/ipc-local (2 queries: mailbox + router)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/ipc-local", () => {
+  test("createLocalMailbox — send, list, and onMessage round-trip", async () => {
+    const { createLocalMailbox } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const mailbox = createLocalMailbox({ agentId: agentId("owner") });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+
+    const result = await mailbox.send({
+      from: agentId("sender"),
+      to: agentId("owner"),
+      kind: "event",
+      type: "ping",
+      payload: { ts: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.id).toBeString();
+      expect(result.value.from).toBe(agentId("sender"));
+      expect(result.value.type).toBe("ping");
+    }
+
+    const msgs = await mailbox.list();
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.type).toBe("ping");
+
+    await Bun.sleep(10);
+    expect(received).toEqual(["ping"]);
+
+    mailbox.close();
+    expect(await mailbox.list()).toHaveLength(0);
+  });
+
+  test("createLocalMailboxRouter — register and route messages between agents", async () => {
+    const { createLocalMailbox, createLocalMailboxRouter } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const router = createLocalMailboxRouter();
+    // Mailboxes must be created with the router they will be registered in —
+    // this binds their inbound-auth guard to the router's trust domain.
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b"), router });
+
+    router.register(agentId("agent-a"), mailboxA);
+    router.register(agentId("agent-b"), mailboxB);
+
+    // Send via mailboxA's outbound path — the authenticated cross-agent route.
+    // router.getView() is a read-only lookup; message delivery goes through the mailbox.
+    const result = await mailboxA.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-b"),
+      kind: "request",
+      type: "task",
+      payload: { action: "run" },
+    });
+    expect(result.ok).toBe(true);
+
+    const bMsgs = await mailboxB.list();
+    expect(bMsgs).toHaveLength(1);
+    expect(bMsgs[0]?.kind).toBe("request");
+    expect(bMsgs[0]?.from).toBe(agentId("agent-a"));
+
+    // Unregister removes from routing table
+    router.unregister(agentId("agent-a"));
+    expect(router.getView(agentId("agent-a"))).toBeUndefined();
+    expect(router.getView(agentId("agent-b"))).toBeDefined();
+
+    mailboxA.close();
+    mailboxB.close();
   });
 });

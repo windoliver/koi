@@ -127,8 +127,8 @@ import {
 } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import {
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
-  createSkillProvider,
   createSkillsRuntime,
 } from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
@@ -1247,6 +1247,7 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
       if (agentRef.current === undefined) throw new Error("Agent not yet wired");
       return agentRef.current;
     },
+    progressive: true,
   });
 
   const tracedMiddleware = [
@@ -1598,16 +1599,17 @@ console.log(
   `Skills registry query verified: tags=["formatting"] → [${queryResult.value.map((s) => s.name).join(", ")}]`,
 );
 
-const skillProvider = createSkillProvider(skillRuntime);
+const { provider: skillProvider, pinnedRuntime: pinnedSkillRuntime } =
+  createProgressiveSkillProvider(skillRuntime);
 console.log(`Skills golden query: dir=${skillsTmpDir}, skill=bullet-points`);
 
 // ---------------------------------------------------------------------------
 // @koi/skill-tool — SkillTool meta-tool golden query setup
-// Uses the same skillRuntime to create a Skill tool the model can invoke.
+// Uses the pinned runtime so Skill tool loads match what was advertised.
 // ---------------------------------------------------------------------------
 
 const skillToolResult = await createSkillTool({
-  resolver: skillRuntime,
+  resolver: pinnedSkillRuntime,
   signal: AbortSignal.timeout(300_000),
 });
 if (!skillToolResult.ok) {
@@ -4196,6 +4198,23 @@ const queries: readonly QueryConfig[] = [
     hooks: [],
     providers: [],
     afterRecord: recordAgentSummarySidecar,
+  },
+
+  // run-reset: records a single run with resetBudgetPerRun=true active so
+  // the run_reset event fires at trajectory index 0 (non-cooperating adapter path).
+  // Two-submit sequential ordering and provenance (guard+governance alignment,
+  // boundaryId stability) are covered by the cassette-harness test in golden-replay.test.ts
+  // ("run_reset fires on cooperating adapter path (cassette replay, two sequential runs)")
+  // using fixtures/run-reset.cassette.json and the createCassetteAdapter two-call pattern.
+  // To record with a real LLM, add OPENROUTER_API_KEY to the environment.
+  {
+    name: "run-reset",
+    prompt: "Say 'hello' in exactly one word.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
   },
 
   // @koi/middleware-feedback-loop — model validation + tool-health middleware.

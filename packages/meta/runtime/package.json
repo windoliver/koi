@@ -32,6 +32,7 @@
     "@koi/file-type": "workspace:*",
     "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
+    "@koi/ipc-local": "workspace:*",
     "@koi/fs-scoped": "workspace:*",
     "@koi/gateway": "workspace:*",
     "@koi/governance-core": "workspace:*",

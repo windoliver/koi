@@ -80,6 +80,7 @@ export {
   createLoopDetector,
   createSpawnGuard,
   detectRepeatingPattern,
+  hasIterationGuardBrand,
   ITERATION_GUARD_BRAND,
   isIterationGuardHandle,
 } from "./guards.js";

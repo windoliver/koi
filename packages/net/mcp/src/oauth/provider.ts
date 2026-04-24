@@ -7,6 +7,7 @@
 
 import type { SecureStorage } from "@koi/secure-storage";
 import type { McpAuthProvider } from "../auth.js";
+import type { UnauthorizedOutcome } from "../connection.js";
 import { discoverAuthServer } from "./discovery.js";
 import { createPkceChallenge } from "./pkce.js";
 import { registerDynamicClient } from "./registration.js";
@@ -41,8 +42,13 @@ export interface OAuthProviderOptions {
 export interface OAuthAuthProvider extends McpAuthProvider {
   /** Run the full interactive OAuth authorization flow. */
   readonly startAuthFlow: () => Promise<boolean>;
-  /** Clear stored tokens and trigger re-auth notification. */
-  readonly handleUnauthorized: () => Promise<void>;
+  /**
+   * Attempt token refresh on a 401. Returns an `UnauthorizedOutcome`:
+   * "refreshed" — new token obtained, retry silently;
+   * "needs-auth" — refresh token gone, interactive OAuth required;
+   * "transient-failure" — tokens preserved but temporarily unavailable.
+   */
+  readonly handleUnauthorized: () => Promise<UnauthorizedOutcome>;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +415,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   };
 
   // --- Interactive auth flow ---
-  const startAuthFlow = async (): Promise<boolean> => {
+  // let: singleflight promise — reset to undefined on settle so the next
+  // call can start a fresh flow.
+  let authFlowInFlight: Promise<boolean> | undefined;
+
+  const startAuthFlow = (): Promise<boolean> => {
+    if (authFlowInFlight !== undefined) return authFlowInFlight;
+    authFlowInFlight = _startAuthFlowImpl().finally(() => {
+      authFlowInFlight = undefined;
+    });
+    return authFlowInFlight;
+  };
+
+  const _startAuthFlowImpl = async (): Promise<boolean> => {
     let metadata = await getMetadata();
     if (metadata === undefined) {
       reportFailure({ kind: "discovery_failed", serverName });
@@ -590,23 +608,22 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   // refresh token in place via tokens.ts; we detect that by re-checking
   // hasTokens() and skipping the destructive path so a temporary outage
   // can't force-logout an otherwise-healthy session.
-  const handleUnauthorized = async (): Promise<void> => {
+  const handleUnauthorized = async (): Promise<UnauthorizedOutcome> => {
     const tm = await getTokenManager();
     const refreshed = await tm.getAccessToken();
     if (refreshed !== undefined) {
-      // Refresh succeeded — the next reconnect will pick up the new token.
-      return;
+      return "refreshed"; // fresh token — caller may retry silently
     }
     // refreshed === undefined could mean either:
     //   (a) terminal refresh failure → tokens.ts already cleared storage
     //   (b) transient failure → tokens.ts deliberately preserved tokens
-    // Distinguish by inspecting storage. Only call clearTokens +
-    // onReauthNeeded in the (a) case so transient outages do not
-    // permanently delete a still-valid refresh token.
+    // Distinguish by inspecting storage. Only call onReauthNeeded in the (a) case
+    // so transient outages do not permanently delete a still-valid refresh token.
     if (await tm.hasTokens()) {
-      return;
+      return "transient-failure"; // tokens preserved but temporarily unavailable
     }
     await runtime.onReauthNeeded(serverName);
+    return "needs-auth"; // terminal — interactive OAuth required
   };
 
   return {

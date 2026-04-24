@@ -1,4 +1,5 @@
-import { matchPatterns } from "./match.js";
+import { detectInjectionOnResolved } from "./injection-detector.js";
+import { MAX_INPUT_LENGTH, matchPatterns, normalizeForMatch } from "./match.js";
 import type { ClassificationResult, ThreatPattern } from "./types.js";
 
 /**
@@ -165,10 +166,26 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
     reason: "rsync to a remote path can copy workspace data off-machine",
   },
   {
-    // ssh with a remote host — can execute commands or open tunnels
-    regex: /\bssh\b/,
+    // ssh with a remote host — can execute commands or open tunnels.
+    // Lookbehind excludes `.ssh/` path references and word-continuations but
+    // NOT `/` so path-invoked executables like `/usr/bin/ssh user@host` still
+    // match. Lookahead excludes hyphen-suffixed local tools (`ssh-keygen`,
+    // `ssh-add`, `ssh-copy-id`) and word chars.
+    regex: /(?<![\w.-])ssh(?![-\w])/,
     category: "data-exfiltration",
     reason: "ssh can execute remote commands or tunnel data out-of-band",
+  },
+  {
+    // lftp — an enhanced FTP/SFTP/HTTP client, common exfil tool
+    regex: /\blftp\b/,
+    category: "data-exfiltration",
+    reason: "lftp can transfer files to remote FTP/SFTP/HTTP endpoints",
+  },
+  {
+    // tftp — trivial FTP, often used in firmware/staging exfil
+    regex: /\btftp\b/,
+    category: "data-exfiltration",
+    reason: "tftp can transfer files to remote TFTP endpoints",
   },
   {
     // curl file upload: -T / --upload-file
@@ -201,19 +218,716 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
  * workspace-scoped destructive ops are intentionally NOT caught here — the
  * user's approval remains the authority for workspace-scoped operations.
  */
-const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
-  {
-    // rm with both -r and -f (any order, any flag grouping) targeting bare root,
-    // a system top-level dir, `~`, or `$HOME`. Catches `rm -rf /`, `rm -Rf /etc`,
-    // `rm -fr /var`, `rm --recursive --force ~`.
-    // Matches `/`, `/*`, or `/<system_dir>` at a word boundary; whitespace or
-    // end-of-string terminates the target. Workspace-scoped paths like
-    // `/tmp/foo` intentionally do not match (they hit `/tmp` which is not listed).
-    regex:
-      /\brm\b[^\n#]*\s(?:--recursive\s+--force|--force\s+--recursive|-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)[^\n#]*?\s(?:\/(?:$|\s|\*|etc\b|usr\b|bin\b|boot\b|dev\b|lib(?:32|64)?\b|sbin\b|var\b|opt\b|root\b|srv\b|home\b)|~(?:$|\s)|\$HOME\b)/,
+/**
+ * System-path target alternation shared by rm/chmod destructive patterns.
+ * Linux, macOS, and common top-level directories. `/tmp` is intentionally
+ * omitted so workspace-scoped operations stay allowed.
+ *
+ * Alternatives (after path-simplification in simplifyPathTokens):
+ *   - `/` followed by end/space/star or a system top-level name
+ *   - `~` end/space/`/` — so `~`, `~ `, `~/`, `~/.ssh` all match
+ *   - `~user` — bash expands `~root`, `~www-data`, etc. to that user's home
+ *     before the command runs; we do not know who that is, so treat every
+ *     named-user tilde as a home target
+ *   - `$HOME` / `${HOME}` references
+ */
+const SYSTEM_PATH_TARGETS =
+  "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s|\\/|[A-Za-z0-9_.-]+)|\\$(?:\\{HOME\\}|HOME\\b)";
+
+// Anchor to start-of-string or whitespace so `dist/*`, `foo/etc`, etc. don't
+// trip the `/<sys-dir>` alternatives embedded mid-token. Case-insensitive so
+// macOS paths mounted on case-insensitive volumes (`/users`, `/system`,
+// `/library`, `/applications`) match the same system trees as their canonical
+// capitalized forms.
+const SYSTEM_PATH_REGEX = new RegExp(`(?:^|\\s)(?:${SYSTEM_PATH_TARGETS})`, "i");
+
+/**
+ * Normalize path-like fragments so bash-equivalent forms collapse to a shape
+ * SYSTEM_PATH_REGEX can match. Bash resolves `/./etc`, `//etc`, and
+ * `/./././etc` all to `/etc`, so an attacker cannot hide a system target
+ * behind redundant `.` or `/` segments.
+ */
+function simplifyPathTokens(cmd: string): string {
+  // Collapse runs of `/` and `/./` sequences. Repeat until fixed-point, bounded
+  // to a handful of iterations so adversarial input cannot loop.
+  let out = cmd;
+  for (let iter = 0; iter < 8; iter++) {
+    const next = out.replace(/\/(?:\.\/)+/g, "/").replace(/\/\/+/g, "/");
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * rm with BOTH a recursive-flag and a force-flag (in any order, grouped or
+ * split) targeting a system path is the destructive case. Using three separate
+ * linear-time regex tests avoids the combinatorial-backtrack space that a
+ * monolithic regex would produce on adversarial input, and handles `rm -r -f`,
+ * `rm -f -r`, `rm --recursive -f`, `rm -f --recursive`, etc.
+ */
+function checkDestructiveRm(cmd: string): ClassificationResult {
+  if (!/\brm\b/.test(cmd)) return { ok: true };
+  const hasRecursive = /(?:\s-[a-zA-Z]*[rR][a-zA-Z]*|\s--recursive\b)/.test(cmd);
+  if (!hasRecursive) return { ok: true };
+  const simplified = simplifyPathTokens(cmd);
+  if (!SYSTEM_PATH_REGEX.test(simplified)) return { ok: true };
+  // For system/home targets, recursive rm is destructive regardless of -f.
+  // An attacker (or a script with `yes |` feeding the prompt, or a non-
+  // interactive context where rm skips the prompt entirely) can delete
+  // /etc without -f.
+  return {
+    ok: false,
+    reason:
+      "recursive rm targeting the root, a system directory, or the home directory is unrecoverable — the -f flag is not required in non-interactive contexts to remove protected paths",
+    pattern: "rm+recursive+system-path",
     category: "destructive",
-    reason: "rm -rf targeting the root, a system directory, or the home directory is unrecoverable",
-  },
+  };
+}
+
+/**
+ * Recursive chmod/chown against a system path is destructive regardless of
+ * mode: the classifier cannot reason about whether `a+rwx`, `g+w`, `+s`, or
+ * numeric `755` is safer than `777` once it is applied across `/etc`, `/usr`,
+ * or `$HOME`. Fail closed on any recursive mode with a system-path target.
+ */
+function checkDestructiveChmod(cmd: string): ClassificationResult {
+  const isChmod = /\bchmod\b/.test(cmd);
+  const isChown = /\bchown\b/.test(cmd);
+  if (!isChmod && !isChown) return { ok: true };
+  const hasRecursive = /(?:\s-[a-zA-Z]*R[a-zA-Z]*|\s--recursive\b)/.test(cmd);
+  if (!hasRecursive) return { ok: true };
+  const simplified = simplifyPathTokens(cmd);
+  if (!SYSTEM_PATH_REGEX.test(simplified)) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      "Recursive chmod/chown targeting the root, a system directory, or the home directory is destructive regardless of mode (777, a+rwx, g+w, ownership change) — system permissions and ownership must not be rewritten in bulk",
+    pattern: "chmod-or-chown+recursive+system-path",
+    category: "destructive",
+  };
+}
+
+/**
+ * Top-level git options that consume the next token as their value when
+ * written in space-separated form (e.g. `git -c foo=bar push ...`,
+ * `git -C /tmp push ...`). `--long=value` forms are always single tokens.
+ */
+const GIT_OPTS_WITH_VALUE = new Set([
+  "-c",
+  "-C",
+  "--config",
+  "--config-env",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--super-prefix",
+  "--exec-path",
+]);
+
+interface GitInvocation {
+  readonly preOptions: readonly string[];
+  readonly subcommand: string;
+  readonly args: readonly string[];
+}
+
+/**
+ * Extract a git invocation's subcommand and arg tokens from a normalized
+ * command string. Handles top-level options that take a value correctly so
+ *   git -c color.ui=false push --force origin main
+ *   git -C /tmp push --force
+ * identify `push` as the subcommand rather than the option value.
+ */
+function extractGitSubcommand(cmd: string): GitInvocation | null {
+  const tokens = cmd.split(/\s+/).filter((t) => t.length > 0);
+  // Strip leading shell-grouping/control characters — `(`, `{`, `!`, `<(`, `>(`,
+  // plus repetitions like `<(` + `(` — from each token before matching `git`.
+  // Bash treats `(git reset --hard HEAD~1)` as a subshell grouping and
+  // `cat <(git push --force origin main)` as a process substitution where the
+  // `<(`/`>(` prefix attaches to the `git` word. Matching the raw token would
+  // miss the destructive git invocation inside either form.
+  const cleaned = tokens.map((t) => t.replace(/^(?:[<>]\(|[({!])+/, ""));
+  const gitIdx = cleaned.findIndex((t) => t === "git" || /\/git$/.test(t));
+  if (gitIdx === -1) return null;
+  const preOptions: string[] = [];
+  let i = gitIdx + 1;
+  while (i < tokens.length) {
+    const tok = tokens[i] ?? "";
+    if (tok === "") {
+      i++;
+      continue;
+    }
+    if (tok.startsWith("--") && tok.includes("=")) {
+      preOptions.push(tok);
+      i++;
+      continue;
+    }
+    if (GIT_OPTS_WITH_VALUE.has(tok)) {
+      preOptions.push(tok, tokens[i + 1] ?? "");
+      i += 2;
+      continue;
+    }
+    if (tok.startsWith("-")) {
+      preOptions.push(tok);
+      i++;
+      continue;
+    }
+    return { preOptions, subcommand: tok, args: tokens.slice(i + 1) };
+  }
+  return null;
+}
+
+/**
+ * Config keys that let an attacker smuggle force-destructive behavior through
+ * a scoped git subcommand:
+ *   - `alias.<name>` redefines `<name>` to any command ("push --force", "!sh").
+ *   - `include.path` / `includeIf.*.path` loads an external config file that
+ *     can itself define aliases, yielding the same bypass one level removed.
+ *
+ * Matching is case-insensitive because git normalizes config keys internally:
+ * `ALIAS.PU` is equivalent to `alias.pu`.
+ *
+ * Rejected in every channel git reads: `-c`, `--config`, `--config-env`, the
+ * `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*` env series, and
+ * `GIT_CONFIG_PARAMETERS`.
+ */
+function isDangerousConfigKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  if (lower.startsWith("alias.")) return true;
+  if (lower === "include.path") return true;
+  if (/^includeif\..*\.path$/.test(lower)) return true;
+  return false;
+}
+
+/**
+ * Reject git config override injection through every channel git accepts:
+ *   - `-c <key>=<value>` invocation-time config
+ *   - `--config=<key>=<value>`
+ *   - `--config-env=<key>=ENVVAR`
+ * Without this guard, an attacker can define a force-capable alias
+ *   git -c alias.pu='push --force' pu origin main
+ * or load an attacker-controlled config file
+ *   git -c include.path=/tmp/evil.cfg fp origin main
+ * and bypass every scoped push/clean/branch/checkout check because git
+ * resolves the alias/include internally before the subcommand runs.
+ */
+function gitHasAliasOverride(preOptions: readonly string[]): boolean {
+  for (let i = 0; i < preOptions.length; i++) {
+    const tok = preOptions[i];
+    // Value-taking options in space-separated form: -c KEY=VAL,
+    // --config KEY=VAL, --config-env KEY=ENVVAR.
+    if (tok === "-c" || tok === "--config" || tok === "--config-env") {
+      const keyPart = (preOptions[i + 1] ?? "").split("=")[0] ?? "";
+      if (isDangerousConfigKey(keyPart)) return true;
+    }
+    // --long=value single-token forms
+    if (tok?.startsWith("--config=")) {
+      const keyPart = tok.slice("--config=".length).split("=")[0] ?? "";
+      if (isDangerousConfigKey(keyPart)) return true;
+    }
+    if (tok?.startsWith("--config-env=")) {
+      const keyPart = tok.slice("--config-env=".length).split("=")[0] ?? "";
+      if (isDangerousConfigKey(keyPart)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Git also resolves aliases and includes from environment variables set on
+ * the SAME command line as the `git` invocation. Two channels:
+ *   - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` — structured
+ *   - `GIT_CONFIG_PARAMETERS` — serialized single-variable form
+ * Detect either before the `git` token so the attacker cannot smuggle an
+ * alias or `include.path` through the process environment.
+ *
+ * Matching is case-insensitive to mirror git's own config-key normalization.
+ */
+function hasGitConfigEnvAliasInjection(cmd: string): boolean {
+  // Structured channel: GIT_CONFIG_COUNT=N GIT_CONFIG_KEY_i=... ...
+  // Git parses the count through strtol, so `01`, `+1`, `0x1`, and leading
+  // whitespace forms all work. Fail closed whenever *any* GIT_CONFIG_KEY_*
+  // carries a dangerous config key — independent of the count value, which
+  // can also be set earlier in the same process environment.
+  if (/\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./i.test(cmd)) return true;
+  if (/\bGIT_CONFIG_KEY_\d+\s*=\s*include\.path\b/i.test(cmd)) return true;
+  if (/\bGIT_CONFIG_KEY_\d+\s*=\s*includeIf\./i.test(cmd)) return true;
+  // Serialized channel: GIT_CONFIG_PARAMETERS="'alias.pu=!git push --force'"
+  // Values are quoted and comma/space separated; each contains a key=value.
+  if (/\bGIT_CONFIG_PARAMETERS\s*=/.test(cmd)) {
+    if (/\balias\./i.test(cmd) || /\binclude\.path\b/i.test(cmd) || /\bincludeIf\./i.test(cmd)) {
+      return true;
+    }
+  }
+  // Config-file selectors: GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM point git
+  // at an attacker-controlled config file wholesale, which can carry any
+  // alias or include.path. HOME= and XDG_CONFIG_HOME= redirect ~/.gitconfig
+  // lookup to an attacker path. Any of these on the same command line as a
+  // git invocation is unsafe regardless of what other options follow.
+  if (/\bGIT_CONFIG_GLOBAL\s*=/.test(cmd)) return true;
+  if (/\bGIT_CONFIG_SYSTEM\s*=/.test(cmd)) return true;
+  if (/\bGIT_CONFIG_NOSYSTEM\s*=/.test(cmd)) return true;
+  if (/\bHOME\s*=[^\s]/.test(cmd) && /\bgit\b/.test(cmd)) return true;
+  if (/\bXDG_CONFIG_HOME\s*=/.test(cmd) && /\bgit\b/.test(cmd)) return true;
+  return false;
+}
+
+/**
+ * Git accepts unambiguous long-option abbreviations — `git reset --har` is
+ * treated as `--hard`, `git clean --for -d` as `--force -d`, etc. Match any
+ * proper prefix of the canonical long option from 2 chars up to full length.
+ * 2-char `--<ch>` is the minimum unambiguous length for these flags within
+ * their subcommands; anything shorter (e.g. `--` alone) is not a flag.
+ */
+function isLongOptionAbbreviation(tok: string, canonical: string): boolean {
+  if (!tok.startsWith("--") || !canonical.startsWith("--")) return false;
+  if (tok.length < 4) return false; // `--h` minimum to be a meaningful abbrev
+  if (tok.length > canonical.length) return false;
+  return canonical.startsWith(tok);
+}
+
+/** Does an argv token match a force-flag in any short-bundle or long form? */
+function hasForceFlag(args: readonly string[]): boolean {
+  for (const tok of args) {
+    if (tok === "--force" || tok === "--force-with-lease") return true;
+    if (/^--force-/.test(tok)) return true;
+    if (/^-[A-Za-z]*f[A-Za-z]*$/.test(tok)) return true;
+    // Long-option abbreviations: git accepts `--for` as `--force`, `--forc`
+    // as `--force`, and similar for the `--force-*` family. Consumers should
+    // only pass sub-prefixes that are unambiguous for the subcommand; we err
+    // on the side of catching more.
+    if (isLongOptionAbbreviation(tok, "--force")) return true;
+    if (isLongOptionAbbreviation(tok, "--force-with-lease")) return true;
+  }
+  return false;
+}
+
+/** Does an argv token match a `branch -d`/`-D` form (force or short)? */
+function hasBranchDeleteFlag(args: readonly string[]): boolean {
+  for (const tok of args) {
+    if (tok === "--delete") return true;
+    if (/^-[A-Za-z]*[dD][A-Za-z]*$/.test(tok)) return true;
+    if (isLongOptionAbbreviation(tok, "--delete")) return true;
+  }
+  return false;
+}
+
+/** Does an argv token match a force-delete short form? */
+function hasBranchForceDeleteShort(args: readonly string[]): boolean {
+  return args.some((tok) => /^-[A-Za-z]*D[A-Za-z]*$/.test(tok));
+}
+
+/** `--hard` and its abbreviations (--h, --ha, --har, --hard). */
+function hasResetHardFlag(args: readonly string[]): boolean {
+  return args.some((tok) => tok === "--hard" || isLongOptionAbbreviation(tok, "--hard"));
+}
+
+/**
+ * Check a single git invocation's subcommand + args for destructive forms.
+ * Helper used by the multi-segment scanner below.
+ */
+function checkGitInvocation(
+  preOptions: readonly string[],
+  subcommand: string,
+  args: readonly string[],
+): ClassificationResult {
+  if (gitHasAliasOverride(preOptions)) {
+    return {
+      ok: false,
+      reason:
+        "git alias or include.path override at invocation time (-c / --config / --config-env) can smuggle force-push or other destructive subcommands past scoped checks",
+      pattern: "git+config-override",
+      category: "destructive",
+    };
+  }
+
+  if (subcommand === "reset" && hasResetHardFlag(args)) {
+    return {
+      ok: false,
+      reason: "git reset --hard discards uncommitted changes without confirmation",
+      pattern: "git+reset+--hard",
+      category: "destructive",
+    };
+  }
+  if (subcommand === "push") {
+    const hasForceRefspec = args.some((t) => /^\+[\w/.:-]+/.test(t));
+    const hasDeleteFlag = args.some(
+      (t) =>
+        t === "--delete" ||
+        /^-[A-Za-z]*d[A-Za-z]*$/.test(t) ||
+        isLongOptionAbbreviation(t, "--delete"),
+    );
+    const hasDeleteRefspec = args.some((t) => /^:[\w/.-]+/.test(t));
+    const hasMirror = args.some((t) => t === "--mirror" || isLongOptionAbbreviation(t, "--mirror"));
+    const hasPrune = args.some((t) => t === "--prune" || isLongOptionAbbreviation(t, "--prune"));
+    if (
+      hasForceFlag(args) ||
+      hasForceRefspec ||
+      hasDeleteFlag ||
+      hasDeleteRefspec ||
+      hasMirror ||
+      hasPrune
+    ) {
+      return {
+        ok: false,
+        reason:
+          "git push --force / +refspec / --delete / :<ref> deletion / --mirror / --prune can rewrite or remove remote refs",
+        pattern: "git+push+destructive",
+        category: "destructive",
+      };
+    }
+  }
+  if (subcommand === "clean" && hasForceFlag(args)) {
+    return {
+      ok: false,
+      reason: "git clean -f permanently deletes untracked files",
+      pattern: "git+clean+force",
+      category: "destructive",
+    };
+  }
+  if (subcommand === "branch") {
+    if (hasBranchForceDeleteShort(args) || (hasBranchDeleteFlag(args) && hasForceFlag(args))) {
+      return {
+        ok: false,
+        reason: "git branch -D force-deletes a branch and can lose unmerged commits",
+        pattern: "git+branch+force-delete",
+        category: "destructive",
+      };
+    }
+  }
+  if (subcommand === "checkout" && hasForceFlag(args)) {
+    return {
+      ok: false,
+      reason: "git checkout -f discards uncommitted changes in the working tree",
+      pattern: "git+checkout+force",
+      category: "destructive",
+    };
+  }
+  if (subcommand === "config") {
+    // Persistent alias/include writes hide future force-pushes behind an
+    // innocuous-looking subcommand name. `git config alias.pu "push --force"`
+    // followed by `git pu origin main` evades the invocation-time guard
+    // because the alias was baked in at config time. Fail closed on any
+    // config write (or unset) that targets alias.*, include.path, or
+    // includeIf.*.path — regardless of scope flag (--global / --system /
+    // --file / --local).
+    const nonFlagArgs = args.filter((t) => !t.startsWith("-"));
+    for (const arg of nonFlagArgs) {
+      const key = arg.split("=")[0] ?? "";
+      if (isDangerousConfigKey(key)) {
+        return {
+          ok: false,
+          reason:
+            "git config writing to alias.*, include.path, or includeIf.*.path persists a force-push bypass or external-config inclusion that would later evade scoped destructive checks",
+          pattern: "git+config+dangerous-key",
+          category: "destructive",
+        };
+      }
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Split a normalized command on shell segment separators so each simple
+ * command can be analyzed independently. Splitting avoids the prior bug where
+ * `git status | git push --force` or `git log; git reset --hard` analyzed
+ * only the first git invocation and missed the destructive second one.
+ */
+function splitShellSegments(cmd: string): string[] {
+  return cmd
+    .split(/\|\||&&|[;|&\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Builtins that set variables when used as a command prefix. `export a=x`,
+ * `declare -g a=x`, `typeset a=x`, `readonly a=x`, `local a=x` all bind
+ * `a=x` in the shell. Without this, an attacker prefixes with `export` and
+ * the assignment resolver misses the binding:
+ *     export target=/etc; rm -rf "$target"
+ */
+const ASSIGNMENT_BUILTIN_PREFIX = /^(?:export|declare|readonly|typeset|local)(?:\s+-\S+)*\s+/;
+
+/**
+ * Resolve simple `VAR=VALUE` assignments within the command before pattern
+ * matching. Destructive classifiers compare literal tokens (e.g. `--force`,
+ * `/etc`), so an attacker can hide dangerous inputs in a prior assignment:
+ *
+ *     target=/etc; rm -rf "$target"          → rm -rf /etc
+ *     export target=/etc; rm -rf "$target"   → rm -rf /etc
+ *     force=--force; git push $force origin  → git push --force origin
+ *     f=f; rm -r$f /etc                      → rm -rf /etc
+ *
+ * Scope is intentionally narrow: only `NAME=VALUE` at the start of a segment,
+ * optionally prefixed by one of the assignment-builtin keywords. VALUEs that
+ * themselves contain `$` are NOT re-expanded, so an attacker cannot use
+ * `a=$a$a` to blow up the output size beyond MAX_INPUT_LENGTH.
+ *
+ * The total output is bounded to MAX_INPUT_LENGTH; if substitution would
+ * exceed that, we abort and return a length-capped string that the downstream
+ * length guard will reject.
+ */
+function resolveSimpleAssignments(cmd: string): string {
+  // Preserve the segment separators by splitting with a capturing group.
+  const parts = cmd.split(/(\|\||&&|[;|&\n])/);
+  const vars = new Map<string, string>();
+  const out: string[] = [];
+  const assignment = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)=(\S*)(\s+|$)/;
+  let totalBytes = 0;
+  for (const part of parts) {
+    if (/^(?:\|\||&&|[;|&\n])$/.test(part)) {
+      out.push(part);
+      totalBytes += part.length;
+      continue;
+    }
+    let segment = part;
+    // Strip a single leading assignment-builtin keyword (export/declare/etc.)
+    // so the next pass sees `NAME=VALUE ...` and records it as an assignment.
+    const builtinMatch = segment.match(ASSIGNMENT_BUILTIN_PREFIX);
+    if (builtinMatch !== null) {
+      segment = segment.slice(builtinMatch[0].length);
+    }
+    // Consume any number of leading VAR=VALUE assignments.
+    while (true) {
+      const m = segment.match(assignment);
+      if (!m) break;
+      const name = m[2] ?? "";
+      const value = m[3] ?? "";
+      vars.set(name, value);
+      segment = segment.slice((m[0] ?? "").length);
+    }
+    if (vars.size > 0) {
+      // Substitute longest names first so $VAR1 is not eaten by $VAR.
+      const names = [...vars.keys()].sort((a, b) => b.length - a.length);
+      for (const name of names) {
+        const value = vars.get(name) ?? "";
+        // Ambiguity guard: an empty captured value can mean either a truly
+        // empty assignment (`s=`) or a quoted-whitespace assignment
+        // (`s=' '`) whose separator was word-split away by the normalizer.
+        // In the latter case, bash word-splitting would produce tokens that
+        // our regex checks cannot see (e.g. `rm${s}-rf${s}/etc` → `rm -rf
+        // /etc`). Leave such expansions unresolved so downstream
+        // checkDestructiveArgvExpansion fails closed on embedded `$name`
+        // adjacent to destructive commands.
+        if (value === "") continue;
+        segment = segment.replace(new RegExp(`\\$\\{${name}\\}`, "g"), value);
+        segment = segment.replace(new RegExp(`\\$${name}(?![A-Za-z0-9_])`, "g"), value);
+        if (segment.length > MAX_INPUT_LENGTH) {
+          // Stop expanding on blow-up. Downstream length guard will reject.
+          segment = segment.slice(0, MAX_INPUT_LENGTH + 1);
+          break;
+        }
+      }
+    }
+    out.push(segment);
+    totalBytes += segment.length;
+    if (totalBytes > MAX_INPUT_LENGTH) {
+      // Bail out with an over-length prefix; the classifier's length guard
+      // will reject it and the regex scans will never run on the blown-up
+      // payload.
+      return out.join("").slice(0, MAX_INPUT_LENGTH + 1);
+    }
+  }
+  return out.join("");
+}
+
+/**
+ * Destructive argv that still contains an unresolved parameter/command
+ * substitution is unsafe: the classifier cannot verify the expansion does not
+ * add a force flag or swap the target to a system path. Reject when any of
+ * these subcommands appears alongside a `$` or backtick expansion in the
+ * same segment.
+ */
+const EXPANSION_TOKEN = /\$(?:[A-Za-z_{(]|[0-9@*#?$!-])|`/;
+const DESTRUCTIVE_COMMANDS = /\b(?:rm|chmod|chown|dd|mkfs(?:\.\w+)?|shred|git|find|xargs)\b/;
+
+function checkDestructiveArgvExpansion(resolved: string): ClassificationResult {
+  for (const segment of splitShellSegments(resolved)) {
+    if (!DESTRUCTIVE_COMMANDS.test(segment)) continue;
+    if (!EXPANSION_TOKEN.test(segment)) continue;
+    return {
+      ok: false,
+      reason:
+        "Destructive command (rm/chmod/chown/dd/mkfs/shred/git/find/xargs) with an unresolved parameter or command substitution cannot be safely classified; set VAR=VALUE before the command or use a literal argument",
+      pattern: "destructive+unresolved-expansion",
+      category: "injection",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Git destructive operations. The command is split into shell segments and
+ * every git invocation across the pipeline is analyzed. Env-var channels
+ * that can smuggle aliases (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`) are
+ * rejected whenever they appear alongside a git invocation.
+ *
+ * The caller passes the pre-resolved (post-normalization, pre-assignment-
+ * substitution) command so that `GIT_CONFIG_COUNT=N ...` prefixes are still
+ * visible here — the assignment resolver otherwise consumes them.
+ */
+function checkDestructiveGit(preResolved: string, resolved: string): ClassificationResult {
+  if (hasGitConfigEnvAliasInjection(preResolved) && /\bgit\b/.test(preResolved)) {
+    return {
+      ok: false,
+      reason:
+        "GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* env channels can inject aliases or include.path overrides that bypass scoped destructive checks",
+      pattern: "git+env-config-injection",
+      category: "destructive",
+    };
+  }
+  for (const segment of splitShellSegments(resolved)) {
+    const parsed = extractGitSubcommand(segment);
+    if (parsed === null) continue;
+    const result = checkGitInvocation(parsed.preOptions, parsed.subcommand, parsed.args);
+    if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+
+/**
+ * Flag any segment whose first token starts with `$` (variable expansion) or
+ * `` ` `` (legacy command substitution). These command-position expansions
+ * hide the actual command from any regex-based classifier: an attacker can
+ * do `a=r; b=m; $a$b -rf /etc` and bash will execute `rm -rf /etc` after
+ * classification has already approved the input.
+ *
+ * Known false-positive: `$HOME/bin/tool` and `$EDITOR file.txt` are flagged.
+ * Agents writing commands through this gate should use explicit paths rather
+ * than env-var indirection. Callers that need variable-as-command support
+ * must resolve the expansion before calling the classifier.
+ */
+/**
+ * Execution-wrapper commands that take an argv and run it. `env VAR=val CMD`,
+ * `time CMD`, `sudo CMD`, etc. — the dangerous executable is the argument
+ * AFTER the wrapper, so the classifier must unwrap before inspecting the
+ * command-position token. Also strips shell grouping/control prefixes.
+ */
+const COMMAND_WRAPPERS = new Set([
+  "env",
+  "time",
+  "exec",
+  "nohup",
+  "command",
+  "builtin",
+  "sudo",
+  "doas",
+  "timeout",
+  "stdbuf",
+  "nice",
+  "ionice",
+  "setsid",
+  "xargs",
+]);
+
+function checkCommandPositionExpansion(cmd: string): ClassificationResult {
+  for (const segment of splitShellSegments(cmd)) {
+    // Walk past shell grouping/control prefixes (`(`, `{`, `!`, `<(`, `>(`) and
+    // execution wrappers (`env`, `time`, `sudo`, ...) so that `($CMD -rf /etc)`,
+    // `{ $CMD -rf /etc; }`, `time $CMD -rf /etc`, and `env $CMD -rf /etc`
+    // all surface `$CMD` as the real command-position token.
+    let rest = segment.replace(/^(?:[<>]\(|[({!\s])+/, "");
+    // Consume any number of wrapper commands. `env VAR=val time sudo $CMD`
+    // needs iterative unwrapping. Also skip env-style `VAR=val` prefixes
+    // because those are assignments, not executables.
+    let consumedWrapper = false;
+    while (true) {
+      const tokMatch = rest.match(/^([^\s]+)\s*/);
+      if (tokMatch === null) break;
+      const tok = tokMatch[1] ?? "";
+      // Bare VAR=VALUE assignment (no builtin prefix needed for env-style).
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
+        rest = rest.slice(tokMatch[0].length);
+        continue;
+      }
+      // Wrapper command followed by the real argv. Skip flags too.
+      if (COMMAND_WRAPPERS.has(tok)) {
+        consumedWrapper = true;
+        rest = rest.slice(tokMatch[0].length);
+        // Skip this wrapper's own flags (`-a`, `--preserve-status`, etc.)
+        while (/^-\S*\s+/.test(rest)) {
+          const flagMatch = rest.match(/^-\S*\s+/);
+          if (flagMatch === null) break;
+          rest = rest.slice(flagMatch[0].length);
+        }
+        continue;
+      }
+      break;
+    }
+    const firstTok = (rest.match(/^\S+/) ?? [""])[0];
+    if (/^\$[\w({]/.test(firstTok) || firstTok.startsWith("`")) {
+      return {
+        ok: false,
+        reason:
+          "Command-position variable or command substitution hides the real command from classification; use an explicit command literal instead",
+        pattern: "expansion-at-command-position",
+        category: "injection",
+      };
+    }
+    // Post-wrapper operand-as-command bypass: `timeout 5 $CMD -rf /etc`,
+    // `nice -n 10 $CMD -rf /etc`. After the wrapper + its flags are consumed,
+    // the next token is a numeric/path operand (`5`, `10`) that we can't
+    // classify as a command, followed by the real `$CMD` expansion. Any
+    // subsequent whitespace-delimited `$VAR`/backtick inside the wrapper
+    // chain's remaining argv is unsafe — we cannot verify it resolves to a
+    // non-destructive command.
+    if (consumedWrapper && /\s(?:\$[\w({]|`)/.test(rest)) {
+      return {
+        ok: false,
+        reason:
+          "Execution wrapper (timeout/nice/env/sudo/…) with an unresolved command-position expansion in its argv cannot be safely classified; use an explicit command literal",
+        pattern: "wrapper+expansion",
+        category: "injection",
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Destructive command-pair checks: run as independent linear presence probes
+ * across the whole validated input, not as bounded-span regexes. A bounded
+ * gap becomes a padding bypass under the 8KB input limit.
+ */
+function checkDestructiveCommandPairs(cmd: string): ClassificationResult {
+  if (/\bdd\b/.test(cmd) && /\bof=\/dev\//.test(cmd)) {
+    return {
+      ok: false,
+      reason: "dd writing to a /dev/ block device destroys all data on the target disk",
+      pattern: "dd+of=/dev",
+      category: "destructive",
+    };
+  }
+  if (/\bfind\b/.test(cmd) && /-exec(?:dir)?\b/.test(cmd) && /\brm\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "find -exec rm deletes matched files without per-file confirmation",
+      pattern: "find+-exec+rm",
+      category: "destructive",
+    };
+  }
+  if (/\bfind\b/.test(cmd) && /-delete\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "find -delete removes matched files in-place",
+      pattern: "find+-delete",
+      category: "destructive",
+    };
+  }
+  if (/\bxargs\b/.test(cmd) && /\brm\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "xargs rm deletes files fed from stdin with no confirmation",
+      pattern: "xargs+rm",
+      category: "destructive",
+    };
+  }
+  return { ok: true };
+}
+
+const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
   {
     // mkfs, mkfs.ext4, mke2fs, mkswap — reformat a filesystem (destroys all data)
     regex: /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap)\b/,
@@ -221,24 +935,10 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
     reason: "mkfs/mkswap formats a filesystem and destroys all data on the device",
   },
   {
-    // dd if=... of=/dev/<disk> — raw block-device write destroys the target disk
-    regex: /\bdd\b[^\n#]*\bof=\/dev\//,
-    category: "destructive",
-    reason: "dd writing to a /dev/ block device destroys all data on the target disk",
-  },
-  {
     // Classic fork bomb: :(){:|:&};:  (whitespace-tolerant)
     regex: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
     category: "destructive",
     reason: "fork bomb exhausts process slots and wedges the host",
-  },
-  {
-    // chmod -R 777 on root, a system dir, `~`, or `$HOME`. Mirrors the rm -rf
-    // target set — catastrophic permission change across the system.
-    regex:
-      /\bchmod\b[^\n#]*\s-[a-zA-Z]*R[a-zA-Z]*\s+[0-7]*777[0-7]*\s+(?:\/(?:$|\s|\*|etc\b|usr\b|bin\b|boot\b|dev\b|lib(?:32|64)?\b|sbin\b|var\b|opt\b|root\b|srv\b|home\b)|~(?:$|\s)|\$HOME\b)/,
-    category: "destructive",
-    reason: "chmod -R 777 on the root or a system directory is a catastrophic permission change",
   },
   {
     // shutdown / reboot / halt / poweroff — takes the host offline
@@ -254,12 +954,63 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
   },
 ] as const;
 
+/**
+ * Extended persistence patterns — SSH directory writes via expansion forms
+ * that the literal `authorized_keys` substring check misses.
+ *
+ * Detects a write-redirect (`>`, `>>`, `>|`, `&>`, `>&`, optional fd prefix)
+ * followed by a `~/.ssh/` or `$HOME/.ssh/` target. This is kept as a regex
+ * because redirects are always adjacent to their target, so there is no
+ * padding-bypass surface.
+ */
+const SSH_DIR_WRITE_REDIRECT: ThreatPattern = {
+  // Home prefix alternatives (all decode to a user's home at exec time):
+  //   ~              bare tilde
+  //   ~user          tilde+user (root, www-data, etc.)
+  //   $HOME          env var
+  //   ${HOME}        brace form
+  //   ${HOME:?msg}   bash's error-if-unset form (:? :- := :+ all common)
+  // Followed by `/.ssh/`.
+  regex: /\d*(?:>>?\|?|&>|>&)\s*(?:~[A-Za-z0-9_.-]*|\$HOME|\$\{HOME(?::[-?=+][^}]*)?\})\/\.ssh\//,
+  category: "persistence",
+  reason: "Writing into ~/.ssh establishes persistent SSH access",
+};
+
+/**
+ * Detect write-verb (`tee`, `cp`, `mv`, `install`) targeting `~/.ssh/...` by
+ * token-scanning the argv of each segment, not by regex with a bounded span
+ * between verb and target. An attacker can pad the argv with many operands
+ * to push the target past a bounded-span regex; an argv scan is linear in
+ * the token count and has no such blind spot.
+ */
+const SSH_DIR_WRITE_VERBS = new Set(["tee", "cp", "mv", "install"]);
+const SSH_DIR_TARGET = /^(?:~[A-Za-z0-9_.-]*|\$HOME|\$\{HOME(?::[-?=+][^}]*)?\})\/\.ssh\//;
+
+function checkSshDirWriteVerb(cmd: string): ClassificationResult {
+  for (const segment of splitShellSegments(cmd)) {
+    const tokens = segment.split(/\s+/).filter((t) => t.length > 0);
+    if (tokens.length === 0) continue;
+    const hasVerb = tokens.some((t) => SSH_DIR_WRITE_VERBS.has(t));
+    if (!hasVerb) continue;
+    if (tokens.some((t) => SSH_DIR_TARGET.test(t))) {
+      return {
+        ok: false,
+        reason: "Writing into ~/.ssh establishes persistent SSH access",
+        pattern: "ssh-dir-write-verb",
+        category: "persistence",
+      };
+    }
+  }
+  return { ok: true };
+}
+
 /** All classifier patterns ordered by threat severity (destructive first). */
 const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
   ...DESTRUCTIVE_PATTERNS,
   ...REVERSE_SHELL_PATTERNS,
   ...PRIVILEGE_PATTERNS,
   ...PERSISTENCE_PATTERNS,
+  SSH_DIR_WRITE_REDIRECT,
   ...RECON_PATTERNS,
   ...EXFILTRATION_PATTERNS,
 ] as const;
@@ -268,10 +1019,55 @@ const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
  * Classify a bash command string against known dangerous TTP patterns.
  *
  * Pattern sets cover MITRE ATT&CK categories: reverse shells, privilege
- * escalation, persistence, and reconnaissance.
+ * escalation, persistence, and reconnaissance. Complex destructive patterns
+ * (rm, chmod, git) run as token-based linear-time checks to avoid regex-DoS
+ * and catch split-flag bypasses that a single regex cannot handle.
  *
  * Returns the first matched threat with full diagnostic context.
  */
 export function classifyCommand(command: string): ClassificationResult {
-  return matchPatterns(command, ALL_CLASSIFIER_PATTERNS);
+  if (command.length > MAX_INPUT_LENGTH) {
+    return {
+      ok: false,
+      reason: `Input exceeds ${MAX_INPUT_LENGTH} chars; reject to avoid regex-DoS`,
+      pattern: `length:${command.length}`,
+      category: "injection",
+    };
+  }
+  const normalized = normalizeForMatch(command);
+  // Resolve simple `VAR=VALUE; CMD $VAR` assignments so literal checks like
+  // "does args contain --force" and "does the command touch /etc" see the
+  // expanded form rather than a symbolic `$VAR`. Substitution is bounded by
+  // MAX_INPUT_LENGTH inside the resolver; re-check here because an attacker
+  // can craft a sub-limit input that expands beyond the cap.
+  const resolved = resolveSimpleAssignments(normalized);
+  if (resolved.length > MAX_INPUT_LENGTH) {
+    return {
+      ok: false,
+      reason: `Variable expansion produced more than ${MAX_INPUT_LENGTH} chars; reject to avoid regex-DoS`,
+      pattern: `resolved-length:${resolved.length}`,
+      category: "injection",
+    };
+  }
+  const expansionResult = checkCommandPositionExpansion(resolved);
+  if (!expansionResult.ok) return expansionResult;
+  const rmResult = checkDestructiveRm(resolved);
+  if (!rmResult.ok) return rmResult;
+  const chmodResult = checkDestructiveChmod(resolved);
+  if (!chmodResult.ok) return chmodResult;
+  const gitResult = checkDestructiveGit(normalized, resolved);
+  if (!gitResult.ok) return gitResult;
+  const argExpansionResult = checkDestructiveArgvExpansion(resolved);
+  if (!argExpansionResult.ok) return argExpansionResult;
+  const sshVerbResult = checkSshDirWriteVerb(resolved);
+  if (!sshVerbResult.ok) return sshVerbResult;
+  // Re-run injection detection on the resolved form. A command like
+  //   x=s; y=ource; $x$y /tmp/evil.sh
+  // normalizes + resolves to `source /tmp/evil.sh`, which the classifier's
+  // TTP patterns do not cover but the injection patterns do.
+  const resolvedInjection = detectInjectionOnResolved(resolved);
+  if (!resolvedInjection.ok) return resolvedInjection;
+  const pairResult = checkDestructiveCommandPairs(resolved);
+  if (!pairResult.ok) return pairResult;
+  return matchPatterns(resolved, ALL_CLASSIFIER_PATTERNS);
 }
