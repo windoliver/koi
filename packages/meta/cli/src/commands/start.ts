@@ -431,7 +431,12 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   }
   const resolvedManifestPath = resolvedManifestResult.path;
   if (resolvedManifestPath !== undefined) {
-    const manifestResult = await loadManifestConfig(resolvedManifestPath);
+    // Skip strict audit path validation — koi start never opens audit sinks,
+    // so host-local filesystem state (missing ./logs, stale symlinks, etc.)
+    // must not block startup. Presence of the audit: block is checked below.
+    const manifestResult = await loadManifestConfig(resolvedManifestPath, {
+      skipAuditValidation: true,
+    });
     if (!manifestResult.ok) {
       // Manifest error can include filesystem paths, user-provided values,
       // or schema diagnostics. Safe to classify but don't forward raw text
