@@ -356,8 +356,12 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("reconcile TERMINATED: task removed silently, emits task:cancelled", async () => {
-    const client = makeClientWithDescribe(() => ({ status: "TERMINATED" }));
+  test("reconcile TERMINATED: task removed, added to history as failed, emits task:cancelled", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "TERMINATED",
+      startTime: 1000,
+      closeTime: 2000,
+    }));
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     const events: string[] = [];
     sched.watch((e) => events.push(e.kind));
@@ -365,6 +369,57 @@ describe("createTemporalScheduler", () => {
     await sched.query({});
     expect(sched.stats().pending).toBe(0);
     expect(events).toContain("task:cancelled");
+    const hist = await sched.history({});
+    expect(hist).toHaveLength(1);
+    expect(hist[0]?.status).toBe("failed");
+    expect(hist[0]?.error).toBe("workflow terminated");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("cancel() writes a failed history record before removing the task", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const id = await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.cancel(id);
+    expect(sched.stats().pending).toBe(0);
+    const hist = await sched.history({});
+    expect(hist).toHaveLength(1);
+    expect(hist[0]?.status).toBe("failed");
+    expect(hist[0]?.error).toBe("workflow cancelled");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("concurrent query() calls on the same task produce exactly one history entry", async () => {
+    let resolveDescribe!: () => void;
+    const blockedDescribe = new Promise<void>((r) => {
+      resolveDescribe = r;
+    });
+    let describeCallCount = 0;
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        describe: mock(async (): Promise<WorkflowExecutionStatus> => {
+          describeCallCount++;
+          await blockedDescribe;
+          return { status: "COMPLETED", startTime: 0, closeTime: 1 };
+        }),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    // Launch two concurrent query() calls
+    const [q1, q2] = [sched.query({}), sched.query({})];
+    resolveDescribe();
+    await Promise.all([q1, q2]);
+    const hist = await sched.history({});
+    expect(hist).toHaveLength(1); // only one entry despite two concurrent queries
     await sched[Symbol.asyncDispose]();
   });
 

@@ -131,6 +131,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const schedules = new Map<ScheduleId, CronSchedule>();
   const history: TaskRunRecord[] = [];
   const listeners = new Set<(event: SchedulerEvent) => void>();
+  // Tracks tasks with an in-flight describe call to prevent duplicate reconciliation.
+  const reconciling = new Set<TaskId>();
 
   function emit(event: SchedulerEvent): void {
     for (const listener of listeners) listener(event);
@@ -160,83 +162,104 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   }
 
   // Reconciles a single task against Temporal describe result.
-  // Terminal tasks are removed from `tasks`, added to `history`, and events fired.
+  // Guards against concurrent reconciliation of the same task ID.
   async function reconcileTask(id: TaskId, task: ScheduledTask): Promise<void> {
     const describeFn = config.client.workflow.describe;
     if (describeFn === undefined) return;
-    let info: WorkflowExecutionStatus;
+    if (reconciling.has(id)) return;
+    reconciling.add(id);
     try {
-      info = await describeFn(id as string);
-    } catch {
-      return; // describe unavailable or network error — keep current state
-    }
+      let info: WorkflowExecutionStatus;
+      try {
+        info = await describeFn(id as string);
+      } catch {
+        return; // describe unavailable or network error — keep current state
+      }
 
-    switch (info.status) {
-      case "RUNNING":
-      case "CONTINUED_AS_NEW": {
-        if (task.status !== "running") {
-          const updated: ScheduledTask = {
-            ...task,
-            status: "running",
-            ...(info.startTime !== undefined && { startedAt: info.startTime }),
-          };
-          tasks.set(id, updated);
-          emit({ kind: "task:started", taskId: id });
+      // Re-check after async gap: a concurrent cancel() may have removed the task.
+      const current = tasks.get(id);
+      if (current === undefined) return;
+
+      switch (info.status) {
+        case "RUNNING":
+        case "CONTINUED_AS_NEW": {
+          if (current.status !== "running") {
+            const updated: ScheduledTask = {
+              ...current,
+              status: "running",
+              ...(info.startTime !== undefined && { startedAt: info.startTime }),
+            };
+            tasks.set(id, updated);
+            emit({ kind: "task:started", taskId: id });
+          }
+          break;
         }
-        break;
-      }
 
-      case "COMPLETED": {
-        const startedAt = info.startTime ?? task.startedAt ?? task.createdAt;
-        const completedAt = info.closeTime ?? Date.now();
-        history.push({
-          taskId: id,
-          agentId: task.agentId,
-          status: "completed",
-          startedAt,
-          completedAt,
-          durationMs: completedAt - startedAt,
-          retryAttempt: task.retries,
-        });
-        tasks.delete(id);
-        emit({ kind: "task:completed", taskId: id, result: undefined });
-        break;
-      }
+        case "COMPLETED": {
+          const startedAt = info.startTime ?? current.startedAt ?? current.createdAt;
+          const completedAt = info.closeTime ?? Date.now();
+          history.push({
+            taskId: id,
+            agentId: current.agentId,
+            status: "completed",
+            startedAt,
+            completedAt,
+            durationMs: completedAt - startedAt,
+            retryAttempt: current.retries,
+          });
+          tasks.delete(id);
+          emit({ kind: "task:completed", taskId: id, result: undefined });
+          break;
+        }
 
-      case "FAILED":
-      case "TIMED_OUT": {
-        const startedAt = info.startTime ?? task.startedAt ?? task.createdAt;
-        const completedAt = info.closeTime ?? Date.now();
-        const errorMessage =
-          info.failure?.message ??
-          (info.status === "TIMED_OUT" ? "workflow timed out" : "workflow failed");
-        const koiError: KoiError = {
-          code: info.status === "TIMED_OUT" ? "TIMEOUT" : "INTERNAL",
-          message: errorMessage,
-          retryable: false,
-        };
-        history.push({
-          taskId: id,
-          agentId: task.agentId,
-          status: "failed",
-          startedAt,
-          completedAt,
-          durationMs: completedAt - startedAt,
-          error: errorMessage,
-          retryAttempt: task.retries,
-        });
-        tasks.delete(id);
-        emit({ kind: "task:failed", taskId: id, error: koiError });
-        break;
-      }
+        case "FAILED":
+        case "TIMED_OUT": {
+          const startedAt = info.startTime ?? current.startedAt ?? current.createdAt;
+          const completedAt = info.closeTime ?? Date.now();
+          const errorMessage =
+            info.failure?.message ??
+            (info.status === "TIMED_OUT" ? "workflow timed out" : "workflow failed");
+          const koiError: KoiError = {
+            code: info.status === "TIMED_OUT" ? "TIMEOUT" : "INTERNAL",
+            message: errorMessage,
+            retryable: false,
+          };
+          history.push({
+            taskId: id,
+            agentId: current.agentId,
+            status: "failed",
+            startedAt,
+            completedAt,
+            durationMs: completedAt - startedAt,
+            error: errorMessage,
+            retryAttempt: current.retries,
+          });
+          tasks.delete(id);
+          emit({ kind: "task:failed", taskId: id, error: koiError });
+          break;
+        }
 
-      case "TERMINATED":
-      case "CANCELLED": {
-        // Operator-initiated termination — remove without surfacing as failure.
-        tasks.delete(id);
-        emit({ kind: "task:cancelled", taskId: id });
-        break;
+        case "TERMINATED":
+        case "CANCELLED": {
+          const startedAt = info.startTime ?? current.startedAt ?? current.createdAt;
+          const completedAt = info.closeTime ?? Date.now();
+          history.push({
+            taskId: id,
+            agentId: current.agentId,
+            status: "failed",
+            startedAt,
+            completedAt,
+            durationMs: completedAt - startedAt,
+            error: info.status === "TERMINATED" ? "workflow terminated" : "workflow cancelled",
+            retryAttempt: current.retries,
+          });
+          tasks.delete(id);
+          emit({ kind: "task:cancelled", taskId: id });
+          break;
+        }
       }
+    } finally {
+      reconciling.delete(id);
     }
   }
 
@@ -277,9 +300,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async cancel(id): Promise<boolean> {
       try {
         await config.client.workflow.cancel(id);
-        if (tasks.has(id)) {
-          // Remove from active tracking — cancellation is an operator action,
-          // not an execution failure.
+        const task = tasks.get(id);
+        if (task !== undefined) {
+          const now = Date.now();
+          const startedAt = task.startedAt ?? task.createdAt;
+          history.push({
+            taskId: id,
+            agentId: task.agentId,
+            status: "failed",
+            startedAt,
+            completedAt: now,
+            durationMs: now - startedAt,
+            error: "workflow cancelled",
+            retryAttempt: task.retries,
+          });
           tasks.delete(id);
           emit({ kind: "task:cancelled", taskId: id });
         }
