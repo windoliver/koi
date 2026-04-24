@@ -702,15 +702,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       boundaryId: string,
     ): Promise<void> {
       // Validate all guards first — throw before mutating any state.
-      // Only branded guards are checked: ITERATION_GUARD_BRAND is an explicit contract
-      // declaration that resetForRun() is implemented. Unbranded guards (including
-      // pre-#1917 named guards) are silently skipped — matching construction-gate behavior.
+      // Covers both static (construction-gate) and dynamic (forge/dynamicMiddleware)
+      // guards: same rules apply regardless of when the middleware was added.
       for (const mw of guards) {
         if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
           throw KoiRuntimeError.from(
             "VALIDATION",
             `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
               `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+          );
+        }
+        if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+          throw KoiRuntimeError.from(
+            "VALIDATION",
+            `[koi] "koi:iteration-guard" does not implement resetForRun(). ` +
+              `Upgrade @koi/engine-compose to fix split-brain enforcement across runs.`,
           );
         }
       }
@@ -800,6 +806,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 "VALIDATION",
                 `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
                   `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+              );
+            }
+            if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+              throw KoiRuntimeError.from(
+                "VALIDATION",
+                `[koi] "koi:iteration-guard" does not implement resetForRun(). ` +
+                  `Upgrade @koi/engine-compose to fix split-brain enforcement across runs.`,
               );
             }
           }
@@ -984,6 +997,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   "VALIDATION",
                   `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
                     `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+                );
+              }
+              if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+                throw KoiRuntimeError.from(
+                  "VALIDATION",
+                  `[koi] "koi:iteration-guard" does not implement resetForRun(). ` +
+                    `Upgrade @koi/engine-compose to fix split-brain enforcement across runs.`,
                 );
               }
             }
