@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 const BIN = join(import.meta.dir, "bin.ts");
+const FIXTURE_MANIFEST = join(import.meta.dir, "__fixtures__", "minimal.koi.yaml");
 
 async function runBin(
   args: readonly string[],
@@ -79,13 +80,22 @@ describe("bin.ts", () => {
 
     // start is wired — exits 2 with API key error when no key is set
     test("koi start exits 2 with no API key message", async () => {
-      const r = await runBin(["start"], { OPENROUTER_API_KEY: "" });
+      const r = await runBin(["start", "--manifest", FIXTURE_MANIFEST], {
+        OPENROUTER_API_KEY: "",
+      });
       expect(r.exitCode).toBe(2);
       expect(r.stderr).toContain("no API key");
     });
 
-    test("koi tui exits 1 with TTY error outside a terminal", async () => {
+    test("koi tui exits 1 outside a terminal (no manifest or TTY)", async () => {
+      // Runs in worktree dir (git repo, no koi.yaml) — exits 1 due to no
+      // manifest found. Pass --no-manifest to reach the TTY check instead.
       const r = await runBin(["tui"]);
+      expect(r.exitCode).toBe(1);
+    });
+
+    test("koi tui --no-manifest exits 1 with TTY error outside a terminal", async () => {
+      const r = await runBin(["tui", "--no-manifest"]);
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("TTY");
     });
@@ -490,7 +500,9 @@ describe("bin.ts", () => {
 
     test("--resume accepted as known flag", async () => {
       const r = await runBin(["start", "--resume", "ses_abc"]);
-      expect(r.exitCode).toBe(2);
+      // May exit 1 (no manifest found) or 2 (parse error) depending on context,
+      // but must not exit 0 and must not complain about an unknown flag.
+      expect(r.exitCode).not.toBe(0);
       expect(r.stderr).not.toContain("unknown flag");
     });
 
@@ -501,7 +513,7 @@ describe("bin.ts", () => {
     });
 
     test("single-prompt mode exits 2 with no API key message", async () => {
-      const r = await runBin(["start", "--prompt", "list files"], {
+      const r = await runBin(["start", "--manifest", FIXTURE_MANIFEST, "--prompt", "list files"], {
         OPENROUTER_API_KEY: "",
       });
       expect(r.exitCode).toBe(2);

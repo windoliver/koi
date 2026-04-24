@@ -14,6 +14,7 @@ import { createInitialState } from "./state/initial.js";
 import { createStore } from "./state/store.js";
 import { StoreContext } from "./store-context.js";
 import { TuiRoot, executeGovernanceReset, resolveNavCommand } from "./tui-root.js";
+import { PERMISSION_PROMPT_WIDTH } from "./components/PermissionPrompt.js";
 
 const OPTS = { width: 100, height: 30 };
 
@@ -113,6 +114,33 @@ describe("TuiRoot — modal overlay", () => {
     expect(frame).toContain("bash");
     renderer.destroy();
   });
+
+  test("permission-prompt modal is bounded to PERMISSION_PROMPT_WIDTH on wide terminal (regression: #1913)", async () => {
+    // Without an explicit width, OpenTUI re-measures the undimensioned absolute
+    // box every layout pass, looping forever in blendCells. On a 100-col terminal
+    // the modal caps at PERMISSION_PROMPT_WIDTH (60): right edge ≤ left(2) + 60 + border(2) = 64.
+    const { captureCharFrame, renderer } = await renderRoot({
+      modal: {
+        kind: "permission-prompt",
+        prompt: {
+          requestId: "r1",
+          toolId: "bash",
+          input: { cmd: "ls" },
+          reason: "",
+          riskLevel: "low",
+        },
+      },
+    });
+    const frame = captureCharFrame();
+    const titleLine = frame.split("\n").find((l) => l.includes("Permission Required"));
+    expect(titleLine).toBeDefined();
+    if (titleLine !== undefined) {
+      // trimEnd() strips the terminal-pad spaces beyond the right border.
+      expect(titleLine.trimEnd().length).toBeLessThanOrEqual(2 + PERMISSION_PROMPT_WIDTH + 2);
+    }
+    renderer.destroy();
+  });
+
 
   test("null modal renders no overlay", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ modal: null });

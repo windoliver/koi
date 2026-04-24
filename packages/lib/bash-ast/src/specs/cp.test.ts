@@ -40,6 +40,13 @@ describe("specCp — -t DIR form (complete)", () => {
     expect(result.semantics.writes).toEqual(["out/src"]);
   });
 
+  test("normalizes trailing slash on destination prefix", () => {
+    const result = specCp(["cp", "-t", "out/", "a"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["out/a"]);
+  });
+
   test("src that is / refuses", () => {
     const result = specCp(["cp", "-t", "out", "/"]);
     expect(result.kind).toBe("refused");
@@ -64,6 +71,13 @@ describe("specCp — destination-last (partial)", () => {
     if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["a", "b"]);
     expect(result.semantics.writes).toEqual(["out", "out/a", "out/b"]);
+  });
+
+  test("normalizes trailing slash when deriving destination-last basenames", () => {
+    const result = specCp(["cp", "a", "out/"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.writes).toEqual(["out/", "out/a"]);
   });
 });
 

@@ -22,6 +22,7 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
+    "@koi/settings": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   },

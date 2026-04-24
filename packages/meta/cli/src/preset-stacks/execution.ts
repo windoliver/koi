@@ -56,6 +56,7 @@ import type {
   ApprovalHandler,
   KoiMiddleware,
   ManagedTaskBoard,
+  TaskBoardStore,
   TaskItemId,
 } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
@@ -254,6 +255,8 @@ export const EXECUTION_EXPORTS = {
   sandboxActive: "sandboxActive",
   getBgSignal: "getBgSignal",
   hasLiveProcesses: "hasLiveProcesses",
+  getTaskBoard: "getTaskBoard",
+  getStore: "getStore",
 } as const;
 
 export const executionStack: PresetStack = {
@@ -407,11 +410,16 @@ export const executionStack: PresetStack = {
     // changes from 0 because `bash_background` is the only wiring
     // that touches it, but the getter stays consistent across hosts.
     let liveSubprocessCount = 0;
+    // const ref object — current property is rotated on session reset
+    // so the spawn stack's TaskRunner subscription targets the live store.
+    const storeRef: { current: TaskBoardStore } = {
+      current: createMemoryTaskBoardStore(),
+    };
     const boardRef: { current: ManagedTaskBoard } = {
       current:
         agentId !== undefined
           ? await createManagedTaskBoard({
-              store: createMemoryTaskBoardStore(),
+              store: storeRef.current,
               resultsDir: join(tmpdir(), `koi-${ctx.hostId}-task-results`),
             })
           : // Stub board for hosts that didn't supply an agent id
@@ -562,6 +570,8 @@ export const executionStack: PresetStack = {
         [EXECUTION_EXPORTS.sandboxActive]: osSandboxResult.ok,
         [EXECUTION_EXPORTS.getBgSignal]: () => bgController.signal,
         [EXECUTION_EXPORTS.hasLiveProcesses]: () => liveSubprocessCount > 0,
+        [EXECUTION_EXPORTS.getTaskBoard]: () => taskBoard,
+        [EXECUTION_EXPORTS.getStore]: (): TaskBoardStore => storeRef.current,
       },
       hasActiveWork: () => liveSubprocessCount > 0,
       onShutdown: () => {
@@ -578,10 +588,11 @@ export const executionStack: PresetStack = {
         //    every host (coordinator flows). If creation fails (sqlite
         //    disk full, permissions, etc.) we surface that before any
         //    destructive state mutation.
+        const newStore = createMemoryTaskBoardStore();
         const newBoard =
           agentId !== undefined
             ? await createManagedTaskBoard({
-                store: createMemoryTaskBoardStore(),
+                store: newStore,
                 resultsDir: join(tmpdir(), `koi-${ctx.hostId}-task-results`),
               })
             : undefined;
@@ -610,10 +621,13 @@ export const executionStack: PresetStack = {
           bgController = new AbortController();
         }
 
-        // 6. Atomic board swap — the proxy auto-sees the new instance on
-        //    next Reflect.get, so cached tool providers don't need rebuilding.
+        // 6. Atomic board + store swap — the proxy auto-sees the new board
+        //    on next Reflect.get; storeRef.current is updated so the spawn
+        //    stack's TaskRunner subscription targets the new store after its
+        //    own onResetSession recreates the runner.
         if (newBoard !== undefined) {
           boardRef.current = newBoard;
+          storeRef.current = newStore;
         }
 
         // 7. Rotate watch-pattern store and output buffers so the new session

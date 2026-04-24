@@ -18,10 +18,18 @@ export interface TuiFlags extends BaseFlags {
    * Path to an agent manifest (koi.yaml). When provided, the TUI
    * picks up the manifest's `modelName`, `instructions` (system
    * prompt), `stacks: [...]` opt-in, and `plugins: [...]` opt-in —
-   * exactly like `koi start --manifest`. Omit for the default
-   * "everything auto-discovered" behavior.
+   * exactly like `koi start --manifest`. Omit to trigger auto-discovery
+   * (walks up from cwd to git root checking koi.yaml, koi.manifest.yaml,
+   * .koi/koi.yaml, .koi/manifest.yaml). Pass `--no-manifest` to skip
+   * discovery entirely and run with built-in defaults.
    */
   readonly manifest: string | undefined;
+  /**
+   * Skip manifest auto-discovery and run with built-in defaults (model
+   * only). Useful in directories that have a koi.yaml you want to ignore.
+   * Mutually exclusive with --manifest.
+   */
+  readonly noManifest: boolean;
   // --- Convergence loop mode (#1624) ---
   /**
    * Verifier argv for --until-pass mode. Repeatable flag: each
@@ -66,6 +74,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly session: string | undefined;
     readonly resume: string | undefined;
     readonly manifest: string | undefined;
+    readonly "no-manifest": boolean | undefined;
     readonly "until-pass": string[] | undefined;
     readonly "max-iter": string | undefined;
     readonly "verifier-timeout": string | undefined;
@@ -90,6 +99,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         session: { type: "string" },
         resume: { type: "string" },
         manifest: { type: "string" },
+        "no-manifest": { type: "boolean", default: false },
         "until-pass": { type: "string", multiple: true },
         "max-iter": { type: "string" },
         "verifier-timeout": { type: "string" },
@@ -114,6 +124,12 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
   const helpRequested = values.help ?? false;
   const versionRequested = values.version ?? false;
   const skipValidators = helpRequested || versionRequested;
+
+  if (!skipValidators && values.manifest !== undefined && (values["no-manifest"] ?? false)) {
+    throw new ParseError(
+      "koi tui: --manifest and --no-manifest are mutually exclusive — pass one or the other, not both",
+    );
+  }
 
   const untilPass = values["until-pass"] ?? [];
   if (!skipValidators && untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
@@ -169,6 +185,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     session: values.session,
     resume: values.resume,
     manifest: values.manifest,
+    noManifest: values["no-manifest"] ?? false,
     untilPass,
     maxIter: resolveMaxIterSafe(values["max-iter"], skipValidators),
     verifierTimeoutMs: resolveVerifierTimeoutMsSafe(values["verifier-timeout"], skipValidators),
