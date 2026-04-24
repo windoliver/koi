@@ -106,6 +106,13 @@ export function createGateway(
     }
   }
 
+  // Single send path for established-session writes so every outbound byte is
+  // backpressure-accounted, including error/ack frames that bypass gateway.send().
+  function sendFrame(conn: TransportConnection, data: string): void {
+    conn.send(data);
+    bp.record(conn.id, data.length);
+  }
+
   function cleanupConn(conn: TransportConnection, reason: string): void {
     const sessionId = sessionByConn.get(conn.id);
     pendingHandshakes.delete(conn.id);
@@ -169,12 +176,18 @@ export function createGateway(
           }
 
           // Restore remoteSeq from any previously persisted session to prevent frame replay.
+          // Distinguish NOT_FOUND (new session → start at 0) from a store exception: if the
+          // store throws we cannot safely determine the replay window, so we reject the
+          // reconnect rather than silently downgrading to seq 0 and risking duplicate dispatch.
           let startSeq = 0;
           try {
             const prev = await Promise.resolve(store.get(result.session.id));
             if (prev.ok) startSeq = prev.value.remoteSeq;
+            // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
           } catch {
-            // fresh session — start at 0
+            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error on resume");
+            cleanupConn(conn, "session store failure on resume");
+            return;
           }
           const tracker = createSequenceTracker(config.dedupWindowSize);
           if (startSeq > 0) tracker.reset(startSeq);
@@ -235,19 +248,25 @@ export function createGateway(
       try {
         sessionResult = await Promise.resolve(store.get(sessionId));
       } catch {
-        conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session lookup failed", nextId));
+        sendFrame(
+          conn,
+          createErrorFrame(0, "SESSION_STORE_FAILURE", "Session lookup failed", nextId),
+        );
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session lookup failed");
         return;
       }
       if (!sessionResult.ok) {
-        conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session not found", nextId));
+        sendFrame(conn, createErrorFrame(0, "SESSION_STORE_FAILURE", "Session not found", nextId));
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
         return;
       }
 
       const frameResult = parseFrame(data);
       if (!frameResult.ok) {
-        conn.send(createErrorFrame(0, frameResult.error.code, frameResult.error.message, nextId));
+        sendFrame(
+          conn,
+          createErrorFrame(0, frameResult.error.code, frameResult.error.message, nextId),
+        );
         return;
       }
 
@@ -257,7 +276,7 @@ export function createGateway(
       const { result, ready } = tracker.accept(frameResult.value);
 
       if (result === "duplicate" || result === "out_of_window") {
-        conn.send(createAckFrame(frameResult.value.seq, frameResult.value.id, null, nextId));
+        sendFrame(conn, createAckFrame(frameResult.value.seq, frameResult.value.id, null, nextId));
         return;
       }
 
@@ -276,12 +295,18 @@ export function createGateway(
         try {
           storeRes = await Promise.resolve(store.set(updatedSession));
         } catch {
-          conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId));
+          sendFrame(
+            conn,
+            createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+          );
           conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
           return;
         }
         if (!storeRes.ok) {
-          conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId));
+          sendFrame(
+            conn,
+            createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+          );
           conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
           return;
         }
