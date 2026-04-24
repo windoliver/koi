@@ -317,12 +317,13 @@ export function createMcpConnection(
       // Check for auth challenge (401 only, not 403 scope denials).
       // Attempt token refresh once before escalating to interactive auth so
       // sessions with a valid refresh token self-heal without browser prompts.
+      // onUnauthorized() returns void (clears in-memory token, triggers storage
+      // refresh); we retry unconditionally — if refresh failed the retry will
+      // get 401 again and fall through to auth-needed with skipRefresh=true.
       if (koiError.code === "AUTH_REQUIRED") {
         if (!skipRefresh && onUnauthorized !== undefined) {
-          const refreshOk = await Promise.resolve(onUnauthorized()).catch(() => false);
-          if (refreshOk === true) {
-            return connect(true); // retry once with fresh token, no further refresh
-          }
+          await Promise.resolve(onUnauthorized()).catch(() => {});
+          return connect(true); // retry once; skipRefresh prevents infinite loop
         }
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
@@ -460,12 +461,13 @@ export function createMcpConnection(
       // 403 (insufficient scope, ACL denial) stays as a normal error.
       if (koiError.code === "AUTH_REQUIRED") {
         if (!skipRefresh && onUnauthorized !== undefined) {
-          const refreshOk = await Promise.resolve(onUnauthorized()).catch(() => false);
-          if (refreshOk === true) {
-            const reconnResult = await connect(true);
-            if (reconnResult.ok) {
-              return listTools(true); // retry with fresh token
-            }
+          // onUnauthorized() returns void; retry unconditionally after clearing
+          // the stale token. If the refresh token is expired, connect(true) gets
+          // 401 again and transitions to auth-needed with skipRefresh=true.
+          await Promise.resolve(onUnauthorized()).catch(() => {});
+          const reconnResult = await connect(true);
+          if (reconnResult.ok) {
+            return listTools(true); // retry with fresh token
           }
         }
         if (stateMachine.canTransitionTo("auth-needed")) {

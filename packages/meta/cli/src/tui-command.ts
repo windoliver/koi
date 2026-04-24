@@ -4504,20 +4504,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // Delegates to runtimeHandle.triggerMcpServerAuth which reuses the live
           // OAuthAuthProvider wired into the existing MCP connection, ensuring
           // in-memory token caches are cleared before startAuthFlow() is called.
+          // Pass the raw qualified name (e.g. "plugin:foo") so triggerMcpServerAuth
+          // can route to the correct source map and avoid cross-source collisions.
           void (async (): Promise<void> => {
             const rawName = args.trim();
             if (rawName === "") return;
-            // Strip namespace prefixes added by the /mcp view's server listing.
-            const serverName = rawName.startsWith("user:")
-              ? rawName.slice(5)
-              : rawName.startsWith("plugin:")
-                ? rawName.slice(7)
-                : rawName;
-            if (mcpAuthInFlight.has(serverName)) return;
-            mcpAuthInFlight.add(serverName);
+            // Use the qualified name as the dedup key so user:foo and plugin:foo
+            // can be authed concurrently without blocking each other.
+            if (mcpAuthInFlight.has(rawName)) return;
+            mcpAuthInFlight.add(rawName);
             try {
               if (runtimeHandle === null) return;
-              const success = await runtimeHandle.triggerMcpServerAuth(serverName, tuiOAuthChannel);
+              const success = await runtimeHandle.triggerMcpServerAuth(rawName, tuiOAuthChannel);
               if (success) {
                 // Tokens are now stored. getMcpStatus() calls resolver.discover()
                 // → listTools() → ensureConnected(): from auth-needed state,
@@ -4537,7 +4535,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 store.dispatch({
                   kind: "add_error",
                   code: "MCP_AUTH",
-                  message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
+                  message: `Authentication failed for "${rawName}". Try: koi mcp auth ${rawName}`,
                 });
               }
             } catch (e: unknown) {
@@ -4547,7 +4545,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 message: `Auth error: ${e instanceof Error ? e.message : String(e)}`,
               });
             } finally {
-              mcpAuthInFlight.delete(serverName);
+              mcpAuthInFlight.delete(rawName);
             }
           })();
           break;

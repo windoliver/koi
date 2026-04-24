@@ -3174,14 +3174,24 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         return entries;
       },
       triggerMcpServerAuth: async (
-        serverName: string,
+        qualifiedName: string,
         channel: import("@koi/core").OAuthChannel,
       ): Promise<boolean> => {
-        // Check user-provided servers first, then plugin-provided servers.
-        const provider =
-          mcpAuthProviders?.get(serverName) ?? mcpPluginAuthProviders?.get(serverName);
+        // Route to the correct source map using the namespace prefix so that
+        // user:foo and plugin:foo cannot collide when both sources exist.
+        const isPlugin = qualifiedName.startsWith("plugin:");
+        const serverName = isPlugin
+          ? qualifiedName.slice(7)
+          : qualifiedName.startsWith("user:")
+            ? qualifiedName.slice(5)
+            : qualifiedName;
+        const provider = isPlugin
+          ? mcpPluginAuthProviders?.get(serverName)
+          : mcpAuthProviders?.get(serverName);
         if (provider === undefined) return false;
-        const connection = mcpConnections?.get(serverName) ?? mcpPluginConnections?.get(serverName);
+        const connection = isPlugin
+          ? mcpPluginConnections?.get(serverName)
+          : mcpConnections?.get(serverName);
         // Fire-and-forget — renderer latency must not block the browser opening.
         void Promise.resolve(
           channel.onAuthRequired({
