@@ -172,7 +172,14 @@ export function createGateway(
     }
 
     const sessionId = sessionByConn.get(conn.id);
-    if (sessionId === undefined) return;
+    if (sessionId === undefined) {
+      // Connection is fenced (mid-reconnect cutover) or not yet authenticated.
+      // Send an explicit error so the client can retry rather than silently losing the frame.
+      conn.send(
+        createErrorFrame(0, "NOT_AUTHORIZED", "No active session; retry after reconnect", nextId),
+      );
+      return;
+    }
 
     let sessionResult: Result<Session, KoiError>;
     try {
