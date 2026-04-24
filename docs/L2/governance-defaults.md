@@ -86,8 +86,9 @@ interface InMemoryControllerConfig {
 
 | Event | What resets |
 |-------|-------------|
-| `iteration_reset` | `turn_count`, `duration_ms` start. NOT token/cost/spawn/error-rate. |
-| `session_reset` | `turn_count`, `duration_ms`, rolling `error_rate` window. NOT token/cost/spawn. |
+| `run_reset` | `turn_count`, `duration_ms` start (anchored to `boundaryTimestamp`, clamped to now). NOT token/cost/spawn/error-rate. |
+| `session_reset` | `turn_count`, `duration_ms`, rolling `error_rate` window (anchored to `boundaryTimestamp`). NOT token/cost/spawn. |
+| `iteration_reset` | Deprecated alias for `run_reset` (renamed in #1939). Accepted for backward compat; no `boundaryTimestamp`. |
 
 **Turn rollback semantics** — `turn_refund` decrements `turn_count` by `count` and clamps at zero (no underflow). Non-finite counts are treated as `0`; negative counts are clamped before subtraction.
 

@@ -228,6 +228,42 @@ downstream consumers (TUI, trajectory) receive the full board state at startup.
 
 `createLocalShellLifecycle()` — spawns shell processes via `Bun.spawn()`, pipes stdout/stderr to `TaskOutputStream`, handles timeouts, and propagates exit codes.
 
+### LocalAgentTask Lifecycle (#1657)
+
+`createLocalAgentLifecycle()` — runs a local subagent via a consumer-provided `run` callback.
+
+**Design:** Layer rules forbid `@koi/tasks` (L2) from importing `@koi/engine` (L1). The lifecycle therefore accepts a `run` callback in the config — the consumer (L3/app) provides the actual spawning logic. This mirrors the `@koi/task-spawn` pattern.
+
+**Config:**
+
+```typescript
+interface LocalAgentConfig {
+  readonly agentType: string;
+  /** Opaque inputs forwarded verbatim to the run callback. */
+  readonly inputs: unknown;
+  readonly timeout?: number;
+  readonly onExit?: (code: number) => void;
+  /**
+   * Consumer-provided runner — yields output chunks as the agent runs.
+   * Resolve = success (exit 0); reject = failure (exit 1).
+   * The signal is aborted on cancel() or timeout — implementations should
+   * respect it to avoid resource leaks.
+   */
+  readonly run: (
+    agentType: string,
+    inputs: unknown,
+    signal: AbortSignal,
+  ) => AsyncIterable<string>;
+}
+```
+
+**Behavior:**
+- `start()` calls `config.run()` and pipes chunks to `TaskOutputStream` (fire-and-forget async loop)
+- On natural completion, writes `\n[exit code: 0]\n` and calls `config.onExit?.(0)`
+- On error/rejection, writes the error message and calls `config.onExit?.(1)`
+- On timeout, aborts the controller after `config.timeout` ms
+- `stop()` calls `cancel()` (aborts the controller) and waits 50 ms
+
 ## Relationship to Other Packages
 
 | Package | Relationship |
@@ -274,7 +310,7 @@ type system but not yet runnable (e.g., `dream`, `local_agent`).
 | Kind | Lifecycle |
 |------|-----------|
 | `local_shell` | Real — `createLocalShellLifecycle()` |
-| `local_agent` | Stub — rejects on start |
+| `local_agent` | Opt-in — `createLocalAgentLifecycle()` (#1657); stub in defaults (requires consumer-provided `run` callback) |
 | `remote_agent` | Stub — rejects on start |
 | `in_process_teammate` | Stub — rejects on start |
 | `dream` | Stub — rejects on start |
@@ -376,3 +412,49 @@ output across chunk boundaries, stop-verify via `proc.exited` timing, and natura
 - After: **159** tests (+86)
 
 <!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
+
+## RemoteAgentTask lifecycle hardening (#2043)
+
+### Composite stop key (`taskId:attemptId`)
+
+`TaskRunner.stoppedTaskIds` now keys on `${taskId}:${attemptId}` for attempt-scoped
+lifecycles. Previously, an explicit `stop()` on attempt A would suppress the natural
+exit from retry B sharing the same `taskId`, causing the board to remain
+`in_progress`. The composite key scopes suppression to the specific attempt that was
+stopped.
+
+### `stoppingTaskIds` double-stop guard
+
+A new `stoppingTaskIds: Set<TaskItemId>` sentinel blocks `handleStoreEvent` from
+invoking `lifecycle.stop()` a second time while an explicit `stop()` is already in
+flight. Without this guard, an external board kill arriving during the
+`lifecycle.stop()` await window (while the task is still in `activeTasks` for
+output readability) would double-invoke the lifecycle's stop handler.
+
+### Lifecycle-before-delete ordering in `stop()`
+
+`lifecycle.stop()` now runs before `activeTasks.delete()`. This preserves the task's
+output stream for `readOutput()` callers during the stop window, so cancel-notify
+failure messages written by `lifecycle.stop()` remain readable after the call returns.
+
+### `Promise.race` cancel-notify timeout
+
+`notifyCancel()` races the HTTP delivery against an independent 500 ms timer. This
+ensures the call resolves promptly even when `fetchImpl` does not honour `AbortSignal`
+(e.g. a user-supplied fetch that ignores signal), preventing the lifecycle from
+wedging the task in a terminal-pending state.
+
+### `cancelNotifiers` deferred delivery map
+
+Cancel delivery is now deferred to `lifecycle.stop()` via a `cancelNotifiers: Map<string,
+() => Promise<void>>` keyed by `attemptId`. Previously, natural-exit paths called
+`void notifyCancel()` and the failure note might not land in the output snapshot before
+`handleNaturalExit` flushed it. Deferring ensures failure messages are always captured
+in the output before the board transition.
+
+### `.finally()` race guard
+
+The pipe's `.finally()` handler now guards `cancelNotifiers.delete(attemptId)` with
+`if (!stopped)`. When a pipe settles during `drainPipe()` — before `lifecycle.stop()`
+reads the notifier — the guard prevents premature deletion, ensuring `lifecycle.stop()`
+can still consume and await the notifier.

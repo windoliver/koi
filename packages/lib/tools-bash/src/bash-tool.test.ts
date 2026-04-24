@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createBashTool } from "./bash-tool.js";
 import { buildSafeEnv, SAFE_ENV } from "./exec.js";
 
@@ -7,8 +9,15 @@ import { buildSafeEnv, SAFE_ENV } from "./exec.js";
 // Unit tests — security blocking
 // ---------------------------------------------------------------------------
 
+// Path-validator hardening requires workspaceRoot to exist and be a real
+// directory (fail-closed on missing base: otherwise an attacker could race
+// a symlink between validation and the subsequent open). Use a real temp
+// dir instead of the classic `/workspace` sentinel so tests exercise the
+// security classifier rather than the base-missing rejection.
+const workspaceRoot = realpathSync(mkdtempSync(join(tmpdir(), "koi-bash-tool-test-")));
+
 describe("createBashTool — security blocking", () => {
-  const tool = createBashTool({ workspaceRoot: "/workspace" });
+  const tool = createBashTool({ workspaceRoot });
 
   async function exec(
     command: string,
@@ -106,7 +115,7 @@ describe("createBashTool — security blocking", () => {
   });
 
   test("blocks cwd escaping workspace root (when workspaceRoot is set)", async () => {
-    const restricted = createBashTool({ workspaceRoot: "/workspace" });
+    const restricted = createBashTool({ workspaceRoot });
     const result = (await restricted.execute({ command: "ls", cwd: "/etc" }, {})) as Record<
       string,
       unknown

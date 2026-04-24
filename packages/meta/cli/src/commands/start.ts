@@ -48,8 +48,9 @@ import { loadManifestConfig } from "../manifest.js";
 import { initOtelSdk } from "../otel-bootstrap.js";
 import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
-import { createKoiRuntime } from "../runtime-factory.js";
-import { resumeSessionFromJsonl } from "../shared-wiring.js";
+import { resolveManifestPath } from "../resolve-manifest-path.js";
+import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
+import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -386,8 +387,56 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("../manifest.js").ManifestGovernanceConfig | undefined;
-  if (flags.manifest !== undefined) {
-    const manifestResult = await loadManifestConfig(flags.manifest);
+  // When resuming without an explicit --manifest, bypass auto-discovery
+  // entirely so the cwd's manifest cannot silently override the model, stacks,
+  // plugins, filesystem scope, or governance that produced the original session.
+  // The operator must explicitly provide --manifest to apply a manifest on resume.
+  const skipManifestDiscovery =
+    flags.noManifest || (flags.resume !== undefined && flags.manifest === undefined);
+  const resolvedManifestResult = resolveManifestPath(
+    process.cwd(),
+    flags.manifest,
+    skipManifestDiscovery,
+  );
+  if (!resolvedManifestResult.ok) {
+    // Redact filesystem paths from the structured error in headless mode —
+    // hard discovery errors (EACCES/EPERM/ELOOP) include the candidate path
+    // which would leak workspace layout into machine-consumed NDJSON logs.
+    const discoveryErr = flags.headless
+      ? resolvedManifestResult.error.replace(
+          /:\s*(?:\/|[A-Za-z]:[/\\])[^\s]*/g,
+          ": <path-redacted>",
+        )
+      : resolvedManifestResult.error;
+    return bail(discoveryErr);
+  }
+  // Fail closed whenever discovery was requested and found nothing — this
+  // applies both inside and outside a project boundary so that markerless
+  // deployments (tarballs, containers, CI workspaces) cannot silently skip
+  // a parent manifest. Pass --no-manifest to explicitly opt into built-in defaults.
+  // Resume without an explicit manifest skips discovery (skipManifestDiscovery above)
+  // so it can never trigger this guard.
+  if (
+    resolvedManifestResult.path === undefined &&
+    flags.manifest === undefined &&
+    !skipManifestDiscovery
+  ) {
+    const tried =
+      !flags.headless && resolvedManifestResult.searched.length > 0
+        ? `\n  Searched:\n${resolvedManifestResult.searched.map((p) => `    ${p}`).join("\n")}`
+        : "";
+    return bail(
+      `no koi.yaml found — pass --manifest <path>, create one with koi init, or pass --no-manifest to run with built-in defaults${tried}`,
+    );
+  }
+  const resolvedManifestPath = resolvedManifestResult.path;
+  if (resolvedManifestPath !== undefined) {
+    // Skip strict audit path validation — koi start never opens audit sinks,
+    // so host-local filesystem state (missing ./logs, stale symlinks, etc.)
+    // must not block startup. Presence of the audit: block is checked below.
+    const manifestResult = await loadManifestConfig(resolvedManifestPath, {
+      skipAuditValidation: true,
+    });
     if (!manifestResult.ok) {
       // Manifest error can include filesystem paths, user-provided values,
       // or schema diagnostics. Safe to classify but don't forward raw text
@@ -422,6 +471,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "long-running background subprocesses (3-in-8 threshold). Remove " +
           "`backgroundSubprocesses: true` from the manifest to run under koi start, or use " +
           "`koi tui`.",
+      );
+    }
+
+    if (manifestResult.value.audit !== undefined) {
+      return bail(
+        "manifest.audit is not supported on this host. " +
+          "koi start does not wire audit sinks — remove the audit: block from the manifest " +
+          "to run under koi start, or use koi tui (which honors manifest.audit when " +
+          "KOI_ALLOW_MANIFEST_FILE_SINKS=1 is set).",
       );
     }
 
@@ -620,6 +678,37 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     process.stdout.write("── End of history ──\n\n");
   }
 
+  // Persist manifest provenance so future resumes can enforce audit intent
+  // against the original session's manifest, not the cwd at resume time.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
+  }
+
+  // Resume-path audit check using stored session provenance.
+  // koi start hard-rejects manifest.audit — check the original session's manifest.
+  if (flags.resume !== undefined) {
+    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(sid));
+    if (resumeMeta.manifestPath !== undefined) {
+      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+        skipAuditValidation: true,
+      });
+      if (!resumeAuditResult.ok) {
+        return bail(
+          "original session manifest cannot be parsed during resume — " +
+            "refusing to start because manifest.audit presence cannot be verified. " +
+            "Fix the manifest to run under koi start, or use koi tui.",
+        );
+      }
+      if (resumeAuditResult.value.audit !== undefined) {
+        return bail(
+          "original session manifest.audit is not supported on this host. " +
+            "koi start does not wire audit sinks — use koi tui to resume this session, " +
+            "or remove the audit: block from the manifest.",
+        );
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // 4. Runtime assembly via shared factory
   // ---------------------------------------------------------------------------
@@ -725,6 +814,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         ? createHeadlessApprovalHandler(flags.allowTools)
         : autoApproveHandler,
       cwd: process.cwd(),
+      ...(flags.settingsFlagPath !== undefined ? { settingsFlagPath: flags.settingsFlagPath } : {}),
       engineId: "koi-cli",
       hostId: "koi-cli",
       permissionBackend: createPatternPermissionBackend({
@@ -838,6 +928,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   } catch (e: unknown) {
     // Ensure OTel provider is shut down even if runtime assembly fails.
     await otelHandle?.shutdown();
+    // Policy settings failures exit with code 2 — both in headless and interactive
+    // mode. Automated policy deployments key off exit 2 to distinguish
+    // "config invalid" from "unexpected crash".
+    if (e instanceof PolicyLoadError) {
+      const msg = e.message;
+      return bail(msg, 2);
+    }
     // In headless mode, route runtime-assembly throws through the same
     // NDJSON envelope as every other setup failure, so CI consumers see
     // a parseable `result` rather than an uncaught exception. Throws are

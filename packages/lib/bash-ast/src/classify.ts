@@ -37,7 +37,7 @@ import {
   classifyCommand as regexClassifyTtp,
   validatePath,
 } from "@koi/bash-security";
-import { analyzeBashCommand } from "./analyze.js";
+import { analyzeBashCommand, MAX_COMMAND_LENGTH } from "./analyze.js";
 import type { AstAnalysis, TooComplexCategory } from "./types.js";
 
 /** Options accepted by `classifyBashCommand`. Mirrors @koi/bash-security's
@@ -102,6 +102,19 @@ export interface ClassifyOptionsWithElicit extends ClassifyOptions {
  */
 function runPrefilter(command: string, opts?: ClassifyOptions): ClassificationResult | null {
   const { cwd, policy, workspaceRoot } = opts ?? {};
+
+  // Length guard before the byte-level regex prefilter: bash-security's
+  // detectInjection has its own ReDoS cap that fires at a different threshold.
+  // Running our gate first preserves the parse-unavailable:over-length
+  // contract for over-length input (fail-closed with the AST-level category).
+  if (command.length > MAX_COMMAND_LENGTH) {
+    return {
+      ok: false,
+      reason: "Bash AST parser unavailable: over-length",
+      pattern: "parse-unavailable:over-length",
+      category: "injection",
+    };
+  }
 
   // 1a. Allowlist gate — preserved from @koi/bash-security's classify.ts
   // so policy.allowlist continues to work unchanged.

@@ -1,10 +1,11 @@
-import type { KoiError, Result } from "@koi/core";
+import type { AgentId, JsonObject, KoiError, Result, SessionId } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { GovernanceController } from "@koi/core/governance";
 import type {
   GovernanceBackend,
   GovernanceVerdict,
   PolicyRequest,
+  PolicyRequestKind,
 } from "@koi/core/governance-backend";
 import type { AlertCallback } from "./alert-tracker.js";
 import type { CostCalculator } from "./cost-calculator.js";
@@ -18,6 +19,19 @@ export type UsageCallback = (event: {
   readonly usage: NormalizedUsage;
   readonly costUsd: number;
 }) => void;
+
+export interface PersistentGrant {
+  readonly kind: PolicyRequestKind;
+  readonly agentId: AgentId;
+  readonly sessionId: SessionId;
+  readonly payload: JsonObject;
+  readonly grantKey: string;
+  readonly grantedAt: number;
+}
+
+export type PersistentGrantCallback = (grant: PersistentGrant) => void;
+
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 60_000 as const;
 
 export interface GovernanceMiddlewareConfig {
   readonly backend: GovernanceBackend;
@@ -53,6 +67,20 @@ export interface GovernanceMiddlewareConfig {
    * `createKoi` engine adapter should set this to true.
    */
   readonly observerOnly?: boolean;
+  /**
+   * Timeout for async approvals triggered by ok:"ask" verdicts.
+   * Defaults to DEFAULT_APPROVAL_TIMEOUT_MS (60_000ms) when omitted.
+   * When the timer fires before the user responds, the middleware throws
+   * KoiRuntimeError({ code: "TIMEOUT" }).
+   */
+  readonly approvalTimeoutMs?: number;
+  /**
+   * Observation callback fired when the user grants `always-allow` with
+   * scope:"always" on a governance ask. Hosts plug gov-12 persistence here.
+   * If omitted, `always` behaves identically to session-only (grant is
+   * kept in-memory for the session and dropped on onSessionEnd).
+   */
+  readonly onApprovalPersist?: PersistentGrantCallback;
 }
 
 function err(message: string, context?: Record<string, unknown>): KoiError {
@@ -118,6 +146,24 @@ export function validateGovernanceConfig(
         }
       }
     }
+  }
+  if (c.approvalTimeoutMs !== undefined) {
+    if (
+      typeof c.approvalTimeoutMs !== "number" ||
+      !Number.isFinite(c.approvalTimeoutMs) ||
+      !Number.isInteger(c.approvalTimeoutMs) ||
+      c.approvalTimeoutMs <= 0
+    ) {
+      return {
+        ok: false,
+        error: err("approvalTimeoutMs must be a positive integer", {
+          approvalTimeoutMs: c.approvalTimeoutMs as never,
+        }),
+      };
+    }
+  }
+  if (c.onApprovalPersist !== undefined && typeof c.onApprovalPersist !== "function") {
+    return { ok: false, error: err("onApprovalPersist must be a function") };
   }
   return { ok: true, value: c as GovernanceMiddlewareConfig };
 }

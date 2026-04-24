@@ -1,18 +1,19 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/fs-nexus API surface . has stable type surface 1`] = `
-"import { ChannelAdapter, FileSystemBackend, Result, KoiError } from '@koi/core';
+"import { OAuthChannel, ChannelAdapter, FileSystemBackend, Result, KoiError } from '@koi/core';
 import { B as BridgeNotification, N as NexusTransport, a as NexusFileSystemConfig } from './types-BN28JvQl.js';
 
 /**
  * Channel wiring for bridge auth notifications.
  *
  * Converts BridgeNotification events from transport.subscribe() into
- * user-facing channel messages during inline OAuth flows.
+ * structured OAuthChannel callbacks (auth_required, auth_complete) and
+ * channel text messages (auth_progress keepalives).
  *
  * Usage:
  *   const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
- *   const handler = createAuthNotificationHandler(channel);
+ *   const handler = createAuthNotificationHandler(oauthChannel, channel);
  *   const unsubscribe = transport.subscribe(handler);
  *   // on teardown:
  *   unsubscribe();
@@ -29,8 +30,9 @@ type AuthNotificationHandler = ((n: BridgeNotification) => void) & {
     readonly dispose: () => void;
 };
 /**
- * Creates a BridgeNotification handler that sends user-facing messages to a
- * channel when OAuth authorization is required, in progress, or complete.
+ * Creates a BridgeNotification handler that routes auth lifecycle events to an
+ * OAuthChannel (auth_required, auth_complete) and sends progress keepalives to
+ * a channel (auth_progress).
  *
  * Wire the returned function to \`transport.subscribe()\` and call
  * \`.dispose()\` on the returned handler when the transport is closed so that
@@ -38,10 +40,11 @@ type AuthNotificationHandler = ((n: BridgeNotification) => void) & {
  * the session (notifications dispatched before \`unsubscribe()\` can still
  * execute the handler via queued microtasks).
  *
- * The handler is non-blocking — channel.send() is fire-and-forget via void.
- * Errors from channel.send() are swallowed to avoid breaking the reader loop.
+ * The handler is non-blocking — all async calls are fire-and-forget.
+ * Errors from oauthChannel callbacks and channel.send() are swallowed to
+ * avoid breaking the reader loop.
  */
-declare function createAuthNotificationHandler(channel: ChannelAdapter): AuthNotificationHandler;
+declare function createAuthNotificationHandler(oauthChannel: OAuthChannel, channel: ChannelAdapter): AuthNotificationHandler;
 
 /**
  * Local subprocess transport — spawns a Python bridge process that

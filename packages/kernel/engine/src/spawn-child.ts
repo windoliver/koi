@@ -530,7 +530,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //     weakening configured spawn limits.
   //   - record(spawn_release) fault → spawn_count over-represents live
   //     children, can produce false RATE_LIMIT until counter is reset
-  //     (e.g. iteration_reset / session_reset, or runtime restart).
+  //     (e.g. run_reset / session_reset, or runtime restart).
   //
   // The default in-process controller (`createGovernanceController` from
   // @koi/engine-reconcile) is sync and never fails on record(), so the

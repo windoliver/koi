@@ -23,11 +23,35 @@
 
 import { homedir } from "node:os";
 import { createAgentResolver } from "@koi/agent-runtime";
-import type { EngineAdapter, KoiMiddleware, ModelAdapter } from "@koi/core";
-import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
+import type {
+  Agent,
+  AgentId,
+  ComponentProvider,
+  EngineAdapter,
+  KoiMiddleware,
+  ManagedTaskBoard,
+  ModelAdapter,
+  SpawnFn,
+  TaskBoardStore,
+} from "@koi/core";
+import {
+  createAgentSpawnFn,
+  createInMemorySpawnLedger,
+  createSpawnToolProvider,
+  DEFAULT_SPAWN_POLICY,
+  type SpawnPolicy,
+} from "@koi/engine";
 import { runTurn } from "@koi/query-engine";
+import {
+  createLocalAgentLifecycle,
+  createTaskRegistry,
+  createTaskRunner,
+  type LocalAgentConfig,
+  type TaskRunner,
+} from "@koi/tasks";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
 import { LATE_PHASE_HOST_KEYS } from "../preset-stacks.js";
+import { AGENT_ID_HOST_KEY } from "./execution.js";
 
 /** Key under `ctx.host` for the optional spawn-event callback. */
 export const SPAWN_EVENT_CALLBACK_HOST_KEY = "onSpawnEvent";
@@ -152,9 +176,141 @@ export const spawnStack: PresetStack = {
       ...(onSpawnEvent !== undefined ? { onSpawnEvent } : {}),
     });
 
+    // --- local_agent task runner ---
+    // Reads task board and store getters threaded from execution stack.
+    // When absent (execution stack not active), skip the runner setup.
+    const getTaskBoard = ctx.host?.[LATE_PHASE_HOST_KEYS.getTaskBoard] as
+      | (() => ManagedTaskBoard)
+      | undefined;
+    const getStore = ctx.host?.[LATE_PHASE_HOST_KEYS.getStore] as
+      | (() => TaskBoardStore)
+      | undefined;
+    const agentId = ctx.host?.[AGENT_ID_HOST_KEY] as AgentId | undefined;
+
+    if (getTaskBoard === undefined || getStore === undefined || agentId === undefined) {
+      return {
+        middleware: [],
+        providers: [spawnToolProvider],
+      };
+    }
+
+    // Narrowed non-optional references — guards above prove these are defined.
+    const boardGetter: () => ManagedTaskBoard = getTaskBoard;
+    const storeGetter: () => TaskBoardStore = getStore;
+    const resolvedAgentId: AgentId = agentId;
+
+    // let: mutable — set once in localAgentRunnerProvider.attach()
+    let spawnFnRef: SpawnFn | undefined;
+    // let: mutable — recreated on session reset
+    let currentRunner: TaskRunner | undefined;
+    // let: mutable — unsubscribe from the pending-task auto-start watcher
+    let currentWatcherUnsubscribe: (() => void) | undefined;
+
+    const LOCAL_AGENT_SPAWN_POLICY: SpawnPolicy = {
+      ...DEFAULT_SPAWN_POLICY,
+      maxTotalProcesses: 10,
+    };
+
+    function startLocalAgentRunner(): void {
+      if (spawnFnRef === undefined) return;
+      const capturedSpawnFn = spawnFnRef;
+
+      // Dispose previous runner + watcher before creating the new ones.
+      currentWatcherUnsubscribe?.();
+      currentWatcherUnsubscribe = undefined;
+      void currentRunner?.[Symbol.asyncDispose]();
+
+      const registry = createTaskRegistry();
+      registry.register(
+        createLocalAgentLifecycle() as unknown as import("@koi/tasks").TaskKindLifecycle,
+      );
+
+      const currentStore = storeGetter();
+      const runner = createTaskRunner({
+        board: boardGetter(),
+        store: currentStore,
+        registry,
+        agentId: resolvedAgentId,
+      });
+      currentRunner = runner;
+
+      // Auto-start pending local_agent tasks created on this store.
+      currentWatcherUnsubscribe = currentStore.watch((event) => {
+        if (event.kind !== "put") return;
+        const { item } = event;
+        if (item.status !== "pending") return;
+        if (item.metadata?.["kind"] !== "local_agent") return;
+
+        const rawAgentType: unknown = item.metadata?.["agentType"];
+        const localAgentType = typeof rawAgentType === "string" ? rawAgentType : item.subject;
+        const localInputs: unknown = item.metadata?.["inputs"] ?? item.description;
+
+        const taskConfig: LocalAgentConfig = {
+          agentType: localAgentType,
+          inputs: localInputs,
+          run(_runAgentType: string, runInputs: unknown, signal: AbortSignal) {
+            // eslint-disable-next-line no-restricted-syntax
+            return (async function* () {
+              const result = await capturedSpawnFn({
+                agentName: _runAgentType,
+                description: typeof runInputs === "string" ? runInputs : JSON.stringify(runInputs),
+                signal,
+                nonInteractive: true,
+              });
+              if (!result.ok) throw new Error(result.error.message);
+              yield result.output;
+            })();
+          },
+        };
+
+        void runner.start(item.id, "local_agent", taskConfig);
+      });
+    }
+
+    const localAgentRunnerProvider: ComponentProvider = {
+      name: "local-agent-runner",
+      attach: async (agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+        spawnFnRef = createAgentSpawnFn({
+          resolver,
+          base: {
+            parentAgent: agent,
+            spawnLedger: createInMemorySpawnLedger(5),
+            spawnPolicy: LOCAL_AGENT_SPAWN_POLICY,
+          },
+          adapter: childAdapter,
+          manifestTemplate: {
+            name: "spawned-agent",
+            version: "0.0.0",
+            description: "Spawned sub-agent",
+            model: { name: modelName },
+            selfCeiling: { tools: ["Glob", "Grep", "fs_read", "ToolSearch"] },
+          },
+          inheritedMiddleware,
+          ...(perChildManifestMiddlewareFactory !== undefined
+            ? { perChildMiddlewareFactory: perChildManifestMiddlewareFactory }
+            : {}),
+          allowDynamicAgents: true,
+        });
+        startLocalAgentRunner();
+        return new Map<string, unknown>();
+      },
+    };
+
     return {
       middleware: [],
-      providers: [spawnToolProvider],
+      providers: [spawnToolProvider, localAgentRunnerProvider],
+      onResetSession: (): void => {
+        // execution stack's onResetSession already rotated board + store.
+        // getTaskBoard()/getStore() now return the fresh instances.
+        startLocalAgentRunner();
+      },
+      onShutdown: (): boolean => {
+        currentWatcherUnsubscribe?.();
+        currentWatcherUnsubscribe = undefined;
+        void currentRunner?.[Symbol.asyncDispose]();
+        currentRunner = undefined;
+        return false;
+      },
     };
   },
 };

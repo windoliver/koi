@@ -31,7 +31,11 @@
     { "path": "../../security/violation-store-sqlite" },
     { "path": "../../lib/tool-exec" },
     { "path": "../../lib/tools-builtin" },
+    { "path": "../../lib/checkpoint" },
+    { "path": "../../lib/config" },
+    { "path": "../../lib/cost-aggregator" },
     { "path": "../../lib/context-manager" },
-    { "path": "../../mm/token-estimator" }
+    { "path": "../../mm/token-estimator" },
+    { "path": "../../ui/tui" }
   ]
 }

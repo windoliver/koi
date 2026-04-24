@@ -64,8 +64,8 @@ function createAuthenticateTool(
     description:
       `The "${serverName}" MCP server requires authentication. ` +
       `Call this tool to start the OAuth flow — a browser window will open ` +
-      `for the user to authorize access. After authentication, tokens are ` +
-      `stored and the server's tools will load on the next TUI restart.`,
+      `for the user to authorize access. After authentication succeeds, ` +
+      `tokens are stored and the server's tools will load automatically.`,
     inputSchema: {
       type: "object",
       properties: {},
@@ -76,10 +76,42 @@ function createAuthenticateTool(
   };
 
   const execute = async (_args: JsonObject): Promise<unknown> => {
-    // Wrap the full auth flow — startAuthFlow() can throw on timeout,
-    // callback port bind failure, OAuth error responses, etc. Convert
-    // those to structured tool errors so one bad attempt doesn't abort
-    // the turn.
+    const { triggerAuth } = entry.connection;
+
+    if (triggerAuth !== undefined) {
+      // Preferred: route through triggerAuth() so concurrent auth attempts share
+      // the singleflight and onAuthComplete fires only once.
+      const result = await triggerAuth();
+      if (!result.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Authentication failed for "${serverName}": ${result.error.message}. ` +
+                `The user can also try: koi mcp auth ${serverName}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      await rediscover();
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Authentication successful for "${serverName}". ` +
+              `Tokens are stored and the server has been reconnected. ` +
+              `The server's tools are now available.`,
+          },
+        ],
+      };
+    }
+
+    // Fallback: no OAuthChannel was wired (e.g. koi start). Use the provider
+    // directly — no singleflight protection, but no concurrent auto-recovery
+    // is possible without onAuthNeeded, so there is no race to prevent.
     try {
       const success = await entry.provider.startAuthFlow();
       if (!success) {
@@ -88,17 +120,14 @@ function createAuthenticateTool(
             {
               type: "text",
               text:
-                `Authentication failed for "${serverName}". The OAuth flow ` +
-                `did not complete — the user may not have authorized in time, ` +
-                `or the authorization server could not be reached. ` +
+                `Authentication failed for "${serverName}". The OAuth flow did not complete — ` +
+                `the user may not have authorized in time, or the authorization server could not be reached. ` +
                 `The user can also try: koi mcp auth ${serverName}`,
             },
           ],
           isError: true,
         };
       }
-
-      // Reconnect now that tokens are stored
       const connectResult = await entry.connection.connect();
       if (!connectResult.ok) {
         return {
@@ -113,18 +142,15 @@ function createAuthenticateTool(
           ],
         };
       }
-
-      // Re-discover so the resolver picks up real tools from the now-connected server
       await rediscover();
-
       return {
         content: [
           {
             type: "text",
             text:
               `Authentication successful for "${serverName}". ` +
-              `Tokens are stored. Restart the TUI (quit and relaunch) ` +
-              `to load the server's tools into this runtime.`,
+              `Tokens are stored and the server has been reconnected. ` +
+              `The server's tools are now available.`,
           },
         ],
       };

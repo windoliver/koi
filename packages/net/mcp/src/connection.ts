@@ -59,12 +59,31 @@ interface SdkClientLike {
 }
 
 // ---------------------------------------------------------------------------
+// Auth outcome type
+// ---------------------------------------------------------------------------
+
+/**
+ * Tri-state result from an `onUnauthorized` / `handleUnauthorized` attempt:
+ * - "refreshed"         — new access token obtained; caller may retry silently
+ * - "needs-auth"        — refresh token gone; interactive OAuth required
+ * - "transient-failure" — tokens preserved but temporarily unavailable; retry later
+ */
+export type UnauthorizedOutcome = "refreshed" | "needs-auth" | "transient-failure";
+
+// ---------------------------------------------------------------------------
 // Connection interface
 // ---------------------------------------------------------------------------
 
 export interface McpConnection {
   /** Connect to the MCP server. */
   readonly connect: () => Promise<Result<void, KoiError>>;
+  /**
+   * Force a transport rebuild without terminating the connection.
+   * Transitions through "reconnecting" state so the token manager is
+   * re-consulted — use this after an auth token refresh to pick up fresh
+   * credentials, even when the connection currently reports "connected".
+   */
+  readonly reconnect: () => Promise<Result<void, KoiError>>;
   /** List available tools on the server. */
   readonly listTools: () => Promise<Result<readonly McpToolInfo[], KoiError>>;
   /** Call a tool by name with arguments. */
@@ -79,6 +98,15 @@ export interface McpConnection {
   readonly onStateChange: (listener: TransportStateListener) => () => void;
   /** Subscribe to tool list changes. Returns unsubscribe function. */
   readonly onToolsChanged: (listener: () => void) => () => void;
+  /**
+   * User-initiated auth entry point. Shares the same `authInFlight` singleflight
+   * as the automatic 401-recovery path so only one browser window can open per
+   * server at a time — callers that race are coalesced onto the same promise.
+   * Unlike automatic recovery, skips the silent-refresh attempt and goes directly
+   * to the interactive OAuth flow even when a transient refresh failure exists.
+   * Undefined when the connection was created without an `onAuthNeeded` dep.
+   */
+  readonly triggerAuth?: () => Promise<Result<void, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,8 +120,27 @@ export interface ConnectionDeps {
   }) => SdkClientLike;
   readonly createTransport: CreateTransportFn;
   readonly random: () => number;
-  /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
-  readonly onUnauthorized?: () => void | Promise<void>;
+  /**
+   * Called on a mid-session 401. Returns an `UnauthorizedOutcome`:
+   * "refreshed" — fresh token obtained, caller may retry silently;
+   * "needs-auth" — refresh token gone, interactive OAuth required;
+   * "transient-failure" — tokens preserved but temporarily unavailable.
+   */
+  readonly onUnauthorized?: () => UnauthorizedOutcome | Promise<UnauthorizedOutcome>;
+  /**
+   * Called when a mid-session 401 triggers auth-needed. The implementation
+   * should perform the full OAuth flow and return true when tokens are ready,
+   * or false if auth was cancelled or failed. When true is returned, the
+   * connection will reconnect and retry the operation automatically.
+   */
+  readonly onAuthNeeded?: () => Promise<boolean>;
+  /**
+   * Called after a successful interactive auth flow AND a successful reconnect.
+   * Fires after the connection is re-established so consumers receive a true
+   * "auth + connection ready" signal rather than "auth completed" prematurely.
+   * Best-effort — errors are swallowed. Optional.
+   */
+  readonly onAuthComplete?: () => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +157,8 @@ export function createMcpConnection(
     createTransport: makeTransport = defaultCreateTransport,
     random = Math.random,
     onUnauthorized,
+    onAuthNeeded,
+    onAuthComplete,
   } = deps ?? {};
 
   const stateMachine: TransportStateMachine = createTransportStateMachine();
@@ -120,21 +169,166 @@ export function createMcpConnection(
   let transport: KoiMcpTransport | undefined;
   // Shared reconnection promise — prevents thundering herd
   let reconnecting: Promise<Result<void, KoiError>> | undefined;
+  // Singleflight for auth flow — prevents concurrent onAuthNeeded calls.
+  // Carries a Result so reconnect failures surface as real errors rather than
+  // being collapsed into the original AUTH_REQUIRED that triggered the flow.
+  let authInFlight: Promise<Result<void, KoiError>> | undefined;
   // Tool change listeners
   const toolChangeListeners = new Set<() => void>();
+
+  // -------------------------------------------------------------------------
+  // Auth flow (singleflight — deduplicates concurrent onAuthNeeded calls)
+  // -------------------------------------------------------------------------
+
+  // Error returned when auth is declined or no handler is wired — the server
+  // still requires authentication so AUTH_REQUIRED is the correct code.
+  const authDeclinedError = (): KoiError => ({
+    code: "AUTH_REQUIRED",
+    message: `${config.name} requires authentication`,
+    retryable: true,
+    context: { serverName: config.name },
+  });
+
+  const runAuthFlow = (): Promise<Result<void, KoiError>> => {
+    if (authInFlight !== undefined) return authInFlight;
+    authInFlight = (async (): Promise<Result<void, KoiError>> => {
+      const outcome = await Promise.resolve(onUnauthorized?.()).catch(
+        (): UnauthorizedOutcome => "transient-failure",
+      );
+      if (outcome === "refreshed") {
+        const silentResult = await connect(true);
+        if (silentResult.ok) {
+          return { ok: true, value: undefined }; // self-healed without browser prompt
+        }
+        // Reconnect failed after a valid token refresh — this is a transport/server
+        // outage, not a credential problem. Return the error directly; launching browser
+        // re-auth would be misleading and waste the freshly acquired token.
+        return silentResult;
+      }
+      if (outcome === "transient-failure") {
+        // Tokens exist but the refresh endpoint is temporarily unavailable.
+        // Do NOT launch browser auth — a network blip must not trigger user-visible
+        // re-consent. Return a retryable error; the session can self-heal when the
+        // refresh endpoint recovers. Explicit re-auth (triggerMcpServerAuth) falls
+        // through to startAuthFlow even on transient-failure because it is user-initiated.
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+            retryable: true,
+            context: { serverName: config.name },
+          },
+        };
+      }
+      // "needs-auth" — interactive OAuth required.
+      if (onAuthNeeded === undefined) {
+        return { ok: false, error: authDeclinedError() };
+      }
+      try {
+        const authed = await onAuthNeeded();
+        if (!authed) {
+          return { ok: false, error: authDeclinedError() };
+        }
+        // Include the reconnect inside the singleflight so concurrent callers
+        // awaiting authInFlight see the connected state when they wake up and
+        // cannot race to call connect() simultaneously on the same connection.
+        const reconnResult = await connect(true);
+        // Propagate reconnect failures so callers can surface the real error
+        // (transport outage, server 5xx) instead of a misleading AUTH_REQUIRED.
+        if (!reconnResult.ok) return reconnResult;
+        // Fire onAuthComplete only after a successful reconnect so consumers
+        // receive a "auth + connection ready" signal, not a premature success.
+        await Promise.resolve(onAuthComplete?.()).catch(() => {});
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.error(`[koi mcp] auth flow error for "${config.name}":`, e);
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_REQUIRED",
+            message: `${config.name}: auth flow failed — ${reason}`,
+            retryable: true,
+            context: { serverName: config.name },
+          },
+        };
+      }
+    })().finally(() => {
+      authInFlight = undefined;
+    });
+    return authInFlight;
+  };
+
+  // User-initiated auth: tries silent token refresh first, then falls through to
+  // interactive browser auth (onAuthNeeded). Shares authInFlight so concurrent
+  // user-triggered attempts are coalesced. Unlike runAuthFlow, transient-failure
+  // falls through to browser auth — an explicit user request is an escape hatch.
+  const triggerAuth: McpConnection["triggerAuth"] =
+    onAuthNeeded !== undefined
+      ? (): Promise<Result<void, KoiError>> => {
+          if (authInFlight !== undefined) return authInFlight;
+          authInFlight = (async (): Promise<Result<void, KoiError>> => {
+            try {
+              // Try silent refresh first; only open browser if tokens are stale.
+              const refreshOutcome = await Promise.resolve(onUnauthorized?.()).catch(
+                (): UnauthorizedOutcome => "transient-failure",
+              );
+              if (refreshOutcome === "refreshed") {
+                // Use reconnect() so the connection follows the valid state-machine
+                // path (connected → reconnecting → connected) instead of trying a
+                // direct connected → connecting transition that the SM rejects.
+                const silentResult = await reconnect();
+                if (silentResult.ok) {
+                  await Promise.resolve(onAuthComplete?.()).catch(() => {});
+                  return { ok: true, value: undefined };
+                }
+                // Token was refreshed but reconnect failed — this is a transport
+                // outage, not a credential problem. Return the error directly;
+                // opening browser auth would waste the fresh token.
+                return silentResult;
+              }
+              // "needs-auth" or "transient-failure": open browser flow.
+              const authed = await onAuthNeeded();
+              if (!authed) return { ok: false, error: authDeclinedError() };
+              const reconnResult = await reconnect();
+              if (!reconnResult.ok) return reconnResult;
+              await Promise.resolve(onAuthComplete?.()).catch(() => {});
+              return { ok: true, value: undefined };
+            } catch (e: unknown) {
+              const reason = e instanceof Error ? e.message : String(e);
+              console.error(`[koi mcp] auth flow error for "${config.name}":`, e);
+              return {
+                ok: false,
+                error: {
+                  code: "AUTH_REQUIRED",
+                  message: `${config.name}: auth flow failed — ${reason}`,
+                  retryable: true,
+                  context: { serverName: config.name },
+                },
+              };
+            }
+          })().finally(() => {
+            authInFlight = undefined;
+          });
+          return authInFlight;
+        }
+      : undefined;
 
   // -------------------------------------------------------------------------
   // Connect
   // -------------------------------------------------------------------------
 
-  const connect = async (): Promise<Result<void, KoiError>> => {
+  const connect = async (skipRefresh = false): Promise<Result<void, KoiError>> => {
     if (abortController.signal.aborted) {
       return { ok: false, error: notConnectedError(config.name) };
     }
 
-    // Only transition to connecting if not already in reconnecting
-    // (ensureConnected transitions to reconnecting before calling connect)
-    if (stateMachine.current.kind !== "reconnecting") {
+    // Skip transition if already in a mid-connect state:
+    // - "reconnecting": ensureConnected transitions here before calling connect
+    // - "connecting": recursive connect(true) after token refresh stays in connecting
+    const currentKind = stateMachine.current.kind;
+    if (currentKind !== "reconnecting" && currentKind !== "connecting") {
       stateMachine.transition({ kind: "connecting", attempt: 1 });
     }
 
@@ -256,8 +450,40 @@ export function createMcpConnection(
 
       const koiError = mapMcpError(error, { serverName: config.name });
 
-      // Check for auth challenge (401 only, not 403 scope denials)
+      // Check for auth challenge (401 only, not 403 scope denials).
+      // "refreshed"         → retry once with a fresh token.
+      // "transient-failure" → refresh endpoint temporarily down; tokens still exist.
+      //   Return retryable EXTERNAL — do NOT enter auth-needed (misleads user into
+      //   browser re-consent for a temporary outage).
+      // "needs-auth"        → interactive OAuth required; transition to auth-needed.
       if (koiError.code === "AUTH_REQUIRED") {
+        if (!skipRefresh && onUnauthorized !== undefined) {
+          const outcome = await Promise.resolve(onUnauthorized()).catch(
+            (): UnauthorizedOutcome => "transient-failure",
+          );
+          if (outcome === "refreshed") {
+            return connect(true); // retry once; skipRefresh prevents infinite loop
+          }
+          if (outcome === "transient-failure") {
+            // Transition to error before returning so the state machine reflects the
+            // failure consistently (not stuck in connecting/reconnecting).
+            const transientError = {
+              code: "EXTERNAL" as const,
+              message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+              retryable: true as const,
+              context: { serverName: config.name },
+            };
+            if (stateMachine.canTransitionTo("error")) {
+              stateMachine.transition({
+                kind: "error",
+                error: transientError,
+                retryable: true,
+              });
+            }
+            return { ok: false, error: transientError };
+          }
+          // outcome === "needs-auth" falls through to auth-needed transition below
+        }
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
             kind: "auth-needed",
@@ -291,9 +517,21 @@ export function createMcpConnection(
       return { ok: false, error: notConnectedError(config.name) };
     }
 
-    // auth-needed → try connecting directly (no reconnect backoff).
-    // The auth-needed state only allows "connecting" or "closed" transitions.
+    // auth-needed → if auth flow is in progress, await it (auth+reconnect are
+    // now atomic in the singleflight), then check state. Checking state rather
+    // than `client !== undefined` prevents using a stale pre-auth client that
+    // hasn't been replaced yet during the reconnect window.
     if (stateMachine.current.kind === "auth-needed") {
+      if (authInFlight !== undefined) {
+        await authInFlight;
+        // Re-read state: authInFlight now covers auth+reconnect, so state
+        // may have advanced to "connected" by the time we wake up.
+        // Cast breaks TS narrowing from the outer auth-needed guard.
+        const postAuthState = stateMachine.current.kind as TransportState["kind"];
+        if (postAuthState === "connected" && client !== undefined) {
+          return { ok: true, value: undefined };
+        }
+      }
       return connect();
     }
 
@@ -358,7 +596,9 @@ export function createMcpConnection(
   // List tools
   // -------------------------------------------------------------------------
 
-  const listTools = async (): Promise<Result<readonly McpToolInfo[], KoiError>> => {
+  const listTools = async (
+    skipRefresh = false,
+  ): Promise<Result<readonly McpToolInfo[], KoiError>> => {
     const connResult = await ensureConnected();
     if (!connResult.ok) return connResult;
     if (client === undefined) {
@@ -375,15 +615,46 @@ export function createMcpConnection(
       return { ok: true, value: tools };
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
-      // 401 mid-session → auth-needed. 403 (insufficient scope, ACL denial)
-      // stays as a normal error — don't clear valid credentials.
-      if (koiError.code === "AUTH_REQUIRED" && stateMachine.canTransitionTo("auth-needed")) {
-        stateMachine.transition({
-          kind: "auth-needed",
-          challenge: { type: "oauth" },
-        });
-        // Notify host to clear stale tokens and prompt for re-auth
-        void Promise.resolve(onUnauthorized?.()).catch(() => {});
+      // 401 mid-session → attempt token refresh before escalating to
+      // interactive auth, so sessions with a valid refresh token self-heal.
+      // 403 (insufficient scope, ACL denial) stays as a normal error.
+      if (koiError.code === "AUTH_REQUIRED") {
+        if (!skipRefresh && onUnauthorized !== undefined) {
+          const outcome = await Promise.resolve(onUnauthorized()).catch(
+            (): UnauthorizedOutcome => "transient-failure",
+          );
+          if (outcome === "refreshed") {
+            // Use reconnect() to rebuild transport: from "connected" state,
+            // connect(true) would attempt "connected -> connecting" which the
+            // state machine forbids. reconnect() properly stages through
+            // "reconnecting" first.
+            const reconnResult = await reconnect();
+            if (reconnResult.ok) {
+              return listTools(true); // retry with fresh token
+            }
+          } else if (outcome === "transient-failure") {
+            // Token endpoint or discovery is temporarily unavailable — do NOT
+            // enter auth-needed (tokens still exist). Surface as retryable
+            // outage so operators see the real failure mode, not a false
+            // "authentication required" prompt.
+            return {
+              ok: false,
+              error: {
+                code: "EXTERNAL",
+                message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+                retryable: true,
+                context: { serverName: config.name },
+              },
+            };
+          }
+          // outcome === "needs-auth" falls through to auth-needed transition below
+        }
+        if (stateMachine.canTransitionTo("auth-needed")) {
+          stateMachine.transition({
+            kind: "auth-needed",
+            challenge: { type: "oauth" },
+          });
+        }
         return { ok: false, error: koiError };
       }
       if (stateMachine.canTransitionTo("error")) {
@@ -402,6 +673,31 @@ export function createMcpConnection(
   // -------------------------------------------------------------------------
 
   const callTool = async (name: string, args: JsonObject): Promise<Result<unknown, KoiError>> => {
+    // If a prior passive discovery (listTools/connect) put the connection in
+    // auth-needed, run the interactive OAuth flow now before ensureConnected()
+    // attempts a plain reconnect that would just return AUTH_REQUIRED again.
+    // Skip if a reconnect is already in progress (e.g., concurrent getMcpStatus)
+    // so we don't race with a legitimate reconnect that will resolve auth-needed.
+    if (
+      stateMachine.current.kind === "auth-needed" &&
+      authInFlight === undefined &&
+      reconnecting === undefined
+    ) {
+      // runAuthFlow now includes connect() so the full auth+reconnect is
+      // atomic in one singleflight promise.
+      const preCallFlowResult = await runAuthFlow();
+      // If the flow returned a transient outage (EXTERNAL) rather than a real auth
+      // failure, escape auth-needed so future calls don't keep trying interactive auth.
+      if (!preCallFlowResult.ok && preCallFlowResult.error.code !== "AUTH_REQUIRED") {
+        if (stateMachine.canTransitionTo("error")) {
+          stateMachine.transition({
+            kind: "error",
+            error: preCallFlowResult.error,
+            retryable: preCallFlowResult.error.retryable,
+          });
+        }
+      }
+    }
     const connResult = await ensureConnected();
     if (!connResult.ok) return connResult;
     if (client === undefined) {
@@ -413,47 +709,49 @@ export function createMcpConnection(
         name,
         arguments: args as Record<string, unknown>,
       });
-
-      const content = result.content as readonly Record<string, unknown>[] | undefined;
-
-      if (result.isError === true) {
-        const errorText =
-          content
-            ?.filter(
-              (
-                c,
-              ): c is Record<string, unknown> & {
-                readonly type: "text";
-                readonly text: string;
-              } => c.type === "text" && typeof c.text === "string",
-            )
-            .map((c) => c.text)
-            .join("\n") ?? "unknown error";
-
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `MCP tool "${name}" on "${config.name}": ${errorText}`,
-            retryable: false,
-            context: { serverName: config.name, toolName: name },
-          },
-        };
-      }
-
-      return { ok: true, value: content };
+      return parseCallToolResult(result, name, config.name);
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
       // 401 mid-session → auth-needed. 403 (insufficient scope, ACL denial)
       // stays as a normal error — don't clear valid credentials.
-      if (koiError.code === "AUTH_REQUIRED" && stateMachine.canTransitionTo("auth-needed")) {
-        stateMachine.transition({
-          kind: "auth-needed",
-          challenge: { type: "oauth" },
-        });
-        // Notify host to clear stale tokens and prompt for re-auth
-        void Promise.resolve(onUnauthorized?.()).catch(() => {});
-        return { ok: false, error: koiError };
+      if (koiError.code === "AUTH_REQUIRED") {
+        if (stateMachine.canTransitionTo("auth-needed")) {
+          stateMachine.transition({
+            kind: "auth-needed",
+            challenge: { type: "oauth" },
+          });
+        }
+        // runAuthFlow includes connect() in its singleflight, so after it
+        // resolves, client is either set (auth+reconnect succeeded) or undefined.
+        const authResult = await runAuthFlow();
+        // Transient refresh failure (EXTERNAL) must not strand the connection in
+        // auth-needed — a network blip must not require browser re-consent.
+        if (!authResult.ok && authResult.error.code !== "AUTH_REQUIRED") {
+          if (stateMachine.canTransitionTo("error")) {
+            stateMachine.transition({
+              kind: "error",
+              error: authResult.error,
+              retryable: authResult.error.retryable,
+            });
+          }
+          return { ok: false, error: authResult.error };
+        }
+        if (authResult.ok && client !== undefined) {
+          try {
+            const retryResult = await client.callTool({
+              name,
+              arguments: args as Record<string, unknown>,
+            });
+            return parseCallToolResult(retryResult, name, config.name);
+          } catch (retryErr: unknown) {
+            // Surface the actual post-auth error so callers can distinguish
+            // auth failure from execution failures (timeout, revoked scope, etc.)
+            return { ok: false, error: mapMcpError(retryErr, { serverName: config.name }) };
+          }
+        }
+        // Auth declined → original AUTH_REQUIRED. Reconnect failed after auth →
+        // propagate the real transport error rather than a misleading AUTH_REQUIRED.
+        return { ok: false, error: authResult.ok ? koiError : authResult.error };
       }
       if (stateMachine.canTransitionTo("error")) {
         stateMachine.transition({
@@ -469,6 +767,23 @@ export function createMcpConnection(
   // -------------------------------------------------------------------------
   // Close
   // -------------------------------------------------------------------------
+
+  const reconnect = async (): Promise<Result<void, KoiError>> => {
+    if (abortController.signal.aborted) {
+      return { ok: false, error: notConnectedError(config.name) };
+    }
+    // Transition through "reconnecting" so connect() can run from any live state.
+    // "connected" → "reconnecting" is a valid state-machine transition; connect()
+    // skips its own state transition when it sees "reconnecting" already set.
+    if (stateMachine.canTransitionTo("reconnecting")) {
+      stateMachine.transition({
+        kind: "reconnecting",
+        attempt: 1,
+        lastError: notConnectedError(config.name),
+      });
+    }
+    return connect();
+  };
 
   const close = async (): Promise<void> => {
     abortController.abort();
@@ -518,6 +833,7 @@ export function createMcpConnection(
 
   return {
     connect,
+    reconnect,
     listTools,
     callTool,
     close,
@@ -532,7 +848,40 @@ export function createMcpConnection(
         toolChangeListeners.delete(listener);
       };
     },
+    ...(triggerAuth !== undefined ? { triggerAuth } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Call tool result parser
+// ---------------------------------------------------------------------------
+
+function parseCallToolResult(
+  result: { readonly content?: unknown; readonly isError?: boolean | undefined },
+  toolName: string,
+  serverName: string,
+): Result<unknown, KoiError> {
+  const content = result.content as readonly Record<string, unknown>[] | undefined;
+  if (result.isError === true) {
+    const errorText =
+      content
+        ?.filter(
+          (c): c is Record<string, unknown> & { readonly type: "text"; readonly text: string } =>
+            c.type === "text" && typeof c.text === "string",
+        )
+        .map((c) => c.text)
+        .join("\n") ?? "unknown error";
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL",
+        message: `MCP tool "${toolName}" on "${serverName}": ${errorText}`,
+        retryable: false,
+        context: { serverName, toolName },
+      },
+    };
+  }
+  return { ok: true, value: content };
 }
 
 // ---------------------------------------------------------------------------

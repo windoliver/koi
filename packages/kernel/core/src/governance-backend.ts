@@ -108,6 +108,23 @@ export interface Violation {
 }
 
 // ---------------------------------------------------------------------------
+// AskId — brand for async-approval identifiers
+// ---------------------------------------------------------------------------
+
+/**
+ * Branded identifier for pending governance approvals. Backends MUST
+ * generate globally-unique askIds (e.g., via crypto.randomUUID) — this is a
+ * documented invariant; consumers rely on it for inflight coalescing.
+ */
+declare const __askIdBrand: unique symbol;
+export type AskId = string & { readonly [__askIdBrand]: "AskId" };
+
+/** Create a branded AskId from a plain string. */
+export function askId(id: string): AskId {
+  return id as AskId;
+}
+
+// ---------------------------------------------------------------------------
 // GovernanceVerdict — the output of policy evaluation
 // ---------------------------------------------------------------------------
 
@@ -116,6 +133,10 @@ export interface Violation {
  * Discriminated union on `ok`:
  * - `ok: true` — request is allowed, with optional diagnostics (info-level observations)
  * - `ok: false` — request is denied, with one or more violations
+ * - `ok: "ask"` — request requires async human approval; the middleware forwards
+ *   `prompt` to `ctx.requestApproval` and maps the returned ApprovalDecision to
+ *   proceed / deny / timeout. `askId` MUST be globally unique per ask for
+ *   inflight coalescing.
  */
 export type GovernanceVerdict =
   | {
@@ -127,6 +148,15 @@ export type GovernanceVerdict =
       readonly ok: false;
       /** One or more violations that caused denial. Never empty when ok is false. */
       readonly violations: readonly Violation[];
+    }
+  | {
+      readonly ok: "ask";
+      /** Human-readable prompt shown to the approver (forwarded to `ctx.requestApproval`). */
+      readonly prompt: string;
+      /** Globally-unique identifier for this ask — required for inflight coalescing. */
+      readonly askId: AskId;
+      /** Optional structured context (e.g., rule id, requested scope) for UI display. */
+      readonly metadata?: JsonObject | undefined;
     };
 
 /**
@@ -137,6 +167,11 @@ export type GovernanceVerdict =
 export const GOVERNANCE_ALLOW: GovernanceVerdict = Object.freeze({
   ok: true as const,
 });
+
+/** Type guard for the ask variant. */
+export function isAskVerdict(v: GovernanceVerdict): v is Extract<GovernanceVerdict, { ok: "ask" }> {
+  return v.ok === "ask";
+}
 
 // ---------------------------------------------------------------------------
 // ConstraintQuery — input to constraint checking

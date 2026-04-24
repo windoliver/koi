@@ -104,9 +104,10 @@ When mounting OAuth-gated connectors (gdrive, gmail, etc.) via the local bridge 
 import { createAuthNotificationHandler, createLocalTransport } from "@koi/fs-nexus";
 
 const transport = await createLocalTransport({ mountUri: "gdrive://my-drive" });
-const handler = createAuthNotificationHandler(channel);
+// oauthChannel receives structured auth_required/auth_complete events;
+// channel receives auth_progress keepalive text messages.
+const handler = createAuthNotificationHandler(oauthChannel, channel);
 const unsubscribe = transport.subscribe(handler);
-// channel.send() fires on auth_required / auth_progress / auth_complete
 // on teardown:
 unsubscribe();
 handler.dispose(); // cancel pending watchdog timers + gate late callbacks

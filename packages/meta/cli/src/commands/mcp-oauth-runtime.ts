@@ -19,27 +19,67 @@ interface OAuthCallbackResult {
   readonly state: string | undefined;
 }
 
+interface OAuthFailureReason {
+  readonly kind: string;
+  readonly serverName: string;
+  readonly detail?: string | undefined;
+}
+
 interface OAuthRuntime {
   readonly authorize: (
     authorizationUrl: string,
     redirectUri: string,
   ) => Promise<OAuthCallbackResult>;
   readonly onReauthNeeded: (serverName: string) => Promise<void>;
+  readonly onAuthFailure?: ((reason: OAuthFailureReason) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createCliOAuthRuntime(): OAuthRuntime {
+export interface CliOAuthRuntimeOptions {
+  /**
+   * Called just before the browser window opens. Receives the authorization
+   * URL so the TUI can show it as a fallback if the browser doesn't open.
+   * The URL is the provider's authorization page (public, not a secret);
+   * `mode: "local"` in the resulting channel notification signals that the
+   * callback runs on 127.0.0.1 — opening the URL on a remote machine cannot
+   * complete the flow.
+   * Invoked fire-and-forget — errors are silently swallowed.
+   */
+  readonly onBrowserOpen?: ((authorizationUrl: string) => void) | undefined;
+  /**
+   * Optional structured-failure observer. Fires when the provider takes a
+   * fail-closed branch — discovery failure, DCR rejection, token-exchange
+   * failure, etc. Lets hosts surface actionable diagnostics.
+   * Must not throw.
+   */
+  readonly onAuthFailure?: ((reason: OAuthFailureReason) => void) | undefined;
+}
+
+export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefined): OAuthRuntime {
   return {
-    authorize: startCallbackServer,
+    authorize: async (
+      authorizationUrl: string,
+      redirectUri: string,
+    ): Promise<OAuthCallbackResult> => {
+      // Notify the channel before opening so the TUI can show the URL as a
+      // fallback if the browser doesn't open automatically.
+      try {
+        options?.onBrowserOpen?.(authorizationUrl);
+      } catch {
+        // Notification failure must never block the browser from opening.
+      }
+      return startCallbackServer(authorizationUrl, redirectUri);
+    },
     onReauthNeeded: async (serverName: string) => {
       console.log(
         `\nAuthentication expired for MCP server "${serverName}".` +
           `\nRun: koi mcp auth ${serverName}`,
       );
     },
+    onAuthFailure: options?.onAuthFailure,
   };
 }
 

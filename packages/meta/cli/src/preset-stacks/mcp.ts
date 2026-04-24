@@ -21,6 +21,7 @@
  *     alongside the execution stack's bgController abort.
  */
 
+import type { OAuthChannel } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
@@ -30,6 +31,8 @@ import { buildPluginMcpSetup, loadUserMcpSetup } from "../shared-wiring.js";
 export const SKILLS_RUNTIME_MCP_HOST_KEY = "skillsRuntime";
 /** Key under `ctx.host` for the plugin-provided MCP server list. */
 export const PLUGIN_MCP_SERVERS_HOST_KEY = "pluginMcpServers";
+/** Key under `ctx.host` for the MCP OAuth channel (optional). */
+export const OAUTH_CHANNEL_MCP_HOST_KEY = "mcpOAuthChannel";
 
 export const mcpStack: PresetStack = {
   id: "mcp",
@@ -39,8 +42,13 @@ export const mcpStack: PresetStack = {
     const skillsRuntime = ctx.host?.[SKILLS_RUNTIME_MCP_HOST_KEY] as SkillsRuntime | undefined;
     const pluginMcpServers =
       (ctx.host?.[PLUGIN_MCP_SERVERS_HOST_KEY] as readonly McpServerConfig[] | undefined) ?? [];
+    const oauthChannel = ctx.host?.[OAUTH_CHANNEL_MCP_HOST_KEY] as OAuthChannel | undefined;
 
-    const userMcpSetup = await loadUserMcpSetup(ctx.cwd, skillsRuntime);
+    const userMcpSetup = await loadUserMcpSetup(ctx.cwd, skillsRuntime, oauthChannel);
+    // Do not pass oauthChannel to plugin servers — plugins must not drive the
+    // trusted browser OAuth flow without a host-controlled consent gate.
+    // Unsupported OAuth plugin servers are filtered per-entry inside
+    // buildPluginMcpSetup; unaffected plugin servers are wired normally.
     const pluginMcpSetup = buildPluginMcpSetup(pluginMcpServers);
 
     return {
@@ -58,6 +66,20 @@ export const mcpStack: PresetStack = {
           : {}),
         ...(pluginMcpSetup !== undefined
           ? { mcpPluginTransportByName: pluginMcpSetup.transportByName }
+          : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginOAuthCapableNames: pluginMcpSetup.oauthCapableNames }
+          : {}),
+        ...(userMcpSetup !== undefined ? { mcpAuthProviders: userMcpSetup.authProviders } : {}),
+        ...(userMcpSetup !== undefined ? { mcpConnections: userMcpSetup.connections } : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginAuthProviders: pluginMcpSetup.authProviders }
+          : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginConnections: pluginMcpSetup.connections }
+          : {}),
+        ...(pluginMcpSetup !== undefined && pluginMcpSetup.rejectedServers !== undefined
+          ? { mcpPluginRejectedServers: pluginMcpSetup.rejectedServers }
           : {}),
       },
       onShutdown: () => {

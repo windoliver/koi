@@ -270,7 +270,12 @@ describe("createGovernanceController", () => {
     expect((await ctrl.check(GOVERNANCE_VARIABLES.ERROR_RATE)).ok).toBe(false);
 
     // Host-driven session boundary: TUI /clear → cycleSession → session_reset
-    ctrl.record({ kind: "session_reset" });
+    ctrl.record({
+      kind: "session_reset",
+      source: "host",
+      boundaryId: "test:session:0",
+      boundaryTimestamp: Date.now(),
+    });
 
     // Per-session state cleared — turn count + error rate windows:
     expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(true);
@@ -284,9 +289,9 @@ describe("createGovernanceController", () => {
     expect(ctrl.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
   });
 
-  test("#1742: iteration_reset resets turn count + duration but preserves cumulative tokens/cost/spawns/error-window", async () => {
-    // Tight per-iteration turn budget + a generous (cumulative) token
-    // ceiling so we can verify that the reset re-opens the per-iteration
+  test("#1939: run_reset resets turn count + duration but preserves cumulative tokens/cost/spawns/error-window", async () => {
+    // Tight per-run turn budget + a generous (cumulative) token
+    // ceiling so we can verify that the reset re-opens the per-run
     // window WITHOUT clearing runtime-wide spend tracking.
     const ctrl = createGovernanceController({
       iteration: { maxTurns: 3, maxTokens: 1_000_000, maxDurationMs: 60_000 },
@@ -294,7 +299,7 @@ describe("createGovernanceController", () => {
       cost: { maxCostUsd: 10, costPerInputToken: 0.000003, costPerOutputToken: 0.000015 },
     });
 
-    // Burn through the per-iteration turn budget and accrue runtime-wide
+    // Burn through the per-run turn budget and accrue runtime-wide
     // state (tokens, cost, spawns, error rate).
     ctrl.record({ kind: "turn" });
     ctrl.record({ kind: "turn" });
@@ -312,8 +317,13 @@ describe("createGovernanceController", () => {
     const spawnBefore = ctrl.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT);
     expect(spawnBefore?.current).toBe(1);
 
-    // Per-iteration reset (fired by createKoi at the start of each runtime.run()).
-    ctrl.record({ kind: "iteration_reset" });
+    // Per-run reset (fired by createKoi at the start of each runtime.run()).
+    ctrl.record({
+      kind: "run_reset",
+      source: "engine",
+      boundaryId: "sess:run:0",
+      boundaryTimestamp: Date.now(),
+    });
 
     // Turn count cleared (per-iteration UX budget reopens):
     expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(true);

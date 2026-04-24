@@ -64,6 +64,8 @@ mock.module("@koi/engine", () => ({
   createGovernanceController: mock(() => ({})),
   createSpawnToolProvider: mock(() => ({})),
   createInMemorySpawnLedger: mock(() => ({})),
+  createAgentSpawnFn: mock(() => async () => ({ ok: true as const, value: {} })),
+  DEFAULT_SPAWN_POLICY: {},
 }));
 
 // Mock `createKoiRuntime` from runtime-factory directly so tests
@@ -75,6 +77,7 @@ mock.module("../runtime-factory.js", () => ({
     transcript: [],
     shutdownBackgroundTasks: mock(() => false),
   })),
+  PolicyLoadError: class PolicyLoadError extends Error {},
 }));
 
 mock.module("@koi/harness", () => ({
@@ -115,6 +118,20 @@ const mockLoadManifest = mock(
 mock.module("../manifest.js", () => ({
   loadManifestConfig: mockLoadManifest,
   CORE_MIDDLEWARE_BLOCKLIST: [] as readonly string[],
+}));
+
+// Mock resolveManifestPath so tests can pass synthetic paths without real files on disk.
+// When a flagValue is given, pass it through as the resolved path (preserves test assertions
+// that check which path loadManifestConfig is called with). When no flagValue, simulate
+// auto-discovery succeeding so no-manifest tests keep working.
+mock.module("../resolve-manifest-path.js", () => ({
+  resolveManifestPath: mock((_cwd: string, flagValue: string | undefined, _noManifest = false) => ({
+    ok: true as const,
+    path: flagValue ?? "auto-discovered/koi.yaml",
+    searched: [] as readonly string[],
+    insideProject: false as const,
+  })),
+  MANIFEST_CANDIDATES: ["koi.yaml", "koi.manifest.yaml", ".koi/koi.yaml", ".koi/manifest.yaml"],
 }));
 
 // Mock resolveFileSystem from @koi/runtime so nexus gate tests don't
@@ -207,6 +224,8 @@ mock.module("../shared-wiring.js", () => ({
   loadUserRegisteredHooks: mock(async () => []),
   mergeUserAndPluginHooks: mock((u: unknown[], _p: unknown[]) => u),
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
+  writeSessionMeta: mock(async () => {}),
+  readSessionMeta: mock(async () => ({})),
   buildCoreMiddleware: mock(() => ({
     permissions: {},
     hook: {},
@@ -247,6 +266,7 @@ function makeFlags(
     help: false,
     mode: overrides.mode ?? { kind: "interactive" },
     manifest: overrides.manifest ?? undefined,
+    noManifest: false,
     resume: overrides.resume ?? undefined,
     verbose: overrides.verbose ?? false,
     dryRun: overrides.dryRun ?? false,
@@ -262,6 +282,7 @@ function makeFlags(
     allowRemoteFs: overrides.allowRemoteFs ?? false,
     headless: overrides.headless ?? false,
     allowTools: [],
+    settingsFlagPath: undefined,
     maxDurationMs: overrides.maxDurationMs,
     resultSchema: overrides.resultSchema,
     governance: {
@@ -384,7 +405,7 @@ describe("run() — manifest loading", () => {
     }));
     const { run } = await import("./start.js");
     await run(makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }));
-    expect(mockLoadManifest).toHaveBeenCalledWith("koi.yaml");
+    expect(mockLoadManifest).toHaveBeenCalledWith("koi.yaml", { skipAuditValidation: true });
   });
 
   test("returns FAILURE when manifest is invalid", async () => {
@@ -403,6 +424,12 @@ describe("run() — session resume", () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     mockResumeSessionFromJsonl.mockReset();
     mockRunInteractive.mockReset();
+    // Reset manifest mock to happy-path default — this block doesn't test manifest
+    // behavior but now calls loadManifestConfig via auto-discovery wiring.
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: { modelName: "manifest/model", instructions: undefined },
+    }));
   });
   afterEach(() => {
     delete process.env.OPENROUTER_API_KEY;
@@ -582,6 +609,12 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     exitSpy = spyOn(process, "exit").mockImplementation((code?: number): never => {
       throw new ExitError(code ?? 0);
     });
+    // Reset manifest mock to happy-path default — this block doesn't test manifest
+    // behavior but now calls loadManifestConfig via auto-discovery wiring.
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: { modelName: "manifest/model", instructions: undefined },
+    }));
   });
 
   afterEach(() => {

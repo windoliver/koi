@@ -138,6 +138,7 @@ export function createMockConnection(
         listener();
       }
     },
+    reconnect: async () => connect(),
     listToolsCallCount: () => listToolsCount,
     connectCallCount: () => connectCount,
   };
