@@ -279,7 +279,6 @@ export async function loadUserMcpSetup(
  */
 export function buildPluginMcpSetup(
   pluginMcpServers: readonly McpServerConfig[],
-  oauthChannel?: OAuthChannel | undefined,
 ): McpSetup | undefined {
   if (pluginMcpServers.length === 0) return undefined;
 
@@ -287,8 +286,10 @@ export function buildPluginMcpSetup(
   const authServers = new Map<string, AuthServerEntry>();
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
+  // Plugin servers never receive an oauthChannel — they must not drive the
+  // host's trusted browser OAuth flow without a consent gate.
   const connections = pluginMcpServers.map((server) => {
-    const conn = createOAuthAwareMcpConnection(server, authProviders, oauthChannel);
+    const conn = createOAuthAwareMcpConnection(server, authProviders);
     connectionsByName.set(server.name, conn);
     return conn;
   });

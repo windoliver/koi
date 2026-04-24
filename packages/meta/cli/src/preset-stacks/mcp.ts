@@ -45,7 +45,9 @@ export const mcpStack: PresetStack = {
     const oauthChannel = ctx.host?.[OAUTH_CHANNEL_MCP_HOST_KEY] as OAuthChannel | undefined;
 
     const userMcpSetup = await loadUserMcpSetup(ctx.cwd, skillsRuntime, oauthChannel);
-    const pluginMcpSetup = buildPluginMcpSetup(pluginMcpServers, oauthChannel);
+    // Do not pass oauthChannel to plugin servers — plugins must not drive the
+    // trusted browser OAuth flow without a host-controlled consent gate.
+    const pluginMcpSetup = buildPluginMcpSetup(pluginMcpServers);
 
     return {
       middleware: [],
