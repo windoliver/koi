@@ -1215,7 +1215,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
         },
       });
-      if (auditLoadResult.ok && auditLoadResult.value.audit !== undefined) {
+      if (!auditLoadResult.ok) {
+        // Manifest exists but cannot be parsed — cannot prove audit: is absent.
+        // Fail closed unless all KOI_AUDIT_* env vars are set (covering intent regardless).
+        const allCoveredByEnv =
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+        if (!allCoveredByEnv) {
+          process.stderr.write(
+            "koi tui: project manifest found during resume but could not be fully parsed — " +
+              "refusing to start because audit intent cannot be verified. " +
+              "Fix the manifest, or set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS " +
+              "to cover all audit sinks regardless of manifest state.\n",
+          );
+          process.exit(1);
+        }
+      } else if (auditLoadResult.value.audit !== undefined) {
         const resumeAudit = auditLoadResult.value.audit;
         if (resumeAudit.malformed === true) {
           const allCoveredByEnv =

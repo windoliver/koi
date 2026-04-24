@@ -600,7 +600,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       const auditLoadResult = await loadManifestConfig(auditDiscovery.path, {
         skipAuditValidation: true,
       });
-      if (auditLoadResult.ok && auditLoadResult.value.audit !== undefined) {
+      if (!auditLoadResult.ok) {
+        // Manifest exists but cannot be parsed — cannot prove audit: is absent. Fail closed.
+        return bail(
+          "project manifest found during resume but could not be parsed — " +
+            "refusing to start because manifest.audit presence cannot be verified. " +
+            "Fix the manifest to run under koi start, or pass --no-manifest.",
+        );
+      }
+      if (auditLoadResult.value.audit !== undefined) {
         return bail(
           "manifest.audit is not supported on this host. " +
             "koi start does not wire audit sinks — remove the audit: block from the manifest " +
