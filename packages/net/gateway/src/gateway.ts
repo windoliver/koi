@@ -295,6 +295,21 @@ export function createGateway(
       }
       seqBytes.set(frameResult.value.seq, frameBytes);
       bp.record(conn.id, frameBytes);
+      // Synchronous global admission check so coordinated flooding across many
+      // connections is rejected immediately rather than waiting for the 5s sweep.
+      if (bp.globalUsage() > config.globalBufferLimitBytes) {
+        sendFrame(
+          conn,
+          createErrorFrame(
+            nextServerSeq(conn),
+            "BUFFER_LIMIT",
+            "Global inbound buffer limit exceeded",
+            nextId,
+          ),
+        );
+        conn.close(CLOSE_CODES.BUFFER_LIMIT, "Global inbound buffer limit exceeded");
+        return;
+      }
       let total = 0;
       for (const b of seqBytes.values()) total += b;
       if (total > config.maxBufferBytesPerConnection) {
@@ -335,6 +350,9 @@ export function createGateway(
       const updatedSession: Session = {
         ...sessionResult.value,
         remoteSeq: lastDispatched.seq + 1,
+        // Snapshot current outbound seq so reconnect can restore it and keep server
+        // frames monotonic across the connection boundary.
+        seq: connOutboundSeq.get(conn.id) ?? 0,
       };
       try {
         emitFrames(updatedSession, ready);
@@ -486,6 +504,9 @@ export function createGateway(
             const prev = await Promise.resolve(store.get(result.session.id));
             if (prev.ok) {
               startSeq = prev.value.remoteSeq;
+              // Restore outbound seq so server frames continue monotonically after reconnect
+              // rather than resetting to 0 and colliding with pre-reconnect frame IDs.
+              connOutboundSeq.set(conn.id, prev.value.seq);
               isNewSession = false; // session already existed in the store
             }
             // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
@@ -654,11 +675,20 @@ export function createGateway(
             // store.set() and the delete() call. Guard here as defense-in-depth.
             if (connBySession.has(sessionId)) continue;
             if (now - ts > ttl) {
-              disconnectedAt.delete(sessionId);
-              ownedSessionIds.delete(sessionId);
+              // Clear bookkeeping only after a successful delete so that a store failure
+              // leaves the session in disconnectedAt for retry on the next sweep tick.
               try {
-                void Promise.resolve(store.delete(sessionId)).catch(() => {});
-              } catch {}
+                void Promise.resolve(store.delete(sessionId))
+                  .then((r) => {
+                    if (r.ok) {
+                      disconnectedAt.delete(sessionId);
+                      ownedSessionIds.delete(sessionId);
+                    }
+                  })
+                  .catch(() => {});
+              } catch {
+                // Sync throw: leave in disconnectedAt for next sweep
+              }
             }
           }
         }
