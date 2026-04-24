@@ -1,0 +1,26 @@
+{
+  "name": "@koi/temporal",
+  "description": "Durable agent execution via Temporal — SpawnLedger + TaskScheduler over Temporal Workflows and Schedules",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@temporalio/client": "^1.11.0",
+    "@temporalio/worker": "^1.11.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}
