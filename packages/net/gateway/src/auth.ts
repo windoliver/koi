@@ -24,6 +24,8 @@ import type {
 
 export interface GatewayAuthenticator {
   readonly authenticate: (frame: ConnectFrame) => Promise<AuthResult>;
+  /** Called periodically for each live session. Return false to revoke access. */
+  readonly validate?: (session: Session) => boolean | Promise<boolean>;
 }
 
 export interface HandshakeOptions {
@@ -36,7 +38,8 @@ export interface HandshakeOptions {
 export interface HandshakeResult {
   readonly session: Session;
   readonly connectFrame: ConnectFrame;
-  readonly sendAck: () => number;
+  /** Send the handshake ack with the given server outbound seq. Returns transport byte count. */
+  readonly sendAck: (seq: number) => number;
 }
 
 /**
@@ -150,7 +153,7 @@ export function handleHandshake(
             resolve({
               session,
               connectFrame,
-              sendAck: () => conn.send(createAckFrame(0, undefined, ackPayload)),
+              sendAck: (seq: number) => conn.send(createAckFrame(seq, undefined, ackPayload)),
             });
           });
         })

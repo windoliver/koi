@@ -137,6 +137,9 @@ export interface GatewayConfig {
   readonly dedupWindowSize: number;
   readonly authTimeoutMs: number;
   readonly backpressureCriticalTimeoutMs: number;
+  /** How long (ms) to retain disconnected sessions before evicting from the store.
+   *  0 or undefined = retain until destroySession() or stop(). */
+  readonly disconnectedSessionTtlMs?: number | undefined;
   // routing?: RoutingConfig — deferred: per-route handler isolation belongs to
   // the node registry layer, not the transport gateway. See intentional omissions.
 }

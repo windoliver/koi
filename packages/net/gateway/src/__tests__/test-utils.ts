@@ -83,7 +83,7 @@ export function createMockTransport(): MockTransport {
       id: opts?.id ?? crypto.randomUUID(),
       remoteAddress: opts?.remoteAddress ?? "127.0.0.1",
       send(data: string) {
-        if (isClosed) return 0;
+        if (isClosed) return -1;
         sentMessages.push(data);
         return fixedSendResult !== undefined ? fixedSendResult : data.length;
       },
@@ -193,7 +193,10 @@ export function createTestSession(overrides?: Partial<Session>): Session {
 // Test authenticator
 // ---------------------------------------------------------------------------
 
-export function createTestAuthenticator(result?: AuthResult): GatewayAuthenticator {
+export function createTestAuthenticator(
+  result?: AuthResult,
+  validate?: (session: Session) => boolean | Promise<boolean>,
+): GatewayAuthenticator {
   const defaultResult: AuthResult = result ?? {
     ok: true,
     sessionId: crypto.randomUUID(),
@@ -204,6 +207,7 @@ export function createTestAuthenticator(result?: AuthResult): GatewayAuthenticat
     async authenticate(_frame: ConnectFrame): Promise<AuthResult> {
       return defaultResult;
     },
+    ...(validate !== undefined ? { validate } : {}),
   };
 }
 

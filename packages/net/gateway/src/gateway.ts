@@ -2,11 +2,9 @@
  * Gateway factory: wires transport, auth, sessions, sequencing, and backpressure
  * into a minimal WebSocket control-plane entry point.
  *
- * Intentionally omits: node registry, tool routing, session resume TTL,
- * channel binding, scheduler, heartbeat sweep, auth token revocation / periodic
- * re-validation, disconnected-session TTL sweep, and per-route onFrame handler
- * isolation (routing enforcement lives in the node-registry layer) — those belong
- * in future issues.
+ * Intentionally omits: node registry, tool routing, channel binding, scheduler,
+ * heartbeat sweep, and per-route onFrame handler isolation (routing enforcement
+ * lives in the node-registry layer) — those belong in future issues.
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -90,11 +88,23 @@ export function createGateway(
   // Key: connId → Map<seq, frameBytes> — precise per-seq tracking so bytes are discharged
   // only when a frame actually leaves the reorder buffer (appears in ready[1..]).
   const inboundBufferedSeqs = new Map<string, Map<number, number>>();
+  // Monotonic per-connection server outbound seq counter. All server-originated frames
+  // (handshake ack, protocol errors, dup/oow acks) use this so the client can dedup them
+  // using the same sliding-window contract as client→server traffic.
+  const connOutboundSeq = new Map<string, number>();
+  // Disconnect timestamps for TTL sweep of retained sessions (connId-less, in-store).
+  const disconnectedAt = new Map<string, number>(); // sessionId → ms since epoch
 
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
 
   let criticalSweep: ReturnType<typeof setInterval> | undefined;
+
+  function nextServerSeq(conn: TransportConnection): number {
+    const seq = connOutboundSeq.get(conn.id) ?? 0;
+    connOutboundSeq.set(conn.id, seq + 1);
+    return seq;
+  }
 
   function emitSessionEvent(event: SessionEvent): void {
     for (const handler of sessionEventHandlers) {
@@ -160,6 +170,7 @@ export function createGateway(
     trackers.delete(conn.id);
     msgQueues.delete(conn.id);
     inboundBufferedSeqs.delete(conn.id);
+    connOutboundSeq.delete(conn.id);
     sessionByConn.delete(conn.id);
     connMap.delete(conn.id);
     bp.remove(conn.id);
@@ -168,7 +179,8 @@ export function createGateway(
       connBySession.delete(sessionId);
       // Session record is intentionally retained in the store so remoteSeq survives
       // network flaps and can be restored on reconnect. Explicit purge happens in
-      // destroySession() and stop().
+      // destroySession() and stop() or via the disconnected-session TTL sweep.
+      disconnectedAt.set(sessionId, Date.now());
       emitSessionEvent({ kind: "destroyed", sessionId, reason });
     }
   }
@@ -193,7 +205,12 @@ export function createGateway(
       // Connection is fenced (mid-reconnect cutover) or not yet authenticated.
       // Send an explicit error so the client can retry rather than silently losing the frame.
       conn.send(
-        createErrorFrame(0, "NOT_AUTHORIZED", "No active session; retry after reconnect", nextId),
+        createErrorFrame(
+          nextServerSeq(conn),
+          "NOT_AUTHORIZED",
+          "No active session; retry after reconnect",
+          nextId,
+        ),
       );
       return;
     }
@@ -204,13 +221,21 @@ export function createGateway(
     } catch {
       sendFrame(
         conn,
-        createErrorFrame(0, "SESSION_STORE_FAILURE", "Session lookup failed", nextId),
+        createErrorFrame(
+          nextServerSeq(conn),
+          "SESSION_STORE_FAILURE",
+          "Session lookup failed",
+          nextId,
+        ),
       );
       conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session lookup failed");
       return;
     }
     if (!sessionResult.ok) {
-      sendFrame(conn, createErrorFrame(0, "SESSION_STORE_FAILURE", "Session not found", nextId));
+      sendFrame(
+        conn,
+        createErrorFrame(nextServerSeq(conn), "SESSION_STORE_FAILURE", "Session not found", nextId),
+      );
       conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
       return;
     }
@@ -219,7 +244,12 @@ export function createGateway(
     if (!frameResult.ok) {
       sendFrame(
         conn,
-        createErrorFrame(0, frameResult.error.code, frameResult.error.message, nextId),
+        createErrorFrame(
+          nextServerSeq(conn),
+          frameResult.error.code,
+          frameResult.error.message,
+          nextId,
+        ),
       );
       return;
     }
@@ -251,7 +281,12 @@ export function createGateway(
       if (total > config.maxBufferBytesPerConnection) {
         sendFrame(
           conn,
-          createErrorFrame(0, "BUFFER_LIMIT", "Inbound sequence buffer exceeded", nextId),
+          createErrorFrame(
+            nextServerSeq(conn),
+            "BUFFER_LIMIT",
+            "Inbound sequence buffer exceeded",
+            nextId,
+          ),
         );
         conn.close(CLOSE_CODES.BUFFER_LIMIT, "Inbound sequence buffer exceeded");
         return;
@@ -291,7 +326,12 @@ export function createGateway(
       } catch {
         sendFrame(
           conn,
-          createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+          createErrorFrame(
+            nextServerSeq(conn),
+            "SESSION_STORE_FAILURE",
+            "Session update failed",
+            nextId,
+          ),
         );
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
         return;
@@ -299,7 +339,12 @@ export function createGateway(
       if (!storeRes.ok) {
         sendFrame(
           conn,
-          createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+          createErrorFrame(
+            nextServerSeq(conn),
+            "SESSION_STORE_FAILURE",
+            "Session update failed",
+            nextId,
+          ),
         );
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
         return;
@@ -310,13 +355,27 @@ export function createGateway(
   const transportHandler: TransportHandler = {
     onOpen(conn: TransportConnection): void {
       if (connMap.size >= config.maxConnections) {
-        conn.send(createErrorFrame(0, "MAX_CONNECTIONS", "Max connections exceeded", nextId));
+        conn.send(
+          createErrorFrame(
+            nextServerSeq(conn),
+            "MAX_CONNECTIONS",
+            "Max connections exceeded",
+            nextId,
+          ),
+        );
         conn.close(CLOSE_CODES.MAX_CONNECTIONS, "Max connections exceeded");
         return;
       }
 
       if (!bp.canAccept()) {
-        conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Global buffer limit exceeded", nextId));
+        conn.send(
+          createErrorFrame(
+            nextServerSeq(conn),
+            "BUFFER_LIMIT",
+            "Global buffer limit exceeded",
+            nextId,
+          ),
+        );
         conn.close(CLOSE_CODES.BUFFER_LIMIT, "Global buffer limit exceeded");
         return;
       }
@@ -425,7 +484,7 @@ export function createGateway(
           if (!connMap.has(conn.id)) return;
           sessionByConn.set(conn.id, result.session.id);
           connBySession.set(result.session.id, conn.id);
-          const ackBytes = result.sendAck();
+          const ackBytes = result.sendAck(nextServerSeq(conn));
           if (ackBytes < 0) {
             // Transport rejected the ack write — session is unusable before the client
             // received its sessionId/protocol. Tear down cleanly so the client reconnects.
@@ -468,10 +527,8 @@ export function createGateway(
 
       criticalSweep = setInterval(() => {
         const now = Date.now();
-        // When global usage exceeds the limit, shed any connection carrying buffered
-        // bytes (warning or critical) — not just individually-critical ones. A fleet
-        // of warning-state connections can collectively push aggregate usage over the
-        // cap while none individually triggers the criticalSince path.
+        // Backpressure shedding: drop connections that are individually over-budget or
+        // that collectively push global usage over the cap.
         const globalOverLimit = !bp.canAccept();
         for (const [connId, conn] of connMap) {
           const since = bp.criticalSince(connId);
@@ -479,8 +536,54 @@ export function createGateway(
             since !== undefined && now - since > config.backpressureCriticalTimeoutMs;
           const globalShed = globalOverLimit && bp.buffered(connId) > 0;
           if (timedOut || globalShed) {
-            conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Buffer limit exceeded", nextId));
+            conn.send(
+              createErrorFrame(
+                nextServerSeq(conn),
+                "BUFFER_LIMIT",
+                "Buffer limit exceeded",
+                nextId,
+              ),
+            );
             conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
+          }
+        }
+
+        // Auth revocation: if the authenticator provides validate(), call it for each
+        // live session and close any whose credentials have become invalid.
+        if (deps.auth.validate !== undefined) {
+          const validate = deps.auth.validate;
+          for (const [connId, conn] of connMap) {
+            const sessionId = sessionByConn.get(connId);
+            if (sessionId === undefined) continue;
+            const sessionRes = store.get(sessionId);
+            void Promise.resolve(sessionRes).then((r) => {
+              if (!r.ok) return;
+              void Promise.resolve(validate(r.value)).then((valid) => {
+                if (!valid) {
+                  conn.send(
+                    createErrorFrame(
+                      nextServerSeq(conn),
+                      "AUTH_FAILED",
+                      "Session credential revoked",
+                      nextId,
+                    ),
+                  );
+                  conn.close(CLOSE_CODES.AUTH_FAILED, "Session credential revoked");
+                }
+              });
+            });
+          }
+        }
+
+        // Disconnected-session TTL sweep: evict retained sessions whose credentials have
+        // exceeded the configured TTL so stale remoteSeq state doesn't accumulate.
+        const ttl = config.disconnectedSessionTtlMs;
+        if (ttl !== undefined && ttl > 0) {
+          for (const [sessionId, ts] of disconnectedAt) {
+            if (now - ts > ttl) {
+              disconnectedAt.delete(sessionId);
+              void Promise.resolve(store.delete(sessionId)).catch(() => {});
+            }
           }
         }
       }, 5_000);
@@ -537,6 +640,8 @@ export function createGateway(
       connBySession.clear();
       trackers.clear();
       pendingHandshakes.clear();
+      connOutboundSeq.clear();
+      disconnectedAt.clear();
       deps.transport.close();
 
       if (cleanupFailed) {
@@ -625,7 +730,7 @@ export function createGateway(
       if (connId !== undefined) {
         const conn = connMap.get(connId);
         if (conn !== undefined) {
-          conn.send(createErrorFrame(0, "ADMIN_CLOSED", reason, nextId));
+          conn.send(createErrorFrame(nextServerSeq(conn), "ADMIN_CLOSED", reason, nextId));
           conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
           // Synchronously sever routing so send() fails immediately after this
           // call resolves, rather than leaking frames until onClose() fires.
@@ -652,6 +757,7 @@ export function createGateway(
       if (!deleteResult.ok) {
         return { ok: false, error: deleteResult.error };
       }
+      disconnectedAt.delete(sessionId);
       return { ok: true, value: undefined };
     },
 
