@@ -55,8 +55,11 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
   const maxMessages = rawMax;
   const messages: AgentMessage[] = [];
   const subscribers = new Set<(message: AgentMessage) => void | Promise<void>>();
-  // let rather than const: closed flag is explicitly mutable state
+  // let rather than const: both are explicitly mutable state
   let closed = false;
+  // Bumped by drain() and close() to cancel any pending microtask deliveries,
+  // preventing duplicate processing when callers drain/close before dispatch fires.
+  let generation = 0;
   // Self-reference for identity check in close()
   let self:
     | (MailboxComponent & {
@@ -74,15 +77,15 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     }
   }
 
-  // Dispatches to all subscribers. Returns hadSyncError and a list of pending async
-  // handler promises (each resolves to true if that handler rejected).
-  function dispatchToSubscribers(msg: AgentMessage): {
-    hadSyncError: boolean;
-    pending: Promise<boolean>[];
-  } {
+  // Dispatches to the subscriber snapshot captured at send time. Returns hadSyncError
+  // and pending async handler promises (each resolves true if that handler rejected).
+  function dispatchToSnapshot(
+    snapshot: ReadonlySet<(message: AgentMessage) => void | Promise<void>>,
+    msg: AgentMessage,
+  ): { hadSyncError: boolean; pending: Promise<boolean>[] } {
     let hadSyncError = false;
     const pending: Promise<boolean>[] = [];
-    for (const handler of subscribers) {
+    for (const handler of snapshot) {
       try {
         const result = handler(msg);
         if (result instanceof Promise) {
@@ -194,15 +197,19 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       });
 
       messages.push(msg);
-      // Snapshot subscriber presence at accept time — retirement should reflect the
-      // delivery attempt that was queued, not the mutable subscriber set at dispatch time.
-      const hadSubscribersAtSend = subscribers.size > 0;
+      // Snapshot subscribers at accept time so only handlers present during send()
+      // receive this message — late subscribes and mid-flight unsubscribes are excluded.
+      const snapshot = new Set(subscribers);
+      const gen = generation;
       // Decouple delivery from the send() call stack via microtask to prevent
       // re-entrant delivery loops when subscribers send cross-agent messages.
       queueMicrotask(() => {
-        const { hadSyncError, pending } = dispatchToSubscribers(msg);
+        // drain() or close() bumps generation — bail out to prevent duplicate processing.
+        if (generation !== gen) return;
 
-        if (hadSyncError || !hadSubscribersAtSend) return;
+        const { hadSyncError, pending } = dispatchToSnapshot(snapshot, msg);
+
+        if (hadSyncError || snapshot.size === 0) return;
 
         if (pending.length === 0) {
           // All sync handlers succeeded — retire immediately to free capacity.
@@ -210,6 +217,7 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         } else {
           // Async handlers in flight — retire only after all settle without error.
           void Promise.all(pending).then((results) => {
+            if (generation !== gen) return; // drain()/close() during async settle
             if (results.some((r) => r)) return;
             retireFromInbox(msg);
           });
@@ -241,12 +249,17 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     },
 
     drain(): readonly AgentMessage[] {
+      // Cancel any pending microtask deliveries before returning the cleared messages,
+      // ensuring drained messages cannot also be delivered to subscribers.
+      generation++;
       const dropped = [...messages];
       messages.length = 0;
       return dropped;
     },
 
     close(): void {
+      // Cancel pending deliveries before teardown to prevent post-close subscriber calls.
+      generation++;
       closed = true;
       messages.length = 0;
       subscribers.clear();

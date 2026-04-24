@@ -396,16 +396,40 @@ describe("createLocalMailbox — local specifics", () => {
     mailbox.close();
   });
 
-  test("drain() does not cancel already-accepted deliveries", async () => {
+  test("drain() cancels queued microtask deliveries to prevent duplicate processing", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER });
     const received: string[] = [];
     mailbox.onMessage((msg) => {
       received.push(msg.type);
     });
-    void mailbox.send(makeInput("still-arrives"));
-    mailbox.drain(); // clears inbox but does not cancel queued microtask delivery
+    void mailbox.send(makeInput("should-not-arrive"));
+    mailbox.drain(); // bumps generation — microtask bails out
     await Bun.sleep(10);
-    expect(received).toEqual(["still-arrives"]);
+    expect(received).toHaveLength(0);
+    mailbox.close();
+  });
+
+  test("close() cancels pending accepted-message deliveries", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+    void mailbox.send(makeInput("close-before-delivery")); // queues microtask
+    mailbox.close(); // bumps generation — microtask bails out
+    await Bun.sleep(10);
+    expect(received).toHaveLength(0);
+  });
+
+  test("late subscriber does not receive messages sent before subscription", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    await mailbox.send(makeInput("before-sub")); // sent with no subscribers
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+    await Bun.sleep(10);
+    expect(received).toHaveLength(0); // snapshot at send time had no subscribers
     mailbox.close();
   });
 
@@ -458,13 +482,17 @@ describe("createLocalMailbox — local specifics", () => {
     mailbox.close();
   });
 
-  test("message is retired when subscriber existed at send time but unsubscribed before delivery", async () => {
+  test("unsubscribed handler in snapshot still receives message and inbox is retired", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 1 });
-    const unsub = mailbox.onMessage(() => {});
+    const received: string[] = [];
+    const unsub = mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
     void mailbox.send(makeInput("before-unsub"));
-    unsub(); // unsubscribe before microtask fires
+    unsub(); // removed from live set, but snapshot still holds reference
     await Bun.sleep(10);
-    // hadSubscribersAtSend=true — delivery was attempted, inbox cleared, capacity restored
+    // Handler was in snapshot at send time — still called; clean delivery retires inbox
+    expect(received).toEqual(["before-unsub"]);
     expect(await mailbox.list()).toHaveLength(0);
     const r = await mailbox.send(makeInput("after"));
     expect(r.ok).toBe(true);
