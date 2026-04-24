@@ -504,6 +504,13 @@ export function createGateway(
       lastGoodSeq = frame.seq;
     }
 
+    // Guard: if the connection was cleaned up during frame handling (e.g., backpressure
+    // critical timeout, handler error, remote close), skip the post-handler persist.
+    // cleanupConn's persist is already chained into pendingSeqPersists and owns the
+    // last write; writing here would overwrite disconnectedAt with a stale snapshot
+    // that does not carry the disconnect timestamp, defeating crash-durable TTL.
+    if (!connMap.has(conn.id)) return;
+
     if (lastGoodSeq !== undefined) {
       // Snapshot outbound seq AFTER all handlers run: handlers may call gateway.send()
       // which advances connOutboundSeq; capturing earlier would persist a stale value.
@@ -1140,6 +1147,15 @@ export function createGateway(
               swallowError(new Error(setResult.error.message), {
                 package: "gateway",
                 operation: "send.seq.persist",
+              });
+              // Fail closed: stored seq is now behind the in-memory counter. Remove the
+              // session from the store so a post-crash reconnect starts fresh rather than
+              // resuming from a stale seq that would collide with already-issued frame IDs.
+              // The live in-memory connection is unaffected (same-process lastKnownOutboundSeq
+              // still provides the correct watermark for reconnects within this process).
+              ownedSessionIds.delete(sidTarget);
+              await Promise.resolve(store.delete(sidTarget)).catch((err: unknown) => {
+                swallowError(err, { package: "gateway", operation: "send.seq.persist.cleanup" });
               });
             }
           } catch (err: unknown) {
