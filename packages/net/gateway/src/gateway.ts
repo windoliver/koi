@@ -34,6 +34,7 @@ import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
 
 export type SessionEvent =
   | { readonly kind: "created"; readonly session: Session }
+  | { readonly kind: "disconnected"; readonly sessionId: string; readonly reason: string }
   | { readonly kind: "destroyed"; readonly sessionId: string; readonly reason: string };
 
 // ---------------------------------------------------------------------------
@@ -184,7 +185,9 @@ export function createGateway(
       // network flaps and can be restored on reconnect. Explicit purge happens in
       // destroySession() and stop() or via the disconnected-session TTL sweep.
       disconnectedAt.set(sessionId, Date.now());
-      emitSessionEvent({ kind: "destroyed", sessionId, reason });
+      // Emit 'disconnected' (not 'destroyed') — the session still exists in the store
+      // and may reconnect. Reserve 'destroyed' for paths that permanently delete the record.
+      emitSessionEvent({ kind: "disconnected", sessionId, reason });
     }
   }
 
@@ -609,9 +612,13 @@ export function createGateway(
         criticalSweep = undefined;
       }
 
+      // Snapshot queues before closing connections. onClose → cleanupConn() deletes queue
+      // entries, so we must capture references first to ensure drain includes in-flight work.
+      const inflightQueues = [...msgQueues.values()];
+
       // Phase 1: Sever session↔conn mappings BEFORE closing sockets so that when the
       // transport delivers onClose → cleanupConn(), sessionByConn is already cleared and
-      // no duplicate 'destroyed' events are emitted.
+      // no duplicate 'disconnected' events are emitted.
       for (const [connId, conn] of connMap) {
         const sessionId = sessionByConn.get(connId);
         sessionByConn.delete(connId);
@@ -624,7 +631,7 @@ export function createGateway(
 
       // Drain all in-flight per-connection message queues before touching the store so that
       // any handler currently executing can finish and its store.set() resolves cleanly.
-      await Promise.allSettled([...msgQueues.values()]);
+      await Promise.allSettled(inflightQueues);
       msgQueues.clear();
 
       // Phase 2: Delete only sessions owned by this gateway instance. A shared/persistent
@@ -778,6 +785,7 @@ export function createGateway(
       }
       disconnectedAt.delete(sessionId);
       ownedSessionIds.delete(sessionId);
+      emitSessionEvent({ kind: "destroyed", sessionId, reason });
       return { ok: true, value: undefined };
     },
 
