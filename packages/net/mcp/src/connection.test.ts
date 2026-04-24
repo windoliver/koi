@@ -521,7 +521,7 @@ describe("McpConnection onAuthNeeded pause-and-retry", () => {
       callResults: { echo: "hello" },
     });
     const mockTransport = createMockTransport();
-    const onUnauthorized = mock(async () => {});
+    const onUnauthorized = mock(async () => false);
 
     const conn = createMcpConnection(makeConfig(), undefined, {
       createClient: (() => mockClient) as ConnectionDeps["createClient"],

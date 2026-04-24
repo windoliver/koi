@@ -41,8 +41,12 @@ export interface OAuthProviderOptions {
 export interface OAuthAuthProvider extends McpAuthProvider {
   /** Run the full interactive OAuth authorization flow. */
   readonly startAuthFlow: () => Promise<boolean>;
-  /** Clear stored tokens and trigger re-auth notification. */
-  readonly handleUnauthorized: () => Promise<void>;
+  /**
+   * Attempt token refresh on a 401. Returns true when a fresh access token was
+   * obtained (caller may retry without interactive auth); false when refresh
+   * failed or no refresh token exists (caller must escalate to interactive auth).
+   */
+  readonly handleUnauthorized: () => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -602,12 +606,12 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   // refresh token in place via tokens.ts; we detect that by re-checking
   // hasTokens() and skipping the destructive path so a temporary outage
   // can't force-logout an otherwise-healthy session.
-  const handleUnauthorized = async (): Promise<void> => {
+  const handleUnauthorized = async (): Promise<boolean> => {
     const tm = await getTokenManager();
     const refreshed = await tm.getAccessToken();
     if (refreshed !== undefined) {
-      // Refresh succeeded — the next reconnect will pick up the new token.
-      return;
+      // Refresh succeeded — caller can retry without interactive auth.
+      return true;
     }
     // refreshed === undefined could mean either:
     //   (a) terminal refresh failure → tokens.ts already cleared storage
@@ -616,9 +620,10 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     // onReauthNeeded in the (a) case so transient outages do not
     // permanently delete a still-valid refresh token.
     if (await tm.hasTokens()) {
-      return;
+      return false; // transient failure — tokens preserved, but can't reconnect yet
     }
     await runtime.onReauthNeeded(serverName);
+    return false; // terminal failure — must do interactive auth
   };
 
   return {

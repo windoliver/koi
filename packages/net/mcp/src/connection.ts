@@ -92,8 +92,12 @@ export interface ConnectionDeps {
   }) => SdkClientLike;
   readonly createTransport: CreateTransportFn;
   readonly random: () => number;
-  /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
-  readonly onUnauthorized?: () => void | Promise<void>;
+  /**
+   * Called on a mid-session 401. May attempt token refresh and return true when a
+   * fresh access token is available (caller can retry), or false/void when refresh
+   * failed (caller must escalate to interactive auth).
+   */
+  readonly onUnauthorized?: () => boolean | undefined | Promise<boolean | undefined>;
   /**
    * Called when a mid-session 401 triggers auth-needed. The implementation
    * should perform the full OAuth flow and return true when tokens are ready,
@@ -151,7 +155,19 @@ export function createMcpConnection(
   const runAuthFlow = (): Promise<Result<void, KoiError>> => {
     if (authInFlight !== undefined) return authInFlight;
     authInFlight = (async (): Promise<Result<void, KoiError>> => {
-      await Promise.resolve(onUnauthorized?.()).catch(() => {});
+      // Try silent token refresh first. onUnauthorized() returns true when it
+      // obtained a fresh access token (handleUnauthorized succeeded). Only then
+      // do we attempt a silent reconnect so we can skip the browser OAuth prompt.
+      // If onUnauthorized is absent or returned false/void, fall through to
+      // interactive auth without wasting a connect() on stale credentials.
+      const refreshOk = await Promise.resolve(onUnauthorized?.()).catch(() => false);
+      if (refreshOk) {
+        const silentResult = await connect(true);
+        if (silentResult.ok) {
+          return { ok: true, value: undefined }; // self-healed without browser prompt
+        }
+      }
+      // Refresh absent, failed, or reconnect still failed — escalate to interactive auth.
       if (onAuthNeeded === undefined) {
         return { ok: false, error: authDeclinedError() };
       }
@@ -163,7 +179,6 @@ export function createMcpConnection(
         // Include the reconnect inside the singleflight so concurrent callers
         // awaiting authInFlight see the connected state when they wake up and
         // cannot race to call connect() simultaneously on the same connection.
-        // Pass skipRefresh=true: onUnauthorized already ran above.
         const reconnResult = await connect(true);
         // Propagate reconnect failures so callers can surface the real error
         // (transport outage, server 5xx) instead of a misleading AUTH_REQUIRED.
