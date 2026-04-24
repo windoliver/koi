@@ -516,6 +516,10 @@ export function createGateway(
           const prevConnId = connBySession.get(result.session.id);
           let savedTracker: ReturnType<typeof createSequenceTracker> | undefined;
           if (prevConnId !== undefined && prevConnId !== conn.id) {
+            // Remove connBySession immediately so send() fails fast with "not connected"
+            // during the entire cutover window instead of routing frames to the stale socket.
+            // The entry is restored by abortReconnect() if any store operation fails.
+            connBySession.delete(result.session.id);
             // Install the sever operation as the new queue tail (the "barrier") before
             // awaiting. Any message that arrives on the old socket during the drain is then
             // chained after the barrier, so it runs only AFTER sessionByConn/trackers are
@@ -537,6 +541,8 @@ export function createGateway(
           function abortReconnect(closeCode: number, reason: string): void {
             if (prevConnId !== undefined && prevConnId !== conn.id) {
               sessionByConn.set(prevConnId, result.session.id);
+              // Restore connBySession so send() routes to the old conn again.
+              connBySession.set(result.session.id, prevConnId);
               if (savedTracker !== undefined) trackers.set(prevConnId, savedTracker);
               msgQueues.set(prevConnId, Promise.resolve());
             }
@@ -718,6 +724,10 @@ export function createGateway(
               sessionRes = store.get(sessionId);
             } catch (err: unknown) {
               swallowError(err, { package: "gateway", operation: "revocation.store.get" });
+              // Fence immediately — same fail-closed behavior as the async revocation branches.
+              // Without this, the connection stays in sessionByConn/connMap until transport
+              // delivers onClose, so processMessage continues authorizing frames in the gap.
+              cleanupConn(conn, "Revocation check failed");
               conn.close(CLOSE_CODES.AUTH_FAILED, "Revocation check failed");
               continue;
             }
