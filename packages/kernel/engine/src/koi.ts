@@ -900,6 +900,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // factorySessionId block above (#1742) — and uses a separate
       // runtime-scoped ctx because dispose may happen long after any run.
       agent.transition({ kind: "start" });
+
+      // #1939: capture run-entry timestamp BEFORE any async work (including onSessionStart)
+      // so governance duration accounting starts from actual submission time. The timestamp
+      // is consumed later in resetRunBoundary() as boundaryTimestamp. Captured here rather
+      // than inside the resetBudgetPerRun block so it precedes onSessionStart on first run.
+      if (resetBudgetPerRun) {
+        runBoundaryEntryAt = Date.now();
+      }
+
       if (!lifecycleSessionStarted) {
         // #1742: capture this run's sessionCtx so the matching
         // onSessionEnd (fired from cycleSession or dispose) reuses the
@@ -928,7 +937,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       resetGuardsCurrentRun = undefined;
 
       if (resetBudgetPerRun) {
-        runBoundaryEntryAt = Date.now(); // anchor before any async startup work
         resetGuardsCurrentRun = new Set();
         if (!adapter.terminals) {
           // Non-cooperating adapters: reset immediately at run entry (guard set is fixed).
