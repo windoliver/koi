@@ -352,20 +352,34 @@ Derived from `HarnessStatus`, not stored separately:
 - `metrics.totalTurns`, `metrics.completedTaskCount` accumulate across sessions.
 - `status()` is pure — safe to call at any time from any caller.
 
-### Timeout
+### Timeout — Quiesce Before Terminalize
 
-- Optional `timeoutMs` in config.
-- On `start()` / `resume()`: harness creates an `AbortController` with
-  `setTimeout(controller.abort, timeoutMs)`.
-- `AbortSignal` is attached to the returned `EngineInput`; the caller MUST wire
-  it into the engine adapter.
-- **On timeout fire, the harness revokes the active lease FIRST** (advances
-  `generation` via CAS to an intermediate `failed` snapshot), then invokes
-  `onFailed`. Any subsequent callback from the aborted run — even late
-  `completeTask` / `failTask` calls — presents a stale lease and is rejected
-  with `STALE_SESSION`. This prevents a cooperative-but-slow adapter from
-  writing after the harness has moved on.
-- Best-effort final snapshot carries `failureReason = "TIMEOUT"`.
+A timed-out run must not have its terminal snapshot published while the
+engine is still producing side effects. `failed` is an observable terminal
+state that external schedulers rely on; declaring it prematurely lets
+post-timeout writes leak out as "ghost" activity after the system has
+reported the run complete.
+
+Flow:
+
+1. `setTimeout` fires at `timeoutMs`.
+2. Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
+   Subsequent harness API calls from the aborted run fail identity check.
+3. Wait up to `abortTimeoutMs` for the engine adapter to quiesce.
+4. **On quiescence:** CAS-advance to `failed` with
+   `failureReason = "TIMEOUT"`. Invoke `onFailed` with the final status.
+5. **On abort timeout (engine refuses to stop):** do NOT advance to
+   `failed`. Keep the snapshot `active`, keep heartbeats running so the
+   session is NOT reclaimable, and raise a loud escalation:
+   `status().durability = "unhealthy"`, `status().failureReason =
+   "TIMEOUT_NOT_QUIESCED"`, invoke `onDurabilityLost` with
+   `KoiError { code: "ABORT_TIMEOUT", retryable: false }`. The host MUST
+   escalate (SIGKILL the process, operator intervention) before the run
+   can be cleared. No reclaimer runs in parallel with the ignored run.
+
+The TS `failed` phase remains a strong signal: "engine has stopped,
+scheduler may now act terminally." If the engine cannot be stopped, we
+loudly refuse to lie about it.
 
 ### Cleanup on Abandonment
 
@@ -379,16 +393,24 @@ Steps:
 1. Stop the heartbeat timer and the timeout timer.
 2. If phase is `active`:
    - Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
+     In-process callers with the old reference now fail identity check.
    - Wait up to `abortTimeoutMs` for the engine adapter to quiesce.
-   - **On quiescence:** CAS-advance to `suspended` with
-     `failureReason = "disposed before completion"`. Best-effort — a failed
-     write leaves the `active` snapshot in place; reclamation via heartbeat
-     staleness will collect it. This is safe because the engine is already
-     stopped.
-   - **On abort timeout:** do NOT publish `suspended`. Keep the snapshot
-     `active` and stop heartbeats so the orphan is eventually reclaimable
-     via TTL. Return `KoiError { code: "ABORT_TIMEOUT" }` from `dispose`.
-3. Release references to stores (callers own their lifecycle).
+   - **On quiescence:** stop the heartbeat loop, then CAS-advance to
+     `suspended` with `failureReason = "disposed before completion"`.
+     Best-effort snapshot write — if it fails, heartbeat-staleness will
+     reclaim. Safe because engine is confirmed stopped.
+   - **On abort timeout (engine refuses to stop):** do NOT publish
+     `suspended` and do NOT stop heartbeats. Keep the lease live from the
+     store's perspective (session `"running"`, heartbeat fresh) so no
+     reclaimer can race the still-executing engine. Flip
+     `status().durability` to `"unhealthy"`, invoke `onDurabilityLost` with
+     `KoiError { code: "ABORT_TIMEOUT" }`, and return that error from
+     `dispose`. The harness registers a background keep-alive for the
+     heartbeat loop so it continues even after `dispose` returns — only
+     host-level process termination (SIGKILL) releases the lease. This
+     matches the timeout path's "loud refusal to lie" semantics.
+3. Release references to stores (callers own their lifecycle), EXCEPT the
+   heartbeat loop if abort timed out.
 
 No process-level cleanup (kill subprocess, close sockets) — that's `@koi/daemon`.
 But no safety rule is softened: dispose never advertises a resumable state
@@ -506,8 +528,13 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - `dispose()` on an active harness revokes the lease, aborts the engine,
   and only publishes `suspended` after quiescence.
 - `dispose()` on an active harness whose engine refuses to quiesce returns
-  `ABORT_TIMEOUT`, does NOT publish `suspended`, and stops heartbeats so
-  the orphan is reclaimable via TTL.
+  `ABORT_TIMEOUT`, does NOT publish `suspended`, and KEEPS heartbeats
+  running so no reclaimer can race the still-executing engine. Host must
+  SIGKILL to release the lease.
+- `timeout` on an active harness whose engine refuses to quiesce does NOT
+  publish `failed`, keeps snapshot `active` + heartbeats live, invokes
+  `onDurabilityLost(ABORT_TIMEOUT)`. External schedulers see the run is
+  still active; no "ghost" post-terminal side effects are possible.
 - `dispose()` is idempotent across repeated calls.
 - `status()` returns current state without mutation.
 
@@ -577,9 +604,14 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `resume()` observing `"starting"` status during this window must return
   `ALREADY_ACTIVE` (heartbeat fresh), NOT reclaim.
 - **abortActive contract:** invoking `abortActive` revokes the lease,
-  propagates via `lease.abort.signal`, waits up to `abortTimeoutMs`, returns
+  propagates via `lease.abort`, waits up to `abortTimeoutMs`, returns
   `Ok` on quiescence or `KoiError { code: "ABORT_TIMEOUT" }` otherwise. A
   subsequent mutation on the revoked lease is rejected before any store write.
+- **No reclaim while engine is running (adversarial):** fake engine that
+  ignores `AbortSignal` keeps emitting events. Timeout fires → abort times
+  out → snapshot stays `active`, heartbeats continue → concurrent
+  `resume()` returns `ALREADY_ACTIVE` indefinitely until the fake engine
+  stops or the process is killed. No post-terminal side effects observed.
 - **Activation rollback:** session `saveSession` succeeds but CAS fails →
   orphan session is cleaned via `removeSession` best-effort; harness head
   unchanged.
