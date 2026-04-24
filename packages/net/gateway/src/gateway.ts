@@ -84,7 +84,9 @@ export function createGateway(
   const msgQueues = new Map<string, Promise<void>>();
   // Per-connection inbound sequence-buffer pressure. SequenceTracker holds GatewayFrame
   // objects for out-of-order gaps; without a byte cap this is an unbounded OOM path.
-  const inboundBuffered = new Map<string, number>();
+  // Key: connId → Map<seq, frameBytes> — precise per-seq tracking so bytes are discharged
+  // only when a frame actually leaves the reorder buffer (appears in ready[1..]).
+  const inboundBufferedSeqs = new Map<string, Map<number, number>>();
 
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
@@ -152,7 +154,7 @@ export function createGateway(
     pendingHandshakes.delete(conn.id);
     trackers.delete(conn.id);
     msgQueues.delete(conn.id);
-    inboundBuffered.delete(conn.id);
+    inboundBufferedSeqs.delete(conn.id);
     sessionByConn.delete(conn.id);
     connMap.delete(conn.id);
     bp.remove(conn.id);
@@ -228,12 +230,20 @@ export function createGateway(
     }
 
     if (result === "buffered") {
-      // Charge buffered bytes against the per-connection inbound cap so a hostile
-      // client sending many out-of-order frames cannot exhaust heap through the tracker.
+      // Charge buffered bytes against the per-connection inbound cap. Track per-seq so
+      // bytes are discharged precisely when a frame leaves the reorder buffer (appears
+      // in ready[1..]) rather than resetting to 0 on any partial progress — which would
+      // allow frames remaining in the tracker to escape the cap.
       const frameBytes = Buffer.byteLength(data, "utf8");
-      const prev = inboundBuffered.get(conn.id) ?? 0;
-      const updated = prev + frameBytes;
-      if (updated > config.maxBufferBytesPerConnection) {
+      let seqBytes = inboundBufferedSeqs.get(conn.id);
+      if (seqBytes === undefined) {
+        seqBytes = new Map<number, number>();
+        inboundBufferedSeqs.set(conn.id, seqBytes);
+      }
+      seqBytes.set(frameResult.value.seq, frameBytes);
+      let total = 0;
+      for (const b of seqBytes.values()) total += b;
+      if (total > config.maxBufferBytesPerConnection) {
         sendFrame(
           conn,
           createErrorFrame(0, "BUFFER_LIMIT", "Inbound sequence buffer exceeded", nextId),
@@ -241,24 +251,34 @@ export function createGateway(
         conn.close(CLOSE_CODES.BUFFER_LIMIT, "Inbound sequence buffer exceeded");
         return;
       }
-      inboundBuffered.set(conn.id, updated);
       return;
     }
 
-    // A non-buffered result means frames are being dispatched; clear the inbound counter.
-    inboundBuffered.delete(conn.id);
+    // Discharge bytes for previously-buffered frames that were flushed into ready[1..].
+    // ready[0] is the just-received frame (never buffered); ready[1..] were in the tracker.
+    const seqBytes = inboundBufferedSeqs.get(conn.id);
+    if (seqBytes !== undefined) {
+      for (const f of ready.slice(1)) seqBytes.delete(f.seq);
+      if (seqBytes.size === 0) inboundBufferedSeqs.delete(conn.id);
+    }
 
     // Dispatch handlers BEFORE persisting the watermark. If a handler throws, emitFrames
-    // re-throws so this processMessage call exits without advancing remoteSeq in the store.
-    // The frame will be replayed on reconnect (at-least-once) rather than silently lost with
-    // the watermark already advanced (at-most-once with no recovery path).
+    // re-throws and we close the connection so the advanced tracker state cannot be used
+    // to accept frames past the failed one. On reconnect, remoteSeq is restored from the
+    // store (which we did not update), so the failed frame is replayed (at-least-once).
     const lastDispatched = ready[ready.length - 1];
     if (lastDispatched !== undefined) {
       const updatedSession: Session = {
         ...sessionResult.value,
         remoteSeq: lastDispatched.seq + 1,
       };
-      emitFrames(updatedSession, ready); // throws on handler failure → skips store.set below
+      try {
+        emitFrames(updatedSession, ready);
+      } catch {
+        conn.close(CLOSE_CODES.ADMIN_CLOSED, "Frame handler failure");
+        cleanupConn(conn, "frame handler failure");
+        return;
+      }
 
       let storeRes: Result<void, KoiError>;
       try {
