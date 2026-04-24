@@ -218,20 +218,33 @@ TypeScript type is documentation only.
 
 ### Atomic Checkpoint Write
 
-Issue requirement: **no partial writes**.
+Issue requirement: **no partial writes**. **All state-advancing writes in
+this package use `SnapshotChainStore.compareAndPut(expectedHead, next)`.**
+Plain `put(...)` is NOT permitted for any path that advances harness state
+(activation, pause, fail, soft checkpoint, reclaim, dispose). Non-CAS
+writes cannot fence stale writers and would re-introduce split-brain
+advancement.
 
 ```
-1. Build HarnessSnapshot in memory (immutable).
-2. harnessStore.put(snapshot) — L0 SnapshotChainStore contract guarantees:
+1. Build next HarnessSnapshot in memory (immutable), including incremented
+   generation (when appropriate) and current lease's sessionId.
+2. harnessStore.compareAndPut(expectedHead, next):
      a. Payload written to durable storage first.
-     b. Chain pointer advanced via CAS.
+     b. Chain pointer advanced iff current head equals expectedHead.
      c. On failure at any step, previous chain head remains authoritative.
-3. If step 2 fails: log, retain in-memory state, do not advance phase.
+     d. Returns a typed outcome distinguishing I/O error from CAS mismatch.
+3. CAS mismatch → the caller's view is stale; reject the operation and
+   let the caller re-read and retry (typically surfaces as
+   CONCURRENT_RESUME, STALE_SESSION, or CHECKPOINT_WRITE_FAILED depending
+   on context).
+4. I/O error → retry-with-backoff where applicable (durability-loss
+   recovery retries 3 times; end-user pause/fail return
+   CHECKPOINT_WRITE_FAILED immediately).
 ```
 
-We never mutate stored state in place. A crashed write leaves the prior snapshot
-as the valid resume point. This matches v1 behavior and relies on
-`SnapshotChainStore` (already validated in L0).
+We never mutate stored state in place. A crashed write leaves the prior
+snapshot as the valid resume point. A stale writer's CAS fails and cannot
+corrupt the chain.
 
 ### Resume — Exclusive Lease Protocol with Crash Reclamation
 
@@ -304,7 +317,16 @@ not status.
 
 Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
 
-1. `sessionPersistence.loadSession(sid)` → `record: SessionRecord | NOT_FOUND`.
+1. `sessionPersistence.loadSession(sid)` → `record: SessionRecord | NOT_FOUND | IO_ERROR`.
+   On `IO_ERROR` (any return other than a record or explicit NOT_FOUND):
+   retry up to 3 times with exponential backoff (100/500/2500 ms). If all
+   retries fail, return `KoiError { code: "RECLAIM_READ_FAILED", retryable: true }`
+   to the caller — do NOT reclaim. This is a safe default: the caller
+   gets a retryable error, the harness remains whatever it was, and no
+   exclusivity invariant is broken. If both snapshot and session stores
+   are persistently unreachable the system is already degraded; the
+   correct recovery is operator intervention on the store, not a
+   forced reclaim based on an unreadable liveness signal.
 2. Decide the owner's liveness. **TTL staleness is the ONLY primary
    dead-owner signal** — status flags are advisory. This avoids relying on
    cross-store read-after-write consistency between `harnessStore` and
@@ -743,6 +765,11 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   snapshot store already shows `active`. Reclamation does NOT treat this
   as dead-owner; it returns `ALREADY_ACTIVE` until `activatedAt` exceeds
   TTL. (Regression against cross-store split-brain.)
+- **`loadSession` I/O error during reclaim:** simulated read failure
+  during reclaim. Harness retries 3x with backoff; if all fail, returns
+  `RECLAIM_READ_FAILED` (retryable). Does NOT attempt reclaim, does NOT
+  wedge the harness — the existing state is untouched and a later
+  `resume()` call can proceed once the store recovers.
 
 ### Unit: `checkpoint-policy.test.ts`
 
@@ -802,6 +829,7 @@ All errors are `KoiError` from L0. Codes used:
 | `ABORT_TIMEOUT` | engine did not quiesce within `abortTimeoutMs` | false |
 | `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
 | `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; returned via `StartResult.activationWarning`, NOT via `Err`; lease is still valid | true |
+| `RECLAIM_READ_FAILED` | `sessionPersistence.loadSession` I/O error during reclaim after 3 retries; caller must retry after backoff | true |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
@@ -812,10 +840,52 @@ All errors are `KoiError` from L0. Codes used:
 - Claude Code: `src/tasks/LocalMainSessionTask.ts` — validates the
   background/resume/notify UX pattern (single-process analogue).
 
-## L0 Prerequisites
+## L0 Prerequisites (coordinated breaking change)
 
-This design requires four additive changes to `@koi/core` / `@koi/session` L0
-types before the L2 package can be implemented:
+These changes are NOT backward-compatible, contrary to earlier drafts.
+Current v2 code assumes `SessionStatus` is `"running" | "idle" | "done"`
+(SQLite parser, recovery logic, crash-candidate detection all key off
+this), `SnapshotChainStore` exposes only `put`, and `HarnessStatus` has
+no `durability` field. Adding `"starting"` / `"abandoned"` will cause
+existing SQLite/memory stores to reject persisted rows; adding
+`compareAndPut` requires every existing store implementation to gain a
+real CAS path or fail the contract test; adding `durability` requires
+every `HarnessStatus` consumer to handle the new field.
+
+**Migration plan (land before the L2 package):**
+
+1. **L0 type additions (single PR):** introduce the new fields/methods
+   on the interfaces with sensible defaults — new `SessionStatus`
+   variants are recognized by parsers but treated as `"running"` in
+   legacy comparators; `compareAndPut` is added to
+   `SnapshotChainStore` with a default-implementation helper that
+   implementations can adopt; `HarnessStatus.durability` defaults to
+   `"ok"`. This PR compiles against the current tree without changing
+   behavior.
+2. **Adapter upgrades (per-store PRs):**
+   - `packages/lib/session/src/persistence/sqlite-store.ts`: extend
+     SQLite schema + parser to accept `"starting"` / `"abandoned"`.
+     Add a migration for existing databases.
+   - `packages/lib/session/src/persistence/memory-store.ts`: drop old
+     exhaustive narrowing of `SessionStatus`.
+   - Every `SnapshotChainStore` implementation
+     (`packages/lib/snapshot-store-sqlite`,
+     `packages/lib/snapshot-chain-store`, any in-memory variants):
+     implement real `compareAndPut` with a store-level atomicity test
+     in that package's `__tests__/`.
+   - Recovery code that treats `"running"` as crash-candidate must now
+     also treat `"starting"` the same way (same TTL rule).
+3. **Contract tests:** add shared contract tests in `@koi/core` that
+   every `SnapshotChainStore` implementation must pass, including a
+   concurrent CAS race test. Any existing adapter failing the test
+   must be updated before the migration PR merges.
+4. **L2 `@koi/long-running` PR:** after steps 1-3 are merged and green
+   in CI, this L2 package can be implemented.
+
+The L2 package's design does not regress if this migration is deferred
+— but it cannot be implemented until the L0 migration lands.
+
+Additive changes required (part of the coordinated migration):
 
 1. `HarnessSnapshot.generation: number` — monotonic per harness, incremented on
    every session transition. Drives lease fencing. Plus
@@ -838,7 +908,7 @@ types before the L2 package can be implemented:
    heartbeat-write failure. Transitions back to `"ok"` only on a clean
    `start()`/`resume()` with a fresh session.
 
-All four are backward-compatible and should land in a prerequisite L0 PR.
+These land across the migration PRs listed above, not a single "prereq PR".
 
 ## Open Questions
 
