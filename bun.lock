@@ -60,6 +60,14 @@
         "@temporalio/client": "^1.11.0",
         "@temporalio/worker": "^1.11.0",
       },
+      "peerDependencies": {
+        "@temporalio/client": ">=1.11.0",
+        "@temporalio/worker": ">=1.11.0",
+      },
+      "optionalPeers": [
+        "@temporalio/client",
+        "@temporalio/worker",
+      ],
     },
     "packages/kernel/core": {
       "name": "@koi/core",

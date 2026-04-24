@@ -1,8 +1,8 @@
 /**
- * Smoke test: verifies the dynamic import path in worker-factory is reachable
- * when @temporalio/worker is installed (skips gracefully when SDK is absent).
+ * Smoke test: verifies the dynamic import path in worker-factory is reachable.
  *
- * This test catches "module not found" regressions that only surface at runtime.
+ * Catches "module not found" regressions that only surface at runtime.
+ * @temporalio/worker is a devDependency so this always runs in repo CI.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -27,24 +27,18 @@ describe("createTemporalWorker smoke", () => {
     await handle.dispose();
   });
 
-  test("default factory resolves @temporalio/worker dynamically (skips if SDK absent)", async () => {
-    let sdkPresent = false;
+  test("@temporalio/worker module resolves (devDep installed in repo)", async () => {
+    // Verifies the dynamic import path is reachable. The SDK is a devDependency
+    // so this must not skip in repo CI. If this fails, check that bun.lock includes
+    // @temporalio/worker and that `bun install` completed successfully.
+    let resolved = false;
     try {
       await import("@temporalio/worker");
-      sdkPresent = true;
-    } catch {
-      // SDK not installed — acceptable in dev/CI without Temporal
+      resolved = true;
+    } catch (e: unknown) {
+      // surface the actual error so CI knows why it failed
+      throw new Error(`@temporalio/worker failed to resolve: ${String(e)}`);
     }
-
-    if (!sdkPresent) {
-      // Document the gap: SDK missing means createTemporalWorker will throw
-      // at runtime. Install @temporalio/worker to enable durable execution.
-      expect(sdkPresent).toBe(false);
-      return;
-    }
-
-    // If SDK is present, the factory should not throw during module resolution.
-    // We still use a stub worker to avoid needing a real Temporal server.
-    expect(sdkPresent).toBe(true);
+    expect(resolved).toBe(true);
   });
 });
