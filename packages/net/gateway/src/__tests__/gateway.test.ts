@@ -316,6 +316,30 @@ describe("createGateway", () => {
       expect(stored?.remoteSeq).toBe(2);
     });
 
+    test("fanout aborts on first handler failure — later subscribers do not see the frame", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-fanout-abort",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const sub2Received: GatewayFrame[] = [];
+      gateway.onFrame(() => {
+        throw new Error("subscriber 1 fails");
+      });
+      gateway.onFrame((_s, f) => sub2Received.push(f));
+
+      const conn = await authenticateConn(transport, gateway, "s-fanout-abort");
+      transport.simulateMessage(conn.id, frameStr({ seq: 0 }));
+
+      await waitForCondition(() => conn.closed);
+      // subscriber 2 must never receive the frame — fanout aborted before reaching it
+      expect(sub2Received).toHaveLength(0);
+    });
+
     test("malformed frame sends error response, not dispatched", async () => {
       const auth = createTestAuthenticator({
         ok: true,

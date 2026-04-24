@@ -104,21 +104,20 @@ export function createGateway(
   }
 
   function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
-    let firstError: unknown;
     for (const frame of frames) {
       for (const handler of frameHandlers) {
         try {
           handler(session, frame);
         } catch (err: unknown) {
+          // Abort immediately: do not invoke remaining handlers for this frame.
+          // Any handler that ran before the failure will see the frame again on reconnect
+          // replay (at-least-once), but continuing fanout would guarantee a duplicate for
+          // handlers that have already succeeded — abort-early limits the blast radius.
           swallowError(err, { package: "gateway", operation: "onFrame" });
-          if (firstError === undefined) firstError = err;
+          throw err;
         }
       }
     }
-    // Re-throw so processMessage can skip the watermark persist on handler failure,
-    // giving at-least-once delivery: the frame will be replayed on reconnect rather
-    // than silently lost with the watermark already advanced.
-    if (firstError !== undefined) throw firstError;
   }
 
   // Single send path for established-session writes so every outbound byte is
@@ -349,12 +348,16 @@ export function createGateway(
           const prevConnId = connBySession.get(result.session.id);
           let savedTracker: ReturnType<typeof createSequenceTracker> | undefined;
           if (prevConnId !== undefined && prevConnId !== conn.id) {
-            sessionByConn.delete(prevConnId);
+            // Drain queued work on the old connection BEFORE severing its session mapping.
+            // If we sever first, frames already enqueued in msgQueues would hit
+            // sessionId===undefined and be rejected as NOT_AUTHORIZED instead of being
+            // processed and persisted (violating at-least-once delivery).
             savedTracker = trackers.get(prevConnId);
-            trackers.delete(prevConnId);
             const drainQueue = msgQueues.get(prevConnId) ?? Promise.resolve();
             msgQueues.delete(prevConnId);
             await drainQueue;
+            sessionByConn.delete(prevConnId);
+            trackers.delete(prevConnId);
           }
 
           // Helper: un-fence the old conn and reject the new one on store failure.
