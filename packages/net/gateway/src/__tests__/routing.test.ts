@@ -13,22 +13,27 @@ describe("computeDispatchKey", () => {
     expect(computeDispatchKey("main", { channel: "x", peer: "y" })).toBe("main");
   });
 
-  test("per-peer uses peer or '_'", () => {
+  test("per-peer uses peer or absent sentinel", () => {
     expect(computeDispatchKey("per-peer", { peer: "p1" })).toBe("p1");
-    expect(computeDispatchKey("per-peer")).toBe("_");
+    expect(computeDispatchKey("per-peer")).toBe("%7E"); // '~' encoded
   });
 
   test("per-channel-peer composes channel:peer", () => {
     expect(computeDispatchKey("per-channel-peer", { channel: "ch", peer: "p1" })).toBe("ch:p1");
-    expect(computeDispatchKey("per-channel-peer", { peer: "p1" })).toBe("_:p1");
-    expect(computeDispatchKey("per-channel-peer")).toBe("_:_");
+    expect(computeDispatchKey("per-channel-peer", { peer: "p1" })).toBe("%7E:p1");
+    expect(computeDispatchKey("per-channel-peer")).toBe("%7E:%7E");
   });
 
   test("per-account-channel-peer composes account:channel:peer", () => {
     expect(
       computeDispatchKey("per-account-channel-peer", { account: "a", channel: "c", peer: "p" }),
     ).toBe("a:c:p");
-    expect(computeDispatchKey("per-account-channel-peer")).toBe("_:_:_");
+    expect(computeDispatchKey("per-account-channel-peer")).toBe("%7E:%7E:%7E");
+  });
+
+  test("literal underscore in field value is not treated as absent sentinel", () => {
+    expect(computeDispatchKey("per-peer", { peer: "_" })).toBe("_");
+    expect(computeDispatchKey("per-peer")).not.toBe("_");
   });
 });
 

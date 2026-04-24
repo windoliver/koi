@@ -140,12 +140,15 @@ export function createGateway(
       return false;
     }
     const bytes = conn.send(data);
-    if (bytes <= 0) {
+    if (bytes < 0) {
       conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
       cleanupConn(conn, "transport send failure");
       return false;
     }
-    bp.record(conn.id, frameBytes);
+    // Only charge bp when bytes > 0: the transport actually buffered data.
+    // bytes === 0 means the write was accepted synchronously with nothing queued;
+    // charging it would inflate bp.buffered() for traffic that was never held.
+    if (bytes > 0) bp.record(conn.id, bytes);
     return true;
   }
 
@@ -412,14 +415,14 @@ export function createGateway(
           sessionByConn.set(conn.id, result.session.id);
           connBySession.set(result.session.id, conn.id);
           const ackBytes = result.sendAck();
-          if (ackBytes <= 0) {
+          if (ackBytes < 0) {
             // Transport rejected the ack write — session is unusable before the client
             // received its sessionId/protocol. Tear down cleanly so the client reconnects.
             conn.close(CLOSE_CODES.ADMIN_CLOSED, "Ack send failed");
             cleanupConn(conn, "ack send failed");
             return;
           }
-          bp.record(conn.id, ackBytes);
+          if (ackBytes > 0) bp.record(conn.id, ackBytes);
           emitSessionEvent({ kind: "created", session: result.session });
         })
         .catch(() => {
@@ -490,6 +493,11 @@ export function createGateway(
         }
         conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
       }
+
+      // Drain all in-flight per-connection message queues before touching the store so that
+      // any handler currently executing can finish and its store.set() resolves cleanly.
+      await Promise.allSettled([...msgQueues.values()]);
+      msgQueues.clear();
 
       // Phase 2: Delete ALL sessions from the store — not just those with live connections.
       // Sessions retained for reconnect (cleanupConn intentionally keeps them) must also
@@ -576,7 +584,7 @@ export function createGateway(
         };
       }
       const bytes = conn.send(encoded);
-      if (bytes <= 0) {
+      if (bytes < 0) {
         conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
         cleanupConn(conn, "transport send failure");
         const error: KoiError = {
@@ -587,7 +595,7 @@ export function createGateway(
         };
         return { ok: false, error };
       }
-      bp.record(connId, frameBytes);
+      if (bytes > 0) bp.record(connId, bytes);
       return { ok: true, value: bytes };
     },
 

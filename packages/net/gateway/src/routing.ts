@@ -7,21 +7,27 @@ import type { RouteBinding, RoutingConfig, RoutingContext, ScopingMode } from ".
 
 // Encode routing field characters that would corrupt the colon-delimited key structure.
 // ':' is the segment delimiter; '*' and '**' are wildcard tokens in patterns.
+// '~' is the absent-field sentinel and must also be encoded so user data can't collide.
 function sanitizeField(value: string): string {
-  return value.replace(/[:%*]/g, (c) => `%${c.codePointAt(0)?.toString(16).toUpperCase()}`);
+  return value.replace(/[:%*~]/g, (c) => `%${c.codePointAt(0)?.toString(16).toUpperCase()}`);
 }
+
+// Sentinel for an absent routing field. Must not be a valid unencoded character in field
+// values after sanitizeField has run. '~' is outside the [:%*] encode set for plain user
+// data, so using it as sentinel is safe once sanitizeField also encodes '~'.
+const ABSENT = "~";
 
 export function computeDispatchKey(mode: ScopingMode, routing?: RoutingContext): string {
   if (mode === "main") return "main";
 
-  const peer = sanitizeField(routing?.peer ?? "_");
+  const peer = sanitizeField(routing?.peer ?? ABSENT);
   if (mode === "per-peer") return peer;
 
-  const channel = sanitizeField(routing?.channel ?? "_");
+  const channel = sanitizeField(routing?.channel ?? ABSENT);
   if (mode === "per-channel-peer") return `${channel}:${peer}`;
 
   if (mode === "per-account-channel-peer") {
-    const account = sanitizeField(routing?.account ?? "_");
+    const account = sanitizeField(routing?.account ?? ABSENT);
     return `${account}:${channel}:${peer}`;
   }
 
