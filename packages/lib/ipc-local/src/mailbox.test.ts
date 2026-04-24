@@ -285,4 +285,29 @@ describe("createLocalMailbox — local specifics", () => {
     expect(Object.isFrozen(msgs[0])).toBe(true);
     mailbox.close();
   });
+
+  test("nested payload fields are also frozen (deep immutability)", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    await mailbox.send({
+      from: SENDER,
+      to: OWNER,
+      kind: "event",
+      type: "deep",
+      payload: { nested: { x: 1 } },
+    });
+    const msgs = await mailbox.list();
+    const nested = (msgs[0]?.payload as { nested: object }).nested;
+    expect(Object.isFrozen(nested)).toBe(true);
+    mailbox.close();
+  });
+
+  test("close() auto-unregisters mailbox from router", async () => {
+    const { createLocalMailboxRouter } = await import("./router.js");
+    const router = createLocalMailboxRouter();
+    const mailbox = createLocalMailbox({ agentId: OWNER, router });
+    router.register(OWNER, mailbox);
+    expect(router.get(OWNER)).toBeDefined();
+    mailbox.close();
+    expect(router.get(OWNER)).toBeUndefined();
+  });
 });

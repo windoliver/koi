@@ -85,4 +85,23 @@ describe("createLocalMailboxRouter", () => {
     router.register(agentId("agent-1"), mailboxNew);
     expect(router.get(agentId("agent-1"))).toBe(mailboxNew);
   });
+
+  test("register() throws when mailbox agentId does not match the key", () => {
+    const router = createLocalMailboxRouter();
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a") });
+    expect(() => router.register(agentId("agent-b"), mailboxA)).toThrow(
+      /cannot register mailbox bound to agent-a under agent-b/,
+    );
+  });
+
+  test("register() accepts a generic MailboxComponent (no agentId to check)", () => {
+    const router = createLocalMailboxRouter();
+    // A plain MailboxComponent without an agentId property is valid
+    const plain: import("@koi/core").MailboxComponent = {
+      send: async () => ({ ok: true, value: {} as import("@koi/core").AgentMessage }),
+      onMessage: () => () => {},
+      list: () => [],
+    };
+    expect(() => router.register(agentId("any"), plain)).not.toThrow();
+  });
 });

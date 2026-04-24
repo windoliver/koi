@@ -1,6 +1,8 @@
 import type {
+  AgentId,
   AgentMessage,
   AgentMessageInput,
+  JsonObject,
   KoiError,
   MailboxComponent,
   MessageFilter,
@@ -11,7 +13,19 @@ import type { LocalMailboxConfig } from "./types.js";
 
 const DEFAULT_MAX_MESSAGES = 10_000;
 
+function deepFreeze(obj: JsonObject): JsonObject {
+  if (Object.isFrozen(obj)) return obj;
+  Object.freeze(obj);
+  for (const value of Object.values(obj)) {
+    if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+      deepFreeze(value as JsonObject);
+    }
+  }
+  return obj;
+}
+
 export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent & {
+  readonly agentId: AgentId;
   readonly close: () => void;
 } {
   const rawMax = config.maxMessages ?? DEFAULT_MAX_MESSAGES;
@@ -21,7 +35,7 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
   const maxMessages = rawMax;
   const messages: AgentMessage[] = [];
   const subscribers = new Set<(message: AgentMessage) => void | Promise<void>>();
-  // let rather than const: the closed flag is explicitly mutable state
+  // let rather than const: closed flag is explicitly mutable state
   let closed = false;
 
   function evictIfNeeded(): void {
@@ -31,6 +45,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
   }
 
   return {
+    get agentId(): AgentId {
+      return config.agentId;
+    },
+
     async send(input: AgentMessageInput): Promise<Result<AgentMessage, KoiError>> {
       if (closed) {
         return {
@@ -72,8 +90,8 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         };
       }
 
-      // Deep-clone payload/metadata so later mutations to the caller's objects
-      // cannot corrupt the stored message history.
+      // Deep-clone then deep-freeze payload/metadata so neither the caller's
+      // original objects nor references returned to callers can mutate history.
       const msg: AgentMessage = Object.freeze({
         id: messageId(crypto.randomUUID()),
         createdAt: new Date().toISOString(),
@@ -81,10 +99,12 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         to: input.to,
         kind: input.kind,
         type: input.type,
-        payload: structuredClone(input.payload),
+        payload: deepFreeze(structuredClone(input.payload)),
         ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
         ...(input.ttlSeconds !== undefined ? { ttlSeconds: input.ttlSeconds } : {}),
-        ...(input.metadata !== undefined ? { metadata: structuredClone(input.metadata) } : {}),
+        ...(input.metadata !== undefined
+          ? { metadata: deepFreeze(structuredClone(input.metadata)) }
+          : {}),
       });
 
       messages.push(msg);
@@ -126,6 +146,8 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       closed = true;
       messages.length = 0;
       subscribers.clear();
+      // Auto-unregister from router so dead mailboxes don't remain routable.
+      config.router?.unregister(config.agentId);
     },
   };
 }
