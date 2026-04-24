@@ -537,7 +537,22 @@ export function createMcpConnection(
             if (reconnResult.ok) {
               return listTools(true); // retry with fresh token
             }
+          } else if (outcome === "transient-failure") {
+            // Token endpoint or discovery is temporarily unavailable — do NOT
+            // enter auth-needed (tokens still exist). Surface as retryable
+            // outage so operators see the real failure mode, not a false
+            // "authentication required" prompt.
+            return {
+              ok: false,
+              error: {
+                code: "EXTERNAL",
+                message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+                retryable: true,
+                context: { serverName: config.name },
+              },
+            };
           }
+          // outcome === "needs-auth" falls through to auth-needed transition below
         }
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({

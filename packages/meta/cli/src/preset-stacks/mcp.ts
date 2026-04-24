@@ -47,16 +47,9 @@ export const mcpStack: PresetStack = {
     const userMcpSetup = await loadUserMcpSetup(ctx.cwd, skillsRuntime, oauthChannel);
     // Do not pass oauthChannel to plugin servers — plugins must not drive the
     // trusted browser OAuth flow without a host-controlled consent gate.
-    // Isolate plugin setup failures: a single bad plugin OAuth config must not
-    // abort the entire MCP stack and take down unrelated user-configured servers.
-    let pluginMcpSetup: Awaited<ReturnType<typeof buildPluginMcpSetup>> | undefined;
-    try {
-      pluginMcpSetup = buildPluginMcpSetup(pluginMcpServers);
-    } catch (err: unknown) {
-      console.error(
-        `[koi mcp] Plugin MCP setup failed (skipping plugin servers): ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    // Unsupported OAuth plugin servers are filtered per-entry inside
+    // buildPluginMcpSetup; unaffected plugin servers are wired normally.
+    const pluginMcpSetup = buildPluginMcpSetup(pluginMcpServers);
 
     return {
       middleware: [],

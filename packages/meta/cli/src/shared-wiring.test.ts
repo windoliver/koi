@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,7 +115,7 @@ describe("buildPluginMcpSetup", () => {
     setup?.dispose();
   });
 
-  test("throws on OAuth-bearing HTTP servers (no consent gate — fail loudly)", () => {
+  test("filters OAuth-bearing HTTP servers per-entry and logs error (other servers proceed)", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -131,13 +131,22 @@ describe("buildPluginMcpSetup", () => {
       name: "plugin-stdio",
       command: "/bin/echo",
     };
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
-    // Must throw so plugin activation fails visibly rather than silently
-    // losing the OAuth server while loading the rest.
-    expect(() => buildPluginMcpSetup([oauthServer, stdioServer])).toThrow("plugin-oauth");
+    const setup = buildPluginMcpSetup([oauthServer, stdioServer]);
+
+    // OAuth server stripped; stdio server retained — other plugin servers proceed
+    expect(setup).toBeDefined();
+    expect(setup?.oauthCapableNames.size).toBe(0);
+    // Explicit error logged for the skipped OAuth server
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect((errorSpy.mock.calls[0] as string[])[0]).toContain("plugin-oauth");
+
+    setup?.dispose();
+    errorSpy.mockRestore();
   });
 
-  test("throws when all servers have OAuth", () => {
+  test("returns undefined when all servers have OAuth (all filtered)", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -148,8 +157,13 @@ describe("buildPluginMcpSetup", () => {
         tokenEndpoint: "https://example.com/token",
       },
     } as unknown as McpServerConfig;
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
 
-    expect(() => buildPluginMcpSetup([oauthServer])).toThrow("plugin-oauth");
+    const setup = buildPluginMcpSetup([oauthServer]);
+    expect(setup).toBeUndefined();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+
+    errorSpy.mockRestore();
   });
 });
 

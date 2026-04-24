@@ -282,21 +282,25 @@ export function buildPluginMcpSetup(
 ): McpSetup | undefined {
   if (pluginMcpServers.length === 0) return undefined;
 
-  // Reject OAuth-bearing plugin MCP configs up front. Plugin-supplied OAuth
-  // configs cannot be authenticated without a host-controlled consent gate.
-  // Throw so plugin activation fails visibly rather than silently losing servers.
+  // Reject OAuth-bearing plugin MCP configs per-server. Plugin-supplied OAuth
+  // configs cannot be authenticated without a host-controlled consent gate, so
+  // skip each offending entry and log explicitly — other plugin servers proceed.
   const unsupported = pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined);
   if (unsupported.length > 0) {
-    throw new Error(
-      `Plugin MCP servers with OAuth are not supported without a host consent gate. ` +
+    console.error(
+      `[koi] Plugin MCP servers with OAuth require a host consent gate and cannot be loaded. ` +
         `Remove the oauth config or replace with a non-OAuth server: ` +
         unsupported.map((s) => s.name).join(", "),
     );
   }
+  const eligibleServers = pluginMcpServers.filter(
+    (s) => !(s.kind === "http" && s.oauth !== undefined),
+  );
+  if (eligibleServers.length === 0) return undefined;
 
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
-  const connections = pluginMcpServers.map((server) => {
+  const connections = eligibleServers.map((server) => {
     const conn = createOAuthAwareMcpConnection(server);
     connectionsByName.set(server.name, conn);
     return conn;
@@ -312,7 +316,7 @@ export function buildPluginMcpSetup(
     dispose: () => {
       resolver.dispose();
     },
-    transportByName: new Map(pluginMcpServers.map((s) => [s.name, s.kind])),
+    transportByName: new Map(eligibleServers.map((s) => [s.name, s.kind])),
     oauthCapableNames: new Set<string>(),
     authProviders: new Map(),
     connections: connectionsByName,
