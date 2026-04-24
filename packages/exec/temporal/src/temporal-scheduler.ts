@@ -328,21 +328,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         paused: false,
       };
 
-      const initialMessages = mapEngineInputToMessages(input, id);
-
-      // spawn: start a fresh workflow on each cron firing.
-      //   ScheduledSpawnArgs intentionally omits sessionId — each Temporal execution
-      //   uses its own execution ID as the session namespace (no cross-run state collision).
-      // dispatch: send a signal to the long-running agent workflow on each firing.
-      //   A schedule fires exactly one action per interval, so only a single signal can
-      //   be delivered. Multi-message inputs (>1 IncomingMessage) are rejected at
-      //   schedule creation time to avoid silent message loss.
+      // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the raw
+      //   EngineInput template (not pre-baked IncomingMessages) so the workflow
+      //   generates fresh message IDs and timestamps at each execution, preventing
+      //   duplicate idempotency keys across recurring firings.
+      // dispatch: "scheduled-input" signal with raw EngineInput so the workflow
+      //   signal handler creates a fresh IncomingMessage envelope per firing.
+      //   A distinct signal name avoids conflating one-shot direct signals ("message")
+      //   with recurring schedule-fired inputs.
       let scheduleAction: Record<string, unknown>;
       if (mode === "spawn") {
         const spawnArgs: ScheduledSpawnArgs = {
           agentId,
           stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-          initialMessages,
+          input,
         };
         scheduleAction = {
           type: "startWorkflow",
@@ -351,18 +350,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           args: [spawnArgs],
         };
       } else {
-        if (initialMessages.length !== 1) {
-          throw new Error(
-            `Scheduled dispatch supports exactly one message per firing but got ${initialMessages.length}. ` +
-              "Use a single-message EngineInput or submit() for multi-message delivery.",
-          );
-        }
         scheduleAction = {
           type: "sendSignal",
           workflowId: String(agentId),
-          signalName: "message",
-          // One positional arg matching direct-dispatch signal shape (signal(wfId, "message", msg))
-          args: [initialMessages[0]],
+          signalName: "scheduled-input",
+          args: [input],
         };
       }
 

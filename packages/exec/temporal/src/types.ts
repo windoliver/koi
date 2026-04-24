@@ -1,4 +1,4 @@
-import type { AgentId, ContentBlock, SessionId } from "@koi/core";
+import type { AgentId, ContentBlock, EngineInput, SessionId } from "@koi/core";
 
 export interface AgentWorkflowConfig {
   readonly agentId: AgentId;
@@ -11,10 +11,12 @@ export interface AgentWorkflowConfig {
 // Args for workflows started by a cron schedule (spawn mode).
 // sessionId is intentionally absent — each Temporal execution provides its own
 // workflow execution ID as the session namespace, preventing cross-run state collision.
+// input is the raw EngineInput template; the workflow materializes fresh IncomingMessage
+// IDs and timestamps at each firing to prevent duplicate idempotency keys across runs.
 export interface ScheduledSpawnArgs {
   readonly agentId: AgentId;
   readonly stateRefs: AgentStateRefs;
-  readonly initialMessages?: readonly IncomingMessage[] | undefined;
+  readonly input: EngineInput;
 }
 
 export interface AgentStateRefs {

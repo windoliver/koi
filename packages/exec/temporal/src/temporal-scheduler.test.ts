@@ -218,8 +218,11 @@ describe("dispatch mode", () => {
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
-    const opts = createArgs?.[1] as { action: { type: string; workflowId: string } };
+    const opts = createArgs?.[1] as {
+      action: { type: string; signalName: string; workflowId: string };
+    };
     expect(opts.action.type).toBe("sendSignal");
+    expect(opts.action.signalName).toBe("scheduled-input");
     expect(opts.action.workflowId).toBe(String(AGENT_ID));
   });
 
@@ -332,7 +335,7 @@ describe("cancel", () => {
 });
 
 describe("schedule / unschedule", () => {
-  test("creates a Temporal schedule with initialMessages", async () => {
+  test("creates a Temporal schedule with raw EngineInput template (not baked messages)", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     const id = await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
@@ -341,7 +344,9 @@ describe("schedule / unschedule", () => {
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
     const wfConfig = opts.action.args[0];
-    expect(wfConfig).toHaveProperty("initialMessages");
+    // Raw EngineInput is embedded so each firing generates fresh IDs/timestamps
+    expect(wfConfig).toHaveProperty("input");
+    expect(wfConfig).not.toHaveProperty("initialMessages");
   });
 
   test("passes timezone in schedule spec", async () => {
@@ -409,7 +414,21 @@ describe("schedule / unschedule", () => {
     expect(s.activeSchedules).toBe(0);
   });
 
-  test("dispatch schedule with multi-message input throws to prevent silent message loss", async () => {
+  test("dispatch schedule uses scheduled-input signal with raw EngineInput (no baked message IDs)", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as {
+      action: { type: string; signalName: string; args: readonly unknown[] };
+    };
+    expect(opts.action.type).toBe("sendSignal");
+    expect(opts.action.signalName).toBe("scheduled-input");
+    // Raw EngineInput template passed so each firing materializes fresh message IDs/timestamps
+    expect(opts.action.args[0]).toEqual(TEXT_INPUT);
+  });
+
+  test("dispatch schedule with multi-message input passes raw input without materialization", async () => {
     const twoMessages = {
       kind: "messages",
       messages: [
@@ -417,22 +436,13 @@ describe("schedule / unschedule", () => {
         { content: [{ kind: "text", text: "msg2" }], senderId: "u2", timestamp: 2 },
       ],
     } as unknown as EngineInput;
-    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
-    await expect(
-      scheduler.schedule("0 0 * * *", AGENT_ID, twoMessages, "dispatch"),
-    ).rejects.toThrow("Scheduled dispatch supports exactly one message per firing");
-  });
-
-  test("dispatch schedule sends single message as first positional arg matching direct-dispatch shape", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
-    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+    // No throw — raw EngineInput is passed through; workflow handles fan-out
+    await scheduler.schedule("0 0 * * *", AGENT_ID, twoMessages, "dispatch");
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly unknown[] } };
-    expect(opts.action.args).toHaveLength(1);
-    expect((opts.action.args[0] as { content: unknown[] }).content).toEqual([
-      { kind: "text", text: "hello" },
-    ]);
+    expect(opts.action.args[0]).toEqual(twoMessages);
   });
 
   test("spawn schedule omits sessionId so each run uses its own execution id", async () => {
