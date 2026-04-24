@@ -59,7 +59,7 @@ export interface WebhookServer {
   readonly port: () => number;
 }
 
-export type WebhookDispatcher = (session: Session, frame: GatewayFrame) => void;
+export type WebhookDispatcher = (session: Session, frame: GatewayFrame) => Promise<void> | void;
 
 export type WebhookAuthenticator = (
   request: Request,
@@ -195,6 +195,9 @@ export function createWebhookServer(
     if (authenticator !== undefined) {
       const authResult = await authenticator(request, rawBody);
       if (!authResult.ok) {
+        if (pendingDedupKey !== undefined) {
+          idempotencyStore.abort(pendingDedupKey);
+        }
         return jsonResponse(401, { ok: false, error: authResult.error.message });
       }
       agentId = authResult.value.agentId;
@@ -224,7 +227,7 @@ export function createWebhookServer(
     };
 
     try {
-      dispatcher(session, frame);
+      await Promise.resolve(dispatcher(session, frame));
     } catch (err: unknown) {
       // Abort dedup reservation so provider can retry and be accepted.
       if (pendingDedupKey !== undefined) {

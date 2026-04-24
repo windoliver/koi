@@ -541,6 +541,107 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     expect(b2.duplicate).toBe(true);
     expect(dispatched).toHaveLength(1);
   });
+
+  test("authenticator failure after dedup reservation aborts key — retry is accepted", async () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+
+    let authCallCount = 0;
+    const flakyAuthenticator: WebhookAuthenticator = async (_req, _raw) => {
+      authCallCount++;
+      if (authCallCount === 1) {
+        return {
+          ok: false,
+          error: { code: "AUTH_REQUIRED", message: "auth backend down", retryable: true },
+        };
+      }
+      return { ok: true, value: { agentId: "webhook" } };
+    };
+
+    const srv = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      dispatcher,
+      flakyAuthenticator,
+      { github: secret },
+    );
+    await srv.start();
+
+    const headers = {
+      "X-Hub-Signature-256": sig,
+      "X-GitHub-Delivery": "auth-fail-delivery-id",
+      "Content-Type": "application/json",
+    };
+
+    // First delivery — authenticator fails → dedup key must be aborted
+    const res1 = await fetch(`http://localhost:${srv.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res1.status).toBe(401);
+    expect(dispatched).toHaveLength(0);
+
+    // Retry — same delivery ID — must NOT be treated as duplicate
+    const res2 = await fetch(`http://localhost:${srv.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res2.status).toBe(200);
+    const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
+    expect(b2.ok).toBe(true);
+    expect(b2.duplicate).toBeUndefined();
+    expect(dispatched).toHaveLength(1);
+    srv.stop();
+  });
+
+  test("async dispatcher rejection aborts dedup key — retry is accepted", async () => {
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+
+    let dispatchCount = 0;
+    async function asyncFailingDispatcher(_session: Session, _frame: GatewayFrame): Promise<void> {
+      dispatchCount++;
+      if (dispatchCount === 1) throw new Error("async transient failure");
+    }
+
+    const srv = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      asyncFailingDispatcher,
+      undefined,
+      { github: secret },
+    );
+    await srv.start();
+
+    const headers = {
+      "X-Hub-Signature-256": sig,
+      "X-GitHub-Delivery": "async-fail-delivery-id",
+      "Content-Type": "application/json",
+    };
+
+    // First delivery — async dispatcher rejects → dedup key aborted
+    const res1 = await fetch(`http://localhost:${srv.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res1.status).toBe(500);
+
+    // Retry — must be accepted, not treated as duplicate
+    const res2 = await fetch(`http://localhost:${srv.port()}/webhook/github`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res2.status).toBe(200);
+    const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
+    expect(b2.ok).toBe(true);
+    expect(b2.duplicate).toBeUndefined();
+    expect(dispatchCount).toBe(2);
+    srv.stop();
+  });
 });
 
 // ---------------------------------------------------------------------------
