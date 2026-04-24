@@ -102,19 +102,37 @@ interface LongRunningConfig {
 ### `LongRunningHarness`
 
 ```ts
+/** Opaque token proving the caller owns the currently-active session. */
+interface SessionLease {
+  readonly sessionId: string;
+  readonly generation: number; // monotonic per harness, persisted
+}
+
 interface LongRunningHarness {
   readonly harnessId: HarnessId;
   readonly start: (plan: TaskBoardSnapshot) => Promise<Result<StartResult, KoiError>>;
   readonly resume: () => Promise<Result<ResumeResult, KoiError>>;
-  readonly pause: (session: SessionResult) => Promise<Result<void, KoiError>>;
-  readonly fail: (err: KoiError) => Promise<Result<void, KoiError>>;
-  readonly completeTask: (id: TaskItemId, result: TaskResult) => Promise<Result<void, KoiError>>;
-  readonly failTask: (id: TaskItemId, err: KoiError) => Promise<Result<void, KoiError>>;
+  readonly pause: (lease: SessionLease, session: SessionResult) => Promise<Result<void, KoiError>>;
+  readonly fail: (lease: SessionLease, err: KoiError) => Promise<Result<void, KoiError>>;
+  readonly completeTask: (
+    lease: SessionLease,
+    id: TaskItemId,
+    result: TaskResult,
+  ) => Promise<Result<void, KoiError>>;
+  readonly failTask: (
+    lease: SessionLease,
+    id: TaskItemId,
+    err: KoiError,
+  ) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
-  readonly createMiddleware: () => KoiMiddleware;
+  readonly createMiddleware: (lease: SessionLease) => KoiMiddleware;
   readonly dispose: () => Promise<void>;
 }
 ```
+
+`StartResult` and `ResumeResult` both carry a fresh `SessionLease`. Callers pass
+it back on every mutating call; stale leases are rejected with
+`KoiError { code: "STALE_SESSION" }`.
 
 ## Behavior
 
@@ -147,14 +165,40 @@ We never mutate stored state in place. A crashed write leaves the prior snapshot
 as the valid resume point. This matches v1 behavior and relies on
 `SnapshotChainStore` (already validated in L0).
 
-### Resume
+### Resume — Exclusive Lease Protocol
 
-1. `harnessStore.latest()` → `HarnessSnapshot | undefined`.
-2. If undefined → return `KoiError` code=`NOT_FOUND`.
-3. If `phase === "completed" | "failed"` → return `KoiError` code=`TERMINAL`.
-4. Reconstruct runtime state from snapshot (phase → `active`, sessionSeq++).
-5. Re-emit `ContextSummary`s + `KeyArtifact`s via `buildResumeContext` → `EngineInput`.
-6. Mark new session "running" via `sessionPersistence.setSessionStatus`.
+Concurrent resume attempts must not both produce an active session. The lease
+protocol below fences duplicate execution:
+
+1. Read `harnessStore.latest()` → `prev: HarnessSnapshot | undefined`.
+   - Undefined → `KoiError { code: "NOT_FOUND" }`.
+   - `prev.phase ∈ { completed, failed }` → `KoiError { code: "TERMINAL" }`.
+   - `prev.phase === "active"` → `KoiError { code: "ALREADY_ACTIVE", retryable: true }`
+     (a peer holds the lease; caller can retry after a bounded wait).
+2. Build `next: HarnessSnapshot` from `prev` with:
+   `phase = "active"`, `sessionSeq = prev.sessionSeq + 1`,
+   `generation = prev.generation + 1`, `lastSessionId = newSessionId`.
+3. `harnessStore.compareAndPut(prev.chainHead, next)` — CAS-conditioned advance.
+   If CAS fails (another caller raced us) → `KoiError { code: "CONCURRENT_RESUME", retryable: true }`.
+4. Only after CAS success: mint a `SessionLease { sessionId, generation }`,
+   mark session "running" via `sessionPersistence.setSessionStatus`, build resume
+   context, return `ResumeResult` carrying the lease.
+
+`start()` uses the same protocol with `prev === undefined` as the precondition
+(the CAS tolerates absence → initial snapshot).
+
+All mutating calls (`pause`, `fail`, `completeTask`, `failTask`, checkpoint
+middleware writes) take the `SessionLease` as an explicit argument. Before every
+store write, the harness asserts `lease.generation === currentSnapshot.generation`.
+Stale leases (timed-out sessions, superseded runs) are rejected with
+`KoiError { code: "STALE_SESSION", retryable: false }` and their writes are
+never persisted. This closes the "late callback after timeout" and "replacement
+session already claimed the harness" races.
+
+Requires L0 support: `HarnessSnapshot.generation: number` and
+`SnapshotChainStore.compareAndPut(expectedHead, next)`. If either is missing,
+add them as a prerequisite L0 PR before implementing this L2 package — the
+design does not regress to lease-less semantics.
 
 ### Progress Tracking
 
@@ -169,10 +213,15 @@ Derived from `HarnessStatus`, not stored separately:
 - Optional `timeoutMs` in config.
 - On `start()` / `resume()`: harness creates an `AbortController` with
   `setTimeout(controller.abort, timeoutMs)`.
-- `AbortSignal` is attached to the returned `EngineInput`.
-- On abort: harness transitions to `failed` with
-  `KoiError { code: "TIMEOUT", retryable: false }` and best-effort final snapshot.
-- Caller is responsible for wiring the signal into the engine adapter.
+- `AbortSignal` is attached to the returned `EngineInput`; the caller MUST wire
+  it into the engine adapter.
+- **On timeout fire, the harness revokes the active lease FIRST** (advances
+  `generation` via CAS to an intermediate `failed` snapshot), then invokes
+  `onFailed`. Any subsequent callback from the aborted run — even late
+  `completeTask` / `failTask` calls — presents a stale lease and is rejected
+  with `STALE_SESSION`. This prevents a cooperative-but-slow adapter from
+  writing after the harness has moved on.
+- Best-effort final snapshot carries `failureReason = "TIMEOUT"`.
 
 ### Cleanup on Abandonment
 
@@ -188,14 +237,40 @@ No process-level cleanup (kill subprocess, close sockets) — that's `@koi/daemo
 ### Checkpoint Middleware
 
 ```ts
-createCheckpointMiddleware({ harness, policy? }): KoiMiddleware
+createCheckpointMiddleware({
+  harness,
+  lease,                              // SessionLease for the current run
+  onDurabilityLost,                   // required — host escalation callback
+  policy?,
+  continueWithoutDurability?: boolean // default false; explicit opt-in for in-memory-only
+}): KoiMiddleware
 ```
 
 Single hook: `afterTurn`. On each turn boundary:
 
 1. `shouldSoftCheckpoint(turnCount, policy.interval)` → bool.
-2. If true: capture `EngineState` via `cfg.saveState?.()`, build snapshot,
-   `harnessStore.put(...)`. Non-blocking — errors logged, do not fail the turn.
+2. If false: return.
+3. Capture `EngineState` via `cfg.saveState?.()`, build snapshot with current
+   `lease.generation`, call `harnessStore.compareAndPut(expectedHead, next)`.
+4. **On CAS success:** update in-memory head reference. Return.
+5. **On CAS failure where `expectedHead` mismatches** (another writer raced or
+   our lease was revoked): treat as `STALE_SESSION`, fail the turn with that
+   error, invoke `onDurabilityLost` with the error, revoke our local lease.
+6. **On CAS failure due to store I/O error:** escalate. The harness is marked
+   `unhealthy`; `status().phase` remains what it was but `status().durability`
+   flips to `"lost"`. The middleware:
+   - If `continueWithoutDurability === true`: emit warning event, allow the
+     turn to continue (caller accepted the risk).
+   - Otherwise (default): fail the turn with
+     `KoiError { code: "CHECKPOINT_WRITE_FAILED", retryable: true }`, invoke
+     `onDurabilityLost`, and transition the harness to `suspended` (best-effort
+     snapshot skipped — durability is already broken).
+
+Rationale: a package whose entire purpose is durable long-running state must
+not silently degrade to memory-only. Silent failure turns an eventual crash
+into unrecoverable progress loss with no signal to the scheduler. The default
+fails loudly; operators who genuinely want memory-only continuation must opt
+in per-harness.
 
 ## File Layout
 
@@ -241,10 +316,29 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 ### Unit: `checkpoint-middleware.test.ts`
 
 - Fires soft checkpoint every `softCheckpointInterval` turns.
-- `saveState` failure does not abort the turn.
-- Store write failure does not abort the turn.
+- CAS success advances head; subsequent soft checkpoint uses new head.
+- **Default behavior:** store I/O failure fails the turn with
+  `CHECKPOINT_WRITE_FAILED`, invokes `onDurabilityLost`, transitions harness to
+  `suspended`. No silent degradation.
+- **Opt-in:** `continueWithoutDurability=true` keeps the turn running on I/O
+  failure but still invokes `onDurabilityLost`.
+- `saveState` thrown exception fails the turn cleanly (no snapshot written).
 - **Atomicity invariant:** simulated crash between put-payload and advance-pointer
   leaves store readable at prior snapshot.
+- **Stale-lease rejection:** checkpoint attempt with a revoked lease is rejected
+  with `STALE_SESSION` and does not mutate the store.
+
+### Unit: race tests (`harness.test.ts`)
+
+- **Double resume:** two concurrent `resume()` calls on the same suspended
+  harness — exactly one succeeds, the other returns `CONCURRENT_RESUME` or
+  `ALREADY_ACTIVE`.
+- **Late callback after timeout:** timeout fires → harness revokes lease →
+  subsequent `completeTask(oldLease, …)` returns `STALE_SESSION` and does not
+  mutate the snapshot.
+- **Stale writer vs. replacement session:** `start` → `pause` → `resume` mints a
+  new lease; an in-flight caller holding the first lease attempts
+  `completeTask` → rejected with `STALE_SESSION`; new lease's writes succeed.
 
 ### Unit: `checkpoint-policy.test.ts`
 
@@ -296,7 +390,10 @@ All errors are `KoiError` from L0. Codes used:
 | `TERMINAL` | action on completed/failed harness | false |
 | `INVALID_STATE` | phase transition not allowed | false |
 | `TIMEOUT` | session exceeded `timeoutMs` | false |
-| `CHECKPOINT_WRITE_FAILED` | store `put` rejected | true |
+| `ALREADY_ACTIVE` | `resume()` while another session holds an active lease | true |
+| `CONCURRENT_RESUME` | CAS failed: peer claimed the lease first | true |
+| `STALE_SESSION` | mutating call presented a revoked/superseded lease | false |
+| `CHECKPOINT_WRITE_FAILED` | store `put`/`compareAndPut` rejected (I/O) | true |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
@@ -307,9 +404,23 @@ All errors are `KoiError` from L0. Codes used:
 - Claude Code: `src/tasks/LocalMainSessionTask.ts` — validates the
   background/resume/notify UX pattern (single-process analogue).
 
+## L0 Prerequisites
+
+This design requires two additions to `@koi/core` before the L2 package can be
+implemented:
+
+1. `HarnessSnapshot.generation: number` — monotonic per harness, incremented on
+   every session transition. Drives lease fencing.
+2. `SnapshotChainStore.compareAndPut(expectedHead, next)` — CAS-conditioned
+   advance. Existing `put` is insufficient for exclusivity guarantees.
+
+Both are additive (backward-compatible) L0 changes and should land in a
+prerequisite PR.
+
 ## Open Questions
 
-None blocking. The design maps cleanly onto existing L0 contracts.
+None blocking. The design maps cleanly onto existing L0 contracts once the two
+prerequisites above are added.
 
 ## Risks
 
