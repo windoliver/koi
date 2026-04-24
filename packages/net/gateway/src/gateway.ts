@@ -3,7 +3,8 @@
  * into a minimal WebSocket control-plane entry point.
  *
  * Intentionally omits: node registry, tool routing, session resume TTL,
- * channel binding, scheduler, and heartbeat sweep — those belong in future issues.
+ * channel binding, scheduler, heartbeat sweep, auth token revocation / periodic
+ * re-validation, and disconnected-session TTL sweep — those belong in future issues.
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -348,16 +349,21 @@ export function createGateway(
           const prevConnId = connBySession.get(result.session.id);
           let savedTracker: ReturnType<typeof createSequenceTracker> | undefined;
           if (prevConnId !== undefined && prevConnId !== conn.id) {
-            // Drain queued work on the old connection BEFORE severing its session mapping.
-            // If we sever first, frames already enqueued in msgQueues would hit
-            // sessionId===undefined and be rejected as NOT_AUTHORIZED instead of being
-            // processed and persisted (violating at-least-once delivery).
+            // Install the sever operation as the new queue tail (the "barrier") before
+            // awaiting. Any message that arrives on the old socket during the drain is then
+            // chained after the barrier, so it runs only AFTER sessionByConn/trackers are
+            // cleared — preventing it from racing the new connection's store operations.
+            // This also preserves at-least-once delivery for already-queued frames because
+            // those frames run before the barrier, while the session mapping is still intact.
             savedTracker = trackers.get(prevConnId);
             const drainQueue = msgQueues.get(prevConnId) ?? Promise.resolve();
-            msgQueues.delete(prevConnId);
-            await drainQueue;
-            sessionByConn.delete(prevConnId);
-            trackers.delete(prevConnId);
+            const pId = prevConnId; // capture for closure
+            const barrierDone = drainQueue.then((): void => {
+              sessionByConn.delete(pId);
+              trackers.delete(pId);
+            });
+            msgQueues.set(prevConnId, barrierDone);
+            await barrierDone;
           }
 
           // Helper: un-fence the old conn and reject the new one on store failure.
