@@ -838,22 +838,33 @@ function parseManifestAudit(
     }
 
     const parentDir = dirname(lexicalResolved);
+    let realParentDir: string;
     try {
-      const realParentDir = realpathSync(parentDir);
-      const parentRel = relative(realManifestDir, realParentDir);
-      if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+      realParentDir = realpathSync(parentDir);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        // Require the parent directory to exist at load time. Accepting a
+        // missing parent would let sessions start with audit "enabled" while
+        // writes fail later — an undetected gap in a compliance feature.
         return {
           ok: false,
           error:
-            `manifest.audit.${field}: path "${value}" resolves through a symlinked parent directory ` +
-            `that escapes the manifest directory (real parent: "${realParentDir}", real manifest dir: "${realManifestDir}"). ` +
-            "Audit paths must stay within the manifest directory when configured from manifest content.",
+            `manifest.audit.${field}: parent directory "${parentDir}" does not exist. ` +
+            "Create the directory before running koi tui with this manifest, or remove the audit path.",
         };
       }
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      // Parent doesn't exist yet — lexical check passed, accept.
-      return { ok: true, value: lexicalResolved };
+      throw err;
+    }
+    const parentRel = relative(realManifestDir, realParentDir);
+    if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: path "${value}" resolves through a symlinked parent directory ` +
+          `that escapes the manifest directory (real parent: "${realParentDir}", real manifest dir: "${realManifestDir}"). ` +
+          "Audit paths must stay within the manifest directory when configured from manifest content.",
+      };
     }
 
     // If the file itself already exists, verify it is not a symlink.

@@ -477,6 +477,7 @@ describe("loadManifestConfig: supervision block", () => {
 
 describe("loadManifestConfig: audit block (#1994)", () => {
   let dir: string;
+  let logsDir: string;
   const writeManifest = (yaml: string): string => {
     const p = join(dir, "koi.manifest.yaml");
     writeFileSync(p, yaml);
@@ -485,6 +486,10 @@ describe("loadManifestConfig: audit block (#1994)", () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "koi-manifest-audit-"));
+    // Most path-anchoring tests reference ./logs/ — create it so the parent-
+    // existence check passes. Tests covering missing parents use different paths.
+    logsDir = join(dir, "logs");
+    mkdirSync(logsDir);
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
@@ -638,12 +643,38 @@ describe("loadManifestConfig: audit block (#1994)", () => {
   });
 
   test("rejects path whose parent is a symlink escaping the manifest dir", async () => {
-    // Create a directory outside the manifest temp dir to serve as the
-    // symlink target — simulates a committed `logs -> /external` entry.
+    // Use a different directory name (sinks/) so it does not collide with the
+    // logs/ directory pre-created in beforeEach.
     const externalDir = mkdtempSync(join(tmpdir(), "koi-audit-external-"));
     try {
-      const logsLink = join(dir, "logs");
-      symlinkSync(externalDir, logsLink);
+      const sinksLink = join(dir, "sinks");
+      symlinkSync(externalDir, sinksLink);
+      const p = writeManifest(
+        [
+          "model:",
+          "  name: google/gemini-2.0-flash-001",
+          "audit:",
+          "  sqlite: sinks/audit.db",
+        ].join("\n"),
+      );
+      const result = await loadManifestConfig(p);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain("sqlite");
+      expect(result.error).toContain("symlink");
+    } finally {
+      rmSync(externalDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects path that is itself a symlink", async () => {
+    // logs/ is pre-created in beforeEach; place a symlink file inside it.
+    const externalDir = mkdtempSync(join(tmpdir(), "koi-audit-external-"));
+    try {
+      const externalFile = join(externalDir, "audit.db");
+      writeFileSync(externalFile, "");
+      const fileLink = join(logsDir, "audit.db");
+      symlinkSync(externalFile, fileLink);
       const p = writeManifest(
         ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqlite: logs/audit.db"].join(
           "\n",
@@ -659,28 +690,35 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     }
   });
 
-  test("rejects path that is itself a symlink", async () => {
-    // Create a real file outside the manifest dir, then commit a
-    // symlink inside dir pointing to it.
-    const externalDir = mkdtempSync(join(tmpdir(), "koi-audit-external-"));
-    try {
-      const externalFile = join(externalDir, "audit.db");
-      writeFileSync(externalFile, "");
-      mkdirSync(join(dir, "logs"));
-      const fileLink = join(dir, "logs", "audit.db");
-      symlinkSync(externalFile, fileLink);
-      const p = writeManifest(
-        ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqlite: logs/audit.db"].join(
-          "\n",
-        ),
-      );
-      const result = await loadManifestConfig(p);
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toContain("sqlite");
-      expect(result.error).toContain("symlink");
-    } finally {
-      rmSync(externalDir, { recursive: true, force: true });
-    }
+  test("rejects ndjson path whose parent directory does not exist", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ./missing-dir/audit.ndjson",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ndjson");
+    expect(result.error).toContain("does not exist");
+  });
+
+  test("rejects sqlite path whose parent directory does not exist", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  sqlite: ./missing-dir/audit.db",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("sqlite");
+    expect(result.error).toContain("does not exist");
   });
 });
