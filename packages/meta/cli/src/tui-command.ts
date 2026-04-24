@@ -1096,8 +1096,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
+    // Pass skipAuditValidation when KOI_ALLOW_MANIFEST_FILE_SINKS is off so a
+    // malformed audit: block in a shared manifest cannot block TUI startup on
+    // hosts that have not opted into manifest file sinks.
     const manifestResult = await loadManifestConfig(resolvedManifestPath, {
       allowOAuthSchemes: true,
+      skipAuditValidation: process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1",
     });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);

@@ -513,6 +513,7 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.audit).toEqual({
+      present: true,
       ndjson: "/abs/logs/audit.ndjson",
       sqlite: "/abs/logs/audit.db",
       violations: "/abs/logs/violations.db",
@@ -555,14 +556,45 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.value.audit?.violations).toBeUndefined();
   });
 
-  test("returns undefined audit when all fields absent from block", async () => {
+  test("returns non-undefined audit with present:true when block is empty", async () => {
     const p = writeManifest(
       ["model:", "  name: google/gemini-2.0-flash-001", "audit: {}"].join("\n"),
     );
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.audit).toBeUndefined();
+    // Empty block: present:true, all paths undefined
+    expect(result.value.audit).not.toBeUndefined();
+    expect(result.value.audit?.present).toBe(true);
+    expect(result.value.audit?.ndjson).toBeUndefined();
+    expect(result.value.audit?.sqlite).toBeUndefined();
+    expect(result.value.audit?.violations).toBeUndefined();
+  });
+
+  test("rejects unknown keys in strict mode (catches typos)", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqltie: ./logs/audit.db"].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("sqltie");
+  });
+
+  test("accepts unknown keys in lenient mode (skipAuditValidation)", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqltie: ./logs/audit.db"].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p, { skipAuditValidation: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Lenient: block presence detected, no validation
+    expect(result.value.audit?.present).toBe(true);
+    expect(result.value.audit?.ndjson).toBeUndefined();
   });
 
   test("rejects non-object audit block", async () => {

@@ -307,8 +307,13 @@ export interface ManifestConfig {
  * Audit sink paths lifted from the manifest. Each field is the absolute path
  * (anchored to manifest dir at parse time) for the corresponding sink.
  * Precedence: env var → manifest → default (violations only).
+ *
+ * `present` is always `true` — indicates the `audit:` block was present in the
+ * manifest even when all three sink fields are undefined (e.g. `audit: {}`).
+ * Hosts use this to detect the block regardless of which fields were set.
  */
 export interface ManifestAuditConfig {
+  readonly present: true;
   readonly ndjson: string | undefined;
   readonly sqlite: string | undefined;
   readonly violations: string | undefined;
@@ -341,6 +346,15 @@ export interface LoadManifestOptions {
    * keep the default `false` so OAuth-gated schemes fail fast at parse time.
    */
   readonly allowOAuthSchemes?: boolean | undefined;
+  /**
+   * When `true`, the `audit:` block is parsed leniently — block presence is
+   * detected and the `present: true` marker is set, but field values and unknown
+   * keys are NOT validated. Use this on hosts where the feature gate is off so a
+   * malformed `audit:` stanza in a shared manifest cannot deny startup. Hosts
+   * that actually wire audit sinks (where `KOI_ALLOW_MANIFEST_FILE_SINKS=1`)
+   * must pass `false` (the default) so typos and invalid paths are caught early.
+   */
+  readonly skipAuditValidation?: boolean | undefined;
 }
 
 /**
@@ -460,7 +474,7 @@ export async function loadManifestConfig(
     return supervisionResult;
   }
 
-  const auditResult = parseManifestAudit(raw.audit, path);
+  const auditResult = parseManifestAudit(raw.audit, path, options?.skipAuditValidation === true);
   if (!auditResult.ok) {
     return auditResult;
   }
@@ -711,17 +725,28 @@ function parseManifestSupervision(
   return { ok: true, value: valid.value };
 }
 
+const AUDIT_KNOWN_KEYS = new Set(["ndjson", "sqlite", "violations"]);
+
 /**
- * Parse the manifest `audit:` section. Accepts any subset of:
- *   ndjson (non-empty string — anchored to manifest dir if relative)
- *   sqlite (non-empty string — anchored to manifest dir if relative)
- *   violations (non-empty string — anchored to manifest dir if relative)
+ * Parse the manifest `audit:` section.
  *
- * Returns `{ ok: true, value: undefined }` when absent.
+ * When `lenient` is true (gate off): block presence is detected and the
+ * `present: true` marker is set, but field values and unknown keys are NOT
+ * validated. Use this on hosts where the feature gate is not enabled so a
+ * malformed stanza cannot deny startup.
+ *
+ * When `lenient` is false (strict, gate on): unknown keys are rejected,
+ * field values are validated, and paths are anchored to the manifest dir.
+ *
+ * Returns `{ ok: true, value: undefined }` only when the block is absent.
+ * Returns a non-undefined `ManifestAuditConfig` (with `present: true`) when
+ * the block is present — even for `audit: {}` — so hosts can always detect
+ * block presence for rejection/warning.
  */
 function parseManifestAudit(
   raw: unknown,
   manifestPath: string,
+  lenient: boolean,
 ): ParseResult<ManifestAuditConfig | undefined> {
   if (raw === undefined) {
     return { ok: true, value: undefined };
@@ -734,6 +759,27 @@ function parseManifestAudit(
     };
   }
   const rec = raw as Record<string, unknown>;
+
+  // Lenient mode: just record block presence, skip all field validation.
+  if (lenient) {
+    return {
+      ok: true,
+      value: { present: true, ndjson: undefined, sqlite: undefined, violations: undefined },
+    };
+  }
+
+  // Strict mode: reject unknown keys so typos are caught, not silently ignored.
+  for (const key of Object.keys(rec)) {
+    if (!AUDIT_KNOWN_KEYS.has(key)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit: unknown key "${key}". Recognized keys: ndjson, sqlite, violations. ` +
+          "Check for typos — unknown keys are rejected to prevent silent audit misconfiguration.",
+      };
+    }
+  }
+
   const manifestDir = dirname(resolvePath(manifestPath));
 
   const anchorPath = (field: string, value: unknown): ParseResult<string | undefined> => {
@@ -759,17 +805,10 @@ function parseManifestAudit(
   const violationsResult = anchorPath("violations", rec.violations);
   if (!violationsResult.ok) return violationsResult;
 
-  if (
-    ndjsonResult.value === undefined &&
-    sqliteResult.value === undefined &&
-    violationsResult.value === undefined
-  ) {
-    return { ok: true, value: undefined };
-  }
-
   return {
     ok: true,
     value: {
+      present: true,
       ndjson: ndjsonResult.value,
       sqlite: sqliteResult.value,
       violations: violationsResult.value,
