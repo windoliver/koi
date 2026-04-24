@@ -948,7 +948,7 @@ describe("McpConnection triggerAuth", () => {
 
     // triggerAuth from connected state must not throw a state-machine error
     expect(conn.triggerAuth).toBeDefined();
-    const result = await conn.triggerAuth!();
+    const result = await conn.triggerAuth?.();
 
     expect(result.ok).toBe(true);
     expect(onAuthNeeded).toHaveBeenCalledTimes(1);
@@ -968,7 +968,7 @@ describe("McpConnection triggerAuth", () => {
     });
 
     await conn.connect();
-    const result = await conn.triggerAuth!();
+    const result = await conn.triggerAuth?.();
 
     expect(result.ok).toBe(true);
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
@@ -987,7 +987,7 @@ describe("McpConnection triggerAuth", () => {
     await conn.connect();
 
     // Fire two concurrent triggerAuth calls
-    const [r1, r2] = await Promise.all([conn.triggerAuth!(), conn.triggerAuth!()]);
+    const [r1, r2] = await Promise.all([conn.triggerAuth?.(), conn.triggerAuth?.()]);
 
     expect(r1.ok).toBe(true);
     expect(r2.ok).toBe(true);

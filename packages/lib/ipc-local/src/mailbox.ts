@@ -222,9 +222,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): LocalMailboxInst
             },
           };
         }
-        const deliverSelf = deliveryFunctions.get(self!);
+        if (self === undefined) throw new Error("invariant: self not initialized");
+        const deliverSelf = deliveryFunctions.get(self);
         if (deliverSelf !== undefined) {
-          return deliverSelf(input, self!);
+          return deliverSelf(input, self);
         }
       }
 
@@ -262,7 +263,8 @@ export function createLocalMailbox(config: LocalMailboxConfig): LocalMailboxInst
           // and it is not accessible via reflection on the target mailbox object.
           const deliverToTarget = deliveryFunctions.get(fullTarget);
           if (deliverToTarget !== undefined) {
-            return deliverToTarget(input, self!);
+            if (self === undefined) throw new Error("invariant: self not initialized");
+            return deliverToTarget(input, self);
           }
           return fullTarget.send(input);
         }
@@ -440,7 +442,7 @@ export function createLocalMailbox(config: LocalMailboxConfig): LocalMailboxInst
     }
     const envelope: AgentMessageInput = { ...input };
     routedInputs.add(envelope);
-    return self!.send(envelope);
+    return self?.send(envelope);
   });
 
   // Stamp the cross-instance brand as a non-enumerable, non-configurable property.
