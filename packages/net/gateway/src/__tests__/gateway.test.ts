@@ -211,7 +211,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const received: GatewayFrame[] = [];
-      gateway.onFrame((_sess, frame) => received.push(frame));
+      gateway.onFrame("a1", (_sess, frame) => received.push(frame));
 
       const conn = await authenticateConn(transport, gateway, "s-frame");
       transport.simulateMessage(conn.id, frameStr({ seq: 0 }));
@@ -232,7 +232,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const received: GatewayFrame[] = [];
-      gateway.onFrame((_sess, frame) => received.push(frame));
+      gateway.onFrame("a1", (_sess, frame) => received.push(frame));
 
       const conn = await authenticateConn(transport, gateway, "s-dedup");
       const frameJson = frameStr({ seq: 0, id: "dup-frame" });
@@ -255,7 +255,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const received: GatewayFrame[] = [];
-      const unsub = gateway.onFrame((_sess, frame) => received.push(frame));
+      const unsub = gateway.onFrame("a1", (_sess, frame) => received.push(frame));
 
       const conn = await authenticateConn(transport, gateway, "s-unsub");
       transport.simulateMessage(conn.id, frameStr({ seq: 0 }));
@@ -299,7 +299,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const received: GatewayFrame[] = [];
-      gateway.onFrame((_sess, frame) => received.push(frame));
+      gateway.onFrame("a1", (_sess, frame) => received.push(frame));
 
       const conn = await authenticateConn(transport, gateway, "s-serial");
 
@@ -328,10 +328,10 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const sub2Received: GatewayFrame[] = [];
-      gateway.onFrame(() => {
+      gateway.onFrame("a1", () => {
         throw new Error("subscriber 1 fails");
       });
-      gateway.onFrame((_s, f) => sub2Received.push(f));
+      gateway.onFrame("a1", (_s, f) => sub2Received.push(f));
 
       const conn = await authenticateConn(transport, gateway, "s-fanout-abort");
       transport.simulateMessage(conn.id, frameStr({ seq: 0 }));
@@ -352,7 +352,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const received: GatewayFrame[] = [];
-      gateway.onFrame((_sess, frame) => received.push(frame));
+      gateway.onFrame("a1", (_sess, frame) => received.push(frame));
 
       const conn = await authenticateConn(transport, gateway, "s-bad");
       transport.simulateMessage(conn.id, "{not valid json}");
@@ -407,7 +407,7 @@ describe("createGateway", () => {
     test("routes frame to all onFrame handlers", () => {
       gateway = createGateway({}, { transport, auth: createTestAuthenticator() });
       const received: GatewayFrame[] = [];
-      gateway.onFrame((_s, f) => received.push(f));
+      gateway.onFrame("test-agent", (_s, f) => received.push(f));
 
       const session = createTestSession();
       const frame = createTestFrame({ seq: 42 });

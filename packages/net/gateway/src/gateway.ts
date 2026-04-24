@@ -45,7 +45,10 @@ export interface Gateway {
   readonly start: (port: number) => Promise<void>;
   readonly stop: () => Promise<Result<void, KoiError>>;
   readonly sessions: () => SessionStore;
-  readonly onFrame: (handler: (session: Session, frame: GatewayFrame) => void) => () => void;
+  readonly onFrame: (
+    agentId: string,
+    handler: (session: Session, frame: GatewayFrame) => void,
+  ) => () => void;
   readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
   readonly destroySession: (sessionId: string, reason?: string) => Promise<Result<void, KoiError>>;
@@ -120,7 +123,10 @@ export function createGateway(
   // Set to true by stop() so pending handshake continuations bail out before store.set().
   let stopped = false;
 
-  const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
+  // Frame handlers keyed by agentId. Delivery is scoped: emitFrames only fans out to
+  // handlers whose agentId matches the session's agentId, preventing cross-tenant/agent
+  // observation. The caller must supply the agentId they own; there is no global wildcard.
+  const frameHandlers = new Map<string, Set<(session: Session, frame: GatewayFrame) => void>>();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
 
   let criticalSweep: ReturnType<typeof setInterval> | undefined;
@@ -142,8 +148,10 @@ export function createGateway(
   }
 
   function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
+    const handlers = frameHandlers.get(session.agentId);
+    if (handlers === undefined) return;
     for (const frame of frames) {
-      for (const handler of frameHandlers) {
+      for (const handler of handlers) {
         try {
           handler(session, frame);
         } catch (err: unknown) {
@@ -899,10 +907,19 @@ export function createGateway(
       return store;
     },
 
-    onFrame(handler: (session: Session, frame: GatewayFrame) => void): () => void {
-      frameHandlers.add(handler);
+    onFrame(agentId: string, handler: (session: Session, frame: GatewayFrame) => void): () => void {
+      let set = frameHandlers.get(agentId);
+      if (set === undefined) {
+        set = new Set();
+        frameHandlers.set(agentId, set);
+      }
+      set.add(handler);
       return () => {
-        frameHandlers.delete(handler);
+        const s = frameHandlers.get(agentId);
+        if (s !== undefined) {
+          s.delete(handler);
+          if (s.size === 0) frameHandlers.delete(agentId);
+        }
       };
     },
 
@@ -955,6 +972,12 @@ export function createGateway(
         bp.record(connId, bytes);
         connOutboundBp.set(connId, (connOutboundBp.get(connId) ?? 0) + bytes);
       }
+      // Keep the in-memory seq snapshot current so same-process reconnects always
+      // restore the latest outbound counter, not just the value at last disconnect.
+      // Note: this does not survive a process crash — the store-side persist from
+      // cleanupConn covers graceful disconnects; crash durability would require
+      // persisting on every send(), which is deferred due to store I/O cost.
+      lastKnownOutboundSeq.set(sessionId, connOutboundSeq.get(connId) ?? 0);
       return { ok: true, value: bytes };
     },
 
