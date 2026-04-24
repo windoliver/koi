@@ -336,11 +336,60 @@ describe("createGateway", () => {
       const conn = await authenticateConn(transport, gateway, "s-fanout-isolate");
       transport.simulateMessage(conn.id, frameStr({ seq: 0 }));
 
-      // Handler failures are isolated: subscriber 2 still receives the frame and the
-      // connection remains open — no replay-duplication from aborting on first throw.
+      // All subscribers run before the failure check — subscriber 2 sees the frame
+      // even though subscriber 1 threw. After all handlers run, the connection is closed
+      // because the in-memory tracker already advanced past the frame; keeping the socket
+      // open would leave a split-brain with the stored remoteSeq watermark. The client
+      // must reconnect and replay from the persisted watermark (at-least-once).
       await waitForCondition(() => sub2Received.length >= 1);
       expect(sub2Received).toHaveLength(1);
-      expect(conn.closed).toBe(false);
+      await waitForCondition(() => conn.closed);
+      expect(conn.closed).toBe(true);
+      // remoteSeq must NOT be advanced so reconnect replays from the correct watermark.
+      const stored = storeGet(gateway.sessions(), "s-fanout-isolate");
+      expect(stored?.remoteSeq ?? 0).toBe(0);
+    });
+
+    test("handler failure on second frame of batch: first frame not replayed, connection closed", async () => {
+      // When ready[] has multiple frames (out-of-order flush), a handler failure on
+      // frame N must NOT cause replay of frames 0..N-1 that were already delivered.
+      // The watermark must be persisted at frame[N-1].seq+1 before closing.
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-batch-fail",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const received: number[] = [];
+      let failOnSeq = -1; // controlled by test
+      gateway.onFrame("a1", (_s, f) => {
+        if (f.seq === failOnSeq) throw new Error("controlled failure");
+        received.push(f.seq);
+      });
+
+      const conn = await authenticateConn(transport, gateway, "s-batch-fail");
+
+      // Send seq 1 first — it buffers in the tracker waiting for seq 0.
+      failOnSeq = 1;
+      transport.simulateMessage(conn.id, frameStr({ seq: 1, id: "f1" }));
+      // Send seq 0 — flushes both: ready = [frame0, frame1].
+      // frame0 delivers (seq 0), frame1 throws (seq 1 = failOnSeq).
+      transport.simulateMessage(conn.id, frameStr({ seq: 0, id: "f0" }));
+
+      await waitForCondition(() => conn.closed);
+      // Frame 0 was delivered before the failure
+      expect(received).toContain(0);
+      // Connection must be closed so the client replays from the persisted watermark
+      expect(conn.closed).toBe(true);
+      // remoteSeq must be advanced past frame 0 (= 1) so frame 0 is not replayed
+      await waitForCondition(
+        () => (storeGet(gateway.sessions(), "s-batch-fail")?.remoteSeq ?? 0) >= 1,
+      );
+      const stored = storeGet(gateway.sessions(), "s-batch-fail");
+      expect(stored?.remoteSeq).toBe(1); // frame 0 persisted, frame 1 replay starts here
     });
 
     test("malformed frame sends error response, not dispatched", async () => {

@@ -151,23 +151,28 @@ export function createGateway(
     }
   }
 
-  function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
+  // Deliver a single frame to all registered handlers for the session's agentId.
+  // Per-handler isolation: one throw does not skip later subscribers. Returns false
+  // if any handler threw — caller must NOT advance remoteSeq for this frame.
+  function emitFrame(session: Session, frame: GatewayFrame): boolean {
     const handlers = frameHandlers.get(session.agentId);
-    if (handlers === undefined) return;
-    for (const frame of frames) {
-      for (const handler of handlers) {
-        try {
-          handler(session, frame);
-        } catch (err: unknown) {
-          // Isolate per-handler: log the error but continue to remaining handlers.
-          // Aborting fanout on the first throw would cause replay duplication — any
-          // subscriber that already processed the frame would receive it again on
-          // reconnect since remoteSeq is only persisted after all handlers run.
-          // Per-handler isolation means each subscriber is independently responsible
-          // for its own error recovery; one failure cannot corrupt others' delivery.
-          swallowError(err, { package: "gateway", operation: "onFrame" });
-        }
+    if (handlers === undefined) return true;
+    let allOk = true;
+    for (const handler of handlers) {
+      try {
+        handler(session, frame);
+      } catch (err: unknown) {
+        swallowError(err, { package: "gateway", operation: "onFrame" });
+        allOk = false;
       }
+    }
+    return allOk;
+  }
+
+  // Public batch emit used by dispatch() — errors are swallowed, no replay contract.
+  function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
+    for (const frame of frames) {
+      emitFrame(session, frame);
     }
   }
 
@@ -403,29 +408,73 @@ export function createGateway(
       if (seqBytes.size === 0) inboundBufferedSeqs.delete(conn.id);
     }
 
-    // Dispatch handlers BEFORE persisting the watermark. If a handler throws, emitFrames
-    // re-throws and we close the connection so the advanced tracker state cannot be used
-    // to accept frames past the failed one. On reconnect, remoteSeq is restored from the
-    // store (which we did not update), so the failed frame is replayed (at-least-once).
-    const lastDispatched = ready[ready.length - 1];
-    if (lastDispatched !== undefined) {
-      const sessionForHandlers: Session = {
+    // Process frames one at a time so a handler failure is bounded to the first bad
+    // frame. ready[] contains one or more sequentially-ordered frames; earlier entries
+    // may have already been delivered to healthy subscribers before the failure fires.
+    // Persisting per-frame progress before closing ensures the reconnect replay window
+    // starts at the failed frame, not at the entire batch start (at-least-once, minimal
+    // duplication).
+    let lastGoodSeq: number | undefined;
+    for (const frame of ready) {
+      // Build session snapshot for this specific frame so handlers see the correct
+      // remoteSeq watermark (one past the frame they are receiving).
+      const frameSession: Session = {
         ...sessionResult.value,
-        remoteSeq: lastDispatched.seq + 1,
+        remoteSeq: frame.seq + 1,
       };
-      try {
-        emitFrames(sessionForHandlers, ready);
-      } catch {
+      const frameOk = emitFrame(frameSession, frame);
+      if (!frameOk) {
+        // Fence/close BEFORE any persistence so the socket is not held open in a
+        // split-brain state while store I/O blocks.
         conn.close(CLOSE_CODES.ADMIN_CLOSED, "Frame handler failure");
         cleanupConn(conn, "frame handler failure");
+        // Chain the progress persist AFTER cleanupConn's on-disconnect persist so the
+        // two writes don't race. cleanupConn's persist reads-then-writes seq; our persist
+        // chains after it, does a fresh read, then stamps remoteSeq — preserving whatever
+        // seq cleanupConn committed. Register in pendingSeqPersists so destroySession
+        // can await it too (prevents ghost resurrection after handler-failure disconnect).
+        if (lastGoodSeq !== undefined) {
+          const targetRemoteSeq = lastGoodSeq + 1;
+          const chainedAfter = pendingSeqPersists.get(sessionId) ?? Promise.resolve();
+          const progressPersist: Promise<void> = chainedAfter.then(async (): Promise<void> => {
+            const current = await Promise.resolve(store.get(sessionId));
+            if (!current.ok) return; // session destroyed concurrently — nothing to do
+            if (current.value.remoteSeq >= targetRemoteSeq) return; // already at watermark
+            const updated: Session = { ...current.value, remoteSeq: targetRemoteSeq };
+            await Promise.resolve(store.set(updated))
+              .then((r) => {
+                if (!r.ok) {
+                  swallowError(new Error(r.error.message), {
+                    package: "gateway",
+                    operation: "handler.failure.progress.persist",
+                  });
+                }
+              })
+              .catch((err: unknown) => {
+                swallowError(err, {
+                  package: "gateway",
+                  operation: "handler.failure.progress.persist",
+                });
+              });
+          });
+          pendingSeqPersists.set(sessionId, progressPersist);
+          void progressPersist.finally(() => {
+            if (pendingSeqPersists.get(sessionId) === progressPersist) {
+              pendingSeqPersists.delete(sessionId);
+            }
+          });
+        }
         return;
       }
+      lastGoodSeq = frame.seq;
+    }
 
-      // Snapshot outbound seq AFTER handlers run: handlers may call gateway.send() which
-      // advances connOutboundSeq; capturing before emitFrames() would persist a stale value
-      // and allow reconnect to reuse already-issued seq numbers.
+    if (lastGoodSeq !== undefined) {
+      // Snapshot outbound seq AFTER all handlers run: handlers may call gateway.send()
+      // which advances connOutboundSeq; capturing earlier would persist a stale value.
       const updatedSession: Session = {
-        ...sessionForHandlers,
+        ...sessionResult.value,
+        remoteSeq: lastGoodSeq + 1,
         seq: connOutboundSeq.get(conn.id) ?? 0,
       };
 
