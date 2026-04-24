@@ -3231,20 +3231,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
           return true;
         }
-        if (refreshOutcome === "transient-failure") {
-          // Tokens still exist but the refresh endpoint is temporarily unavailable.
-          // Do NOT launch browser auth — this is an operational outage, not a lost
-          // credential. Surface the real failure so the user can wait and retry.
-          void Promise.resolve(
-            channel.onAuthFailure?.({
-              provider: serverName,
-              reason:
-                "Token refresh is temporarily unavailable. The auth endpoint may be down — wait a moment and retry.",
-            }),
-          ).catch(() => {});
-          return false;
-        }
-        // "needs-auth" — interactive OAuth required.
+        // "needs-auth" or "transient-failure" — route to interactive OAuth.
+        // For transient-failure, silent refresh failed but tokens still exist.
+        // Automatic paths (runAuthFlow, listTools) skip browser auth on transient
+        // failures. This is an EXPLICIT user-triggered request, so fall through to
+        // triggerAuth to give the user a manual re-consent escape hatch even when
+        // the refresh endpoint is temporarily unavailable.
         // Route through the connection's triggerAuth to serialize against any
         // in-flight automatic 401-recovery and prevent duplicate browser windows.
         // triggerAuth fires onAuthComplete internally via ConnectionDeps after
