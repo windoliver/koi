@@ -81,7 +81,7 @@ describe("PersistentGrant (L0)", () => {
       kind: "tool_call",
       agentId: "a1" as never,
       sessionId: "s1" as never,
-      payload: { tool: "bash" } as JsonObject,
+      payload: { tool: "bash" } satisfies JsonObject,
       grantKey: "deadbeef",
       grantedAt: 1_713_974_400_000,
     };
@@ -96,7 +96,7 @@ describe("PersistentGrant (L0)", () => {
       kind: "tool_call",
       agentId: "a1" as never,
       sessionId: "s1" as never,
-      payload: {} as JsonObject,
+      payload: {} satisfies JsonObject,
       grantKey: "x",
       grantedAt: 0,
     });
@@ -568,7 +568,7 @@ describe("types.ts", () => {
   it("PersistedApproval has all required fields", () => {
     const g: PersistedApproval = {
       kind: "tool_call",
-      payload: {} as JsonObject,
+      payload: {} satisfies JsonObject,
       grantKey: "x",
       grantedAt: 0,
     };
@@ -576,7 +576,7 @@ describe("types.ts", () => {
   });
 
   it("ApprovalQuery matches the (kind, payload) shape", () => {
-    const q: ApprovalQuery = { kind: "tool_call", payload: {} as JsonObject };
+    const q: ApprovalQuery = { kind: "tool_call", payload: {} satisfies JsonObject };
     expect(q.kind).toBe("tool_call");
   });
 
@@ -701,38 +701,38 @@ const aliases: readonly AliasSpec[] = [
 
 describe("applyAliases", () => {
   it("rewrites a matching field", () => {
-    const p = applyAliases("tool_call", { tool: "bash_exec", cmd: "ls" } as JsonObject, aliases);
+    const p = applyAliases("tool_call", { tool: "bash_exec", cmd: "ls" } satisfies JsonObject, aliases);
     expect(p).toEqual({ tool: "bash", cmd: "ls" });
   });
 
   it("passes through when kind does not match", () => {
-    const p = applyAliases("model_call", { tool: "bash_exec" } as JsonObject, aliases);
+    const p = applyAliases("model_call", { tool: "bash_exec" } satisfies JsonObject, aliases);
     expect(p).toEqual({ tool: "bash_exec" });
   });
 
   it("passes through when field value does not match", () => {
-    const p = applyAliases("tool_call", { tool: "python" } as JsonObject, aliases);
+    const p = applyAliases("tool_call", { tool: "python" } satisfies JsonObject, aliases);
     expect(p).toEqual({ tool: "python" });
   });
 
   it("passes through when the field is absent", () => {
-    const p = applyAliases("tool_call", { cmd: "ls" } as JsonObject, aliases);
+    const p = applyAliases("tool_call", { cmd: "ls" } satisfies JsonObject, aliases);
     expect(p).toEqual({ cmd: "ls" });
   });
 
   it("applies multiple specs in order (first match wins)", () => {
-    const p = applyAliases("tool_call", { tool: "shell_exec" } as JsonObject, aliases);
+    const p = applyAliases("tool_call", { tool: "shell_exec" } satisfies JsonObject, aliases);
     expect(p).toEqual({ tool: "bash" });
   });
 
   it("returns a fresh object — does not mutate input", () => {
-    const input = { tool: "bash_exec", cmd: "ls" } as JsonObject;
+    const input = { tool: "bash_exec", cmd: "ls" } satisfies JsonObject;
     applyAliases("tool_call", input, aliases);
     expect(input).toEqual({ tool: "bash_exec", cmd: "ls" });
   });
 
   it("returns input reference when no aliases are provided", () => {
-    const input = { tool: "bash" } as JsonObject;
+    const input = { tool: "bash" } satisfies JsonObject;
     expect(applyAliases("tool_call", input, [])).toBe(input);
   });
 });
@@ -774,7 +774,7 @@ export function applyAliases(
     if (next === undefined) next = { ...payload };
     next[alias.field] = alias.to;
   }
-  return (next ?? payload) as JsonObject;
+  return next ?? payload;
 }
 ```
 
@@ -832,7 +832,7 @@ afterEach(async () => {
 describe("createJsonlApprovalStore", () => {
   it("returns undefined when the file does not exist", async () => {
     const store = createJsonlApprovalStore({ path });
-    expect(await store.match({ kind: "tool_call", payload: {} as JsonObject })).toBeUndefined();
+    expect(await store.match({ kind: "tool_call", payload: {} satisfies JsonObject })).toBeUndefined();
     expect(await store.load()).toEqual([]);
   });
 
@@ -840,13 +840,13 @@ describe("createJsonlApprovalStore", () => {
     const store = createJsonlApprovalStore({ path });
     const g1: PersistedApproval = {
       kind: "tool_call",
-      payload: { tool: "bash", cmd: "ls" } as JsonObject,
+      payload: { tool: "bash", cmd: "ls" } satisfies JsonObject,
       grantKey: computeGrantKey("tool_call", { tool: "bash", cmd: "ls" }),
       grantedAt: 1,
     };
     const g2: PersistedApproval = {
       kind: "tool_call",
-      payload: { tool: "bash", cmd: "rm" } as JsonObject,
+      payload: { tool: "bash", cmd: "rm" } satisfies JsonObject,
       grantKey: computeGrantKey("tool_call", { tool: "bash", cmd: "rm" }),
       grantedAt: 2,
     };
@@ -859,7 +859,7 @@ describe("createJsonlApprovalStore", () => {
 
   it("matches a stored grant by canonical (kind, payload)", async () => {
     const store = createJsonlApprovalStore({ path });
-    const payload = { tool: "bash", cmd: "ls" } as JsonObject;
+    const payload = { tool: "bash", cmd: "ls" } satisfies JsonObject;
     await store.append({
       kind: "tool_call",
       payload,
@@ -872,7 +872,7 @@ describe("createJsonlApprovalStore", () => {
 
   it("persists across store instances (read-path)", async () => {
     const a = createJsonlApprovalStore({ path });
-    const payload = { tool: "bash" } as JsonObject;
+    const payload = { tool: "bash" } satisfies JsonObject;
     await a.append({
       kind: "tool_call",
       payload,
@@ -887,7 +887,7 @@ describe("createJsonlApprovalStore", () => {
   it("skips malformed lines and loads the rest", async () => {
     const good: PersistedApproval = {
       kind: "tool_call",
-      payload: { tool: "bash" } as JsonObject,
+      payload: { tool: "bash" } satisfies JsonObject,
       grantKey: computeGrantKey("tool_call", { tool: "bash" }),
       grantedAt: 1,
     };
@@ -904,7 +904,7 @@ describe("createJsonlApprovalStore", () => {
     ];
     const store = createJsonlApprovalStore({ path, aliases });
     // Grant was recorded under the new key "bash"
-    const newPayload = { tool: "bash" } as JsonObject;
+    const newPayload = { tool: "bash" } satisfies JsonObject;
     await store.append({
       kind: "tool_call",
       payload: newPayload,
@@ -914,7 +914,7 @@ describe("createJsonlApprovalStore", () => {
     // Incoming query still uses the legacy name "bash_exec"
     const hit = await store.match({
       kind: "tool_call",
-      payload: { tool: "bash_exec" } as JsonObject,
+      payload: { tool: "bash_exec" } satisfies JsonObject,
     });
     expect(hit).toBeDefined();
   });
@@ -922,7 +922,7 @@ describe("createJsonlApprovalStore", () => {
   it("serialises concurrent appends without losing writes", async () => {
     const store = createJsonlApprovalStore({ path });
     const grants = Array.from({ length: 20 }, (_, i) => {
-      const payload = { tool: "bash", n: i } as JsonObject;
+      const payload = { tool: "bash", n: i } satisfies JsonObject;
       return {
         kind: "tool_call" as const,
         payload,
@@ -938,7 +938,7 @@ describe("createJsonlApprovalStore", () => {
   it("creates the parent directory if missing", async () => {
     const deep = join(dir, "nested", "path", "approvals.json");
     const store = createJsonlApprovalStore({ path: deep });
-    const payload = { tool: "bash" } as JsonObject;
+    const payload = { tool: "bash" } satisfies JsonObject;
     await store.append({
       kind: "tool_call",
       payload,
@@ -1060,7 +1060,7 @@ Create `packages/security/governance-approval-tiers/src/backend-wrapper.test.ts`
 
 ```typescript
 import { describe, expect, it } from "bun:test";
-import type { JsonObject } from "@koi/core";
+import { agentId, type JsonObject } from "@koi/core";
 import {
   type GovernanceBackend,
   type GovernanceVerdict,
@@ -1084,8 +1084,8 @@ function makeStore(entries: readonly PersistedApproval[]): ApprovalStore {
 
 const allowRequest: PolicyRequest = {
   kind: "tool_call",
-  agentId: "a" as never,
-  payload: { tool: "bash" } as JsonObject,
+  agentId: agentId("a"),
+  payload: { tool: "bash" } satisfies JsonObject,
   timestamp: 0,
 };
 
@@ -1111,7 +1111,7 @@ describe("wrapBackendWithPersistedAllowlist", () => {
   });
 
   it("converts ok:ask to ok:true when the store has a match", async () => {
-    const payload = { tool: "bash" } as JsonObject;
+    const payload = { tool: "bash" } satisfies JsonObject;
     const grantKey = computeGrantKey("tool_call", payload);
     const store = makeStore([{ kind: "tool_call", payload, grantKey, grantedAt: 1 }]);
     const ask: GovernanceVerdict = {
@@ -1229,7 +1229,7 @@ Create `packages/security/governance-approval-tiers/src/persist-sink.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "bun:test";
-import type { JsonObject, PersistentGrant } from "@koi/core";
+import { agentId, sessionId, type JsonObject, type PersistentGrant } from "@koi/core";
 import { createPersistSink } from "./persist-sink.js";
 import type { ApprovalStore, PersistedApproval } from "./types.js";
 
@@ -1249,9 +1249,9 @@ function makeStore(): { readonly store: ApprovalStore; readonly appended: Persis
 
 const grant: PersistentGrant = {
   kind: "tool_call",
-  agentId: "a1" as never,
-  sessionId: "s1" as never,
-  payload: { tool: "bash" } as JsonObject,
+  agentId: agentId("a1"),
+  sessionId: sessionId("s1"),
+  payload: { tool: "bash" } satisfies JsonObject,
   grantKey: "deadbeef",
   grantedAt: 1_713_974_400_000,
 };
@@ -1348,7 +1348,7 @@ Create `packages/security/governance-approval-tiers/src/violation-audit.test.ts`
 
 ```typescript
 import { describe, expect, it } from "bun:test";
-import type { JsonObject, PersistentGrant } from "@koi/core";
+import { agentId, sessionId, type JsonObject, type PersistentGrant } from "@koi/core";
 import type { GovernanceVerdict, PolicyRequest, Violation } from "@koi/core/governance-backend";
 import { createViolationAuditAdapter } from "./violation-audit.js";
 
@@ -1356,9 +1356,9 @@ type Recorded = { readonly verdict: GovernanceVerdict; readonly request: PolicyR
 
 const grant: PersistentGrant = {
   kind: "tool_call",
-  agentId: "a1" as never,
-  sessionId: "s1" as never,
-  payload: { tool: "bash", cmd: "ls" } as JsonObject,
+  agentId: agentId("a1"),
+  sessionId: sessionId("s1"),
+  payload: { tool: "bash", cmd: "ls" } satisfies JsonObject,
   grantKey: "deadbeef",
   grantedAt: 1_713_974_400_000,
 };
@@ -1730,6 +1730,7 @@ describe("Golden: @koi/governance-approval-tiers", () => {
       wrapBackendWithPersistedAllowlist,
     } = await import("@koi/governance-approval-tiers");
     const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
     const { computeGrantKey } = await import("@koi/hash");
 
     const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
@@ -1753,7 +1754,7 @@ describe("Golden: @koi/governance-approval-tiers", () => {
       );
       const v = await wrapped.evaluator.evaluate({
         kind: "tool_call",
-        agentId: "a" as never,
+        agentId: agentId("a"),
         payload,
         timestamp: 0,
       });
@@ -1772,6 +1773,7 @@ describe("Golden: @koi/governance-approval-tiers", () => {
       wrapBackendWithPersistedAllowlist,
     } = await import("@koi/governance-approval-tiers");
     const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
 
     const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
     try {
@@ -1787,7 +1789,7 @@ describe("Golden: @koi/governance-approval-tiers", () => {
       );
       const v = await wrapped.evaluator.evaluate({
         kind: "tool_call",
-        agentId: "a" as never,
+        agentId: agentId("a"),
         payload: { tool: "bash" },
         timestamp: 0,
       });
