@@ -282,35 +282,33 @@ export function buildPluginMcpSetup(
 ): McpSetup | undefined {
   if (pluginMcpServers.length === 0) return undefined;
 
-  const authProviders = new Map<string, OAuthAuthProvider>();
-  const authServers = new Map<string, AuthServerEntry>();
+  // Reject OAuth-bearing plugin MCP configs per-server. Plugin-supplied OAuth
+  // configs cannot be authenticated without a host-controlled consent gate, so
+  // skip each offending entry and log explicitly — other plugin servers proceed.
+  const unsupported = pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined);
+  if (unsupported.length > 0) {
+    console.error(
+      `[koi] Plugin MCP servers with OAuth require a host consent gate and cannot be loaded. ` +
+        `Remove the oauth config or replace with a non-OAuth server: ` +
+        unsupported.map((s) => s.name).join(", "),
+    );
+  }
+  const eligibleServers = pluginMcpServers.filter(
+    (s) => !(s.kind === "http" && s.oauth !== undefined),
+  );
+  if (eligibleServers.length === 0) return undefined;
+
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
-  const connections = pluginMcpServers.map((server) => {
-    const conn = createOAuthAwareMcpConnection(server, authProviders);
+  const connections = eligibleServers.map((server) => {
+    const conn = createOAuthAwareMcpConnection(server);
     connectionsByName.set(server.name, conn);
     return conn;
   });
 
-  for (const server of pluginMcpServers) {
-    const provider = authProviders.get(server.name);
-    const connection = connectionsByName.get(server.name);
-    if (provider !== undefined && connection !== undefined && server.kind === "http") {
-      authServers.set(server.name, { provider, connection, url: server.url });
-    }
-  }
-
   const resolver = createMcpResolver(connections);
 
-  const createAuthTools =
-    authServers.size > 0
-      ? createCliAuthToolFactory({
-          servers: authServers,
-          rediscover: () => resolver.discover(),
-        })
-      : undefined;
-
-  const provider = createMcpComponentProvider({ resolver, createAuthTools });
+  const provider = createMcpComponentProvider({ resolver });
   return {
     resolver,
     provider,
@@ -318,11 +316,9 @@ export function buildPluginMcpSetup(
     dispose: () => {
       resolver.dispose();
     },
-    transportByName: new Map(pluginMcpServers.map((s) => [s.name, s.kind])),
-    oauthCapableNames: new Set(
-      pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined).map((s) => s.name),
-    ),
-    authProviders,
+    transportByName: new Map(eligibleServers.map((s) => [s.name, s.kind])),
+    oauthCapableNames: new Set<string>(),
+    authProviders: new Map(),
     connections: connectionsByName,
   };
 }
