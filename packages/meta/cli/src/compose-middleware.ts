@@ -219,6 +219,14 @@ export function buildInheritedMiddlewareForChildren(input: {
   readonly systemPrompt?: KoiMiddleware | undefined;
   readonly plan?: KoiMiddleware | undefined;
   readonly planPersist?: KoiMiddleware | undefined;
+  /**
+   * Skill injector middleware to inherit into spawned child agents.
+   * When provided, child model calls receive the same skill context
+   * (e.g. `<available_skills>` XML in progressive mode) as the root agent.
+   * The middleware reads from whatever agent reference it was constructed
+   * with — typically the root agent, whose skill set applies globally.
+   */
+  readonly skillInjector?: KoiMiddleware | undefined;
 }): readonly KoiMiddleware[] {
   return [
     input.permissions,
@@ -227,5 +235,6 @@ export function buildInheritedMiddlewareForChildren(input: {
     ...(input.plan !== undefined ? [input.plan] : []),
     ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
+    ...(input.skillInjector !== undefined ? [input.skillInjector] : []),
   ];
 }

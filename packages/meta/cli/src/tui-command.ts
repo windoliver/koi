@@ -1747,6 +1747,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // will lose those tools after the spawn. This is a known scope
     // restriction of the mock dev/test path, not a bug in production.
     extraMiddleware: [skillInjectorMw],
+    // Propagate skill injection into spawned children so they also receive
+    // the <available_skills> XML block. The tool:Skill tool is already
+    // inherited by children via InheritedComponentProvider; the middleware
+    // ensures they know which skills exist to call.
+    childSkillInjector: skillInjectorMw,
     extraProviders: [
       skillProvider,
       ...artifactExtraProviders,

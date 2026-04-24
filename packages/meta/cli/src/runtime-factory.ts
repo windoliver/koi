@@ -800,6 +800,14 @@ export interface KoiRuntimeConfig {
    * Order preserved.
    */
   readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Skill injector middleware to propagate into spawned child agents.
+   * When set, child model calls receive the same `<available_skills>` injection
+   * as the root agent. The middleware reads from its original agent reference
+   * (typically the root agent's ECS), which reflects the global skill set.
+   * Only relevant when `extraMiddleware` contains a progressive skill injector.
+   */
+  readonly childSkillInjector?: KoiMiddleware | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -1894,6 +1902,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
       ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
+      // Thread skill injector into children so spawned agents also receive
+      // the <available_skills> XML block in progressive mode. The middleware
+      // reads from its original agent reference (root), whose skill set
+      // is global — the same skills apply to all children.
+      ...(config.childSkillInjector !== undefined
+        ? { skillInjector: config.childSkillInjector }
+        : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
