@@ -193,8 +193,11 @@ export function createGateway(
 
   async function processMessage(conn: TransportConnection, data: string): Promise<void> {
     if (Buffer.byteLength(data, "utf8") > config.capabilities.maxFrameBytes) {
+      // Use the connection's outbound seq counter if already authenticated so the client
+      // dedup window treats this error as a distinct frame rather than a dup of seq 0.
+      const errSeq = trackers.has(conn.id) ? nextServerSeq(conn) : 0;
       conn.send(
-        createErrorFrame(0, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
+        createErrorFrame(errSeq, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
       );
       conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Frame too large");
       return;
@@ -456,9 +459,16 @@ export function createGateway(
           // store throws we cannot safely determine the replay window, so we reject the
           // reconnect rather than silently downgrading to seq 0 and risking duplicate dispatch.
           let startSeq = 0;
+          // True only when the store returns NOT_FOUND: this gateway instance created
+          // the record and is the rightful owner. For resumed sessions the record already
+          // existed (in this process or another), so this gateway should not delete it.
+          let isNewSession = true;
           try {
             const prev = await Promise.resolve(store.get(result.session.id));
-            if (prev.ok) startSeq = prev.value.remoteSeq;
+            if (prev.ok) {
+              startSeq = prev.value.remoteSeq;
+              isNewSession = false; // session already existed in the store
+            }
             // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
           } catch {
             abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure on resume");
@@ -488,7 +498,7 @@ export function createGateway(
             abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure");
             return;
           }
-          ownedSessionIds.add(result.session.id);
+          if (isNewSession) ownedSessionIds.add(result.session.id);
           // Clear stale disconnectedAt so TTL sweep does not evict this session now
           // that it is live again. Not clearing would race the sweep: a brief disconnect
           // followed by reconnect before TTL expiry would silently delete the live session.
@@ -577,7 +587,14 @@ export function createGateway(
           for (const [connId, conn] of connMap) {
             const sessionId = sessionByConn.get(connId);
             if (sessionId === undefined) continue;
-            const sessionRes = store.get(sessionId);
+            let sessionRes: ReturnType<typeof store.get>;
+            try {
+              sessionRes = store.get(sessionId);
+            } catch (err: unknown) {
+              swallowError(err, { package: "gateway", operation: "revocation.store.get" });
+              conn.close(CLOSE_CODES.AUTH_FAILED, "Revocation check failed");
+              continue;
+            }
             void Promise.resolve(sessionRes)
               .then((r) => {
                 if (!r.ok) return;
@@ -615,7 +632,9 @@ export function createGateway(
             if (now - ts > ttl) {
               disconnectedAt.delete(sessionId);
               ownedSessionIds.delete(sessionId);
-              void Promise.resolve(store.delete(sessionId)).catch(() => {});
+              try {
+                void Promise.resolve(store.delete(sessionId)).catch(() => {});
+              } catch {}
             }
           }
         }
