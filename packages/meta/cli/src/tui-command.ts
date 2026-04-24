@@ -28,10 +28,10 @@
  *   agent_spawn — real spawning via createSpawnToolProvider (#1582 wired)
  */
 
-import { lstatSync, writeSync } from "node:fs";
+import { writeSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { SummaryOk } from "@koi/agent-summary";
 import { createAgentSummary } from "@koi/agent-summary";
 import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
@@ -96,7 +96,7 @@ import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
 import { createGovernanceBridge, type GovernanceBridge } from "./governance-bridge.js";
-import { loadManifestConfig } from "./manifest.js";
+import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { loadPolicyFile } from "./policy-file.js";
@@ -1068,6 +1068,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
   let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
+  let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
   // stacks, plugins, filesystem scope, or governance of the original session.
@@ -1115,6 +1116,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestGovernance = manifestResult.value.governance;
     manifestSupervision = manifestResult.value.supervision;
     manifestAudit = manifestResult.value.audit;
+    manifestLoadPath = resolvedManifestPath;
 
     // Warn loudly when manifest.audit is present but the host gate is off.
     // Silent downgrade is dangerous for compliance features: operators can
@@ -1723,30 +1725,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ];
     for (const [resolvedPath, label] of auditPathsToRevalidate) {
       if (resolvedPath === undefined) continue;
-      // Re-check: parent dir must not have become a symlink between parse and use.
-      const auditParentDir = dirname(resolvedPath);
-      try {
-        const parentStat = lstatSync(auditParentDir);
-        if (parentStat.isSymbolicLink()) {
-          process.stderr.write(
-            `koi tui: ${label}: parent directory "${auditParentDir}" became a symlink after manifest validation — aborting to prevent path-traversal write.\n`,
-          );
-          process.exit(1);
-        }
-      } catch (e: unknown) {
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      }
-      // Re-check: target file must not have become a symlink between parse and use.
-      try {
-        const fileStat = lstatSync(resolvedPath);
-        if (fileStat.isSymbolicLink()) {
-          process.stderr.write(
-            `koi tui: ${label}: "${resolvedPath}" became a symlink after manifest validation — aborting to prevent path-traversal write.\n`,
-          );
-          process.exit(1);
-        }
-      } catch (e: unknown) {
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      // Re-validate using full canonical containment (realpathSync on parent +
+      // lstat on file), not just a direct lstat on the terminal parent.
+      // This catches ancestor symlink swaps (e.g. logs/ → /external) that a
+      // plain lstatSync(dirname(path)) misses by following the intermediate link.
+      // manifestLoadPath is always defined here because manifestAudit is only
+      // set when resolvedManifestPath !== undefined (same code block above).
+      const violation = revalidateAuditPathContainment(resolvedPath, manifestLoadPath ?? "");
+      if (violation !== undefined) {
+        process.stderr.write(
+          `koi tui: ${label}: filesystem changed after manifest validation — aborting: ${violation}.\n`,
+        );
+        process.exit(1);
       }
     }
   }

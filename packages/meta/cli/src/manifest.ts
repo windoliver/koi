@@ -935,6 +935,60 @@ function parseManifestAudit(
 }
 
 /**
+ * Re-validate a manifest-derived audit path immediately before use to close
+ * the TOCTOU window between manifest load and sink creation. Uses the same
+ * canonical containment check as `anchorPath` (realpathSync on parent + lstat
+ * on file), so ancestor symlink swaps that are missed by a plain lstat of only
+ * the terminal parent are caught.
+ *
+ * Returns `undefined` when the path is still safe, or an error string if the
+ * path has been compromised (symlinked parent, symlinked file, or the canonical
+ * parent is now outside the manifest directory).
+ */
+export function revalidateAuditPathContainment(
+  resolvedPath: string,
+  manifestPath: string,
+): string | undefined {
+  const manifestDir = dirname(resolvePath(manifestPath));
+
+  let realManifestDir: string;
+  try {
+    realManifestDir = realpathSync(manifestDir);
+  } catch {
+    return `cannot resolve manifest directory "${manifestDir}"`;
+  }
+
+  const parentDir = dirname(resolvedPath);
+  let realParentDir: string;
+  try {
+    realParentDir = realpathSync(parentDir);
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      return `parent directory "${parentDir}" no longer exists`;
+    }
+    throw err;
+  }
+
+  const parentRel = relative(realManifestDir, realParentDir);
+  if (parentRel === ".." || parentRel.startsWith(`..${sep}`) || isAbsolute(parentRel)) {
+    return `"${resolvedPath}" now resolves through a symlinked ancestor that escapes the manifest directory (real parent: "${realParentDir}", real manifest dir: "${realManifestDir}")`;
+  }
+
+  try {
+    const stat = lstatSync(resolvedPath);
+    if (stat.isSymbolicLink()) {
+      return `"${resolvedPath}" is now a symlink`;
+    }
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    // File does not exist yet — expected.
+  }
+
+  return undefined;
+}
+
+/**
  * Parse the manifest `governance:` section. Accepts any subset of:
  *   maxSpend (non-negative float)
  *   maxTurns (positive int)
