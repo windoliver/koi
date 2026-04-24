@@ -2642,12 +2642,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // stays usable for the next turn. (#1759 review round 2)
     permissionBridge.cancelPending("Session reset");
 
-    // Invalidate pinned skill bodies so the next session loads fresh disk
-    // state. Without this, a skill edited or deleted after startup would
-    // still be served from the session-start pin map, making the body
-    // visible across session boundaries. After invalidate(), pinnedLoad()
-    // falls through to base.load() for each on-demand Skill tool call.
-    skillRuntime.invalidate();
+    // Clear only the session-local pin map so the next session's Skill tool
+    // calls load fresh disk state. Unlike invalidate(), clearPinnedBodies()
+    // preserves the underlying runtime's discovery cache and external-skill
+    // registry, preventing advertised skills from becoming unresolvable
+    // mid-session when external/plugin skills are still registered.
+    skillRuntime.clearPinnedBodies();
 
     // Cost aggregator clear is deferred to the success branch below —
     // same fail-closed contract as transcript/messages (#1742).

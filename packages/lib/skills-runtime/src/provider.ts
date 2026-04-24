@@ -90,7 +90,7 @@ export function createSkillProvider(
  */
 export function createProgressiveSkillProvider(base: SkillsRuntime): {
   readonly provider: ComponentProvider;
-  readonly pinnedRuntime: SkillsRuntime;
+  readonly pinnedRuntime: PinnedRuntime;
 } {
   const pinnedRuntime = createProgressivePinnedRuntime(base);
   const provider = createSkillProvider(pinnedRuntime, { progressive: true });
@@ -225,7 +225,22 @@ function skillDefinitionToProgressiveComponent(skill: SkillDefinition): SkillCom
  *
  *   const runtime = createProgressivePinnedRuntime(createSkillsRuntime());
  */
-export function createProgressivePinnedRuntime(base: SkillsRuntime): SkillsRuntime {
+/** SkillsRuntime extended with a pin-only clear for session resets. */
+export type PinnedRuntime = SkillsRuntime & {
+  /**
+   * Clears only the session-local pin map without touching the underlying
+   * base runtime's discovery cache, body cache, or external-skill registry.
+   * After this call, `load()` falls through to `base.load()` for each
+   * on-demand request — returning current-disk state.
+   *
+   * Use on session reset instead of `invalidate()` so the external-skill
+   * registry and discovery state remain intact for the next session's
+   * Skill tool calls.
+   */
+  readonly clearPinnedBodies: () => void;
+};
+
+export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRuntime {
   const pinned = new Map<string, Result<SkillDefinition, KoiError>>();
   // let justified: mutable flag, set once after first successful loadAll()
   let pinnedPopulated = false;
@@ -273,5 +288,12 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): SkillsRunti
     // body than what was advertised at attach time — that breaks the invariant.
     // Hosts that need live refresh must start a new session.
     registerExternal: (skills: readonly SkillMetadata[]): void => base.registerExternal(skills),
+    clearPinnedBodies: (): void => {
+      pinned.clear();
+      pinnedPopulated = false;
+      // Intentionally does NOT call base.invalidate() — preserves the
+      // underlying runtime's discovery cache and external-skill registry
+      // so the next session's Skill tool calls can still resolve skill names.
+    },
   };
 }

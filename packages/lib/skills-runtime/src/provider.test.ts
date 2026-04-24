@@ -451,6 +451,54 @@ describe("createProgressivePinnedRuntime", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.body).toContain("Session-start body.");
   });
+
+  test("clearPinnedBodies() resets pinnedPopulated so loadAll() re-pins next call", async () => {
+    // clearPinnedBodies is the session-reset primitive: clears session-local pins and
+    // resets the pinnedPopulated flag so the next loadAll() can re-populate fresh pins.
+    // The base runtime's LRU cache is intentionally preserved.
+    await writeSkill(userRoot, "session-skill", "Session-start body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    // Pin the skill via loadAll (session start).
+    await runtime.loadAll();
+
+    // Pins populated — load returns session-start body from pin map.
+    const beforeClear = await runtime.load("session-skill");
+    expect(beforeClear.ok && beforeClear.value.body).toContain("Session-start body.");
+
+    // Clear pins (session reset path). Does NOT call base.invalidate().
+    runtime.clearPinnedBodies();
+
+    // After clear, pinnedPopulated = false — next loadAll() re-populates the pin map.
+    // Invalidate the base LRU to simulate a fresh start, then re-load.
+    base.invalidate("session-skill");
+    await writeSkill(userRoot, "session-skill", "Updated body.");
+    await runtime.loadAll(); // re-pins with fresh base state
+
+    const afterRepopulate = await runtime.load("session-skill");
+    expect(afterRepopulate.ok && afterRepopulate.value.body).toContain("Updated body.");
+  });
+
+  test("clearPinnedBodies() does not call base.invalidate() — preserves discovery cache", async () => {
+    // Full invalidate() would wipe the base runtime's discovery/LRU cache and
+    // external-skill registry. clearPinnedBodies() must not propagate to base.
+    await writeSkill(userRoot, "cached-skill", "Cached body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    // Pre-populate the base runtime's LRU cache via a direct base.load() call.
+    const initial = await base.load("cached-skill");
+    expect(initial.ok).toBe(true);
+
+    // Clear session pins only.
+    runtime.clearPinnedBodies();
+
+    // Base runtime's cache should remain intact — load() via base still works.
+    const afterClear = await base.load("cached-skill");
+    expect(afterClear.ok).toBe(true);
+    if (afterClear.ok) expect(afterClear.value.body).toContain("Cached body.");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -42,6 +42,7 @@ export { mapSkillToSpawnRequest } from "./execution.js";
 export { mapFrontmatterToDefinition, mapFrontmatterToMetadata } from "./map-frontmatter.js";
 export type { SkillInjectorConfig } from "./middleware.js";
 export { createSkillInjectorMiddleware } from "./middleware.js";
+export type { PinnedRuntime } from "./provider.js";
 export {
   createProgressivePinnedRuntime,
   createProgressiveSkillProvider,

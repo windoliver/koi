@@ -96,19 +96,19 @@ function sortedSkills(agent: Agent): readonly SkillComponent[] {
 function collectSkillNames(
   agent: Agent,
   progressive: boolean,
-  hasForkSupport: boolean,
+  _hasForkSupport: boolean,
 ): readonly string[] {
   const sorted = sortedSkills(agent);
   if (progressive) {
-    // Match the same filter as injectSkillsProgressive: only runtimeBacked progressive
-    // skills (excludes MCP/external metadata-only stubs) and fork skills unless supported.
-    return sorted
-      .filter(
-        (s) =>
-          s.content !== "" ||
-          (s.runtimeBacked === true && (hasForkSupport || s.executionMode !== "fork")),
-      )
-      .map((s) => s.name);
+    // In progressive mode, runtimeBacked skills are advertised via the
+    // <available_skills> XML block injected per-request (gated on Skill
+    // tool presence). Including them in the capability banner is incorrect
+    // when the Skill tool is filtered out by permissions — describeCapabilities
+    // does not receive request context, so we conservatively omit them here
+    // to prevent the banner from advertising skills the model cannot invoke.
+    // Body-backed skills (content !== "") are still included: they inject
+    // directly into systemPrompt regardless of tool list.
+    return sorted.filter((s) => s.content !== "").map((s) => s.name);
   }
   return sorted.map((s) => s.name);
 }

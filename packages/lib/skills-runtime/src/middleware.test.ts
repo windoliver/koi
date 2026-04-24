@@ -218,6 +218,29 @@ describe("createSkillInjectorMiddleware", () => {
     expect(cap?.description).toBe("1 skill active: bullet-points");
   });
 
+  test("progressive mode: describeCapabilities omits runtimeBacked skills from banner", () => {
+    // runtimeBacked skills are advertised via <available_skills> XML block
+    // (gated on Skill tool presence). The capability banner cannot know whether
+    // the Skill tool is filtered, so runtimeBacked skills are excluded to prevent
+    // the banner from advertising skills the model cannot invoke.
+    const agent = mockAgent(
+      new Map([progressiveSkill("cmd"), skill("browser", "## Browser guidance")]),
+    );
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+
+    const cap = mw.describeCapabilities(mockTurnContext());
+    // Only the body-backed "browser" skill appears; runtimeBacked "cmd" is excluded
+    expect(cap?.description).toBe("1 skill active: browser");
+  });
+
+  test("progressive mode: describeCapabilities returns undefined when all skills are runtimeBacked", () => {
+    const agent = mockAgent(new Map([progressiveSkill("cmd"), progressiveSkill("run")]));
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+
+    // All runtimeBacked → banner omitted; XML block is the correct advertisement path
+    expect(mw.describeCapabilities(mockTurnContext())).toBeUndefined();
+  });
+
   test("accepts a thunk for lazy agent resolution", async () => {
     const skills = new Map([skill("bullet-points", "Always use bullet points.")]);
     const ref: { current: Agent | undefined } = { current: undefined };
