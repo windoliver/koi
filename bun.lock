@@ -878,6 +878,7 @@
       "devDependencies": {
         "@aws-sdk/client-s3": "3.1032.0",
         "@koi/blob-cas": "workspace:*",
+        "@koi/hash": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "@smithy/util-stream": "4.5.23",
         "aws-sdk-client-mock": "4.1.0",

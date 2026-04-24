@@ -12706,3 +12706,81 @@ describe("Golden: @koi/toolsets", () => {
     if (!sneakyResult.ok) expect(sneakyResult.error.code).toBe("VALIDATION");
   });
 });
+
+describe("Golden: @koi/governance-approval-tiers", () => {
+  test("short-circuits ask to allow on persisted match", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createJsonlApprovalStore, wrapBackendWithPersistedAllowlist } = await import(
+      "@koi/governance-approval-tiers"
+    );
+    const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
+    const { computeGrantKey } = await import("@koi/hash");
+
+    const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
+    try {
+      const path = join(dir, "approvals.json");
+      const payload = { tool: "bash" };
+      const store = createJsonlApprovalStore({ path });
+      await store.append({
+        kind: "tool_call",
+        payload,
+        grantKey: computeGrantKey("tool_call", payload),
+        grantedAt: 1,
+      });
+      const wrapped = wrapBackendWithPersistedAllowlist(
+        {
+          evaluator: {
+            evaluate: () => ({ ok: "ask", prompt: "?", askId: askId("g1") }),
+          },
+        },
+        store,
+      );
+      const v = await wrapped.evaluator.evaluate({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload,
+        timestamp: 0,
+      });
+      expect(v.ok).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves ask unchanged with no persisted match", async () => {
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createJsonlApprovalStore, wrapBackendWithPersistedAllowlist } = await import(
+      "@koi/governance-approval-tiers"
+    );
+    const { askId } = await import("@koi/core/governance-backend");
+    const { agentId } = await import("@koi/core");
+
+    const dir = await mkdtemp(join(tmpdir(), "golden-appt-"));
+    try {
+      const path = join(dir, "approvals.json");
+      const store = createJsonlApprovalStore({ path });
+      const wrapped = wrapBackendWithPersistedAllowlist(
+        {
+          evaluator: {
+            evaluate: () => ({ ok: "ask", prompt: "?", askId: askId("g2") }),
+          },
+        },
+        store,
+      );
+      const v = await wrapped.evaluator.evaluate({
+        kind: "tool_call",
+        agentId: agentId("a"),
+        payload: { tool: "bash" },
+        timestamp: 0,
+      });
+      expect(v.ok).toBe("ask");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
