@@ -523,6 +523,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // Reset to undefined on cycleSession so the next session captures fresh.
   // let justified: mutable per-session ctx, captured in streamEvents
   let activeSessionCtx: SessionContext | undefined;
+  // let justified: run() call timestamp — set synchronously in run() before the RunHandle
+  // is returned so duration budgets include any queue gap before first iterator pull.
+  let runEntryAt = 0;
 
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
   async function* streamEvents(
@@ -649,11 +652,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
     // let justified: guards already reset for the current run — prevents double-resets across recompositions
     let resetGuardsCurrentRun: Set<IterationGuardHandle> | undefined;
-
-    // let justified: run() entry timestamp — anchors duration budget to submission time, not post-startup.
-    // Startup work (forge refresh, dynamic-mw recomposition) counts against maxDurationMs,
-    // preventing a slow startup from silently extending the effective duration window.
-    let runEntryAt = 0;
 
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
@@ -922,10 +920,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let unsubRegistryWatch: (() => void) | undefined;
 
     try {
-      // Anchor duration budget to run() entry so startup work (forge refresh,
-      // dynamic-mw recomposition) counts against maxDurationMs.
-      runEntryAt = Date.now();
-
       // #1682: generator body is now executing — ownership of the
       // pre-iteration cleanup transfers to the finally block below.
       // Clear the sweeper so a concurrent cycleSession/dispose doesn't
@@ -2276,6 +2270,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         activeRunSignal = undefined;
         currentRunIdRef = undefined;
       };
+      // Anchor duration budget to run() call time (not first iterator pull) so
+      // hosts that queue RunHandles before consuming them cannot exclude the
+      // queue gap from maxDurationMs. runEntryAt is safe to set here because
+      // only one run() can be active at a time (enforced by the running flag
+      // and epoch mechanism above), and the value is a plain number with no
+      // cleanup requirements for abandoned (never-iterated) handles.
+      runEntryAt = Date.now();
       running = true;
       runningEpoch = sessionEpoch;
 
