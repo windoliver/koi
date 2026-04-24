@@ -1171,4 +1171,92 @@ describe("createRemoteAgentLifecycle", () => {
       expect(exits.length).toBeGreaterThan(0);
     });
   });
+
+  describe("cleanup-incomplete on all failure modes", () => {
+    test("non-OK HTTP response emits cleanup-incomplete (5xx may fire after work started)", async () => {
+      const exits: number[] = [];
+      const fetch = mockFetch(503, new ReadableStream());
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("cleanup-incomplete");
+      expect(text).toContain("503");
+      expect(exits).toEqual([1]);
+    });
+
+    test("fetch rejection emits cleanup-incomplete (POST body may have been sent)", async () => {
+      const exits: number[] = [];
+      const fetch = errorFetch(new Error("ECONNREFUSED"));
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("cleanup-incomplete");
+      expect(text).toContain("ECONNREFUSED");
+      expect(exits).toEqual([1]);
+    });
+
+    test("invalid UTF-8 bytes in frame fail closed with cleanup-incomplete", async () => {
+      // 0xFF is not valid UTF-8; fatal decoder must throw rather than substitute U+FFFD.
+      const exits: number[] = [];
+      const badUtf8 = new Uint8Array([0x7b, 0xff, 0x7d, 0x0a]); // {<bad>}\n
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(badUtf8);
+          c.close();
+        },
+      });
+      const fetch = mockFetch(200, stream);
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("cleanup-incomplete");
+      expect(text).toContain("UTF-8");
+      expect(exits).toEqual([1]);
+    });
+  });
 });

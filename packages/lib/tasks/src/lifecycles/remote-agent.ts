@@ -176,14 +176,16 @@ export function createRemoteAgentLifecycle(
           if (controller.signal.aborted) return;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           const message = err instanceof Error ? err.message : String(err);
-          emitTerminal(1, `\n[error: ${message}]\n`);
+          // POST body may have been sent before the network error — remote state unknown.
+          emitTerminal(1, `\n[cleanup-incomplete: ${message}]\n`);
           return;
         }
 
         if (!response.ok) {
           if (controller.signal.aborted) return;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          emitTerminal(1, `\n[error: HTTP ${String(response.status)}]\n`);
+          // 5xx can be returned after work started; treat all non-OK as cleanup-incomplete.
+          emitTerminal(1, `\n[cleanup-incomplete: HTTP ${String(response.status)}]\n`);
           return;
         }
 
@@ -226,7 +228,17 @@ export function createRemoteAgentLifecycle(
             teardownTransport();
             return true;
           }
-          const trimmed = new TextDecoder().decode(lineBytes).trim();
+          let trimmed: string;
+          try {
+            // fatal: true — invalid UTF-8 bytes throw instead of silently replacing with U+FFFD,
+            // which could allow wire corruption to masquerade as valid frames.
+            trimmed = new TextDecoder("utf-8", { fatal: true }).decode(lineBytes).trim();
+          } catch {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+            emitTerminal(1, "\n[cleanup-incomplete: protocol error — invalid UTF-8]\n");
+            teardownTransport();
+            return true;
+          }
           if (trimmed === "") return false;
           let frame: unknown;
           try {
