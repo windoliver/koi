@@ -244,17 +244,28 @@ export function createGateway(
         lastKnownOutboundSeq.set(id, seqToSave);
       }
       const disconnectTs = Date.now();
-      const persist = (async (): Promise<void> => {
-        const r = await Promise.resolve(store.get(id));
-        if (r.ok) {
-          const updated: Session = {
-            ...r.value,
-            seq: r.value.seq < seqToSave ? seqToSave : r.value.seq,
-            disconnectedAt: disconnectTs,
-          };
-          await Promise.resolve(store.set(updated));
-        }
-      })()
+      // Chain after any in-flight send.seq.persist so destroySession() awaits the full
+      // serialized chain before store.delete(), preventing the earlier persist from
+      // completing after the delete and resurrecting the session as a ghost record.
+      const chainedAfter = pendingSeqPersists.get(id) ?? Promise.resolve();
+      const persist: Promise<void> = chainedAfter
+        .then(async (): Promise<void> => {
+          const r = await Promise.resolve(store.get(id));
+          if (r.ok) {
+            const updated: Session = {
+              ...r.value,
+              seq: r.value.seq < seqToSave ? seqToSave : r.value.seq,
+              disconnectedAt: disconnectTs,
+            };
+            const setResult = await Promise.resolve(store.set(updated));
+            if (!setResult.ok) {
+              swallowError(new Error(setResult.error.message), {
+                package: "gateway",
+                operation: "disconnect.seq.persist",
+              });
+            }
+          }
+        })
         .catch((err: unknown) => {
           swallowError(err, { package: "gateway", operation: "disconnect.seq.persist" });
         })
@@ -1122,11 +1133,15 @@ export function createGateway(
             const current = await Promise.resolve(store.get(sidTarget));
             if (!current.ok) return; // session gone (destroyed or TTL evicted)
             if (current.value.seq >= seqTarget) return; // already at or past target
-            await Promise.resolve(store.set({ ...current.value, seq: seqTarget })).catch(
-              (err: unknown) => {
-                swallowError(err, { package: "gateway", operation: "send.seq.persist" });
-              },
+            const setResult = await Promise.resolve(
+              store.set({ ...current.value, seq: seqTarget }),
             );
+            if (!setResult.ok) {
+              swallowError(new Error(setResult.error.message), {
+                package: "gateway",
+                operation: "send.seq.persist",
+              });
+            }
           } catch (err: unknown) {
             swallowError(err, { package: "gateway", operation: "send.seq.persist" });
           }
