@@ -253,7 +253,7 @@ describe("createTemporalScheduler", () => {
   test("resume input state is forwarded to workflow args", async () => {
     const client = makeClient();
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
-    const resumeState = { checkpoint: "abc123", step: 42 };
+    const resumeState = { engineId: "eng-1", data: { checkpoint: "abc123", step: 42 } };
     await sched.submit(A1, { kind: "resume", state: resumeState }, "dispatch");
     const startCall = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0] as [
       string,
