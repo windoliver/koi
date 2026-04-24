@@ -397,7 +397,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       };
     },
 
-    history(filter): readonly TaskRunRecord[] {
+    async history(filter): Promise<readonly TaskRunRecord[]> {
+      // Reconcile before reading so completed/failed workflows are moved from
+      // `tasks` into `history` before we filter.
+      await reconcileAll();
       let results = [...history];
       if (filter.agentId !== undefined) {
         results = results.filter((r) => r.agentId === filter.agentId);
