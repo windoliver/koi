@@ -109,10 +109,20 @@ without false reclamation. Defaults satisfy this (90s vs. 30s).
 ### `LongRunningHarness`
 
 ```ts
-/** Opaque token proving the caller owns the currently-active session. */
+/**
+ * Unforgeable ownership capability for the currently-active session.
+ *
+ * Construction is private to `@koi/long-running`; callers receive a
+ * SessionLease from start()/resume() and pass it back unchanged. The interface
+ * is intentionally not structurally constructible from plain fields.
+ */
+declare const __leaseBrand: unique symbol;
 interface SessionLease {
-  readonly sessionId: string;
-  readonly generation: number; // monotonic per harness, persisted
+  readonly [__leaseBrand]: "SessionLease";
+  readonly sessionId: string;          // must equal HarnessSnapshot.lastSessionId
+  readonly generation: number;         // must equal HarnessSnapshot.generation
+  readonly abort: AbortController;     // revoked when lease is invalidated
+  readonly revoked: () => boolean;     // fast local check before any write
 }
 
 interface LongRunningHarness {
@@ -131,15 +141,33 @@ interface LongRunningHarness {
     id: TaskItemId,
     err: KoiError,
   ) => Promise<Result<void, KoiError>>;
+  /**
+   * Abort the active run. Exposed so durability-loss handlers (inside
+   * checkpoint middleware) can force engine quiescence before releasing the
+   * lease. Returns once the engine adapter has stopped emitting events or
+   * abortTimeoutMs has elapsed.
+   */
+  readonly abortActive: (reason: KoiError) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: (lease: SessionLease) => KoiMiddleware;
   readonly dispose: () => Promise<void>;
 }
 ```
 
-`StartResult` and `ResumeResult` both carry a fresh `SessionLease`. Callers pass
-it back on every mutating call; stale leases are rejected with
-`KoiError { code: "STALE_SESSION" }`.
+`StartResult` and `ResumeResult` both carry a fresh `SessionLease`. Callers
+pass it back on every mutating call; the harness validates:
+
+1. `lease.revoked() === false` (fast local check).
+2. `lease.sessionId === currentSnapshot.lastSessionId` (binds to the specific
+   activation, not just the generation counter).
+3. `lease.generation === currentSnapshot.generation` (fences superseded runs).
+
+Any failure → `KoiError { code: "STALE_SESSION", retryable: false }`.
+
+Leases are branded (`__leaseBrand` is `unique symbol`, not exported) so they
+cannot be structurally forged by callers. Internal revocation sets
+`revoked()` true and aborts `lease.abort`, propagating to any engine work
+holding the signal.
 
 ## Behavior
 
@@ -241,18 +269,29 @@ The harness runs an independent heartbeat loop from `start()`/`resume()` until
 
 - On activation: `setInterval(bumpHeartbeat, heartbeatIntervalMs)`.
 - `bumpHeartbeat` calls `sessionPersistence.setHeartbeat(sessionId, Date.now())`
-  (new L0 method, see prerequisites). Failure is logged and retried on the next
-  tick; a sustained failure surfaces via `onDurabilityLost` after
-  `leaseTtlMs / 2` of contiguous failures.
-- Lease validation (before every mutating store write) checks the cached
-  in-memory heartbeat timestamp AND issues a fresh heartbeat before the CAS,
-  so write-heavy turns never appear stale.
+  (new L0 method, see prerequisites).
+- **Heartbeat-write failure is not a log-and-retry.** The harness tracks
+  `lastPersistedHeartbeatAt` (the timestamp of the last *successful* write).
+  Before every tick, it computes `remaining = leaseTtlMs - (now - lastPersistedHeartbeatAt)`.
+  - If `remaining < heartbeatIntervalMs * 2` (approaching staleness) AND the
+    most recent write failed: **invoke `abortActive("HEARTBEAT_STALE")`
+    immediately**. This forces engine quiescence before TTL expires and
+    another process can legitimately reclaim.
+  - `onDurabilityLost` is invoked on the first failed write, not after
+    contiguous failures.
+- Lease validation (before every mutating store write) refreshes the
+  heartbeat before the CAS. If that heartbeat write fails, the mutation is
+  rejected with `CHECKPOINT_WRITE_FAILED` and `abortActive` is invoked.
 - A long turn (minutes or hours, no checkpoint, no tool return) continues to
-  heartbeat on the timer and is never falsely reclaimed.
+  heartbeat on the timer and is never falsely reclaimed while writes succeed.
+  If writes fail, the run proactively stops itself before the reclamation
+  window opens.
 
-The heartbeat loop is the authoritative liveness signal. Turn-boundary writes
-(checkpoint middleware, pause, complete/fail-task) bump it opportunistically as
-a latency optimization, but never as the sole signal.
+Invariant: `(now - lastPersistedHeartbeatAt) < leaseTtlMs` OR the engine has
+been signalled to abort. There is no window where a live run both fails to
+persist heartbeats AND remains non-abortable. The heartbeat loop is the
+authoritative liveness signal; turn-boundary writes bump it opportunistically
+as a latency optimization, never as the sole signal.
 
 **Start:**
 
@@ -350,9 +389,12 @@ Therefore the default path is:
 
 1. Fail the current turn with `CHECKPOINT_WRITE_FAILED`.
 2. Invoke `onDurabilityLost` for host escalation.
-3. **Stop engine execution before giving up the lease.** The middleware
-   signals the engine adapter via the lease's `AbortSignal` and waits for it
-   to quiesce (bounded by `abortTimeoutMs`, default 10s).
+3. **Stop engine execution before giving up the lease.** The middleware calls
+   `harness.abortActive(...)`, which revokes the lease (`lease.revoked()`
+   starts returning true, `lease.abort.abort()` fires), signals the engine
+   adapter, and waits for it to quiesce (bounded by `abortTimeoutMs`,
+   default 10s). `abortActive` is a real method on `LongRunningHarness`
+   (not a capability implied by the lease shape alone).
 4. Only after quiescence: mark the session `"idle"` via `setSessionStatus`
    and stop heartbeats. If that write also fails, heartbeat-staleness is the
    sole reclamation signal — but execution has already stopped, so the run is
@@ -469,9 +511,21 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   reaching a checkpoint boundary continues to heartbeat via the timer loop;
   a concurrent `resume()` attempt returns `ALREADY_ACTIVE`, not a successful
   reclamation. (Regression test for false dead-owner reclamation.)
+- **Heartbeat-write failure proactive abort:** simulated `setHeartbeat` I/O
+  failure with `lastPersistedHeartbeatAt` approaching TTL → harness invokes
+  `abortActive` before TTL expires → no competing `resume()` can reclaim
+  while execution is still ongoing.
 - **Heartbeat loop lifecycle:** heartbeat starts on `start()`/`resume()` and
   stops on `pause()`/`fail()`/`dispose()`; no heartbeats emitted outside
   active phase.
+- **Lease forgery rejection:** a structurally-similar object that does not
+  carry the internal brand is rejected at the type level (compile-time); a
+  lease with tampered `sessionId` (not matching `lastSessionId`) is rejected
+  at runtime with `STALE_SESSION`.
+- **abortActive contract:** invoking `abortActive` revokes the lease,
+  propagates via `lease.abort.signal`, waits up to `abortTimeoutMs`, returns
+  `Ok` on quiescence or `KoiError { code: "ABORT_TIMEOUT" }` otherwise. A
+  subsequent mutation on the revoked lease is rejected before any store write.
 - **Activation rollback:** session `saveSession` succeeds but CAS fails →
   orphan session is cleaned via `removeSession` best-effort; harness head
   unchanged.
@@ -528,8 +582,10 @@ All errors are `KoiError` from L0. Codes used:
 | `TIMEOUT` | session exceeded `timeoutMs` | false |
 | `ALREADY_ACTIVE` | `resume()` while another session holds an active lease | true |
 | `CONCURRENT_RESUME` | CAS failed: peer claimed the lease first | true |
-| `STALE_SESSION` | mutating call presented a revoked/superseded lease | false |
-| `CHECKPOINT_WRITE_FAILED` | store `put`/`compareAndPut` rejected (I/O) | true |
+| `STALE_SESSION` | mutating call presented a revoked/superseded/tampered lease | false |
+| `CHECKPOINT_WRITE_FAILED` | store `put`/`compareAndPut`/`setHeartbeat` rejected (I/O) | true |
+| `HEARTBEAT_STALE` | heartbeat persistence approaching TTL with recent failure | false |
+| `ABORT_TIMEOUT` | engine did not quiesce within `abortTimeoutMs` | false |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
