@@ -136,6 +136,20 @@ describe("submit", () => {
     expect(payload.pinned).toBe(true);
   });
 
+  test("throws when timeoutMs is passed to submit — not enforced", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { timeoutMs: 5000 }),
+    ).rejects.toThrow("does not enforce timeoutMs");
+  });
+
+  test("throws when maxRetries is passed to submit — not enforced", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { maxRetries: 3 }),
+    ).rejects.toThrow("does not enforce");
+  });
+
   test("throws when delayMs is used with dispatch mode", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await expect(
@@ -301,29 +315,17 @@ describe("cancel", () => {
     expect(client.workflow.cancel).toHaveBeenCalled();
   });
 
-  test("dispatch cancel targets the agent workflow, not the task id", async () => {
+  test("dispatch cancel returns false — signal already consumed, cancelling would destroy the agent", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
-    await scheduler.cancel(id);
-    const cancelArgs = (client.workflow.cancel as ReturnType<typeof mock>).mock.calls[0];
-    expect(cancelArgs?.[0]).toBe(String(AGENT_ID));
+    expect(await scheduler.cancel(id)).toBe(false);
+    expect(client.workflow.cancel).not.toHaveBeenCalled();
   });
 
-  test("returns false for unknown task when remote cancel also fails", async () => {
-    const client = makeMockClient({
-      cancel: mock(async () => {
-        throw new Error("workflow not found");
-      }),
-    });
-    const scheduler = createTemporalScheduler(makeConfig(client));
-    expect(await scheduler.cancel("nonexistent" as never)).toBe(false);
-  });
-
-  test("returns true for unknown local task when remote cancel succeeds (post-restart spawn recovery)", async () => {
+  test("returns false for unknown task", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
-    // No submit — simulates a task created before a process restart
-    expect(await scheduler.cancel("task:123:abc" as never)).toBe(true);
+    expect(await scheduler.cancel("nonexistent" as never)).toBe(false);
   });
 
   test("emits task:cancelled event", async () => {

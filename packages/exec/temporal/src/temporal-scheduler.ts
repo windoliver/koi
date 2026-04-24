@@ -175,6 +175,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           "delayMs is not supported for dispatch mode — dispatch targets a running workflow and cannot defer signal delivery",
         );
       }
+      if (options?.timeoutMs !== undefined || options?.maxRetries !== undefined) {
+        throw new Error(
+          "submit() does not enforce timeoutMs or maxRetries. Remove these options or implement them inside the target workflow.",
+        );
+      }
 
       const id = toTaskId(`task:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`);
       const now = Date.now();
@@ -306,14 +311,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
     async cancel(id: TaskId): Promise<boolean> {
       const task = tasks.get(id);
-      // Attempt remote cancel even without local state: for spawn tasks, taskId === workflowId
-      // so post-restart cancel requests can still reach the running workflow.
+      if (task === undefined) return false;
+      // Dispatch signals are delivered immediately; there is no workflow-level cancel
+      // that targets only this task. Cancelling the agent workflow ID would destroy
+      // all in-flight work for that agent, not just this task.
+      if (task.mode === "dispatch") return false;
       const targetId = taskWorkflowIds.get(id) ?? id;
       try {
         await config.client.workflow.cancel(targetId);
-        if (task !== undefined) {
-          tasks.set(id, { ...task, status: "failed" });
-        }
+        tasks.set(id, { ...task, status: "failed" });
         emit({ kind: "task:cancelled", taskId: id });
         return true;
       } catch {
