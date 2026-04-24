@@ -1122,6 +1122,10 @@ export function createGateway(
       return store;
     },
 
+    // Trust model: onFrame and send() are in-process APIs used by the koi engine whose
+    // callers are trusted (engine owns all session routing). A multi-tenant or plugin
+    // environment should wrap this with a capability handle returned from authentication
+    // rather than exposing the raw agentId/sessionId surface to untrusted code.
     onFrame(agentId: string, handler: (session: Session, frame: GatewayFrame) => void): () => void {
       let set = frameHandlers.get(agentId);
       if (set === undefined) {
@@ -1199,6 +1203,9 @@ export function createGateway(
         connSessionCache.set(connId, { ...cachedSession, seq: latestSeq });
         const seqTarget = latestSeq;
         const sidTarget = sessionId;
+        // Capture the connection ID at send() time. The async persist may run after the
+        // client has reconnected on a new connection; we must not close the replacement.
+        const connIdAtSendTime = connId;
         // Chain into pendingSeqPersists so destroySession/stop() await this persist
         // before store.delete(), preventing resurrection of a deleted session by a
         // concurrent in-flight write completing after the delete.
@@ -1225,29 +1232,32 @@ export function createGateway(
           }
           if (persistFailed) {
             // Fail closed: stored seq is behind or indeterminate. Delete the session and
-            // close the live connection so it cannot continue serving traffic with durable
-            // sequencing state already gone. Without closing the conn, a process crash in
-            // this window leaves no safe reconnect state for the client.
+            // close the originating connection so it cannot continue serving traffic with
+            // durable sequencing state already gone.
+            // Guard: only close if the same connId is still authoritative. The session may
+            // have reconnected on a new socket by the time this persist resolves; closing
+            // connBySession.get(sidTarget) would kill the replacement connection.
             ownedSessionIds.delete(sidTarget);
             await Promise.resolve(store.delete(sidTarget)).catch((err: unknown) => {
               swallowError(err, { package: "gateway", operation: "send.seq.persist.cleanup" });
             });
-            const activeConnId = connBySession.get(sidTarget);
-            const activeConn = activeConnId !== undefined ? connMap.get(activeConnId) : undefined;
-            if (activeConn !== undefined) {
-              activeConn.send(
-                createErrorFrame(
-                  nextServerSeq(activeConn),
-                  "SESSION_STORE_FAILURE",
+            if (connBySession.get(sidTarget) === connIdAtSendTime) {
+              const activeConn = connMap.get(connIdAtSendTime);
+              if (activeConn !== undefined) {
+                activeConn.send(
+                  createErrorFrame(
+                    nextServerSeq(activeConn),
+                    "SESSION_STORE_FAILURE",
+                    "Outbound sequence durability lost",
+                    nextId,
+                  ),
+                );
+                cleanupConn(activeConn, "seq persist failure");
+                activeConn.close(
+                  CLOSE_CODES.SESSION_STORE_FAILURE,
                   "Outbound sequence durability lost",
-                  nextId,
-                ),
-              );
-              cleanupConn(activeConn, "seq persist failure");
-              activeConn.close(
-                CLOSE_CODES.SESSION_STORE_FAILURE,
-                "Outbound sequence durability lost",
-              );
+                );
+              }
             }
           }
         });
