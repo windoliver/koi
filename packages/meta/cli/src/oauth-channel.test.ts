@@ -54,6 +54,28 @@ describe("createOAuthChannel", () => {
       expect(text).toContain("google-drive");
       // URL shown as fallback (e.g. Nexus local auth where the URL is navigable)
       expect(text).toContain("https://accounts.google.com/auth?test=1");
+      // No provider-specific instructions — Nexus does not pass koi mcp auth hint
+      expect(text).not.toContain("koi mcp auth");
+    });
+
+    test("mode:local with authUrl and instructions appends instructions (MCP style)", async () => {
+      const { channel, sent } = makeChannel();
+      const oauthChannel = createOAuthChannel({
+        channel: channel as unknown as ChannelAdapter,
+      });
+
+      await oauthChannel.onAuthRequired({
+        provider: "my-mcp-server",
+        authUrl: "https://auth.example.com/oauth/authorize?client_id=x",
+        message: "Opening browser to authorize my-mcp-server.",
+        mode: "local",
+        instructions: "On a remote or headless machine, run instead: `koi mcp auth my-mcp-server`",
+      });
+
+      expect(sent).toHaveLength(1);
+      const text = sent[0]?.content[0]?.text ?? "";
+      expect(text).toContain("https://auth.example.com/oauth/authorize");
+      expect(text).toContain("koi mcp auth my-mcp-server");
     });
 
     test("sends plain message when authUrl is absent (no browser-open event)", async () => {

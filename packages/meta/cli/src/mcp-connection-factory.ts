@@ -97,6 +97,7 @@ export function createOAuthAwareMcpConnection(
                   message: `Opening browser to authorize ${server.name}.`,
                   mode: "local",
                   authUrl: authorizationUrl,
+                  instructions: `On a remote or headless machine, run instead: \`koi mcp auth ${server.name}\``,
                 }),
               ).catch(() => {});
             },

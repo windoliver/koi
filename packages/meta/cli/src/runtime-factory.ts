@@ -121,6 +121,7 @@ import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
+  loadUserMcpSetup,
   loadUserRegisteredHooks,
   mergeUserAndPluginHooks,
 } from "./shared-wiring.js";
@@ -3204,14 +3205,39 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           : qualifiedName;
         const provider = mcpAuthProviders?.get(serverName);
         if (provider === undefined) {
-          // Server was added to .mcp.json after this session started — the
-          // runtime was not built with a live connection for it. The CLI path
-          // (koi mcp auth <server>) reads .mcp.json fresh and will work.
+          // Server missing from startup map — likely added to .mcp.json after
+          // this session started. Re-read the current config to find it and
+          // attempt a live one-shot auth without requiring a full restart.
+          const freshSetup = await loadUserMcpSetup(cwd, undefined, channel).catch(() => undefined);
+          const freshProvider = freshSetup?.authProviders.get(serverName);
+          const freshConnection = freshSetup?.connections.get(serverName);
+          if (freshProvider === undefined || freshConnection === undefined) {
+            // Server genuinely not found or has no OAuth config — guide user to CLI.
+            void Promise.resolve(
+              channel.onAuthRequired({
+                provider: serverName,
+                message: `"${serverName}" was not found in the current MCP config. Run \`koi mcp auth ${serverName}\` in a terminal to authorize it, then reload the session.`,
+                mode: "local",
+                instructions: `On a remote or headless machine, run: \`koi mcp auth ${serverName}\``,
+              }),
+            ).catch(() => {});
+            freshSetup?.dispose();
+            return false;
+          }
+          // Trigger auth through the fresh connection. On success, the server
+          // will authenticate but the running session's resolver won't know
+          // about it — prompt the user to reload.
+          const authResult = await freshConnection.triggerAuth?.();
+          // freshSetup is non-null here: freshProvider/freshConnection came from it.
+          freshSetup?.dispose();
+          if (authResult?.ok) {
+            void Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
+            return true;
+          }
           void Promise.resolve(
-            channel.onAuthRequired({
+            channel.onAuthFailure?.({
               provider: serverName,
-              message: `"${serverName}" was added after this session started. Run \`koi mcp auth ${serverName}\` in a terminal to authorize it, then reload the session.`,
-              mode: "local",
+              reason: authResult?.error.message ?? "Authorization did not complete.",
             }),
           ).catch(() => {});
           return false;

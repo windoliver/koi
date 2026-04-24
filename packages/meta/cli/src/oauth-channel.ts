@@ -28,8 +28,10 @@ function buildAuthRequiredText(n: AuthRequiredNotification): string {
   // mode:"local" with authUrl — navigable on the same machine as the CLI
   // (Nexus OAuth and MCP loopback flows). The authorization callback runs on
   // localhost — this URL must be opened on the machine running the CLI.
-  // SSH/headless: run `koi mcp auth <server>` on the local machine to authorize.
-  return `**${n.message}**\n\n_If the browser does not open automatically, open this link **on the machine running the CLI** to authorize ${n.provider}:_\n${n.authUrl}\n\n_On a remote or headless machine, run instead:_ \`koi mcp auth ${n.provider}\``;
+  // Callers supply provider-specific recovery guidance via `instructions`
+  // (e.g. MCP passes "run `koi mcp auth <server>`"; Nexus omits this).
+  const localHint = n.instructions !== undefined ? `\n\n_${n.instructions}_` : "";
+  return `**${n.message}**\n\n_If the browser does not open automatically, open this link **on the machine running the CLI** to authorize ${n.provider}:_\n${n.authUrl}${localHint}`;
 }
 
 export function createOAuthChannel(options: {
