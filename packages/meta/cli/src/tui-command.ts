@@ -4507,17 +4507,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           void (async (): Promise<void> => {
             const rawName = args.trim();
             if (rawName === "") return;
-            if (rawName.startsWith("plugin:")) {
-              store.dispatch({
-                kind: "add_error",
-                code: "MCP_AUTH",
-                message:
-                  `Cannot authenticate "${rawName}" from /mcp — plugin-provided ` +
-                  `servers must be authenticated through the plugin's own flow.`,
-              });
-              return;
-            }
-            const serverName = rawName.startsWith("user:") ? rawName.slice(5) : rawName;
+            // Strip namespace prefixes added by the /mcp view's server listing.
+            const serverName = rawName.startsWith("user:")
+              ? rawName.slice(5)
+              : rawName.startsWith("plugin:")
+                ? rawName.slice(7)
+                : rawName;
             if (mcpAuthInFlight.has(serverName)) return;
             mcpAuthInFlight.add(serverName);
             try {

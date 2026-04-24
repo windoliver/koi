@@ -226,12 +226,13 @@ export async function loadUserMcpSetup(
 
   const resolver = createMcpResolver(connections);
 
-  // Wire auth pseudo-tools only when there is no OAuthChannel. When an
-  // OAuthChannel is present (TUI path), the connection's onAuthNeeded
-  // singleflight handles auth inline on the first tool call, making the
-  // pseudo-tools redundant and their restart-required messaging wrong.
+  // Wire auth pseudo-tools whenever OAuth servers are present. Even when an
+  // OAuthChannel is available, listTools() is passive (returns AUTH_REQUIRED
+  // without calling onAuthNeeded), so an unauthenticated server contributes
+  // zero tools. The pseudo-tools are the discoverable entry point that lets
+  // the model (or user) trigger auth before the first real tool call.
   const createAuthTools =
-    authServers.size > 0 && oauthChannel === undefined
+    authServers.size > 0
       ? createCliAuthToolFactory({
           servers: authServers,
           rediscover: () => resolver.discover(),
@@ -303,7 +304,7 @@ export function buildPluginMcpSetup(
   const resolver = createMcpResolver(connections);
 
   const createAuthTools =
-    authServers.size > 0 && oauthChannel === undefined
+    authServers.size > 0
       ? createCliAuthToolFactory({
           servers: authServers,
           rediscover: () => resolver.discover(),

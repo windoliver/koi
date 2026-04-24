@@ -2291,6 +2291,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpConnections = stackContribution.exports.mcpConnections as
       | ReadonlyMap<string, import("@koi/mcp").McpConnection>
       | undefined;
+    const mcpPluginAuthProviders = stackContribution.exports.mcpPluginAuthProviders as
+      | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
+      | undefined;
+    const mcpPluginConnections = stackContribution.exports.mcpPluginConnections as
+      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
+      | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
     // and the onViolation callback need a LIVE session id (rotates on
@@ -3171,9 +3177,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         serverName: string,
         channel: import("@koi/core").OAuthChannel,
       ): Promise<boolean> => {
-        const provider = mcpAuthProviders?.get(serverName);
+        // Check user-provided servers first, then plugin-provided servers.
+        const provider =
+          mcpAuthProviders?.get(serverName) ?? mcpPluginAuthProviders?.get(serverName);
         if (provider === undefined) return false;
-        await Promise.resolve(
+        const connection = mcpConnections?.get(serverName) ?? mcpPluginConnections?.get(serverName);
+        // Fire-and-forget — renderer latency must not block the browser opening.
+        void Promise.resolve(
           channel.onAuthRequired({
             provider: serverName,
             message: `${serverName} requires authorization`,
@@ -3185,13 +3195,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         if (authed) {
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
           // Force-reconnect the live connection so it transitions out of
-          // auth-needed and picks up the fresh tokens before the caller
-          // queries getMcpStatus(). Best-effort: a failed reconnect is not
-          // fatal — the connection will retry on the next tool call.
-          await mcpConnections
-            ?.get(serverName)
-            ?.connect()
-            .catch(() => {});
+          // auth-needed and picks up fresh tokens before getMcpStatus() runs.
+          await connection?.connect().catch(() => {});
         }
         return authed;
       },

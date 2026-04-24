@@ -65,8 +65,9 @@ export function createOAuthAwareMcpConnection(
     const onAuthNeeded =
       oauthChannel !== undefined
         ? async (): Promise<boolean> => {
-            // Notify best-effort — renderer failure must not prevent auth from starting.
-            await Promise.resolve(
+            // Fire-and-forget — renderer latency or failure must never block
+            // the browser window from opening. startAuthFlow() starts immediately.
+            void Promise.resolve(
               oauthChannel.onAuthRequired({
                 provider: server.name,
                 message: `${server.name} requires authorization`,

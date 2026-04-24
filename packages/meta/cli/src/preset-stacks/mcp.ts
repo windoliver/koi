@@ -65,6 +65,12 @@ export const mcpStack: PresetStack = {
           : {}),
         ...(userMcpSetup !== undefined ? { mcpAuthProviders: userMcpSetup.authProviders } : {}),
         ...(userMcpSetup !== undefined ? { mcpConnections: userMcpSetup.connections } : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginAuthProviders: pluginMcpSetup.authProviders }
+          : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginConnections: pluginMcpSetup.connections }
+          : {}),
       },
       onShutdown: () => {
         // Best-effort dispose. Neither setup has background work that
