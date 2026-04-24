@@ -14,10 +14,12 @@ import type {
   AttachResult,
   BrickRequires,
   ComponentProvider,
+  KoiError,
+  Result,
   SkillComponent,
 } from "@koi/core";
 import { COMPONENT_PRIORITY, skillToken } from "@koi/core";
-import type { SkillDefinition, SkillsRuntime } from "./types.js";
+import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -177,5 +179,69 @@ function skillDefinitionToProgressiveComponent(skill: SkillDefinition): SkillCom
     ...(skill.allowedTools !== undefined ? { tags: skill.allowedTools } : {}),
     ...(skill.requires !== undefined ? { requires: skill.requires as BrickRequires } : {}),
     ...(skill.executionMode !== undefined ? { executionMode: skill.executionMode } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Progressive pinned-body runtime wrapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps a SkillsRuntime so that bodies loaded during `loadAll()` are pinned
+ * in a session-local Map that is not subject to LRU eviction.
+ *
+ * When progressive mode is active, the provider attaches skill components
+ * based on `loadAll()` results. Later `load()` calls (from the Skill tool)
+ * must return the same body that was valid at session start — regardless of
+ * whether the shared LRU cache has since evicted the entry or the file has
+ * changed on disk.
+ *
+ * Use at the call site before passing the runtime to both the provider and
+ * the Skill tool:
+ *
+ *   const runtime = createProgressivePinnedRuntime(createSkillsRuntime());
+ */
+export function createProgressivePinnedRuntime(base: SkillsRuntime): SkillsRuntime {
+  const pinned = new Map<string, Result<SkillDefinition, KoiError>>();
+  // let justified: mutable flag, set once after first successful loadAll()
+  let pinnedPopulated = false;
+
+  const pinnedLoad = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
+    const hit = pinned.get(name);
+    if (hit !== undefined) return hit;
+    return base.load(name);
+  };
+
+  const pinnedLoadAll = async (): Promise<
+    Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>
+  > => {
+    const result = await base.loadAll();
+    if (result.ok && !pinnedPopulated) {
+      pinnedPopulated = true;
+      for (const [name, entry] of result.value) {
+        pinned.set(name, entry);
+      }
+    }
+    return result;
+  };
+
+  return {
+    discover: (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => base.discover(),
+    load: pinnedLoad,
+    loadAll: pinnedLoadAll,
+    query: (filter?: SkillQuery): Promise<Result<readonly SkillMetadata[], KoiError>> =>
+      base.query(filter),
+    loadReference: (name: string, refPath: string): Promise<Result<string, KoiError>> =>
+      base.loadReference(name, refPath),
+    invalidate: (name?: string): void => {
+      if (name !== undefined) {
+        pinned.delete(name);
+      } else {
+        pinned.clear();
+        pinnedPopulated = false;
+      }
+      base.invalidate(name);
+    },
+    registerExternal: (skills: readonly SkillMetadata[]): void => base.registerExternal(skills),
   };
 }

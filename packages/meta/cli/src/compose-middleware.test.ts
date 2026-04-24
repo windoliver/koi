@@ -59,6 +59,21 @@ describe("buildInheritedMiddlewareForChildren", () => {
     expect(result.indexOf(skillInjector)).toBeGreaterThan(requiredIdx);
   });
 
+  test("skillInjector appears BEFORE systemPrompt — matches root agent effective ordering", () => {
+    // Regression: if skillInjector is after systemPrompt, children get
+    // "<skills>\n\nbase" while root gets "base\n\n<skills>" — prompt-order drift.
+    const skillInjector = stub("skill-injector");
+    const systemPrompt = stub("system-prompt");
+    const result = buildInheritedMiddlewareForChildren({
+      permissions,
+      exfiltrationGuard,
+      hook,
+      skillInjector,
+      systemPrompt,
+    });
+    expect(result.indexOf(skillInjector)).toBeLessThan(result.indexOf(systemPrompt));
+  });
+
   test("omits skillInjector when not provided", () => {
     const result = buildInheritedMiddlewareForChildren({
       permissions,

@@ -5,7 +5,11 @@ import { join } from "node:path";
 import type { Agent } from "@koi/core";
 import { isAttachResult, skillToken } from "@koi/core";
 import { createSkillsRuntime } from "./index.js";
-import { createSkillProvider, skillDefinitionToComponent } from "./provider.js";
+import {
+  createProgressivePinnedRuntime,
+  createSkillProvider,
+  skillDefinitionToComponent,
+} from "./provider.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -333,5 +337,88 @@ describe("createSkillProvider — progressive mode", () => {
     expect(component?.runtimeBacked).toBeUndefined();
     // Content should be empty (MCP body is description === "")
     expect(component?.content).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createProgressivePinnedRuntime — session-snapshot body pinning
+// ---------------------------------------------------------------------------
+
+describe("createProgressivePinnedRuntime", () => {
+  let userRoot: string;
+  beforeEach(async () => {
+    userRoot = await mkdtemp(join(tmpdir(), "koi-pinned-test-"));
+  });
+  afterEach(async () => {
+    await rm(userRoot, { recursive: true, force: true });
+  });
+
+  test("load() returns body from pin map after loadAll()", async () => {
+    await writeSkill(userRoot, "pinned-skill", "Pinned body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    await runtime.loadAll();
+    const result = await runtime.load("pinned-skill");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.body).toContain("Pinned body.");
+  });
+
+  test("load() returns attach-time snapshot even after file is deleted (LRU eviction resistance)", async () => {
+    await writeSkill(userRoot, "deletable-skill", "Body before deletion.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot, cacheMaxBodies: 1 });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    await runtime.loadAll();
+
+    // Delete the skill file and write another skill to trigger LRU eviction
+    const { rmSync } = await import("node:fs");
+    rmSync(`${userRoot}/deletable-skill/SKILL.md`, { force: true });
+    await writeSkill(userRoot, "new-skill", "Evicts old entry.");
+    await base.load("new-skill"); // evicts deletable-skill from the LRU
+
+    // Pinned body must still be returned despite eviction from LRU
+    const result = await runtime.load("deletable-skill");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.body).toContain("Body before deletion.");
+  });
+
+  test("invalidate(name) removes the pin entry", async () => {
+    await writeSkill(userRoot, "skill-a", "Original body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    await runtime.loadAll();
+    runtime.invalidate("skill-a");
+
+    // After invalidation the pin is cleared — next load re-reads from disk
+    await writeSkill(userRoot, "skill-a", "Updated body.");
+    const result = await runtime.load("skill-a");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.body).toContain("Updated body.");
+  });
+
+  test("invalidate() with no arg clears all pins", async () => {
+    await writeSkill(userRoot, "skill-b", "Body B.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    await runtime.loadAll();
+    runtime.invalidate();
+
+    await writeSkill(userRoot, "skill-b", "Updated B.");
+    const result = await runtime.load("skill-b");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.body).toContain("Updated B.");
+  });
+
+  test("delegates discover() to base runtime", async () => {
+    await writeSkill(userRoot, "skill-c", "Body C.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    const result = await runtime.discover();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.has("skill-c")).toBe(true);
   });
 });

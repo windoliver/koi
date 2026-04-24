@@ -188,7 +188,13 @@ export function composeRuntimeMiddleware(
  * know their manifest policy does not apply to delegated work.
  *
  * Order mirrors the parent chain structure minus zone B:
- *   permissions → exfiltration-guard → hook → plan? → systemPrompt?
+ *   permissions → exfiltration-guard → hook → plan? → skillInjector? → systemPrompt?
+ *
+ * `skillInjector` sits BEFORE `systemPrompt` (not after) to match the root
+ * agent's effective ordering, where skillInjector is in zone A (outermost) and
+ * systemPrompt is zone C-bottom (innermost). Both root and child resolve to
+ * `"<basePrompt>\n\n<available_skills>"` — skills appended after base instructions.
+ * Reversing the order would flip this to skills-before-base for children only.
  *
  * `plan` sits BEFORE `systemPrompt` to match the parent chain's
  * Zone C-bottom order (see composeRuntimeMiddleware). That keeps
@@ -234,7 +240,7 @@ export function buildInheritedMiddlewareForChildren(input: {
     input.hook,
     ...(input.plan !== undefined ? [input.plan] : []),
     ...(input.planPersist !== undefined ? [input.planPersist] : []),
-    ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.skillInjector !== undefined ? [input.skillInjector] : []),
+    ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
   ];
 }
