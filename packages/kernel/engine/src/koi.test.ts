@@ -1960,6 +1960,144 @@ describe("createKoi resetBudgetPerRun", () => {
     expect(sr1.boundaryId).toMatch(/:session:1$/);
     expect(sr0.boundaryId).not.toBe(sr1.boundaryId);
   });
+
+  test("run_reset.boundaryTimestamp reflects run() call time, not first iterator pull", async () => {
+    // Regression for the runEntryAt lazy-capture bug: if runEntryAt is set
+    // inside the generator body (first pull), a host that queues RunHandles
+    // before consuming them would exclude the queue gap from maxDurationMs.
+    // runEntryAt must be set synchronously inside run() before the handle
+    // is returned, so boundaryTimestamp is close to the run() call time.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const { GOVERNANCE } = await import("@koi/core");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recordedEvents: import("@koi/core").GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      recordedEvents.push(event);
+      return original(event);
+    };
+
+    // First run: establish a reset event, discard it.
+    await collectEvents(runtime.run({ kind: "text", text: "warmup" }));
+    recordedEvents.length = 0;
+
+    // Second run: capture timestamp immediately before calling run().
+    const callTime = Date.now();
+    const handle = runtime.run({ kind: "text", text: "timed" });
+    // Delay 60ms before consuming — simulates a queued-RunHandle scenario.
+    await new Promise((r) => setTimeout(r, 60));
+    await collectEvents(handle);
+
+    const reset = recordedEvents.find((e) => e.kind === "run_reset");
+    if (reset === undefined || reset.kind !== "run_reset")
+      throw new Error("expected run_reset event");
+    // boundaryTimestamp must be within 40ms of callTime, not 60ms+ later.
+    expect(reset.boundaryTimestamp).toBeGreaterThanOrEqual(callTime - 5);
+    expect(reset.boundaryTimestamp).toBeLessThan(callTime + 40);
+  });
+
+  test("resetBudgetPerRun works with non-cooperating adapter (no adapter.terminals)", async () => {
+    // The cooperating-adapter path (adapter.terminals present) and the
+    // non-cooperating path each have their own resetForRun() call site in
+    // koi.ts. This test exercises the non-cooperating path.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const guard = createIterationGuard({
+      maxTurns: 100,
+      maxDurationMs: 120,
+      maxTokens: 100_000,
+    });
+
+    // mockAdapter has no .terminals — it is the non-cooperating path.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Sleep past the budget — a stale startedAt would cause immediate TIMEOUT.
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Re-create non-coop adapter for second run (mockAdapter is single-use).
+    const runtime2 = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+    const secondEvents = await collectEvents(runtime2.run({ kind: "text", text: "second" }));
+    expect(secondEvents.at(-1)?.kind).toBe("done");
+  });
+
+  test("warns when resetBudgetPerRun and resetIterationBudgetPerRun conflict", async () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+        resetBudgetPerRun: true,
+        resetIterationBudgetPerRun: false,
+        loopDetection: false,
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("takes precedence"));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("governance.record() throw during resetRunBoundary poisons the runtime", async () => {
+    // Fail-closed: if governance.record() throws on the run_reset event,
+    // the runtime must be poisoned and subsequent run() calls must reject.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const { GOVERNANCE } = await import("@koi/core");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    // First run succeeds — establishes clean state.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Poison governance so the next run_reset throws.
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      if (event.kind === "run_reset") throw new Error("governance storage failure");
+      return undefined;
+    };
+
+    // Second run must throw due to governance failure during resetRunBoundary.
+    await expect(collectEvents(runtime.run({ kind: "text", text: "second" }))).rejects.toThrow(
+      "governance storage failure",
+    );
+
+    // Runtime must now be poisoned — run() itself throws synchronously.
+    expect(() => {
+      runtime.run({ kind: "text", text: "third" });
+    }).toThrow(/poisoned/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
