@@ -248,8 +248,12 @@ koi tui
 
 **Manifest `audit:` block (#1994):** Audit sinks can be configured in `koi.yaml` so projects enable
 audit logging without shell/init plumbing. All paths anchor to the manifest directory (not the shell
-cwd). Parent directories must exist — audit sinks never silently create them. Env vars take
-precedence over manifest values; `violations` defaults to `~/.koi/violations.db` when absent.
+cwd). Parent directories must exist — audit sinks never silently create them.
+
+`koi tui` only: manifest audit paths are gated behind `KOI_ALLOW_MANIFEST_FILE_SINKS=1` (same gate
+as zone-B `manifest.middleware` file sinks) because `koi.yaml` is repo-authored content that can
+open files at arbitrary host paths. Without the gate, manifest audit config is silently ignored and
+env vars still work. `koi start` rejects manifests that contain `audit:`.
 
 ```yaml
 audit:
@@ -258,8 +262,8 @@ audit:
   violations: ./logs/v.db        # overrides ~/.koi/violations.db default; relative to manifest dir
 ```
 
-Precedence: `KOI_AUDIT_NDJSON` env var → `audit.ndjson` manifest → off (for ndjson); same for
-sqlite. For violations: `audit.violations` manifest → `~/.koi/violations.db` default.
+Precedence: `KOI_AUDIT_NDJSON` env var → `audit.ndjson` manifest (requires gate) → off; same for
+sqlite. For violations: `audit.violations` manifest (requires gate) → `~/.koi/violations.db` default.
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`

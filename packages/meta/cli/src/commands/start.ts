@@ -469,6 +469,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       );
     }
 
+    if (manifestResult.value.audit !== undefined) {
+      return bail(
+        "manifest.audit is not supported on this host. " +
+          "koi start does not wire audit sinks — remove the audit: block from the manifest " +
+          "to run under koi start, or use koi tui (which honors manifest.audit when " +
+          "KOI_ALLOW_MANIFEST_FILE_SINKS=1 is set).",
+      );
+    }
+
     // #1777 two-gate trust boundary for nexus backends:
     //   Gate 1 — manifest must declare scope (root + mode in options)
     //   Gate 2 — operator must pass --allow-remote-fs to explicitly
