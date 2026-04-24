@@ -1920,6 +1920,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
         ? { violationSqlitePath: manifestAudit.violations }
         : {}),
+    // When any audit path came from the manifest (not an env var), pass the
+    // manifest source path so createKoiRuntime can run a final containment
+    // check immediately before each sink open (minimising the TOCTOU window).
+    ...(() => {
+      const gate = process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1";
+      const usingManifestNdjson =
+        gate && process.env.KOI_AUDIT_NDJSON === undefined && manifestAudit?.ndjson !== undefined;
+      const usingManifestSqlite =
+        gate && process.env.KOI_AUDIT_SQLITE === undefined && manifestAudit?.sqlite !== undefined;
+      const usingManifestViolations =
+        gate &&
+        process.env.KOI_AUDIT_VIOLATIONS === undefined &&
+        manifestAudit?.violations !== undefined;
+      return (usingManifestNdjson || usingManifestSqlite || usingManifestViolations) &&
+        manifestLoadPath !== undefined
+        ? { manifestAuditSourcePath: manifestLoadPath }
+        : {};
+    })(),
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.
     ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),

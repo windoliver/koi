@@ -107,6 +107,7 @@ import {
 } from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import type { ManifestMiddlewareEntry } from "./manifest.js";
+import { revalidateAuditPathContainment } from "./manifest.js";
 import {
   canonicalizeAuditSinkPath,
   createBuiltinManifestRegistry,
@@ -755,6 +756,18 @@ export interface KoiRuntimeConfig {
    *  - Empty string `""`: disables the store entirely (violations only
    *    surfaced in-memory via the governance bridge for the current session). */
   readonly violationSqlitePath?: string | undefined;
+  /**
+   * When `auditNdjsonPath`, `auditSqlitePath`, or `violationSqlitePath` were
+   * derived from a repo-authored manifest (not from operator env vars), set
+   * this to the absolute path of the manifest file. `createKoiRuntime` will
+   * call `revalidateAuditPathContainment` immediately before each manifest-
+   * derived sink is opened, closing the TOCTOU window between the pre-runtime
+   * check in `tui-command.ts` and the actual sink open syscall.
+   *
+   * Leave `undefined` for env-var-sourced paths (operator-trusted, not subject
+   * to the manifest repo-authored trust boundary).
+   */
+  readonly manifestAuditSourcePath?: string | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -2316,6 +2329,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
+      // Final containment check immediately before open — minimizes the TOCTOU
+      // window between the pre-runtime check in tui-command.ts and the actual
+      // file open syscall. Only runs for manifest-derived paths.
+      if (config.manifestAuditSourcePath !== undefined) {
+        const err = revalidateAuditPathContainment(
+          config.auditNdjsonPath,
+          config.manifestAuditSourcePath,
+        );
+        if (err !== undefined) {
+          throw new Error(
+            `manifest.audit.ndjson: path compromised after validation — ${err}. ` +
+              "Refusing to open sink to prevent out-of-manifest writes.",
+          );
+        }
+      }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       complianceRecorders.push(
@@ -2382,6 +2410,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               );
             }
           }
+        }
+      }
+      if (config.manifestAuditSourcePath !== undefined) {
+        const err = revalidateAuditPathContainment(
+          config.auditSqlitePath,
+          config.manifestAuditSourcePath,
+        );
+        if (err !== undefined) {
+          throw new Error(
+            `manifest.audit.sqlite: path compromised after validation — ${err}. ` +
+              "Refusing to open sink to prevent out-of-manifest writes.",
+          );
         }
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
@@ -2554,6 +2594,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             );
           }
           mkdirSync(parent, { recursive: true });
+        }
+        // Final containment check immediately before violation store open.
+        // Only applies to manifest-derived paths (explicit violationSqlitePath
+        // that came from manifest.audit.violations via tui-command.ts).
+        if (config.manifestAuditSourcePath !== undefined && explicitPath) {
+          const err = revalidateAuditPathContainment(
+            resolvedViolationPath,
+            config.manifestAuditSourcePath,
+          );
+          if (err !== undefined) {
+            throw new Error(
+              `manifest.audit.violations: path compromised after validation — ${err}. ` +
+                "Refusing to open violation store to prevent out-of-manifest writes.",
+            );
+          }
         }
         violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
         // Register close on manifest shutdown so `runtime.dispose()`
