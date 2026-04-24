@@ -733,39 +733,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           );
         }
       }
-      // Two separate timestamps for two distinct purposes:
-      //   runEntryAt  — run() entry; anchors duration (guard startedAt + governance
-      //                 boundaryTimestamp) so startup work counts against maxDurationMs.
-      //   resetAt     — post-startup (post-validation); anchors inactivity (guard
-      //                 lastActivityMs) so the first model call gets a full inactivity
-      //                 window regardless of how long forge/dynamic-mw took to settle.
-      // Both anchors use the same closure variable captured before any startup work,
-      // so duration enforcement is never split-brain between guard and governance.
-      const resetAt = Date.now();
-      const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
-      // Reset all guards FIRST — before committing the governance event — so that
-      // `run_reset` is only emitted when the reset is fully complete. If a guard
-      // throws, we poison the runtime and re-throw; governance is never told about
-      // a reset that didn't happen.
-      // Deduplication: middleware is composed additively (static + forged + dynamic),
-      // so the same guard instance can appear multiple times. Track by identity so each
-      // guard is reset exactly once, even if it appears from multiple sources.
-      try {
-        const seen = new Set<IterationGuardHandle>();
-        for (const mw of guards) {
-          if (isIterationGuardHandle(mw) && !seen.has(mw)) {
-            seen.add(mw);
-            mw.resetForRun(durationAnchor, resetAt);
-          }
-        }
-      } catch (e) {
-        poisoned = true;
-        throw e;
-      }
-      // Commit governance event AFTER guards succeed. If governance rejects
-      // (async I/O failure), guards are already reset — poison the runtime so
-      // no subsequent run can proceed with split-brain state (guards fresh,
-      // controller still carrying the exhausted previous run's budgets).
+      // Duration anchor uses run() call time so startup work (forge refresh,
+      // dynamic-mw recomposition) counts against maxDurationMs.
+      const durationAnchor = runEntryAt > 0 ? runEntryAt : Date.now();
+      // Record governance FIRST with the duration anchor. If governance rejects,
+      // we poison before touching guard state — guards stay at prior-run values,
+      // engine is dead, no split-brain possible.
       try {
         await governance.record({
           kind: "run_reset",
@@ -773,6 +746,25 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           boundaryId,
           boundaryTimestamp: durationAnchor,
         });
+      } catch (e) {
+        poisoned = true;
+        throw e;
+      }
+      // Anchor inactivity AFTER governance.record() completes so that slow async
+      // governance (remote persistence, I/O) does not eat into the first-turn
+      // inactivity window. The duration anchor (runEntryAt) is unaffected.
+      // Deduplication: middleware is composed additively (static + forged + dynamic),
+      // so the same guard instance can appear multiple times. Track by identity so each
+      // guard is reset exactly once.
+      const activityAnchor = Date.now();
+      try {
+        const seen = new Set<IterationGuardHandle>();
+        for (const mw of guards) {
+          if (isIterationGuardHandle(mw) && !seen.has(mw)) {
+            seen.add(mw);
+            mw.resetForRun(durationAnchor, activityAnchor);
+          }
+        }
       } catch (e) {
         poisoned = true;
         throw e;
