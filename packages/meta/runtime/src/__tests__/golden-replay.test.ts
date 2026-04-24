@@ -60,6 +60,7 @@ import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { loadCassette } from "@koi/replay";
 import {
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
   createSkillProvider,
   createSkillsRuntime,
@@ -8264,7 +8265,7 @@ describe("Golden: @koi/skills-runtime (standalone progressive loading)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/skills-runtime (progressive mode — issue #1986)", () => {
-  test("createSkillProvider progressive:true attaches runtimeBacked components with empty content", async () => {
+  test("createProgressiveSkillProvider attaches runtimeBacked components with empty content", async () => {
     const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
@@ -8278,8 +8279,8 @@ describe("Golden: @koi/skills-runtime (progressive mode — issue #1986)", () =>
       "---\nname: commit\ndescription: Generate a commit message.\n---\n\nFull body text.",
     );
 
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const { provider } = createProgressiveSkillProvider(base);
 
     const result = await provider.attach({} as never);
     expect(isAttachResult(result)).toBe(true);

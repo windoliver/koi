@@ -128,16 +128,18 @@ function buildDescription(skillListing: string, progressive = false): string {
  * @returns Result containing the Tool on success, or a KoiError if discovery fails.
  */
 export async function createSkillTool(config: SkillToolConfig): Promise<Result<Tool, KoiError>> {
+  // Always run discover() for a startup health check — if the skills runtime is broken
+  // at creation time, fail here so the host can omit the Skill tool rather than
+  // registering an advertised-but-broken tool that fails at invocation time.
+  //
   // In progressive mode the host injects an <available_skills> XML block per model call
-  // from live ECS state. The tool description does not need a skill listing — it would
-  // duplicate a startup-time snapshot that goes stale after session resets. Skip discovery
-  // and use an empty listing so the XML block is the single authoritative catalog.
+  // from live ECS state, so the discovery result is not used for the tool description.
+  // In eager mode the result is used to build the static skill listing in the descriptor.
+  const discoverResult = await config.resolver.discover();
+  if (!discoverResult.ok) return discoverResult;
+
   let skillListing = "";
   if (!config.progressive) {
-    // Discover skills for the tool description
-    const discoverResult = await config.resolver.discover();
-    if (!discoverResult.ok) return discoverResult;
-
     // Filter to only skills executable under the current config.
     // Fork skills require spawnFn and valid spawn config to be executable.
     const allSkills = [...discoverResult.value.values()];
