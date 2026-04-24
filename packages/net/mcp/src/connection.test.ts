@@ -146,6 +146,30 @@ describe("McpConnection.connect", () => {
     const conn = createMcpConnection(makeConfig(), undefined, makeDeps());
     expect(conn.serverName).toBe("test-server");
   });
+
+  test("connect — 401 → onUnauthorized transient-failure → transitions to error (not stuck in connecting)", async () => {
+    // Regression: before fix, transient-failure returned early without transitioning
+    // state machine, leaving connection in "connecting" after a failed attempt.
+    const mockClient = createMockClient({ shouldFailConnect: false });
+    // Override connect to throw 401
+    mockClient.connect = mock(async () => {
+      throw new Error("HTTP 401 Unauthorized");
+    }) as typeof mockClient.connect;
+    const onUnauthorized = mock(async (): Promise<UnauthorizedOutcome> => "transient-failure");
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      ...makeDeps(mockClient),
+      onUnauthorized,
+    });
+
+    const result = await conn.connect();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.retryable).toBe(true);
+    }
+    // State machine must reflect the failure — not stuck in "connecting"
+    expect(conn.state.kind).toBe("error");
+  });
 });
 
 // ---------------------------------------------------------------------------

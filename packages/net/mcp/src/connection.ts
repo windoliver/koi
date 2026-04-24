@@ -463,15 +463,22 @@ export function createMcpConnection(
             return connect(true); // retry once; skipRefresh prevents infinite loop
           }
           if (outcome === "transient-failure") {
-            return {
-              ok: false,
-              error: {
-                code: "EXTERNAL",
-                message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
-                retryable: true,
-                context: { serverName: config.name },
-              },
+            // Transition to error before returning so the state machine reflects the
+            // failure consistently (not stuck in connecting/reconnecting).
+            const transientError = {
+              code: "EXTERNAL" as const,
+              message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+              retryable: true as const,
+              context: { serverName: config.name },
             };
+            if (stateMachine.canTransitionTo("error")) {
+              stateMachine.transition({
+                kind: "error",
+                error: transientError,
+                retryable: true,
+              });
+            }
+            return { ok: false, error: transientError };
           }
           // outcome === "needs-auth" falls through to auth-needed transition below
         }
