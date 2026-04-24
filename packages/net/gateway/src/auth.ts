@@ -52,23 +52,31 @@ export function handleHandshake(
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
 
-    const timer = setTimeout(() => {
+    function settle(action: () => void): void {
       if (settled) return;
       settled = true;
-      conn.close(CLOSE_CODES.AUTH_TIMEOUT, "Auth timeout");
-      reject(new Error("Auth handshake timed out"));
+      clearTimeout(timer);
+      action();
+    }
+
+    // Timer covers the entire handshake: first-message wait + authenticate() duration.
+    const timer = setTimeout(() => {
+      settle(() => {
+        conn.close(CLOSE_CODES.AUTH_TIMEOUT, "Auth timeout");
+        reject(new Error("Auth handshake timed out"));
+      });
     }, timeoutMs);
 
     onMessage((data: string) => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timer);
 
       const parseResult = parseConnectFrame(data);
       if (!parseResult.ok) {
-        conn.send(createErrorFrame(0, parseResult.error.code, parseResult.error.message));
-        conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Invalid connect frame");
-        reject(new Error(`Invalid connect frame: ${parseResult.error.message}`));
+        settle(() => {
+          conn.send(createErrorFrame(0, parseResult.error.code, parseResult.error.message));
+          conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Invalid connect frame");
+          reject(new Error(`Invalid connect frame: ${parseResult.error.message}`));
+        });
         return;
       }
 
@@ -81,9 +89,11 @@ export function handleHandshake(
         options.maxProtocolVersion,
       );
       if (!versionResult.ok) {
-        conn.send(createErrorFrame(0, "PROTOCOL_MISMATCH", versionResult.error.message));
-        conn.close(CLOSE_CODES.PROTOCOL_MISMATCH, "Protocol version mismatch");
-        reject(new Error(`Protocol mismatch: ${versionResult.error.message}`));
+        settle(() => {
+          conn.send(createErrorFrame(0, "PROTOCOL_MISMATCH", versionResult.error.message));
+          conn.close(CLOSE_CODES.PROTOCOL_MISMATCH, "Protocol version mismatch");
+          reject(new Error(`Protocol mismatch: ${versionResult.error.message}`));
+        });
         return;
       }
 
@@ -93,9 +103,11 @@ export function handleHandshake(
         .authenticate(connectFrame)
         .then((result) => {
           if (!result.ok) {
-            conn.send(createErrorFrame(0, result.code, result.message));
-            conn.close(CLOSE_CODES.AUTH_FAILED, result.code);
-            reject(new Error(`Auth failed: ${result.code}`));
+            settle(() => {
+              conn.send(createErrorFrame(0, result.code, result.message));
+              conn.close(CLOSE_CODES.AUTH_FAILED, result.code);
+              reject(new Error(`Auth failed: ${result.code}`));
+            });
             return;
           }
 
@@ -116,13 +128,18 @@ export function handleHandshake(
             capabilities: options.capabilities,
             ...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
           };
-          conn.send(createAckFrame(0, undefined, ackPayload));
-          resolve({ session, connectFrame });
+
+          settle(() => {
+            conn.send(createAckFrame(0, undefined, ackPayload));
+            resolve({ session, connectFrame });
+          });
         })
         .catch((err: unknown) => {
-          conn.send(createErrorFrame(0, "INTERNAL", "Authentication service error"));
-          conn.close(CLOSE_CODES.AUTH_FAILED, "INTERNAL");
-          reject(new Error("Auth service error", { cause: err }));
+          settle(() => {
+            conn.send(createErrorFrame(0, "INTERNAL", "Authentication service error"));
+            conn.close(CLOSE_CODES.AUTH_FAILED, "INTERNAL");
+            reject(new Error("Auth service error", { cause: err }));
+          });
         });
     });
   });

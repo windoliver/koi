@@ -154,10 +154,20 @@ export function createGateway(
 
           if (!connMap.has(conn.id)) return;
 
+          // Evict any existing connection already bound to this session ID.
+          // Remove the old conn's maps first so its onClose/cleanupConn skips session teardown.
+          const prevConnId = connBySession.get(result.session.id);
+          if (prevConnId !== undefined && prevConnId !== conn.id) {
+            sessionByConn.delete(prevConnId);
+            trackers.delete(prevConnId);
+            const prevConn = connMap.get(prevConnId);
+            connMap.delete(prevConnId);
+            bp.remove(prevConnId);
+            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
+          }
+
           const tracker = createSequenceTracker(config.dedupWindowSize);
           trackers.set(conn.id, tracker);
-          sessionByConn.set(conn.id, result.session.id);
-          connBySession.set(result.session.id, conn.id);
 
           void Promise.resolve(store.set(result.session))
             .then((r) => {
@@ -166,6 +176,10 @@ export function createGateway(
                 cleanupConn(conn, "session store failure");
                 return;
               }
+              // Install session maps only after persistence to avoid read-before-write on async stores.
+              if (!connMap.has(conn.id)) return;
+              sessionByConn.set(conn.id, result.session.id);
+              connBySession.set(result.session.id, conn.id);
               emitSessionEvent({ kind: "created", session: result.session });
             })
             .catch(() => {
