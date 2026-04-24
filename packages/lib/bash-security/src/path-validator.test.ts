@@ -360,6 +360,19 @@ describe("validatePath", () => {
     });
   });
 
+  describe("over-depth URL-decode rejection (round 12)", () => {
+    test("level-6 URL-encoded ../etc is rejected (over-depth)", () => {
+      // Level-N encoding wraps each `%` with a leading `%25`, so each decode
+      // pass peels one `%25` from each sequence. Level 6 takes 5 passes to
+      // reach level 1 (which matches `%2e%2e`); our max depth is 4, so the
+      // input must be rejected as over-encoded.
+      //   level 1: %2e%2e%2fetc
+      //   level 6: %25252525252e%25252525252e%25252525252fetc
+      const level6 = "%25252525252e%25252525252e%25252525252fetc";
+      expect(validatePath(level6).ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = validatePath("../../etc");

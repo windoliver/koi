@@ -90,14 +90,26 @@ function decodeOnce(s: string): string {
  */
 function checkIterativePathTraversal(path: string): ClassificationResult {
   let current = path;
-  for (let i = 0; i < 4; i++) {
+  const maxDepth = 4;
+  for (let i = 0; i < maxDepth; i++) {
     const result = matchPatterns(current, PATH_TRAVERSAL_PATTERNS, {
       normalize: false,
     });
     if (!result.ok) return result;
     const next = decodeOnce(current);
-    if (next === current) break;
+    if (next === current) return { ok: true };
     current = next;
+  }
+  // After max depth, if the path would STILL decode further, it is a
+  // pathologically-encoded input that almost certainly hides a traversal
+  // sequence. Reject outright rather than silently accept the deepest form.
+  if (decodeOnce(current) !== current) {
+    return {
+      ok: false,
+      reason: `Path exceeds ${maxDepth} URL-decode passes without stabilizing; reject pathologically-encoded input`,
+      pattern: `decode-depth>${maxDepth}`,
+      category: "path-traversal",
+    };
   }
   return { ok: true };
 }

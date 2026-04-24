@@ -65,7 +65,7 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
     // as `source /path`. We can't tell at classify time what $IFS expands to,
     // so any expansion adjacent to source/dot is treated as unsafe.
     regex:
-      /(?:^|[;|&(){!\n]|&&|\|\||\b(?:if|then|else|elif|do|while|until|case|esac)\s+)\s*(?:source|\.)(?:\s+\S|\$[A-Za-z_{(]|`)/,
+      /(?:^|[;|&(){!\n]|&&|\|\||\b(?:if|then|else|elif|do|while|until|case|esac|command|builtin|time|exec|nohup|env|sudo|doas)\s+)\s*(?:source|\.)(?:\s+\S|\$[A-Za-z_{(]|`)/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },

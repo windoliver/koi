@@ -571,6 +571,28 @@ function checkGitInvocation(
       category: "destructive",
     };
   }
+  if (subcommand === "config") {
+    // Persistent alias/include writes hide future force-pushes behind an
+    // innocuous-looking subcommand name. `git config alias.pu "push --force"`
+    // followed by `git pu origin main` evades the invocation-time guard
+    // because the alias was baked in at config time. Fail closed on any
+    // config write (or unset) that targets alias.*, include.path, or
+    // includeIf.*.path — regardless of scope flag (--global / --system /
+    // --file / --local).
+    const nonFlagArgs = args.filter((t) => !t.startsWith("-"));
+    for (const arg of nonFlagArgs) {
+      const key = arg.split("=")[0] ?? "";
+      if (isDangerousConfigKey(key)) {
+        return {
+          ok: false,
+          reason:
+            "git config writing to alias.*, include.path, or includeIf.*.path persists a force-push bypass or external-config inclusion that would later evade scoped destructive checks",
+          pattern: "git+config+dangerous-key",
+          category: "destructive",
+        };
+      }
+    }
+  }
   return { ok: true };
 }
 
@@ -745,9 +767,62 @@ function checkDestructiveGit(preResolved: string, resolved: string): Classificat
  * than env-var indirection. Callers that need variable-as-command support
  * must resolve the expansion before calling the classifier.
  */
+/**
+ * Execution-wrapper commands that take an argv and run it. `env VAR=val CMD`,
+ * `time CMD`, `sudo CMD`, etc. — the dangerous executable is the argument
+ * AFTER the wrapper, so the classifier must unwrap before inspecting the
+ * command-position token. Also strips shell grouping/control prefixes.
+ */
+const COMMAND_WRAPPERS = new Set([
+  "env",
+  "time",
+  "exec",
+  "nohup",
+  "command",
+  "builtin",
+  "sudo",
+  "doas",
+  "timeout",
+  "stdbuf",
+  "nice",
+  "ionice",
+  "setsid",
+  "xargs",
+]);
+
 function checkCommandPositionExpansion(cmd: string): ClassificationResult {
   for (const segment of splitShellSegments(cmd)) {
-    const firstTok = segment.split(/\s+/)[0] ?? "";
+    // Walk past shell grouping/control prefixes (`(`, `{`, `!`) and execution
+    // wrappers (`env`, `time`, `sudo`, ...) so that `($CMD -rf /etc)`,
+    // `{ $CMD -rf /etc; }`, `time $CMD -rf /etc`, and `env $CMD -rf /etc`
+    // all surface `$CMD` as the real command-position token.
+    let rest = segment.replace(/^[({!\s]+/, "");
+    // Consume any number of wrapper commands. `env VAR=val time sudo $CMD`
+    // needs iterative unwrapping. Also skip env-style `VAR=val` prefixes
+    // because those are assignments, not executables.
+    while (true) {
+      const tokMatch = rest.match(/^([^\s]+)\s*/);
+      if (tokMatch === null) break;
+      const tok = tokMatch[1] ?? "";
+      // Bare VAR=VALUE assignment (no builtin prefix needed for env-style).
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
+        rest = rest.slice(tokMatch[0].length);
+        continue;
+      }
+      // Wrapper command followed by the real argv. Skip flags too.
+      if (COMMAND_WRAPPERS.has(tok)) {
+        rest = rest.slice(tokMatch[0].length);
+        // Skip this wrapper's own flags (`-a`, `--preserve-status`, etc.)
+        while (/^-\S*\s+/.test(rest)) {
+          const flagMatch = rest.match(/^-\S*\s+/);
+          if (flagMatch === null) break;
+          rest = rest.slice(flagMatch[0].length);
+        }
+        continue;
+      }
+      break;
+    }
+    const firstTok = (rest.match(/^\S+/) ?? [""])[0];
     if (/^\$[\w({]/.test(firstTok) || firstTok.startsWith("`")) {
       return {
         ok: false,
