@@ -60,14 +60,15 @@ export function createOAuthAwareMcpConnection(
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (_authorizationUrl: string): void => {
-              // Raw auth URLs (including state params) must not appear in logs,
-              // CI artifacts, or session recorders. The runtime already writes the
-              // URL to the terminal via console.log in startCallbackServer, which
-              // is the appropriate ephemeral fallback for copy-paste recovery.
+            onBrowserOpen: (authorizationUrl: string): void => {
+              // Pass authUrl so the channel renderer can show a copy-pastable
+              // link when the browser fails to open automatically. mode:"local"
+              // signals the callback URL listens on 127.0.0.1 — only usable
+              // on the machine running Koi, not from remote/SSH sessions.
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,
+                  authUrl: authorizationUrl,
                   message: `Opening browser to authorize ${server.name}`,
                   mode: "local",
                 }),

@@ -425,8 +425,11 @@ export function createMcpConnection(
       const koiError = mapMcpError(error, { serverName: config.name });
 
       // Check for auth challenge (401 only, not 403 scope denials).
-      // "refreshed" → retry once with a fresh token.
-      // "needs-auth" / "transient-failure" → fall through to auth-needed transition.
+      // "refreshed"         → retry once with a fresh token.
+      // "transient-failure" → refresh endpoint temporarily down; tokens still exist.
+      //   Return retryable EXTERNAL — do NOT enter auth-needed (misleads user into
+      //   browser re-consent for a temporary outage).
+      // "needs-auth"        → interactive OAuth required; transition to auth-needed.
       if (koiError.code === "AUTH_REQUIRED") {
         if (!skipRefresh && onUnauthorized !== undefined) {
           const outcome = await Promise.resolve(onUnauthorized()).catch(
@@ -435,6 +438,18 @@ export function createMcpConnection(
           if (outcome === "refreshed") {
             return connect(true); // retry once; skipRefresh prevents infinite loop
           }
+          if (outcome === "transient-failure") {
+            return {
+              ok: false,
+              error: {
+                code: "EXTERNAL",
+                message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+                retryable: true,
+                context: { serverName: config.name },
+              },
+            };
+          }
+          // outcome === "needs-auth" falls through to auth-needed transition below
         }
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({

@@ -239,7 +239,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen: fires onAuthRequired without authUrl (URL stays in runtime console.log, not logs/CI)", () => {
+    test("wires onBrowserOpen to fire onAuthRequired with authUrl (mode:local) for copy-paste fallback", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -253,17 +253,17 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(typeof onBrowserOpen).toBe("function");
       if (onBrowserOpen === undefined) return;
 
-      onBrowserOpen("https://example.com/auth?state=abc");
+      const testAuthUrl = "https://example.com/auth?state=abc";
+      onBrowserOpen(testAuthUrl);
 
-      // Channel notification fires with provider + mode only — no authUrl.
-      // Raw auth URLs (with state params) must not appear in logs, CI artifacts,
-      // or session recorders. The runtime's startCallbackServer already writes
-      // the URL to console.log for ephemeral copy-paste recovery.
+      // channel.onAuthRequired fires with authUrl so the renderer can show a
+      // copy-pastable link when the browser fails to open automatically.
+      // mode:"local" signals the callback runs on 127.0.0.1 (Koi machine only).
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };
       expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.authUrl).toBeUndefined();
+      expect(reqArg.authUrl).toBe(testAuthUrl);
       expect(reqArg.mode).toBe("local");
     });
   });
