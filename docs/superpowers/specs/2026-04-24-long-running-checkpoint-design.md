@@ -94,7 +94,8 @@ interface LongRunningConfig {
   readonly pruningPolicy?: PruningPolicy;     // default { retainCount: 10 }
   readonly timeoutMs?: number;                // optional wall-clock deadline per session
   readonly leaseTtlMs?: number;               // heartbeat staleness threshold; default 90_000
-  readonly heartbeatIntervalMs?: number;      // how often to bump heartbeat; default 30_000
+  readonly heartbeatIntervalMs?: number;      // how often the timer-driven loop bumps heartbeat; default 30_000
+  readonly abortTimeoutMs?: number;           // max wait for engine to quiesce on durability loss; default 10_000
   readonly saveState?: SaveStateCallback;     // capture engine state on soft checkpoint
   readonly onCompleted?: OnCompletedCallback;
   readonly onFailed?: OnFailedCallback;
@@ -233,9 +234,25 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
    lease. Then re-enter the resume flow from step 1 with the now-suspended
    snapshot.
 
-Requires `SessionRecord.lastHeartbeatAt: number | undefined` and a heartbeat
-bump that the harness issues on every soft checkpoint and pause. Both are
-additive to `@koi/core` / `@koi/session`.
+**Heartbeat loop (mandatory, timer-driven).**
+
+The harness runs an independent heartbeat loop from `start()`/`resume()` until
+`pause()`/`fail()`/`dispose()`. It is NOT tied to turn boundaries.
+
+- On activation: `setInterval(bumpHeartbeat, heartbeatIntervalMs)`.
+- `bumpHeartbeat` calls `sessionPersistence.setHeartbeat(sessionId, Date.now())`
+  (new L0 method, see prerequisites). Failure is logged and retried on the next
+  tick; a sustained failure surfaces via `onDurabilityLost` after
+  `leaseTtlMs / 2` of contiguous failures.
+- Lease validation (before every mutating store write) checks the cached
+  in-memory heartbeat timestamp AND issues a fresh heartbeat before the CAS,
+  so write-heavy turns never appear stale.
+- A long turn (minutes or hours, no checkpoint, no tool return) continues to
+  heartbeat on the timer and is never falsely reclaimed.
+
+The heartbeat loop is the authoritative liveness signal. Turn-boundary writes
+(checkpoint middleware, pause, complete/fail-task) bump it opportunistically as
+a latency optimization, but never as the sole signal.
 
 **Start:**
 
@@ -303,7 +320,6 @@ createCheckpointMiddleware({
   lease,                              // SessionLease for the current run
   onDurabilityLost,                   // required — host escalation callback
   policy?,
-  continueWithoutDurability?: boolean // default false; explicit opt-in for in-memory-only
 }): KoiMiddleware
 ```
 
@@ -318,33 +334,45 @@ Single hook: `afterTurn`. On each turn boundary:
    our lease was revoked): treat as `STALE_SESSION`, fail the turn with that
    error, invoke `onDurabilityLost` with the error, revoke our local lease.
 6. **On CAS failure due to store I/O error:** escalate. The harness is marked
-   `unhealthy`; `status().phase` remains what it was but `status().durability`
-   flips to `"lost"`. The middleware:
-   - If `continueWithoutDurability === true`: emit warning event, allow the
-     turn to continue (caller accepted the risk).
-   - Otherwise (default): fail the turn with
-     `KoiError { code: "CHECKPOINT_WRITE_FAILED", retryable: true }` and
-     invoke `onDurabilityLost`.
+   `unhealthy` (`status().durability = "lost"`). Fail the turn with
+   `KoiError { code: "CHECKPOINT_WRITE_FAILED", retryable: true }` and invoke
+   `onDurabilityLost`. Proceed with the Degraded-durability recovery path
+   below — execution is stopped before the lease is released, so no
+   split-brain is possible.
 
-**Degraded-durability recovery path.** On I/O failure, the authoritative store
-still points at the previous `active` snapshot. We do NOT attempt a second
-CAS to transition to `suspended` — if the store is unhealthy, that write would
-also likely fail or partially succeed. Instead:
+**Degraded-durability recovery path.** On I/O failure, the authoritative
+store still points at the previous `active` snapshot. Recovery must preserve
+exclusivity: we cannot simultaneously advertise the session as reclaimable AND
+keep executing, or a competing `resume()` will fence-and-replace while the
+original run is still issuing side effects (split-brain).
 
-- The harness records `SessionRecord` status = `"idle"` via
-  `setSessionStatus` (different storage path from the snapshot store; may still
-  be healthy) AND stops issuing heartbeats.
-- If that session-record update also fails, the harness simply stops issuing
-  heartbeats. Either way, reclamation will detect the dead owner:
-  - If session record updated: `status === "idle"` → reclaimed.
-  - If session record stuck at `"running"`: heartbeat staleness
-    (`now - lastHeartbeatAt > leaseTtlMs`) → reclaimed.
+Therefore the default path is:
 
-This means: a crash or unrecoverable durability loss during an active session
-is always recoverable by a later `resume()` call, because reclamation uses two
-independent signals (session-record status and heartbeat freshness) and at
-least one will reveal the dead owner within `leaseTtlMs`. The `active` snapshot
-is never a terminal trap.
+1. Fail the current turn with `CHECKPOINT_WRITE_FAILED`.
+2. Invoke `onDurabilityLost` for host escalation.
+3. **Stop engine execution before giving up the lease.** The middleware
+   signals the engine adapter via the lease's `AbortSignal` and waits for it
+   to quiesce (bounded by `abortTimeoutMs`, default 10s).
+4. Only after quiescence: mark the session `"idle"` via `setSessionStatus`
+   and stop heartbeats. If that write also fails, heartbeat-staleness is the
+   sole reclamation signal — but execution has already stopped, so the run is
+   genuinely dead.
+5. If abort times out (engine refuses to stop): keep heartbeating AND keep
+   the session `"running"` — the run is still live, host must SIGKILL the
+   process to release the lease. This is a loud, non-silent failure surfaced
+   via `onDurabilityLost`.
+
+`continueWithoutDurability` is **removed**. Allowing continued execution while
+marking the session reclaimable was a split-brain vector: it let a second
+process legitimately claim the lease and execute non-idempotent work in
+parallel with the original run. If an operator truly needs in-memory-only
+continuation, they can catch `CHECKPOINT_WRITE_FAILED` in their host code,
+but the harness will not unilaterally downgrade exclusivity.
+
+Invariant: **the lease (session status + heartbeat freshness) accurately
+reflects whether execution is ongoing.** A run that is still executing cannot
+appear reclaimable; a run that has stopped executing becomes reclaimable
+within `leaseTtlMs` via one of two independent signals.
 
 Rationale: a package whose entire purpose is durable long-running state must
 not silently degrade to memory-only. Silent failure turns an eventual crash
@@ -397,11 +425,12 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 
 - Fires soft checkpoint every `softCheckpointInterval` turns.
 - CAS success advances head; subsequent soft checkpoint uses new head.
-- **Default behavior:** store I/O failure fails the turn with
-  `CHECKPOINT_WRITE_FAILED`, invokes `onDurabilityLost`, transitions harness to
-  `suspended`. No silent degradation.
-- **Opt-in:** `continueWithoutDurability=true` keeps the turn running on I/O
-  failure but still invokes `onDurabilityLost`.
+- Store I/O failure fails the turn with `CHECKPOINT_WRITE_FAILED`, invokes
+  `onDurabilityLost`, aborts the engine via lease signal, stops heartbeats,
+  marks session `idle`. No silent degradation. No continue-with-in-memory
+  escape hatch.
+- Engine refuses to abort within `abortTimeoutMs` → heartbeats continue and
+  session remains `running`; `onDurabilityLost` surfaced — host must SIGKILL.
 - `saveState` thrown exception fails the turn cleanly (no snapshot written).
 - **Atomicity invariant:** simulated crash between put-payload and advance-pointer
   leaves store readable at prior snapshot.
@@ -433,9 +462,16 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   failed. Next `resume()` ignores orphan (no pointer from harness); periodic
   reconciliation (`pruneOrphanSessions`) removes it.
 - **Durability loss mid-run:** simulated I/O failure on soft checkpoint →
-  middleware stops heartbeats + marks session `idle` → next `resume()` reclaims
-  via session-record status (primary) or heartbeat staleness (fallback). No
-  permanent `ALREADY_ACTIVE` trap.
+  middleware aborts engine → after quiescence, session marked `idle` and
+  heartbeats stopped → next `resume()` reclaims. No permanent `ALREADY_ACTIVE`
+  trap, no parallel execution with a reclaimer.
+- **Long-turn heartbeat:** a single turn that exceeds `leaseTtlMs` without
+  reaching a checkpoint boundary continues to heartbeat via the timer loop;
+  a concurrent `resume()` attempt returns `ALREADY_ACTIVE`, not a successful
+  reclamation. (Regression test for false dead-owner reclamation.)
+- **Heartbeat loop lifecycle:** heartbeat starts on `start()`/`resume()` and
+  stops on `pause()`/`fail()`/`dispose()`; no heartbeats emitted outside
+  active phase.
 - **Activation rollback:** session `saveSession` succeeds but CAS fails →
   orphan session is cleaned via `removeSession` best-effort; harness head
   unchanged.
@@ -518,6 +554,9 @@ types before the L2 package can be implemented:
 4. `SessionStatus` gains `"starting"` between `idle` and `running` — marks
    mid-activation sessions so a crash before the first heartbeat is
    unambiguously reclaimable.
+5. `SessionPersistence.setHeartbeat(sessionId, timestampMs)` — dedicated
+   cheap-write method so the heartbeat loop does not compete with full
+   `saveSession` writes.
 
 All four are backward-compatible and should land in a prerequisite L0 PR.
 
