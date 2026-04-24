@@ -127,12 +127,12 @@ interface ScheduleStore extends AsyncDisposable {
   readonly saveSchedule: (schedule: CronSchedule) => void | Promise<void>
   readonly removeSchedule: (id: ScheduleId) => void | Promise<void>
   readonly loadSchedules: () => readonly CronSchedule[] | Promise<readonly CronSchedule[]>
-  // updateSchedule used by pause/resume to persist the paused flag before returning.
-  // Durability requirement: pause() and resume() MUST call updateSchedule() and await
-  // persistence before mutating in-memory croner state or returning to the caller.
-  // A process restart must reproduce the paused/active state from the store, not memory.
-  readonly updateSchedule: (id: ScheduleId, patch: Readonly<{ paused: boolean }>) => void | Promise<void>
 }
+// Pause/resume durability: implemented via saveSchedule({ ...existing, paused: true/false }).
+// No updateSchedule needed — saveSchedule is an upsert (INSERT OR REPLACE in SQLite).
+// Durability requirement: pause() and resume() MUST call saveSchedule() and await
+// persistence BEFORE mutating the in-memory croner. A process restart reproduces
+// paused/active state from the store via loadSchedules(), not from memory.
 
 // SchedulerConfig — exact L0 definition (no dbPath — passed to SQLite store factory separately):
 interface SchedulerConfig {
@@ -241,6 +241,13 @@ init() on startup
       for detecting hung dispatchers that missed their AbortSignal).
       tasks exceeding maxRetries are dead-lettered instead of re-queued
       emit task:recovered event for each recovered task
+
+  ⚠ AT-LEAST-ONCE DELIVERY: crash recovery provides at-least-once (not at-most-once)
+      semantics. Work dispatched before the crash may have partially or fully completed;
+      re-queuing will dispatch it again. Callers MUST ensure dispatchers are idempotent
+      (e.g. use the task ID as an idempotency key at the destination) or accept the risk
+      of duplicate execution during crash recovery. This is a deliberate trade-off:
+      at-most-once would require a distributed ack/checkpoint protocol out of scope for v2.
   → ScheduleStore.loadSchedules() → re-register croners for non-paused schedules
 
 timeout enforcement
