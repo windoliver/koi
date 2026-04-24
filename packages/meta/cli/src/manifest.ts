@@ -39,7 +39,7 @@
  */
 
 import { lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
 import { loadConfig } from "@koi/config";
 import type {
   ChildIsolation,
@@ -838,9 +838,12 @@ function parseManifestAudit(
     }
 
     // Lexical `..` check — catches traversal before any filesystem access.
+    // Use exact segment matching (rel === ".." or starts with "../") rather
+    // than a plain startsWith("..") prefix so directory names like "..logs/"
+    // are not incorrectly rejected.
     const lexicalResolved = resolvePath(manifestDir, value);
     const lexicalRel = relative(manifestDir, lexicalResolved);
-    if (lexicalRel.startsWith("..") || isAbsolute(lexicalRel)) {
+    if (lexicalRel === ".." || lexicalRel.startsWith(`..${sep}`) || isAbsolute(lexicalRel)) {
       return {
         ok: false,
         error:
@@ -882,7 +885,7 @@ function parseManifestAudit(
       throw err;
     }
     const parentRel = relative(realManifestDir, realParentDir);
-    if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+    if (parentRel === ".." || parentRel.startsWith(`..${sep}`) || isAbsolute(parentRel)) {
       return {
         ok: false,
         error:

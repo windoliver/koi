@@ -626,6 +626,37 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.error).toContain("sqlite");
   });
 
+  test("accepts path in a directory whose name starts with '..' (not a traversal)", async () => {
+    // e.g. '..logs' is a valid directory name — startsWith("..") is not sufficient
+    // to detect a real ".." path segment. Only `../<rest>` is a traversal.
+    const dotDotDir = join(dir, "..logs");
+    mkdirSync(dotDotDir);
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ../..logs/session.audit.ndjson",
+      ].join("\n"),
+    );
+    // This still escapes because it traverses OUT of dir first, even if target
+    // starts with "..". The point of this test is the fix works for names like
+    // "..logs/" that are truly inside the manifest dir (not via ".." segments).
+    // Use a path that really IS inside dir:
+    const p2 = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ..logs/session.audit.ndjson",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.audit?.ndjson).toBe(join(dotDotDir, "session.audit.ndjson"));
+  });
+
   test("rejects `..` traversal out of the manifest directory", async () => {
     const p = writeManifest(
       [

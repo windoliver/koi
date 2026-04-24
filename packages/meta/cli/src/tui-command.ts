@@ -28,10 +28,10 @@
  *   agent_spawn — real spawning via createSpawnToolProvider (#1582 wired)
  */
 
-import { writeSync } from "node:fs";
+import { lstatSync, writeSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { SummaryOk } from "@koi/agent-summary";
 import { createAgentSummary } from "@koi/agent-summary";
 import { type ArtifactStore, createArtifactStore } from "@koi/artifacts";
@@ -1699,6 +1699,57 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // callback registered on runtimeReady can fire during the `await
   // createCostBridge` below, before the original `let` at line 2055 is reached.
   let governanceBridge: GovernanceBridge | undefined;
+
+  // Re-validate manifest-derived audit paths immediately before use to close
+  // the TOCTOU window between manifest load and sink creation. Without this
+  // a symlink swap after parseManifestAudit() could redirect writes outside
+  // the manifest tree despite the load-time containment checks.
+  // Only manifest paths are re-checked here — env-var paths are operator-supplied
+  // and already outside the repo-authored trust boundary.
+  if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1") {
+    const auditPathsToRevalidate: ReadonlyArray<readonly [string | undefined, string]> = [
+      [
+        process.env.KOI_AUDIT_NDJSON === undefined ? manifestAudit.ndjson : undefined,
+        "manifest.audit.ndjson",
+      ],
+      [
+        process.env.KOI_AUDIT_SQLITE === undefined ? manifestAudit.sqlite : undefined,
+        "manifest.audit.sqlite",
+      ],
+      [
+        process.env.KOI_AUDIT_VIOLATIONS === undefined ? manifestAudit.violations : undefined,
+        "manifest.audit.violations",
+      ],
+    ];
+    for (const [resolvedPath, label] of auditPathsToRevalidate) {
+      if (resolvedPath === undefined) continue;
+      // Re-check: parent dir must not have become a symlink between parse and use.
+      const auditParentDir = dirname(resolvedPath);
+      try {
+        const parentStat = lstatSync(auditParentDir);
+        if (parentStat.isSymbolicLink()) {
+          process.stderr.write(
+            `koi tui: ${label}: parent directory "${auditParentDir}" became a symlink after manifest validation — aborting to prevent path-traversal write.\n`,
+          );
+          process.exit(1);
+        }
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+      // Re-check: target file must not have become a symlink between parse and use.
+      try {
+        const fileStat = lstatSync(resolvedPath);
+        if (fileStat.isSymbolicLink()) {
+          process.stderr.write(
+            `koi tui: ${label}: "${resolvedPath}" became a symlink after manifest validation — aborting to prevent path-traversal write.\n`,
+          );
+          process.exit(1);
+        }
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+    }
+  }
 
   const runtimeReady = createKoiRuntime({
     modelAdapter,
