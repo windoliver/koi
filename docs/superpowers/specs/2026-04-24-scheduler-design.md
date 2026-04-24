@@ -172,21 +172,18 @@ CREATE TABLE koi_schedules (
   id TEXT PRIMARY KEY,
   expression TEXT NOT NULL,
   agent_id TEXT NOT NULL,
-  input TEXT NOT NULL,        -- JSON: EngineInput discriminated union
+  input TEXT NOT NULL,   -- JSON: EngineInput discriminated union
   mode TEXT NOT NULL,
   task_options TEXT,
   timezone TEXT,
   paused INTEGER NOT NULL DEFAULT 0,
-  run_once INTEGER NOT NULL DEFAULT 0,  -- 1 = fire exactly once then remove
-  next_run_at INTEGER,                  -- Unix ms: next scheduled fire time (null = not yet computed)
-  last_run_at INTEGER,                  -- Unix ms: last fire time (null = never fired)
-  completed_at INTEGER                  -- Unix ms: when run_once schedule completed (null = not done)
+  last_run_at INTEGER    -- Unix ms: last fire time (null = never fired); updated after each tick
 );
 -- Restart semantics:
--- run_once=1 + completed_at NOT NULL → schedule already fired; skip re-registration on startup.
--- run_once=0 → re-register croner; if next_run_at < now AND last_run_at IS NULL → fire missed run.
--- Missed runs for recurring schedules are skipped by default (no backfill).
--- A one-shot schedule is removed transactionally with task creation (in a single SQLite write).
+-- On startup, all non-paused schedules are re-registered with croner.
+-- Missed recurring runs during downtime are skipped by default (no backfill).
+-- One-shot execution is modeled as submit() with delayMs, NOT as a schedule row.
+-- koi_schedules only stores recurring cron schedules.
 
 -- Immutable append-only run history: one row per execution attempt.
 -- Never updated. Rows keyed by (task_id, retry_attempt).
@@ -229,9 +226,10 @@ schedule(expression, input, mode, opts)
 init() on startup
   → TaskStore.loadPending() → rebuild heap (all pending + delayed tasks)
   → stale "running" recovery: tasks where startedAt < (now - staleTaskThresholdMs)
-      are reset to pending with retries++ rather than hard-failed
+      are moved back to pending with retries++ — these are tasks interrupted by
+      process crash, NOT by timeout (timed-out tasks are already dead_letter before restart)
       (staleTaskThresholdMs default: 300_000ms — from SchedulerConfig in @koi/core)
-      only tasks exceeding maxRetries are dead-lettered
+      tasks exceeding maxRetries are dead-lettered instead of re-queued
       emit task:recovered event for each recovered task
   → ScheduleStore.loadSchedules() → re-register croners for non-paused schedules
 
@@ -257,9 +255,10 @@ timeout enforcement
 `TaskDispatcher` is NOT in `@koi/core` — it is a local type defined in `@koi/scheduler`:
 
 ```typescript
-// signal is aborted when timeoutMs elapses; dispatcher SHOULD propagate it.
-// Dispatchers that cannot cooperatively cancel MUST ensure their work is idempotent —
-// the task ID serves as the idempotency key.
+// signal is aborted when timeoutMs elapses; dispatcher SHOULD propagate it to cancel
+// in-flight work. A timed-out task moves to dead_letter immediately — it is NOT retried.
+// Dispatchers that cannot cooperatively cancel MUST treat their work as idempotent,
+// since the original dispatch may complete after the scheduler has moved on.
 type TaskDispatcher = (
   agentId: AgentId,
   input: EngineInput,
