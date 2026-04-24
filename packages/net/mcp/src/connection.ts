@@ -230,11 +230,17 @@ export function createMcpConnection(
         await Promise.resolve(onAuthComplete?.()).catch(() => {});
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        // Preserve the real failure cause for observability instead of silently
-        // swallowing it. The caller surfaces AUTH_REQUIRED separately; this log
-        // provides the concrete reason (port bind failure, discovery error, etc.)
+        const reason = e instanceof Error ? e.message : String(e);
         console.error(`[koi mcp] auth flow error for "${config.name}":`, e);
-        return { ok: false, error: authDeclinedError() };
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_REQUIRED",
+            message: `${config.name}: auth flow failed — ${reason}`,
+            retryable: true,
+            context: { serverName: config.name },
+          },
+        };
       }
     })().finally(() => {
       authInFlight = undefined;

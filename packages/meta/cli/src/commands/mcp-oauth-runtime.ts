@@ -33,16 +33,15 @@ interface OAuthRuntime {
 
 export interface CliOAuthRuntimeOptions {
   /**
-   * Called just before the browser window opens. Use this to fire a
-   * "browser opening" UX notification through the channel.
+   * Called just before the browser window opens. Receives the authorization
+   * URL so the TUI can show it as a fallback if the browser doesn't open.
+   * The URL is the provider's authorization page (public, not a secret);
+   * `mode: "local"` in the resulting channel notification signals that the
+   * callback runs on 127.0.0.1 — opening the URL on a remote machine cannot
+   * complete the flow.
    * Invoked fire-and-forget — errors are silently swallowed.
-   *
-   * Note: the authorization URL is NOT forwarded through this callback.
-   * It carries OAuth state and PKCE parameters that must not enter the
-   * model-visible channel. The URL is printed to the console for local
-   * fallback only (startCallbackServer already does this).
    */
-  readonly onBrowserOpen?: (() => void) | undefined;
+  readonly onBrowserOpen?: ((authorizationUrl: string) => void) | undefined;
 }
 
 export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefined): OAuthRuntime {
@@ -51,11 +50,10 @@ export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefin
       authorizationUrl: string,
       redirectUri: string,
     ): Promise<OAuthCallbackResult> => {
-      // Notify the channel that the browser is about to open before doing so.
-      // Do NOT forward authorizationUrl — it carries OAuth state and PKCE
-      // parameters that must not enter the model-visible channel.
+      // Notify the channel before opening so the TUI can show the URL as a
+      // fallback if the browser doesn't open automatically.
       try {
-        options?.onBrowserOpen?.();
+        options?.onBrowserOpen?.(authorizationUrl);
       } catch {
         // Notification failure must never block the browser from opening.
       }

@@ -239,7 +239,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen to fire onAuthRequired without authUrl through channel", () => {
+    test("wires onBrowserOpen to fire onAuthRequired with authUrl (mode:local) through channel", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -247,23 +247,25 @@ describe("createOAuthAwareMcpConnection", () => {
 
       // createRuntime must have been called with an onBrowserOpen option
       const runtimeCallArgs = localMocks.createRuntime.mock.calls[0] as [
-        { onBrowserOpen?: () => void } | undefined,
+        { onBrowserOpen?: (url: string) => void } | undefined,
       ];
       const onBrowserOpen = runtimeCallArgs?.[0]?.onBrowserOpen;
       expect(typeof onBrowserOpen).toBe("function");
       if (onBrowserOpen === undefined) return;
 
-      // Simulate the runtime calling onBrowserOpen
-      onBrowserOpen();
+      // Simulate the runtime calling onBrowserOpen with the authorization URL
+      const testAuthUrl = "https://example.com/auth?state=abc";
+      onBrowserOpen(testAuthUrl);
 
-      // channel.onAuthRequired must fire WITHOUT authUrl — the authorization URL
-      // carries OAuth state and PKCE params that must not enter the model-visible
-      // channel. The console fallback is provided by startCallbackServer instead.
+      // channel.onAuthRequired must fire WITH authUrl so the TUI can display
+      // it as a fallback if the browser doesn't open automatically.
+      // mode:"local" signals the callback runs on 127.0.0.1 — only valid on
+      // the Koi machine.
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };
       expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.authUrl).toBeUndefined();
+      expect(reqArg.authUrl).toBe(testAuthUrl);
       expect(reqArg.mode).toBe("local");
     });
   });
