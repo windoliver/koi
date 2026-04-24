@@ -399,7 +399,12 @@ export function createGateway(
           emitSessionEvent({ kind: "destroyed", sessionId, reason: "server shutdown" });
         }
       }
-      await Promise.allSettled(deletePromises);
+      const settled = await Promise.allSettled(deletePromises);
+      for (const r of settled) {
+        if (r.status === "rejected") {
+          swallowError(r.reason as unknown, { package: "gateway", operation: "stop.delete" });
+        }
+      }
       connMap.clear();
       sessionByConn.clear();
       connBySession.clear();
@@ -463,6 +468,9 @@ export function createGateway(
         if (conn !== undefined) {
           conn.send(createErrorFrame(0, "ADMIN_CLOSED", reason, nextId));
           conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
+          // Synchronously sever routing so send() fails immediately after this
+          // call resolves, rather than leaking frames until onClose() fires.
+          cleanupConn(conn, reason);
         }
       }
       // Await deletion so callers get a real success/failure contract. Idempotent —
