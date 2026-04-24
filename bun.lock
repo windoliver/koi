@@ -815,6 +815,7 @@
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
+        "@koi/ipc-local": "workspace:*",
         "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",

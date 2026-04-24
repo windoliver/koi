@@ -12362,3 +12362,82 @@ describe("Golden: @koi/toolsets", () => {
     if (!sneakyResult.ok) expect(sneakyResult.error.code).toBe("VALIDATION");
   });
 });
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/ipc-local (2 queries: mailbox + router)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/ipc-local", () => {
+  test("createLocalMailbox — send, list, and onMessage round-trip", async () => {
+    const { createLocalMailbox } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const mailbox = createLocalMailbox({ agentId: agentId("owner") });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+
+    const result = await mailbox.send({
+      from: agentId("sender"),
+      to: agentId("owner"),
+      kind: "event",
+      type: "ping",
+      payload: { ts: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.id).toBeString();
+      expect(result.value.from).toBe(agentId("sender"));
+      expect(result.value.type).toBe("ping");
+    }
+
+    const msgs = await mailbox.list();
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.type).toBe("ping");
+
+    await Bun.sleep(10);
+    expect(received).toEqual(["ping"]);
+
+    mailbox.close();
+    expect(await mailbox.list()).toHaveLength(0);
+  });
+
+  test("createLocalMailboxRouter — register and route messages between agents", async () => {
+    const { createLocalMailbox, createLocalMailboxRouter } = await import("@koi/ipc-local");
+    const { agentId } = await import("@koi/core");
+
+    const router = createLocalMailboxRouter();
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a") });
+    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b") });
+
+    router.register(agentId("agent-a"), mailboxA);
+    router.register(agentId("agent-b"), mailboxB);
+
+    const target = router.get(agentId("agent-b"));
+    expect(target).toBeDefined();
+    if (target === undefined) return;
+
+    await target.send({
+      from: agentId("agent-a"),
+      to: agentId("agent-b"),
+      kind: "request",
+      type: "task",
+      payload: { action: "run" },
+    });
+
+    const bMsgs = await mailboxB.list();
+    expect(bMsgs).toHaveLength(1);
+    expect(bMsgs[0]?.kind).toBe("request");
+    expect(bMsgs[0]?.from).toBe(agentId("agent-a"));
+
+    // Unregister removes from routing table
+    router.unregister(agentId("agent-a"));
+    expect(router.get(agentId("agent-a"))).toBeUndefined();
+    expect(router.get(agentId("agent-b"))).toBeDefined();
+
+    mailboxA.close();
+    mailboxB.close();
+  });
+});
