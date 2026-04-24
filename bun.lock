@@ -1045,6 +1045,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/security/governance-defaults": {
