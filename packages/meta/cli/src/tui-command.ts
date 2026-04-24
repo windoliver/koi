@@ -1349,6 +1349,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
     progressive: true,
   });
+  // Child skill injector: same progressive XML block, but filtered to only
+  // runtimeBacked skills — body-backed skills (browser, memory helpers) belong
+  // to root-only providers whose tools are NOT inherited by spawned children.
+  // Using the full liveSkillComponents would advertise tools children can't use.
+  const childSkillInjectorMw = createSkillInjectorMiddleware({
+    agent: (): Agent => {
+      if (skillAgentRef.current === undefined) throw new Error("skill agent ref not yet wired");
+      const real = skillAgentRef.current;
+      return {
+        ...real,
+        query: <T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> =>
+          prefix === "skill:"
+            ? (new Map(
+                [...liveSkillComponents.entries()].filter(
+                  ([, comp]) => (comp as { runtimeBacked?: boolean }).runtimeBacked === true,
+                ),
+              ) as unknown as ReadonlyMap<SubsystemToken<T>, T>)
+            : real.query<T>(prefix),
+      } as Agent;
+    },
+    progressive: true,
+  });
   // Manifest instructions replace DEFAULT_SYSTEM_PROMPT when supplied —
   // mirrors `koi start --manifest` behavior. Skills are injected by
   // skillInjectorMw, not concatenated into systemPrompt.
@@ -1776,11 +1798,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Post-permissions slot: runs inside the security layers so request.tools
     // is permissions-filtered when the injector checks for the Skill tool.
     skillInjector: skillInjectorMw,
-    // childSkillInjector intentionally omitted: the root skill injector reads
-    // from the root agent's ECS, which includes root-only body-backed skills
-    // (e.g. browser skills) that spawned children cannot use. Children inherit
-    // the Skill tool via InheritedComponentProvider and can invoke skills; they
-    // rely on the Skill tool descriptor listing rather than the XML block.
+    // Propagate skill injection into spawned children so they receive the
+    // <available_skills> XML block in progressive mode. Uses a filtered injector
+    // that only includes runtimeBacked skills — body-backed skills (browser,
+    // memory) belong to root-only providers not available in children.
+    childSkillInjector: childSkillInjectorMw,
     extraProviders: [
       skillProvider,
       ...artifactExtraProviders,
@@ -2783,15 +2805,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         // Refresh the live skill component map for the new session.
         // reloadSkillComponents() clears pinned bodies (evicting base LRU entries),
-        // re-runs loadAll() to pick up edits/deletions, and returns a fresh typed
-        // map the middleware will read next turn. Deferred to this success branch
-        // so a failed reset preserves the old session's pinned snapshot — avoiding
-        // a desync where liveSkillComponents advertises pre-reset skills while
-        // Skill tool loads fall through to different on-disk state.
-        // Non-fatal: if reload fails, liveSkillComponents retains the previous
-        // session's skills rather than crashing the reset.
+        // re-runs loadAll() to pick up edits/deletions, and returns a fresh map of
+        // progressive (runtimeBacked) skills from the skills-runtime provider only.
+        // Merge with body-backed skills (browser, memory) that remain valid from
+        // the real agent ECS — those providers are not rebuilt on reset, so their
+        // components are still accurate. Progressive skills overlay them.
+        // Non-fatal: if reload fails, liveSkillComponents retains previous state.
         try {
-          liveSkillComponents = await reloadSkillComponents();
+          const fresh = await reloadSkillComponents();
+          const realSkills = skillAgentRef.current?.query<SkillComponent>("skill:") ?? new Map();
+          // Start with real ECS (has body-backed skills), overlay fresh progressive skills.
+          const merged = new Map<SubsystemToken<SkillComponent>, SkillComponent>(realSkills);
+          for (const [token, comp] of fresh) {
+            merged.set(token, comp);
+          }
+          liveSkillComponents = merged;
         } catch {
           /* skill refresh failure is non-fatal — stale inventory is better than crash */
         }
