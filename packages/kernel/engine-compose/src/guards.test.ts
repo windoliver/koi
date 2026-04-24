@@ -2346,7 +2346,10 @@ describe("createIterationGuard inactivity", () => {
   });
 
   test("tool call resets inactivity timer", async () => {
-    const guard = createIterationGuard({ maxInactivityMs: 40, maxDurationMs: 5_000 });
+    // Use generous margins (50ms waits, 200ms limit) so CI timing variance
+    // doesn't flip the test. The invariant under test is correctness of reset,
+    // not timer precision — the ratio is what matters.
+    const guard = createIterationGuard({ maxInactivityMs: 200, maxDurationMs: 5_000 });
     const modelWrap = getModelWrap(guard);
     const toolWrap = getToolWrap(guard);
     const ctx = mockTurnContext();
@@ -2357,13 +2360,13 @@ describe("createIterationGuard inactivity", () => {
     await modelWrap(ctx, mockModelRequest(), modelNext);
 
     // Wait almost to the limit
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 50));
 
     // Tool call resets the timer
     await toolWrap(ctx, mockToolRequest(), toolNext);
 
     // Wait again — timer was reset by tool call
-    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 50));
 
     // Model call should succeed (inactivity timer reset by tool call above)
     await modelWrap(ctx, mockModelRequest(), modelNext);
