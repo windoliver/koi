@@ -202,6 +202,7 @@ export function createRemoteAgentLifecycle(
               if (frame.kind === "chunk") {
                 output.write(frame.text);
               } else {
+                // done is a hard terminal — stop reading immediately.
                 receivedDone = true;
                 if (timeoutId !== undefined) clearTimeout(timeoutId);
                 const exitMsg =
@@ -209,6 +210,7 @@ export function createRemoteAgentLifecycle(
                     ? "\n[exit code: 0]\n"
                     : `\n[exit code: ${String(frame.exitCode)}]\n`;
                 emitTerminal(frame.exitCode, exitMsg, true);
+                return; // exit pipe; finally{} releases reader lock
               }
             }
           }

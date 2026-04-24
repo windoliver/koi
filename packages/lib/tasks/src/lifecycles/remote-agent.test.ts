@@ -296,6 +296,39 @@ describe("createRemoteAgentLifecycle", () => {
       expect(exits).toEqual([0]);
     });
 
+    test("stops reading after done frame — post-done chunks are not written", async () => {
+      const exits: number[] = [];
+      const fetch = mockFetch(
+        200,
+        makeNdjsonStream(
+          { kind: "chunk", text: "before" },
+          { kind: "done", exitCode: 0 },
+          { kind: "chunk", text: "after-done" }, // must not appear in output
+        ),
+      );
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("before");
+      expect(text).not.toContain("after-done");
+      expect(exits).toEqual([0]);
+    });
+
     test("handles NDJSON split across read() boundaries (chunked transport)", async () => {
       const exits: number[] = [];
       const fetch = mockFetch(
