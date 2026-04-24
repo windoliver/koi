@@ -435,6 +435,8 @@ export function createGateway(
       const encoded = encodeFrame(frame);
       const bytes = conn.send(encoded);
       if (bytes === -1) {
+        conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
+        cleanupConn(conn, "transport send failure");
         const error: KoiError = {
           code: "EXTERNAL",
           message: `Transport send failed for session: ${sessionId}`,
@@ -465,8 +467,9 @@ export function createGateway(
       }
       // Await deletion so callers get a real success/failure contract. Idempotent —
       // store.delete is a no-op for unknown sessions.
+      let deleteResult: Result<boolean, KoiError>;
       try {
-        await Promise.resolve(store.delete(sessionId));
+        deleteResult = await Promise.resolve(store.delete(sessionId));
       } catch {
         const error: KoiError = {
           code: "EXTERNAL",
@@ -475,6 +478,9 @@ export function createGateway(
           context: { sessionId },
         };
         return { ok: false, error };
+      }
+      if (!deleteResult.ok) {
+        return { ok: false, error: deleteResult.error };
       }
       return { ok: true, value: undefined };
     },
