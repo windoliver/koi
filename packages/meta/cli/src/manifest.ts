@@ -765,12 +765,26 @@ function parseManifestAudit(
   }
 
   // Lenient mode: treat any present audit key as block-presence metadata.
-  // Skip all validation so malformed values (scalars, arrays, null, bad keys)
-  // cannot abort startup on hosts where the feature gate is off.
+  // Skip all path validation so malformed values (scalars, arrays, null, bad
+  // keys) cannot abort startup on hosts where the feature gate is off.
+  // We do surface non-empty string values so the gate-off fail-closed check in
+  // tui-command.ts can determine which sinks the manifest attempted to configure
+  // and match them against operator env-var overrides per-sink. These strings
+  // are NOT validated — callers must not use them as trusted paths.
   if (lenient) {
+    const rec =
+      typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {};
+    const lNdjson =
+      typeof rec.ndjson === "string" && rec.ndjson.length > 0 ? rec.ndjson : undefined;
+    const lSqlite =
+      typeof rec.sqlite === "string" && rec.sqlite.length > 0 ? rec.sqlite : undefined;
+    const lViolations =
+      typeof rec.violations === "string" && rec.violations.length > 0 ? rec.violations : undefined;
     return {
       ok: true,
-      value: { present: true, ndjson: undefined, sqlite: undefined, violations: undefined },
+      value: { present: true, ndjson: lNdjson, sqlite: lSqlite, violations: lViolations },
     };
   }
 

@@ -1120,26 +1120,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestAudit = manifestResult.value.audit;
     manifestLoadPath = resolvedManifestPath;
 
-    // Fail closed when manifest.audit is present and the host gate is off,
-    // unless the operator has fully superseded all manifest sinks with env vars.
-    // In lenient (gate-off) mode, manifest paths are not resolved, so we use
-    // the block-presence marker: if the block exists and all three KOI_AUDIT_*
-    // overrides are not set, refuse to start rather than silently running with
-    // no manifest-configured audit trail.
-    // If all three are set, the operator has taken explicit control of every
-    // audit sink — the manifest audit block is fully neutralised and we proceed.
+    // Fail closed per-sink when manifest.audit is present and the gate is off.
+    // In lenient (gate-off) mode the loader reports unvalidated path strings for
+    // any audit key that was present in the manifest block, which lets us check
+    // each sink independently: if the manifest configured it but the operator
+    // did not provide the matching KOI_AUDIT_* env var, block startup.
+    // If the operator provides an env var for every manifest-configured sink,
+    // those env vars fully supersede the manifest block and we proceed.
+    // The violations sink is treated independently from ndjson/sqlite because it
+    // already has a default-path fallback — only block when the manifest
+    // explicitly configured it without an operator override.
     if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1") {
-      const allAuditSinksCoveredByEnv =
-        process.env.KOI_AUDIT_NDJSON !== undefined &&
-        process.env.KOI_AUDIT_SQLITE !== undefined &&
-        process.env.KOI_AUDIT_VIOLATIONS !== undefined;
-      if (!allAuditSinksCoveredByEnv) {
+      const ndjsonExposed =
+        manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+      const sqliteExposed =
+        manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+      const violationsExposed =
+        manifestAudit.violations !== undefined && process.env.KOI_AUDIT_VIOLATIONS === undefined;
+      if (ndjsonExposed || sqliteExposed || violationsExposed) {
         process.stderr.write(
           "koi tui: manifest.audit is set but KOI_ALLOW_MANIFEST_FILE_SINKS is not 1 — " +
             "refusing to start to prevent silently disabled audit logging. " +
             "Set KOI_ALLOW_MANIFEST_FILE_SINKS=1 to enable manifest-configured audit sinks, " +
-            "or set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS to override " +
-            "all three sinks, or remove the audit: block from the manifest.\n",
+            "or set the matching KOI_AUDIT_* env var for each manifest-configured sink, " +
+            "or remove the audit: block from the manifest.\n",
         );
         process.exit(1);
       }
