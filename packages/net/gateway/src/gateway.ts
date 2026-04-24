@@ -391,6 +391,8 @@ export function createGateway(
         conn.send(createErrorFrame(0, "ADMIN_CLOSED", reason, nextId));
         conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
       }
+      // Purge persisted session so the store doesn't grow without bound on admin destroy.
+      void Promise.resolve(store.delete(sessionId));
       return { ok: true, value: undefined };
     },
 

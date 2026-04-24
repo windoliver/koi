@@ -370,6 +370,24 @@ describe("createGateway", () => {
       expect(conn.closed).toBe(true);
       expect(conn.closeCode).toBe(CLOSE_CODES.ADMIN_CLOSED);
     });
+
+    test("purges session from store on destroySession", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-destroy-purge",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      await authenticateConn(transport, gateway, "s-destroy-purge");
+      expect(storeHas(gateway.sessions(), "s-destroy-purge")).toBe(true);
+
+      gateway.destroySession("s-destroy-purge", "cleanup");
+      await waitForCondition(() => !storeHas(gateway.sessions(), "s-destroy-purge"));
+      expect(storeHas(gateway.sessions(), "s-destroy-purge")).toBe(false);
+    });
   });
 
   // =========================================================================

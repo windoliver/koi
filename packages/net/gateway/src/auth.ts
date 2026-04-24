@@ -71,9 +71,20 @@ export function handleHandshake(
 
     onMessage((data: string) => {
       if (settled) return;
-      // Consume exactly one connect frame; silently discard any subsequent pre-ack messages
-      // (e.g. early client frames sent during slow authenticate()) instead of re-parsing them.
-      if (connectFrameSeen) return;
+      // Reject any traffic that arrives before the handshake ack is sent. A well-behaved
+      // client waits for the ack before sending application frames; any frame here indicates
+      // a protocol violation, so we close with a deterministic error rather than dropping
+      // silently (which would leave the client unable to distinguish loss from discard).
+      if (connectFrameSeen) {
+        settle(() => {
+          conn.send(
+            createErrorFrame(0, "INVALID_HANDSHAKE", "Frame received before handshake complete"),
+          );
+          conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Frame received before handshake complete");
+          reject(new Error("Frame received before handshake complete"));
+        });
+        return;
+      }
       connectFrameSeen = true;
 
       const parseResult = parseConnectFrame(data);

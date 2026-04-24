@@ -205,4 +205,26 @@ describe("handleHandshake", () => {
     expect(result.session.routing?.channel).toBe("ch1");
     expect(result.session.routing?.peer).toBe("u1");
   });
+
+  test("closes with INVALID_HANDSHAKE if frame arrives before ack", async () => {
+    conn = transport.simulateOpen();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s5",
+      agentId: "a5",
+      metadata: {},
+    });
+    let firstMessageHandler: ((data: string) => void) | undefined;
+    const handshakePromise = handleHandshake(conn, auth, 1000, defaultOptions, (h) => {
+      firstMessageHandler = h;
+    });
+
+    firstMessageHandler?.(createConnectMessage("tok"));
+    // Send a second message before the handshake promise resolves
+    firstMessageHandler?.(JSON.stringify({ kind: "data", seq: 0, id: "f1", payload: {} }));
+
+    await expectRejects(handshakePromise, "before handshake complete");
+    expect(conn.closed).toBe(true);
+    expect(conn.closeCode).toBe(CLOSE_CODES.INVALID_HANDSHAKE);
+  });
 });
