@@ -65,6 +65,11 @@ export interface SkillInjectorConfig {
 
 const SKILL_PREFIX = "skill:";
 const SEPARATOR = "\n\n---\n\n";
+// Matches the tool name registered by @koi/skill-tool's createSkillTool().
+// Checked against request.tools before injection: if Skill is absent (e.g.,
+// ceiling-blocked in a child agent), skip injection so the model is not steered
+// toward skills it cannot invoke.
+const SKILL_TOOL_NAME = "Skill";
 
 function resolveAgent(agentOrFn: Agent | (() => Agent)): Agent {
   return typeof agentOrFn === "function" ? agentOrFn() : agentOrFn;
@@ -121,6 +126,11 @@ function collectSkillNames(
  * Returns the original request unchanged when no skills contribute any content.
  */
 function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
+  // Only gate when the engine has committed to an explicit tool list and Skill
+  // is absent. Undefined tools (pre-engine, tests) allows injection through.
+  if (request.tools !== undefined && !request.tools.some((t) => t.name === SKILL_TOOL_NAME)) {
+    return request;
+  }
   const sorted = sortedSkills(agent);
   if (sorted.length === 0) return request;
 
@@ -221,6 +231,9 @@ function injectSkillsProgressive(
   request: ModelRequest,
   hasForkSupport: boolean,
 ): ModelRequest {
+  if (request.tools !== undefined && !request.tools.some((t) => t.name === SKILL_TOOL_NAME)) {
+    return request;
+  }
   const sorted = sortedSkills(agent);
   // Runtime-backed progressive skills have runtimeBacked: true (set by attachProgressive).
   // MCP/external metadata-only stubs lack this marker and are excluded from the XML block

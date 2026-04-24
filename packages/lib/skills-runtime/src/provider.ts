@@ -57,6 +57,11 @@ export interface SkillProviderConfig {
  *   discarded at attach time; the Skill tool re-loads a body on demand when the
  *   model invokes a skill. The middleware injects an <available_skills> XML block.
  *
+ * NOTE: Progressive mode requires a session-pinned runtime so the advertised
+ * skills and the bodies served by the Skill tool remain consistent. Use
+ * `createProgressiveSkillProvider()` instead of this function in progressive
+ * mode — it bundles pinning automatically and returns the pinned runtime.
+ *
  * Compatible with Nexus in the future: swap the runtime implementation,
  * keep the same provider.
  */
@@ -71,6 +76,25 @@ export function createSkillProvider(
     attach: async (_agent: Agent): Promise<AttachResult> =>
       progressive ? attachProgressive(runtime) : attachEager(runtime),
   };
+}
+
+/**
+ * Creates a progressive-mode ComponentProvider with session-snapshot pinning
+ * built in. Returns both the provider and the pinned runtime so callers can
+ * pass the same runtime to the Skill tool — ensuring the body served on
+ * demand matches exactly what was valid when the session started.
+ *
+ * Use this instead of `createSkillProvider(runtime, { progressive: true })`
+ * to guarantee consistency without having to manually call
+ * `createProgressivePinnedRuntime` at the call site.
+ */
+export function createProgressiveSkillProvider(base: SkillsRuntime): {
+  readonly provider: ComponentProvider;
+  readonly pinnedRuntime: SkillsRuntime;
+} {
+  const pinnedRuntime = createProgressivePinnedRuntime(base);
+  const provider = createSkillProvider(pinnedRuntime, { progressive: true });
+  return { provider, pinnedRuntime };
 }
 
 // ---------------------------------------------------------------------------

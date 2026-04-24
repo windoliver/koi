@@ -67,9 +67,8 @@ import {
 import { createArtifactToolProvider, resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import {
-  createProgressivePinnedRuntime,
+  createProgressiveSkillProvider,
   createSkillInjectorMiddleware,
-  createSkillProvider,
   createSkillsRuntime,
 } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
@@ -1313,12 +1312,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The Skill tool loads full bodies on-demand from the same runtime.
   // Startup I/O matches the old eager path (loadAll() still runs for
   // blocked-skill visibility); benefit is per-call token reduction.
-  // Wrap with progressive pinning: bodies loaded at attach time are stored in a
-  // session-local Map that is not subject to LRU eviction. This ensures the Skill
-  // tool always returns the body that was valid at session start, regardless of
-  // cacheMaxBodies configuration or disk changes during the session.
-  const skillRuntime = createProgressivePinnedRuntime(createSkillsRuntime());
-  const skillProvider = createSkillProvider(skillRuntime, { progressive: true });
+  // createProgressiveSkillProvider bundles session-snapshot pinning: bodies
+  // loaded at attach time are stored in a session-local Map that is not subject
+  // to LRU eviction, ensuring the Skill tool always returns the body that was
+  // valid at session start.
+  const { provider: skillProvider, pinnedRuntime: skillRuntime } = createProgressiveSkillProvider(
+    createSkillsRuntime(),
+  );
   // Lazy agent ref — middleware created before createKoiRuntime assembles agent.
   const skillAgentRef: { current: import("@koi/core").Agent | undefined } = { current: undefined };
   const skillInjectorMw = createSkillInjectorMiddleware({

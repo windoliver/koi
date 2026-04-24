@@ -44,6 +44,7 @@ export type { SkillInjectorConfig } from "./middleware.js";
 export { createSkillInjectorMiddleware } from "./middleware.js";
 export {
   createProgressivePinnedRuntime,
+  createProgressiveSkillProvider,
   createSkillProvider,
   skillDefinitionToComponent,
 } from "./provider.js";

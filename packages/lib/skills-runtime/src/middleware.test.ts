@@ -431,7 +431,82 @@ describe("createSkillInjectorMiddleware — progressive mode", () => {
     // Decision must be reported even though the request was unchanged
     expect(decisions).toHaveLength(1);
     const decision = decisions[0] as Record<string, unknown>;
-    expect(Array.isArray(decision["excludedForkSkills"])).toBe(true);
-    expect((decision["excludedForkSkills"] as string[]).includes("fork-only")).toBe(true);
+    expect(Array.isArray(decision.excludedForkSkills)).toBe(true);
+    expect((decision.excludedForkSkills as string[]).includes("fork-only")).toBe(true);
+  });
+});
+
+describe("createSkillInjectorMiddleware — Skill tool gate", () => {
+  // Regression for #1986: child agents with a tool ceiling that excludes
+  // the Skill tool must not receive <available_skills> injection, otherwise
+  // the model is steered toward skills it cannot invoke.
+
+  function mockRequestWithTools(toolNames: readonly string[]): ModelRequest {
+    return {
+      messages: [],
+      tools: toolNames.map((name) => ({
+        name,
+        description: `${name} tool`,
+        inputSchema: { type: "object" as const, properties: {} },
+      })),
+    };
+  }
+
+  test("skips injection when Skill tool absent from explicit tools list", async () => {
+    const agent = mockAgent(new Map([skill("guide", "## Guide")]));
+    const mw = createSkillInjectorMiddleware({ agent });
+    const { wrapModelCall } = assertHooks(mw);
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), mockRequestWithTools(["Bash", "Read"]), async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    // Skill tool not in the tools list → no injection
+    expect(received[0]?.systemPrompt).toBeUndefined();
+  });
+
+  test("injects skills when Skill tool present in explicit tools list", async () => {
+    const agent = mockAgent(new Map([skill("guide", "## Guide")]));
+    const mw = createSkillInjectorMiddleware({ agent });
+    const { wrapModelCall } = assertHooks(mw);
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), mockRequestWithTools(["Bash", "Skill"]), async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    expect(received[0]?.systemPrompt).toContain("## Guide");
+  });
+
+  test("injects skills when tools is undefined (no engine tool filtering)", async () => {
+    const agent = mockAgent(new Map([skill("guide", "## Guide")]));
+    const mw = createSkillInjectorMiddleware({ agent });
+    const { wrapModelCall } = assertHooks(mw);
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), mockRequest(), async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    // Undefined tools → no engine filtering → allow injection
+    expect(received[0]?.systemPrompt).toContain("## Guide");
+  });
+
+  test("progressive mode: skips XML block when Skill tool absent", async () => {
+    const agent = mockAgent(new Map([progressiveSkill("cmd")]));
+    const mw = createSkillInjectorMiddleware({ agent, progressive: true });
+    const { wrapModelCall } = assertHooks(mw);
+
+    const received: ModelRequest[] = [];
+    await wrapModelCall(mockTurnContext(), mockRequestWithTools(["Bash"]), async (req) => {
+      received.push(req);
+      return DONE_RESPONSE;
+    });
+
+    expect(received[0]?.systemPrompt).toBeUndefined();
   });
 });

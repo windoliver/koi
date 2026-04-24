@@ -7,6 +7,7 @@ import { isAttachResult, skillToken } from "@koi/core";
 import { createSkillsRuntime } from "./index.js";
 import {
   createProgressivePinnedRuntime,
+  createProgressiveSkillProvider,
   createSkillProvider,
   skillDefinitionToComponent,
 } from "./provider.js";
@@ -420,5 +421,74 @@ describe("createProgressivePinnedRuntime", () => {
     const result = await runtime.discover();
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.has("skill-c")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createProgressiveSkillProvider — self-consistent progressive factory
+// ---------------------------------------------------------------------------
+
+describe("createProgressiveSkillProvider", () => {
+  let userRoot: string;
+
+  beforeEach(async () => {
+    userRoot = await mkdtemp(join(tmpdir(), "koi-progressive-provider-"));
+  });
+
+  afterEach(async () => {
+    await rm(userRoot, { recursive: true, force: true });
+  });
+
+  test("returns provider and pinnedRuntime", async () => {
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const { provider, pinnedRuntime } = createProgressiveSkillProvider(base);
+    expect(typeof provider.attach).toBe("function");
+    expect(typeof pinnedRuntime.load).toBe("function");
+  });
+
+  test("provider attaches progressive skill components (runtimeBacked: true)", async () => {
+    await writeSkill(userRoot, "cmd");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const { provider } = createProgressiveSkillProvider(base);
+    const result = await provider.attach({} as Agent);
+    expect(isAttachResult(result)).toBe(true);
+    const comp = result.components.get(skillToken("cmd")) as
+      | { runtimeBacked?: boolean }
+      | undefined;
+    expect(comp?.runtimeBacked).toBe(true);
+  });
+
+  test("pinnedRuntime serves session-start body after base eviction", async () => {
+    await writeSkill(userRoot, "pinned-skill", "Original body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot, cacheMaxBodies: 1 });
+    const { provider, pinnedRuntime } = createProgressiveSkillProvider(base);
+
+    // Trigger loadAll (called by provider.attach) to pin the body.
+    await provider.attach({} as Agent);
+
+    // Evict the cached body by loading another skill.
+    await writeSkill(userRoot, "other-skill", "Evicts pinned.");
+    await base.load("other-skill");
+
+    // pinnedRuntime must still return the session-start body.
+    const result = await pinnedRuntime.load("pinned-skill");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.body).toContain("Original body.");
+  });
+
+  test("provider and pinnedRuntime share the same pinned session state", async () => {
+    await writeSkill(userRoot, "shared", "Shared body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const { provider, pinnedRuntime } = createProgressiveSkillProvider(base);
+
+    await provider.attach({} as Agent);
+
+    // Update the file on disk — pinned runtime should NOT pick up the change.
+    await writeSkill(userRoot, "shared", "Updated body.");
+    base.invalidate();
+
+    const result = await pinnedRuntime.load("shared");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.body).toContain("Shared body.");
   });
 });
