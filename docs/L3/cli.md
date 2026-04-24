@@ -775,6 +775,10 @@ The resolver matches tool ids case-insensitively (`"Bash"` or `"bash"`). Non-bas
 
 `tui-command.ts` holds the `createAuthNotificationHandler` result in a `tuiAuthNotificationHandler` local and wires it into `resolveFileSystemAsync`. Both teardown paths (interim reconfigure and final shutdown) call `tuiAuthNotificationHandler?.dispose()` **synchronously before** awaiting `resolvedFilesystemBackend?.dispose?.()`. The filesystem `dispose()` unsubscribes then awaits, and that yield can still run a pre-queued notification microtask; disposing the handler first gates late `channel.send()` callbacks and cancels watchdog timers so stale heartbeats can't hit the channel after shutdown. See `docs/L2/fs-nexus.md` for the per-provider state machine, epoch/attempt tokens, and 45 s watchdog.
 
+## OAuthChannel unification (issue #1982)
+
+`createAuthNotificationHandler` now takes `(oauthChannel: OAuthChannel, channel: ChannelAdapter)` — structured `auth_required`/`auth_complete` events route to the `OAuthChannel` while `auth_progress` keepalives go to the text `channel`. The `nav:mcp-auth` handler in `tui-command.ts` now receives a structured `TriggerMcpServerAuthResult` (`"success-live" | "success-reload-required" | "failed"`) from `triggerMcpServerAuth` instead of a plain boolean, and renders server-specific outcome messages accordingly. Plugin OAuth server loading is blocked at plugin load time with `PLUGIN_OAUTH_BLOCKED` error when Koi is not running as localhost, preventing uncontrolled redirect URI registration from remote plugins.
+
 ## #1638 — Activity-based stream timeouts (dev-only env hook)
 
 Integrates `@koi/checkpoint` (stopBlocked fail-closed rollback + quarantine on rollback/persist double-failure) and `@koi/loop` (budget treats synthesized metrics as unmetered) with the runtime-level activity-timeout wrapper.

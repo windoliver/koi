@@ -298,6 +298,8 @@ The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping
 
 > **`@koi/cost-aggregator` wired as runtime dependency (#1636):** Added as a dependency for the orphan-check gate. The cost aggregator itself runs in the CLI host layer (not middleware), but the runtime declares the dependency so golden-query infrastructure can cover it. Exempt from golden queries (infrastructure, no tool surface).
 
+> **OAuthChannel unification (issue #1982):** `@koi/mcp`'s `McpConnection` interface gained `reconnect()` and optional `triggerAuth?()`. `ConnectionDeps.onUnauthorized` now returns `UnauthorizedOutcome` tri-state (`"refreshed" | "needs-auth" | "transient-failure"`) instead of `void`; new `onAuthNeeded` and `onAuthComplete` deps wire interactive OAuth and post-auth signals. `@koi/fs-nexus`'s `createAuthNotificationHandler` signature changed to `(oauthChannel: OAuthChannel, channel: ChannelAdapter)` — it now routes `auth_required`/`auth_complete` to the `OAuthChannel` and sends `auth_progress` keepalives to the text channel. Hosts that wire `createAuthNotificationHandler` must pass an `OAuthChannel` as the first argument.
+
 ## Changelog
 
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
