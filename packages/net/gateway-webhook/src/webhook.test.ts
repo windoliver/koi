@@ -372,7 +372,10 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     server?.stop();
   });
 
-  test("duplicate GitHub delivery is detected after successful dispatch", async () => {
+  test("GitHub provider dispatches both deliveries — no provider-level dedup (no signed event ID)", async () => {
+    // GitHub does not provide a signed delivery ID, so the provider returns no
+    // dedup key. Both deliveries are accepted and dispatched. Callers that need
+    // GitHub-level dedup must inject a custom IdempotencyStore.
     const secret = "test-secret";
     const body = JSON.stringify({ action: "push" });
     const sig = await computeGitHubSig(secret, body);
@@ -391,7 +394,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
       "Content-Type": "application/json",
     };
 
-    // First delivery — succeeds and commits dedup key
+    // First delivery
     const res1 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
       method: "POST",
       headers,
@@ -403,7 +406,7 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     expect(b1.duplicate).toBeUndefined();
     expect(dispatched).toHaveLength(1);
 
-    // Duplicate delivery — detected, returns 200 without re-dispatching
+    // Second delivery (same payload) — no dedup key, so this is dispatched again
     const res2 = await fetch(`http://localhost:${server.port()}/webhook/github`, {
       method: "POST",
       headers,
@@ -412,8 +415,8 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     expect(res2.status).toBe(200);
     const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
     expect(b2.ok).toBe(true);
-    expect(b2.duplicate).toBe(true);
-    expect(dispatched).toHaveLength(1); // not re-dispatched
+    expect(b2.duplicate).toBeUndefined();
+    expect(dispatched).toHaveLength(2); // both dispatched
   });
 
   test("failed dispatch does not commit dedup key — retry is accepted", async () => {

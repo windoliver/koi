@@ -67,28 +67,6 @@ function extractSlackEventId(rawBody: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Tenant-scoped HMAC dedup helper
-// ---------------------------------------------------------------------------
-
-async function hmacBodyKey(prefix: string, secret: string, rawBody: string): Promise<string> {
-  // HMAC the body with the tenant's secret to produce a dedup key that is:
-  //   1. Authenticated (tied to verified signing material, not unsigned headers)
-  //   2. Tenant-scoped (different secrets → different keys, preventing cross-tenant
-  //      dedup collisions when two tenants receive identical payloads)
-  // Same body + same secret always maps to the same key, so retries dedup correctly.
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(rawBody));
-  return `${prefix}:${Buffer.from(sig).toString("hex")}`;
-}
-
-// ---------------------------------------------------------------------------
 // Built-in providers
 // ---------------------------------------------------------------------------
 
@@ -97,11 +75,12 @@ const githubProvider: WebhookProvider = {
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGitHubSignature(secret, rawBody, request);
     if (!ok) return { ok: false };
-    // HMAC-body key: scoped by secret (tenant) + body, so same payload from two
-    // different tenants produces different dedup keys (no cross-tenant suppression).
-    // X-GitHub-Delivery is excluded — it is not covered by the request HMAC.
-    const dedupKey = await hmacBodyKey("github", secret, rawBody);
-    return { ok, dedupKey };
+    // No dedup key: GitHub provides X-GitHub-Delivery but it is not covered by
+    // the HMAC signature, so it cannot be trusted for idempotency. Content-based
+    // keys (body hash/HMAC) conflate distinct deliveries with identical payloads,
+    // causing silent event loss. Callers that need GitHub dedup should inject a
+    // custom IdempotencyStore keyed on X-GitHub-Delivery after independent validation.
+    return { ok };
   },
 };
 
@@ -110,10 +89,11 @@ const slackProvider: WebhookProvider = {
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifySlackSignature(secret, rawBody, request);
     if (!ok) return { ok: false };
-    // For Events API: use the stable event_id so retries deduplicate by event.
-    // For other Slack payloads (slash commands, interactive, etc.) event_id is
-    // absent; fall back to a tenant-scoped HMAC key so signed retries still dedup.
-    const dedupKey = extractSlackEventId(rawBody) ?? (await hmacBodyKey("slack", secret, rawBody));
+    // Events API: use event_id — a stable, provider-vended identifier present in
+    // the verified payload. No dedup key for other Slack shapes (slash commands,
+    // interactive payloads) because those have no stable signed event identifier;
+    // using content-based keys would conflate distinct commands with equal bodies.
+    const dedupKey = extractSlackEventId(rawBody);
     return { ok, dedupKey };
   },
 };
@@ -134,10 +114,11 @@ const genericProvider: WebhookProvider = {
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGenericSignature(secret, rawBody, request);
     if (!ok) return { ok: false };
-    // Tenant-scoped HMAC key: X-Webhook-ID is not covered by the HMAC signature
-    // and cannot be trusted. The HMAC key prevents cross-tenant dedup collisions.
-    const dedupKey = await hmacBodyKey("generic", secret, rawBody);
-    return { ok, dedupKey };
+    // X-Webhook-ID is not covered by the Standard Webhooks HMAC signature and
+    // cannot be trusted. Content-based keys conflate distinct events with identical
+    // payloads. No dedup key is provided — callers should inject a store keyed
+    // on a verified delivery identifier for dedup.
+    return { ok };
   },
 };
 
