@@ -96,6 +96,8 @@ interface LongRunningConfig {
   readonly leaseTtlMs?: number;               // heartbeat staleness threshold; default 90_000
   readonly heartbeatIntervalMs?: number;      // how often the timer-driven loop bumps heartbeat; default 30_000
   readonly abortTimeoutMs?: number;           // max wait for engine to quiesce on durability loss; default 10_000
+  // INVARIANT: abortTimeoutMs < leaseTtlMs - 2 * heartbeatIntervalMs
+  // createLongRunningHarness throws INVALID_CONFIG if violated.
   readonly saveState?: SaveStateCallback;     // capture engine state on soft checkpoint
   readonly onCompleted?: OnCompletedCallback;
   readonly onFailed?: OnFailedCallback;
@@ -153,7 +155,7 @@ interface LongRunningHarness {
   readonly abortActive: (reason: KoiError) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: (lease: SessionLease) => KoiMiddleware;
-  readonly dispose: () => Promise<void>;
+  readonly dispose: () => Promise<Result<void, KoiError>>;
 }
 ```
 
@@ -394,23 +396,38 @@ Steps:
 2. If phase is `active`:
    - Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
      In-process callers with the old reference now fail identity check.
+   - **Keep the heartbeat loop running.** Heartbeats must continue emitting
+     until engine quiescence is confirmed, otherwise
+     `(now - lastPersistedHeartbeatAt)` can exceed `leaseTtlMs` while the
+     engine is still executing and a reclaimer can race in. This is a
+     non-negotiable invariant.
    - Wait up to `abortTimeoutMs` for the engine adapter to quiesce.
-   - **On quiescence:** stop the heartbeat loop, then CAS-advance to
-     `suspended` with `failureReason = "disposed before completion"`.
+   - **On quiescence:** only NOW stop the heartbeat loop, then CAS-advance
+     to `suspended` with `failureReason = "disposed before completion"`.
      Best-effort snapshot write — if it fails, heartbeat-staleness will
-     reclaim. Safe because engine is confirmed stopped.
+     reclaim (safe now because the engine is confirmed stopped). Return
+     `Ok(undefined)`.
    - **On abort timeout (engine refuses to stop):** do NOT publish
-     `suspended` and do NOT stop heartbeats. Keep the lease live from the
-     store's perspective (session `"running"`, heartbeat fresh) so no
-     reclaimer can race the still-executing engine. Flip
-     `status().durability` to `"unhealthy"`, invoke `onDurabilityLost` with
-     `KoiError { code: "ABORT_TIMEOUT" }`, and return that error from
-     `dispose`. The harness registers a background keep-alive for the
-     heartbeat loop so it continues even after `dispose` returns — only
-     host-level process termination (SIGKILL) releases the lease. This
-     matches the timeout path's "loud refusal to lie" semantics.
+     `suspended`. Heartbeat loop keeps running (detached from `dispose`;
+     retained by the process until SIGKILL or until the engine eventually
+     stops and the harness is garbage-collected). Lease remains live from
+     the store's perspective (session `"running"`, heartbeat fresh). Flip
+     `status().durability` to `"unhealthy"`, invoke `onDurabilityLost`
+     with `KoiError { code: "ABORT_TIMEOUT" }`, and return
+     `Err(ABORT_TIMEOUT)`.
 3. Release references to stores (callers own their lifecycle), EXCEPT the
-   heartbeat loop if abort timed out.
+   heartbeat loop — it is retained until engine quiescence OR process exit.
+
+**Invariant (spec-enforced):** `abortTimeoutMs < leaseTtlMs - 2 *
+heartbeatIntervalMs`. The config constructor validates this at
+`createLongRunningHarness(cfg)` time and returns
+`KoiError { code: "INVALID_CONFIG" }` if violated. This guarantees the
+quiesce wait cannot outlive the TTL window even if heartbeats were to
+stall — an additional defense beyond "don't stop heartbeats early".
+
+Default config satisfies the invariant: `abortTimeoutMs=10_000`,
+`heartbeatIntervalMs=30_000`, `leaseTtlMs=90_000` →
+`10_000 < 90_000 - 60_000 = 30_000`. ✓
 
 No process-level cleanup (kill subprocess, close sockets) — that's `@koi/daemon`.
 But no safety rule is softened: dispose never advertises a resumable state
@@ -527,10 +544,19 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - `timeout` fires `fail()` with `TIMEOUT` error and attempts final snapshot.
 - `dispose()` on an active harness revokes the lease, aborts the engine,
   and only publishes `suspended` after quiescence.
+- `dispose()` returns `Promise<Result<void, KoiError>>`. Ok path on
+  quiescence; `Err(ABORT_TIMEOUT)` when engine refuses to stop. Host keys
+  SIGKILL decisions off this typed result.
 - `dispose()` on an active harness whose engine refuses to quiesce returns
-  `ABORT_TIMEOUT`, does NOT publish `suspended`, and KEEPS heartbeats
+  `Err(ABORT_TIMEOUT)`, does NOT publish `suspended`, and KEEPS heartbeats
   running so no reclaimer can race the still-executing engine. Host must
   SIGKILL to release the lease.
+- `dispose()` with a running engine and an `abortTimeoutMs` that violates
+  the invariant is rejected at `createLongRunningHarness` time with
+  `INVALID_CONFIG`, not at dispose time.
+- `status().durability` reflects `"unhealthy"` after ABORT_TIMEOUT or
+  sustained heartbeat-write failure; host automation can observe it via
+  `status()` without waiting for the dispose result.
 - `timeout` on an active harness whose engine refuses to quiesce does NOT
   publish `failed`, keeps snapshot `active` + heartbeats live, invokes
   `onDurabilityLost(ABORT_TIMEOUT)`. External schedulers see the run is
@@ -672,6 +698,7 @@ All errors are `KoiError` from L0. Codes used:
 | `CHECKPOINT_WRITE_FAILED` | store `put`/`compareAndPut`/`setHeartbeat` rejected (I/O) | true |
 | `HEARTBEAT_STALE` | heartbeat persistence approaching TTL with recent failure | false |
 | `ABORT_TIMEOUT` | engine did not quiesce within `abortTimeoutMs` | false |
+| `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
@@ -699,6 +726,11 @@ types before the L2 package can be implemented:
 5. `SessionPersistence.setHeartbeat(sessionId, timestampMs)` — dedicated
    cheap-write method so the heartbeat loop does not compete with full
    `saveSession` writes.
+6. `HarnessStatus.durability: "ok" | "unhealthy"` — observable degraded-state
+   signal. Hosts key automation (pager, SIGKILL escalation) off this field.
+   Default `"ok"`; flips to `"unhealthy"` on `ABORT_TIMEOUT` or sustained
+   heartbeat-write failure. Transitions back to `"ok"` only on a clean
+   `start()`/`resume()` with a fresh session.
 
 All four are backward-compatible and should land in a prerequisite L0 PR.
 
