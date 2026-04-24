@@ -61,18 +61,43 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
   }
 }
 
+function assertJsonSafeValue(value: unknown, path: string): void {
+  switch (typeof value) {
+    case "function":
+    case "symbol":
+    case "bigint":
+      throw new Error(
+        `schedule() payload contains a non-JSON-serializable ${typeof value} at "${path}". Remove it before scheduling.`,
+      );
+    case "object":
+      if (value === null) return;
+      if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; i++) {
+          assertJsonSafeValue(value[i], `${path}[${i}]`);
+        }
+      } else {
+        for (const key of Object.keys(value)) {
+          assertJsonSafeValue((value as Record<string, unknown>)[key], `${path}.${key}`);
+        }
+      }
+      break;
+    default:
+      break;
+  }
+}
+
 // Verify the payload is JSON-serializable before passing it to Temporal.
-// Catches nested functions, Symbols, and circular refs that shallow field-stripping misses.
+// Two-pass: JSON.stringify catches circular refs (throws); recursive walk catches
+// functions, Symbols, and BigInts that JSON.stringify silently drops without throwing.
 function assertJsonSerializable(value: unknown): void {
   try {
     JSON.stringify(value);
   } catch (err: unknown) {
     throw new Error(
-      "schedule() payload contains non-JSON-serializable values. " +
-        "Strip functions, Symbols, and circular references from message content before scheduling. " +
-        `Cause: ${err instanceof Error ? err.message : String(err)}`,
+      `schedule() payload contains a non-JSON-serializable circular reference — remove it before scheduling. Cause: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+  assertJsonSafeValue(value, "payload");
 }
 
 // Strip non-serializable EngineInputBase fields (callHandlers, AbortSignal) before
@@ -220,7 +245,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // Only record locally after the remote call succeeds to keep state consistent.
       // For spawn: start a new workflow then signal it with each message.
       // For dispatch: signal an existing workflow identified by agentId — no new workflow.
-      let targetWorkflowId: string;
+      // Initialize to id so the rollback cancel uses the requested workflowId even if start() throws
+      // before handle.workflowId is assigned.
+      let targetWorkflowId: string = id;
       try {
         if (mode === "spawn") {
           const handle = await config.client.workflow.start(config.workflowType, {
@@ -244,7 +271,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // Compensate: if spawn started but signal failed, cancel the orphaned workflow
         if (mode === "spawn") {
           try {
-            await config.client.workflow.cancel(id);
+            await config.client.workflow.cancel(targetWorkflowId);
           } catch {
             // Best-effort — workflow may not have started yet
           }
@@ -299,7 +326,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         const runningTask: ScheduledTask = { ...task, status: "running" };
         tasks.set(id, runningTask);
         const startedAt = now;
-        void config.client.workflow.getResult(id).then(
+        void config.client.workflow.getResult(targetWorkflowId).then(
           (result: unknown) => {
             if (cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
