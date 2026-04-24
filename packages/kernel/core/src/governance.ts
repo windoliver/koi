@@ -123,14 +123,21 @@ export type GovernanceEvent =
    */
   | {
       readonly kind: "run_reset";
-      readonly source: "host" | "engine";
-      readonly reason?: string | undefined;
-      readonly boundaryId: string;
       /**
-       * Wall-clock ms (Date.now()) captured immediately before this event is
-       * passed to `governance.record()` — after all async startup work (forge
-       * refresh, dynamic-mw recomposition) finishes, so the enforcement window
-       * does not pre-consume budget from slow lifecycle latency.
+       * Optional for backward compatibility: controllers default to `"engine"` when absent.
+       * Producers should always supply this to distinguish host-driven vs engine-driven resets.
+       */
+      readonly source?: "host" | "engine" | undefined;
+      readonly reason?: string | undefined;
+      /**
+       * Optional for backward compatibility: controllers skip provenance logging when absent.
+       */
+      readonly boundaryId?: string | undefined;
+      /**
+       * Wall-clock ms (Date.now()) captured at `runtime.run()` entry — before any
+       * async startup work (forge refresh, dynamic-mw recomposition) — so the
+       * enforcement window is anchored to when the user submitted, not when the
+       * engine finished booting. Startup latency counts against `maxDurationMs`.
        *
        * Optional for backward compatibility: controllers fall back to `Date.now()`
        * when absent. Future values are clamped to now (non-finite values fall back
@@ -150,9 +157,16 @@ export type GovernanceEvent =
    */
   | {
       readonly kind: "session_reset";
-      readonly source: "host" | "engine";
+      /**
+       * Optional for backward compatibility: controllers default to `"host"` when absent.
+       * Producers should always supply this to distinguish host-driven vs engine-driven resets.
+       */
+      readonly source?: "host" | "engine" | undefined;
       readonly reason?: string | undefined;
-      readonly boundaryId: string;
+      /**
+       * Optional for backward compatibility: controllers skip provenance logging when absent.
+       */
+      readonly boundaryId?: string | undefined;
       readonly boundaryTimestamp?: number | undefined;
     };
 

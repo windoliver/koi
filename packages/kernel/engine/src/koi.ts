@@ -624,6 +624,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: guards already reset for the current run — prevents double-resets across recompositions
     let resetGuardsCurrentRun: Set<IterationGuardHandle> | undefined;
 
+    // let justified: wall-clock ms captured at run() entry; used as boundaryTimestamp in
+    // resetRunBoundary() so duration enforcement anchors to submission time, not post-boot time.
+    let runBoundaryEntryAt: number | undefined;
+
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals: TerminalHandlers | undefined;
 
@@ -706,11 +710,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           );
         }
       }
-      // Capture a single timestamp after validation, shared by both guard resets
-      // and the governance event — ensures guard and governance enforcement windows
-      // are anchored to the same moment. Captured AFTER all slow startup work
-      // (forge refresh, dynamic-mw recomposition) so neither window pre-consumes budget.
-      const resetAt = Date.now();
+      // Consume the run-entry timestamp captured before any async startup work.
+      // Falls back to Date.now() for host-emitted resets (where runBoundaryEntryAt is unset).
+      const resetAt = runBoundaryEntryAt ?? Date.now();
+      runBoundaryEntryAt = undefined;
       // Reset all guards FIRST — before committing the governance event — so that
       // `run_reset` is only emitted when the reset is fully complete. If a guard
       // throws, we poison the runtime and re-throw; governance is never told about
@@ -920,6 +923,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       resetGuardsCurrentRun = undefined;
 
       if (resetBudgetPerRun) {
+        runBoundaryEntryAt = Date.now(); // anchor before any async startup work
         resetGuardsCurrentRun = new Set();
         if (!adapter.terminals) {
           // Non-cooperating adapters: reset immediately at run entry (guard set is fixed).
