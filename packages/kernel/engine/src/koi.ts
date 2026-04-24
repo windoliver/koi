@@ -701,24 +701,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       boundaryId: string,
     ): Promise<void> {
       // Validate all guards first — throw before mutating any state.
-      // The construction gate catches static middleware; this defends against
-      // dynamic/forged guards added after construction. Both failure modes fail closed:
-      //   (a) Branded guard missing resetForRun() — opted into new contract, broken
-      //   (b) Unbranded "koi:iteration-guard" — legacy shape; emitting run_reset
-      //       without resetting it creates split-brain enforcement
+      // Only branded guards are checked: ITERATION_GUARD_BRAND is an explicit contract
+      // declaration that resetForRun() is implemented. Unbranded guards (including
+      // pre-#1917 named guards) are silently skipped — matching construction-gate behavior.
       for (const mw of guards) {
         if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
           throw KoiRuntimeError.from(
             "VALIDATION",
             `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
               `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
-          );
-        }
-        if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-          throw KoiRuntimeError.from(
-            "VALIDATION",
-            `[koi] Dynamic/forged "koi:iteration-guard" does not implement resetForRun(). ` +
-              `This is a pre-#1917 legacy guard. Remove it or upgrade @koi/engine-compose.`,
           );
         }
       }
@@ -808,13 +799,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 "VALIDATION",
                 `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
                   `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
-              );
-            }
-            if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-              throw KoiRuntimeError.from(
-                "VALIDATION",
-                `[koi] Cooperating "koi:iteration-guard" does not implement resetForRun(). ` +
-                  `This is a pre-#1917 legacy guard. Remove it or upgrade @koi/engine-compose.`,
               );
             }
           }
@@ -999,13 +983,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   "VALIDATION",
                   `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
                     `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
-                );
-              }
-              if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-                throw KoiRuntimeError.from(
-                  "VALIDATION",
-                  `[koi] Non-cooperating "koi:iteration-guard" does not implement resetForRun(). ` +
-                    `This is a pre-#1917 legacy guard. Remove it or upgrade @koi/engine-compose.`,
                 );
               }
             }
