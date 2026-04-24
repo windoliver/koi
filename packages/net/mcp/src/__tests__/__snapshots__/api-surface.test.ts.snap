@@ -245,9 +245,23 @@ interface SdkClientLike {
         };
     } | undefined;
 }
+/**
+ * Tri-state result from an \`onUnauthorized\` / \`handleUnauthorized\` attempt:
+ * - "refreshed"         — new access token obtained; caller may retry silently
+ * - "needs-auth"        — refresh token gone; interactive OAuth required
+ * - "transient-failure" — tokens preserved but temporarily unavailable; retry later
+ */
+type UnauthorizedOutcome = "refreshed" | "needs-auth" | "transient-failure";
 interface McpConnection {
     /** Connect to the MCP server. */
     readonly connect: () => Promise<Result<void, KoiError>>;
+    /**
+     * Force a transport rebuild without terminating the connection.
+     * Transitions through "reconnecting" state so the token manager is
+     * re-consulted — use this after an auth token refresh to pick up fresh
+     * credentials, even when the connection currently reports "connected".
+     */
+    readonly reconnect: () => Promise<Result<void, KoiError>>;
     /** List available tools on the server. */
     readonly listTools: () => Promise<Result<readonly McpToolInfo[], KoiError>>;
     /** Call a tool by name with arguments. */
@@ -262,6 +276,15 @@ interface McpConnection {
     readonly onStateChange: (listener: TransportStateListener) => () => void;
     /** Subscribe to tool list changes. Returns unsubscribe function. */
     readonly onToolsChanged: (listener: () => void) => () => void;
+    /**
+     * User-initiated auth entry point. Shares the same \`authInFlight\` singleflight
+     * as the automatic 401-recovery path so only one browser window can open per
+     * server at a time — callers that race are coalesced onto the same promise.
+     * Unlike automatic recovery, skips the silent-refresh attempt and goes directly
+     * to the interactive OAuth flow even when a transient refresh failure exists.
+     * Undefined when the connection was created without an \`onAuthNeeded\` dep.
+     */
+    readonly triggerAuth?: () => Promise<Result<void, KoiError>>;
 }
 interface ConnectionDeps {
     readonly createClient: (info: {
@@ -270,8 +293,27 @@ interface ConnectionDeps {
     }) => SdkClientLike;
     readonly createTransport: CreateTransportFn;
     readonly random: () => number;
-    /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
-    readonly onUnauthorized?: () => void | Promise<void>;
+    /**
+     * Called on a mid-session 401. Returns an \`UnauthorizedOutcome\`:
+     * "refreshed" — fresh token obtained, caller may retry silently;
+     * "needs-auth" — refresh token gone, interactive OAuth required;
+     * "transient-failure" — tokens preserved but temporarily unavailable.
+     */
+    readonly onUnauthorized?: () => UnauthorizedOutcome | Promise<UnauthorizedOutcome>;
+    /**
+     * Called when a mid-session 401 triggers auth-needed. The implementation
+     * should perform the full OAuth flow and return true when tokens are ready,
+     * or false if auth was cancelled or failed. When true is returned, the
+     * connection will reconnect and retry the operation automatically.
+     */
+    readonly onAuthNeeded?: () => Promise<boolean>;
+    /**
+     * Called after a successful interactive auth flow AND a successful reconnect.
+     * Fires after the connection is re-established so consumers receive a true
+     * "auth + connection ready" signal rather than "auth completed" prematurely.
+     * Best-effort — errors are swallowed. Optional.
+     */
+    readonly onAuthComplete?: () => Promise<void>;
 }
 declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
 
@@ -611,8 +653,13 @@ interface OAuthProviderOptions {
 interface OAuthAuthProvider extends McpAuthProvider {
     /** Run the full interactive OAuth authorization flow. */
     readonly startAuthFlow: () => Promise<boolean>;
-    /** Clear stored tokens and trigger re-auth notification. */
-    readonly handleUnauthorized: () => Promise<void>;
+    /**
+     * Attempt token refresh on a 401. Returns an \`UnauthorizedOutcome\`:
+     * "refreshed" — new token obtained, retry silently;
+     * "needs-auth" — refresh token gone, interactive OAuth required;
+     * "transient-failure" — tokens preserved but temporarily unavailable.
+     */
+    readonly handleUnauthorized: () => Promise<UnauthorizedOutcome>;
 }
 /**
  * Creates an OAuth-backed McpAuthProvider.
@@ -785,6 +832,6 @@ declare function mapMcpToolInfoToDescriptor(toolInfo: McpToolInfo, serverName: s
  */
 declare function mapMcpToolToKoi(toolInfo: McpToolInfo, connection: McpConnection, serverName: string): Tool;
 
-export { type AuthChallenge, type AuthServerMetadata, type AuthToolFactory, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpOAuthConfig, type McpOAuthExternalConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type OAuthAuthProvider, type OAuthProviderOptions, type OAuthRuntime, type OAuthTokens, type PkceChallenge, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TokenManager, type TokenManagerOptions, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, computeServerKey, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createOAuthAuthProvider, createPkceChallenge, createTokenManager, createTransport, createTransportStateMachine, discoverAuthServer, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
+export { type AuthChallenge, type AuthServerMetadata, type AuthToolFactory, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpOAuthConfig, type McpOAuthExternalConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type OAuthAuthProvider, type OAuthProviderOptions, type OAuthRuntime, type OAuthTokens, type PkceChallenge, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TokenManager, type TokenManagerOptions, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, type UnauthorizedOutcome, computeServerKey, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createOAuthAuthProvider, createPkceChallenge, createTokenManager, createTransport, createTransportStateMachine, discoverAuthServer, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
 "
 `;

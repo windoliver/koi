@@ -4,7 +4,10 @@
  * - local_shell: real lifecycle (Bun.spawn subprocess)
  * - local_agent: unsupported stub — requires consumer-provided run callback;
  *   use createLocalAgentLifecycle() to opt in with an explicit runner.
- * - remote_agent, in_process_teammate, dream: unsupported stubs
+ * - remote_agent: unsupported stub — arbitrary outbound HTTP; must be opted in
+ *   explicitly by the consumer via createRemoteAgentLifecycle() with a trusted
+ *   endpoint config. Registering by default would create an SSRF surface.
+ * - in_process_teammate, dream: unsupported stubs
  *
  * Each kind is listed explicitly so that adding a new TaskKindName to core
  * produces a build/test failure here rather than silently degrading to a
@@ -23,6 +26,10 @@ import { createUnsupportedLifecycle } from "./unsupported.js";
  * local_agent is opt-in (not in defaults) because its lifecycle requires a
  * consumer-provided run callback. Use createLocalAgentLifecycle() with an
  * explicit runner config and register it manually.
+ *
+ * remote_agent is opt-in (not in defaults) because it makes arbitrary outbound
+ * HTTP requests. Use createRemoteAgentLifecycle() with a trusted endpoint
+ * config and register it manually.
  */
 const UNSUPPORTED_KINDS: readonly TaskKindName[] = [
   "local_agent",

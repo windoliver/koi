@@ -51,6 +51,8 @@ import type {
   KoiMiddleware,
   ModelAdapter,
   PermissionBackend,
+  PermissionDecision,
+  PermissionQuery,
   PolicyRequest,
   RichTrajectoryStep,
   RuleDescriptor,
@@ -86,9 +88,17 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
-import type { SourcedRule } from "@koi/permissions";
-import { createPermissionBackend } from "@koi/permissions";
+import type { CompiledRule, SourcedRule } from "@koi/permissions";
+import {
+  compileGlob,
+  createPermissionBackend,
+  evaluateRules,
+  mapSettingsToSourcedRules,
+  SOURCE_PRECEDENCE,
+  widenCommandScopedRulesForTui,
+} from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
+import { loadSettings } from "@koi/settings";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSqliteViolationStore } from "@koi/violation-store-sqlite";
 import {
@@ -111,6 +121,7 @@ import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
+  loadUserMcpSetup,
   loadUserRegisteredHooks,
   mergeUserAndPluginHooks,
 } from "./shared-wiring.js";
@@ -597,7 +608,7 @@ export interface KoiRuntimeConfig {
    *   retries interactively.
    * - `false` → disables detection entirely. `koi tui` opts in
    *   because its per-submit iteration budget reset
-   *   (`resetIterationBudgetPerRun: true` below, combined with the
+   *   (`resetBudgetPerRun: true` below, combined with the
    *   governance caps) already bounds spirals and false positives
    *   are expensive inside an interactive session.
    * - `Partial<LoopDetectionConfig>` → custom thresholds for hosts
@@ -639,6 +650,12 @@ export interface KoiRuntimeConfig {
   /** Working directory for file tools (Glob, fs_read, Bash). Defaults to process.cwd(). */
   readonly cwd?: string | undefined;
   /**
+   * Absolute path to a settings file loaded as the `flag` layer — highest priority
+   * below `policy`. Enables per-invocation overrides via `--settings <path>`.
+   * When omitted the flag layer is empty (no per-invocation override).
+   */
+  readonly settingsFlagPath?: string | undefined;
+  /**
    * System prompt injected via createSystemPromptMiddleware.
    * Tells the model it has tools and should use them.
    * When omitted, no system prompt middleware is installed.
@@ -660,6 +677,12 @@ export interface KoiRuntimeConfig {
    * via createSkillsMcpBridge.
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
+  /**
+   * Optional OAuthChannel for MCP server OAuth flows.
+   * When provided, wired into every MCP connection so auth_required /
+   * auth_complete events render inline as chat messages.
+   */
+  readonly mcpOAuthChannel?: import("@koi/core").OAuthChannel | undefined;
   /**
    * Persistent approval store for cross-session "always" grants.
    * When provided, durable approvals survive process restart.
@@ -739,6 +762,24 @@ export interface KoiRuntimeConfig {
    *  - Empty string `""`: disables the store entirely (violations only
    *    surfaced in-memory via the governance bridge for the current session). */
   readonly violationSqlitePath?: string | undefined;
+  /**
+   * Per-sink manifest provenance — set to the manifest file path when the
+   * corresponding audit path was derived from `manifest.audit.*` (not from an
+   * operator env var). `createKoiRuntime` calls `revalidateAuditPathContainment`
+   * immediately before opening each manifest-derived sink to narrow the TOCTOU
+   * window between the pre-runtime check in `tui-command.ts` and the actual
+   * filesystem open syscall.
+   *
+   * A residual race remains because Bun/Node do not expose `openat` /
+   * `O_NOFOLLOW` for intermediate path components — full atomicity would require
+   * L2 sink API changes. The narrowed window is the best-effort mitigation.
+   *
+   * Leave each field `undefined` for env-var-sourced paths: those are operator-
+   * trusted and are NOT subject to manifest containment revalidation.
+   */
+  readonly manifestNdjsonSourcePath?: string | undefined;
+  readonly manifestSqliteSourcePath?: string | undefined;
+  readonly manifestViolationsSourcePath?: string | undefined;
   /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
@@ -909,6 +950,22 @@ export interface KoiRuntimeHandle {
    * no MCP servers are configured.
    */
   readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
+  /**
+   * Trigger interactive OAuth for an MCP server using the live auth provider
+   * wired into the existing connection. This is the correct path for nav:mcp-auth
+   * — it reuses the same provider instance so in-memory token caches are cleared
+   * before startAuthFlow(), rather than creating a parallel provider that only
+   * updates storage.
+   *
+   * "success-live" — auth succeeded and the live session can use the server now.
+   * "success-reload-required" — auth succeeded in storage but the server was not
+   *   wired into this session's resolver; the user must reload to connect.
+   * "failed" — auth did not complete.
+   */
+  readonly triggerMcpServerAuth: (
+    serverName: string,
+    channel: import("@koi/core").OAuthChannel,
+  ) => Promise<"success-live" | "success-reload-required" | "failed">;
   /**
    * Plugin discovery summary — loaded plugins + any errors.
    * Static for the lifetime of the runtime. Used by the TUI to populate
@@ -1181,8 +1238,27 @@ export function resolveMaxDurationMs(hostDefault?: number): number {
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
 }
 
+/**
+ * Thrown when the policy settings file fails to parse or load.
+ * `start.ts` catches this specifically to emit `bail(msg, 2)` — the documented
+ * policy-failure exit code — instead of a generic runtime-assembly error.
+ */
+export class PolicyLoadError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "PolicyLoadError";
+  }
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
-  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+  const {
+    modelAdapter,
+    modelName,
+    approvalHandler,
+    cwd = process.cwd(),
+    settingsFlagPath,
+    skillsRuntime,
+  } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
   // the agentName in trajectory metadata, and the [koi/X] log prefix.
   // Pulled up from below so preset stack activation (which runs early so
@@ -1360,6 +1436,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+    ...(config.mcpOAuthChannel !== undefined ? { mcpOAuthChannel: config.mcpOAuthChannel } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
     approvalHandler,
     agentId: precomputedAgentId,
@@ -1472,40 +1549,153 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // `coreSlots.hook` instead.
 
   // --- @koi/permissions + @koi/middleware-permissions ---
-  // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
-  // See TUI_ALLOW_RULES (above) for allowlist reasoning. The
-  // write_plan rule is appended only when planning is opted in so
-  // hosts that do not install @koi/middleware-planning cannot have
-  // a third-party same-named tool silently approved.
-  const tuiAllowRules: readonly SourcedRule[] = [
-    ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true
-      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
-      : []),
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "allow",
-      source: "policy",
-      context: { path: `${cwd}/**` },
-    },
-    {
-      pattern: "fs_read",
-      action: "invoke",
-      effect: "ask",
-      source: "policy",
-      reason: "File is outside the workspace — approve to read",
-    },
-  ] as const;
-  // Permission backend: caller may override (koi start passes an
-  // auto-allow pattern backend). Default to the TUI's tiered default
-  // mode so existing TUI behavior is preserved.
-  const permBackend =
-    config.permissionBackend ??
-    createPermissionBackend({
-      mode: "default",
-      rules: tuiAllowRules,
+  // Always load settings — policy-layer rules must be enforced on every startup
+  // path, including koi start which supplies its own custom backend.
+  // Non-policy parse/schema errors are logged and skipped (fail-open for user
+  // layers); a policy-layer error is re-thrown so the top-level handler can
+  // exit with the fail-closed error code rather than produce a generic crash.
+  const settingsRules: SourcedRule[] = [];
+  const settingsDefaultMode = "default" as const;
+  try {
+    const { sources, errors: settingsErrors } = await loadSettings({
+      cwd,
+      ...(settingsFlagPath !== undefined ? { flagPath: settingsFlagPath } : {}),
     });
+    for (const err of settingsErrors) {
+      console.warn(`[koi/${hostId}] settings validation warning: ${err.file}: ${err.message}`);
+    }
+    for (const source of SOURCE_PRECEDENCE) {
+      const layerSettings = sources[source];
+      if (layerSettings != null) {
+        const rules = mapSettingsToSourcedRules(layerSettings, source);
+        // Policy layer is tightening-only: allow entries are dropped to prevent
+        // policy from re-opening tools that lower-precedence layers deny.
+        const filtered = source === "policy" ? rules.filter((r) => r.effect !== "allow") : rules;
+        settingsRules.push(...filtered);
+      }
+    }
+  } catch (err) {
+    // Policy or explicit --settings file is malformed or unreadable — rethrow
+    // so the caller can exit with code 2 (fail-closed).
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new PolicyLoadError(`[koi/${hostId}] fatal: settings failed to load — ${msg}`, {
+      cause: err,
+    });
+  }
+
+  // Sort helpers: highest-precedence source first, then deny < ask < allow.
+  const EFFECT_ORDER: Readonly<Record<string, number>> = { deny: 0, ask: 1, allow: 2 };
+  const precedenceIdx = (r: SourcedRule): number => SOURCE_PRECEDENCE.indexOf(r.source);
+  const sortRules = (rules: readonly SourcedRule[]): readonly SourcedRule[] =>
+    [...rules].sort((a, b) => {
+      const srcDiff = precedenceIdx(a) - precedenceIdx(b);
+      if (srcDiff !== 0) return srcDiff;
+      return (EFFECT_ORDER[a.effect] ?? 3) - (EFFECT_ORDER[b.effect] ?? 3);
+    });
+
+  // Build the permission backend:
+  //   Custom backend path (koi start): enforce policy-layer rules first, then
+  //     delegate to the caller's marker-aware backend.  No widening needed —
+  //     the custom backend evaluates enriched command-scoped resources directly.
+  //   TUI path: widen command-scoped rules fail-closed (the TUI backend only
+  //     receives plain tool ids), then add built-in TUI allows as fallback.
+  let permBackend: PermissionBackend;
+  if (config.permissionBackend !== undefined) {
+    const inner = config.permissionBackend;
+    // Settings may only TIGHTEN on the custom-backend path (koi start).
+    // Allow rules would bypass the caller's explicit whitelist (e.g. --allow-tool);
+    // only deny/ask rules are applied so operators stay in control.
+    const droppedAllowCount = settingsRules.filter((r) => r.effect === "allow").length;
+    if (droppedAllowCount > 0) {
+      console.warn(
+        `[koi/${hostId}] ${droppedAllowCount} settings allow rule(s) are not enforced when a ` +
+          `custom permission backend is active (koi start). ` +
+          `Only deny and ask rules take effect on this path. ` +
+          `Use \`koi tui\` or remove allow rules from settings.`,
+      );
+    }
+    const restrictingRules = sortRules(settingsRules.filter((r) => r.effect !== "allow"));
+    if (restrictingRules.length > 0) {
+      // Compile rules once at construction — never recompile per-query.
+      const compiledRules: readonly CompiledRule[] = restrictingRules.map((r) => ({
+        ...r,
+        compiled: compileGlob(r.pattern),
+      }));
+      const wrappedCheck = async (query: PermissionQuery): Promise<PermissionDecision> => {
+        const decision = evaluateRules(query, compiledRules);
+        // Sentinel "No matching permission rule" means settings have no deny/ask opinion.
+        // Delegate to the inner marker-aware backend (e.g. createPatternPermissionBackend).
+        if (decision.effect === "ask" && decision.reason === "No matching permission rule") {
+          return inner.check(query);
+        }
+        return decision;
+      };
+      // Preserve the marker-aware capability flag so koi start retains dual-key evaluation.
+      permBackend = {
+        check: wrappedCheck,
+        ...(inner.dispose != null ? { dispose: inner.dispose } : {}),
+        ...(inner.supportsDefaultDenyMarker === true
+          ? { supportsDefaultDenyMarker: true as const }
+          : {}),
+      };
+    } else {
+      permBackend = inner;
+    }
+  } else {
+    // TUI single-key mode: widen command-scoped rules (fail-closed).
+    const { rules: widenedRules, hadCommandScoped } = widenCommandScopedRulesForTui(settingsRules);
+    if (hadCommandScoped) {
+      console.warn(
+        `[koi/${hostId}] command-scoped settings rules are widened to tool-level in TUI mode ` +
+          `(deny/ask become tool-wide; allow rules are stripped). ` +
+          `Use \`koi start\` for precise command-scoped enforcement.`,
+      );
+    }
+    // Rule ordering: policy settings → non-policy restrict → built-in allows →
+    // fs_read workspace guard → non-policy allows.
+    //
+    // Non-policy deny/ask rules come before built-in TUI allows so that
+    // user/project/local/flag deny rules fire first. Non-policy allow rules come
+    // AFTER the out-of-workspace fs_read guard so that a broad "allow all" rule
+    // in project settings cannot bypass the workspace boundary prompt.
+    // Policy is tightening-only on TUI path as well: allows are already stripped at
+    // collection time, but guard here explicitly to prevent any future regression.
+    const policySettingsRules = sortRules(
+      widenedRules.filter((r) => r.source === "policy" && r.effect !== "allow"),
+    );
+    const subPolicyRestrictRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect !== "allow"),
+    );
+    const subPolicyAllowRules = sortRules(
+      widenedRules.filter((r) => r.source !== "policy" && r.effect === "allow"),
+    );
+    permBackend = createPermissionBackend({
+      mode: settingsDefaultMode,
+      rules: [
+        ...policySettingsRules,
+        ...subPolicyRestrictRules,
+        ...TUI_ALLOW_RULES,
+        ...(config.planningEnabled === true
+          ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+          : []),
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "allow",
+          source: "policy",
+          context: { path: `${cwd}/**` },
+        },
+        {
+          pattern: "fs_read",
+          action: "invoke",
+          effect: "ask",
+          source: "policy",
+          reason: "File is outside the workspace — approve to read",
+        },
+        ...subPolicyAllowRules,
+      ],
+    });
+  }
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
   // Bash prefix enrichment (#1881). Feeds the raw command to
@@ -1561,7 +1751,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | import("@koi/tools-bash").BashToolHandle
     | undefined;
   const sandboxActive = (earlyContribution.exports.sandboxActive as boolean | undefined) ?? false;
-  const _tuiAgentId = precomputedAgentId;
 
   // --- Core providers (search + fs + web + bash) via shared-wiring ---
   // The shared `buildCoreProviders` helper wires the exact same base set
@@ -2102,6 +2291,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
+    const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
+      | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
+      | undefined;
+    const mcpConnections = stackContribution.exports.mcpConnections as
+      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
+      | undefined;
+    const mcpPluginRejectedServers = stackContribution.exports.mcpPluginRejectedServers as
+      | ReadonlyMap<string, string>
+      | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
     // and the onViolation callback need a LIVE session id (rotates on
@@ -2167,6 +2365,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             );
           }
         }
+      }
+      // manifest.audit.ndjson is rejected at tui-command.ts before this point —
+      // ancestor-symlink swaps between revalidation and open cannot be blocked
+      // without openat-style APIs unavailable in Node.js/Bun. All manifest-derived
+      // audit paths require env var overrides; manifestNdjsonSourcePath is therefore
+      // always undefined here. The guard below is defensive only.
+      if (config.manifestNdjsonSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.ndjson: manifest-derived paths are not supported. " +
+            "Set KOI_AUDIT_NDJSON instead.",
+        );
       }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
@@ -2235,6 +2444,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }
           }
         }
+      }
+      // manifest.audit.sqlite is rejected at tui-command.ts before this point
+      // (manifest-derived SQLite paths are not supported — SQLite must open by
+      // pathname for WAL/SHM sidecars, making atomic containment impossible).
+      // manifestSqliteSourcePath is therefore always undefined here; the check
+      // below is a defensive belt-and-suspenders guard only.
+      if (config.manifestSqliteSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.sqlite: manifest-derived SQLite paths are not supported. " +
+            "Set KOI_AUDIT_SQLITE instead.",
+        );
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
@@ -2392,8 +2612,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     if (resolvedViolationPath !== undefined) {
       try {
         const parent = dirname(resolvedViolationPath);
+        const manifestDerived = config.manifestViolationsSourcePath !== undefined;
         if (!existsSync(parent)) {
+          // Manifest-derived paths must already have their parent present —
+          // auto-creating directories for repo-authored paths expands the
+          // write-capability trust boundary. Operator-supplied explicit paths
+          // (--violation-sqlite flag) and the implicit default (~/.koi/)
+          // retain the previous auto-create behavior.
+          if (manifestDerived) {
+            throw new Error(
+              `manifest.audit.violations: parent directory "${parent}" does not exist. ` +
+                "Create it before starting koi tui, or remove the violations: key from manifest.audit.",
+            );
+          }
           mkdirSync(parent, { recursive: true });
+        }
+        // manifest.audit.violations is rejected at tui-command.ts before this
+        // point (same WAL/SHM atomic-open limitation as manifest.audit.sqlite).
+        // manifestDerived is therefore always false here; the guard below is
+        // defensive only.
+        if (manifestDerived) {
+          throw new Error(
+            "manifest.audit.violations: manifest-derived SQLite paths are not supported. " +
+              "Set KOI_AUDIT_VIOLATIONS instead.",
+          );
         }
         violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
         // Register close on manifest shutdown so `runtime.dispose()`
@@ -2682,7 +2924,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // and we don't have a model-aware pricing source wired in. When
       // a host wires real token pricing, also set `cost.maxCostUsd` here
       // for a stricter dollar-denominated cap.
-      resetIterationBudgetPerRun: true,
+      resetBudgetPerRun: true,
       // The iteration guard (wired by the default guard extension) and
       // the governance controller are separate enforcement paths. Both
       // must see the same resolved duration or the tighter of the two
@@ -2883,10 +3125,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
-            // Plugin servers authenticate via their own auth pseudo-tools, not
-            // via nav:mcp-auth (which only handles .mcp.json entries). Force
-            // hasOAuth false so AUTH_REQUIRED plugin servers render as error
-            // rather than needs-auth, preventing a misleading recovery prompt.
+            // Plugin servers do not surface as OAuth-capable via nav:mcp-auth —
+            // they authenticate through their own pseudo-tools, not through the
+            // same first-party browser flow as user-configured .mcp.json entries.
+            // Routing plugins through triggerMcpServerAuth would widen the trust
+            // boundary to plugin-supplied OAuth endpoints without a consent gate.
             oauthNames: undefined,
           });
         if (sources.length === 0) return [];
@@ -2932,7 +3175,99 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             });
           }
         }
+        // Append plugin servers rejected at setup time (e.g. OAuth without consent gate)
+        // as explicit error entries so /mcp shows them as blocked instead of invisible.
+        if (mcpPluginRejectedServers !== undefined) {
+          for (const [name, reason] of mcpPluginRejectedServers) {
+            const key = `plugin:${name}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: `plugin:${name}`,
+              toolCount: 0,
+              failureCode: "PLUGIN_OAUTH_BLOCKED",
+              failureMessage: reason,
+              transport: undefined,
+              hasOAuth: false,
+            });
+          }
+        }
         return entries;
+      },
+      triggerMcpServerAuth: async (
+        qualifiedName: string,
+        channel: import("@koi/core").OAuthChannel,
+      ): Promise<"success-live" | "success-reload-required" | "failed"> => {
+        // Plugin-provided servers are not eligible for user-triggered auth via
+        // this path — they are blocked at load time (no host consent gate).
+        if (qualifiedName.startsWith("plugin:")) return "failed";
+
+        // Strip user: prefix if present for consistent map lookups.
+        const serverName = qualifiedName.startsWith("user:")
+          ? qualifiedName.slice(5)
+          : qualifiedName;
+        const provider = mcpAuthProviders?.get(serverName);
+        if (provider === undefined) {
+          // Server missing from startup map — likely added to .mcp.json after
+          // this session started. Re-read the current config to find it and
+          // attempt a live one-shot auth without requiring a full restart.
+          const freshSetup = await loadUserMcpSetup(cwd, undefined, channel).catch(() => undefined);
+          const freshProvider = freshSetup?.authProviders.get(serverName);
+          const freshConnection = freshSetup?.connections.get(serverName);
+          if (freshProvider === undefined || freshConnection === undefined) {
+            // Server genuinely not found or has no OAuth config — guide user to CLI.
+            void Promise.resolve(
+              channel.onAuthRequired({
+                provider: serverName,
+                message: `"${serverName}" was not found in the current MCP config. Run \`koi mcp auth ${serverName}\` in a terminal to authorize it, then reload the session.`,
+                mode: "local",
+                instructions: `On a remote or headless machine, run: \`koi mcp auth ${serverName}\``,
+              }),
+            ).catch(() => {});
+            freshSetup?.dispose();
+            return "failed";
+          }
+          // Auth through a temporary connection. The live resolver does not know
+          // about this server — return success-reload-required so the TUI can
+          // guide the user to reload rather than showing a failure message.
+          const authResult = await freshConnection.triggerAuth?.();
+          freshSetup?.dispose();
+          if (authResult?.ok) {
+            return "success-reload-required";
+          }
+          void Promise.resolve(
+            channel.onAuthFailure?.({
+              provider: serverName,
+              reason: authResult?.error.message ?? "Authorization did not complete.",
+            }),
+          ).catch(() => {});
+          return "failed";
+        }
+        const connection = mcpConnections?.get(serverName);
+        const resolver = mcpResolver;
+
+        // Route everything through connection.triggerAuth() so the singleflight
+        // serializes concurrent automatic 401-recovery and explicit user auth.
+        // triggerAuth tries silent token refresh first, then falls through to
+        // browser auth if tokens are stale — no separate handleUnauthorized call
+        // needed here. onAuthComplete fires internally after reconnect.
+        if (connection?.triggerAuth !== undefined) {
+          const result = await connection.triggerAuth();
+          if (!result.ok) {
+            void Promise.resolve(
+              channel.onAuthFailure?.({
+                provider: serverName,
+                reason: result.error.message,
+              }),
+            ).catch(() => {});
+            return "failed";
+          }
+          // Trigger resolver rediscovery so real tools replace pseudo-tools immediately.
+          await resolver?.discover().catch(() => {});
+          return "success-live";
+        }
+        // Fallback for connections without triggerAuth (non-OAuth connections).
+        return "failed";
       },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];

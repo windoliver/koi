@@ -79,6 +79,7 @@
     "@koi/tools-bash": "workspace:*",
     "@koi/sandbox-os": "workspace:*",
     "@koi/session": "workspace:*",
+    "@koi/settings": "workspace:*",
     "@koi/skill-scanner": "workspace:*",
     "@koi/skill-tool": "workspace:*",
     "@koi/skills-runtime": "workspace:*",

@@ -3,6 +3,7 @@
 exports[`public api surface 1`] = `
 [
   "DEFAULT_ALERT_THRESHOLDS",
+  "DEFAULT_APPROVAL_TIMEOUT_MS",
   "GOVERNANCE_MIDDLEWARE_NAME",
   "GOVERNANCE_MIDDLEWARE_PRIORITY",
   "createAlertTracker",

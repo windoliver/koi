@@ -64,6 +64,8 @@ mock.module("@koi/engine", () => ({
   createGovernanceController: mock(() => ({})),
   createSpawnToolProvider: mock(() => ({})),
   createInMemorySpawnLedger: mock(() => ({})),
+  createAgentSpawnFn: mock(() => async () => ({ ok: true as const, value: {} })),
+  DEFAULT_SPAWN_POLICY: {},
 }));
 
 // Mock `createKoiRuntime` from runtime-factory directly so tests
@@ -75,6 +77,7 @@ mock.module("../runtime-factory.js", () => ({
     transcript: [],
     shutdownBackgroundTasks: mock(() => false),
   })),
+  PolicyLoadError: class PolicyLoadError extends Error {},
 }));
 
 mock.module("@koi/harness", () => ({
@@ -221,6 +224,8 @@ mock.module("../shared-wiring.js", () => ({
   loadUserRegisteredHooks: mock(async () => []),
   mergeUserAndPluginHooks: mock((u: unknown[], _p: unknown[]) => u),
   resumeSessionFromJsonl: mockResumeSessionFromJsonl,
+  writeSessionMeta: mock(async () => {}),
+  readSessionMeta: mock(async () => ({})),
   buildCoreMiddleware: mock(() => ({
     permissions: {},
     hook: {},
@@ -277,6 +282,7 @@ function makeFlags(
     allowRemoteFs: overrides.allowRemoteFs ?? false,
     headless: overrides.headless ?? false,
     allowTools: [],
+    settingsFlagPath: undefined,
     maxDurationMs: overrides.maxDurationMs,
     resultSchema: overrides.resultSchema,
     governance: {
@@ -399,7 +405,7 @@ describe("run() — manifest loading", () => {
     }));
     const { run } = await import("./start.js");
     await run(makeFlags({ manifest: "koi.yaml", mode: { kind: "prompt", text: "hi" } }));
-    expect(mockLoadManifest).toHaveBeenCalledWith("koi.yaml");
+    expect(mockLoadManifest).toHaveBeenCalledWith("koi.yaml", { skipAuditValidation: true });
   });
 
   test("returns FAILURE when manifest is invalid", async () => {

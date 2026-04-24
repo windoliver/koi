@@ -585,9 +585,14 @@ export type {
   SensorReading,
 } from "./governance.js";
 // governance — runtime values
-export { GOVERNANCE_VARIABLES, governanceContributorToken } from "./governance.js";
+export {
+  GOVERNANCE_VARIABLES,
+  governanceContributorToken,
+  RESET_BOUNDARIES,
+} from "./governance.js";
 // governance backend — pluggable rule-based policy evaluation contract
 export type {
+  AskId,
   ComplianceRecord,
   ComplianceRecorder,
   ConstraintChecker,
@@ -605,8 +610,10 @@ export type {
   ViolationStore,
 } from "./governance-backend.js";
 export {
+  askId,
   DEFAULT_VIOLATION_QUERY_LIMIT,
   GOVERNANCE_ALLOW,
+  isAskVerdict,
   VIOLATION_SEVERITY_ORDER,
 } from "./governance-backend.js";
 // handoff — types
@@ -811,6 +818,13 @@ export { ANS_SCOPE_PRIORITY, DEFAULT_ANS_CONFIG } from "./name-service.js";
 // nexus-path — branded string type for Nexus namespace paths
 export type { NexusPath } from "./nexus-path.js";
 export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
+// oauth-channel — shared OAuth authorization channel protocol
+export type {
+  AuthCompleteNotification,
+  AuthFailureNotification,
+  AuthRequiredNotification,
+  OAuthChannel,
+} from "./oauth-channel.js";
 // outcome-evaluator — rubric-graded LLM-as-judge iteration loop types
 export type {
   CriterionResult,

@@ -114,6 +114,54 @@ describe("buildPluginMcpSetup", () => {
     expect(setup?.provider).toBeDefined();
     setup?.dispose();
   });
+
+  test("blocks OAuth-bearing plugin servers (trust boundary) and surfaces them in rejectedServers", () => {
+    const oauthServer = {
+      kind: "http" as const,
+      name: "plugin-oauth",
+      url: "https://example.com/mcp",
+      oauth: {
+        clientId: "id",
+        authorizationEndpoint: "https://example.com/auth",
+        tokenEndpoint: "https://example.com/token",
+      },
+    } as unknown as McpServerConfig;
+    const stdioServer: McpServerConfig = {
+      kind: "stdio",
+      name: "plugin-stdio",
+      command: "/bin/echo",
+    };
+
+    const setup = buildPluginMcpSetup([oauthServer, stdioServer]);
+
+    // OAuth server blocked; stdio server wired normally
+    expect(setup).toBeDefined();
+    expect(setup?.connections.has("plugin-oauth")).toBe(false);
+    expect(setup?.connections.has("plugin-stdio")).toBe(true);
+    expect(setup?.rejectedServers?.has("plugin-oauth")).toBe(true);
+    expect(setup?.oauthCapableNames.size).toBe(0);
+    setup?.dispose();
+  });
+
+  test("returns setup with rejectedServers populated when all plugin servers have OAuth", () => {
+    const oauthServer = {
+      kind: "http" as const,
+      name: "plugin-oauth",
+      url: "https://example.com/mcp",
+      oauth: {
+        clientId: "id",
+        authorizationEndpoint: "https://example.com/auth",
+        tokenEndpoint: "https://example.com/token",
+      },
+    } as unknown as McpServerConfig;
+
+    const setup = buildPluginMcpSetup([oauthServer]);
+    expect(setup).toBeDefined();
+    expect(setup?.connections.has("plugin-oauth")).toBe(false);
+    expect(setup?.rejectedServers?.has("plugin-oauth")).toBe(true);
+    expect(setup?.oauthCapableNames.size).toBe(0);
+    setup?.dispose();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,11 @@ export {
 } from "./lifecycles/local-agent.js";
 export { createLocalShellLifecycle, type LocalShellConfig } from "./lifecycles/local-shell.js";
 export {
+  createRemoteAgentLifecycle,
+  type RemoteAgentConfig,
+  type RemoteAgentLifecycleOptions,
+} from "./lifecycles/remote-agent.js";
+export {
   createUnsupportedLifecycle,
   isUnsupportedLifecycle,
   UNSUPPORTED_LIFECYCLE_MARKER,

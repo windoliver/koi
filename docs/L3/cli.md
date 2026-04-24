@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`@koi/settings` wired into CLI (#1958)**: `@koi/settings` added as a direct CLI dependency. `runtime-factory.ts` calls `loadSettings()` at startup (resolving user, project, local, flag, and policy layers from `cwd` + `homeDir`) and passes the merged `KoiSettings` into `mapSettingsToSourcedRules` to populate the permission backend's rule set. The `koi start --settings <path>` flag maps to the `flag` layer. Policy layer failures (missing or malformed policy file) throw a `PolicyLoadError` and exit with code 2 — fail-closed. `koi start --settings` now also accepts settings via the `flagPath` field for the flag layer. No new TUI surface changes — settings are applied transparently at runtime startup.
+
 - **`@koi/tasks` local_agent lifecycle wired into spawn stack (#1657)**: `spawn.ts` now creates a `TaskRunner` backed by `createLocalAgentLifecycle` whenever the execution stack's `getTaskBoard`/`getStore` getters are present. A `store.watch()` watcher auto-starts any `pending` task with `metadata.kind === "local_agent"` by calling `capturedSpawnFn` (the same `SpawnFn` used by the Spawn tool) with the task's `agentType` and `inputs`. An idempotency guard (`claimedTaskIds: Set<string>`) prevents duplicate starts from re-entrant store writes. On session reset (`onResetSession`), the runner and watcher are torn down and recreated against the fresh board/store pair. On shutdown (`onShutdown`), both are disposed before returning. The runner is only created when all three host keys are present (`getTaskBoard`, `getStore`, `agentId`) — hosts without the execution stack continue to receive only the Spawn tool, unchanged.
 
 - **`@koi/tui` — `PermissionPrompt` width/height fix (#1913)**: modal now has an explicit `width={modalWidth()}` (clamped to `[1, 60]` based on terminal columns) so OpenTUI's `blendCells` doesn't busy-loop. Adds `terminalHeight` prop and `computeMinSafeHeight` to suppress approval keys when the terminal is too narrow or too short to show meaningful context. No CLI surface change — `terminalWidth` and `terminalHeight` are forwarded from `useTerminalDimensions()` already wired in the TUI host.
@@ -30,6 +32,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 - **`@koi/daemon` — AbortSignal plumbing on `WorkerBackend.watch()` (#1865)**: L0 contract extended to `watch(id, signal?: AbortSignal)`. Supervisor creates a per-worker `AbortController`, threads its signal into `backend.watch(...)` on spawn, and aborts on `stop()`/`shutdown()` — backends that stall or drop their watch stream without emitting a terminal event no longer leak the supervisor's watch IIFE. Subprocess + fake backends honor the signal via abort listeners that resolve parked awaits. Hardening (10 review-loop rounds): generation-safe pool entry mutations (`pool.get(id) === entry`), post-await TOCTOU re-checks on every cleanup branch, bounded liveness probe (250ms) in tidy-cleanup, `stop()` defers `activeIds` release until `entry.cleanupSettled` resolves to close the duplicate-spawn race window, fault path skips `resolveExited()` on teardown failure to prevent false-success races against concurrent `stop()`, subprocess prune timer is identity-checked + preserved on abort-before-terminal-drain. No CLI surface change — this is internal supervisor plumbing that hardens behavior under degraded backends.
 - **`@koi/daemon` — worker heartbeat IPC protocol (#1341)**: opt-in via `backendHints.heartbeat: true`; supervisor health snapshot exposed via `supervisor.health()`; missed-heartbeat timeout detection with synthetic-crash event. Heartbeats only detect hangs in subprocess workers today; other backends are unchanged.
 - **Governance violation persistence (#1393)**: when governance is enabled, the CLI auto-wires `@koi/violation-store-sqlite` to `~/.koi/violations.db` (override with `--violation-sqlite=<path>`; pass `--violation-sqlite=""` to disable). A `ComplianceRecorder` from `@koi/governance-defaults` bridges `GovernanceController.onViolation` into `@koi/middleware-audit`'s sink so each violation lands as an `AuditEntry` with `kind: "compliance_event"`; the SQLite `ViolationStore` also persists the full `Violation` for queryable replay. Live-session id resolution: the `onViolation` callback reads the runtime's current session id via a getter closure (not a frozen value captured at wire-time), so post-rotation violations attribute to the live session. Default-path failures (read-only FS, quota) degrade with a stderr warning; explicit `--violation-sqlite` paths fail closed so operators cannot silently lose violations. Idempotent dispose via `store.close()` returns `{ droppedCount }` — non-zero with an explicit path throws on dispose so the host sees durability loss. Audit `schema_version` bumped to 2 to cover the new `compliance_event` kind.
+- **Ternary governance verdict — ask flow (gov-11, #1878)**: `@koi/governance-core`'s `GovernanceVerdict` now supports `{ ok: "ask", prompt, askId, metadata? }` alongside allow/deny. When a governance backend returns an ask, the middleware routes it through the host's `ApprovalHandler` via `TurnContext.requestApproval` — the same primitive the TUI already binds via `permission-bridge`, so governance asks render through the existing `PermissionPrompt` (`[y]` allow, `[n]` deny, `[a]` always-allow session, `[!]` always-allow permanent) with no CLI wiring changes. Missing handler fails closed to `PERMISSION`. Handler timeouts (`approvalTimeoutMs`, default 60s) throw `ApprovalTimeoutError` re-thrown as `KoiRuntimeError("TIMEOUT", ...)` — distinct from `PERMISSION` so hosts can tell "user took too long" apart from "user said no". Duplicate asks within a session (same `askId`) coalesce to one handler call; the session's `AbortController` aborts every pending ask on `onSessionEnd` so a stale modal can't outlive the turn. `always-allow` permanent fires a one-shot `onApprovalPersist(PersistentGrant)` callback (with a deterministic `grantKey` from `computeGrantKey(kind, payload)`) — hosts wire this into `@koi/approvals-store-sqlite` if persistent storage is desired. The CLI does not auto-wire `onApprovalPersist` today; plain `always-allow` currently behaves as session-scoped until a host opts in.
+- **Unified run/session reset boundary semantics (#1939)**: `@koi/governance-defaults`' `createInMemoryController` now handles `run_reset` (renamed from `iteration_reset`) and `session_reset` with `boundaryTimestamp` clamping — the `duration_ms` sensor anchors to the caller-supplied timestamp so the full run budget is available from the first model call. Deprecated `iteration_reset` is still accepted for backward compat. The CLI-visible effect: `/governance` duration readings now start from when `run()` was called, not when the first turn was consumed.
 - **`koi tui --max-spend` + `/governance` view (gov-9, #1876)**: new `--max-spend <usd>` flag wires `cost_usd` setpoint into the in-memory governance controller via `@koi/governance-defaults`. CLI builds a `createPatternBackend({ rules: [], defaultDeny: false })` (synthetic `default-allow` descriptor exposed through `backend.describeRules()` until the manifest YAML loader lands in #1877) and shares ONE controller between the engine-extension reconcile path (pre-turn) and the `@koi/governance-core` middleware (post-turn) — the middleware is wired with `observerOnly: true` so its `controller.record(...)` sites are no-ops, preventing the double-recording that would otherwise inflate `turn_count` / `tool_*` / token totals. `governanceBridge` mirrors controller state into the TUI store after every settled turn (cost-bridge feed boundary), so `/governance` and the status chip refresh on token-producing AND zero-token paths (early policy denies, tool-only turns, degraded paths). Cost pricing validates ALL `KOI_FALLBACK_MODEL` chain entries against the active pricing table at construction time — fail-fast on missing pricing or per-token rate mismatch — and fallback model names are only threaded into runtime config when `modelRouterMiddleware` is actually instantiated. New `KoiRuntimeHandle.governanceRules: readonly RuleDescriptor[]` and `KoiRuntimeConfig.fallbackModelNames?: readonly string[]` surfaces.
 - **`koi tui` stdin resurrection after Bun `internalRead` EOF (#1915)**: Bun 1.3.10's native stdin reader destroys `process.stdin` when its underlying ReadableStream reader returns `done:true`. Koi's two-write-to-same-file turn flow deterministically triggers this; after the second turn the stream is dead and the TUI wedges (keys silently drop). `@koi/tui`'s `createTuiApp` now wires `wireStdinResurrection` after the renderer mount: on a stdin `'close'` event while the TUI is still live, it opens a fresh `/dev/tty` read fd, wraps it in a `tty.ReadStream`, calls `setRawMode(true)`, and rebinds OpenTUI's private `stdinListener` plus `renderer.stdin` to the new stream. Teardown is a `disarm` / `close` split — `disarm()` (remove watcher) runs before `renderer.destroy()` so a stdin `close` during destroy can't race into a fresh `/dev/tty`; `close()` (full teardown) runs after so OpenTUI can complete its own cleanup on the live replacement first. `stop()` is fail-closed per its documented "Never rejects — stop() catches all errors internally" contract: an unexpected `renderer.destroy()` error is logged via `console.error` and swallowed, so the host's post-stop cleanup (resume hint, run report, batcher dispose, filesystem backend close) runs regardless. No CLI callsite changes — the host's existing `await appHandle.stop()` flow works as-is.
 - **`koi tui` artifact tools (#1651, Plans 1-6)**: the TUI opens a single `@koi/artifacts` `ArtifactStore` per process at `~/.koi/artifacts/` (sqlite meta + `@koi/blob-cas` blob dir) and attaches four agent-facing tools (`artifact_save`, `artifact_get`, `artifact_list`, `artifact_delete`) via a new `extraProviders` hook on `createKoiRuntime`. All tool calls bind to the active TUI session id; advisory-lock contention (concurrent TUIs hitting the same path) logs `artifact store disabled — ArtifactStore already open by another process` to stderr and continues without artifact tools rather than aborting the session. Both interim + final teardown paths close the store so the lock releases cleanly on normal quit, SIGUSR1, or dispose failure. Plan 3 (#1920) added an optional `ArtifactStoreConfig.policy: LifecyclePolicy` (TTL + quota + per-name retention) plus operator-facing `sweepArtifacts()` / `scavengeOrphanBlobs()` on the store. Plan 4 (#1921) moved blob-ready repair and Phase B tombstone drain off the open path onto a background worker (default 30s cadence) with an `onEvent` hook that surfaces `repair_exhausted` / `transient_repair_error` for operator observability; the close-barrier awaits the current iteration so TUI quit never orphans in-flight repair work. Plan 5 (#1922) + Plan 6 (#1923) expose `ArtifactStoreConfig.blobStore` so hosts can substitute an S3 backend (via `createS3BlobStore` from `@koi/artifacts-s3`) for shared multi-host persistence — the TUI keeps using the local filesystem CAS at `~/.koi/artifacts/` by default; see [Backend selection](../L2/artifacts.md#backend-selection) for when to switch. The CLI does not currently pass a policy or custom `onEvent`, so default behavior is unchanged until a host opts in. See `docs/L2/artifacts.md` for the lifecycle contract.
@@ -242,6 +246,37 @@ koi tui
 | `KOI_FEEDBACK_LOOP_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-feedback-loop` in observe-only mode (`feedbackLoop: {}`). The middleware intercepts every model response and tool call: validators run against each response chunk sequence (pass-through by default), transport errors are classified and counted against per-category retry budgets, and tool health is tracked via a ring-buffer quarantine tracker. No validators are registered by default so the middleware is a no-op fence until validators or a custom `FeedbackLoopConfig` are supplied at the programmatic API level. |
 | `KOI_WEB_CACHE_TTL_MS` | no | `60000` | Response-cache TTL (milliseconds) for `web_fetch` GET/HEAD without custom headers and without a request body. `@koi/tools-web` ships disabled (TTL `0`) as an L2 opt-in contract; the CLI opts in with a 60 s default so back-to-back identical fetches within a session return `cached: true` instead of re-issuing live network calls. Only `200` responses without revalidation directives (`no-store`, `no-cache`, `private`, `must-revalidate`, `max-age=0`, `Pragma: no-cache`, past `Expires`, or any `Vary`) are stored; each entry's lifetime is capped to origin's remaining freshness (`max-age − Age`). `web_fetch` also accepts a per-call `noCache: true` that forces a live fetch with no stale fallback (evicts the entry; failures leave the key empty). Accepts any non-negative integer; `0` disables the cache for a run. **Malformed values (non-integer, negative, non-numeric) fail startup loudly** — an operator fixing staleness during an incident deserves an obvious error, not a silent 60 s stale-read window. (#1903) |
 
+**Manifest `audit:` block (#1994):** Audit sinks can be configured in `koi.yaml` so projects enable
+audit logging without shell/init plumbing. All paths anchor to the manifest directory (not the shell
+cwd). Parent directories must exist — audit sinks never silently create them.
+
+`koi tui` only: manifest audit paths are gated behind `KOI_ALLOW_MANIFEST_FILE_SINKS=1` (same gate
+as zone-B `manifest.middleware` file sinks) because `koi.yaml` is repo-authored content that can
+open files at arbitrary host paths. Without the gate, `koi tui` refuses to start if `audit:` is
+present and any manifest-configured sink is not covered by its `KOI_AUDIT_*` env var — this
+prevents silently disabling audit logging when the operator clearly expressed audit intent in the
+manifest. To opt out of manifest-driven sinks without setting the gate, either remove the `audit:`
+block or set the corresponding `KOI_AUDIT_*` env vars. `koi start` rejects manifests that contain `audit:`.
+
+```yaml
+audit:
+  ndjson: ./logs/session.audit.ndjson      # fallback for KOI_AUDIT_NDJSON; relative to manifest dir
+  sqlite: ./logs/session.audit.db          # field accepted but NOT usable as manifest path (see below)
+  violations: ./logs/session.violations.db # field accepted but NOT usable as manifest path (see below)
+```
+
+**`manifest.audit` is a declarative intent marker, not a path provider.** The paths listed under `audit:` are validated for correct format but are NOT used as actual sink paths — atomic containment against ancestor-symlink swaps requires `openat`-style APIs not available in Node.js/Bun. All actual sink paths must come from `KOI_AUDIT_*` env vars. The value of `manifest.audit` is fail-closed enforcement: if any sink is declared in the manifest but its corresponding env var is absent (and the gate is off), `koi tui` refuses to start rather than silently dropping audit records.
+
+Paths must use audit-only filename suffixes (`.audit.ndjson`, `.audit.db`, `.violations.db`) and
+must be relative — no `..` traversal, no symlinks. Paths are validated at load time so typos are caught early, even though the values are not used as open targets.
+
+Precedence and override rules:
+- `KOI_AUDIT_NDJSON` set (even to `""`) → authoritative; `""` explicitly disables (does not fall back to manifest)
+- `KOI_AUDIT_NDJSON` absent + `manifest.audit.ndjson` present → startup refuses (gate off) or refuses (gate on, path not usable)
+- Same for `KOI_AUDIT_SQLITE` / `audit.sqlite`
+- `KOI_AUDIT_VIOLATIONS` set (even to `""`) → authoritative; `""` falls through to `~/.koi/violations.db` default
+- `KOI_AUDIT_VIOLATIONS` absent + `manifest.audit.violations` present → startup refuses unless governance disabled
+
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
 so the key is not forwarded to OpenRouter.
@@ -397,12 +432,21 @@ The new pipeline:
      transitional compatibility shim until `#1622` ships three-state permissions with an
      `ask-user` verdict
 6. `parse-unavailable` (init timeout, over-length, panic) → fail-closed hard-deny,
-   NEVER falls through
+   NEVER falls through. The over-length guard runs ahead of the byte-level prefilter
+   so its cap (`MAX_COMMAND_LENGTH`) dictates the rejection category instead of
+   `@koi/bash-security`'s lower regex-DoS cap leaking a generic `length:N` pattern
+   through this pipeline (PR #2040).
 
 End-to-end behaviour is unchanged for common commands (`git status`, `ls -la`, `echo hi`,
 `ls | head -3`) — they flow through the AST walker as `kind: "simple"`. Commands with
 `$VAR`, `$(cmd)`, loops, or `&&` with standalone assignments fall through to the regex
 classifier, preserving current behaviour.
+
+The path validator fail-closes when `workspaceRoot` (or any caller-supplied base dir) is
+missing, is not a real directory, or is a dangling symlink, preventing TOCTOU bypass
+where an attacker could race a symlink into place between validation and the subsequent
+`spawn` (PR #2040). CLI wiring passes `process.cwd()` — already realpath-resolved — so
+the invariant is satisfied by default.
 
 Codex adversarial review of the PR surfaced six real bugs (2 P1 security bypasses + 4
 P2 defects in walker escape handling, init-retry semantics, matcher regex flags, and
@@ -731,6 +775,10 @@ The resolver matches tool ids case-insensitively (`"Bash"` or `"bash"`). Non-bas
 
 `tui-command.ts` holds the `createAuthNotificationHandler` result in a `tuiAuthNotificationHandler` local and wires it into `resolveFileSystemAsync`. Both teardown paths (interim reconfigure and final shutdown) call `tuiAuthNotificationHandler?.dispose()` **synchronously before** awaiting `resolvedFilesystemBackend?.dispose?.()`. The filesystem `dispose()` unsubscribes then awaits, and that yield can still run a pre-queued notification microtask; disposing the handler first gates late `channel.send()` callbacks and cancels watchdog timers so stale heartbeats can't hit the channel after shutdown. See `docs/L2/fs-nexus.md` for the per-provider state machine, epoch/attempt tokens, and 45 s watchdog.
 
+## OAuthChannel unification (issue #1982)
+
+`createAuthNotificationHandler` now takes `(oauthChannel: OAuthChannel, channel: ChannelAdapter)` — structured `auth_required`/`auth_complete` events route to the `OAuthChannel` while `auth_progress` keepalives go to the text `channel`. The `nav:mcp-auth` handler in `tui-command.ts` now receives a structured `TriggerMcpServerAuthResult` (`"success-live" | "success-reload-required" | "failed"`) from `triggerMcpServerAuth` instead of a plain boolean, and renders server-specific outcome messages accordingly. Plugin OAuth server loading is blocked at plugin load time with `PLUGIN_OAUTH_BLOCKED` error when Koi is not running as localhost, preventing uncontrolled redirect URI registration from remote plugins.
+
 ## #1638 — Activity-based stream timeouts (dev-only env hook)
 
 Integrates `@koi/checkpoint` (stopBlocked fail-closed rollback + quarantine on rollback/persist double-failure) and `@koi/loop` (budget treats synthesized metrics as unmetered) with the runtime-level activity-timeout wrapper.
@@ -750,3 +798,11 @@ CLI surface changes:
 See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`activity.idle.warning`, `activity.terminated.idle`, `activity.terminated.wall_clock`), and the `done.output.metadata` contract consumers can read.
 
 <!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
+
+---
+
+## @koi/tasks RemoteAgentTask lifecycle hardening (#2043)
+
+`@koi/tasks` received correctness fixes for the `remote_agent` lifecycle. No CLI
+surface changes. See `docs/L2/tasks.md` for the detailed change log and
+`docs/L3/runtime.md` for the runtime-boundary impact summary.

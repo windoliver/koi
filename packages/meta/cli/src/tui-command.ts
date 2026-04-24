@@ -96,15 +96,16 @@ import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
 import { createGovernanceBridge, type GovernanceBridge } from "./governance-bridge.js";
-import { loadManifestConfig } from "./manifest.js";
+import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.js";
 import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
+import { createOAuthChannel } from "./oauth-channel.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { loadPolicyFile } from "./policy-file.js";
 import { resolveManifestPath } from "./resolve-manifest-path.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
-import { resumeSessionFromJsonl } from "./shared-wiring.js";
+import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 import {
@@ -1067,6 +1068,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
+  let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
+  let manifestLoadPath: string | undefined; // tracks which path was loaded, for TOCTOU revalidation
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
   // stacks, plugins, filesystem scope, or governance of the original session.
@@ -1095,8 +1098,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
+    // manifest.audit is a declarative intent marker — actual sink paths always
+    // come from KOI_AUDIT_* env vars. Skip strict audit path validation when
+    // the env var for a given sink is already set (the manifest path is never
+    // opened, so stale paths must not block startup). Always skip for
+    // --no-governance (violations sink disabled at runtime anyway).
     const manifestResult = await loadManifestConfig(resolvedManifestPath, {
       allowOAuthSchemes: true,
+      skipAuditValidation: false,
+      skipAuditValidationFor: {
+        ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+        sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+        violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+      },
     });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
@@ -1109,6 +1123,65 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
     manifestGovernance = manifestResult.value.governance;
     manifestSupervision = manifestResult.value.supervision;
+    manifestAudit = manifestResult.value.audit;
+    manifestLoadPath = resolvedManifestPath;
+
+    // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
+    // manifest.audit paths are never used as actual file paths (atomic containment
+    // requires openat-style APIs unavailable in Node.js/Bun). The manifest block
+    // is a declarative intent marker: its presence requires matching KOI_AUDIT_*
+    // env vars so the operator explicitly controls every declared sink.
+    // KOI_AUDIT_NDJSON="" / KOI_AUDIT_SQLITE="" / KOI_AUDIT_VIOLATIONS="" are
+    // authoritative overrides that satisfy the intent check — undefined is the failure
+    // case. For violations, empty string is passed through to the runtime which treats
+    // length===0 as explicit disable (no fallback to ~/.koi/violations.db).
+    //
+    // Two cases based on block shape:
+    //   Malformed — require all three env vars (can't infer per-sink intent)
+    //   Well-formed — per-sink check; violations skipped when governance disabled
+    if (manifestAudit !== undefined) {
+      if (manifestAudit.malformed === true) {
+        const allCoveredByEnv =
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+        if (!allCoveredByEnv) {
+          const missingVars = [
+            process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+            process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+            flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+              ? "KOI_AUDIT_VIOLATIONS"
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" + ");
+          process.stderr.write(
+            "koi tui: manifest.audit has an unrecognized format (unknown fields or invalid value) — " +
+              "refusing to start because audit intent cannot be determined. " +
+              `Fix the manifest, or set ${missingVars} to control all active audit sinks, or remove the audit: block.\n`,
+          );
+          process.exit(1);
+        }
+      } else {
+        const ndjsonExposed =
+          manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+        const sqliteExposed =
+          manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+        const violationsExposed =
+          flags.governance.enabled &&
+          manifestAudit.violations !== undefined &&
+          process.env.KOI_AUDIT_VIOLATIONS === undefined;
+        if (ndjsonExposed || sqliteExposed || violationsExposed) {
+          process.stderr.write(
+            "koi tui: manifest.audit declares audit sinks but the matching KOI_AUDIT_* env vars are absent — " +
+              "refusing to start to prevent silently dropping declared audit logging. " +
+              "Set each matching KOI_AUDIT_* env var (empty string disables that sink — for violations, empty string prevents the ~/.koi/violations.db fallback), " +
+              "or remove the sink key from manifest.audit.\n",
+          );
+          process.exit(1);
+        }
+      }
+    }
 
     if (manifestResult.value.filesystem !== undefined) {
       // Store the full config for async resolution before runtime assembly.
@@ -1314,6 +1387,90 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
   }
 
+  // Persist manifest provenance so future resumes can enforce audit intent
+  // against the original session's manifest, not the cwd at resume time.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    await writeSessionMeta(SESSIONS_DIR, String(tuiSessionId), {
+      manifestPath: resolvedManifestPath,
+    });
+  }
+
+  // Resume-path audit intent enforcement using stored session provenance.
+  // The check mirrors the new-session path but is keyed on the manifest that
+  // actually governed the original session, not a cwd rediscovery.
+  if (flags.resume !== undefined) {
+    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(tuiSessionId));
+    if (resumeMeta.manifestPath !== undefined) {
+      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+        allowOAuthSchemes: true,
+        skipAuditValidation: false,
+        skipAuditValidationFor: {
+          ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+          sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+          violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+        },
+      });
+      if (!resumeAuditResult.ok) {
+        const allCoveredByEnv =
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+        if (!allCoveredByEnv) {
+          process.stderr.write(
+            "koi tui: original session manifest cannot be parsed — " +
+              "refusing to resume because audit intent cannot be verified. " +
+              "Set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS to cover all " +
+              "audit sinks, or pass --manifest to re-specify the manifest explicitly.\n",
+          );
+          process.exit(1);
+        }
+      } else if (resumeAuditResult.value.audit !== undefined) {
+        const resumeAudit = resumeAuditResult.value.audit;
+        if (resumeAudit.malformed === true) {
+          const allCoveredByEnv =
+            process.env.KOI_AUDIT_NDJSON !== undefined &&
+            process.env.KOI_AUDIT_SQLITE !== undefined &&
+            (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+          if (!allCoveredByEnv) {
+            const missingVars = [
+              process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+              process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+              flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+                ? "KOI_AUDIT_VIOLATIONS"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" + ");
+            process.stderr.write(
+              "koi tui: original session manifest.audit has an unrecognized format — " +
+                "refusing to resume because audit intent cannot be determined. " +
+                `Fix the manifest, or set ${missingVars} to cover all active audit sinks.\n`,
+            );
+            process.exit(1);
+          }
+        } else {
+          const ndjsonExposed =
+            resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+          const sqliteExposed =
+            resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+          const violationsExposed =
+            flags.governance.enabled &&
+            resumeAudit.violations !== undefined &&
+            process.env.KOI_AUDIT_VIOLATIONS === undefined;
+          if (ndjsonExposed || sqliteExposed || violationsExposed) {
+            process.stderr.write(
+              "koi tui: original session manifest.audit declares audit sinks but the matching " +
+                "KOI_AUDIT_* env vars are absent — refusing to resume to prevent silently " +
+                "dropping declared audit logging. Set each matching KOI_AUDIT_* env var " +
+                "(empty string disables that sink), or pass --manifest and re-specify the manifest.\n",
+            );
+            process.exit(1);
+          }
+        }
+      }
+    }
+  }
+
   // Populate the status-bar session chip immediately so users see the
   // same identifier the post-quit resume hint will emit, instead of the
   // placeholder "no session" label. Provider was destructured from
@@ -1406,11 +1563,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     send: async (message): Promise<void> => {
       const textBlock = message.content.find((b) => b.kind === "text");
       if (textBlock !== undefined && textBlock.kind === "text") {
-        store.dispatch({
-          kind: "add_user_message",
-          id: `auth-notice-${Date.now()}`,
-          blocks: [{ kind: "text", text: textBlock.text }],
-        });
+        // Route OAuth notices through add_info (non-transcript) so auth URLs
+        // and completion text never enter conversation state replayed to the model.
+        store.dispatch({ kind: "add_info", message: textBlock.text });
       }
     },
     onMessage: () => () => {},
@@ -1427,12 +1582,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
   let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
 
-  // Keep a reference so teardown can call .dispose() — cancels pending
-  // auth_progress watchdog timers and gates late channel.send() callbacks,
-  // preventing stale auth notifications from running after shutdown.
+  // Single OAuthChannel — shared by nexus and MCP. Created unconditionally so
+  // nav:mcp-auth and MCP onAuthNeeded always have a renderer regardless of whether
+  // a nexus filesystem is configured. submitAuthCode is forwarded to the nexus
+  // transport once it resolves (no-op for non-nexus sessions).
+  // let: nexusSubmitAuthCode populated after transport resolves
+  let nexusSubmitAuthCode: ((url: string, correlationId?: string) => void) | undefined;
+  const tuiOAuthChannel: import("@koi/core").OAuthChannel = createOAuthChannel({
+    channel: tuiChannelForAuth,
+    onSubmit: (url, correlationId) => nexusSubmitAuthCode?.(url, correlationId),
+  });
   let tuiAuthNotificationHandler: ReturnType<typeof createAuthNotificationHandler> | undefined;
   if (manifestFilesystemConfig !== undefined) {
-    tuiAuthNotificationHandler = createAuthNotificationHandler(tuiChannelForAuth);
+    tuiAuthNotificationHandler = createAuthNotificationHandler(tuiOAuthChannel, tuiChannelForAuth);
     const fsResolved = await resolveFileSystemAsync(
       manifestFilesystemConfig,
       process.cwd(),
@@ -1447,6 +1609,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Wire inbound OAuth interceptor when a local-bridge transport is available.
     if (fsResolved.transport !== undefined) {
       const transport = fsResolved.transport;
+      nexusSubmitAuthCode = (url, id) => transport.submitAuthCode(url, id);
       // Subscribe extra: track correlationId from auth_required (mode: "remote").
       transport.subscribe((n) => {
         if (n.method === "auth_required" && n.params.mode === "remote") {
@@ -1682,6 +1845,52 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // createCostBridge` below, before the original `let` at line 2055 is reached.
   let governanceBridge: GovernanceBridge | undefined;
 
+  // Re-validate manifest-derived audit paths immediately before use to close
+  // the TOCTOU window between manifest load and sink creation. Without this
+  // a symlink swap after parseManifestAudit() could redirect writes outside
+  // the manifest tree despite the load-time containment checks.
+  // Only manifest paths are re-checked here — env-var paths are operator-supplied
+  // and already outside the repo-authored trust boundary.
+  if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1") {
+    // Skip violations revalidation when governance is disabled: runtime-factory
+    // ignores violationSqlitePath entirely in that case, so a post-load FS
+    // change to that path cannot cause a real security issue and must not abort
+    // the incident-mitigation path that --no-governance enables.
+    const governanceEnabledForRevalidation = flags.governance.enabled;
+    const auditPathsToRevalidate: ReadonlyArray<readonly [string | undefined, string]> = [
+      [
+        (process.env.KOI_AUDIT_NDJSON ?? "").length === 0 ? manifestAudit.ndjson : undefined,
+        "manifest.audit.ndjson",
+      ],
+      [
+        (process.env.KOI_AUDIT_SQLITE ?? "").length === 0 ? manifestAudit.sqlite : undefined,
+        "manifest.audit.sqlite",
+      ],
+      [
+        governanceEnabledForRevalidation && (process.env.KOI_AUDIT_VIOLATIONS ?? "").length === 0
+          ? manifestAudit.violations
+          : undefined,
+        "manifest.audit.violations",
+      ],
+    ];
+    for (const [resolvedPath, label] of auditPathsToRevalidate) {
+      if (resolvedPath === undefined) continue;
+      // Re-validate using full canonical containment (realpathSync on parent +
+      // lstat on file), not just a direct lstat on the terminal parent.
+      // This catches ancestor symlink swaps (e.g. logs/ → /external) that a
+      // plain lstatSync(dirname(path)) misses by following the intermediate link.
+      // manifestLoadPath is always defined here because manifestAudit is only
+      // set when resolvedManifestPath !== undefined (same code block above).
+      const violation = revalidateAuditPathContainment(resolvedPath, manifestLoadPath ?? "");
+      if (violation !== undefined) {
+        process.stderr.write(
+          `koi tui: ${label}: filesystem changed after manifest validation — aborting: ${violation}.\n`,
+        );
+        process.exit(1);
+      }
+    }
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1718,6 +1927,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Loop mode is a self-correcting execution, not a conversation.
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
     skillsRuntime: skillRuntime,
+    mcpOAuthChannel: tuiOAuthChannel,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
       ? { maxSpendUsd: governance.maxSpendUsd }
@@ -1828,17 +2038,60 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // initOtelSdk() registers a global TracerProvider so middleware-otel's
     // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
     ...(otelEnabled ? { otel: true as const } : {}),
-    // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
-    // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
-    // every model/tool call is recorded as a hash-chained NDJSON entry.
-    ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
-      ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+    // KOI_AUDIT_NDJSON=<path> opts into security-grade audit logging.
+    // Manifest audit.ndjson is the fallback when the env var is absent.
+    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 (repo-authored path).
+    // Precedence: env var (present, even "") → manifest (gate required) → off.
+    // Setting the env var to "" is an explicit disable that wins over manifest.
+    ...(process.env.KOI_AUDIT_NDJSON !== undefined
+      ? process.env.KOI_AUDIT_NDJSON !== ""
+        ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+        : {}
+      : manifestAudit?.ndjson !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { auditNdjsonPath: manifestAudit.ndjson }
+        : {}),
+    // KOI_AUDIT_SQLITE=<path> opts into SQLite-backed audit logging.
+    // Same precedence/disable semantics as KOI_AUDIT_NDJSON above.
+    ...(process.env.KOI_AUDIT_SQLITE !== undefined
+      ? process.env.KOI_AUDIT_SQLITE !== ""
+        ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+        : {}
+      : manifestAudit?.sqlite !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { auditSqlitePath: manifestAudit.sqlite }
+        : {}),
+    // KOI_AUDIT_VIOLATIONS=<path> overrides the violations DB path.
+    // Manifest audit.violations is the fallback when the env var is absent.
+    // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 for manifest paths.
+    // Precedence: env var (present, even "") → manifest (gate required) → default (~/.koi/violations.db).
+    // Setting the env var to "" passes the empty string through — runtime-factory treats
+    // length===0 as an explicit disable (no violations DB), preventing the default fallback.
+    ...(process.env.KOI_AUDIT_VIOLATIONS !== undefined
+      ? { violationSqlitePath: process.env.KOI_AUDIT_VIOLATIONS }
+      : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { violationSqlitePath: manifestAudit.violations }
+        : {}),
+    // Per-sink manifest provenance: only pass the source path for sinks that
+    // actually came from the manifest (not from operator env vars). This lets
+    // createKoiRuntime run a final containment check immediately before each
+    // manifest-derived sink open, without incorrectly revalidating env-var
+    // sourced paths against the manifest directory.
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+    process.env.KOI_AUDIT_NDJSON === undefined &&
+    manifestAudit?.ndjson !== undefined &&
+    manifestLoadPath !== undefined
+      ? { manifestNdjsonSourcePath: manifestLoadPath }
       : {}),
-    // KOI_AUDIT_SQLITE=<absolute path> opts into SQLite-backed audit
-    // logging. Wires @koi/middleware-audit + @koi/audit-sink-sqlite so
-    // every model/tool call is recorded in a WAL-mode SQLite database.
-    ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
-      ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+    process.env.KOI_AUDIT_SQLITE === undefined &&
+    manifestAudit?.sqlite !== undefined &&
+    manifestLoadPath !== undefined
+      ? { manifestSqliteSourcePath: manifestLoadPath }
+      : {}),
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" &&
+    process.env.KOI_AUDIT_VIOLATIONS === undefined &&
+    manifestAudit?.violations !== undefined &&
+    manifestLoadPath !== undefined
+      ? { manifestViolationsSourcePath: manifestLoadPath }
       : {}),
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.
@@ -4246,121 +4499,52 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         case "nav:mcp-auth":
           // Triggered by pressing Enter on a needs-auth server in /mcp view.
-          // args = server name. Runs `koi mcp auth <name>` inline.
+          // Delegates to runtimeHandle.triggerMcpServerAuth which reuses the live
+          // OAuthAuthProvider wired into the existing MCP connection, ensuring
+          // in-memory token caches are cleared before startAuthFlow() is called.
+          // Pass the raw qualified name (e.g. "plugin:foo") so triggerMcpServerAuth
+          // can route to the correct source map and avoid cross-source collisions.
           void (async (): Promise<void> => {
             const rawName = args.trim();
             if (rawName === "") return;
-            // Strip source prefix. Plugin-backed servers can't auth here.
-            if (rawName.startsWith("plugin:")) {
-              store.dispatch({
-                kind: "add_error",
-                code: "MCP_AUTH",
-                message:
-                  `Cannot authenticate "${rawName}" from /mcp — plugin-provided ` +
-                  `servers must be authenticated through the plugin's own flow.`,
-              });
-              return;
-            }
-            const serverName = rawName.startsWith("user:") ? rawName.slice(5) : rawName;
-            // Per-server guard — prevent overlapping OAuth flows from
-            // double-pressing Enter (callback port conflict, timeout race).
-            if (mcpAuthInFlight.has(serverName)) return;
-            mcpAuthInFlight.add(serverName);
+            // Use the qualified name as the dedup key so user:foo and plugin:foo
+            // can be authed concurrently without blocking each other.
+            if (mcpAuthInFlight.has(rawName)) return;
+            mcpAuthInFlight.add(rawName);
             try {
-              const { loadMcpJsonFile } = await import("@koi/mcp");
-              const { join } = await import("node:path");
-              const { homedir } = await import("node:os");
-              const { createSecureStorage } = await import("@koi/secure-storage");
-              const { createCliOAuthRuntime } = await import("./commands/mcp-oauth-runtime.js");
-              const { createOAuthAuthProvider } = await import("@koi/mcp");
-
-              // Find the server config — same precedence as runtime
-              const authProjectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
-              const authConfigs: Awaited<ReturnType<typeof loadMcpJsonFile>>[] = [];
-              if (authProjectResult.ok) {
-                authConfigs.push(authProjectResult);
-              } else if (authProjectResult.error.code === "NOT_FOUND") {
-                const authHomeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
-                if (authHomeResult.ok) authConfigs.push(authHomeResult);
-              }
-              let authMatched = false;
-              for (const r of authConfigs) {
-                if (!r.ok) continue;
-                const server = r.value.servers.find((s) => s.name === serverName);
-                if (server === undefined || server.kind !== "http" || server.oauth === undefined)
-                  continue;
-                authMatched = true;
-
-                const storage = createSecureStorage();
-                const runtime = createCliOAuthRuntime();
-                const provider = createOAuthAuthProvider({
-                  serverName: server.name,
-                  serverUrl: server.url,
-                  oauthConfig: server.oauth,
-                  runtime,
-                  storage,
+              if (runtimeHandle === null) return;
+              const authOutcome = await runtimeHandle.triggerMcpServerAuth(
+                rawName,
+                tuiOAuthChannel,
+              );
+              if (authOutcome === "success-reload-required") {
+                // Auth succeeded in storage but this session's resolver doesn't
+                // know about the server — guide the user to reload rather than
+                // showing a failure or a stale status refresh.
+                store.dispatch({
+                  kind: "add_info",
+                  message: `Authorization for "${rawName}" succeeded. Reload the session to connect.`,
                 });
-
-                const success = await provider.startAuthFlow();
-                if (success) {
-                  // Refresh /mcp view with updated Keychain state
-                  const { computeServerKey: computeKey } = await import("@koi/mcp");
-                  const freshStorage = createSecureStorage();
-                  const refreshed: import("@koi/tui").McpServerInfo[] = await Promise.all(
-                    r.value.servers.map(async (s2) => {
-                      const hasOAuth2 = s2.kind === "http" && s2.oauth !== undefined;
-                      if (!hasOAuth2) {
-                        return {
-                          name: s2.name,
-                          status: "connected" as const,
-                          toolCount: 0,
-                          detail: `${s2.kind} transport`,
-                        };
-                      }
-                      const key2 = computeKey(s2.name, s2.kind === "http" ? s2.url : "");
-                      const raw2 = await freshStorage.get(key2);
-                      // The server we just authed shows "auth-pending-restart"
-                      // because the live runtime still has the pseudo-tool only
-                      // — tools won't load until the next TUI launch.
-                      if (s2.name === serverName && raw2 !== undefined) {
-                        return {
-                          name: s2.name,
-                          status: "auth-pending-restart" as const,
-                          toolCount: 0,
-                          detail: "Tokens stored. Restart the TUI to load tools.",
-                        };
-                      }
-                      return {
-                        name: s2.name,
-                        status: (raw2 !== undefined ? "connected" : "needs-auth") as
-                          | "connected"
-                          | "needs-auth",
-                        toolCount: 0,
-                        detail: raw2 !== undefined ? "Authenticated" : undefined,
-                      };
-                    }),
-                  );
-                  store.dispatch({ kind: "set_mcp_status", servers: refreshed });
-                } else {
-                  store.dispatch({
-                    kind: "add_error",
-                    code: "MCP_AUTH",
-                    message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
-                  });
-                }
-                break;
-              }
-              if (!authMatched) {
-                // Server is listed in /mcp (e.g. plugin-provided) but we
-                // don't have a file-config entry to auth against. Fail
-                // loudly instead of silently doing nothing.
+              } else if (authOutcome === "success-live") {
+                // Tokens are now stored. getMcpStatus() calls resolver.discover()
+                // → listTools() → ensureConnected(): from auth-needed state,
+                // ensureConnected() calls connect() which fetches fresh tokens
+                // from storage — the live connection reconnects without restart.
+                const live = await runtimeHandle.getMcpStatus();
+                store.dispatch({
+                  kind: "set_mcp_status",
+                  servers: live.map((l) => ({
+                    name: l.name,
+                    status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage,
+                  })),
+                });
+              } else {
                 store.dispatch({
                   kind: "add_error",
                   code: "MCP_AUTH",
-                  message:
-                    `Cannot authenticate "${serverName}" from this view — ` +
-                    `server is not in .mcp.json (likely plugin-provided). ` +
-                    `Plugin-backed OAuth must be completed through the plugin's own flow.`,
+                  message: `Authentication failed for "${rawName}". Try: koi mcp auth ${rawName}`,
                 });
               }
             } catch (e: unknown) {
@@ -4370,7 +4554,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 message: `Auth error: ${e instanceof Error ? e.message : String(e)}`,
               });
             } finally {
-              mcpAuthInFlight.delete(serverName);
+              mcpAuthInFlight.delete(rawName);
             }
           })();
           break;
