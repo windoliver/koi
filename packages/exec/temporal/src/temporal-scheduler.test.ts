@@ -12,6 +12,8 @@ function makeMockClient(wfOverrides?: Partial<TemporalClientLike["workflow"]>): 
       start: mock(async () => ({ workflowId: "wf-1" })),
       signal: mock(async () => undefined),
       cancel: mock(async () => undefined),
+      // Required: completion tracking. Default never resolves (task stays running) unless overridden.
+      getResult: mock(async () => new Promise<unknown>(() => {})),
       ...wfOverrides,
     },
     schedule: {
@@ -159,7 +161,7 @@ describe("submit", () => {
 
   test("tracks workflow completion via getResult", async () => {
     let resolveResult!: (value: unknown) => void;
-    const resultPromise = new Promise((resolve) => {
+    const resultPromise = new Promise<unknown>((resolve) => {
       resolveResult = resolve;
     });
     const client = makeMockClient({ getResult: mock(async () => resultPromise) });
@@ -173,7 +175,7 @@ describe("submit", () => {
 
   test("tracks workflow failure via getResult", async () => {
     let rejectResult!: (error: unknown) => void;
-    const resultPromise = new Promise((_, reject) => {
+    const resultPromise = new Promise<unknown>((_, reject) => {
       rejectResult = reject;
     });
     const client = makeMockClient({ getResult: mock(async () => resultPromise) });
@@ -443,6 +445,39 @@ describe("schedule / unschedule", () => {
     const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
     const opts = createArgs?.[1] as { action: { args: readonly unknown[] } };
     expect(opts.action.args[0]).toEqual(twoMessages);
+  });
+
+  test("schedule() rejects timeoutMs to prevent false guarantee of enforcement", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", { timeoutMs: 5000 }),
+    ).rejects.toThrow("does not enforce timeoutMs");
+  });
+
+  test("schedule() rejects maxRetries to prevent false guarantee of enforcement", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", { maxRetries: 3 }),
+    ).rejects.toThrow("does not enforce");
+  });
+
+  test("spawn schedule strips non-serializable EngineInput fields", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const inputWithHandlers = {
+      kind: "text",
+      text: "hello",
+      callHandlers: { modelCall: () => Promise.resolve({}) },
+      signal: new AbortController().signal,
+    } as unknown as EngineInput;
+    await scheduler.schedule("0 0 * * *", AGENT_ID, inputWithHandlers, "spawn");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
+    const spawnArgs = opts.action.args[0];
+    const payload = spawnArgs?.input as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("callHandlers");
+    expect(payload).not.toHaveProperty("signal");
+    expect(payload).toEqual({ kind: "text", text: "hello" });
   });
 
   test("spawn schedule omits sessionId so each run uses its own execution id", async () => {

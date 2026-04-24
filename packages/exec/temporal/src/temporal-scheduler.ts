@@ -14,7 +14,7 @@ import type {
   TaskRunRecord,
   TaskScheduler,
 } from "@koi/core";
-import type { IncomingMessage, ScheduledSpawnArgs } from "./types.js";
+import type { IncomingMessage, ScheduledInputPayload, ScheduledSpawnArgs } from "./types.js";
 
 function toTaskId(id: string): TaskId {
   return id as TaskId;
@@ -61,6 +61,19 @@ function mapEngineInputToMessages(input: EngineInput, taskId: string): readonly 
   }
 }
 
+// Strip non-serializable EngineInputBase fields (callHandlers, AbortSignal) before
+// embedding the input into a Temporal schedule definition.
+function mapEngineInputToScheduledPayload(input: EngineInput): ScheduledInputPayload {
+  switch (input.kind) {
+    case "text":
+      return { kind: "text", text: input.text };
+    case "messages":
+      return { kind: "messages", messages: input.messages };
+    case "resume":
+      return { kind: "resume", state: input.state };
+  }
+}
+
 export interface TemporalClientLike {
   readonly workflow: {
     readonly start: (
@@ -73,7 +86,7 @@ export interface TemporalClientLike {
       ...args: readonly unknown[]
     ) => Promise<void>;
     readonly cancel: (workflowId: string) => Promise<void>;
-    readonly getResult?: ((workflowId: string) => Promise<unknown>) | undefined;
+    readonly getResult: (workflowId: string) => Promise<unknown>;
   };
   readonly schedule: {
     readonly create: (scheduleId: string, options: Record<string, unknown>) => Promise<unknown>;
@@ -246,7 +259,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       const runningTask: ScheduledTask = { ...task, status: "running" };
       tasks.set(id, runningTask);
 
-      if (config.client.workflow.getResult !== undefined && mode === "spawn") {
+      if (mode === "spawn") {
         const startedAt = now;
         void config.client.workflow.getResult(id).then(
           (result: unknown) => {
@@ -315,6 +328,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       mode: "spawn" | "dispatch",
       options?: TaskOptions & { readonly timezone?: string | undefined },
     ): Promise<ScheduleId> {
+      // timeoutMs and maxRetries cannot be plumbed into Temporal schedule policies —
+      // accepting them silently would give callers a false guarantee of enforcement.
+      if (options?.timeoutMs !== undefined || options?.maxRetries !== undefined) {
+        throw new Error(
+          "schedule() does not enforce timeoutMs or maxRetries via Temporal schedule policies. " +
+            "Remove these options or implement them inside the target workflow.",
+        );
+      }
+
       const id = toScheduleId(`sched:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`);
 
       const schedule: CronSchedule = {
@@ -328,20 +350,23 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         paused: false,
       };
 
-      // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the raw
-      //   EngineInput template (not pre-baked IncomingMessages) so the workflow
-      //   generates fresh message IDs and timestamps at each execution, preventing
-      //   duplicate idempotency keys across recurring firings.
-      // dispatch: "scheduled-input" signal with raw EngineInput so the workflow
+      // Strip non-serializable EngineInput fields (callHandlers, AbortSignal) before
+      // passing the payload into Temporal's durable schedule store.
+      const scheduledPayload = mapEngineInputToScheduledPayload(input);
+
+      // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the
+      //   serialized payload; the workflow generates fresh IncomingMessage IDs and
+      //   timestamps at each execution to prevent duplicate idempotency keys.
+      // dispatch: "scheduled-input" signal with serialized payload so the workflow
       //   signal handler creates a fresh IncomingMessage envelope per firing.
-      //   A distinct signal name avoids conflating one-shot direct signals ("message")
+      //   Distinct signal name prevents conflating one-shot direct signals ("message")
       //   with recurring schedule-fired inputs.
       let scheduleAction: Record<string, unknown>;
       if (mode === "spawn") {
         const spawnArgs: ScheduledSpawnArgs = {
           agentId,
           stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-          input,
+          input: scheduledPayload,
         };
         scheduleAction = {
           type: "startWorkflow",
@@ -354,7 +379,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           type: "sendSignal",
           workflowId: String(agentId),
           signalName: "scheduled-input",
-          args: [input],
+          args: [scheduledPayload],
         };
       }
 

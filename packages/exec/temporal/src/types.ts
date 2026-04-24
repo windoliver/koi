@@ -1,4 +1,4 @@
-import type { AgentId, ContentBlock, EngineInput, SessionId } from "@koi/core";
+import type { AgentId, ContentBlock, InboundMessage, SessionId } from "@koi/core";
 
 export interface AgentWorkflowConfig {
   readonly agentId: AgentId;
@@ -8,15 +8,26 @@ export interface AgentWorkflowConfig {
   readonly initialMessages?: readonly IncomingMessage[] | undefined;
 }
 
+// Serializable-safe payload derived from EngineInput for embedding in Temporal schedules.
+// Non-durable fields from EngineInputBase (callHandlers, signal) are stripped at the
+// scheduling boundary before the payload crosses into Temporal.
+export type ScheduledInputPayload =
+  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "messages"; readonly messages: readonly InboundMessage[] }
+  | {
+      readonly kind: "resume";
+      readonly state: { readonly engineId: string; readonly data: unknown };
+    };
+
 // Args for workflows started by a cron schedule (spawn mode).
 // sessionId is intentionally absent — each Temporal execution provides its own
 // workflow execution ID as the session namespace, preventing cross-run state collision.
-// input is the raw EngineInput template; the workflow materializes fresh IncomingMessage
-// IDs and timestamps at each firing to prevent duplicate idempotency keys across runs.
+// input is a serializable ScheduledInputPayload (not a raw EngineInput) — callHandlers
+// and AbortSignal are stripped before schedule creation.
 export interface ScheduledSpawnArgs {
   readonly agentId: AgentId;
   readonly stateRefs: AgentStateRefs;
-  readonly input: EngineInput;
+  readonly input: ScheduledInputPayload;
 }
 
 export interface AgentStateRefs {
