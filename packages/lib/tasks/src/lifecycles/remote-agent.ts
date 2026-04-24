@@ -149,6 +149,11 @@ export function createRemoteAgentLifecycle(
   // Using attemptId (not taskId) prevents concurrent retries sharing the same
   // taskId from overwriting each other's pipe entry.
   const activePipes = new Map<string, Promise<void>>();
+  // Cancel notification functions, keyed by attemptId. Registered at start()
+  // and invoked by lifecycle.stop() after pipe drain so failures land in output
+  // while the task is still accessible via readOutput() (runner delays
+  // activeTasks.delete until after lifecycle.stop() returns).
+  const cancelNotifiers = new Map<string, () => Promise<void>>();
 
   return {
     kind: "remote_agent",
@@ -180,28 +185,40 @@ export function createRemoteAgentLifecycle(
         }
       };
 
-      // Best-effort cancel notification: fire-and-forget POST to cancelEndpoint on every
-      // post-accept terminal failure so the remote server can stop the associated work.
+      // Cancel notification: bounded POST to cancelEndpoint on every post-accept terminal
+      // failure. Returns a Promise so callers can await it before snapshotting terminal
+      // output — this ensures cancel-delivery failures land in the output before
+      // handleNaturalExit snapshots and persists the terminal record.
       // attemptId (not taskId) is the per-start discriminator — the board reuses taskId
       // across retries, so a delayed cancel from an earlier attempt could otherwise
       // target a later retry of the same task.
-      const notifyCancel = (): void => {
-        if (cancelEndpoint !== undefined) {
-          fetchImpl(cancelEndpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...lifecycleHeaders },
-            body: JSON.stringify({ correlationId: config.correlationId, taskId, attemptId }),
-            redirect: "error",
-          }).then(
-            () => undefined,
-            (err: unknown) => {
-              // Cancel delivery failed — surface in output so operators can
-              // detect runaway remote work rather than getting a silent leak.
-              const msg = err instanceof Error ? err.message : String(err);
-              output.write(`\n[cancel-notify: failed to reach cancelEndpoint — ${msg}]\n`);
-            },
-          );
-        }
+      const notifyCancel = (): Promise<void> => {
+        if (cancelEndpoint === undefined) return Promise.resolve();
+        // Independent timer ensures the race resolves within 500ms even if fetchImpl
+        // ignores the AbortSignal (e.g. a non-compliant test double or wrapper).
+        const giveUp = new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const delivery = fetchImpl(cancelEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...lifecycleHeaders },
+          body: JSON.stringify({ correlationId: config.correlationId, taskId, attemptId }),
+          redirect: "error",
+          signal: AbortSignal.timeout(500),
+        }).then(
+          (response: Response) => {
+            if (!response.ok) {
+              // Non-2xx: cancel endpoint rejected the request — surface so operators
+              // can detect runaway remote work rather than getting false confidence.
+              output.write(`\n[cancel-notify: failed — HTTP ${String(response.status)}]\n`);
+            }
+          },
+          (err: unknown) => {
+            // Cancel delivery failed — surface in output so operators can
+            // detect runaway remote work rather than getting a silent leak.
+            const msg = err instanceof Error ? err.message : String(err);
+            output.write(`\n[cancel-notify: failed to reach cancelEndpoint — ${msg}]\n`);
+          },
+        );
+        return Promise.race([delivery, giveUp]);
       };
 
       // let justified: pipeRef used by timeout handler; assigned immediately below.
@@ -222,9 +239,10 @@ export function createRemoteAgentLifecycle(
             // Snapshot before the call: if the done frame beat the abort in
             // the narrow race, terminal is already set and emitTerminal no-ops.
             const timedOutBeforeDone = !terminal;
+            // Await cancel delivery before emitTerminal so any failure note
+            // lands in output before handleNaturalExit snapshots the terminal record.
+            if (timedOutBeforeDone) await notifyCancel();
             emitTerminal(1, "\n[timed out: remote agent may still be running]\n");
-            // Only send cancel if we actually committed to timeout failure.
-            if (timedOutBeforeDone) notifyCancel();
             // Force-remove from activePipes even if the pipe never settled.
             activePipes.delete(attemptId);
           })();
@@ -252,7 +270,7 @@ export function createRemoteAgentLifecycle(
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           const message = err instanceof Error ? err.message : String(err);
           // POST body may have been sent before the network error — remote state unknown.
-          notifyCancel();
+          await notifyCancel();
           emitTerminal(1, `\n[cleanup-incomplete: ${message}]\n`);
           return;
         }
@@ -261,7 +279,7 @@ export function createRemoteAgentLifecycle(
           if (controller.signal.aborted) return;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           // 5xx can be returned after work started; treat all non-OK as cleanup-incomplete.
-          notifyCancel();
+          await notifyCancel();
           emitTerminal(1, `\n[cleanup-incomplete: HTTP ${String(response.status)}]\n`);
           return;
         }
@@ -270,7 +288,7 @@ export function createRemoteAgentLifecycle(
         if (response.body === null) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           if (!stopped && !timedOut) {
-            notifyCancel();
+            await notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — response body is null]\n");
           }
           return;
@@ -296,10 +314,12 @@ export function createRemoteAgentLifecycle(
         };
 
         // Returns true if the pipe should stop reading (error or done frame).
-        const processLineBytes = (lineBytes: Uint8Array): boolean => {
+        // Async so it can await notifyCancel() before emitTerminal(), ensuring
+        // cancel-delivery failures land in output before the terminal snapshot.
+        const processLineBytes = async (lineBytes: Uint8Array): Promise<boolean> => {
           if (lineBytes.byteLength > MAX_FRAME_BYTES) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            notifyCancel();
+            await notifyCancel();
             emitTerminal(
               1,
               "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
@@ -314,7 +334,7 @@ export function createRemoteAgentLifecycle(
             trimmed = new TextDecoder("utf-8", { fatal: true }).decode(lineBytes).trim();
           } catch {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            notifyCancel();
+            await notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — invalid UTF-8]\n");
             teardownTransport();
             return true;
@@ -325,14 +345,14 @@ export function createRemoteAgentLifecycle(
             frame = JSON.parse(trimmed);
           } catch {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            notifyCancel();
+            await notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — malformed frame]\n");
             teardownTransport();
             return true;
           }
           if (!isRemoteAgentFrame(frame)) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            notifyCancel();
+            await notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — unknown frame kind]\n");
             teardownTransport();
             return true;
@@ -373,7 +393,7 @@ export function createRemoteAgentLifecycle(
             // single oversized read() call from forcing a large allocation.
             if (value.byteLength > MAX_CHUNK_BYTES) {
               if (timeoutId !== undefined) clearTimeout(timeoutId);
-              notifyCancel();
+              await notifyCancel();
               emitTerminal(
                 1,
                 "\n[cleanup-incomplete: protocol error — transport chunk exceeds maximum size]\n",
@@ -395,7 +415,7 @@ export function createRemoteAgentLifecycle(
                 const tailLen = value.byteLength - valStart;
                 if (rawBuf.byteLength + tailLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
-                  notifyCancel();
+                  await notifyCancel();
                   emitTerminal(
                     1,
                     "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
@@ -423,7 +443,7 @@ export function createRemoteAgentLifecycle(
                 // large; check lineLen before materializing the merged buffer.
                 if (lineLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
-                  notifyCancel();
+                  await notifyCancel();
                   emitTerminal(
                     1,
                     "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
@@ -441,7 +461,7 @@ export function createRemoteAgentLifecycle(
               valStart = nlPos + 1;
 
               if (stopped) break outer;
-              if (processLineBytes(lineBytes)) {
+              if (await processLineBytes(lineBytes)) {
                 pipeError = true;
                 break outer;
               }
@@ -453,7 +473,7 @@ export function createRemoteAgentLifecycle(
             const message = err instanceof Error ? err.message : String(err);
             // POST was accepted so the remote agent has started; transport loss
             // leaves it in an unknown state — signal cleanup-incomplete.
-            notifyCancel();
+            await notifyCancel();
             emitTerminal(1, `\n[cleanup-incomplete: ${message}]\n`);
           }
           pipeError = true;
@@ -467,13 +487,13 @@ export function createRemoteAgentLifecycle(
         // Do NOT skip this on timeout: these bytes were received before the abort,
         // so a done frame in rawBuf is pre-deadline data and should win.
         if (!stopped && !receivedDone && rawBuf.byteLength > 0) {
-          processLineBytes(rawBuf);
+          await processLineBytes(rawBuf);
         }
 
         // Stream closed without a done frame — remote state unknown; cleanup-incomplete.
         if (!stopped && !timedOut && !receivedDone) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          notifyCancel();
+          await notifyCancel();
           emitTerminal(
             1,
             "\n[cleanup-incomplete: protocol error — stream closed without done frame]\n",
@@ -481,10 +501,18 @@ export function createRemoteAgentLifecycle(
         }
       })().finally(() => {
         activePipes.delete(attemptId);
+        // Clean up cancelNotifier only for natural exits (timeout/done/error).
+        // When stopped=true, lifecycle.stop() is responsible for invoking and
+        // deleting it — if we delete here, stop() arrives after .finally() and
+        // gets undefined from cancelNotifiers.get(), silently skipping cancel delivery.
+        if (!stopped) cancelNotifiers.delete(attemptId);
       });
 
       pipeRef = pipe;
       activePipes.set(attemptId, pipe);
+      // Register cancel notifier so lifecycle.stop() can await it after pipe
+      // drain while the task is still accessible via readOutput().
+      cancelNotifiers.set(attemptId, notifyCancel);
 
       const cancel = (): void => {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -497,8 +525,8 @@ export function createRemoteAgentLifecycle(
           terminal = true;
           output.write("\n[cleanup-incomplete: remote agent may still be running]\n");
         }
-        // Best-effort cancel notification — same as timeout path.
-        notifyCancel();
+        // Cancel notification is deferred to lifecycle.stop() so it can be awaited
+        // while the task is still accessible via readOutput() in the runner.
       };
 
       return {
@@ -521,6 +549,14 @@ export function createRemoteAgentLifecycle(
       // Without this, a hung connection would retain the attemptId in activePipes
       // after the board has already transitioned to a terminal state.
       activePipes.delete(state.attemptId);
+      // Await cancel notification after pipe drain. The runner delays
+      // activeTasks.delete until after lifecycle.stop() returns, so any
+      // failure note written here is still visible via readOutput().
+      const notify = cancelNotifiers.get(state.attemptId);
+      if (notify !== undefined) {
+        cancelNotifiers.delete(state.attemptId);
+        await notify();
+      }
     },
   };
 }

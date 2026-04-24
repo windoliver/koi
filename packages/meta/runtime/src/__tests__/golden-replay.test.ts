@@ -2515,7 +2515,7 @@ describe("Golden: @koi/hooks agent hooks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// L2 golden queries: @koi/tasks (2 queries)
+// L2 golden queries: @koi/tasks (4 queries, includes remote_agent lifecycle)
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/tasks", () => {
@@ -2675,6 +2675,90 @@ describe("Golden: @koi/tasks", () => {
       expect(isRuntimeTask(state)).toBe(true);
       expect(state.kind).toBe("local_shell");
     }
+  });
+
+  test("createRemoteAgentLifecycle SSRF guard rejects non-HTTPS non-loopback endpoint", async () => {
+    const { createRemoteAgentLifecycle } = await import("@koi/tasks");
+
+    // Plain HTTP to non-loopback must throw at construction time.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "http://remote.example.com/api/agent" }),
+    ).toThrow(/must use HTTPS/);
+
+    // HTTPS is accepted.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "https://remote.example.com/api/agent" }),
+    ).not.toThrow();
+
+    // Loopback HTTP is accepted for local dev.
+    expect(() =>
+      createRemoteAgentLifecycle({ endpoint: "http://localhost:3000/api/agent" }),
+    ).not.toThrow();
+
+    // cancelEndpoint is also validated.
+    expect(() =>
+      createRemoteAgentLifecycle({
+        endpoint: "https://remote.example.com/api/agent",
+        cancelEndpoint: "http://external.example.com/cancel",
+      }),
+    ).toThrow(/must use HTTPS/);
+  });
+
+  test("createRemoteAgentLifecycle start/stop round-trip via mock fetch produces RemoteAgentTask", async () => {
+    const { createRemoteAgentLifecycle, createOutputStream, isRemoteAgentTask } = await import(
+      "@koi/tasks"
+    );
+    const { taskItemId } = await import("@koi/core");
+
+    // Mock fetch: returns a minimal NDJSON stream with a done frame.
+    const encoder = new TextEncoder();
+    const doneFrame = encoder.encode('{"kind":"done","exitCode":0}\n');
+    const mockFetch = async (
+      _url: string | URL | Request,
+      _init?: RequestInit,
+    ): Promise<Response> =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(doneFrame);
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+
+    const lifecycle = createRemoteAgentLifecycle({
+      endpoint: "https://agent.example.com/run",
+      fetch: mockFetch,
+    });
+
+    expect(lifecycle.kind).toBe("remote_agent");
+
+    const output = createOutputStream();
+    let exitCode: number | undefined;
+    const state = await lifecycle.start(taskItemId("task_1"), output, {
+      correlationId: "corr-abc",
+      payload: { prompt: "hello" },
+      onExit: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(isRemoteAgentTask(state)).toBe(true);
+    expect(state.kind).toBe("remote_agent");
+    expect(state.correlationId).toBe("corr-abc");
+    expect(typeof state.attemptId).toBe("string");
+    expect(state.attemptId).toHaveLength(36); // UUID format
+
+    // Wait briefly for the pipe to process the done frame.
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+    expect(exitCode).toBe(0);
+    const chunks = output.read(0);
+    expect(chunks.some((c) => c.content.includes("exit code: 0"))).toBe(true);
+
+    // stop() is a no-op after natural exit — should not throw.
+    await lifecycle.stop(state);
   });
 });
 

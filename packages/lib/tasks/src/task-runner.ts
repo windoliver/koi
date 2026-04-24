@@ -70,8 +70,12 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
   // Tracks exit codes for tasks that exited before activeTasks.set() completed
   // (race condition: fast-exiting processes can fire onExit during lifecycle.start())
   const pendingExits = new Map<TaskItemId, number>();
-  // Tasks intentionally stopped — prevents stale pendingExits entries
-  const stoppedTaskIds = new Set<TaskItemId>();
+  // Tasks intentionally stopped — keyed by "taskId:attemptId" for attempt-scoped lifecycles
+  // (plain "taskId" for non-attempt-scoped) to prevent retry B inheriting stop-suppression from A.
+  const stoppedTaskIds = new Set<string>();
+  // Tasks currently mid-stop (lifecycle.stop() in flight). handleStoreEvent skips these
+  // to prevent double-stop while the task is still in activeTasks during cleanup.
+  const stoppingTaskIds = new Set<TaskItemId>();
   // IDs the runner itself is currently writing to the board. When store.watch
   // fires a terminal event for an ID in this set, handleStoreEvent skips the
   // cleanup because the runner already triggered the transition itself. This
@@ -105,6 +109,10 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     // withSelfWrite), so no external reconciliation is needed.
     if (selfWriteIds.has(item.id)) return;
     if (!activeTasks.has(item.id)) return;
+    // Mid-stop skip: stop() is in progress and has the task in lifecycle.stop();
+    // activeTasks still contains the task for readOutput() access. Do not
+    // double-stop — stop() will call lifecycle.stop() and remove it when done.
+    if (stoppingTaskIds.has(item.id)) return;
 
     // Task was terminated externally — clean up runtime state
     const task = activeTasks.get(item.id);
@@ -173,9 +181,13 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     code: number,
     exitAttemptId?: string,
   ): Promise<void> {
-    // Ignore exits from intentionally stopped tasks
-    if (stoppedTaskIds.has(taskId)) {
-      stoppedTaskIds.delete(taskId);
+    // Ignore exits from intentionally stopped tasks.
+    // Use attempt-scoped key when available so a stop() on attempt A does not
+    // suppress a natural exit from retry B (which shares the same taskId).
+    const stopKey =
+      exitAttemptId !== undefined ? `${String(taskId)}:${exitAttemptId}` : String(taskId);
+    if (stoppedTaskIds.has(stopKey)) {
+      stoppedTaskIds.delete(stopKey);
       return;
     }
     const task = activeTasks.get(taskId);
@@ -353,29 +365,38 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
       };
     }
 
-    // Mark as intentionally stopped so post-kill onExit doesn't stash a pendingExit
-    stoppedTaskIds.add(taskId);
-    // Remove from activeTasks BEFORE board transition to prevent the store
-    // watcher from triggering a duplicate lifecycle.stop() call.
-    activeTasks.delete(taskId);
+    // Mark as intentionally stopped. Use attempt-scoped key so stop() on attempt A
+    // does not suppress a natural exit from retry B on the same taskId.
+    const stopKey =
+      "attemptId" in task && typeof task.attemptId === "string"
+        ? `${String(taskId)}:${task.attemptId}`
+        : String(taskId);
+    stoppedTaskIds.add(stopKey);
 
-    // Transition board — if this fails, the task is already removed from
-    // active tracking (watcher won't double-stop) but we report the error.
-    // withSelfWrite adds the belt-and-suspenders skip-set so any future
-    // callers that forget to activeTasks.delete first are still safe.
-    const boardResult = await withSelfWrite(taskId, () => board.killOwnedTask(taskId, agentId));
+    // Mark mid-stop so handleStoreEvent skips this task while lifecycle.stop()
+    // is in progress. The task remains in activeTasks so cancel-notify failure
+    // messages written during stop() are still visible via readOutput().
+    stoppingTaskIds.add(taskId);
 
-    // Clean up runtime state regardless of board result.
-    // Wrap in try/catch so lifecycle failures don't reject the promise.
+    // Run lifecycle.stop() before removing from activeTasks so any output
+    // written during stop (e.g., cancel-notify failure) is readable via readOutput().
     const lifecycle = registry.get(task.kind);
     if (lifecycle !== undefined) {
       try {
         await lifecycle.stop(task);
       } catch {
-        // Lifecycle cleanup failed — task is already removed from tracking
-        // and board transition is done; swallow to honor the Result contract.
+        // Lifecycle cleanup failed — swallow to honor the Result contract.
       }
     }
+
+    // Remove from activeTasks and clear the stopping guard before board
+    // transition. After this point, handleStoreEvent can see the task is gone.
+    activeTasks.delete(taskId);
+    stoppingTaskIds.delete(taskId);
+
+    // Transition board — withSelfWrite skips the resulting store event so
+    // handleStoreEvent doesn't attempt redundant cleanup.
+    const boardResult = await withSelfWrite(taskId, () => board.killOwnedTask(taskId, agentId));
 
     if (!boardResult.ok) return boardResult;
     return { ok: true, value: undefined };
