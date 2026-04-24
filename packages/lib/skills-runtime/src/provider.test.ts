@@ -654,4 +654,40 @@ describe("createProgressiveSkillProvider", () => {
     const components = await reload();
     expect(components.size).toBe(0);
   });
+
+  test("reload() is transactional — restores previous pins and throws on discovery failure", async () => {
+    // Simulate a failing base runtime so reload() encounters a discovery error.
+    await writeSkill(userRoot, "stable-skill", "Session-start body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+
+    let failNextLoadAll = false;
+    const faultyBase = {
+      ...base,
+      loadAll: async () => {
+        if (failNextLoadAll) {
+          const err: import("@koi/core").KoiError = {
+            code: "INTERNAL",
+            message: "simulated discovery failure",
+            retryable: false,
+            context: {},
+          };
+          return { ok: false as const, error: err };
+        }
+        return base.loadAll();
+      },
+    };
+
+    const { provider, pinnedRuntime, reload } = createProgressiveSkillProvider(faultyBase);
+
+    // Session start — pins session-start body.
+    await provider.attach({} as Agent);
+
+    // Next reload will fail.
+    failNextLoadAll = true;
+    await expect(reload()).rejects.toThrow("simulated discovery failure");
+
+    // After failed reload, pins are restored — Skill tool still serves session-start body.
+    const loaded = await pinnedRuntime.load("stable-skill");
+    expect(loaded.ok && loaded.value.body).toContain("Session-start body.");
+  });
 });

@@ -84,13 +84,19 @@ export function createProgressiveSkillProvider(base: SkillsRuntime): {
   readonly provider: ComponentProvider;
   readonly pinnedRuntime: PinnedRuntime;
   /**
+   * Atomically refreshes the skill catalog for the new session.
+   *
    * Clears pinned bodies, refreshes the base runtime's discovery cache, and
    * re-runs loadAll() to pick up added/removed/edited skills. Returns a fresh
-   * typed SkillComponent map.
+   * typed SkillComponent map on success.
    *
-   * Externals registered via registerExternal() are preserved across the reset
-   * (replayed automatically). Newly discovered filesystem skills are included
-   * in the fresh map.
+   * Throws if discovery fails (`loadAll` returns `{ ok: false }`). The previous
+   * pinned snapshot is restored in that case so the Skill tool still serves
+   * session-start bodies — preserving a consistent catalog rather than leaving
+   * the runtime in a half-cleared state.
+   *
+   * Individual skill validation failures (skipped entries) do not cause a throw
+   * — they are reported in `AttachResult.skipped` and the partial catalog is valid.
    */
   readonly reload: () => Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>>;
 } {
@@ -102,11 +108,28 @@ export function createProgressiveSkillProvider(base: SkillsRuntime): {
   };
 
   const reload = async (): Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>> => {
-    // clearPinnedBodies() calls base.invalidate(name) for each pinned key
-    // so base LRU entries are evicted before the fresh loadAll() below.
+    // Snapshot current pins before clearing — used to restore on failure.
+    const snapshot = pinnedRuntime.snapshotPins();
     pinnedRuntime.clearPinnedBodies();
-    const result = await attachProgressive(pinnedRuntime);
-    return result.components as ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>;
+    try {
+      const result = await attachProgressive(pinnedRuntime);
+      // Discovery failure surfaces as a skipped "__discover__" entry with empty components.
+      // Throw so callers preserve their previous liveSkillComponents instead of replacing
+      // it with an empty catalog while the pinned runtime is in a cleared state.
+      const discoveryFailed = result.skipped.some((s) => s.name === "__discover__");
+      if (discoveryFailed) {
+        const reason =
+          result.skipped.find((s) => s.name === "__discover__")?.reason ?? "skill discovery failed";
+        throw new Error(reason);
+      }
+      return result.components as ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>;
+    } catch (err: unknown) {
+      // Restore the previous pinned snapshot: load() will serve session-start bodies
+      // even though the base LRU/discovery cache was cleared. Non-pinned skills fall
+      // through to disk, but those were never advertised so no catalog desync occurs.
+      pinnedRuntime.restorePins(snapshot);
+      throw err;
+    }
   };
 
   return { provider, pinnedRuntime, reload };
@@ -254,6 +277,19 @@ export type PinnedRuntime = SkillsRuntime & {
    * the full invalidation so currently-connected MCP skills survive the reset.
    */
   readonly clearPinnedBodies: () => void;
+  /**
+   * Returns a shallow copy of the current pinned bodies map for transactional
+   * use. Use with `restorePins()` to implement atomic reload: snapshot before
+   * clearing, restore on failure.
+   */
+  readonly snapshotPins: () => ReadonlyMap<string, Result<SkillDefinition, KoiError>>;
+  /**
+   * Replaces the current pinned bodies with the provided snapshot. Used after a
+   * failed reload to restore the previous session-start state. Pinned entries take
+   * priority in `load()`, so restoring the snapshot means the Skill tool still
+   * returns session-start bodies even after a failed base invalidation.
+   */
+  readonly restorePins: (snapshot: ReadonlyMap<string, Result<SkillDefinition, KoiError>>) => void;
 };
 
 export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRuntime {
@@ -319,6 +355,13 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
         base.registerExternal(lastExternalSkills);
       }
       pinned.clear();
+    },
+    snapshotPins: (): ReadonlyMap<string, Result<SkillDefinition, KoiError>> => new Map(pinned),
+    restorePins: (snapshot: ReadonlyMap<string, Result<SkillDefinition, KoiError>>): void => {
+      pinned.clear();
+      for (const [name, entry] of snapshot) {
+        pinned.set(name, entry);
+      }
     },
   };
 }

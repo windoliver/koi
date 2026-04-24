@@ -2826,8 +2826,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
           }
           liveSkillComponents = merged;
-        } catch {
-          /* skill refresh failure is non-fatal — stale inventory is better than crash */
+        } catch (skillReloadErr) {
+          // reload() throws on discovery failure and restores the previous pinned snapshot.
+          // Preserve the current liveSkillComponents — the catalog stays consistent with
+          // what the Skill tool can serve. Log so the operator is aware.
+          console.error(
+            "[skills] Session reset: skill catalog refresh failed, retaining previous inventory.",
+            skillReloadErr,
+          );
         }
         // /clear is silent on success — a freshly cleared conversation
         // is its own acknowledgement. The cumulative runtime-wide spend
