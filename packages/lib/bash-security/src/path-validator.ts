@@ -51,15 +51,46 @@ const NON_PRINTABLE = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 type CanonicalResult =
   | { readonly ok: true; readonly path: string }
   | { readonly ok: false; readonly reason: "dangling-symlink"; readonly component: string }
-  | { readonly ok: false; readonly reason: "missing-intermediate"; readonly component: string };
+  | { readonly ok: false; readonly reason: "missing-intermediate"; readonly component: string }
+  | { readonly ok: false; readonly reason: "not-a-directory"; readonly component: string };
 
 /**
- * Canonicalize a path by realpath'ing the existing prefix. At most the final
- * path component (the leaf) may be missing; every intermediate directory must
- * already exist. Reject dangling symlinks and any form where more than the
- * leaf is absent, because a concurrent actor could materialize an attacker-
- * controlled symlink at a missing intermediate between validation and the
- * subsequent open/write.
+ * Canonicalize the base directory. The base MUST exist as a real directory
+ * (not a symlink, not a file) and realpath cleanly. Without this, a caller
+ * that passes a not-yet-existing base can pass containment checks against a
+ * base that an attacker later materializes as a symlink outside the intended
+ * scope.
+ */
+function canonicalizeBase(p: string): CanonicalResult {
+  const absolute = resolve(p);
+  try {
+    const real = realpathSync(absolute);
+    const stat = lstatSync(real);
+    if (!stat.isDirectory()) {
+      return { ok: false, reason: "not-a-directory", component: absolute };
+    }
+    return { ok: true, path: real };
+  } catch {
+    // Base missing or dangling. Distinguish: if base is a symlink whose
+    // target does not exist, that is a dangling-symlink rejection.
+    try {
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) {
+        return { ok: false, reason: "dangling-symlink", component: absolute };
+      }
+    } catch {
+      // Base does not exist at all.
+    }
+    return { ok: false, reason: "missing-intermediate", component: absolute };
+  }
+}
+
+/**
+ * Canonicalize a candidate path. At most the final path component (the leaf)
+ * may be missing; every intermediate directory must already exist. Reject
+ * dangling symlinks and any form where more than the leaf is absent, because
+ * a concurrent actor could materialize an attacker-controlled symlink at a
+ * missing intermediate between validation and the subsequent open/write.
  *
  * Why we walk at all instead of just realpath: `realpathSync` throws ENOENT
  * when any component is missing, including the leaf. Callers legitimately
@@ -156,19 +187,22 @@ export function validatePath(path: string, baseDir?: string): ClassificationResu
   //    symlinks are rejected: both represent races where an attacker could
   //    materialize an outside target between validation and use.
   if (baseDir !== undefined) {
-    const baseResult = canonicalizeExisting(baseDir);
-    const pathResult = canonicalizeExisting(resolve(baseDir, path));
+    const baseResult = canonicalizeBase(baseDir);
     if (!baseResult.ok) {
+      const baseReason =
+        baseResult.reason === "dangling-symlink"
+          ? `Base directory contains a dangling symlink (${baseResult.component})`
+          : baseResult.reason === "not-a-directory"
+            ? `Base directory is not a directory (${baseResult.component})`
+            : `Base directory is missing (${baseResult.component}); it must exist as a real directory before validation`;
       return {
         ok: false,
-        reason:
-          baseResult.reason === "dangling-symlink"
-            ? `Base directory contains a dangling symlink (${baseResult.component})`
-            : `Base directory is missing (${baseResult.component}); it must exist before validation`,
+        reason: baseReason,
         pattern: baseResult.component,
         category: "path-traversal",
       };
     }
+    const pathResult = canonicalizeExisting(resolve(baseResult.path, path));
     if (!pathResult.ok) {
       return {
         ok: false,

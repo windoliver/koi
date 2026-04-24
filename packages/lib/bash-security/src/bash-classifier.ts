@@ -221,9 +221,14 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
  * System-path target alternation shared by rm/chmod destructive patterns.
  * Linux, macOS, and common top-level directories. `/tmp` is intentionally
  * omitted so workspace-scoped operations stay allowed.
+ *
+ * Alternatives (after path-simplification in simplifyPathTokens):
+ *   - `/` followed by end/space/star or a system top-level name
+ *   - `~` end/space/`/` — so `~`, `~ `, `~/`, `~/.ssh` all match
+ *   - `$HOME` / `${HOME}` references
  */
 const SYSTEM_PATH_TARGETS =
-  "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s)|\\$(?:\\{HOME\\}|HOME\\b)";
+  "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s|\\/)|\\$(?:\\{HOME\\}|HOME\\b)";
 
 /** Bounded wildcard span — caps backtrack state to prevent regex-DoS. */
 const B = "[^\\n#]{0,512}";
@@ -231,6 +236,24 @@ const B = "[^\\n#]{0,512}";
 // Anchor to start-of-string or whitespace so `dist/*`, `foo/etc`, etc. don't
 // trip the `/<sys-dir>` alternatives embedded mid-token.
 const SYSTEM_PATH_REGEX = new RegExp(`(?:^|\\s)(?:${SYSTEM_PATH_TARGETS})`);
+
+/**
+ * Normalize path-like fragments so bash-equivalent forms collapse to a shape
+ * SYSTEM_PATH_REGEX can match. Bash resolves `/./etc`, `//etc`, and
+ * `/./././etc` all to `/etc`, so an attacker cannot hide a system target
+ * behind redundant `.` or `/` segments.
+ */
+function simplifyPathTokens(cmd: string): string {
+  // Collapse runs of `/` and `/./` sequences. Repeat until fixed-point, bounded
+  // to a handful of iterations so adversarial input cannot loop.
+  let out = cmd;
+  for (let iter = 0; iter < 8; iter++) {
+    const next = out.replace(/\/(?:\.\/)+/g, "/").replace(/\/\/+/g, "/");
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
 
 /**
  * rm with BOTH a recursive-flag and a force-flag (in any order, grouped or
@@ -244,7 +267,8 @@ function checkDestructiveRm(cmd: string): ClassificationResult {
   const hasRecursive = /(?:\s-[a-zA-Z]*[rR][a-zA-Z]*|\s--recursive\b)/.test(cmd);
   const hasForce = /(?:\s-[a-zA-Z]*[fF][a-zA-Z]*|\s--force\b)/.test(cmd);
   if (!hasRecursive || !hasForce) return { ok: true };
-  if (!SYSTEM_PATH_REGEX.test(cmd)) return { ok: true };
+  const simplified = simplifyPathTokens(cmd);
+  if (!SYSTEM_PATH_REGEX.test(simplified)) return { ok: true };
   return {
     ok: false,
     reason: "rm -rf targeting the root, a system directory, or the home directory is unrecoverable",
@@ -258,7 +282,8 @@ function checkDestructiveChmod(cmd: string): ClassificationResult {
   const hasRecursive = /(?:\s-[a-zA-Z]*R[a-zA-Z]*|\s--recursive\b)/.test(cmd);
   const has777 = /\b[0-7]*777[0-7]*\b/.test(cmd);
   if (!hasRecursive || !has777) return { ok: true };
-  if (!SYSTEM_PATH_REGEX.test(cmd)) return { ok: true };
+  const simplified = simplifyPathTokens(cmd);
+  if (!SYSTEM_PATH_REGEX.test(simplified)) return { ok: true };
   return {
     ok: false,
     reason: "chmod -R 777 on the root or a system directory is a catastrophic permission change",
@@ -333,13 +358,19 @@ function extractGitSubcommand(cmd: string): GitInvocation | null {
  *   - `alias.<name>` redefines `<name>` to any command ("push --force", "!sh").
  *   - `include.path` / `includeIf.*.path` loads an external config file that
  *     can itself define aliases, yielding the same bypass one level removed.
- * Both must be rejected in every channel git reads (`-c`, `--config`,
- * `--config-env`, and the `GIT_CONFIG_*` env series).
+ *
+ * Matching is case-insensitive because git normalizes config keys internally:
+ * `ALIAS.PU` is equivalent to `alias.pu`.
+ *
+ * Rejected in every channel git reads: `-c`, `--config`, `--config-env`, the
+ * `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*` env series, and
+ * `GIT_CONFIG_PARAMETERS`.
  */
 function isDangerousConfigKey(key: string): boolean {
-  if (key.startsWith("alias.")) return true;
-  if (key === "include.path") return true;
-  if (/^includeIf\..*\.path$/.test(key)) return true;
+  const lower = key.toLowerCase();
+  if (lower.startsWith("alias.")) return true;
+  if (lower === "include.path") return true;
+  if (/^includeif\..*\.path$/.test(lower)) return true;
   return false;
 }
 
@@ -376,21 +407,33 @@ function gitHasAliasOverride(preOptions: readonly string[]): boolean {
 
 /**
  * Git also resolves aliases and includes from environment variables set on
- * the SAME command line as the `git` invocation
- * (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` channel).
- * Detect those prefixes before the `git` token so the attacker cannot smuggle
- * either an alias or an `include.path` through the process environment.
+ * the SAME command line as the `git` invocation. Two channels:
+ *   - `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` — structured
+ *   - `GIT_CONFIG_PARAMETERS` — serialized single-variable form
+ * Detect either before the `git` token so the attacker cannot smuggle an
+ * alias or `include.path` through the process environment.
+ *
+ * Matching is case-insensitive to mirror git's own config-key normalization.
  */
 function hasGitConfigEnvAliasInjection(cmd: string): boolean {
-  // Match VAR=VALUE ... git, where VAR is a GIT_CONFIG_* channel that can
-  // carry alias or include injection. The regex is bounded so it does not
-  // force backtracking on pathological input.
-  if (!/\bGIT_CONFIG_COUNT\s*=\s*[1-9]/.test(cmd)) return false;
-  return (
-    /\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./.test(cmd) ||
-    /\bGIT_CONFIG_KEY_\d+\s*=\s*include\.path\b/.test(cmd) ||
-    /\bGIT_CONFIG_KEY_\d+\s*=\s*includeIf\./.test(cmd)
-  );
+  // Structured channel: GIT_CONFIG_COUNT=N GIT_CONFIG_KEY_i=... ...
+  if (/\bGIT_CONFIG_COUNT\s*=\s*[1-9]/.test(cmd)) {
+    if (
+      /\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./i.test(cmd) ||
+      /\bGIT_CONFIG_KEY_\d+\s*=\s*include\.path\b/i.test(cmd) ||
+      /\bGIT_CONFIG_KEY_\d+\s*=\s*includeIf\./i.test(cmd)
+    ) {
+      return true;
+    }
+  }
+  // Serialized channel: GIT_CONFIG_PARAMETERS="'alias.pu=!git push --force'"
+  // Values are quoted and comma/space separated; each contains a key=value.
+  if (/\bGIT_CONFIG_PARAMETERS\s*=/.test(cmd)) {
+    if (/\balias\./i.test(cmd) || /\binclude\.path\b/i.test(cmd) || /\bincludeIf\./i.test(cmd)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Does an argv token match a force-flag in any short-bundle or long form? */
@@ -502,21 +545,32 @@ function splitShellSegments(cmd: string): string[] {
 }
 
 /**
+ * Builtins that set variables when used as a command prefix. `export a=x`,
+ * `declare -g a=x`, `typeset a=x`, `readonly a=x`, `local a=x` all bind
+ * `a=x` in the shell. Without this, an attacker prefixes with `export` and
+ * the assignment resolver misses the binding:
+ *     export target=/etc; rm -rf "$target"
+ */
+const ASSIGNMENT_BUILTIN_PREFIX = /^(?:export|declare|readonly|typeset|local)(?:\s+-\S+)*\s+/;
+
+/**
  * Resolve simple `VAR=VALUE` assignments within the command before pattern
  * matching. Destructive classifiers compare literal tokens (e.g. `--force`,
  * `/etc`), so an attacker can hide dangerous inputs in a prior assignment:
  *
  *     target=/etc; rm -rf "$target"          → rm -rf /etc
+ *     export target=/etc; rm -rf "$target"   → rm -rf /etc
  *     force=--force; git push $force origin  → git push --force origin
  *     f=f; rm -r$f /etc                      → rm -rf /etc
  *
- * Scope is intentionally narrow: only `NAME=VALUE` at the start of a segment
- * with an unquoted VALUE (quote removal already ran in normalizeForMatch).
- * Array assignments, compound expansions, `local`/`export` prefixes, and
- * indirect references are NOT resolved — for those cases the segment-start
- * `$` token will still trigger the command-position-expansion check.
+ * Scope is intentionally narrow: only `NAME=VALUE` at the start of a segment,
+ * optionally prefixed by one of the assignment-builtin keywords. VALUEs that
+ * themselves contain `$` are NOT re-expanded, so an attacker cannot use
+ * `a=$a$a` to blow up the output size beyond MAX_INPUT_LENGTH.
  *
- * Substitutions apply to subsequent segments in the same pipeline/sequence.
+ * The total output is bounded to MAX_INPUT_LENGTH; if substitution would
+ * exceed that, we abort and return a length-capped string that the downstream
+ * length guard will reject.
  */
 function resolveSimpleAssignments(cmd: string): string {
   // Preserve the segment separators by splitting with a capturing group.
@@ -524,12 +578,20 @@ function resolveSimpleAssignments(cmd: string): string {
   const vars = new Map<string, string>();
   const out: string[] = [];
   const assignment = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)=(\S*)(\s+|$)/;
+  let totalBytes = 0;
   for (const part of parts) {
     if (/^(?:\|\||&&|[;|&\n])$/.test(part)) {
       out.push(part);
+      totalBytes += part.length;
       continue;
     }
     let segment = part;
+    // Strip a single leading assignment-builtin keyword (export/declare/etc.)
+    // so the next pass sees `NAME=VALUE ...` and records it as an assignment.
+    const builtinMatch = segment.match(ASSIGNMENT_BUILTIN_PREFIX);
+    if (builtinMatch !== null) {
+      segment = segment.slice(builtinMatch[0].length);
+    }
     // Consume any number of leading VAR=VALUE assignments.
     while (true) {
       const m = segment.match(assignment);
@@ -546,14 +608,48 @@ function resolveSimpleAssignments(cmd: string): string {
         const value = vars.get(name) ?? "";
         segment = segment.replace(new RegExp(`\\$\\{${name}\\}`, "g"), value);
         segment = segment.replace(new RegExp(`\\$${name}(?![A-Za-z0-9_])`, "g"), value);
+        if (segment.length > MAX_INPUT_LENGTH) {
+          // Stop expanding on blow-up. Downstream length guard will reject.
+          segment = segment.slice(0, MAX_INPUT_LENGTH + 1);
+          break;
+        }
       }
     }
-    // Re-emit the consumed assignments so the segment-count downstream is
-    // unaffected, but with their VALUE stripped of the VAR= so subsequent
-    // segment scans don't re-consume them.
     out.push(segment);
+    totalBytes += segment.length;
+    if (totalBytes > MAX_INPUT_LENGTH) {
+      // Bail out with an over-length prefix; the classifier's length guard
+      // will reject it and the regex scans will never run on the blown-up
+      // payload.
+      return out.join("").slice(0, MAX_INPUT_LENGTH + 1);
+    }
   }
   return out.join("");
+}
+
+/**
+ * Destructive argv that still contains an unresolved parameter/command
+ * substitution is unsafe: the classifier cannot verify the expansion does not
+ * add a force flag or swap the target to a system path. Reject when any of
+ * these subcommands appears alongside a `$` or backtick expansion in the
+ * same segment.
+ */
+const EXPANSION_TOKEN = /\$(?:[A-Za-z_{(]|[0-9@*#?$!-])|`/;
+const DESTRUCTIVE_COMMANDS = /\b(?:rm|chmod|chown|dd|mkfs(?:\.\w+)?|shred|git|find|xargs)\b/;
+
+function checkDestructiveArgvExpansion(resolved: string): ClassificationResult {
+  for (const segment of splitShellSegments(resolved)) {
+    if (!DESTRUCTIVE_COMMANDS.test(segment)) continue;
+    if (!EXPANSION_TOKEN.test(segment)) continue;
+    return {
+      ok: false,
+      reason:
+        "Destructive command (rm/chmod/chown/dd/mkfs/shred/git/find/xargs) with an unresolved parameter or command substitution cannot be safely classified; set VAR=VALUE before the command or use a literal argument",
+      pattern: "destructive+unresolved-expansion",
+      category: "injection",
+    };
+  }
+  return { ok: true };
 }
 
 /**
@@ -731,8 +827,18 @@ export function classifyCommand(command: string): ClassificationResult {
   const normalized = normalizeForMatch(command);
   // Resolve simple `VAR=VALUE; CMD $VAR` assignments so literal checks like
   // "does args contain --force" and "does the command touch /etc" see the
-  // expanded form rather than a symbolic `$VAR`.
+  // expanded form rather than a symbolic `$VAR`. Substitution is bounded by
+  // MAX_INPUT_LENGTH inside the resolver; re-check here because an attacker
+  // can craft a sub-limit input that expands beyond the cap.
   const resolved = resolveSimpleAssignments(normalized);
+  if (resolved.length > MAX_INPUT_LENGTH) {
+    return {
+      ok: false,
+      reason: `Variable expansion produced more than ${MAX_INPUT_LENGTH} chars; reject to avoid regex-DoS`,
+      pattern: `resolved-length:${resolved.length}`,
+      category: "injection",
+    };
+  }
   const expansionResult = checkCommandPositionExpansion(resolved);
   if (!expansionResult.ok) return expansionResult;
   const rmResult = checkDestructiveRm(resolved);
@@ -741,6 +847,8 @@ export function classifyCommand(command: string): ClassificationResult {
   if (!chmodResult.ok) return chmodResult;
   const gitResult = checkDestructiveGit(normalized, resolved);
   if (!gitResult.ok) return gitResult;
+  const argExpansionResult = checkDestructiveArgvExpansion(resolved);
+  if (!argExpansionResult.ok) return argExpansionResult;
   const pairResult = checkDestructiveCommandPairs(resolved);
   if (!pairResult.ok) return pairResult;
   return matchPatterns(resolved, ALL_CLASSIFIER_PATTERNS);

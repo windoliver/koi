@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PATH_BYPASS_CASES, SAFE_CASES } from "./bypass-cases.js";
@@ -245,6 +245,44 @@ describe("validatePath", () => {
         }
       } finally {
         rmSync(base, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("missing / invalid base directory (round 7)", () => {
+    test("missing base directory is rejected outright", () => {
+      // Without this guard, a caller could pass a not-yet-existing base and a
+      // path identical to it, and containment would pass against a root that
+      // an attacker later materializes as a symlink outside the workspace.
+      const missingBase = join(tmpdir(), `koi-pv-missing-${Date.now()}`);
+      const result = validatePath(missingBase, missingBase);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.category).toBe("path-traversal");
+        expect(result.reason).toMatch(/base.*missing|must exist/i);
+      }
+    });
+
+    test("missing base directory rejects relative paths too", () => {
+      const missingBase = join(tmpdir(), `koi-pv-missing2-${Date.now()}`);
+      const result = validatePath(".", missingBase);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("path-traversal");
+    });
+
+    test("base pointing at a file (not a directory) is rejected", () => {
+      const baseDir = mkdtempSync(join(tmpdir(), "koi-pv-notdir-"));
+      try {
+        const filePath = join(baseDir, "not-a-dir.txt");
+        writeFileSync(filePath, "content");
+        const result = validatePath("child", filePath);
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.category).toBe("path-traversal");
+          expect(result.reason).toMatch(/not a directory/i);
+        }
+      } finally {
+        rmSync(baseDir, { recursive: true, force: true });
       }
     });
   });
