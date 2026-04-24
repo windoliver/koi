@@ -281,7 +281,14 @@ export function createRemoteAgentLifecycle(
               if (rawBuf.byteLength === 0) {
                 lineBytes = value.subarray(valStart, nlPos);
               } else {
-                // Merge rawBuf + this segment (max MAX_FRAME_BYTES each).
+                // Guard before allocation: a cross-chunk frame could be arbitrarily
+                // large; check lineLen before materializing the merged buffer.
+                if (lineLen > MAX_FRAME_BYTES) {
+                  if (timeoutId !== undefined) clearTimeout(timeoutId);
+                  emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+                  pipeError = true;
+                  break outer;
+                }
                 lineBytes = new Uint8Array(lineLen);
                 lineBytes.set(rawBuf);
                 lineBytes.set(value.subarray(valStart, nlPos), rawBuf.byteLength);

@@ -939,6 +939,47 @@ describe("createRemoteAgentLifecycle", () => {
         .join("");
       expect(text).toContain("frame exceeds maximum size");
     });
+
+    test("oversized frame split across two reads is rejected before allocation", async () => {
+      // Regression: tiny first chunk (no newline) fills rawBuf with a small prefix,
+      // then a huge second chunk containing the terminating newline. The merge path
+      // must check lineLen > MAX_FRAME_BYTES before allocating.
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      const prefix = encoder.encode('{"kind":"chunk","text":"'); // small prefix, no newline
+      // Fill to just over 1 MiB, then close the JSON string + newline
+      const body = encoder.encode(`${"x".repeat(1024 * 1024)}"}\n`);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(prefix); // chunk 1: no newline
+          controller.enqueue(body); // chunk 2: contains newline, huge total
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("frame exceeds maximum size");
+    });
   });
 
   describe("unknown frame kinds", () => {
