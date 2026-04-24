@@ -66,9 +66,10 @@ export interface SkillInjectorConfig {
 const SKILL_PREFIX = "skill:";
 const SEPARATOR = "\n\n---\n\n";
 // Matches the tool name registered by @koi/skill-tool's createSkillTool().
-// Checked against request.tools before injection: if Skill is absent (e.g.,
-// ceiling-blocked in a child agent), skip injection so the model is not steered
-// toward skills it cannot invoke.
+// Checked in the PROGRESSIVE path only: if Skill is absent from request.tools
+// (e.g., ceiling-blocked in a child), skip XML injection so the model is not
+// steered toward on-demand skills it cannot invoke. Eager body-backed skills
+// (non-empty content) are always injected regardless of tool list.
 const SKILL_TOOL_NAME = "Skill";
 
 function resolveAgent(agentOrFn: Agent | (() => Agent)): Agent {
@@ -126,11 +127,8 @@ function collectSkillNames(
  * Returns the original request unchanged when no skills contribute any content.
  */
 function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
-  // Only gate when the engine has committed to an explicit tool list and Skill
-  // is absent. Undefined tools (pre-engine, tests) allows injection through.
-  if (request.tools !== undefined && !request.tools.some((t) => t.name === SKILL_TOOL_NAME)) {
-    return request;
-  }
+  // Eager path: skill bodies are embedded in systemPrompt and do NOT require
+  // the Skill tool to be invoked. Always inject regardless of tool list.
   const sorted = sortedSkills(agent);
   if (sorted.length === 0) return request;
 

@@ -70,17 +70,11 @@ export function createSkillProvider(
   config?: SkillProviderConfig,
 ): ComponentProvider {
   const progressive = config?.progressive ?? false;
-  // Progressive mode requires a session-pinned runtime for consistency: the
-  // advertised <available_skills> must match what the Skill tool actually loads.
-  // Auto-wrap here so any caller of createSkillProvider gets pinning for the
-  // provider's attach path. For full consistency (provider + Skill tool sharing
-  // the same pinned runtime) use createProgressiveSkillProvider() instead.
-  const effectiveRuntime = progressive ? createProgressivePinnedRuntime(runtime) : runtime;
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
     attach: async (_agent: Agent): Promise<AttachResult> =>
-      progressive ? attachProgressive(effectiveRuntime) : attachEager(runtime),
+      progressive ? attachProgressive(runtime) : attachEager(runtime),
   };
 }
 

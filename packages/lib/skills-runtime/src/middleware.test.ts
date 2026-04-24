@@ -452,7 +452,9 @@ describe("createSkillInjectorMiddleware — Skill tool gate", () => {
     };
   }
 
-  test("skips injection when Skill tool absent from explicit tools list", async () => {
+  test("eager mode: injects skills regardless of Skill tool presence in tools list", async () => {
+    // Eager body-backed skills do not require the Skill tool — the body is embedded
+    // directly in systemPrompt. Gate applies only to the progressive XML block.
     const agent = mockAgent(new Map([skill("guide", "## Guide")]));
     const mw = createSkillInjectorMiddleware({ agent });
     const { wrapModelCall } = assertHooks(mw);
@@ -463,8 +465,8 @@ describe("createSkillInjectorMiddleware — Skill tool gate", () => {
       return DONE_RESPONSE;
     });
 
-    // Skill tool not in the tools list → no injection
-    expect(received[0]?.systemPrompt).toBeUndefined();
+    // Skill tool absent but eager body still injected — no gate on eager path
+    expect(received[0]?.systemPrompt).toContain("## Guide");
   });
 
   test("injects skills when Skill tool present in explicit tools list", async () => {
