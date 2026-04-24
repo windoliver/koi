@@ -2587,17 +2587,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     if (resolvedViolationPath !== undefined) {
       try {
         const parent = dirname(resolvedViolationPath);
-        const explicitPath =
-          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
+        const manifestDerived = config.manifestViolationsSourcePath !== undefined;
         if (!existsSync(parent)) {
-          // Only auto-create the parent directory for the implicit default path
-          // (~/.koi/). Explicit operator-supplied paths must already have their
-          // parent present — silently creating directories for explicitly-
-          // configured paths expands the trust boundary beyond "open a file".
-          if (explicitPath) {
+          // Manifest-derived paths must already have their parent present —
+          // auto-creating directories for repo-authored paths expands the
+          // write-capability trust boundary. Operator-supplied explicit paths
+          // (--violation-sqlite flag) and the implicit default (~/.koi/)
+          // retain the previous auto-create behavior.
+          if (manifestDerived) {
             throw new Error(
-              `violation store: parent directory "${parent}" does not exist. ` +
-                "Create it before starting, or remove the explicit path to use the default (~/.koi/violations.db).",
+              `manifest.audit.violations: parent directory "${parent}" does not exist. ` +
+                "Create it before starting koi tui, or remove the violations: key from manifest.audit.",
             );
           }
           mkdirSync(parent, { recursive: true });
@@ -2605,7 +2605,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // Final containment check immediately before violation store open.
         // Only applies to manifest-derived paths (explicit violationSqlitePath
         // that came from manifest.audit.violations via tui-command.ts).
-        if (config.manifestViolationsSourcePath !== undefined && explicitPath) {
+        if (manifestDerived) {
           const err = revalidateAuditPathContainment(
             resolvedViolationPath,
             config.manifestViolationsSourcePath,
