@@ -277,7 +277,9 @@ export function createGateway(
     const { result, ready } = tracker.accept(frameResult.value);
 
     if (result === "duplicate" || result === "out_of_window") {
-      sendFrame(conn, createAckFrame(frameResult.value.seq, frameResult.value.id, null, nextId));
+      // Use the server's outbound seq (not the client's) so the ack is in the correct
+      // monotonic sequence space; the client's frame ID is preserved in the ref field.
+      sendFrame(conn, createAckFrame(nextServerSeq(conn), frameResult.value.id, null, nextId));
       return;
     }
 
@@ -496,6 +498,7 @@ export function createGateway(
           // store throws we cannot safely determine the replay window, so we reject the
           // reconnect rather than silently downgrading to seq 0 and risking duplicate dispatch.
           let startSeq = 0;
+          let prevOutboundSeq = 0;
           // True only when the store returns NOT_FOUND: this gateway instance created
           // the record and is the rightful owner. For resumed sessions the record already
           // existed (in this process or another), so this gateway should not delete it.
@@ -504,9 +507,10 @@ export function createGateway(
             const prev = await Promise.resolve(store.get(result.session.id));
             if (prev.ok) {
               startSeq = prev.value.remoteSeq;
+              prevOutboundSeq = prev.value.seq;
               // Restore outbound seq so server frames continue monotonically after reconnect
               // rather than resetting to 0 and colliding with pre-reconnect frame IDs.
-              connOutboundSeq.set(conn.id, prev.value.seq);
+              connOutboundSeq.set(conn.id, prevOutboundSeq);
               isNewSession = false; // session already existed in the store
             }
             // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
@@ -522,10 +526,12 @@ export function createGateway(
           // unacknowledged frames on reconnect, so no data is lost.
           trackers.set(conn.id, tracker);
 
-          // Carry recovered remoteSeq into the persisted session so subsequent reconnects
-          // restore the correct window even if no new frames arrive before next disconnect.
+          // Carry recovered watermarks into the persisted session so subsequent reconnects
+          // restore both inbound (remoteSeq) and outbound (seq) windows correctly.
           const sessionToStore: Session =
-            startSeq > 0 ? { ...result.session, remoteSeq: startSeq } : result.session;
+            startSeq > 0 || prevOutboundSeq > 0
+              ? { ...result.session, remoteSeq: startSeq, seq: prevOutboundSeq }
+              : result.session;
 
           let storeResult: Result<void, KoiError>;
           try {
