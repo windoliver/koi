@@ -112,12 +112,19 @@ function matchesGlob(glob: string, path: string): boolean {
   return new Bun.Glob(glob).match(path);
 }
 
+const CLOSED_ERROR: KoiError = {
+  code: "VALIDATION",
+  message: "Scratchpad is closed",
+  retryable: false,
+};
+
 export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScratchpad {
   const { groupId, authorId } = config;
   const sweepIntervalMs = config.sweepIntervalMs ?? 60_000;
 
   const entries = new Map<ScratchpadPath, MutableEntry>();
   const subscribers = new Set<(event: ScratchpadChangeEvent) => void>();
+  let closed = false;
 
   function notify(event: ScratchpadChangeEvent): void {
     for (const sub of subscribers) {
@@ -144,6 +151,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   }
 
   function write(input: ScratchpadWriteInput): Result<ScratchpadWriteResult, KoiError> {
+    if (closed) return { ok: false, error: CLOSED_ERROR };
     const pathErr = validatePath(input.path);
     if (pathErr) return { ok: false, error: pathErr };
 
@@ -240,6 +248,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   }
 
   function read(path: ScratchpadPath): Result<ScratchpadEntry, KoiError> {
+    if (closed) return { ok: false, error: CLOSED_ERROR };
     const entry = entries.get(path);
     if (!entry || isExpired(entry)) {
       if (entry) entries.delete(path);
@@ -252,6 +261,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   }
 
   function list(filter?: ScratchpadFilter): readonly ScratchpadEntrySummary[] {
+    if (closed) return [];
     const now = Date.now();
     let results: ScratchpadEntrySummary[] = [];
 
@@ -273,6 +283,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   }
 
   function del(path: ScratchpadPath): Result<void, KoiError> {
+    if (closed) return { ok: false, error: CLOSED_ERROR };
     const entry = entries.get(path);
     if (!entry || isExpired(entry)) {
       if (entry) entries.delete(path);
@@ -300,6 +311,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   }
 
   function onChange(handler: (event: ScratchpadChangeEvent) => void): () => void {
+    if (closed) return () => {};
     subscribers.add(handler);
     return () => {
       subscribers.delete(handler);
@@ -308,8 +320,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function close(): void {
     if (timer !== null) clearInterval(timer);
+    timer = null;
     entries.clear();
     subscribers.clear();
+    closed = true;
   }
 
   return { write, read, list, delete: del, flush, onChange, close };

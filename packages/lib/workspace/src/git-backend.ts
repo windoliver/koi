@@ -22,9 +22,39 @@ interface RegistryEntry {
   readonly branchName: string;
 }
 
+interface WorkspaceMarker {
+  readonly id?: string;
+  readonly branchName?: string;
+}
+
 export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): WorkspaceBackend {
   const registry = new Map<WorkspaceId, RegistryEntry>();
   const basePath = resolveWorktreeBasePath(config.repoPath, config.worktreeBasePath);
+
+  // Scan git worktree list and on-disk markers to recover an entry that
+  // survived a process restart and is no longer in the in-memory registry.
+  async function recoverEntry(wsId: WorkspaceId): Promise<RegistryEntry | null> {
+    const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
+    if (!listResult.ok) return null;
+
+    const blocks = listResult.value.split(/\n\n+/);
+    for (const block of blocks) {
+      const lines = block.trim().split("\n");
+      const pathLine = lines.find((l) => l.startsWith("worktree "));
+      if (!pathLine) continue;
+      const path = pathLine.slice("worktree ".length).trim();
+      try {
+        const markerText = await Bun.file(join(path, ".koi-workspace")).text();
+        const marker = JSON.parse(markerText) as WorkspaceMarker;
+        if (marker.id === wsId && typeof marker.branchName === "string") {
+          return { path, branchName: marker.branchName };
+        }
+      } catch {
+        // Marker missing or unreadable — skip this worktree
+      }
+    }
+    return null;
+  }
 
   return {
     name: "git-worktree",
@@ -84,16 +114,21 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     },
 
     async dispose(wsId: WorkspaceId): Promise<Result<void, KoiError>> {
-      const entry = registry.get(wsId);
+      let entry = registry.get(wsId);
       if (!entry) {
-        return {
-          ok: false,
-          error: {
-            code: "NOT_FOUND",
-            message: `Workspace ${wsId} not found in registry`,
-            retryable: false,
-          },
-        };
+        // Registry is in-memory only — attempt crash recovery via on-disk marker
+        const recovered = await recoverEntry(wsId);
+        if (!recovered) {
+          return {
+            ok: false,
+            error: {
+              code: "NOT_FOUND",
+              message: `Workspace ${wsId} not found in registry or on disk`,
+              retryable: false,
+            },
+          };
+        }
+        entry = recovered;
       }
 
       const removeResult = await runGit(

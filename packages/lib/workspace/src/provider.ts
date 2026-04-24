@@ -27,7 +27,11 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
   async function tryDispose(wsId: WorkspaceId): Promise<boolean> {
     const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs));
     const disposeResult = await Promise.race([
-      config.backend.dispose(wsId).then((r) => r.ok),
+      config.backend.dispose(wsId).then((r) => {
+        // NOT_FOUND means workspace already gone — treat as idempotent success
+        if (!r.ok && r.error.code === "NOT_FOUND") return true;
+        return r.ok;
+      }),
       timeout,
     ]);
     return disposeResult;
@@ -45,6 +49,14 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
 
     async attach(agent: Agent): Promise<AttachResult> {
       const agentId = agent.pid.id;
+
+      // Dispose any stale workspace from a previous attach (e.g. after a crash
+      // and re-attach without an intervening detach).
+      const staleWsId = attached.get(agentId);
+      if (staleWsId !== undefined) {
+        await tryDispose(staleWsId);
+        attached.delete(agentId);
+      }
 
       const result = await config.backend.create(agentId, {
         cleanupPolicy: policy,
