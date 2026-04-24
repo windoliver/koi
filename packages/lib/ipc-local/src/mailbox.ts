@@ -45,8 +45,7 @@ function safeCloneFreeze(
 
 export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent & {
   readonly agentId: AgentId;
-  /** Remove all messages from the inbox, freeing capacity for new sends. */
-  readonly drain: () => void;
+  readonly drain: () => readonly AgentMessage[];
   readonly close: () => void;
 } {
   const rawMax = config.maxMessages ?? DEFAULT_MAX_MESSAGES;
@@ -56,15 +55,13 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
   const maxMessages = rawMax;
   const messages: AgentMessage[] = [];
   const subscribers = new Set<(message: AgentMessage) => void | Promise<void>>();
-  // let rather than const: both are explicitly mutable state
+  // let rather than const: closed flag is explicitly mutable state
   let closed = false;
-  // Incremented by drain() to invalidate microtasks queued before the drain.
-  let drainGeneration = 0;
   // Self-reference for identity check in close()
   let self:
     | (MailboxComponent & {
         readonly agentId: AgentId;
-        readonly drain: () => void;
+        readonly drain: () => readonly AgentMessage[];
         readonly close: () => void;
       })
     | undefined;
@@ -77,7 +74,9 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     }
   }
 
-  function dispatchToSubscribers(msg: AgentMessage): void {
+  // Returns true if any sync subscriber threw — used to decide whether to retire the message.
+  function dispatchToSubscribers(msg: AgentMessage): boolean {
+    let hadSyncError = false;
     for (const handler of subscribers) {
       try {
         const result = handler(msg);
@@ -88,8 +87,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         }
       } catch (err: unknown) {
         safeOnError(err, msg);
+        hadSyncError = true;
       }
     }
+    return hadSyncError;
   }
 
   self = {
@@ -177,19 +178,16 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       });
 
       messages.push(msg);
-      // Capture generation so drain() can invalidate this delivery.
-      const gen = drainGeneration;
       // Decouple delivery from the send() call stack via microtask to prevent
       // re-entrant delivery loops when subscribers send cross-agent messages.
       queueMicrotask(() => {
-        if (drainGeneration !== gen) return;
-        // Retire from inbox when there are subscribers — keeps capacity available
-        // for long-lived agents that use onMessage() rather than list() polling.
-        if (subscribers.size > 0) {
+        const hadSyncError = dispatchToSubscribers(msg);
+        // Retire from inbox AFTER dispatch, and only on clean delivery — if any sync
+        // subscriber threw, the message stays in list() for inspection or retry.
+        if (!hadSyncError && subscribers.size > 0) {
           const idx = messages.indexOf(msg);
           if (idx !== -1) messages.splice(idx, 1);
         }
-        dispatchToSubscribers(msg);
       });
 
       return { ok: true, value: msg };
@@ -216,9 +214,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       return result;
     },
 
-    drain(): void {
-      drainGeneration++;
+    drain(): readonly AgentMessage[] {
+      const dropped = [...messages];
       messages.length = 0;
+      return dropped;
     },
 
     close(): void {

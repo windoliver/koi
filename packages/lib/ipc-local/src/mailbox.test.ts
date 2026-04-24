@@ -396,29 +396,53 @@ describe("createLocalMailbox — local specifics", () => {
     mailbox.close();
   });
 
-  test("drain() cancels already-queued microtask deliveries", async () => {
+  test("drain() does not cancel already-accepted deliveries", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER });
     const received: string[] = [];
     mailbox.onMessage((msg) => {
       received.push(msg.type);
     });
-    // fire-and-forget: send() runs synchronously, queues microtask, but returns a Promise
-    void mailbox.send(makeInput("should-not-arrive"));
-    mailbox.drain(); // increments generation before microtask fires
+    void mailbox.send(makeInput("still-arrives"));
+    mailbox.drain(); // clears inbox but does not cancel queued microtask delivery
     await Bun.sleep(10);
-    expect(received).toHaveLength(0);
+    expect(received).toEqual(["still-arrives"]);
     mailbox.close();
   });
 
-  test("messages are retired from inbox after delivery to subscribers", async () => {
+  test("drain() returns the cleared messages for dead-lettering", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    await mailbox.send(makeInput("x"));
+    await mailbox.send(makeInput("y"));
+    const dropped = await mailbox.drain();
+    expect(dropped).toHaveLength(2);
+    expect(dropped[0]?.type).toBe("x");
+    expect(dropped[1]?.type).toBe("y");
+    mailbox.close();
+  });
+
+  test("messages are retired from inbox after clean delivery to subscribers", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 2 });
-    mailbox.onMessage(() => {}); // attach subscriber
+    mailbox.onMessage(() => {}); // non-throwing subscriber
     await mailbox.send(makeInput("a"));
     await mailbox.send(makeInput("b"));
-    // Both messages delivered and retired — inbox empty, capacity restored
+    // Both messages delivered cleanly — retired from inbox, capacity restored
     expect(await mailbox.list()).toHaveLength(0);
     const result = await mailbox.send(makeInput("c"));
     expect(result.ok).toBe(true);
+    mailbox.close();
+  });
+
+  test("message preserved in inbox when subscriber throws synchronously", async () => {
+    const mailbox = createLocalMailbox({
+      agentId: OWNER,
+      onError: () => {},
+    });
+    mailbox.onMessage(() => {
+      throw new Error("handler boom");
+    });
+    await mailbox.send(makeInput("retry-me"));
+    // Sync throw → message stays in list() for retry
+    expect(await mailbox.list()).toHaveLength(1);
     mailbox.close();
   });
 
@@ -430,7 +454,8 @@ describe("createLocalMailbox — local specifics", () => {
     expect(full.ok).toBe(false);
     if (!full.ok) expect(full.error.code).toBe("RESOURCE_EXHAUSTED");
 
-    mailbox.drain();
+    const dropped = await mailbox.drain();
+    expect(dropped).toHaveLength(2);
     expect(await mailbox.list()).toHaveLength(0);
 
     const after = await mailbox.send(makeInput("d"));

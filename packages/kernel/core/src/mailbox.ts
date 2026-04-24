@@ -95,5 +95,5 @@ export interface MailboxComponent {
   readonly list: (
     filter?: MessageFilter,
   ) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
-  readonly drain: () => void | Promise<void>;
+  readonly drain: () => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
 }

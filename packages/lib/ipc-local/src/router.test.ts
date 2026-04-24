@@ -101,7 +101,7 @@ describe("createLocalMailboxRouter", () => {
       send: async () => ({ ok: true, value: {} as import("@koi/core").AgentMessage }),
       onMessage: () => () => {},
       list: () => [],
-      drain: () => {},
+      drain: () => [],
     };
     expect(() => router.register(agentId("any"), plain)).not.toThrow();
   });
