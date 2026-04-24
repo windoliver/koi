@@ -409,7 +409,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   };
 
   // --- Interactive auth flow ---
-  const startAuthFlow = async (): Promise<boolean> => {
+  // let: singleflight promise — reset to undefined on settle so the next
+  // call can start a fresh flow.
+  let authFlowInFlight: Promise<boolean> | undefined;
+
+  const startAuthFlow = (): Promise<boolean> => {
+    if (authFlowInFlight !== undefined) return authFlowInFlight;
+    authFlowInFlight = _startAuthFlowImpl().finally(() => {
+      authFlowInFlight = undefined;
+    });
+    return authFlowInFlight;
+  };
+
+  const _startAuthFlowImpl = async (): Promise<boolean> => {
     let metadata = await getMetadata();
     if (metadata === undefined) {
       reportFailure({ kind: "discovery_failed", serverName });

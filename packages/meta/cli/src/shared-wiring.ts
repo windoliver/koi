@@ -226,9 +226,12 @@ export async function loadUserMcpSetup(
 
   const resolver = createMcpResolver(connections);
 
-  // Wire auth tool factory when OAuth servers are present
+  // Wire auth pseudo-tools only when there is no OAuthChannel. When an
+  // OAuthChannel is present (TUI path), the connection's onAuthNeeded
+  // singleflight handles auth inline on the first tool call, making the
+  // pseudo-tools redundant and their restart-required messaging wrong.
   const createAuthTools =
-    authServers.size > 0
+    authServers.size > 0 && oauthChannel === undefined
       ? createCliAuthToolFactory({
           servers: authServers,
           rediscover: () => resolver.discover(),
@@ -300,7 +303,7 @@ export function buildPluginMcpSetup(
   const resolver = createMcpResolver(connections);
 
   const createAuthTools =
-    authServers.size > 0
+    authServers.size > 0 && oauthChannel === undefined
       ? createCliAuthToolFactory({
           servers: authServers,
           rediscover: () => resolver.discover(),

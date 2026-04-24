@@ -64,8 +64,8 @@ function createAuthenticateTool(
     description:
       `The "${serverName}" MCP server requires authentication. ` +
       `Call this tool to start the OAuth flow — a browser window will open ` +
-      `for the user to authorize access. After authentication, tokens are ` +
-      `stored and the server's tools will load on the next TUI restart.`,
+      `for the user to authorize access. After authentication succeeds, ` +
+      `tokens are stored and the server's tools will load automatically.`,
     inputSchema: {
       type: "object",
       properties: {},
@@ -123,8 +123,8 @@ function createAuthenticateTool(
             type: "text",
             text:
               `Authentication successful for "${serverName}". ` +
-              `Tokens are stored. Restart the TUI (quit and relaunch) ` +
-              `to load the server's tools into this runtime.`,
+              `Tokens are stored and the server has been reconnected. ` +
+              `The server's tools are now available.`,
           },
         ],
       };
