@@ -25,9 +25,11 @@ function buildAuthRequiredText(n: AuthRequiredNotification): string {
     return `**${n.message}**\n\nOpen this link in your browser to authorize ${n.provider}:\n${n.authUrl}${remoteHint}`;
   }
 
-  // mode:"local" with authUrl — the URL is navigable on the local machine
+  // mode:"local" with authUrl — navigable on the same machine as the CLI
   // (Nexus OAuth and MCP loopback flows). Show as a copy-paste fallback link.
-  return `**${n.message}**\n\n_If the browser does not open automatically, open this link to authorize ${n.provider}:_\n${n.authUrl}`;
+  // SSH/headless users: this URL uses a loopback callback and must be opened
+  // on the machine running the CLI, not in a remote browser.
+  return `**${n.message}**\n\n_If the browser does not open automatically, open this link **on this machine** to authorize ${n.provider}:_\n${n.authUrl}`;
 }
 
 export function createOAuthChannel(options: {

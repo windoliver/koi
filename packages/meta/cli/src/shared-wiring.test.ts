@@ -148,7 +148,7 @@ describe("buildPluginMcpSetup", () => {
     }
   });
 
-  test("returns undefined when all plugin servers have OAuth (none eligible)", () => {
+  test("returns setup with rejectedServers populated when all plugin servers have OAuth", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -163,7 +163,10 @@ describe("buildPluginMcpSetup", () => {
     const errorSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       const setup = buildPluginMcpSetup([oauthServer]);
-      expect(setup).toBeUndefined();
+      // Setup still returned so rejected servers surface in runtime status
+      expect(setup).toBeDefined();
+      expect(setup?.rejectedServers?.has("plugin-oauth")).toBe(true);
+      expect(setup?.oauthCapableNames.size).toBe(0);
       expect(errorSpy).toHaveBeenCalledTimes(1);
     } finally {
       errorSpy.mockRestore();

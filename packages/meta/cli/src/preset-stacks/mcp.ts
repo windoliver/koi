@@ -78,6 +78,9 @@ export const mcpStack: PresetStack = {
         ...(pluginMcpSetup !== undefined
           ? { mcpPluginConnections: pluginMcpSetup.connections }
           : {}),
+        ...(pluginMcpSetup !== undefined && pluginMcpSetup.rejectedServers !== undefined
+          ? { mcpPluginRejectedServers: pluginMcpSetup.rejectedServers }
+          : {}),
       },
       onShutdown: () => {
         // Best-effort dispose. Neither setup has background work that

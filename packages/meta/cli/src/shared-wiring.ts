@@ -91,6 +91,12 @@ export interface McpSetup {
    * out of auth-needed without requiring a full restart.
    */
   readonly connections: ReadonlyMap<string, import("@koi/mcp").McpConnection>;
+  /**
+   * Plugin-declared servers that were rejected at setup time (e.g. OAuth without
+   * a host consent gate), keyed by server name with the rejection reason.
+   * Callers should surface these as permanent error entries in status views.
+   */
+  readonly rejectedServers?: ReadonlyMap<string, string> | undefined;
 }
 
 /** Absolute path of `~/.koi/hooks.json` — the single user-tier hook source. */
@@ -283,9 +289,15 @@ export function buildPluginMcpSetup(
   if (pluginMcpServers.length === 0) return undefined;
 
   // Reject OAuth-bearing plugin MCP configs per-server. Plugin-supplied OAuth
-  // configs cannot be authenticated without a host-controlled consent gate, so
-  // skip each offending entry and log explicitly — other plugin servers proceed.
+  // configs cannot be authenticated without a host-controlled consent gate.
+  // Skip each offending entry; other plugin servers proceed normally.
   const unsupported = pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined);
+  const rejectedServers = new Map<string, string>(
+    unsupported.map((s) => [
+      s.name,
+      "Plugin MCP servers with OAuth require a host consent gate and cannot be loaded",
+    ]),
+  );
   if (unsupported.length > 0) {
     console.error(
       `[koi] Plugin MCP servers with OAuth require a host consent gate and cannot be loaded. ` +
@@ -296,7 +308,6 @@ export function buildPluginMcpSetup(
   const eligibleServers = pluginMcpServers.filter(
     (s) => !(s.kind === "http" && s.oauth !== undefined),
   );
-  if (eligibleServers.length === 0) return undefined;
 
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
@@ -320,6 +331,7 @@ export function buildPluginMcpSetup(
     oauthCapableNames: new Set<string>(),
     authProviders: new Map(),
     connections: connectionsByName,
+    rejectedServers,
   };
 }
 

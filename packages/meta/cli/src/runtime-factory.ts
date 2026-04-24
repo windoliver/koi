@@ -2291,6 +2291,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpConnections = stackContribution.exports.mcpConnections as
       | ReadonlyMap<string, import("@koi/mcp").McpConnection>
       | undefined;
+    const mcpPluginRejectedServers = stackContribution.exports.mcpPluginRejectedServers as
+      | ReadonlyMap<string, string>
+      | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
     // and the onViolation callback need a LIVE session id (rotates on
@@ -3163,6 +3166,23 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               failureMessage: f.error.message,
               transport: transportMap?.get(f.serverName),
               hasOAuth: oauthNames?.has(f.serverName) ?? false,
+            });
+          }
+        }
+        // Append plugin servers rejected at setup time (e.g. OAuth without consent gate)
+        // as explicit error entries so /mcp shows them as blocked instead of invisible.
+        if (mcpPluginRejectedServers !== undefined) {
+          for (const [name, reason] of mcpPluginRejectedServers) {
+            const key = `plugin:${name}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: `plugin:${name}`,
+              toolCount: 0,
+              failureCode: "PLUGIN_OAUTH_BLOCKED",
+              failureMessage: reason,
+              transport: undefined,
+              hasOAuth: false,
             });
           }
         }
