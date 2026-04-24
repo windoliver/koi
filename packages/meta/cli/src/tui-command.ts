@@ -4513,8 +4513,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             mcpAuthInFlight.add(rawName);
             try {
               if (runtimeHandle === null) return;
-              const success = await runtimeHandle.triggerMcpServerAuth(rawName, tuiOAuthChannel);
-              if (success) {
+              const authOutcome = await runtimeHandle.triggerMcpServerAuth(
+                rawName,
+                tuiOAuthChannel,
+              );
+              if (authOutcome === "success-reload-required") {
+                // Auth succeeded in storage but this session's resolver doesn't
+                // know about the server — guide the user to reload rather than
+                // showing a failure or a stale status refresh.
+                store.dispatch({
+                  kind: "add_info",
+                  message: `Authorization for "${rawName}" succeeded. Reload the session to connect.`,
+                });
+              } else if (authOutcome === "success-live") {
                 // Tokens are now stored. getMcpStatus() calls resolver.discover()
                 // → listTools() → ensureConnected(): from auth-needed state,
                 // ensureConnected() calls connect() which fetches fresh tokens

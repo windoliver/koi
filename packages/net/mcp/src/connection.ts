@@ -283,8 +283,10 @@ export function createMcpConnection(
                   await Promise.resolve(onAuthComplete?.()).catch(() => {});
                   return { ok: true, value: undefined };
                 }
-                // Fresh token but reconnect failed — fall through to browser auth
-                // so the user gets an actionable path.
+                // Token was refreshed but reconnect failed — this is a transport
+                // outage, not a credential problem. Return the error directly;
+                // opening browser auth would waste the fresh token.
+                return silentResult;
               }
               // "needs-auth" or "transient-failure": open browser flow.
               const authed = await onAuthNeeded();

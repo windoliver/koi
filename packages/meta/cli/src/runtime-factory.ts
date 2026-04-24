@@ -955,12 +955,17 @@ export interface KoiRuntimeHandle {
    * wired into the existing connection. This is the correct path for nav:mcp-auth
    * — it reuses the same provider instance so in-memory token caches are cleared
    * before startAuthFlow(), rather than creating a parallel provider that only
-   * updates storage. Returns true when auth succeeded.
+   * updates storage.
+   *
+   * "success-live" — auth succeeded and the live session can use the server now.
+   * "success-reload-required" — auth succeeded in storage but the server was not
+   *   wired into this session's resolver; the user must reload to connect.
+   * "failed" — auth did not complete.
    */
   readonly triggerMcpServerAuth: (
     serverName: string,
     channel: import("@koi/core").OAuthChannel,
-  ) => Promise<boolean>;
+  ) => Promise<"success-live" | "success-reload-required" | "failed">;
   /**
    * Plugin discovery summary — loaded plugins + any errors.
    * Static for the lifetime of the runtime. Used by the TUI to populate
@@ -3192,12 +3197,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       triggerMcpServerAuth: async (
         qualifiedName: string,
         channel: import("@koi/core").OAuthChannel,
-      ): Promise<boolean> => {
+      ): Promise<"success-live" | "success-reload-required" | "failed"> => {
         // Plugin-provided servers are not eligible for user-triggered auth via
-        // this path — they authenticate through their own pseudo-tools. Routing
-        // plugin servers here would allow plugin-supplied OAuth endpoints to
-        // drive the trusted browser flow without a consent gate.
-        if (qualifiedName.startsWith("plugin:")) return false;
+        // this path — they are blocked at load time (no host consent gate).
+        if (qualifiedName.startsWith("plugin:")) return "failed";
 
         // Strip user: prefix if present for consistent map lookups.
         const serverName = qualifiedName.startsWith("user:")
@@ -3222,24 +3225,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               }),
             ).catch(() => {});
             freshSetup?.dispose();
-            return false;
+            return "failed";
           }
-          // Trigger auth through the fresh connection. The live resolver does not
-          // know about this server, so even on success we cannot mark it as available
-          // in this session — fire onAuthFailure with a reload-required message so
-          // the user knows what happened and what to do next.
+          // Auth through a temporary connection. The live resolver does not know
+          // about this server — return success-reload-required so the TUI can
+          // guide the user to reload rather than showing a failure message.
           const authResult = await freshConnection.triggerAuth?.();
-          // freshSetup is non-null here: freshProvider/freshConnection came from it.
           freshSetup?.dispose();
           if (authResult?.ok) {
-            void Promise.resolve(
-              channel.onAuthFailure?.({
-                provider: serverName,
-                reason: `Authorization succeeded. Reload the session to connect to "${serverName}".`,
-              }),
-            ).catch(() => {});
-            // Return false: the server is not usable in this session yet.
-            return false;
+            return "success-reload-required";
           }
           void Promise.resolve(
             channel.onAuthFailure?.({
@@ -3247,7 +3241,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               reason: authResult?.error.message ?? "Authorization did not complete.",
             }),
           ).catch(() => {});
-          return false;
+          return "failed";
         }
         const connection = mcpConnections?.get(serverName);
         const resolver = mcpResolver;
@@ -3266,14 +3260,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 reason: result.error.message,
               }),
             ).catch(() => {});
-            return false;
+            return "failed";
           }
           // Trigger resolver rediscovery so real tools replace pseudo-tools immediately.
           await resolver?.discover().catch(() => {});
-          return true;
+          return "success-live";
         }
         // Fallback for connections without triggerAuth (non-OAuth connections).
-        return false;
+        return "failed";
       },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];

@@ -115,7 +115,7 @@ describe("buildPluginMcpSetup", () => {
     setup?.dispose();
   });
 
-  test("wires OAuth-bearing plugin servers with auth pseudo-tools but no oauthChannel", () => {
+  test("blocks OAuth-bearing plugin servers (trust boundary) and surfaces them in rejectedServers", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -134,18 +134,16 @@ describe("buildPluginMcpSetup", () => {
 
     const setup = buildPluginMcpSetup([oauthServer, stdioServer]);
 
-    // Both servers wired: OAuth server has auth provider, stdio does not
+    // OAuth server blocked; stdio server wired normally
     expect(setup).toBeDefined();
-    expect(setup?.connections.has("plugin-oauth")).toBe(true);
+    expect(setup?.connections.has("plugin-oauth")).toBe(false);
     expect(setup?.connections.has("plugin-stdio")).toBe(true);
-    // oauthCapableNames includes the OAuth server
-    expect(setup?.oauthCapableNames.has("plugin-oauth")).toBe(true);
-    // No rejected servers — OAuth servers are wired, not blocked
-    expect(setup?.rejectedServers).toBeUndefined();
+    expect(setup?.rejectedServers?.has("plugin-oauth")).toBe(true);
+    expect(setup?.oauthCapableNames.size).toBe(0);
     setup?.dispose();
   });
 
-  test("plugin OAuth servers have no oauthChannel — rejectedServers is undefined", () => {
+  test("returns setup with rejectedServers populated when all plugin servers have OAuth", () => {
     const oauthServer = {
       kind: "http" as const,
       name: "plugin-oauth",
@@ -159,9 +157,9 @@ describe("buildPluginMcpSetup", () => {
 
     const setup = buildPluginMcpSetup([oauthServer]);
     expect(setup).toBeDefined();
-    // Server is wired — auth possible via pseudo-tool, not TUI browser flow
-    expect(setup?.connections.has("plugin-oauth")).toBe(true);
-    expect(setup?.rejectedServers).toBeUndefined();
+    expect(setup?.connections.has("plugin-oauth")).toBe(false);
+    expect(setup?.rejectedServers?.has("plugin-oauth")).toBe(true);
+    expect(setup?.oauthCapableNames.size).toBe(0);
     setup?.dispose();
   });
 });
