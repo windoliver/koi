@@ -145,8 +145,10 @@ export function createRemoteAgentLifecycle(
   const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
   const fetchImpl = options.fetch ?? globalThis.fetch;
 
-  // Active pipe promises for stop() to await.
-  const activePipes = new Map<TaskItemId, Promise<void>>();
+  // Active pipe promises for stop() to await, keyed by per-start attemptId.
+  // Using attemptId (not taskId) prevents concurrent retries sharing the same
+  // taskId from overwriting each other's pipe entry.
+  const activePipes = new Map<string, Promise<void>>();
 
   return {
     kind: "remote_agent",
@@ -202,24 +204,21 @@ export function createRemoteAgentLifecycle(
       if (config.timeout !== undefined) {
         timeoutId = setTimeout(() => {
           timedOut = true;
+          // Abort immediately — hard deadline. Any done frame that was already
+          // consumed by an in-flight reader.read() before the abort propagated
+          // can still win (terminal guard in emitTerminal), but post-deadline
+          // network arrivals are dropped.
+          controller.abort();
           void (async () => {
-            // Drain before aborting: allows any done frame already buffered in
-            // the ReadableStream internal queue to be consumed by the read loop
-            // before we tear down the connection.
             if (pipeRef !== undefined) await drainPipe(pipeRef, drainTimeoutMs);
-            // If a done frame was processed during the drain, terminal is
-            // already set — emitTerminal is a no-op. Snapshot to know whether
-            // we actually committed to timeout failure.
+            // Snapshot before the call: if the done frame beat the abort in
+            // the narrow race, terminal is already set and emitTerminal no-ops.
             const timedOutBeforeDone = !terminal;
             emitTerminal(1, "\n[timed out: remote agent may still be running]\n");
-            // Abort after the drain/decision — frees any blocked reader.read()
-            // that did not settle during the drain window.
-            controller.abort();
             // Only send cancel if we actually committed to timeout failure.
-            // If a done frame won during drain, cancel would race a success.
             if (timedOutBeforeDone) notifyCancel();
             // Force-remove from activePipes even if the pipe never settled.
-            activePipes.delete(taskId);
+            activePipes.delete(attemptId);
           })();
         }, config.timeout);
       }
@@ -464,11 +463,11 @@ export function createRemoteAgentLifecycle(
           );
         }
       })().finally(() => {
-        activePipes.delete(taskId);
+        activePipes.delete(attemptId);
       });
 
       pipeRef = pipe;
-      activePipes.set(taskId, pipe);
+      activePipes.set(attemptId, pipe);
 
       const cancel = (): void => {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -488,6 +487,7 @@ export function createRemoteAgentLifecycle(
       return {
         kind: "remote_agent",
         taskId,
+        attemptId,
         endpoint, // from lifecycle options, not per-task config
         correlationId: config.correlationId,
         cancel,
@@ -498,12 +498,12 @@ export function createRemoteAgentLifecycle(
 
     stop: async (state: RemoteAgentTask): Promise<void> => {
       state.cancel();
-      const pipe = activePipes.get(state.taskId);
+      const pipe = activePipes.get(state.attemptId);
       if (pipe !== undefined) await drainPipe(pipe, drainTimeoutMs);
       // Force-remove even if the pipe promise never settled within the drain window.
-      // Without this, a hung connection would retain the taskId in activePipes
+      // Without this, a hung connection would retain the attemptId in activePipes
       // after the board has already transitioned to a terminal state.
-      activePipes.delete(state.taskId);
+      activePipes.delete(state.attemptId);
     },
   };
 }
