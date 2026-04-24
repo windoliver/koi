@@ -1748,6 +1748,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Only manifest paths are re-checked here — env-var paths are operator-supplied
   // and already outside the repo-authored trust boundary.
   if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1") {
+    // Skip violations revalidation when governance is disabled: runtime-factory
+    // ignores violationSqlitePath entirely in that case, so a post-load FS
+    // change to that path cannot cause a real security issue and must not abort
+    // the incident-mitigation path that --no-governance enables.
+    const governanceEnabledForRevalidation = flags.governance.enabled;
     const auditPathsToRevalidate: ReadonlyArray<readonly [string | undefined, string]> = [
       [
         process.env.KOI_AUDIT_NDJSON === undefined ? manifestAudit.ndjson : undefined,
@@ -1758,7 +1763,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         "manifest.audit.sqlite",
       ],
       [
-        process.env.KOI_AUDIT_VIOLATIONS === undefined ? manifestAudit.violations : undefined,
+        governanceEnabledForRevalidation && process.env.KOI_AUDIT_VIOLATIONS === undefined
+          ? manifestAudit.violations
+          : undefined,
         "manifest.audit.violations",
       ],
     ];
