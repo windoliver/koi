@@ -54,19 +54,37 @@ describe("createIdempotencyStore", () => {
     expect(store.tryBegin("key-1")).toBe("ok");
   });
 
-  test("maxSize blocks new reservations when store is full", () => {
-    // capacity is enforced before insertion in tryBegin, so committed + processing
-    // entries together cannot exceed maxSize.
+  test("maxSize evicts oldest committed entry to make room for new reservations", () => {
+    // At capacity, tryBegin evicts the oldest committed entry (LRU-ish) so normal
+    // sustained traffic does not degrade into capacity-exceeded errors.
     const store = createIdempotencyStore({ maxSize: 2 });
     store.tryBegin("key-1");
     store.commit("key-1");
     store.tryBegin("key-2");
     store.commit("key-2");
-    // Store has 2 committed entries (size = 2 = maxSize). New key is rejected.
+    // Store is full (2 committed). tryBegin evicts key-1 (oldest) to make room for key-3.
+    // State: {key-2:committed, key-3:processing}
+    expect(store.tryBegin("key-3")).toBe("ok");
+    // key-3 is now in processing — tryBegin on key-3 again → in-flight
+    expect(store.tryBegin("key-3")).toBe("in-flight");
+    // key-1 was evicted — it can be re-delivered
+    // (This evicts key-2 which is the only committed entry left.)
+    expect(store.tryBegin("key-1")).toBe("ok");
+    // key-2 was evicted by the key-1 reservation above — also available again
+    store.abort("key-3"); // free a processing slot
+    store.abort("key-1"); // free a processing slot
+    expect(store.tryBegin("key-2")).toBe("ok"); // key-2 was evicted, so ok
+  });
+
+  test("tryBegin returns capacity-exceeded when store is full of in-flight entries", () => {
+    // Only processing entries in the store — no committed to evict.
+    const store = createIdempotencyStore({ maxSize: 2 });
+    store.tryBegin("key-1"); // processing, not committed
+    store.tryBegin("key-2"); // processing, not committed — store full
     expect(store.tryBegin("key-3")).toBe("capacity-exceeded");
-    // Existing committed keys are still blocked.
-    expect(store.tryBegin("key-1")).toBe("duplicate");
-    expect(store.tryBegin("key-2")).toBe("duplicate");
+    // Aborting one in-flight entry frees capacity
+    store.abort("key-1");
+    expect(store.tryBegin("key-3")).toBe("ok");
   });
 
   test("prune removes expired committed entries", () => {
@@ -79,18 +97,6 @@ describe("createIdempotencyStore", () => {
     }
     store.prune();
     expect(store.tryBegin("key-expire")).toBe("ok");
-  });
-
-  test("tryBegin returns capacity-exceeded when store is full (processing + committed)", () => {
-    // maxSize bounds total entries including in-flight processing reservations,
-    // so a burst of unique keys cannot grow memory past the stated cap.
-    const store = createIdempotencyStore({ maxSize: 2 });
-    expect(store.tryBegin("key-1")).toBe("ok"); // slot 1
-    expect(store.tryBegin("key-2")).toBe("ok"); // slot 2 — now full
-    expect(store.tryBegin("key-3")).toBe("capacity-exceeded"); // rejected
-    // Aborting one slot frees capacity
-    store.abort("key-1");
-    expect(store.tryBegin("key-3")).toBe("ok"); // accepted after abort
   });
 
   test("expired processing reservation is pruned — hung request cannot permanently burn a key", () => {

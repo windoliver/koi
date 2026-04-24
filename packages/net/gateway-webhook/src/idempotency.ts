@@ -12,9 +12,11 @@
  * Processing reservations expire after `processingTtlMs` (default: 5 min) so that
  * hung or cancelled requests cannot permanently black-hole a delivery key. Tune
  * `processingTtlMs` to be longer than your slowest expected dispatch path.
- * Committed entries expire after `ttlMs` (default: 24 h). Bounded by `maxSize`
- * (default: 10 000) — capacity is enforced before each new reservation so a
- * burst of unique in-flight requests cannot grow the store past the stated cap.
+ * Committed entries expire after `ttlMs` (default: 24 h). Total store size is
+ * bounded by `maxSize` (default: 10 000). At capacity, `tryBegin` evicts the
+ * oldest committed entry to make room for new reservations (LRU-ish). If all
+ * entries are in-flight (no committed to evict), it returns `"capacity-exceeded"`
+ * so the caller can return a retryable 503.
  *
  * **Scope:** this store is in-process only. Dedup state is lost on restart and
  * not shared across replicas. For cross-process replay protection, implement
@@ -97,9 +99,21 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
       // Expired committed entry — allow fresh delivery
       store.delete(key);
     }
-    // Enforce capacity before inserting — processing entries count toward the cap.
-    // Without this, a burst of unique keys fills memory past maxSize.
-    if (store.size >= maxSize) return "capacity-exceeded";
+    // Enforce capacity before inserting. At the cap, evict the oldest committed
+    // entry to make room — this gives LRU-ish behavior for normal sustained
+    // traffic. If the store is full of processing entries (no committed to evict),
+    // return capacity-exceeded so the caller retries after entries drain.
+    if (store.size >= maxSize) {
+      let evicted = false;
+      for (const [k, e] of store) {
+        if (e.state === "committed") {
+          store.delete(k);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) return "capacity-exceeded";
+    }
     // Reserve with a processing TTL so hung requests cannot permanently tombstone a key.
     store.set(key, { state: "processing", expiresAt: Date.now() + processingTtlMs });
     return "ok";
