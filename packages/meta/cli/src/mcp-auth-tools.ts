@@ -77,51 +77,98 @@ function createAuthenticateTool(
 
   const execute = async (_args: JsonObject): Promise<unknown> => {
     const { triggerAuth } = entry.connection;
-    if (triggerAuth === undefined) {
+
+    if (triggerAuth !== undefined) {
+      // Preferred: route through triggerAuth() so concurrent auth attempts share
+      // the singleflight and onAuthComplete fires only once.
+      const result = await triggerAuth();
+      if (!result.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Authentication failed for "${serverName}": ${result.error.message}. ` +
+                `The user can also try: koi mcp auth ${serverName}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      await rediscover();
       return {
         content: [
           {
             type: "text",
             text:
-              `Authentication is not available for "${serverName}". ` +
-              `The server may not be configured for OAuth. Try: koi mcp auth ${serverName}`,
+              `Authentication successful for "${serverName}". ` +
+              `Tokens are stored and the server has been reconnected. ` +
+              `The server's tools are now available.`,
           },
         ],
-        isError: true,
       };
     }
 
-    // Route through triggerAuth() so concurrent auth attempts share the
-    // singleflight and the onAuthComplete notification fires only once.
-    const result = await triggerAuth();
-    if (!result.ok) {
+    // Fallback: no OAuthChannel was wired (e.g. koi start). Use the provider
+    // directly — no singleflight protection, but no concurrent auto-recovery
+    // is possible without onAuthNeeded, so there is no race to prevent.
+    try {
+      const success = await entry.provider.startAuthFlow();
+      if (!success) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Authentication failed for "${serverName}". The OAuth flow did not complete — ` +
+                `the user may not have authorized in time, or the authorization server could not be reached. ` +
+                `The user can also try: koi mcp auth ${serverName}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      const connectResult = await entry.connection.connect();
+      if (!connectResult.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Authentication succeeded for "${serverName}" but reconnection ` +
+                `failed: ${connectResult.error.message}. The server's tools ` +
+                `should appear on the next turn.`,
+            },
+          ],
+        };
+      }
+      await rediscover();
       return {
         content: [
           {
             type: "text",
             text:
-              `Authentication failed for "${serverName}": ${result.error.message}. ` +
-              `The user can also try: koi mcp auth ${serverName}`,
+              `Authentication successful for "${serverName}". ` +
+              `Tokens are stored and the server has been reconnected. ` +
+              `The server's tools are now available.`,
+          },
+        ],
+      };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Authentication error for "${serverName}": ${message}. ` +
+              `Common causes: callback port already in use, auth timeout ` +
+              `(2min), or browser couldn't open. Try: koi mcp auth ${serverName}`,
           },
         ],
         isError: true,
       };
     }
-
-    // Re-discover so the resolver replaces pseudo-tools with real server tools.
-    await rediscover();
-
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Authentication successful for "${serverName}". ` +
-            `Tokens are stored and the server has been reconnected. ` +
-            `The server's tools are now available.`,
-        },
-      ],
-    };
   };
 
   return { descriptor, origin: "operator", policy: DEFAULT_UNSANDBOXED_POLICY, execute };

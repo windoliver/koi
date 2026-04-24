@@ -239,7 +239,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen to fire onAuthRequired with authUrl (mode:local) for copy-paste fallback", () => {
+    test("wires onBrowserOpen to fire onAuthRequired without authUrl but with CLI recovery in message (mode:local)", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -256,15 +256,16 @@ describe("createOAuthAwareMcpConnection", () => {
       const testAuthUrl = "https://example.com/auth?state=abc";
       onBrowserOpen(testAuthUrl);
 
-      // channel.onAuthRequired fires with authUrl so the renderer can show a
-      // copy-pastable link when the browser fails to open automatically.
-      // mode:"local" signals the callback runs on 127.0.0.1 (Koi machine only).
+      // channel.onAuthRequired fires WITHOUT authUrl — the MCP callback is on
+      // 127.0.0.1 and cannot complete from a remote/SSH session. The message
+      // field includes a CLI recovery command instead.
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
-        .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };
+        .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string; message: string };
       expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.authUrl).toBe(testAuthUrl);
+      expect(reqArg.authUrl).toBeUndefined();
       expect(reqArg.mode).toBe("local");
+      expect(reqArg.message).toContain("koi mcp auth test-http");
     });
   });
 });

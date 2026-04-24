@@ -187,10 +187,45 @@ describe("createCliAuthToolFactory", () => {
     expect(content.content[0]?.text).toContain("koi mcp auth jira");
   });
 
-  test("authenticate execute returns error when connection has no triggerAuth", async () => {
+  test("authenticate execute falls back to startAuthFlow when triggerAuth absent (non-TUI runtime)", async () => {
     const provider = createMockAuthProvider();
     const connection = createMockConnection("jira", "success");
-    // Simulate a connection without triggerAuth (non-OAuth or legacy)
+    // Simulate a non-TUI runtime: connection without triggerAuth
+    const connectionWithoutTrigger = { ...connection, triggerAuth: undefined };
+    const rediscover = mock(async () => []);
+    const servers = new Map<string, AuthServerEntry>([
+      [
+        "jira",
+        {
+          provider,
+          connection: connectionWithoutTrigger as unknown as McpConnection,
+          url: "https://example.com/mcp",
+        },
+      ],
+    ]);
+
+    const factory = createCliAuthToolFactory({ servers, rediscover });
+    const tools = factory(makeFailure("jira"));
+    expect(tools[0]).toBeDefined();
+    const result = await (tools[0] as (typeof tools)[number]).execute({});
+    const content = result as {
+      readonly content: readonly { readonly type: string; readonly text: string }[];
+    };
+
+    // Fallback path must succeed: startAuthFlow + connect
+    expect(provider.startAuthFlow).toHaveBeenCalledTimes(1);
+    expect(connection.connect).toHaveBeenCalledTimes(1);
+    expect(rediscover).toHaveBeenCalledTimes(1);
+    expect(content.content[0]?.text).toContain("successful");
+  });
+
+  test("fallback: returns error when startAuthFlow returns false (no triggerAuth)", async () => {
+    const provider: OAuthAuthProvider = {
+      token: () => undefined,
+      startAuthFlow: mock(async () => false),
+      handleUnauthorized: mock(async () => "refreshed" as const),
+    };
+    const connection = createMockConnection("jira", "success");
     const connectionWithoutTrigger = { ...connection, triggerAuth: undefined };
     const servers = new Map<string, AuthServerEntry>([
       [
@@ -213,7 +248,83 @@ describe("createCliAuthToolFactory", () => {
     };
 
     expect(content.isError).toBe(true);
-    expect(content.content[0]?.text).toContain("not available");
+    expect(content.content[0]?.text).toContain("did not complete");
+    expect(content.content[0]?.text).toContain("koi mcp auth jira");
+  });
+
+  test("fallback: returns partial success when connect fails after startAuthFlow (no triggerAuth)", async () => {
+    const provider: OAuthAuthProvider = {
+      token: () => undefined,
+      startAuthFlow: mock(async () => true),
+      handleUnauthorized: mock(async () => "refreshed" as const),
+    };
+    const connection = {
+      ...createMockConnection("jira", "success"),
+      triggerAuth: undefined,
+      connect: mock(async () => ({
+        ok: false as const,
+        error: {
+          code: "EXTERNAL" as const,
+          message: "port 3000 in use",
+          retryable: false as const,
+        },
+      })),
+    };
+    const servers = new Map<string, AuthServerEntry>([
+      [
+        "jira",
+        {
+          provider,
+          connection: connection as unknown as McpConnection,
+          url: "https://example.com/mcp",
+        },
+      ],
+    ]);
+
+    const factory = createCliAuthToolFactory({ servers, rediscover: async () => [] });
+    const tools = factory(makeFailure("jira"));
+    expect(tools[0]).toBeDefined();
+    const result = await (tools[0] as (typeof tools)[number]).execute({});
+    const content = result as {
+      readonly content: readonly { readonly type: string; readonly text: string }[];
+    };
+
+    expect(content.content[0]?.text).toContain("port 3000 in use");
+    expect(content.content[0]?.text).toContain("next turn");
+  });
+
+  test("fallback: returns error when startAuthFlow throws (no triggerAuth)", async () => {
+    const provider: OAuthAuthProvider = {
+      token: () => undefined,
+      startAuthFlow: mock(async () => {
+        throw new Error("callback port 9999 already in use");
+      }),
+      handleUnauthorized: mock(async () => "refreshed" as const),
+    };
+    const connection = createMockConnection("jira", "success");
+    const connectionWithoutTrigger = { ...connection, triggerAuth: undefined };
+    const servers = new Map<string, AuthServerEntry>([
+      [
+        "jira",
+        {
+          provider,
+          connection: connectionWithoutTrigger as unknown as McpConnection,
+          url: "https://example.com/mcp",
+        },
+      ],
+    ]);
+
+    const factory = createCliAuthToolFactory({ servers, rediscover: async () => [] });
+    const tools = factory(makeFailure("jira"));
+    expect(tools[0]).toBeDefined();
+    const result = await (tools[0] as (typeof tools)[number]).execute({});
+    const content = result as {
+      readonly content: readonly { readonly type: string; readonly text: string }[];
+      readonly isError: boolean;
+    };
+
+    expect(content.isError).toBe(true);
+    expect(content.content[0]?.text).toContain("callback port 9999 already in use");
     expect(content.content[0]?.text).toContain("koi mcp auth jira");
   });
 

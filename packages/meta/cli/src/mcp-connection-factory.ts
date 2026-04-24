@@ -60,16 +60,15 @@ export function createOAuthAwareMcpConnection(
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (authorizationUrl: string): void => {
-              // Pass authUrl so the channel renderer can show a copy-pastable
-              // link when the browser fails to open automatically. mode:"local"
-              // signals the callback URL listens on 127.0.0.1 — only usable
-              // on the machine running Koi, not from remote/SSH sessions.
+            onBrowserOpen: (_authorizationUrl: string): void => {
+              // MCP OAuth callback runs on 127.0.0.1 — the URL cannot complete
+              // the flow from a remote/SSH session. Do NOT pass authUrl to the
+              // channel renderer; include a CLI recovery command in the message
+              // so users have an actionable fallback if the browser fails to open.
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,
-                  authUrl: authorizationUrl,
-                  message: `Opening browser to authorize ${server.name}`,
+                  message: `Opening browser to authorize ${server.name}. If the browser does not open, run: \`koi mcp auth ${server.name}\``,
                   mode: "local",
                 }),
               ).catch(() => {});
