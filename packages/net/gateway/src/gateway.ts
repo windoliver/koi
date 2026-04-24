@@ -47,7 +47,7 @@ export interface Gateway {
   readonly sessions: () => SessionStore;
   readonly onFrame: (
     agentId: string,
-    handler: (session: Session, frame: GatewayFrame) => void,
+    handler: (session: Session, frame: GatewayFrame) => void | Promise<void>,
   ) => () => void;
   readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
@@ -130,7 +130,10 @@ export function createGateway(
   // Frame handlers keyed by agentId. Delivery is scoped: emitFrames only fans out to
   // handlers whose agentId matches the session's agentId, preventing cross-tenant/agent
   // observation. The caller must supply the agentId they own; there is no global wildcard.
-  const frameHandlers = new Map<string, Set<(session: Session, frame: GatewayFrame) => void>>();
+  const frameHandlers = new Map<
+    string,
+    Set<(session: Session, frame: GatewayFrame) => void | Promise<void>>
+  >();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
 
   let criticalSweep: ReturnType<typeof setInterval> | undefined;
@@ -152,15 +155,16 @@ export function createGateway(
   }
 
   // Deliver a single frame to all registered handlers for the session's agentId.
-  // Per-handler isolation: one throw does not skip later subscribers. Returns false
-  // if any handler threw — caller must NOT advance remoteSeq for this frame.
-  function emitFrame(session: Session, frame: GatewayFrame): boolean {
+  // Per-handler isolation: one failure does not skip later subscribers. Returns false
+  // if any handler threw or returned a rejected promise — caller must NOT advance
+  // remoteSeq for this frame (fail-closed at-least-once delivery).
+  async function emitFrame(session: Session, frame: GatewayFrame): Promise<boolean> {
     const handlers = frameHandlers.get(session.agentId);
     if (handlers === undefined) return true;
     let allOk = true;
     for (const handler of handlers) {
       try {
-        handler(session, frame);
+        await Promise.resolve(handler(session, frame));
       } catch (err: unknown) {
         swallowError(err, { package: "gateway", operation: "onFrame" });
         allOk = false;
@@ -170,9 +174,12 @@ export function createGateway(
   }
 
   // Public batch emit used by dispatch() — errors are swallowed, no replay contract.
+  // Fire-and-forget: async handler rejections are caught per-handler.
   function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
     for (const frame of frames) {
-      emitFrame(session, frame);
+      void emitFrame(session, frame).catch((err: unknown) => {
+        swallowError(err, { package: "gateway", operation: "onFrame.dispatch" });
+      });
     }
   }
 
@@ -262,6 +269,16 @@ export function createGateway(
               swallowError(new Error(setResult.error.message), {
                 package: "gateway",
                 operation: "disconnect.seq.persist",
+              });
+              // Fail closed: disconnect state (seq + disconnectedAt) could not be durably
+              // committed. Delete the session so reconnects after a crash/restart start
+              // fresh rather than resuming from stale TTL or seq state.
+              ownedSessionIds.delete(id);
+              await Promise.resolve(store.delete(id)).catch((err: unknown) => {
+                swallowError(err, {
+                  package: "gateway",
+                  operation: "disconnect.seq.persist.cleanup",
+                });
               });
             }
           }
@@ -443,7 +460,7 @@ export function createGateway(
         ...sessionResult.value,
         remoteSeq: frame.seq + 1,
       };
-      const frameOk = emitFrame(frameSession, frame);
+      const frameOk = await emitFrame(frameSession, frame);
       if (!frameOk) {
         // Fence/close BEFORE any persistence so the socket is not held open in a
         // split-brain state while store I/O blocks.
@@ -533,6 +550,7 @@ export function createGateway(
             nextId,
           ),
         );
+        cleanupConn(conn, "session store failure");
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
         return;
       }
@@ -546,6 +564,7 @@ export function createGateway(
             nextId,
           ),
         );
+        cleanupConn(conn, "session store failure");
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
         return;
       }
