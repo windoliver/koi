@@ -67,6 +67,11 @@ import { createDecisionLedger } from "@koi/decision-ledger";
 import type { GovernanceConfig, KoiRuntime } from "@koi/engine";
 import { createGovernanceController, createKoi } from "@koi/engine";
 import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
+import {
+  createJsonlApprovalStore,
+  createPersistSink,
+  wrapBackendWithPersistedAllowlist,
+} from "@koi/governance-approval-tiers";
 import type { CostCalculator } from "@koi/governance-core";
 import { createGovernanceMiddleware } from "@koi/governance-core";
 import type { PatternRule } from "@koi/governance-defaults";
@@ -2626,17 +2631,39 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             ...(violationStore !== undefined ? { violations: violationStore } : {}),
           }
         : rawGovernanceBackend;
+
+    // gov-12: persistent approval allowlist. When governance is enabled, wrap
+    // the backend so `ok:"ask"` verdicts short-circuit to allow on a cached
+    // grant, and install a persistence sink that appends scope:"always"
+    // approvals to the store. Path defaults to ~/.koi/approvals.json; override
+    // with KOI_APPROVALS_PATH for tests and sandboxed invocations.
+    const approvalStore =
+      governanceBackend !== undefined
+        ? createJsonlApprovalStore({
+            path: process.env.KOI_APPROVALS_PATH ?? join(homedir(), ".koi", "approvals.json"),
+          })
+        : undefined;
+    const wrappedGovernanceBackend =
+      governanceBackend !== undefined && approvalStore !== undefined
+        ? wrapBackendWithPersistedAllowlist(governanceBackend, approvalStore)
+        : governanceBackend;
+
     const governanceRules: readonly RuleDescriptor[] =
-      governanceBackend !== undefined ? await resolveGovernanceRules(governanceBackend) : [];
+      wrappedGovernanceBackend !== undefined
+        ? await resolveGovernanceRules(wrappedGovernanceBackend)
+        : [];
     const governanceMw =
       governanceEnabled &&
-      governanceBackend !== undefined &&
+      wrappedGovernanceBackend !== undefined &&
       sharedGovernanceController !== undefined
         ? createGovernanceMiddleware({
-            backend: governanceBackend,
+            backend: wrappedGovernanceBackend,
             controller: sharedGovernanceController,
             cost: createPricingCostCalculator(),
             observerOnly: true,
+            ...(approvalStore !== undefined
+              ? { onApprovalPersist: createPersistSink(approvalStore) }
+              : {}),
             // --alert-threshold overrides the default [0.8, 0.95]. Passed
             // unconditionally when set — governance-middleware validates the
             // list and falls back to its default when undefined.

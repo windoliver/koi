@@ -701,6 +701,7 @@
         "@koi/file-type": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
+        "@koi/governance-approval-tiers": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
         "@koi/harness": "workspace:*",
