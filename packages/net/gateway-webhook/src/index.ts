@@ -16,6 +16,7 @@ export {
 export {
   createWebhookServer,
   type ProviderSecrets,
+  type ProviderSecretValue,
   type WebhookAuthenticator,
   type WebhookAuthResult,
   type WebhookConfig,

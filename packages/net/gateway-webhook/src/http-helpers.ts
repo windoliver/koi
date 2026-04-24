@@ -19,8 +19,10 @@ type ParseBodyResult =
   | { readonly ok: false; readonly status: number; readonly message: string };
 
 /**
- * Stream-read and JSON-parse a request body with size enforcement.
+ * Stream-read a request body with size enforcement, then try to JSON-parse it.
  * Returns both the raw string (for HMAC verification) and the parsed value.
+ * Non-JSON bodies (e.g. Slack slash commands, form-encoded payloads) succeed
+ * with `parsed` set to the raw string — the transport layer does not mandate JSON.
  */
 export async function parseJsonBody(request: Request, maxBytes: number): Promise<ParseBodyResult> {
   const declaredLength = request.headers.get("Content-Length");
@@ -58,7 +60,9 @@ export async function parseJsonBody(request: Request, maxBytes: number): Promise
   try {
     return { ok: true, raw, parsed: JSON.parse(raw) };
   } catch {
-    return { ok: false, status: 400, message: "Invalid JSON body" };
+    // Non-JSON body (e.g. Slack slash commands use form-encoded bodies).
+    // Dispatch the raw string as payload; providers handle interpretation.
+    return { ok: true, raw, parsed: raw };
   }
 }
 

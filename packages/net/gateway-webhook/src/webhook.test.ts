@@ -111,7 +111,9 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched).toHaveLength(0);
   });
 
-  test("invalid JSON body returns 400", async () => {
+  test("non-JSON body is accepted — dispatched with raw string as payload", async () => {
+    // Slack slash commands / form-encoded payloads must not be rejected at the
+    // transport layer. The raw body is dispatched as-is so providers can interpret it.
     server = createWebhookServer(
       { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
       dispatcher,
@@ -119,11 +121,12 @@ describe("WebhookServer — core dispatch", () => {
     await server.start();
     const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{invalid",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "command=%2Fecho&text=hello",
     });
-    expect(res.status).toBe(400);
-    expect(dispatched).toHaveLength(0);
+    expect(res.status).toBe(200);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]?.frame.payload).toBe("command=%2Fecho&text=hello");
   });
 
   test("payload exceeding maxBodyBytes returns 413", async () => {

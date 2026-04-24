@@ -73,10 +73,16 @@ export interface WebhookAuthResult {
 }
 
 /**
- * Per-provider signature config. Keys are provider kind strings.
- * Used when providerRouting is enabled.
+ * Per-provider signature config. Each provider maps to either:
+ *  - a single shared secret (string) — all accounts use the same secret
+ *  - a per-account secret map (Record<string, string>) — binds the URL account
+ *    segment to its own secret, preventing cross-tenant event injection when a
+ *    URL like /webhook/github/acme is used (requests to unknown accounts → 401)
+ *
+ * Use per-account secrets in any multi-tenant deployment.
  */
-export type ProviderSecrets = Readonly<Partial<Record<ProviderKind, string>>>;
+export type ProviderSecretValue = string | Readonly<Record<string, string>>;
+export type ProviderSecrets = Readonly<Partial<Record<ProviderKind, ProviderSecretValue>>>;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -162,7 +168,16 @@ export function createWebhookServer(
     let pendingDedupKey: string | undefined;
 
     if (provider !== undefined) {
-      const secret = providerSecrets !== undefined ? providerSecrets[provider.kind] : undefined;
+      const secretValue =
+        providerSecrets !== undefined ? providerSecrets[provider.kind] : undefined;
+      let secret: string | undefined;
+      if (typeof secretValue === "string") {
+        secret = secretValue;
+      } else if (secretValue !== undefined) {
+        // Per-account secret map — reject requests to unrecognized accounts.
+        // This prevents cross-tenant event injection via URL account manipulation.
+        secret = account !== undefined ? secretValue[account] : undefined;
+      }
       if (secret === undefined) {
         return jsonResponse(401, { ok: false, error: "No secret configured for provider" });
       }
