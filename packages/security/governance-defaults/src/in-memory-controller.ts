@@ -511,7 +511,8 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         const runNow = now();
         const runTs = event.boundaryTimestamp;
         state.turnCount = 0;
-        state.iterationStart = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
+        state.iterationStart =
+          Number.isFinite(runTs) && Math.abs(runTs - runNow) <= 60_000 ? runTs : runNow;
         return;
       }
       case "session_reset": {
@@ -522,7 +523,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         const sessTs = event.boundaryTimestamp;
         state.turnCount = 0;
         state.iterationStart =
-          Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
+          Number.isFinite(sessTs) && Math.abs(sessTs - sessNow) <= 60_000 ? sessTs : sessNow;
         state.toolOutcomes.length = 0;
         return;
       }

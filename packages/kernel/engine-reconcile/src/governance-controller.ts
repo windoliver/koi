@@ -308,7 +308,7 @@ export function createGovernanceController(
         const runNow = Date.now();
         const runTs = event.boundaryTimestamp;
         turnCount = 0;
-        startedAt = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
+        startedAt = Number.isFinite(runTs) && Math.abs(runTs - runNow) <= 60_000 ? runTs : runNow;
         break;
       }
       case "session_reset": {
@@ -322,7 +322,8 @@ export function createGovernanceController(
         const sessNow = Date.now();
         const sessTs = event.boundaryTimestamp;
         turnCount = 0;
-        startedAt = Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
+        startedAt =
+          Number.isFinite(sessTs) && Math.abs(sessTs - sessNow) <= 60_000 ? sessTs : sessNow;
         errorWindow.clear();
         totalCallsWindow.clear();
         break;

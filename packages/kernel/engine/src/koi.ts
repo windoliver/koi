@@ -713,9 +713,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // Reset all guards FIRST — before committing the governance event — so that
       // `run_reset` is only emitted when the reset is fully complete. If a guard
       // throws, we poison the runtime and re-throw; governance is never told about
-      // a reset that didn't happen. If governance later throws after guards are reset,
-      // enforcement is still correct (guards have fresh budgets); only the audit record
-      // is missing, which is recoverable on the next retry.
+      // a reset that didn't happen.
       try {
         for (const mw of guards) {
           if (isIterationGuardHandle(mw)) {
@@ -726,12 +724,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         poisoned = true;
         throw e;
       }
-      await governance.record({
-        kind: "run_reset",
-        source: "engine",
-        boundaryId,
-        boundaryTimestamp: runStartedAt,
-      });
+      // Commit governance event AFTER guards succeed. If governance rejects
+      // (async I/O failure), guards are already reset — poison the runtime so
+      // no subsequent run can proceed with split-brain state (guards fresh,
+      // controller still carrying the exhausted previous run's budgets).
+      try {
+        await governance.record({
+          kind: "run_reset",
+          source: "engine",
+          boundaryId,
+          boundaryTimestamp: runStartedAt,
+        });
+      } catch (e) {
+        poisoned = true;
+        throw e;
+      }
     }
 
     /** Re-compose chains when dynamic sources change. Updates mutable chain refs in-place.
