@@ -114,7 +114,7 @@ export function createGateway(
   // backpressure-accounted, including error/ack frames that bypass gateway.send().
   function sendFrame(conn: TransportConnection, data: string): void {
     conn.send(data);
-    bp.record(conn.id, data.length);
+    bp.record(conn.id, Buffer.byteLength(data, "utf8"));
   }
 
   function cleanupConn(conn: TransportConnection, reason: string): void {
@@ -136,7 +136,7 @@ export function createGateway(
   }
 
   async function processMessage(conn: TransportConnection, data: string): Promise<void> {
-    if (data.length > config.capabilities.maxFrameBytes) {
+    if (Buffer.byteLength(data, "utf8") > config.capabilities.maxFrameBytes) {
       conn.send(
         createErrorFrame(0, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
       );
@@ -256,17 +256,10 @@ export function createGateway(
 
           if (!connMap.has(conn.id)) return;
 
-          // Evict any existing connection already bound to this session ID.
-          // Remove old conn maps first so its onClose/cleanupConn skips session teardown.
+          // Snapshot the previous connection for this session ID — we defer eviction
+          // until after all store operations succeed (two-phase cutover). If store ops
+          // fail, the new connection is closed and the old session remains authoritative.
           const prevConnId = connBySession.get(result.session.id);
-          if (prevConnId !== undefined && prevConnId !== conn.id) {
-            sessionByConn.delete(prevConnId);
-            trackers.delete(prevConnId);
-            const prevConn = connMap.get(prevConnId);
-            connMap.delete(prevConnId);
-            bp.remove(prevConnId);
-            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
-          }
 
           // Restore remoteSeq from any previously persisted session to prevent frame replay.
           // Distinguish NOT_FOUND (new session → start at 0) from a store exception: if the
@@ -303,6 +296,18 @@ export function createGateway(
             conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
             cleanupConn(conn, "session store failure");
             return;
+          }
+
+          // All persistence succeeded — now atomically evict the previous connection.
+          // Remove old conn maps first so its onClose/cleanupConn skips session teardown.
+          if (prevConnId !== undefined && prevConnId !== conn.id) {
+            sessionByConn.delete(prevConnId);
+            trackers.delete(prevConnId);
+            msgQueues.delete(prevConnId);
+            const prevConn = connMap.get(prevConnId);
+            connMap.delete(prevConnId);
+            bp.remove(prevConnId);
+            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
           }
 
           // Install maps and send ack only after persistence — prevents read-before-write.
@@ -344,11 +349,18 @@ export function createGateway(
 
       criticalSweep = setInterval(() => {
         const now = Date.now();
+        // When global usage exceeds the limit, shed any connection already in critical
+        // state immediately rather than waiting for its per-connection timeout. This
+        // enforces globalBufferLimitBytes as an ongoing cap, not just an admission gate.
+        const globalOverLimit = !bp.canAccept();
         for (const [connId, conn] of connMap) {
           const since = bp.criticalSince(connId);
-          if (since !== undefined && now - since > config.backpressureCriticalTimeoutMs) {
-            conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Buffer limit exceeded", nextId));
-            conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
+          if (since !== undefined) {
+            const timedOut = now - since > config.backpressureCriticalTimeoutMs;
+            if (timedOut || globalOverLimit) {
+              conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Buffer limit exceeded", nextId));
+              conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
+            }
           }
         }
       }, 5_000);
