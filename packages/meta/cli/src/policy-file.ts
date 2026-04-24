@@ -61,7 +61,7 @@ export async function loadPolicyFile(path: string): Promise<readonly PatternRule
 // Validators (private)
 // ---------------------------------------------------------------------------
 
-const VALID_DECISIONS = new Set<string>(["allow", "deny"]);
+const VALID_DECISIONS = new Set<string>(["allow", "deny", "ask"]);
 const VALID_SEVERITIES = new Set<ViolationSeverity>(["info", "warning", "critical"]);
 const VALID_FIXED_KINDS = new Set<string>([
   "tool_call",
@@ -71,7 +71,14 @@ const VALID_FIXED_KINDS = new Set<string>([
   "forge",
   "handoff",
 ]);
-const VALID_RULE_KEYS = new Set<string>(["match", "decision", "rule", "severity", "message"]);
+const VALID_RULE_KEYS = new Set<string>([
+  "match",
+  "decision",
+  "rule",
+  "severity",
+  "message",
+  "prompt",
+]);
 const VALID_MATCH_KEYS = new Set<string>(["kind", "toolId", "model"]);
 
 function validateRule(entry: unknown, idx: number, path: string): PatternRule {
@@ -101,19 +108,22 @@ function validateRule(entry: unknown, idx: number, path: string): PatternRule {
   const decision = record.decision;
   if (typeof decision !== "string" || !VALID_DECISIONS.has(decision)) {
     throw new Error(
-      `--policy-file: rule[${idx}] in '${path}' must have decision: 'allow' | 'deny', got ${describeValue(decision)}`,
+      `--policy-file: rule[${idx}] in '${path}' must have decision: 'allow' | 'deny' | 'ask', got ${describeValue(decision)}`,
     );
   }
 
   const rule: PatternRule = {
     match,
-    decision: decision as "allow" | "deny",
+    decision: decision as "allow" | "deny" | "ask",
     ...(record.rule !== undefined ? { rule: requireString(record.rule, "rule", idx, path) } : {}),
     ...(record.severity !== undefined
       ? { severity: validateSeverity(record.severity, idx, path) }
       : {}),
     ...(record.message !== undefined
       ? { message: requireString(record.message, "message", idx, path) }
+      : {}),
+    ...(record.prompt !== undefined
+      ? { prompt: requireString(record.prompt, "prompt", idx, path) }
       : {}),
   };
   return rule;
