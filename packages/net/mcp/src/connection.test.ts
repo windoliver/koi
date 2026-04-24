@@ -840,3 +840,72 @@ describe("callTool interactive auth after passive discovery 401", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// triggerAuth — user-initiated auth from connected state
+// ---------------------------------------------------------------------------
+
+describe("McpConnection triggerAuth", () => {
+  test("triggerAuth succeeds from connected state without state-machine violation", async () => {
+    const onAuthNeeded = mock(async () => true);
+    const onAuthComplete = mock(async () => {});
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      ...makeDeps(),
+      onAuthNeeded,
+      onAuthComplete,
+    });
+
+    // Establish connection so state is "connected"
+    const connectResult = await conn.connect();
+    expect(connectResult.ok).toBe(true);
+    expect(conn.state.kind).toBe("connected");
+
+    // triggerAuth from connected state must not throw a state-machine error
+    expect(conn.triggerAuth).toBeDefined();
+    const result = await conn.triggerAuth!();
+
+    expect(result.ok).toBe(true);
+    expect(onAuthNeeded).toHaveBeenCalledTimes(1);
+    expect(onAuthComplete).toHaveBeenCalledTimes(1);
+    expect(conn.state.kind).toBe("connected");
+  });
+
+  test("triggerAuth tries silent refresh first; skips browser if refreshed", async () => {
+    const onUnauthorized = mock(async () => "refreshed" as const);
+    const onAuthNeeded = mock(async () => true);
+    const onAuthComplete = mock(async () => {});
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      ...makeDeps(),
+      onUnauthorized,
+      onAuthNeeded,
+      onAuthComplete,
+    });
+
+    await conn.connect();
+    const result = await conn.triggerAuth!();
+
+    expect(result.ok).toBe(true);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    // Silent refresh succeeded — browser auth must not be triggered
+    expect(onAuthNeeded).not.toHaveBeenCalled();
+    expect(onAuthComplete).toHaveBeenCalledTimes(1);
+  });
+
+  test("triggerAuth coalesces concurrent calls via singleflight", async () => {
+    const onAuthNeeded = mock(async () => true);
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      ...makeDeps(),
+      onAuthNeeded,
+    });
+
+    await conn.connect();
+
+    // Fire two concurrent triggerAuth calls
+    const [r1, r2] = await Promise.all([conn.triggerAuth!(), conn.triggerAuth!()]);
+
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    // Singleflight: onAuthNeeded must only fire once despite concurrent calls
+    expect(onAuthNeeded).toHaveBeenCalledTimes(1);
+  });
+});

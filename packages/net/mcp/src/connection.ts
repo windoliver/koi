@@ -272,7 +272,10 @@ export function createMcpConnection(
                 (): UnauthorizedOutcome => "transient-failure",
               );
               if (refreshOutcome === "refreshed") {
-                const silentResult = await connect(true);
+                // Use reconnect() so the connection follows the valid state-machine
+                // path (connected → reconnecting → connected) instead of trying a
+                // direct connected → connecting transition that the SM rejects.
+                const silentResult = await reconnect();
                 if (silentResult.ok) {
                   await Promise.resolve(onAuthComplete?.()).catch(() => {});
                   return { ok: true, value: undefined };
@@ -283,7 +286,7 @@ export function createMcpConnection(
               // "needs-auth" or "transient-failure": open browser flow.
               const authed = await onAuthNeeded();
               if (!authed) return { ok: false, error: authDeclinedError() };
-              const reconnResult = await connect(true);
+              const reconnResult = await reconnect();
               if (!reconnResult.ok) return reconnResult;
               await Promise.resolve(onAuthComplete?.()).catch(() => {});
               return { ok: true, value: undefined };
