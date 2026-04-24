@@ -39,6 +39,13 @@ describe("resolveSettingsPaths", () => {
     expect(paths.policy).toMatch(/policy\.json$/);
   });
 
+  test("cwd='/' does not infinite-loop and returns a valid project path", () => {
+    const paths = resolveSettingsPaths({ cwd: "/", homeDir: "/home/user" });
+    // Falls back to "/" as project root — no hang, valid string
+    expect(typeof paths.project).toBe("string");
+    expect(paths.project).toMatch(/settings\.json$/);
+  });
+
   test("uses process.cwd() (walked to project root) when cwd not provided", () => {
     const paths = resolveSettingsPaths({ homeDir: "/home/user" });
     // findProjectRoot walks up from process.cwd() to the nearest git root,
