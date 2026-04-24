@@ -65,6 +65,7 @@
     { "path": "../../lib/middleware-strict-agentic" },
     { "path": "../../lib/outcome-evaluator" },
     { "path": "../../security/middleware-permissions" },
+    { "path": "../../security/governance-approval-tiers" },
     { "path": "../../security/governance-core" },
     { "path": "../../security/governance-defaults" },
     { "path": "../../lib/bash-ast" },
