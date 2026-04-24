@@ -720,6 +720,44 @@ describe("createRemoteAgentLifecycle", () => {
   });
 
   describe("max frame size guard", () => {
+    test("many small frames coalesced into one large chunk still succeed", async () => {
+      // Total chunk > 1 MiB, but each individual NDJSON line is small.
+      // The guard must not trip on the combined buffer before line splitting.
+      const encoder = new TextEncoder();
+      const frames: NdjsonFrame[] = [];
+      for (let i = 0; i < 5000; i++) {
+        frames.push({ kind: "chunk", text: "a".repeat(200) }); // 200 bytes each → 1MB total
+      }
+      frames.push({ kind: "done", exitCode: 0 });
+      // Deliver all frames in one ReadableStream chunk.
+      const ndjson = `${frames.map((f) => JSON.stringify(f)).join("\n")}\n`;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(ndjson));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const exits: number[] = [];
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      expect(exits).toEqual([0]);
+    });
+
     test("frame exceeding 1 MiB fails closed with protocol error", async () => {
       const exits: number[] = [];
       const encoder = new TextEncoder();

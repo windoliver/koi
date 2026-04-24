@@ -200,18 +200,25 @@ export function createRemoteAgentLifecycle(
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            // last element is the incomplete line remainder
+            buffer = lines.pop() ?? "";
+            // Guard: enforce limit on the current incomplete frame only (remainder),
+            // not the full pre-split buffer which may contain many valid complete lines.
             if (buffer.length > MAX_FRAME_BYTES) {
               if (timeoutId !== undefined) clearTimeout(timeoutId);
               emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
               return;
             }
-            const lines = buffer.split("\n");
-            // last element is the incomplete line remainder
-            buffer = lines.pop() ?? "";
             for (const line of lines) {
               if (stopped || timedOut) break;
               const trimmed = line.trim();
               if (trimmed === "") continue;
+              if (trimmed.length > MAX_FRAME_BYTES) {
+                if (timeoutId !== undefined) clearTimeout(timeoutId);
+                emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+                return;
+              }
               let frame: unknown;
               try {
                 frame = JSON.parse(trimmed);
