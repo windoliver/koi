@@ -859,10 +859,13 @@ function parseManifestAudit(
     try {
       realManifestDir = realpathSync(manifestDir);
     } catch (err: unknown) {
-      throw new Error(
-        `manifest.audit: cannot resolve manifest directory "${manifestDir}": ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
+      const code = (err as NodeJS.ErrnoException).code ?? "unknown";
+      return {
+        ok: false,
+        error:
+          `manifest.audit: cannot resolve manifest directory "${manifestDir}" (${code}): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      };
     }
 
     const parentDir = dirname(lexicalResolved);
@@ -882,7 +885,12 @@ function parseManifestAudit(
             "Create the directory before running koi tui with this manifest, or remove the audit path.",
         };
       }
-      throw err;
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: cannot resolve parent directory "${parentDir}" (${code ?? "unknown"}): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      };
     }
     const parentRel = relative(realManifestDir, realParentDir);
     if (parentRel === ".." || parentRel.startsWith(`..${sep}`) || isAbsolute(parentRel)) {
@@ -907,7 +915,15 @@ function parseManifestAudit(
         };
       }
     } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: cannot stat "${lexicalResolved}" (${code ?? "unknown"}): ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
       // File doesn't exist yet — expected happy path.
     }
 
@@ -967,7 +983,7 @@ export function revalidateAuditPathContainment(
     if (code === "ENOENT") {
       return `parent directory "${parentDir}" no longer exists`;
     }
-    throw err;
+    return `cannot check parent directory "${parentDir}" (${code ?? "unknown"}): ${err instanceof Error ? err.message : String(err)}`;
   }
 
   const parentRel = relative(realManifestDir, realParentDir);
@@ -981,7 +997,10 @@ export function revalidateAuditPathContainment(
       return `"${resolvedPath}" is now a symlink`;
     }
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      return `cannot stat "${resolvedPath}" (${code ?? "unknown"}): ${err instanceof Error ? err.message : String(err)}`;
+    }
     // File does not exist yet — expected.
   }
 

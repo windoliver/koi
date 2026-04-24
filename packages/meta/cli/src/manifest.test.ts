@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadManifestConfig } from "./manifest.js";
+import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.js";
 
 // Regression tests for #1777 — manifest.filesystem must be parsed,
 // validated, and surfaced so `koi start --manifest` / `koi tui --manifest`
@@ -787,5 +787,85 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     if (result.ok) return;
     expect(result.error).toContain("sqlite");
     expect(result.error).toContain("does not exist");
+  });
+
+  test("returns error (not throw) when parent directory is a symlink loop (ELOOP)", async () => {
+    // Create a circular symlink: loop → loop inside logs/. realpathSync on any
+    // path through it produces ELOOP. parseManifestAudit must return { ok: false }
+    // instead of propagating the exception to the caller.
+    const loopLink = join(dir, "logs", "loop");
+    symlinkSync(loopLink, loopLink); // points to itself
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ./logs/loop/session.audit.ndjson",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ndjson");
+  });
+});
+
+describe("revalidateAuditPathContainment", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-revalidate-"));
+    mkdirSync(join(dir, "logs"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const manifestPath = (): string => join(dir, "koi.manifest.yaml");
+
+  test("returns undefined when path is safe", () => {
+    const resolvedPath = join(dir, "logs", "session.audit.ndjson");
+    writeFileSync(manifestPath(), "");
+    const result = revalidateAuditPathContainment(resolvedPath, manifestPath());
+    expect(result).toBeUndefined();
+  });
+
+  test("returns error string (not throw) when parent is a symlink loop (ELOOP)", () => {
+    const loopLink = join(dir, "logs", "loop");
+    symlinkSync(loopLink, loopLink);
+    writeFileSync(manifestPath(), "");
+    const result = revalidateAuditPathContainment(
+      join(loopLink, "session.audit.ndjson"),
+      manifestPath(),
+    );
+    expect(typeof result).toBe("string");
+    expect(result).not.toBeUndefined();
+  });
+
+  test("returns error string when path resolves through symlink outside manifest dir", () => {
+    const externalDir = mkdtempSync(join(tmpdir(), "koi-external-"));
+    try {
+      const escapeLink = join(dir, "logs", "escape");
+      symlinkSync(externalDir, escapeLink);
+      writeFileSync(manifestPath(), "");
+      const result = revalidateAuditPathContainment(
+        join(escapeLink, "session.audit.ndjson"),
+        manifestPath(),
+      );
+      expect(typeof result).toBe("string");
+    } finally {
+      rmSync(externalDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns error string when path is now a symlink", () => {
+    const target = join(dir, "logs", "actual.audit.ndjson");
+    writeFileSync(target, "");
+    const linkPath = join(dir, "logs", "session.audit.ndjson");
+    symlinkSync(target, linkPath);
+    writeFileSync(manifestPath(), "");
+    const result = revalidateAuditPathContainment(linkPath, manifestPath());
+    expect(typeof result).toBe("string");
+    expect(result).toContain("symlink");
   });
 });
