@@ -168,6 +168,12 @@ export function createWebhookServer(
     // Dedup key is extracted here but NOT committed until after dispatch succeeds.
     let pendingDedupKey: string | undefined;
 
+    // accountAuthenticated is true only when a per-account secret map was used.
+    // A shared string secret authenticates the provider secret but NOT the URL
+    // account segment, which is unsigned. Routing.account is only populated from
+    // the URL when the account was explicitly authenticated via secret lookup.
+    let accountAuthenticated = false;
+
     if (provider !== undefined) {
       const secretValue =
         providerSecrets !== undefined ? providerSecrets[provider.kind] : undefined;
@@ -175,9 +181,10 @@ export function createWebhookServer(
       if (typeof secretValue === "string") {
         secret = secretValue;
       } else if (secretValue !== undefined) {
-        // Per-account secret map — reject requests to unrecognized accounts.
-        // This prevents cross-tenant event injection via URL account manipulation.
+        // Per-account secret map — reject requests to unrecognized accounts and
+        // mark the account as authenticated (it was proven via the secret lookup).
         secret = account !== undefined ? secretValue[account] : undefined;
+        accountAuthenticated = secret !== undefined;
       }
       if (secret === undefined) {
         return jsonResponse(401, { ok: false, error: "No secret configured for provider" });
@@ -200,7 +207,14 @@ export function createWebhookServer(
     let agentId = "webhook";
     let routing: RoutingContext = {
       ...(channel !== undefined ? { channel } : {}),
-      ...(account !== undefined ? { account } : {}),
+      // Only include the URL account segment when it was authenticated. A shared
+      // provider secret does not prove which account the request is for — that
+      // must come from the authenticator or an explicit allowUnauthenticated flag
+      // (which signals the caller has accepted all routing risks).
+      ...(account !== undefined &&
+      (accountAuthenticated || authenticator !== undefined || config.allowUnauthenticated === true)
+        ? { account }
+        : {}),
       peer,
     };
     let metadata: Readonly<Record<string, unknown>> = {};

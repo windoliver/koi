@@ -9,14 +9,22 @@
  *   3. `abort(key)` — releases the reservation after a transient failure so
  *      provider retries are accepted.
  *
- * Processing reservations expire after `processingTtlMs` (default: 30 s) so that
- * hung or cancelled requests cannot permanently black-hole a delivery key.
+ * Processing reservations expire after `processingTtlMs` (default: 5 min) so that
+ * hung or cancelled requests cannot permanently black-hole a delivery key. Tune
+ * `processingTtlMs` to be longer than your slowest expected dispatch path.
  * Committed entries expire after `ttlMs` (default: 24 h). Bounded by `maxSize`
  * (default: 10 000) to cap memory; oldest committed entries evicted first.
+ *
+ * **Scope:** this store is in-process only. Dedup state is lost on restart and
+ * not shared across replicas. For cross-process replay protection, implement
+ * `IdempotencyStore` against a shared/persistent backend.
  */
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_PROCESSING_TTL_MS = 30_000;
+// 5-minute processing TTL: long enough for most slow dispatchers, short enough
+// to recover from truly hung/crashed requests. Tune down if your dispatcher is
+// consistently fast; tune up if dispatch work exceeds 5 minutes.
+const DEFAULT_PROCESSING_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_SIZE = 10_000;
 
 type EntryState = "processing" | "committed";
