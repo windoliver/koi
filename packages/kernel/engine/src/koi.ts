@@ -146,17 +146,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const debugInstrumentation: DebugInstrumentation | undefined =
     options.debug?.enabled === true ? createDebugInstrumentation(options.debug) : undefined;
 
-  // Warn JS/JSON hosts using the old key name; TypeScript callers see a compile error.
-  // The old key has no effect — hosts must set `resetBudgetPerRun: true` explicitly
-  // to opt in to the new fail-closed per-run reset semantics.
+  // Honor the renamed option so untyped JS/JSON hosts that set the old key still get
+  // per-run reset behavior. TypeScript callers see a compile warning from the deprecated
+  // field. A host that sets both keys gets the explicit value of the new key.
   const legacyOpts = options as unknown as Record<string, unknown>;
   if ("resetIterationBudgetPerRun" in legacyOpts && !("resetBudgetPerRun" in legacyOpts)) {
     console.warn(
-      "[koi] createKoi: option `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` " +
-        "in #1939 and has no effect. Set `resetBudgetPerRun: true` to enable per-run reset.",
+      "[koi] createKoi: `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
+        "The value has been remapped. Update your config to silence this warning.",
     );
   }
-  const resetBudgetPerRun = options.resetBudgetPerRun === true;
+  const resetBudgetPerRun =
+    options.resetBudgetPerRun === true ||
+    (legacyOpts.resetIterationBudgetPerRun === true && !("resetBudgetPerRun" in legacyOpts));
 
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {

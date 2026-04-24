@@ -127,8 +127,9 @@ export interface CreateKoiOptions {
    */
   readonly resetBudgetPerRun?: boolean;
   /**
-   * @deprecated Renamed to `resetBudgetPerRun` in #1939. This field has no effect.
-   * Set `resetBudgetPerRun: true` instead. Will be removed in the next major release.
+   * @deprecated Renamed to `resetBudgetPerRun` in #1939. The runtime still honors this
+   * field (remapped automatically) for one compatibility window. Migrate to
+   * `resetBudgetPerRun: true`. Will be removed in the next major release.
    */
   readonly resetIterationBudgetPerRun?: boolean;
   /** Optional approval handler for HITL permission gating. */
