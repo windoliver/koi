@@ -982,6 +982,51 @@ describe("createRemoteAgentLifecycle", () => {
     });
   });
 
+  describe("transport teardown on protocol error", () => {
+    test("server that keeps streaming after sending an invalid frame is ignored", async () => {
+      // Server sends a malformed frame, then continues streaming valid data.
+      // The lifecycle must abort/cancel the transport so server-side work stops.
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      // Simulate a server that keeps streaming after a bad frame
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("not-json\n"));
+          // More data after the invalid frame — must not appear in output
+          controller.enqueue(
+            encoder.encode(`${JSON.stringify({ kind: "chunk", text: "LEAKED" })}\n`),
+          );
+          controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "done", exitCode: 0 })}\n`));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("protocol error");
+      expect(text).not.toContain("LEAKED");
+    });
+  });
+
   describe("unknown frame kinds", () => {
     test("unknown frame kind fails closed with protocol error", async () => {
       const exits: number[] = [];

@@ -204,11 +204,20 @@ export function createRemoteAgentLifecycle(
         const NL = 10; // 0x0A — safe to scan in raw UTF-8 bytes (never a continuation byte)
 
         // Decode and process one complete NDJSON line (raw bytes, no trailing newline).
+        // Abort the fetch and cancel the response body reader.
+        // Called on every terminal path (done, protocol error, or unrecoverable failure)
+        // so the remote agent does not keep running after the local task is finalized.
+        const teardownTransport = (): void => {
+          reader.cancel().catch(() => undefined);
+          controller.abort();
+        };
+
         // Returns true if the pipe should stop reading (error or done frame).
         const processLineBytes = (lineBytes: Uint8Array): boolean => {
           if (lineBytes.byteLength > MAX_FRAME_BYTES) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
             emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+            teardownTransport();
             return true;
           }
           const trimmed = new TextDecoder().decode(lineBytes).trim();
@@ -219,11 +228,13 @@ export function createRemoteAgentLifecycle(
           } catch {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
             emitTerminal(1, "\n[error: protocol error — malformed frame]\n");
+            teardownTransport();
             return true;
           }
           if (!isRemoteAgentFrame(frame)) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
             emitTerminal(1, "\n[error: protocol error — unknown frame kind]\n");
+            teardownTransport();
             return true;
           }
           if (frame.kind === "chunk") {
@@ -238,7 +249,7 @@ export function createRemoteAgentLifecycle(
               ? "\n[exit code: 0]\n"
               : `\n[exit code: ${String(frame.exitCode)}]\n`;
           emitTerminal(frame.exitCode, exitMsg);
-          reader.cancel().catch(() => undefined);
+          teardownTransport();
           return true;
         };
 
@@ -263,6 +274,7 @@ export function createRemoteAgentLifecycle(
                 if (rawBuf.byteLength + tailLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
                   emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+                  teardownTransport();
                   pipeError = true;
                   break outer;
                 }
@@ -286,6 +298,7 @@ export function createRemoteAgentLifecycle(
                 if (lineLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
                   emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+                  teardownTransport();
                   pipeError = true;
                   break outer;
                 }
