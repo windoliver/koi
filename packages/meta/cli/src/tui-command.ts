@@ -1563,11 +1563,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     send: async (message): Promise<void> => {
       const textBlock = message.content.find((b) => b.kind === "text");
       if (textBlock !== undefined && textBlock.kind === "text") {
-        store.dispatch({
-          kind: "add_user_message",
-          id: `auth-notice-${Date.now()}`,
-          blocks: [{ kind: "text", text: textBlock.text }],
-        });
+        // Route OAuth notices through add_info (non-transcript) so auth URLs
+        // and completion text never enter conversation state replayed to the model.
+        store.dispatch({ kind: "add_info", message: textBlock.text });
       }
     },
     onMessage: () => () => {},

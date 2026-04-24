@@ -53,23 +53,23 @@ export function createOAuthAwareMcpConnection(
     const storage = createStorage();
     // Fire onAuthRequired the moment the browser is about to open so the TUI
     // shows a "browser opening" status without blocking the launch.
-    // MCP uses a local loopback callback (127.0.0.1) that is not reachable from
-    // remote hosts — do NOT include authUrl here since the URL is not a usable
-    // paste-in fallback for headless/SSH sessions. The console already logs it
-    // as a machine-local fallback via startCallbackServer.
+    // MCP uses a local loopback callback (127.0.0.1). Pass authorizationUrl so
+    // the user can copy-paste it into their local browser if auto-open fails.
+    // The message also includes a CLI fallback for SSH/headless environments.
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (_authorizationUrl: string): void => {
+            onBrowserOpen: (authorizationUrl: string): void => {
               // MCP OAuth callback runs on 127.0.0.1 — the URL cannot complete
-              // the flow from a remote/SSH session. Do NOT pass authUrl to the
-              // channel renderer; include a CLI recovery command in the message
-              // so users have an actionable fallback if the browser fails to open.
+              // the flow from a remote/SSH session. Pass authorizationUrl so the
+              // user can manually copy-paste it into their local browser if
+              // auto-open fails. Remote/SSH users also see the CLI fallback.
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,
                   message: `Opening browser to authorize ${server.name}. If the browser does not open, run: \`koi mcp auth ${server.name}\``,
                   mode: "local",
+                  authUrl: authorizationUrl,
                 }),
               ).catch(() => {});
             },

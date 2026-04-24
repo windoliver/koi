@@ -25,10 +25,8 @@ function buildAuthRequiredText(n: AuthRequiredNotification): string {
     return `**${n.message}**\n\nOpen this link in your browser to authorize ${n.provider}:\n${n.authUrl}${remoteHint}`;
   }
 
-  // mode:"local" with authUrl — the URL is navigable (e.g. Nexus OAuth where
-  // the user must open a browser on the same machine). Show as a fallback link.
-  // MCP loopback flows must NOT pass authUrl here — they include recovery
-  // instructions in the message field instead.
+  // mode:"local" with authUrl — the URL is navigable on the local machine
+  // (Nexus OAuth and MCP loopback flows). Show as a copy-paste fallback link.
   return `**${n.message}**\n\n_If the browser does not open automatically, open this link to authorize ${n.provider}:_\n${n.authUrl}`;
 }
 

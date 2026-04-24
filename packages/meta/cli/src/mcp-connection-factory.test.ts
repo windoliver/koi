@@ -239,7 +239,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen to fire onAuthRequired without authUrl but with CLI recovery in message (mode:local)", () => {
+    test("wires onBrowserOpen to fire onAuthRequired with authUrl and CLI recovery in message (mode:local)", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -256,14 +256,14 @@ describe("createOAuthAwareMcpConnection", () => {
       const testAuthUrl = "https://example.com/auth?state=abc";
       onBrowserOpen(testAuthUrl);
 
-      // channel.onAuthRequired fires WITHOUT authUrl — the MCP callback is on
-      // 127.0.0.1 and cannot complete from a remote/SSH session. The message
-      // field includes a CLI recovery command instead.
+      // channel.onAuthRequired fires WITH authUrl so the user can copy-paste it
+      // if browser auto-open fails. The message field also includes a CLI recovery
+      // command for SSH/remote sessions where the loopback callback won't work.
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string; message: string };
       expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.authUrl).toBeUndefined();
+      expect(reqArg.authUrl).toBe(testAuthUrl);
       expect(reqArg.mode).toBe("local");
       expect(reqArg.message).toContain("koi mcp auth test-http");
     });
