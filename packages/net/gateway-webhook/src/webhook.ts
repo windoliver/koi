@@ -46,12 +46,19 @@ export interface WebhookConfig {
    * or a WebhookAuthenticator instead.
    */
   readonly allowUnauthenticated?: boolean | undefined;
-  /** Idempotency store options. Omit to use defaults (24h TTL, 30s processing TTL, 10k entries). */
+  /** Idempotency store options. Omit to use defaults (24h TTL, 5min processing TTL, 10k entries).
+   *  Ignored when `idempotencyStore` is provided. */
   readonly idempotency?: {
     readonly ttlMs?: number | undefined;
     readonly processingTtlMs?: number | undefined;
     readonly maxSize?: number | undefined;
   };
+  /**
+   * Inject a custom IdempotencyStore (e.g. Redis-backed) for cross-process or
+   * cross-replica replay protection. Without this, the default in-memory store
+   * loses dedup state on restart and is not shared across replicas.
+   */
+  readonly idempotencyStore?: IdempotencyStore | undefined;
 }
 
 export interface WebhookServer {
@@ -116,7 +123,8 @@ export function createWebhookServer(
   let frameCounter = 0;
 
   const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
-  const idempotencyStore: IdempotencyStore = createIdempotencyStore(config.idempotency ?? {});
+  const idempotencyStore: IdempotencyStore =
+    config.idempotencyStore ?? createIdempotencyStore(config.idempotency ?? {});
 
   const prefix = config.pathPrefix.endsWith("/")
     ? config.pathPrefix.slice(0, -1)
@@ -208,11 +216,10 @@ export function createWebhookServer(
     let routing: RoutingContext = {
       ...(channel !== undefined ? { channel } : {}),
       // Only include the URL account segment when it was authenticated. A shared
-      // provider secret does not prove which account the request is for — that
-      // must come from the authenticator or an explicit allowUnauthenticated flag
-      // (which signals the caller has accepted all routing risks).
-      ...(account !== undefined &&
-      (accountAuthenticated || authenticator !== undefined || config.allowUnauthenticated === true)
+      // provider secret proves the body integrity but NOT the URL account path.
+      // An authenticator can still set routing.account explicitly in its return value.
+      // allowUnauthenticated signals the caller accepted all routing risks.
+      ...(account !== undefined && (accountAuthenticated || config.allowUnauthenticated === true)
         ? { account }
         : {}),
       peer,
