@@ -1097,25 +1097,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
-    // Use skipAuditValidation (full lenient mode) when the gate is off.
-    // When the gate is on, use per-sink skipAuditValidationFor to skip only
-    // the sinks that are already covered by KOI_AUDIT_* env vars or disabled
-    // by --no-governance — stale manifest paths for dead sinks must not abort
-    // startup.
-    // "Covered" means the env var is set to a non-empty string. An empty
-    // string (KOI_AUDIT_NDJSON="") later disables the sink or falls through to
-    // the default, defeating manifest audit intent — empty is NOT covered.
-    const ndjsonCovered = (process.env.KOI_AUDIT_NDJSON ?? "").length > 0;
-    const sqliteCovered = (process.env.KOI_AUDIT_SQLITE ?? "").length > 0;
-    const violationsCovered = (process.env.KOI_AUDIT_VIOLATIONS ?? "").length > 0;
-
+    // manifest.audit is a declarative intent marker — actual sink paths always
+    // come from KOI_AUDIT_* env vars. Skip strict audit path validation when
+    // the env var for a given sink is already set (the manifest path is never
+    // opened, so stale paths must not block startup). Always skip for
+    // --no-governance (violations sink disabled at runtime anyway).
     const manifestResult = await loadManifestConfig(resolvedManifestPath, {
       allowOAuthSchemes: true,
-      skipAuditValidation: process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1",
+      skipAuditValidation: false,
       skipAuditValidationFor: {
-        ndjson: ndjsonCovered,
-        sqlite: sqliteCovered,
-        violations: !flags.governance.enabled || violationsCovered,
+        ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+        sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+        violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
       },
     });
     if (!manifestResult.ok) {
@@ -1132,89 +1125,58 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestAudit = manifestResult.value.audit;
     manifestLoadPath = resolvedManifestPath;
 
-    // Fail closed when manifest.audit is present and the gate is off.
-    // Two cases based on whether the block is malformed:
+    // Fail-closed audit intent enforcement — applies regardless of KOI_ALLOW_MANIFEST_FILE_SINKS.
+    // manifest.audit paths are never used as actual file paths (atomic containment
+    // requires openat-style APIs unavailable in Node.js/Bun). The manifest block
+    // is a declarative intent marker: its presence requires matching KOI_AUDIT_*
+    // env vars so the operator explicitly controls every declared sink.
+    // KOI_AUDIT_NDJSON="" / KOI_AUDIT_SQLITE="" are authoritative empty overrides
+    // (disable the sink) and satisfy the intent check — undefined is the failure case.
     //
-    // Malformed (unknown keys, wrong type, non-object) — the manifest intended
-    // to configure auditing but in a shape we can't interpret. Require all three
-    // KOI_AUDIT_* overrides or block, because we can't infer per-sink intent.
-    //
-    // Well-formed (known keys only) — per-sink check: only block when a
-    // manifest-configured sink is not covered by its env var. The violations
-    // sink is skipped when governance is disabled at the CLI (--no-governance)
-    // because runtime-factory ignores violationSqlitePath in that case.
-    if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1") {
+    // Two cases based on block shape:
+    //   Malformed — require all three env vars (can't infer per-sink intent)
+    //   Well-formed — per-sink check; violations skipped when governance disabled
+    if (manifestAudit !== undefined) {
       if (manifestAudit.malformed === true) {
         const allCoveredByEnv =
-          ndjsonCovered && sqliteCovered && (!flags.governance.enabled || violationsCovered);
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
         if (!allCoveredByEnv) {
           const missingVars = [
-            !ndjsonCovered ? "KOI_AUDIT_NDJSON" : "",
-            !sqliteCovered ? "KOI_AUDIT_SQLITE" : "",
-            flags.governance.enabled && !violationsCovered ? "KOI_AUDIT_VIOLATIONS" : "",
+            process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+            process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+            flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+              ? "KOI_AUDIT_VIOLATIONS"
+              : "",
           ]
             .filter(Boolean)
             .join(" + ");
           process.stderr.write(
             "koi tui: manifest.audit has an unrecognized format (unknown fields or invalid value) — " +
               "refusing to start because audit intent cannot be determined. " +
-              `Fix the manifest, or set ${missingVars} (non-empty) to override all active audit sinks, or remove the audit: block.\n`,
+              `Fix the manifest, or set ${missingVars} to control all active audit sinks, or remove the audit: block.\n`,
           );
           process.exit(1);
         }
       } else {
-        const ndjsonExposed = manifestAudit.ndjson !== undefined && !ndjsonCovered;
-        const sqliteExposed = manifestAudit.sqlite !== undefined && !sqliteCovered;
-        // violations sink is disabled by --no-governance; skip when gate is off.
+        const ndjsonExposed =
+          manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+        const sqliteExposed =
+          manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
         const violationsExposed =
-          flags.governance.enabled && manifestAudit.violations !== undefined && !violationsCovered;
+          flags.governance.enabled &&
+          manifestAudit.violations !== undefined &&
+          process.env.KOI_AUDIT_VIOLATIONS === undefined;
         if (ndjsonExposed || sqliteExposed || violationsExposed) {
           process.stderr.write(
-            "koi tui: manifest.audit is set but KOI_ALLOW_MANIFEST_FILE_SINKS is not 1 — " +
-              "refusing to start to prevent silently disabled audit logging. " +
-              "Set KOI_ALLOW_MANIFEST_FILE_SINKS=1 to enable manifest-configured audit sinks, " +
-              "or set the matching KOI_AUDIT_* env var (non-empty) for each manifest-configured sink, " +
-              "or remove the audit: block from the manifest.\n",
+            "koi tui: manifest.audit declares audit sinks but the matching KOI_AUDIT_* env vars are absent — " +
+              "refusing to start to prevent silently dropping declared audit logging. " +
+              "Set each matching KOI_AUDIT_* env var (use empty string to explicitly disable a sink), " +
+              "or remove the sink key from manifest.audit.\n",
           );
           process.exit(1);
         }
-      }
-    }
-
-    // Gate-on: manifest.audit paths are not usable as manifest-derived file
-    // paths. Atomic containment (O_NOFOLLOW-based) only protects the final path
-    // component; ancestor symlink swaps between the containment check and the
-    // file open cannot be blocked without openat-style APIs that Node.js/Bun
-    // do not expose. manifest.audit is therefore a declarative intent marker
-    // only — the presence of any audit: key in the manifest triggers fail-closed
-    // startup (see gate-off check above) unless the operator supplies matching
-    // KOI_AUDIT_* env vars. All actual sink paths must come from env vars.
-    if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1") {
-      if (manifestAudit.ndjson !== undefined && !ndjsonCovered) {
-        process.stderr.write(
-          "koi tui: manifest.audit.ndjson cannot be used as a manifest-derived path — " +
-            "atomic containment against ancestor symlink swaps requires openat-style APIs " +
-            "not available in Node.js/Bun. Set KOI_AUDIT_NDJSON (non-empty) instead.\n",
-        );
-        process.exit(1);
-      }
-      if (manifestAudit.sqlite !== undefined && !sqliteCovered) {
-        process.stderr.write(
-          "koi tui: manifest.audit.sqlite cannot be used as a manifest-derived path — " +
-            "SQLite must open by pathname (WAL/SHM sidecars require it) and atomic containment " +
-            "is not possible. Set KOI_AUDIT_SQLITE (non-empty) instead.\n",
-        );
-        process.exit(1);
-      }
-      const violationsWouldBeUsed =
-        flags.governance.enabled && manifestAudit.violations !== undefined && !violationsCovered;
-      if (violationsWouldBeUsed) {
-        process.stderr.write(
-          "koi tui: manifest.audit.violations cannot be used as a manifest-derived path — " +
-            "SQLite must open by pathname (WAL/SHM sidecars require it) and atomic containment " +
-            "is not possible. Set KOI_AUDIT_VIOLATIONS (non-empty) instead.\n",
-        );
-        process.exit(1);
       }
     }
 
