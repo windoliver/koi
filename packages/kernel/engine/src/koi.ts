@@ -449,6 +449,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   }
   function commitFactorySessionId(next: SessionId): void {
     factorySessionId = next;
+    runIndex = 0;
   }
 
   // --- Session lifecycle (runtime-scoped, NOT per-run) ---
