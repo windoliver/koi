@@ -159,6 +159,25 @@ interface LongRunningHarness {
 }
 ```
 
+```ts
+interface StartResult {
+  readonly lease: SessionLease;
+  readonly engineInput: EngineInput;
+  readonly sessionId: string;
+  /**
+   * Non-fatal warning observed during activation. When present, the `active`
+   * snapshot was published and the lease is valid, but a secondary write
+   * (e.g. setSessionStatus) failed. Reclamation remains safe; the caller
+   * should log the warning and may proceed or relinquish.
+   */
+  readonly activationWarning?: KoiError;
+}
+
+interface ResumeResult extends StartResult {
+  readonly engineStateRecovered: boolean;
+}
+```
+
 `StartResult` and `ResumeResult` both carry a fresh `SessionLease`. Callers
 pass it back on every mutating call; the harness validates:
 
@@ -239,20 +258,26 @@ session-first, then snapshot. On `start()` / successful `resume()`:
    WeakSet, stop heartbeats, best-effort `removeSession(sid)`, return
    `CONCURRENT_RESUME`. Any durable orphan is cleaned by reconciliation.
 5. Attempt `sessionPersistence.setSessionStatus(sid, "running")`.
-   - **On success:** return `ResumeResult` / `StartResult` with the lease.
-   - **On failure:** the harness snapshot is already `active`, the
-     heartbeat is running, and the lease is minted. Do NOT try to revert
-     the snapshot — CAS-reverting would leave the heartbeat-less owner
-     potentially reclaimable if the revert itself fails. Instead: return
-     the lease AND the error as
-     `Err(KoiError { code: "ACTIVATION_STATUS_WRITE_FAILED", retryable: true })`
-     alongside the lease via an out-param (`StartResult.activationWarning`).
-     The caller owns a valid lease and MUST either proceed (accepting
-     that `SessionRecord.status` remains `"starting"`, which reclaim treats
-     identically to `"running"` via TTL) or explicitly `pause`/`fail` to
-     relinquish. Heartbeats keep the lease live regardless of status-write
-     success. This collapses the post-publish ambiguity: the caller is
-     always given back an actionable lease.
+   Regardless of outcome, the harness snapshot is already `active`, the
+   heartbeat is running, and the lease is minted. We MUST always return
+   the lease so the caller can eventually relinquish.
+   - **On success:** return `Ok(StartResult { lease, engineInput,
+     sessionId, activationWarning: undefined })`.
+   - **On failure:** return
+     `Ok(StartResult { lease, engineInput, sessionId, activationWarning:
+     KoiError { code: "ACTIVATION_STATUS_WRITE_FAILED", retryable: true } })`.
+     The return is `Ok` (not `Err`) because the caller has a valid lease
+     and can proceed; the warning is a field on the result. The caller
+     MUST check `activationWarning` and decide whether to proceed (TTL
+     keeps reclaim safety since `"starting"` is treated identically to
+     `"running"` via heartbeat TTL) or to call `pause(lease, …)` /
+     `fail(lease, …)` to cleanly relinquish.
+
+This encoding fits the repo's strict `Result<T, E>` union: success returns
+the fully-usable state plus an optional warning; errors are reserved for
+cases where no lease is handed back. The activation contract guarantees:
+**once the `active` snapshot is published, the caller always receives
+a valid lease in an `Ok` result.**
 
 A crash between (1) and (4) leaves an orphan session record with no pointer
 from the harness — harmless, pruned by reconciliation (below). A crash
@@ -297,6 +322,10 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      reads of an old status).
    - `record.status === "idle"` → same: advisory, require TTL-stale
      heartbeat.
+   - `record.status === "abandoned"` → immediately reclaimable, no TTL
+     wait required. The tombstone is only written by the lease holder
+     after confirmed engine quiescence, so it proves the run has stopped
+     even when the snapshot store is not yet consistent.
    - `record.status ∈ { "starting", "running" }` — apply TTL rule:
      - `now - record.lastHeartbeatAt > leaseTtlMs` → **dead**. Reclaim.
      - Heartbeat fresh → **live**. `ALREADY_ACTIVE`.
@@ -507,19 +536,39 @@ Therefore the default path is:
 1. Fail the current turn with `CHECKPOINT_WRITE_FAILED`.
 2. Invoke `onDurabilityLost` for host escalation.
 3. **Stop engine execution before giving up the lease.** The middleware calls
-   `harness.abortActive(...)`, which revokes the lease (`lease.revoked()`
-   starts returning true, `lease.abort.abort()` fires), signals the engine
-   adapter, and waits for it to quiesce (bounded by `abortTimeoutMs`,
-   default 10s). `abortActive` is a real method on `LongRunningHarness`
-   (not a capability implied by the lease shape alone).
-4. Only after quiescence: mark the session `"idle"` via `setSessionStatus`
-   and stop heartbeats. If that write also fails, heartbeat-staleness is the
-   sole reclamation signal — but execution has already stopped, so the run is
-   genuinely dead.
-5. If abort times out (engine refuses to stop): keep heartbeating AND keep
-   the session `"running"` — the run is still live, host must SIGKILL the
-   process to release the lease. This is a loud, non-silent failure surfaced
-   via `onDurabilityLost`.
+   `harness.abortActive(...)`, which revokes the lease, fires the abort
+   signal, and waits up to `abortTimeoutMs` for the engine to quiesce.
+4. Once quiesced, **attempt immediate fencing so recovery does not wait for
+   TTL**. This is critical: merely stopping heartbeats and marking the
+   session `idle` leaves the authoritative snapshot as `active`, and
+   reclaim rules require TTL staleness — so a single transient I/O fault
+   could block failover for up to `leaseTtlMs`. We fence via two
+   independent attempts, either of which makes the harness immediately
+   reclaimable:
+   - **Attempt A: retry the snapshot store.** I/O failures are often
+     transient; the initial `compareAndPut` is retried with exponential
+     backoff (default 3 tries, 100/500/2500ms). On success, advance to
+     `suspended` with `failureReason = "CHECKPOINT_WRITE_FAILED"` and a
+     new generation. The harness is now `suspended`; any `resume()`
+     proceeds immediately with no TTL wait.
+   - **Attempt B: write a tombstone to session persistence.** Regardless
+     of attempt A's outcome, mark the session with a new
+     `"abandoned"` status via `setSessionStatus(sid, "abandoned")`.
+     This is a different store from `harnessStore` and may be healthy
+     even when the snapshot store is not. Reclaim is extended to treat
+     `active + session.status === "abandoned"` AS IMMEDIATELY
+     RECLAIMABLE (no TTL wait required). The tombstone is
+     cryptographically meaningful because only the current lease
+     holder can write it after quiescence — cross-store lag only
+     delays observation, never creates a false positive.
+5. After step 4, stop the heartbeat loop. Whichever of A or B succeeded
+   makes the harness reclaimable within a heartbeat round-trip, not a TTL.
+   If BOTH A and B fail, fall back to TTL-based reclaim — no worse than
+   the prior design.
+6. If `abortActive` times out (engine refuses to stop): keep heartbeating,
+   keep session `"running"`, flip `durability` to `"unhealthy"`, return
+   `Err(ABORT_TIMEOUT)` from the middleware path, loud escalation via
+   `onDurabilityLost`. Host must SIGKILL to release the lease.
 
 `continueWithoutDurability` is **removed**. Allowing continued execution while
 marking the session reclaimable was a split-brain vector: it let a second
@@ -640,10 +689,17 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - **Orphan session record after partial activation:** session written but CAS
   failed. Next `resume()` ignores orphan (no pointer from harness); periodic
   reconciliation (`pruneOrphanSessions`) removes it.
-- **Durability loss mid-run:** simulated I/O failure on soft checkpoint →
-  middleware aborts engine → after quiescence, session marked `idle` and
-  heartbeats stopped → next `resume()` reclaims. No permanent `ALREADY_ACTIVE`
-  trap, no parallel execution with a reclaimer.
+- **Durability loss mid-run with transient fault:** I/O failure on soft
+  checkpoint → middleware aborts engine → after quiescence, snapshot-store
+  retry with backoff succeeds → `suspended` snapshot published →
+  immediate `resume()` proceeds without TTL wait.
+- **Durability loss mid-run with persistent fault:** snapshot-store retries
+  all fail → `setSessionStatus("abandoned")` succeeds (different store) →
+  immediate `resume()` reclaims via abandoned-status path, no TTL wait.
+- **Durability loss mid-run, both stores unhealthy:** both snapshot-store
+  retry AND abandoned tombstone fail → heartbeat loop stopped → reclaim
+  via TTL staleness after `leaseTtlMs`. (Regression: spec never makes
+  recovery worse than TTL wait.)
 - **Long-turn heartbeat:** a single turn that exceeds `leaseTtlMs` without
   reaching a checkpoint boundary continues to heartbeat via the timer loop;
   a concurrent `resume()` attempt returns `ALREADY_ACTIVE`, not a successful
@@ -745,7 +801,7 @@ All errors are `KoiError` from L0. Codes used:
 | `HEARTBEAT_STALE` | heartbeat persistence approaching TTL with recent failure | false |
 | `ABORT_TIMEOUT` | engine did not quiesce within `abortTimeoutMs` | false |
 | `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
-| `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; lease is still valid, caller must proceed or relinquish | true |
+| `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; returned via `StartResult.activationWarning`, NOT via `Err`; lease is still valid | true |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
@@ -770,9 +826,9 @@ types before the L2 package can be implemented:
    advance. Existing `put` is insufficient for exclusivity guarantees.
 3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal for
    crash reclamation.
-4. `SessionStatus` gains `"starting"` between `idle` and `running` — marks
-   mid-activation sessions so a crash before the first heartbeat is
-   unambiguously reclaimable.
+4. `SessionStatus` gains `"starting"` between `idle` and `running` plus
+   `"abandoned"` as a terminal tombstone that makes the harness
+   immediately reclaimable without waiting for heartbeat TTL.
 5. `SessionPersistence.setHeartbeat(sessionId, timestampMs)` — dedicated
    cheap-write method so the heartbeat loop does not compete with full
    `saveSession` writes.
