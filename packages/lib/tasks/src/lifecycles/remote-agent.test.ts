@@ -1312,4 +1312,106 @@ describe("createRemoteAgentLifecycle", () => {
       // If we reach here, stop() resolved — map entry was force-removed.
     });
   });
+
+  describe("cancelEndpoint", () => {
+    test("rejects non-HTTPS cancel endpoint at construction time", () => {
+      expect(() =>
+        createRemoteAgentLifecycle({
+          endpoint: "https://agent.internal/run",
+          cancelEndpoint: "http://remote-agent.prod/cancel",
+        }),
+      ).toThrow("HTTPS");
+    });
+
+    test("sends POST to cancelEndpoint with correlationId when cancel() is called", async () => {
+      const cancelCalls: { correlationId: unknown }[] = [];
+      const encoder = new TextEncoder();
+      // Main stream never closes — we cancel it.
+      const slowStream = new ReadableStream<Uint8Array>({ start() {} });
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          const urlStr = String(url);
+          if (urlStr.includes("/cancel")) {
+            const body = JSON.parse(String(init?.body)) as { correlationId: unknown };
+            cancelCalls.push(body);
+            return new Response(encoder.encode(""), { status: 200 });
+          }
+          return new Response(slowStream, { status: 200 });
+        },
+      ) as unknown as typeof globalThis.fetch;
+
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        cancelEndpoint: "https://agent.internal/cancel",
+        drainTimeoutMs: 20,
+        fetch: fetchSpy,
+      });
+      const output = createOutputStream();
+      const state = await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({ correlationId: "cid-cancel" }),
+      );
+
+      await lifecycle.stop(state);
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      expect(cancelCalls.length).toBeGreaterThan(0);
+      expect(cancelCalls[0]?.correlationId).toBe("cid-cancel");
+    });
+
+    test("sends POST to cancelEndpoint with correlationId on timeout", async () => {
+      const cancelCalls: { correlationId: unknown }[] = [];
+      const encoder = new TextEncoder();
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          if (String(url).includes("/cancel")) {
+            const body = JSON.parse(String(init?.body)) as { correlationId: unknown };
+            cancelCalls.push(body);
+            return new Response(encoder.encode(""), { status: 200 });
+          }
+          return new Response(new ReadableStream({ start() {} }), { status: 200 });
+        },
+      ) as unknown as typeof globalThis.fetch;
+
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        cancelEndpoint: "https://agent.internal/cancel",
+        drainTimeoutMs: 20,
+        fetch: fetchSpy,
+      });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({ correlationId: "cid-timeout", timeout: 50 }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      expect(cancelCalls.length).toBeGreaterThan(0);
+      expect(cancelCalls[0]?.correlationId).toBe("cid-timeout");
+    });
+
+    test("cancelEndpoint failure is swallowed — does not propagate", async () => {
+      const fetchSpy: typeof globalThis.fetch = mock(async (url: string | URL | Request) => {
+        if (String(url).includes("/cancel")) {
+          throw new Error("cancel endpoint unreachable");
+        }
+        return new Response(new ReadableStream({ start() {} }), { status: 200 });
+      }) as unknown as typeof globalThis.fetch;
+
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        cancelEndpoint: "https://agent.internal/cancel",
+        drainTimeoutMs: 20,
+        fetch: fetchSpy,
+      });
+      const output = createOutputStream();
+      const state = await lifecycle.start(tid(), output, makeConfig());
+
+      // Must not throw even though cancel endpoint fails.
+      await expect(lifecycle.stop(state)).resolves.toBeUndefined();
+    });
+  });
 });

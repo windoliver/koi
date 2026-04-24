@@ -74,6 +74,14 @@ export interface RemoteAgentLifecycleOptions {
    */
   readonly endpoint: string;
   /**
+   * Optional cancellation endpoint. When set, cancel/timeout sends a
+   * fire-and-forget POST to this URL with `{ correlationId }` so the remote
+   * server can stop the associated work. Same HTTPS rules as `endpoint`.
+   * Subject to same lifecycle `headers`. Failures are swallowed — the
+   * cleanup-incomplete signal already covers uncertain remote state.
+   */
+  readonly cancelEndpoint?: string | undefined;
+  /**
    * HTTP headers merged into every outbound request (e.g. auth tokens).
    * Fixed at lifecycle construction — not per-task — so auth/tenant context
    * cannot be overridden by less-trusted task config.
@@ -126,7 +134,9 @@ export function createRemoteAgentLifecycle(
   options: RemoteAgentLifecycleOptions,
 ): TaskKindLifecycle<RemoteAgentConfig, RemoteAgentTask> {
   validateEndpointSecurity(options.endpoint);
+  if (options.cancelEndpoint !== undefined) validateEndpointSecurity(options.cancelEndpoint);
   const { endpoint } = options;
+  const cancelEndpoint = options.cancelEndpoint;
   const lifecycleHeaders = options.headers;
   const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
   const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -169,6 +179,15 @@ export function createRemoteAgentLifecycle(
         timeoutId = setTimeout(() => {
           timedOut = true;
           controller.abort();
+          // Best-effort: notify the remote server on timeout so it can stop.
+          if (cancelEndpoint !== undefined) {
+            void fetchImpl(cancelEndpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...lifecycleHeaders },
+              body: JSON.stringify({ correlationId: config.correlationId }),
+              redirect: "error",
+            }).catch(() => undefined);
+          }
           void (async () => {
             if (pipeRef !== undefined) await drainPipe(pipeRef, drainTimeoutMs);
             // Timeout must call onExit so TaskRunner can fail the task on the board.
@@ -407,6 +426,17 @@ export function createRemoteAgentLifecycle(
         if (!terminal) {
           terminal = true;
           output.write("\n[cleanup-incomplete: remote agent may still be running]\n");
+        }
+        // Best-effort: notify the remote server so it can stop the associated work.
+        // Fire-and-forget — failures are swallowed; cleanup-incomplete already covers
+        // the uncertain state and the board transition must not block on this.
+        if (cancelEndpoint !== undefined) {
+          void fetchImpl(cancelEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...lifecycleHeaders },
+            body: JSON.stringify({ correlationId: config.correlationId }),
+            redirect: "error",
+          }).catch(() => undefined);
         }
       };
 
