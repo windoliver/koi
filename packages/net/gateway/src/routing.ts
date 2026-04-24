@@ -5,17 +5,23 @@
 
 import type { RouteBinding, RoutingConfig, RoutingContext, ScopingMode } from "./types.js";
 
+// Encode routing field characters that would corrupt the colon-delimited key structure.
+// ':' is the segment delimiter; '*' and '**' are wildcard tokens in patterns.
+function sanitizeField(value: string): string {
+  return value.replace(/[:%*]/g, (c) => `%${c.codePointAt(0)?.toString(16).toUpperCase()}`);
+}
+
 export function computeDispatchKey(mode: ScopingMode, routing?: RoutingContext): string {
   if (mode === "main") return "main";
 
-  const peer = routing?.peer ?? "_";
+  const peer = sanitizeField(routing?.peer ?? "_");
   if (mode === "per-peer") return peer;
 
-  const channel = routing?.channel ?? "_";
+  const channel = sanitizeField(routing?.channel ?? "_");
   if (mode === "per-channel-peer") return `${channel}:${peer}`;
 
   if (mode === "per-account-channel-peer") {
-    const account = routing?.account ?? "_";
+    const account = sanitizeField(routing?.account ?? "_");
     return `${account}:${channel}:${peer}`;
   }
 

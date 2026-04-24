@@ -398,7 +398,7 @@ export function createGateway(
       // Close all live connections, emit destroy events, and await all store deletions
       // before stopping the transport. Using allSettled so a single store failure doesn't
       // block the rest of shutdown.
-      const deletePromises: Promise<unknown>[] = [];
+      const deletePromises: Promise<Result<boolean, KoiError>>[] = [];
       for (const [connId, conn] of connMap) {
         conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
         const sessionId = sessionByConn.get(connId);
@@ -411,6 +411,11 @@ export function createGateway(
       for (const r of settled) {
         if (r.status === "rejected") {
           swallowError(r.reason as unknown, { package: "gateway", operation: "stop.delete" });
+        } else if (!r.value.ok) {
+          swallowError(new Error(r.value.error.message), {
+            package: "gateway",
+            operation: "stop.delete",
+          });
         }
       }
       connMap.clear();
