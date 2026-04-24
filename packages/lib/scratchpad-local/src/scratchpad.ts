@@ -353,10 +353,13 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     closed = true;
     store.refCount--;
     if (store.refCount <= 0) {
+      // Stop the sweep timer but preserve entries so state survives detach/reattach
+      // within the same process. Subscribers are cleared since they are per-handle.
       if (store.timer !== null) clearInterval(store.timer);
-      store.entries.clear();
+      store.timer = null;
       store.subscribers.clear();
-      groupRegistry.delete(groupId as string);
+      // Intentionally NOT removing from groupRegistry: a later createLocalScratchpad
+      // for the same groupId will reuse the store and see existing entries.
     }
   }
 

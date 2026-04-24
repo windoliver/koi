@@ -151,6 +151,27 @@ describe("createWorkspaceProvider", () => {
     expect(backend.disposed.length).toBe(1);
   });
 
+  it("postCreate + dispose both fail: tracks workspace for retry and throws combined error", async () => {
+    const failDisposeBackend = makeBackend({
+      async dispose(): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: "cleanup failed", retryable: false },
+        };
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: failDisposeBackend,
+      postCreate: async () => {
+        throw new Error("setup failed");
+      },
+    });
+    const agent = makeAgent();
+    await expect(provider.attach(agent)).rejects.toThrow("cleanup also failed");
+    // Workspace should still be tracked so a later detach can retry cleanup
+    await expect(provider.detach?.(agent)).resolves.toBeUndefined();
+  });
+
   it("backend create failure propagates as thrown error", async () => {
     const failBackend = makeBackend({
       async create(): Promise<Result<WorkspaceInfo, KoiError>> {

@@ -81,8 +81,15 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         try {
           await config.postCreate(ws);
         } catch (e: unknown) {
-          // Best-effort cleanup to avoid orphaned worktree/branch on postCreate failure
-          await config.backend.dispose(ws.id).catch(() => undefined);
+          const cleanupResult = await config.backend.dispose(ws.id);
+          if (!cleanupResult.ok) {
+            // Cleanup failed — keep tracking so detach can retry disposal later
+            attached.set(agentId, ws.id);
+            throw new Error(
+              `Workspace setup failed; cleanup also failed: workspace ${ws.id} is still alive`,
+              { cause: { setupError: e, cleanupError: cleanupResult.error } },
+            );
+          }
           throw e;
         }
       }

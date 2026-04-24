@@ -3,17 +3,22 @@ import { agentGroupId, agentId, scratchpadPath } from "@koi/core";
 import type { LocalScratchpad } from "./scratchpad.js";
 import { createLocalScratchpad } from "./scratchpad.js";
 
-const gid = agentGroupId("group-1");
 const aid = agentId("agent-1");
 
+// Each test gets a unique groupId so that the persistent group store
+// does not bleed state across tests.
+let gidCounter = 0;
+let currentGid = agentGroupId("group-0");
+
 function makeScratchpad(sweepIntervalMs = 0): LocalScratchpad {
-  return createLocalScratchpad({ groupId: gid, authorId: aid, sweepIntervalMs });
+  return createLocalScratchpad({ groupId: currentGid, authorId: aid, sweepIntervalMs });
 }
 
 describe("createLocalScratchpad", () => {
   let sp: LocalScratchpad;
 
   beforeEach(() => {
+    currentGid = agentGroupId(`group-${++gidCounter}`);
     sp = makeScratchpad();
   });
 
@@ -35,7 +40,7 @@ describe("createLocalScratchpad", () => {
       expect(rr.value.content).toBe("buy milk");
       expect(rr.value.generation).toBe(1);
       expect(rr.value.authorId).toBe(aid);
-      expect(rr.value.groupId).toBe(gid);
+      expect(rr.value.groupId).toBe(currentGid);
     });
 
     it("returns NOT_FOUND for missing path", () => {
@@ -287,7 +292,7 @@ describe("createLocalScratchpad", () => {
 
   describe("group-shared storage", () => {
     it("two instances with same groupId share writes", () => {
-      const sp2 = createLocalScratchpad({ groupId: gid, authorId: agentId("agent-2") });
+      const sp2 = createLocalScratchpad({ groupId: currentGid, authorId: agentId("agent-2") });
       try {
         sp.write({ path: scratchpadPath("shared/key"), content: "hello" });
         const r = sp2.read(scratchpadPath("shared/key"));
@@ -299,7 +304,7 @@ describe("createLocalScratchpad", () => {
     });
 
     it("CAS conflict visible across instances", () => {
-      const sp2 = createLocalScratchpad({ groupId: gid, authorId: agentId("agent-2") });
+      const sp2 = createLocalScratchpad({ groupId: currentGid, authorId: agentId("agent-2") });
       try {
         sp.write({ path: scratchpadPath("lock"), content: "v1" });
         // Both try to create-only (expectedGeneration=0) — one must conflict
@@ -317,7 +322,7 @@ describe("createLocalScratchpad", () => {
     });
 
     it("change event from one instance fires on subscriber registered in another", () => {
-      const sp2 = createLocalScratchpad({ groupId: gid, authorId: agentId("agent-2") });
+      const sp2 = createLocalScratchpad({ groupId: currentGid, authorId: agentId("agent-2") });
       try {
         let fired = false;
         const unsub = sp2.onChange(() => {
@@ -338,6 +343,22 @@ describe("createLocalScratchpad", () => {
         sp.write({ path: scratchpadPath("isolated"), content: "secret" });
         const r = sp2.read(scratchpadPath("isolated"));
         expect(r.ok).toBe(false);
+      } finally {
+        sp2.close();
+      }
+    });
+
+    it("entries survive handle close and reopen (detach/reattach continuity)", () => {
+      const reopenGid = agentGroupId("group-reopen");
+      const sp1 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
+      sp1.write({ path: scratchpadPath("checkpoint"), content: "state-v1" });
+      sp1.close(); // refCount → 0, but entries should persist
+
+      const sp2 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
+      try {
+        const r = sp2.read(scratchpadPath("checkpoint"));
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.value.content).toBe("state-v1");
       } finally {
         sp2.close();
       }
