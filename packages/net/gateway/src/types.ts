@@ -158,4 +158,8 @@ export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
   dedupWindowSize: 128,
   authTimeoutMs: 5_000,
   backpressureCriticalTimeoutMs: 30_000,
+  // Retain disconnected sessions for 5 minutes by default. Covers reconnect jitter
+  // without accumulating stale replay-window state indefinitely. Set to 0 to disable
+  // retention (delete on disconnect) or increase for longer grace periods.
+  disconnectedSessionTtlMs: 300_000,
 } as const;

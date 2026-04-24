@@ -791,11 +791,33 @@ export function createGateway(
                   if (!r.ok) return;
                   // Post-check: reconnect may have completed during the delete.
                   if (connBySession.has(sessionId)) {
-                    // Delete raced a successful reconnect. Best-effort restore so the live
-                    // connection finds its session record on the next inbound frame.
-                    void Promise.resolve(store.set(snapshot.value)).catch((err: unknown) => {
-                      swallowError(err, { package: "gateway", operation: "ttl.restore" });
-                    });
+                    // Delete raced a successful reconnect. Attempt to restore the session
+                    // record so the live connection finds it on the next inbound frame.
+                    // If restore fails, immediately tear down the connection: leaving a live
+                    // socket with no backing store record causes SESSION_STORE_FAILURE on
+                    // every inbound frame anyway, so an immediate close is safer.
+                    const restoreResult = await Promise.resolve(store.set(snapshot.value)).catch(
+                      (err: unknown) => {
+                        swallowError(err, { package: "gateway", operation: "ttl.restore" });
+                        return null; // signal failure
+                      },
+                    );
+                    if (restoreResult === null || !restoreResult.ok) {
+                      const connId = connBySession.get(sessionId);
+                      const liveConn = connId !== undefined ? connMap.get(connId) : undefined;
+                      if (liveConn !== undefined) {
+                        liveConn.send(
+                          createErrorFrame(
+                            nextServerSeq(liveConn),
+                            "SESSION_STORE_FAILURE",
+                            "Session record lost during TTL eviction; reconnect required",
+                            nextId,
+                          ),
+                        );
+                        cleanupConn(liveConn, "Session store restore failed after TTL race");
+                        liveConn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session restore failed");
+                      }
+                    }
                   } else {
                     disconnectedAt.delete(sessionId);
                     ownedSessionIds.delete(sessionId);
