@@ -2729,7 +2729,7 @@ describe("Golden: @koi/tasks", () => {
 
     const lifecycle = createRemoteAgentLifecycle({
       endpoint: "https://agent.example.com/run",
-      fetch: mockFetch,
+      fetch: mockFetch as typeof globalThis.fetch,
     });
 
     expect(lifecycle.kind).toBe("remote_agent");
