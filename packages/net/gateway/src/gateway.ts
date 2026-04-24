@@ -851,6 +851,7 @@ export function createGateway(
                 nextId,
               ),
             );
+            cleanupConn(conn, "backpressure timeout");
             conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
           }
         }
@@ -934,18 +935,20 @@ export function createGateway(
                   if (!r.ok) return;
                   // Post-check: reconnect may have completed during the delete.
                   if (connBySession.has(sessionId)) {
-                    // Delete raced a successful reconnect. Attempt to restore the session
-                    // record so the live connection finds it on the next inbound frame.
-                    // If restore fails, immediately tear down the connection: leaving a live
-                    // socket with no backing store record causes SESSION_STORE_FAILURE on
-                    // every inbound frame anyway, so an immediate close is safer.
-                    const restoreResult = await Promise.resolve(store.set(snapshot.value)).catch(
-                      (err: unknown) => {
-                        swallowError(err, { package: "gateway", operation: "ttl.restore" });
-                        return null; // signal failure
-                      },
+                    // Delete raced a successful reconnect. The reconnect path already wrote
+                    // fresh session state via store.set(sessionToStore). Re-read to check:
+                    // if the store already has an entry the reconnect won — do nothing, the
+                    // live state is correct. If the store is empty the reconnect's write
+                    // hasn't committed yet or failed; leave it empty so processMessage will
+                    // surface SESSION_STORE_FAILURE and tear the connection down safely rather
+                    // than overwriting reconnect state with the pre-delete stale snapshot.
+                    const currentAfterRace = await Promise.resolve(store.get(sessionId)).catch(
+                      () => null,
                     );
-                    if (restoreResult === null || !restoreResult.ok) {
+                    if (currentAfterRace !== null && !currentAfterRace.ok) {
+                      // Store empty: the reconnect's write is missing. Close the connection
+                      // so the client reconnects cleanly rather than operating without a
+                      // backing store record.
                       const connId = connBySession.get(sessionId);
                       const liveConn = connId !== undefined ? connMap.get(connId) : undefined;
                       if (liveConn !== undefined) {
@@ -957,10 +960,14 @@ export function createGateway(
                             nextId,
                           ),
                         );
-                        cleanupConn(liveConn, "Session store restore failed after TTL race");
-                        liveConn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session restore failed");
+                        cleanupConn(liveConn, "Session store lost after TTL race");
+                        liveConn.close(
+                          CLOSE_CODES.SESSION_STORE_FAILURE,
+                          "Session lost after TTL race",
+                        );
                       }
                     }
+                    // currentAfterRace.ok: reconnect state is in the store — nothing to do.
                   } else {
                     disconnectedAt.delete(sessionId);
                     ownedSessionIds.delete(sessionId);
@@ -1179,6 +1186,15 @@ export function createGateway(
             }
           } catch (err: unknown) {
             swallowError(err, { package: "gateway", operation: "send.seq.persist" });
+            // Thrown exception: same fail-closed response as { ok: false } — the stored seq
+            // is indeterminate. Delete so post-crash reconnects start fresh.
+            ownedSessionIds.delete(sidTarget);
+            await Promise.resolve(store.delete(sidTarget)).catch((deleteErr: unknown) => {
+              swallowError(deleteErr, {
+                package: "gateway",
+                operation: "send.seq.persist.cleanup",
+              });
+            });
           }
         });
         pendingSeqPersists.set(sidTarget, sendPersist);
