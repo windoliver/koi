@@ -8,12 +8,18 @@
  *
  * Protocol is fail-closed: a valid `done` frame is required for any success
  * exit. Stream close without one, null bodies, and malformed frames all map
- * to a protocol-error failure. Non-2xx responses and network errors also fail.
+ * to a protocol-error failure.
  *
- * Remote cancellation: aborting the local fetch terminates the HTTP connection
- * but cannot confirm the remote agent has stopped. Stop/timeout emit a
- * cleanup-incomplete marker and do NOT call onExit — callers must treat
- * cleanup-incomplete tasks as potentially still running remotely.
+ * SSRF boundary: the target endpoint is fixed at lifecycle construction time
+ * (RemoteAgentLifecycleOptions.endpoint), not supplied per-task. Per-task
+ * config carries only correlationId, payload, and optional auth headers.
+ *
+ * Cancel vs timeout:
+ * - cancel() — TaskRunner.stop() owns the board transition (killOwnedTask).
+ *   The lifecycle does NOT call onExit; it writes cleanup-incomplete to output.
+ * - timeout — no external board transition; the lifecycle MUST call onExit(1)
+ *   so TaskRunner.handleNaturalExit can fail the task on the board. Output
+ *   carries the cleanup-incomplete detail to preserve the remote-uncertainty signal.
  */
 
 import type { TaskItemId } from "@koi/core";
@@ -42,23 +48,32 @@ function isRemoteAgentFrame(value: unknown): value is RemoteAgentFrame {
 // ---------------------------------------------------------------------------
 
 export interface RemoteAgentConfig {
-  readonly endpoint: string;
   readonly correlationId: string;
   readonly payload: unknown;
   readonly timeout?: number | undefined;
-  /** Extra HTTP headers forwarded to the remote endpoint (e.g. auth). */
+  /**
+   * Per-task HTTP headers (e.g. bearer tokens). Merged over the
+   * Content-Type header set by the lifecycle.
+   */
   readonly headers?: Readonly<Record<string, string>> | undefined;
   /**
-   * Called when the task exits with a confirmed done frame (exit 0 or non-zero).
-   * NOT called on cancel() or timeout — those paths produce cleanup-incomplete
-   * state because remote termination cannot be confirmed. Called at most once.
-   * Exceptions are swallowed.
+   * Called when the task reaches a confirmed terminal state:
+   * - done frame received (natural completion, any exitCode)
+   * - HTTP error / network error / protocol error (code 1)
+   * - timeout (code 1, output also carries cleanup-incomplete detail)
+   * NOT called on explicit cancel() — TaskRunner.stop() owns that board transition.
+   * Called at most once. Exceptions are swallowed.
    */
   readonly onExit?: ((code: number) => void) | undefined;
 }
 
 export interface RemoteAgentLifecycleOptions {
-  /** Max ms to wait for the pipe to drain after abort before declaring done. Default: 2000. */
+  /**
+   * Trusted remote endpoint. Fixed at lifecycle construction — not supplied
+   * per-task — to enforce the SSRF boundary at wiring time.
+   */
+  readonly endpoint: string;
+  /** Max ms to wait for the pipe to drain after abort. Default: 2000. */
   readonly drainTimeoutMs?: number | undefined;
   /** Injectable fetch implementation — defaults to globalThis.fetch. For testing. */
   readonly fetch?: typeof globalThis.fetch | undefined;
@@ -79,10 +94,11 @@ async function drainPipe(pipe: Promise<void>, drainTimeoutMs: number): Promise<v
 // ---------------------------------------------------------------------------
 
 export function createRemoteAgentLifecycle(
-  options?: RemoteAgentLifecycleOptions,
+  options: RemoteAgentLifecycleOptions,
 ): TaskKindLifecycle<RemoteAgentConfig, RemoteAgentTask> {
-  const drainTimeoutMs = options?.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
-  const fetchImpl = options?.fetch ?? globalThis.fetch;
+  const { endpoint } = options;
+  const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  const fetchImpl = options.fetch ?? globalThis.fetch;
 
   // Active pipe promises for stop() to await.
   const activePipes = new Map<TaskItemId, Promise<void>>();
@@ -98,15 +114,14 @@ export function createRemoteAgentLifecycle(
       const controller = new AbortController();
 
       // let justified: set-once, never reset
-      let stopped = false; // explicit cancel — suppresses all callbacks
-      let timedOut = false; // timeout fired — produces cleanup-incomplete, not onExit
+      let stopped = false; // explicit cancel — board transition owned by TaskRunner.stop()
+      let timedOut = false; // timeout fired
       let terminal = false; // exactly-once guard
 
-      const emitTerminal = (code: number, message: string, callOnExit: boolean): void => {
+      const emitTerminal = (code: number, message: string): void => {
         if (terminal) return;
         terminal = true;
         output.write(message);
-        if (!callOnExit) return;
         try {
           config.onExit?.(code);
         } catch {
@@ -125,8 +140,10 @@ export function createRemoteAgentLifecycle(
           controller.abort();
           void (async () => {
             if (pipeRef !== undefined) await drainPipe(pipeRef, drainTimeoutMs);
-            // Timeout cannot confirm remote stopped — emit cleanup-incomplete, no onExit.
-            emitTerminal(1, "\n[timed out: remote agent may still be running]\n", false);
+            // Timeout must call onExit so TaskRunner can fail the task on the board.
+            // The cleanup-incomplete message communicates that remote termination is
+            // unconfirmed — the remote agent may still be running.
+            emitTerminal(1, "\n[timed out: remote agent may still be running]\n");
           })();
         }, config.timeout);
       }
@@ -134,7 +151,7 @@ export function createRemoteAgentLifecycle(
       const pipe = (async (): Promise<void> => {
         let response: Response;
         try {
-          response = await fetchImpl(config.endpoint, {
+          response = await fetchImpl(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...config.headers },
             body: JSON.stringify({
@@ -147,14 +164,14 @@ export function createRemoteAgentLifecycle(
           if (controller.signal.aborted) return;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           const message = err instanceof Error ? err.message : String(err);
-          emitTerminal(1, `\n[error: ${message}]\n`, true);
+          emitTerminal(1, `\n[error: ${message}]\n`);
           return;
         }
 
         if (!response.ok) {
           if (controller.signal.aborted) return;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          emitTerminal(1, `\n[error: HTTP ${String(response.status)}]\n`, true);
+          emitTerminal(1, `\n[error: HTTP ${String(response.status)}]\n`);
           return;
         }
 
@@ -162,7 +179,7 @@ export function createRemoteAgentLifecycle(
         if (response.body === null) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           if (!stopped && !timedOut) {
-            emitTerminal(1, "\n[error: protocol error — response body is null]\n", true);
+            emitTerminal(1, "\n[error: protocol error — response body is null]\n");
           }
           return;
         }
@@ -191,7 +208,7 @@ export function createRemoteAgentLifecycle(
               } catch {
                 // Malformed JSON — protocol violation; fail closed.
                 if (timeoutId !== undefined) clearTimeout(timeoutId);
-                emitTerminal(1, "\n[error: protocol error — malformed frame]\n", true);
+                emitTerminal(1, "\n[error: protocol error — malformed frame]\n");
                 return;
               }
               if (!isRemoteAgentFrame(frame)) {
@@ -209,7 +226,7 @@ export function createRemoteAgentLifecycle(
                   frame.exitCode === 0
                     ? "\n[exit code: 0]\n"
                     : `\n[exit code: ${String(frame.exitCode)}]\n`;
-                emitTerminal(frame.exitCode, exitMsg, true);
+                emitTerminal(frame.exitCode, exitMsg);
                 return; // exit pipe; finally{} releases reader lock
               }
             }
@@ -218,7 +235,7 @@ export function createRemoteAgentLifecycle(
           if (!controller.signal.aborted && !stopped && !timedOut) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
             const message = err instanceof Error ? err.message : String(err);
-            emitTerminal(1, `\n[error: ${message}]\n`, true);
+            emitTerminal(1, `\n[error: ${message}]\n`);
           }
         } finally {
           reader.releaseLock();
@@ -231,7 +248,7 @@ export function createRemoteAgentLifecycle(
             frame = JSON.parse(buffer.trim());
           } catch {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            emitTerminal(1, "\n[error: protocol error — malformed frame]\n", true);
+            emitTerminal(1, "\n[error: protocol error — malformed frame]\n");
           }
           if (frame !== undefined && isRemoteAgentFrame(frame) && frame.kind === "done") {
             receivedDone = true;
@@ -240,14 +257,14 @@ export function createRemoteAgentLifecycle(
               frame.exitCode === 0
                 ? "\n[exit code: 0]\n"
                 : `\n[exit code: ${String(frame.exitCode)}]\n`;
-            emitTerminal(frame.exitCode, exitMsg, true);
+            emitTerminal(frame.exitCode, exitMsg);
           }
         }
 
         // Stream closed without a done frame — protocol violation; fail closed.
         if (!stopped && !timedOut && !receivedDone) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          emitTerminal(1, "\n[error: protocol error — stream closed without done frame]\n", true);
+          emitTerminal(1, "\n[error: protocol error — stream closed without done frame]\n");
         }
       })().finally(() => {
         activePipes.delete(taskId);
@@ -260,20 +277,19 @@ export function createRemoteAgentLifecycle(
         if (timeoutId !== undefined) clearTimeout(timeoutId);
         stopped = true;
         controller.abort();
-        // Remote cleanup cannot be confirmed — emit cleanup-incomplete marker.
-        // emitTerminal is called after abort so the pipe can settle; write
-        // directly here to surface the state even if the pipe has already exited.
+        // TaskRunner.stop() owns the board transition (killOwnedTask).
+        // Write cleanup-incomplete to output to surface remote uncertainty,
+        // but do NOT call onExit — that would double-transition the board.
         if (!terminal) {
           terminal = true;
           output.write("\n[cleanup-incomplete: remote agent may still be running]\n");
-          // onExit intentionally NOT called — remote termination unconfirmed.
         }
       };
 
       return {
         kind: "remote_agent",
         taskId,
-        endpoint: config.endpoint,
+        endpoint, // from lifecycle options, not per-task config
         correlationId: config.correlationId,
         cancel,
         output,

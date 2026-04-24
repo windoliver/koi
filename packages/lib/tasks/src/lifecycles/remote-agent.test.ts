@@ -63,11 +63,11 @@ function errorFetch(err: Error): typeof globalThis.fetch {
   ) as unknown as typeof globalThis.fetch;
 }
 
-const FAST_OPTIONS: RemoteAgentLifecycleOptions = { drainTimeoutMs: 50 };
+const TEST_ENDPOINT = "http://agent.internal/run";
+const FAST_OPTIONS: RemoteAgentLifecycleOptions = { endpoint: TEST_ENDPOINT, drainTimeoutMs: 50 };
 
 function makeConfig(overrides: Partial<RemoteAgentConfig> = {}): RemoteAgentConfig {
   return {
-    endpoint: "http://agent.internal/run",
     correlationId: "corr-abc",
     payload: { task: "hello" },
     ...overrides,
@@ -500,7 +500,7 @@ describe("createRemoteAgentLifecycle", () => {
   });
 
   describe("timeout", () => {
-    test("writes cleanup-incomplete marker on timeout — onExit NOT called", async () => {
+    test("calls onExit(1) on timeout and writes cleanup-incomplete detail", async () => {
       const exits: number[] = [];
       const slowStream = new ReadableStream<Uint8Array>({ start() {} });
       const fetch = mockFetch(200, slowStream);
@@ -524,11 +524,11 @@ describe("createRemoteAgentLifecycle", () => {
         .read(0)
         .map((c) => c.content)
         .join("");
-      // Timeout cannot confirm remote stopped — must emit cleanup-incomplete, not success
+      // Timeout emits cleanup-incomplete detail so callers know remote may still be running
       expect(text).toContain("timed out");
       expect(text).toContain("remote agent may still be running");
-      // onExit must NOT be called on timeout — remote termination unconfirmed
-      expect(exits).toEqual([]);
+      // onExit(1) IS called so TaskRunner can fail the task on the board
+      expect(exits).toEqual([1]);
     });
 
     test("onExit is called at most once even on timeout + natural exit race", async () => {
@@ -587,14 +587,14 @@ describe("createRemoteAgentLifecycle", () => {
 
     test("returned state has expected shape", async () => {
       const fetch = mockFetch(200, makeNdjsonStream({ kind: "done", exitCode: 0 }));
-      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
       const output = createOutputStream();
 
-      const state = await lifecycle.start(
-        tid(),
-        output,
-        makeConfig({ endpoint: "http://ep/x", correlationId: "cid" }),
-      );
+      const lifecycle2 = createRemoteAgentLifecycle({
+        ...FAST_OPTIONS,
+        endpoint: "http://ep/x",
+        fetch,
+      });
+      const state = await lifecycle2.start(tid(), output, makeConfig({ correlationId: "cid" }));
 
       expect(state.kind).toBe("remote_agent");
       expect(state.endpoint).toBe("http://ep/x");
