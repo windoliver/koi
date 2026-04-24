@@ -462,31 +462,36 @@ describe("createProgressivePinnedRuntime", () => {
     expect(afterRepopulate.ok && afterRepopulate.value.body).toContain("Updated body.");
   });
 
-  test("clearPinnedBodies() only invalidates pinned skills — non-pinned base LRU entries preserved", async () => {
-    // clearPinnedBodies() calls base.invalidate(name) for each pinned key only.
-    // Skills loaded directly via base.load() (not via runtime.loadAll()) are not
-    // in the pin map and therefore are not invalidated.
-    await writeSkill(userRoot, "cached-skill", "Cached body.");
+  test("clearPinnedBodies() does a full base invalidation — discovery cache cleared", async () => {
+    // clearPinnedBodies() calls base.invalidate() (full, no name) which clears the
+    // discovery cache, body LRU, and external registrations (then replays externals).
+    // After clear, the next loadAll() re-discovers filesystem skills, picking up
+    // newly added or removed skills rather than serving the session-start snapshot.
+    await writeSkill(userRoot, "existing-skill", "Existing body.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const runtime = createProgressivePinnedRuntime(base);
 
-    // Pre-populate the base runtime's LRU cache via a direct base.load() call.
-    // This skill is NOT in the pin map (no loadAll() was called on runtime).
-    const initial = await base.load("cached-skill");
-    expect(initial.ok).toBe(true);
+    // Pin via loadAll (session start).
+    await runtime.loadAll();
 
-    // Clear session pins (pin map is empty — no loadAll() was called).
+    // Add a NEW skill after session start.
+    await writeSkill(userRoot, "new-skill", "New skill body.");
+
+    // Without clearing, the new skill is not discoverable (discovery cache preserved).
+    const beforeClear = await runtime.discover();
+    expect(beforeClear.ok).toBe(true);
+    if (beforeClear.ok) expect(beforeClear.value.has("new-skill")).toBe(false);
+
+    // After clearPinnedBodies(), discovery cache is cleared → re-discover picks up new skill.
     runtime.clearPinnedBodies();
-
-    // Non-pinned base LRU entry is preserved — only pinned skills are invalidated.
-    const afterClear = await base.load("cached-skill");
+    const afterClear = await runtime.discover();
     expect(afterClear.ok).toBe(true);
-    if (afterClear.ok) expect(afterClear.value.body).toContain("Cached body.");
+    if (afterClear.ok) expect(afterClear.value.has("new-skill")).toBe(true);
   });
 
-  test("clearPinnedBodies() calls base.invalidate(name) for each pinned skill", async () => {
-    // Pinned skills (loaded via runtime.loadAll()) get their base LRU entry cleared
-    // so the next session re-reads from disk instead of returning a stale cached body.
+  test("clearPinnedBodies() clears base LRU so pinned skills re-read from disk", async () => {
+    // Full invalidation clears all body LRU entries, so even pinned skills return
+    // fresh disk state after clearPinnedBodies() + loadAll().
     await writeSkill(userRoot, "pinned-skill", "Original body.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const runtime = createProgressivePinnedRuntime(base);
@@ -501,12 +506,34 @@ describe("createProgressivePinnedRuntime", () => {
     const cached = await base.load("pinned-skill");
     expect(cached.ok && cached.value.body).toContain("Original body.");
 
-    // clearPinnedBodies() calls base.invalidate("pinned-skill") → clears base LRU.
+    // clearPinnedBodies() does base.invalidate() (full) → clears ALL base LRU entries.
     runtime.clearPinnedBodies();
 
     // Base LRU is now cleared — next load reads fresh from disk.
     const afterClear = await base.load("pinned-skill");
     expect(afterClear.ok && afterClear.value.body).toContain("Updated body.");
+  });
+
+  test("clearPinnedBodies() replays external skills after full invalidation", async () => {
+    // Full base.invalidate() clears external registrations, but clearPinnedBodies()
+    // replays lastExternalSkills so MCP bridge state survives the session reset.
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    runtime.registerExternal([
+      { name: "mcp-tool", description: "MCP tool.", source: "mcp", dirPath: "mcp://test" },
+    ]);
+
+    // Verify external is discoverable before clear.
+    const beforeClear = await runtime.discover();
+    expect(beforeClear.ok).toBe(true);
+    if (beforeClear.ok) expect(beforeClear.value.has("mcp-tool")).toBe(true);
+
+    // After clearPinnedBodies(), the external must be replayed.
+    runtime.clearPinnedBodies();
+    const afterClear = await runtime.discover();
+    expect(afterClear.ok).toBe(true);
+    if (afterClear.ok) expect(afterClear.value.has("mcp-tool")).toBe(true);
   });
 });
 

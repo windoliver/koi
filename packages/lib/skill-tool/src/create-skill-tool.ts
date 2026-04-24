@@ -92,7 +92,7 @@ function internalError(
 // Tool description builder
 // ---------------------------------------------------------------------------
 
-function buildDescription(skillListing: string): string {
+function buildDescription(skillListing: string, progressive = false): string {
   const usage = [
     "Execute a skill by name. Skills provide specialized capabilities and domain knowledge.",
     "",
@@ -101,6 +101,12 @@ function buildDescription(skillListing: string): string {
   ].join("\n");
 
   if (skillListing.length === 0) {
+    // In progressive mode the middleware injects an <available_skills> XML block into the
+    // system prompt at each turn — that block is the authoritative catalog. Emitting "no
+    // skills available" here would contradict the system prompt and suppress Skill() calls.
+    if (progressive) {
+      return `${usage}Available skills are listed in the system prompt above.`;
+    }
     return `${usage}No skills are currently available.`;
   }
 
@@ -148,7 +154,7 @@ export async function createSkillTool(config: SkillToolConfig): Promise<Result<T
     });
     skillListing = formatSkillDescription(skills);
   }
-  const description = buildDescription(skillListing);
+  const description = buildDescription(skillListing, config.progressive);
 
   const tool: Tool = {
     descriptor: {

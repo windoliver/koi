@@ -27,6 +27,16 @@ import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "
 // ---------------------------------------------------------------------------
 
 /**
+ * Config for `createSkillProvider`. Accepts no options — exists so callers
+ * that previously passed `{ progressive: true }` receive an explicit runtime
+ * error pointing to `createProgressiveSkillProvider()` instead of silently
+ * falling back to eager mode.
+ */
+export interface SkillProviderConfig {
+  readonly progressive?: boolean;
+}
+
+/**
  * Creates a ComponentProvider that bridges a SkillsRuntime to the agent ECS.
  *
  * Eager mode: Calls runtime.loadAll(), converts each SkillDefinition → SkillComponent
@@ -40,7 +50,17 @@ import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "
  * Compatible with Nexus in the future: swap the runtime implementation,
  * keep the same provider.
  */
-export function createSkillProvider(runtime: SkillsRuntime): ComponentProvider {
+export function createSkillProvider(
+  runtime: SkillsRuntime,
+  config?: SkillProviderConfig,
+): ComponentProvider {
+  if (config?.progressive === true) {
+    throw new Error(
+      "createSkillProvider: progressive mode is not supported by this entrypoint. " +
+        "Use createProgressiveSkillProvider() instead — it bundles session-snapshot " +
+        "pinning and returns the pinned runtime that must also be passed to the Skill tool.",
+    );
+  }
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
@@ -66,13 +86,13 @@ export function createProgressiveSkillProvider(base: SkillsRuntime): {
   readonly provider: ComponentProvider;
   readonly pinnedRuntime: PinnedRuntime;
   /**
-   * Clears pinned bodies (+ base LRU for all pinned skills), re-runs loadAll()
-   * to pick up edits/deletions, and returns a fresh typed SkillComponent map.
+   * Clears pinned bodies, refreshes the base runtime's discovery cache, and
+   * re-runs loadAll() to pick up added/removed/edited skills. Returns a fresh
+   * typed SkillComponent map.
    *
-   * Use on session reset to refresh the live skill inventory. Because named
-   * invalidate() is used (not full invalidate), the discovery cache and
-   * external-skill registry are preserved — newly added skills require a
-   * process restart.
+   * Externals registered via registerExternal() are preserved across the reset
+   * (replayed automatically). Newly discovered filesystem skills are included
+   * in the fresh map.
    */
   readonly reload: () => Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>>;
 } {
@@ -225,20 +245,23 @@ function skillDefinitionToProgressiveComponent(skill: SkillDefinition): SkillCom
 /** SkillsRuntime extended with a pin-only clear for session resets. */
 export type PinnedRuntime = SkillsRuntime & {
   /**
-   * Clears only the session-local pin map without touching the underlying
-   * base runtime's discovery cache, body cache, or external-skill registry.
-   * After this call, `load()` falls through to `base.load()` for each
-   * on-demand request — returning current-disk state.
+   * Clears pinned bodies and invalidates the corresponding base LRU entries,
+   * then clears the base runtime's discovery cache so the next `loadAll()`
+   * re-scans the filesystem. Externals registered via `registerExternal()` are
+   * preserved and re-applied immediately so MCP skills survive the reset.
    *
-   * Use on session reset instead of `invalidate()` so the external-skill
-   * registry and discovery state remain intact for the next session's
-   * Skill tool calls.
+   * Use on session reset to pick up added/removed filesystem skills and refreshed
+   * skill bodies. The external-skill registry is NOT lost — it is replayed on the
+   * base runtime after the full invalidation.
    */
   readonly clearPinnedBodies: () => void;
 };
 
 export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRuntime {
   const pinned = new Map<string, Result<SkillDefinition, KoiError>>();
+  // Tracks the last set of externals registered via registerExternal() so they
+  // can be replayed on the base runtime after a full invalidation in clearPinnedBodies().
+  let lastExternalSkills: readonly SkillMetadata[] = [];
 
   const pinnedLoad = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
     const hit = pinned.get(name);
@@ -278,21 +301,18 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
       }
       base.invalidate(name);
     },
-    // Do NOT evict pins on registerExternal. Session-snapshot consistency means
-    // the advertised <available_skills> and the bodies served by the Skill tool
-    // must both reflect the session-start state for the session's lifetime.
-    // Evicting pins on MCP bridge refresh would let load() return a different
-    // body than what was advertised at attach time — that breaks the invariant.
-    // Hosts that need live refresh must start a new session.
-    registerExternal: (skills: readonly SkillMetadata[]): void => base.registerExternal(skills),
+    registerExternal: (skills: readonly SkillMetadata[]): void => {
+      lastExternalSkills = skills;
+      base.registerExternal(skills);
+    },
     clearPinnedBodies: (): void => {
-      // Named invalidate() clears only the body-cache entry for each skill,
-      // preserving the discovery cache and external-skill registration.
-      // This ensures edited/deleted skills are re-read from disk on next
-      // load() while newly-added skills (not yet discovered) require a
-      // full process restart.
-      for (const name of pinned.keys()) {
-        base.invalidate(name);
+      // Full base invalidation clears the discovery cache so the next loadAll()
+      // re-scans the filesystem, picking up newly added or removed skill directories.
+      // External/MCP skills are cleared too by base.invalidate(), but are immediately
+      // re-registered from lastExternalSkills so MCP bridge state survives the reset.
+      base.invalidate();
+      if (lastExternalSkills.length > 0) {
+        base.registerExternal(lastExternalSkills);
       }
       pinned.clear();
     },
