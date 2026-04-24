@@ -120,6 +120,10 @@ export function createGateway(
   // only if no in-memory entry exists. This prevents seq reuse when the async
   // disconnect persist fails or has not completed before the reconnect reads the store.
   const lastKnownOutboundSeq = new Map<string, number>();
+  // Per-connection session snapshot kept in sync with the last store.set() call.
+  // Used by send() to fire a best-effort outbound-seq persist without a store.get()
+  // round-trip, reducing the seq-reuse window after a process crash.
+  const connSessionCache = new Map<string, Session>();
   // Set to true by stop() so pending handshake continuations bail out before store.set().
   let stopped = false;
 
@@ -155,12 +159,13 @@ export function createGateway(
         try {
           handler(session, frame);
         } catch (err: unknown) {
-          // Abort immediately: do not invoke remaining handlers for this frame.
-          // Any handler that ran before the failure will see the frame again on reconnect
-          // replay (at-least-once), but continuing fanout would guarantee a duplicate for
-          // handlers that have already succeeded — abort-early limits the blast radius.
+          // Isolate per-handler: log the error but continue to remaining handlers.
+          // Aborting fanout on the first throw would cause replay duplication — any
+          // subscriber that already processed the frame would receive it again on
+          // reconnect since remoteSeq is only persisted after all handlers run.
+          // Per-handler isolation means each subscriber is independently responsible
+          // for its own error recovery; one failure cannot corrupt others' delivery.
           swallowError(err, { package: "gateway", operation: "onFrame" });
-          throw err;
         }
       }
     }
@@ -210,6 +215,7 @@ export function createGateway(
     inboundBufferedSeqs.delete(conn.id);
     connOutboundSeq.delete(conn.id);
     connOutboundBp.delete(conn.id);
+    connSessionCache.delete(conn.id);
     sessionByConn.delete(conn.id);
     connMap.delete(conn.id);
     bp.remove(conn.id);
@@ -452,6 +458,9 @@ export function createGateway(
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
         return;
       }
+      // Keep the per-connection session cache in sync so send() can persist the
+      // latest outbound seq without a round-trip store.get().
+      connSessionCache.set(conn.id, updatedSession);
     }
   }
 
@@ -628,6 +637,8 @@ export function createGateway(
           // that it is live again. Not clearing would race the sweep: a brief disconnect
           // followed by reconnect before TTL expiry would silently delete the live session.
           disconnectedAt.delete(result.session.id);
+          // Seed the session cache so send() can persist seq updates without store.get().
+          connSessionCache.set(conn.id, sessionToStore);
 
           // Phase 2: Persistence succeeded — complete eviction of the old connection.
           if (prevConnId !== undefined && prevConnId !== conn.id) {
@@ -741,7 +752,15 @@ export function createGateway(
             }
             void Promise.resolve(sessionRes)
               .then((r) => {
-                if (!r.ok) return;
+                if (!r.ok) {
+                  // Session record gone — fail closed: the authorization state cannot be
+                  // verified and the session record may have been deleted by a concurrent
+                  // destroySession or TTL sweep. Leaving the socket open would allow
+                  // outbound sends and inbound processing without a valid auth context.
+                  cleanupConn(conn, "Session not found during revocation check");
+                  conn.close(CLOSE_CODES.AUTH_FAILED, "Session not found during revocation");
+                  return;
+                }
                 return Promise.resolve(validate(r.value)).then((valid) => {
                   if (!valid) {
                     conn.send(
@@ -906,6 +925,7 @@ export function createGateway(
       pendingHandshakes.clear();
       connOutboundSeq.clear();
       connOutboundBp.clear();
+      connSessionCache.clear();
       disconnectedAt.clear();
       pendingSeqPersists.clear();
       lastKnownOutboundSeq.clear();
@@ -994,12 +1014,19 @@ export function createGateway(
         bp.record(connId, bytes);
         connOutboundBp.set(connId, (connOutboundBp.get(connId) ?? 0) + bytes);
       }
-      // Keep the in-memory seq snapshot current so same-process reconnects always
-      // restore the latest outbound counter, not just the value at last disconnect.
-      // Note: this does not survive a process crash — the store-side persist from
-      // cleanupConn covers graceful disconnects; crash durability would require
-      // persisting on every send(), which is deferred due to store I/O cost.
-      lastKnownOutboundSeq.set(sessionId, connOutboundSeq.get(connId) ?? 0);
+      // Keep the in-memory snapshot current for same-process reconnects.
+      const latestSeq = connOutboundSeq.get(connId) ?? 0;
+      lastKnownOutboundSeq.set(sessionId, latestSeq);
+      // Fire-and-forget store persist so the outbound seq survives process crashes.
+      // Uses the session cache to avoid a store.get() round-trip per send.
+      const cachedSession = connSessionCache.get(connId);
+      if (cachedSession !== undefined && cachedSession.seq < latestSeq) {
+        const updated: Session = { ...cachedSession, seq: latestSeq };
+        connSessionCache.set(connId, updated);
+        void Promise.resolve(store.set(updated)).catch((err: unknown) => {
+          swallowError(err, { package: "gateway", operation: "send.seq.persist" });
+        });
+      }
       return { ok: true, value: bytes };
     },
 

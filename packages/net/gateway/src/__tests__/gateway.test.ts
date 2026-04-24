@@ -317,10 +317,10 @@ describe("createGateway", () => {
       expect(stored?.remoteSeq).toBe(2);
     });
 
-    test("fanout aborts on first handler failure — later subscribers do not see the frame", async () => {
+    test("handler failure is isolated — later subscribers still receive the frame", async () => {
       const auth = createTestAuthenticator({
         ok: true,
-        sessionId: "s-fanout-abort",
+        sessionId: "s-fanout-isolate",
         agentId: "a1",
         metadata: {},
       });
@@ -333,12 +333,14 @@ describe("createGateway", () => {
       });
       gateway.onFrame("a1", (_s, f) => sub2Received.push(f));
 
-      const conn = await authenticateConn(transport, gateway, "s-fanout-abort");
+      const conn = await authenticateConn(transport, gateway, "s-fanout-isolate");
       transport.simulateMessage(conn.id, frameStr({ seq: 0 }));
 
-      await waitForCondition(() => conn.closed);
-      // subscriber 2 must never receive the frame — fanout aborted before reaching it
-      expect(sub2Received).toHaveLength(0);
+      // Handler failures are isolated: subscriber 2 still receives the frame and the
+      // connection remains open — no replay-duplication from aborting on first throw.
+      await waitForCondition(() => sub2Received.length >= 1);
+      expect(sub2Received).toHaveLength(1);
+      expect(conn.closed).toBe(false);
     });
 
     test("malformed frame sends error response, not dispatched", async () => {
