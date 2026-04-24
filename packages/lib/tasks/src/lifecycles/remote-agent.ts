@@ -94,6 +94,26 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 2000;
 // server that never emits a newline.
 const MAX_FRAME_BYTES = 1 * 1024 * 1024;
 
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+// Enforce HTTPS at lifecycle construction time so auth headers and task payloads
+// are never sent over a plaintext transport. Plain HTTP is permitted only for
+// loopback addresses (local dev / integration testing).
+function validateEndpointSecurity(endpoint: string): void {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error(`RemoteAgentLifecycle: invalid endpoint URL: ${JSON.stringify(endpoint)}`);
+  }
+  if (url.protocol === "https:") return;
+  if (url.protocol === "http:" && LOOPBACK_HOSTNAMES.has(url.hostname)) return;
+  throw new Error(
+    `RemoteAgentLifecycle: endpoint must use HTTPS (got ${url.protocol}//${url.hostname}). ` +
+      "Plain HTTP is only permitted for loopback addresses (localhost, 127.0.0.1, ::1).",
+  );
+}
+
 async function drainPipe(pipe: Promise<void>, drainTimeoutMs: number): Promise<void> {
   await Promise.race([pipe, new Promise<void>((resolve) => setTimeout(resolve, drainTimeoutMs))]);
 }
@@ -105,6 +125,7 @@ async function drainPipe(pipe: Promise<void>, drainTimeoutMs: number): Promise<v
 export function createRemoteAgentLifecycle(
   options: RemoteAgentLifecycleOptions,
 ): TaskKindLifecycle<RemoteAgentConfig, RemoteAgentTask> {
+  validateEndpointSecurity(options.endpoint);
   const { endpoint } = options;
   const lifecycleHeaders = options.headers;
   const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
@@ -404,6 +425,10 @@ export function createRemoteAgentLifecycle(
       state.cancel();
       const pipe = activePipes.get(state.taskId);
       if (pipe !== undefined) await drainPipe(pipe, drainTimeoutMs);
+      // Force-remove even if the pipe promise never settled within the drain window.
+      // Without this, a hung connection would retain the taskId in activePipes
+      // after the board has already transitioned to a terminal state.
+      activePipes.delete(state.taskId);
     },
   };
 }

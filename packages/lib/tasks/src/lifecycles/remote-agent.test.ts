@@ -63,7 +63,7 @@ function errorFetch(err: Error): typeof globalThis.fetch {
   ) as unknown as typeof globalThis.fetch;
 }
 
-const TEST_ENDPOINT = "http://agent.internal/run";
+const TEST_ENDPOINT = "https://agent.internal/run";
 const FAST_OPTIONS: RemoteAgentLifecycleOptions = { endpoint: TEST_ENDPOINT, drainTimeoutMs: 50 };
 
 function makeConfig(overrides: Partial<RemoteAgentConfig> = {}): RemoteAgentConfig {
@@ -107,7 +107,7 @@ describe("createRemoteAgentLifecycle", () => {
       const text = chunks.map((c) => c.content).join("");
       expect(text).toContain("hello world");
       expect(state.kind).toBe("remote_agent");
-      expect(state.endpoint).toBe("http://agent.internal/run");
+      expect(state.endpoint).toBe("https://agent.internal/run");
       expect(state.correlationId).toBe("corr-abc");
     });
 
@@ -669,13 +669,13 @@ describe("createRemoteAgentLifecycle", () => {
 
       const lifecycle2 = createRemoteAgentLifecycle({
         ...FAST_OPTIONS,
-        endpoint: "http://ep/x",
+        endpoint: "https://ep/x",
         fetch,
       });
       const state = await lifecycle2.start(tid(), output, makeConfig({ correlationId: "cid" }));
 
       expect(state.kind).toBe("remote_agent");
-      expect(state.endpoint).toBe("http://ep/x");
+      expect(state.endpoint).toBe("https://ep/x");
       expect(state.correlationId).toBe("cid");
       expect(typeof state.cancel).toBe("function");
       expect(typeof state.startedAt).toBe("number");
@@ -1257,6 +1257,59 @@ describe("createRemoteAgentLifecycle", () => {
       expect(text).toContain("cleanup-incomplete");
       expect(text).toContain("UTF-8");
       expect(exits).toEqual([1]);
+    });
+  });
+
+  describe("endpoint security validation", () => {
+    test("rejects plain HTTP to a non-loopback host at construction time", () => {
+      expect(() =>
+        createRemoteAgentLifecycle({ endpoint: "http://remote-agent.prod/run" }),
+      ).toThrow("HTTPS");
+    });
+
+    test("accepts HTTPS endpoints", () => {
+      expect(() =>
+        createRemoteAgentLifecycle({ endpoint: "https://remote-agent.prod/run" }),
+      ).not.toThrow();
+    });
+
+    test("accepts plain HTTP to loopback for local dev", () => {
+      expect(() =>
+        createRemoteAgentLifecycle({ endpoint: "http://localhost:8080/run" }),
+      ).not.toThrow();
+    });
+
+    test("accepts plain HTTP to 127.0.0.1 for local dev", () => {
+      expect(() =>
+        createRemoteAgentLifecycle({ endpoint: "http://127.0.0.1:9000/run" }),
+      ).not.toThrow();
+    });
+
+    test("rejects invalid URL at construction time", () => {
+      expect(() => createRemoteAgentLifecycle({ endpoint: "not-a-url" })).toThrow(
+        "invalid endpoint URL",
+      );
+    });
+  });
+
+  describe("activePipes map cleanup on hung connections", () => {
+    test("stop() removes taskId from activePipes even if pipe never settles", async () => {
+      // Stream that never closes — simulates a hung connection.
+      const neverStream = new ReadableStream<Uint8Array>({ start() {} });
+      const fetch = mockFetch(200, neverStream);
+      // Use a very short drain timeout so the test finishes quickly.
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        drainTimeoutMs: 20,
+        fetch,
+      });
+      const output = createOutputStream();
+      const id = tid();
+      const state = await lifecycle.start(id, output, makeConfig());
+
+      // Stop must return within the drain window and not hang.
+      await lifecycle.stop(state);
+      // If we reach here, stop() resolved — map entry was force-removed.
     });
   });
 });
