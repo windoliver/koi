@@ -458,13 +458,96 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     expect(b2.duplicate).toBeUndefined();
     expect(dispatchCount).toBe(2);
   });
+
+  test("duplicate Stripe event is deduplicated by event.id from payload", async () => {
+    const secret = "stripe-secret";
+    const eventId = "evt_test_123abc";
+    const stripeBody = JSON.stringify({ id: eventId, type: "payment_intent.succeeded" });
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const sigStr = `${ts}.${stripeBody}`;
+    const stripeSig = `t=${ts},v1=${await computeHmacHex(secret, sigStr)}`;
+
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      dispatcher,
+      undefined,
+      { stripe: secret },
+    );
+    await server.start();
+
+    const headers = { "Stripe-Signature": stripeSig, "Content-Type": "application/json" };
+
+    const res1 = await fetch(`http://localhost:${server.port()}/webhook/stripe`, {
+      method: "POST",
+      headers,
+      body: stripeBody,
+    });
+    expect(res1.status).toBe(200);
+    expect(dispatched).toHaveLength(1);
+
+    // Stripe retry — same body, new timestamp+sig would be a real retry but same event.id
+    // Simulate with same ts (simplest way to verify dedup key)
+    const res2 = await fetch(`http://localhost:${server.port()}/webhook/stripe`, {
+      method: "POST",
+      headers,
+      body: stripeBody,
+    });
+    expect(res2.status).toBe(200);
+    const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
+    expect(b2.duplicate).toBe(true);
+    expect(dispatched).toHaveLength(1);
+  });
+
+  test("duplicate Slack Events API event is deduplicated by event_id", async () => {
+    const secret = "slack-secret";
+    const slackBody = JSON.stringify({
+      type: "event_callback",
+      event_id: "Ev0123456789",
+      event: { type: "message", text: "hello" },
+    });
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const slackSig = `v0=${await computeHmacHex(secret, `v0:${ts}:${slackBody}`)}`;
+
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      dispatcher,
+      undefined,
+      { slack: secret },
+    );
+    await server.start();
+
+    const headers = {
+      "X-Slack-Request-Timestamp": ts,
+      "X-Slack-Signature": slackSig,
+      "Content-Type": "application/json",
+    };
+
+    const res1 = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
+      method: "POST",
+      headers,
+      body: slackBody,
+    });
+    expect(res1.status).toBe(200);
+    expect(dispatched).toHaveLength(1);
+
+    // Slack retry — same event_id
+    const res2 = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
+      method: "POST",
+      headers,
+      body: slackBody,
+    });
+    expect(res2.status).toBe(200);
+    const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
+    expect(b2.duplicate).toBe(true);
+    expect(dispatched).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
 // Test helper — compute GitHub HMAC sig
 // ---------------------------------------------------------------------------
 
-async function computeGitHubSig(secret: string, body: string): Promise<string> {
+async function computeHmacHex(secret: string, message: string): Promise<string> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -473,6 +556,10 @@ async function computeGitHubSig(secret: string, body: string): Promise<string> {
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-  return `sha256=${Buffer.from(sig).toString("hex")}`;
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+  return Buffer.from(sig).toString("hex");
+}
+
+async function computeGitHubSig(secret: string, body: string): Promise<string> {
+  return `sha256=${await computeHmacHex(secret, body)}`;
 }

@@ -2,9 +2,13 @@
  * Built-in webhook provider definitions.
  *
  * A provider describes how to:
- * 1. Detect an inbound request (path segment or header)
+ * 1. Detect an inbound request (URL path segment)
  * 2. Verify its HMAC signature
- * 3. Extract a dedup key for idempotency
+ * 3. Extract a stable dedup key for idempotency
+ *
+ * Dedup keys are derived from provider-native delivery/event identifiers
+ * embedded in the verified payload — not from HTTP headers that callers
+ * may omit or forge. This ensures retries are correctly deduplicated.
  */
 
 import {
@@ -31,6 +35,38 @@ export interface WebhookProvider {
 }
 
 // ---------------------------------------------------------------------------
+// Payload dedup-key extraction helpers (only called on verified payloads)
+// ---------------------------------------------------------------------------
+
+function extractStripeEventId(rawBody: string): string | undefined {
+  // Stripe webhook payload: { "id": "evt_xxx", "type": "...", ... }
+  // Use event id as dedup key — stable across Stripe's automatic retries.
+  try {
+    const payload = JSON.parse(rawBody) as { id?: unknown };
+    const id = payload.id;
+    if (typeof id === "string" && id.length > 0) return `stripe:${id}`;
+  } catch {
+    // Non-JSON body — no dedup key
+  }
+  return undefined;
+}
+
+function extractSlackEventId(rawBody: string): string | undefined {
+  // Slack Events API envelope: { "event_id": "Ev012345", "type": "event_callback", ... }
+  // event_id is globally unique per delivery; use it for dedup.
+  // Non-Events-API Slack webhooks (slash commands, interactive payloads) have no
+  // stable envelope ID, so we return undefined and skip dedup for those shapes.
+  try {
+    const payload = JSON.parse(rawBody) as { event_id?: unknown };
+    const id = payload.event_id;
+    if (typeof id === "string" && id.length > 0) return `slack:${id}`;
+  } catch {
+    // Non-JSON body
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Built-in providers
 // ---------------------------------------------------------------------------
 
@@ -38,6 +74,7 @@ const githubProvider: WebhookProvider = {
   kind: "github",
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGitHubSignature(secret, rawBody, request);
+    // X-GitHub-Delivery is a stable GUID supplied by GitHub for every delivery.
     const dedupKey = request.headers.get("x-github-delivery") ?? undefined;
     return { ok, dedupKey };
   },
@@ -47,7 +84,9 @@ const slackProvider: WebhookProvider = {
   kind: "slack",
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifySlackSignature(secret, rawBody, request);
-    return { ok };
+    // Extract event_id from verified Events API payload for dedup.
+    const dedupKey = ok ? extractSlackEventId(rawBody) : undefined;
+    return { ok, dedupKey };
   },
 };
 
@@ -55,7 +94,9 @@ const stripeProvider: WebhookProvider = {
   kind: "stripe",
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyStripeSignature(secret, rawBody, request);
-    const dedupKey = request.headers.get("idempotency-key") ?? undefined;
+    // Derive dedup from event.id in the verified payload.
+    // The Stripe-Signature header's Idempotency-Key is for API requests, not webhooks.
+    const dedupKey = ok ? extractStripeEventId(rawBody) : undefined;
     return { ok, dedupKey };
   },
 };
@@ -64,6 +105,7 @@ const genericProvider: WebhookProvider = {
   kind: "generic",
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGenericSignature(secret, rawBody, request);
+    // X-Webhook-ID is the Standard Webhooks delivery identifier.
     const dedupKey = request.headers.get("x-webhook-id") ?? undefined;
     return { ok, dedupKey };
   },

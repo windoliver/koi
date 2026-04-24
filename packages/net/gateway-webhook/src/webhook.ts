@@ -170,9 +170,11 @@ export function createWebhookServer(
       if (!verifyResult.ok) {
         return jsonResponse(401, { ok: false, error: "Invalid signature" });
       }
-      // Check idempotency (read-only — do not commit yet)
+      // Atomically reserve the dedup key — prevents concurrent duplicate dispatch.
+      // tryBegin() is synchronous: no await between check and reservation, so
+      // concurrent requests cannot both pass before either records.
       if (verifyResult.dedupKey !== undefined) {
-        if (idempotencyStore.isDuplicate(verifyResult.dedupKey)) {
+        if (!idempotencyStore.tryBegin(verifyResult.dedupKey)) {
           return jsonResponse(200, { ok: true, duplicate: true });
         }
         pendingDedupKey = verifyResult.dedupKey;
@@ -224,6 +226,10 @@ export function createWebhookServer(
     try {
       dispatcher(session, frame);
     } catch (err: unknown) {
+      // Abort dedup reservation so provider can retry and be accepted.
+      if (pendingDedupKey !== undefined) {
+        idempotencyStore.abort(pendingDedupKey);
+      }
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
     }
@@ -231,7 +237,7 @@ export function createWebhookServer(
     // Commit dedup key only after full successful acceptance (auth + dispatch).
     // Provider retries after transient failures will not be silently dropped.
     if (pendingDedupKey !== undefined) {
-      idempotencyStore.record(pendingDedupKey);
+      idempotencyStore.commit(pendingDedupKey);
     }
 
     return jsonResponse(200, { ok: true, frameId });
