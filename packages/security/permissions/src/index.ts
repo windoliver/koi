@@ -15,6 +15,7 @@ export { resolveMode } from "./mode-resolver.js";
 export { compileGlob, evaluateRules, normalizeResource } from "./rule-evaluator.js";
 export { loadRules } from "./rule-loader.js";
 export type {
+  CompiledRule,
   PermissionConfig,
   PermissionMode,
   PermissionRule,
@@ -28,3 +29,8 @@ export {
   PLAN_SAFE_VOCABULARY,
   SOURCE_PRECEDENCE,
 } from "./rule-types.js";
+export type { TuiRuleNormalizationResult } from "./settings-bridge.js";
+export {
+  mapSettingsToSourcedRules,
+  widenCommandScopedRulesForTui,
+} from "./settings-bridge.js";

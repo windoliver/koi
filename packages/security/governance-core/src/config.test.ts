@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import type { GovernanceController } from "@koi/core/governance";
 import type { GovernanceBackend } from "@koi/core/governance-backend";
 import { DEFAULT_ALERT_THRESHOLDS, validateGovernanceConfig } from "./config.js";
@@ -96,5 +96,60 @@ describe("validateGovernanceConfig", () => {
     if (!result.ok) {
       expect(result.error.message).toContain("cost_usd");
     }
+  });
+});
+
+describe("validateGovernanceConfig — ask-verdict config", () => {
+  const baseValid = {
+    backend: { evaluator: { evaluate: () => ({ ok: true }) } },
+    controller: {
+      checkAll: async () => ({ ok: true }),
+      record: async () => undefined,
+      snapshot: () => ({}),
+    },
+    cost: { calculate: () => 0 },
+  };
+
+  it("accepts missing approvalTimeoutMs (defaulted later)", () => {
+    const res = validateGovernanceConfig(baseValid);
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects approvalTimeoutMs: 0", () => {
+    const res = validateGovernanceConfig({ ...baseValid, approvalTimeoutMs: 0 });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects approvalTimeoutMs: -1", () => {
+    const res = validateGovernanceConfig({ ...baseValid, approvalTimeoutMs: -1 });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects approvalTimeoutMs: NaN", () => {
+    const res = validateGovernanceConfig({ ...baseValid, approvalTimeoutMs: Number.NaN });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects approvalTimeoutMs: '60'", () => {
+    const res = validateGovernanceConfig({ ...baseValid, approvalTimeoutMs: "60" });
+    expect(res.ok).toBe(false);
+  });
+
+  it("accepts approvalTimeoutMs: 60000", () => {
+    const res = validateGovernanceConfig({ ...baseValid, approvalTimeoutMs: 60000 });
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects onApprovalPersist that is not a function", () => {
+    const res = validateGovernanceConfig({ ...baseValid, onApprovalPersist: "nope" });
+    expect(res.ok).toBe(false);
+  });
+
+  it("accepts onApprovalPersist as a function", () => {
+    const res = validateGovernanceConfig({
+      ...baseValid,
+      onApprovalPersist: () => undefined,
+    });
+    expect(res.ok).toBe(true);
   });
 });

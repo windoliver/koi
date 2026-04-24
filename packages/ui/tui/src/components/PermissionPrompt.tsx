@@ -23,6 +23,139 @@ import { COLORS, MODAL_POSITION } from "../theme.js";
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Preferred outer width for the permission prompt modal.
+ * Must be a positive integer — OpenTUI absolute-positioned boxes without an
+ * explicit width re-measure content every layout pass, triggering a
+ * blendCells busy-loop that saturates one CPU core and blocks all input.
+ * The actual rendered width is clamped to available terminal columns so the
+ * modal remains fully visible on narrow terminals (< 64 cols). (#1913)
+ */
+export const PERMISSION_PROMPT_WIDTH = 60;
+
+/**
+ * Border chrome: 1 col left + 1 col right. Subtracted from the available
+ * columns so the outer box (left_offset + width + borders) never exceeds
+ * the terminal column count.
+ */
+const BORDER_CHROME = 2;
+
+/**
+ * Minimum positive width passed to the OpenTUI <box>. A zero or absent width
+ * causes OpenTUI to re-measure the content every layout pass, triggering the
+ * blendCells busy-loop that saturates one CPU core and blocks all input.
+ * 1 is the smallest value that avoids the busy-loop.
+ */
+const PERMISSION_PROMPT_MIN_WIDTH = 1;
+
+/**
+ * Compute the clamped modal width for a given terminal column count.
+ * Guarantees: result >= PERMISSION_PROMPT_MIN_WIDTH (positive integer, avoids
+ * blendCells busy-loop); result <= PERMISSION_PROMPT_WIDTH on wide terminals.
+ * For pathologically narrow terminals (< left + border = 4 cols) the left
+ * offset already overflows the terminal — width is clamped to the minimum so
+ * OpenTUI still has an explicit positive width and does not enter the loop.
+ * Exported for unit testing without needing a render context.
+ */
+export function computePermissionPromptWidth(terminalCols: number): number {
+  const available = terminalCols - MODAL_POSITION.left - BORDER_CHROME;
+  return Math.min(PERMISSION_PROMPT_WIDTH, Math.max(available, PERMISSION_PROMPT_MIN_WIDTH));
+}
+
+/**
+ * Modal widths below this threshold stack the title-row risk label onto its own
+ * line. At PERMISSION_PROMPT_WIDTH=60 the inner width is 58, comfortably fitting
+ * "Permission Required [MEDIUM] (1 of 9)" (38 chars). Only below 30 cols does
+ * the heading start to clip its metadata.
+ *
+ * Key hints are always rendered as a vertical stack regardless of this threshold:
+ * the full horizontal row is ~76 chars, which never fits in the max 60-col modal.
+ * Exported for unit testing.
+ */
+export const PERMISSION_PROMPT_NARROW_THRESHOLD = 30;
+
+/**
+ * Minimum modal width at which the prompt can display enough approval context
+ * to be safely interactive. Below this (terminal < ~24 cols), the keyboard
+ * handler suppresses y/a/! and shows a "resize terminal" fallback so users
+ * cannot accidentally grant access to an unreadable prompt. Only Escape/deny
+ * remains active. Exported for unit testing.
+ */
+export const PERMISSION_PROMPT_MIN_SAFE_WIDTH = 20;
+
+/**
+ * Absolute floor for `computeMinSafeHeight`: the minimum baseline for the
+ * shortest possible prompt (short toolId, no reason, no permanent, "{}" JSON
+ * on a wide terminal). Derived:
+ *   MODAL_POSITION.top(1) + border(2) + title(1) + tool(2) + args(3) + hints(6) = 15
+ *   floored to 16 to account for rendering margin.
+ * Exported for unit testing.
+ */
+export const PERMISSION_PROMPT_MIN_SAFE_HEIGHT = 16;
+
+/**
+ * Estimate minimum terminal row count needed to show the full permission
+ * prompt without vertical clipping, given the current prompt content and
+ * terminal width.
+ *
+ * Row budget:
+ *   MODAL_POSITION.top + borders(2) + title(1 or 2 if narrow) +
+ *   marginTop + tool rows (wraps for long IDs) +
+ *   marginTop + "Arguments:\n" + inputPreview lines +
+ *   [if reason: marginTop + estimated lines] +
+ *   marginTop + [y](1) + [n](1) + [a header](1) + [a toolId wrapped] + [!]?(1) + [Esc](1)
+ *
+ * toolId wrapping is included in both the Tool: section and the [a] hint so
+ * long MCP-style IDs (e.g. `crm__get_customer_with_full_details`) that span
+ * multiple rows are accounted for. Returns at least PERMISSION_PROMPT_MIN_SAFE_HEIGHT.
+ * Exported for unit testing.
+ */
+export function computeMinSafeHeight(
+  terminalCols: number,
+  inputPreviewStr: string,
+  reason: string | undefined,
+  permanentAvailable: boolean,
+  toolId: string,
+): number {
+  const width = computePermissionPromptWidth(terminalCols);
+  // Inner usable width: paddingLeft(1) + paddingRight(1) consumed by the box.
+  const innerWidth = Math.max(1, width - 2);
+  const isNarrow = width < PERMISSION_PROMPT_NARROW_THRESHOLD;
+
+  // top offset + border top + border bottom
+  let rows = MODAL_POSITION.top + 2;
+  // title row (risk label stacks below on narrow terminals)
+  rows += isNarrow ? 2 : 1;
+  // marginTop(1) + tool section
+  // Wide: "Tool: ${toolId}" — wraps at innerWidth cols.
+  // Narrow: "Tool:" (1) + "  ${toolId}" (wraps at innerWidth cols, 2-char indent).
+  if (isNarrow) {
+    // "  " + toolId wraps at innerWidth
+    const toolIdLines = Math.max(1, Math.ceil((2 + toolId.length) / innerWidth));
+    rows += 1 + 1 + toolIdLines; // marginTop + "Tool:" + indented toolId lines
+  } else {
+    // "Tool: " (6 chars) + toolId wraps at innerWidth
+    const toolLineLines = Math.max(1, Math.ceil((6 + toolId.length) / innerWidth));
+    rows += 1 + toolLineLines; // marginTop + tool line(s)
+  }
+  // marginTop(1) + "Arguments:" header + JSON preview lines
+  rows += 1 + 1 + inputPreviewStr.split("\n").length;
+  // reason: marginTop(1) + estimated line count based on inner width
+  if (reason !== undefined && reason !== "") {
+    const normalized = reason.replace(/\s+/g, " ").trim();
+    // "↳ " prefix (2 chars) + paddingLeft(1) = 3 chars overhead
+    const lineWidth = Math.max(1, width - 3);
+    rows += 1 + Math.max(1, Math.ceil(normalized.length / lineWidth));
+  }
+  // marginTop(1) + [y](1) + [n](1)
+  // + [a] hint: "[a] Allow this session:" header (1) + "  ${toolId}" wrapped lines
+  // + [!]?(1) + [Esc](1)
+  const aHintToolIdLines = Math.max(1, Math.ceil((2 + toolId.length) / innerWidth));
+  rows += 1 + 1 + 1 + 1 + aHintToolIdLines + (permanentAvailable ? 1 : 0) + 1;
+
+  return Math.max(rows, PERMISSION_PROMPT_MIN_SAFE_HEIGHT);
+}
+
 const RISK_COLORS: Record<PermissionRiskLevel, string> = {
   low: COLORS.success,
   medium: COLORS.amber,
@@ -46,6 +179,20 @@ export interface PermissionPromptProps {
   readonly onRespond: (requestId: string, decision: ApprovalDecision) => void;
   /** Whether this prompt has keyboard focus. */
   readonly focused: boolean;
+  /**
+   * Current terminal column count, forwarded from the parent that owns
+   * useTerminalDimensions(). Used to clamp modal width on narrow terminals
+   * so approval context is never clipped off-screen (#1913).
+   * Defaults to PERMISSION_PROMPT_WIDTH when not provided.
+   */
+  readonly terminalWidth?: number | undefined;
+  /**
+   * Current terminal row count, forwarded from the parent that owns
+   * useTerminalDimensions(). Used to suppress approval keys when the terminal
+   * is too short to show the full prompt context (#1913).
+   * Defaults to PERMISSION_PROMPT_MIN_SAFE_HEIGHT + 1 (always safe) when not provided.
+   */
+  readonly terminalHeight?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +216,18 @@ export function processPermissionKey(keyName: string, permanentAvailable = false
     default:
       return null; // swallow — focus trap
   }
+}
+
+/**
+ * Truncate a tool ID for display when the available width is narrow.
+ * The full `toolId` is preserved in the prompt's `Tool:` label and in
+ * the `[a]` always-allow hint; `maxLen` limits the inline display copy
+ * so MCP-style IDs such as `crm__get_customer` don't dominate the layout
+ * on 40-col terminals.
+ */
+export function formatToolId(toolId: string, maxLen: number): string {
+  if (toolId.length <= maxLen) return toolId;
+  return toolId.slice(0, maxLen - 1) + "…";
 }
 
 /** Format the input object for display (truncated for large inputs). */
@@ -101,9 +260,56 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
 
   const permanentAvailable = createMemo(() => props.prompt.permanentAvailable === true);
 
+  // Clamp to available columns so the approval context is never clipped on
+  // narrow terminals. Width is driven by the parent's terminal-resize signal —
+  // not per-frame — so this does not reintroduce the blendCells busy-loop.
+  // Falls back to PERMISSION_PROMPT_WIDTH when terminalWidth is not provided
+  // (e.g. unit tests that only exercise pure logic). (#1913)
+  const modalWidth = createMemo(() =>
+    computePermissionPromptWidth(props.terminalWidth ?? PERMISSION_PROMPT_WIDTH)
+  );
+
+  // Stacked layout when the computed modal width is below the threshold where
+  // horizontal hint rows would overflow. (#1913)
+  const isNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_NARROW_THRESHOLD);
+
+  // Below the minimum safe width or height the prompt cannot display enough
+  // context to make an informed decision. Approval keys are suppressed in both
+  // the keyboard handler AND the render path so approval affordances are never
+  // shown when they would be silently ignored. (#1913)
+  const isTooNarrow = createMemo(() => modalWidth() < PERMISSION_PROMPT_MIN_SAFE_WIDTH);
+  // Dynamic height estimate accounts for multiline JSON, reason text, narrow
+  // layout, toolId wrapping in Tool: and [a] hint, and permanent row. (#1913)
+  const minSafeHeight = createMemo(() =>
+    computeMinSafeHeight(
+      props.terminalWidth ?? PERMISSION_PROMPT_WIDTH,
+      inputPreview(),
+      props.prompt.reason,
+      permanentAvailable(),
+      props.prompt.toolId,
+    )
+  );
+  const isTooShort = createMemo(() =>
+    (props.terminalHeight ?? minSafeHeight() + 1) < minSafeHeight()
+  );
+  const cannotReview = createMemo(() => isTooNarrow() || isTooShort());
+
   // Register keyboard handler — without this, y/n/a keys are never received
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
+    if (cannotReview()) {
+      // Context is unreadable: suppress approval (y/a/!) but keep explicit
+      // deny (n) and dismiss (Escape) so the user can fail closed immediately.
+      const name = key.name.toLowerCase();
+      if (name === "escape") {
+        key.preventDefault();
+        props.onRespond(props.prompt.requestId, { kind: "deny", reason: "User dismissed" });
+      } else if (name === "n") {
+        key.preventDefault();
+        props.onRespond(props.prompt.requestId, { kind: "deny", reason: "User denied" });
+      }
+      return;
+    }
     const decision = processPermissionKey(key.name, permanentAvailable());
     if (decision !== null) {
       key.preventDefault();
@@ -118,35 +324,64 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       borderColor={riskColor()}
       paddingLeft={1}
       paddingRight={1}
+      width={modalWidth()}
       {...MODAL_POSITION}
     >
-      {/* Title */}
-      <box flexDirection="row" gap={1}>
-        <text fg={COLORS.white}><b>{"Permission Required"}</b></text>
-        <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
-        {/* Counter hint — shows queue position when multiple prompts are
-            pending in the bridge queue, OR the monotonically incrementing
-            sequence number when prompts arrive one at a time (the common
-            engine-serialized case). Lets the user tell that the prompt
-            that appeared after pressing y is a NEW tool call, not a
-            re-render of the same one. (#1759) */}
-        <Show
-          when={(props.prompt.queueDepth ?? 0) > 1}
-          fallback={
-            <Show when={props.prompt.sequenceNumber !== undefined}>
-              <text fg={COLORS.amber}>{`#${props.prompt.sequenceNumber}`}</text>
-            </Show>
-          }
-        >
-          <text fg={COLORS.amber}>
-            {`(${props.prompt.queuePosition ?? 1} of ${props.prompt.queueDepth})`}
-          </text>
-        </Show>
+      {/* Safety guard: when the terminal is too narrow OR too short to show
+          meaningful approval context, render a non-interactive message.
+          Approval (y/a/!) is suppressed in both the handler and the render
+          so users are never shown affordances that would be silently ignored. */}
+      <Show when={cannotReview()}>
+        <text fg={COLORS.amber}>{"Resize\nto review"}</text>
+        <text fg={COLORS.textMuted}>{"[n] Deny  [Esc]"}</text>
+      </Show>
+      <Show when={!cannotReview()}>
+      {/* Title — stacks risk label below the heading on narrow terminals so
+          "Permission Required [MEDIUM] (1 of 9)" (38+ chars) never clips. */}
+      <box flexDirection={isNarrow() ? "column" : "row"} gap={isNarrow() ? 0 : 1}>
+        <box flexDirection="row" gap={1}>
+          <text fg={COLORS.white}><b>{"Permission Required"}</b></text>
+          <Show when={!isNarrow()}>
+            <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
+          </Show>
+        </box>
+        <box flexDirection="row" gap={1}>
+          <Show when={isNarrow()}>
+            <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
+          </Show>
+          {/* Counter hint — shows queue position when multiple prompts are
+              pending in the bridge queue, OR the monotonically incrementing
+              sequence number when prompts arrive one at a time (the common
+              engine-serialized case). Lets the user tell that the prompt
+              that appeared after pressing y is a NEW tool call, not a
+              re-render of the same one. (#1759) */}
+          <Show
+            when={(props.prompt.queueDepth ?? 0) > 1}
+            fallback={
+              <Show when={props.prompt.sequenceNumber !== undefined}>
+                <text fg={COLORS.amber}>{`#${props.prompt.sequenceNumber}`}</text>
+              </Show>
+            }
+          >
+            <text fg={COLORS.amber}>
+              {`(${props.prompt.queuePosition ?? 1} of ${props.prompt.queueDepth})`}
+            </text>
+          </Show>
+        </box>
       </box>
 
-      {/* Tool info */}
+      {/* Tool info — on narrow terminals the toolId goes on its own line so
+          the full authorization target remains visible without truncation. */}
       <box flexDirection="column" marginTop={1}>
-        <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
+        <Show
+          when={isNarrow()}
+          fallback={
+            <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
+          }
+        >
+          <text fg={COLORS.textSecondary}>{"Tool:"}</text>
+          <text fg={COLORS.white}>{`  ${props.prompt.toolId}`}</text>
+        </Show>
       </box>
 
       {/* Args preview */}
@@ -167,17 +402,23 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         </box>
       </Show>
 
-      {/* Key hints — always-allow copy explicitly names the tool and scope */}
+      {/* Key hints — always stacked vertically. The full horizontal row is ~76
+          chars, which exceeds the max modal width (60), so a single-row layout
+          would always clip hints. Stacked layout ensures all actions are visible
+          at every supported terminal width. The [a] hint breaks the toolId onto
+          its own line so the full authorization target is readable (no truncation). */}
       <Show when={props.focused}>
-        <box flexDirection="row" marginTop={1} gap={2}>
+        <box flexDirection="column" marginTop={1}>
           <text fg={COLORS.success}>{"[y] Allow once"}</text>
           <text fg={COLORS.danger}>{"[n] Deny"}</text>
-          <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
+          <text fg={COLORS.blueAccent}>{`[a] Allow this session:\n  ${props.prompt.toolId}`}</text>
           <Show when={permanentAvailable()}>
             <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
           </Show>
           <text fg={COLORS.textMuted}>{"[Esc] Dismiss"}</text>
         </box>
+      </Show>
+
       </Show>
     </box>
   );

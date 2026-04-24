@@ -117,6 +117,20 @@ mock.module("../manifest.js", () => ({
   CORE_MIDDLEWARE_BLOCKLIST: [] as readonly string[],
 }));
 
+// Mock resolveManifestPath so tests can pass synthetic paths without real files on disk.
+// When a flagValue is given, pass it through as the resolved path (preserves test assertions
+// that check which path loadManifestConfig is called with). When no flagValue, simulate
+// auto-discovery succeeding so no-manifest tests keep working.
+mock.module("../resolve-manifest-path.js", () => ({
+  resolveManifestPath: mock((_cwd: string, flagValue: string | undefined, _noManifest = false) => ({
+    ok: true as const,
+    path: flagValue ?? "auto-discovered/koi.yaml",
+    searched: [] as readonly string[],
+    insideProject: false as const,
+  })),
+  MANIFEST_CANDIDATES: ["koi.yaml", "koi.manifest.yaml", ".koi/koi.yaml", ".koi/manifest.yaml"],
+}));
+
 // Mock resolveFileSystem from @koi/runtime so nexus gate tests don't
 // try to create real nexus backends.
 const mockResolveFileSystem = mock((_config: unknown, _cwd: string) => ({
@@ -247,6 +261,7 @@ function makeFlags(
     help: false,
     mode: overrides.mode ?? { kind: "interactive" },
     manifest: overrides.manifest ?? undefined,
+    noManifest: false,
     resume: overrides.resume ?? undefined,
     verbose: overrides.verbose ?? false,
     dryRun: overrides.dryRun ?? false,
@@ -262,6 +277,7 @@ function makeFlags(
     allowRemoteFs: overrides.allowRemoteFs ?? false,
     headless: overrides.headless ?? false,
     allowTools: [],
+    settingsFlagPath: undefined,
     maxDurationMs: overrides.maxDurationMs,
     resultSchema: overrides.resultSchema,
     governance: {
@@ -403,6 +419,12 @@ describe("run() — session resume", () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
     mockResumeSessionFromJsonl.mockReset();
     mockRunInteractive.mockReset();
+    // Reset manifest mock to happy-path default — this block doesn't test manifest
+    // behavior but now calls loadManifestConfig via auto-discovery wiring.
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: { modelName: "manifest/model", instructions: undefined },
+    }));
   });
   afterEach(() => {
     delete process.env.OPENROUTER_API_KEY;
@@ -582,6 +604,12 @@ describe("commands/start — --result-schema wiring (#1648)", () => {
     exitSpy = spyOn(process, "exit").mockImplementation((code?: number): never => {
       throw new ExitError(code ?? 0);
     });
+    // Reset manifest mock to happy-path default — this block doesn't test manifest
+    // behavior but now calls loadManifestConfig via auto-discovery wiring.
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: { modelName: "manifest/model", instructions: undefined },
+    }));
   });
 
   afterEach(() => {
