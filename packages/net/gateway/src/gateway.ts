@@ -129,6 +129,12 @@ export function createGateway(
         return;
       }
 
+      if (!bp.canAccept()) {
+        conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Global buffer limit exceeded", nextId));
+        conn.close(CLOSE_CODES.BUFFER_LIMIT, "Global buffer limit exceeded");
+        return;
+      }
+
       connMap.set(conn.id, conn);
 
       const handshakeOptions: HandshakeOptions = {
@@ -167,7 +173,7 @@ export function createGateway(
         });
     },
 
-    onMessage(conn: TransportConnection, data: string): void {
+    async onMessage(conn: TransportConnection, data: string): Promise<void> {
       const handshakeHandler = pendingHandshakes.get(conn.id);
       if (handshakeHandler !== undefined) {
         handshakeHandler(data);
@@ -177,7 +183,7 @@ export function createGateway(
       const sessionId = sessionByConn.get(conn.id);
       if (sessionId === undefined) return;
 
-      const sessionResult = store.get(sessionId) as Result<Session, KoiError>;
+      const sessionResult = await Promise.resolve(store.get(sessionId));
       if (!sessionResult.ok) return;
 
       const frameResult = parseFrame(data);
@@ -199,7 +205,6 @@ export function createGateway(
       const updatedSession: Session = { ...sessionResult.value, remoteSeq: frameResult.value.seq };
       void Promise.resolve(store.set(updatedSession));
 
-      bp.record(conn.id, data.length);
       emitFrames(updatedSession, ready);
     },
 

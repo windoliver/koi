@@ -13,7 +13,7 @@ export interface TransportConnection {
 
 export interface TransportHandler {
   readonly onOpen: (conn: TransportConnection) => void;
-  readonly onMessage: (conn: TransportConnection, data: string) => void;
+  readonly onMessage: (conn: TransportConnection, data: string) => void | Promise<void>;
   readonly onClose: (conn: TransportConnection, code: number, reason: string) => void;
   readonly onDrain: (conn: TransportConnection) => void;
 }
