@@ -219,7 +219,7 @@ export function createRemoteAgentLifecycle(
               if (frame.kind === "chunk") {
                 output.write(frame.text);
               } else {
-                // done is a hard terminal — stop reading immediately.
+                // done is a hard terminal — cancel transport to stop server streaming.
                 receivedDone = true;
                 if (timeoutId !== undefined) clearTimeout(timeoutId);
                 const exitMsg =
@@ -227,6 +227,7 @@ export function createRemoteAgentLifecycle(
                     ? "\n[exit code: 0]\n"
                     : `\n[exit code: ${String(frame.exitCode)}]\n`;
                 emitTerminal(frame.exitCode, exitMsg);
+                reader.cancel().catch(() => undefined);
                 return; // exit pipe; finally{} releases reader lock
               }
             }
@@ -240,6 +241,9 @@ export function createRemoteAgentLifecycle(
         } finally {
           reader.releaseLock();
         }
+
+        // Flush decoder — releases any bytes held for multibyte UTF-8 boundary.
+        buffer += decoder.decode();
 
         // Process any remaining buffer content (done frame with no trailing newline).
         if (!stopped && !timedOut && !receivedDone && buffer.trim() !== "") {

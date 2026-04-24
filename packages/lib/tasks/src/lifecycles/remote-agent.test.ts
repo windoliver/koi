@@ -603,4 +603,87 @@ describe("createRemoteAgentLifecycle", () => {
       expect(typeof state.startedAt).toBe("number");
     });
   });
+
+  describe("UTF-8 boundary handling", () => {
+    test("multibyte character split across final chunk is decoded correctly", async () => {
+      // "café" — the é (U+00E9) encodes to 0xC3 0xA9 in UTF-8.
+      // Split the stream so the last byte of é lands in the tail buffer flush.
+      const encoder = new TextEncoder();
+      const doneFrame = JSON.stringify({ kind: "done", exitCode: 0 });
+      const chunkFrame = JSON.stringify({ kind: "chunk", text: "café" });
+      const ndjson = encoder.encode(`${chunkFrame}\n${doneFrame}\n`);
+      // Split after the first byte of é so the second byte is in the next chunk
+      const split = ndjson.indexOf(0xc3) + 1; // 0xC3 is first byte of é
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(ndjson.slice(0, split));
+          controller.enqueue(ndjson.slice(split));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(tid(), output, makeConfig());
+      await new Promise<void>((resolve) => {
+        const interval = setInterval(() => {
+          if (output.length() >= 2) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 10);
+      });
+
+      const chunks = output.read(0);
+      const text = chunks.map((c) => c.content).join("");
+      expect(text).toContain("café");
+      expect(text).toContain("[exit code: 0]");
+    });
+  });
+
+  describe("transport close after done frame", () => {
+    test("server that keeps streaming after done frame is ignored", async () => {
+      // Stream: chunk → done → extra chunk after done (server misbehaves)
+      const frames: NdjsonFrame[] = [
+        { kind: "chunk", text: "hello" },
+        { kind: "done", exitCode: 0 },
+      ];
+      // The extra post-done bytes are appended manually
+      const encoder = new TextEncoder();
+      const ndjson = `${frames.map((f) => JSON.stringify(f)).join("\n")}\n`;
+      const extraBytes = encoder.encode(`${JSON.stringify({ kind: "chunk", text: "EXTRA" })}\n`);
+      const mainBytes = encoder.encode(ndjson);
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(mainBytes);
+          controller.enqueue(extraBytes);
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(tid(), output, makeConfig());
+      await new Promise<void>((resolve) => {
+        const interval = setInterval(() => {
+          if (output.length() >= 2) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 10);
+      });
+
+      const chunks = output.read(0);
+      const text = chunks.map((c) => c.content).join("");
+      expect(text).toContain("hello");
+      expect(text).not.toContain("EXTRA");
+      expect(text).toContain("[exit code: 0]");
+    });
+  });
 });
