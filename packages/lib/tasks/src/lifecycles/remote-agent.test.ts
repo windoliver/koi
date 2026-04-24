@@ -873,4 +873,74 @@ describe("createRemoteAgentLifecycle", () => {
       expect(text).toContain("frame exceeds maximum size");
     });
   });
+
+  describe("unknown frame kinds", () => {
+    test("unknown frame kind fails closed with protocol error", async () => {
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      // Server sends a JSON frame with an unrecognized kind (e.g. heartbeat)
+      const unknownFrame = `${JSON.stringify({ kind: "heartbeat", ts: 12345 })}\n`;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(unknownFrame));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("protocol error");
+    });
+
+    test("typoed done frame (unknown kind) fails closed rather than hanging", async () => {
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      // "dne" instead of "done" — a server-side typo that should not silently wedge the task
+      const typoFrame = `${JSON.stringify({ kind: "dne", exitCode: 0 })}\n`;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(typoFrame));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      // Must terminate, not hang — exits should have been called
+      expect(exits.length).toBeGreaterThan(0);
+    });
+  });
 });

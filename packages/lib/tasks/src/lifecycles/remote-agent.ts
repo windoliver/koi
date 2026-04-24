@@ -205,6 +205,8 @@ export function createRemoteAgentLifecycle(
           while (true) {
             if (stopped || timedOut) break;
             const { done, value } = await reader.read();
+            // Re-check after await — timeout/cancel may have fired while read was pending.
+            if (stopped || timedOut) break;
             if (done) break;
             // Pre-decode guard: when the chunk has no newlines, all of its bytes
             // would extend the current incomplete frame. Reject before decoding
@@ -241,9 +243,11 @@ export function createRemoteAgentLifecycle(
                 return;
               }
               if (!isRemoteAgentFrame(frame)) {
-                // Valid JSON but unrecognised shape — skip silently; remote may
-                // emit metadata frames we don't understand yet.
-                continue;
+                // Valid JSON but unrecognised shape — protocol violation; fail closed.
+                // The protocol only defines chunk/done; unknown kinds can wedge tasks indefinitely.
+                if (timeoutId !== undefined) clearTimeout(timeoutId);
+                emitTerminal(1, "\n[error: protocol error — unknown frame kind]\n");
+                return;
               }
               if (frame.kind === "chunk") {
                 output.write(frame.text);
