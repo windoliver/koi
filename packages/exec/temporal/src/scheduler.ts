@@ -191,7 +191,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           type: "startWorkflow",
           workflowType,
           taskQueue: config.taskQueue,
-          args: [{ agentId, sessionId: rawId, messages, mode }],
+          // sessionId is intentionally absent here: each Temporal workflow
+          // execution for this schedule gets a unique workflowId, and the
+          // workflow should derive its sessionId from workflowInfo().workflowId
+          // so that independent firings never share session-keyed state.
+          args: [{ agentId, messages, mode }],
           ...(options?.timeoutMs !== undefined && {
             workflowExecutionTimeout: options.timeoutMs,
           }),

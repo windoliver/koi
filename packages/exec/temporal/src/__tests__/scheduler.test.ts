@@ -136,7 +136,7 @@ describe("createTemporalScheduler", () => {
     expect(stats.running).toBe(0);
   });
 
-  test("schedule passes sessionId in workflow args (same shape as submit)", async () => {
+  test("schedule omits sessionId from workflow args — each firing derives session from Temporal workflowId", async () => {
     const client = makeClient();
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch");
@@ -144,9 +144,13 @@ describe("createTemporalScheduler", () => {
       string,
       Record<string, unknown>,
     ];
-    const action = createCall[1]["action"] as Record<string, unknown>;
+    const action = createCall[1].action as Record<string, unknown>;
     const args = action["args"] as [Record<string, unknown>];
-    expect(args[0]).toHaveProperty("sessionId");
+    // sessionId must NOT be present — cron firings must NOT share a session
+    expect(args[0]).not.toHaveProperty("sessionId");
+    // but agentId and mode must still be present
+    expect(args[0]).toHaveProperty("agentId");
+    expect(args[0]).toHaveProperty("mode");
     await sched[Symbol.asyncDispose]();
   });
 
