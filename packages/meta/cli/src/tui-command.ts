@@ -1199,6 +1199,69 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         : undefined;
   }
 
+  // On resume without --manifest, manifest discovery was skipped so that the
+  // original session config (model, stacks, plugins) cannot be silently overridden.
+  // Audit intent enforcement must still run — discover the project manifest solely
+  // for the fail-closed audit check; never apply its config values here.
+  if (skipManifestDiscovery && flags.resume !== undefined) {
+    const auditDiscovery = resolveManifestPath(process.cwd(), undefined, false);
+    if (auditDiscovery.ok && auditDiscovery.path !== undefined) {
+      const auditLoadResult = await loadManifestConfig(auditDiscovery.path, {
+        allowOAuthSchemes: true,
+        skipAuditValidation: false,
+        skipAuditValidationFor: {
+          ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+          sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+          violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+        },
+      });
+      if (auditLoadResult.ok && auditLoadResult.value.audit !== undefined) {
+        const resumeAudit = auditLoadResult.value.audit;
+        if (resumeAudit.malformed === true) {
+          const allCoveredByEnv =
+            process.env.KOI_AUDIT_NDJSON !== undefined &&
+            process.env.KOI_AUDIT_SQLITE !== undefined &&
+            (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+          if (!allCoveredByEnv) {
+            const missingVars = [
+              process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+              process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+              flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+                ? "KOI_AUDIT_VIOLATIONS"
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" + ");
+            process.stderr.write(
+              "koi tui: manifest.audit has an unrecognized format (unknown fields or invalid value) — " +
+                "refusing to start because audit intent cannot be determined. " +
+                `Fix the manifest, or set ${missingVars} to control all active audit sinks, or remove the audit: block.\n`,
+            );
+            process.exit(1);
+          }
+        } else {
+          const ndjsonExposed =
+            resumeAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+          const sqliteExposed =
+            resumeAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+          const violationsExposed =
+            flags.governance.enabled &&
+            resumeAudit.violations !== undefined &&
+            process.env.KOI_AUDIT_VIOLATIONS === undefined;
+          if (ndjsonExposed || sqliteExposed || violationsExposed) {
+            process.stderr.write(
+              "koi tui: manifest.audit declares audit sinks but the matching KOI_AUDIT_* env vars are absent — " +
+                "refusing to start to prevent silently dropping declared audit logging. " +
+                "Set each matching KOI_AUDIT_* env var (use empty string to explicitly disable a sink), " +
+                "or remove the sink key from manifest.audit.\n",
+            );
+            process.exit(1);
+          }
+        }
+      }
+    }
+  }
+
   // Previously this block auto-disabled the spawn preset stack
   // whenever manifest.middleware was non-empty, because children
   // inheriting the parent's mutable middleware instances would

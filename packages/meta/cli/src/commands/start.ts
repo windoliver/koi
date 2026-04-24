@@ -591,6 +591,26 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }
   }
 
+  // On resume without --manifest, manifest discovery was skipped. koi start
+  // hard-rejects manifest.audit — run the check independently so resume cannot
+  // bypass the host-level safety contract.
+  if (skipManifestDiscovery && flags.resume !== undefined) {
+    const auditDiscovery = resolveManifestPath(process.cwd(), undefined, false);
+    if (auditDiscovery.ok && auditDiscovery.path !== undefined) {
+      const auditLoadResult = await loadManifestConfig(auditDiscovery.path, {
+        skipAuditValidation: true,
+      });
+      if (auditLoadResult.ok && auditLoadResult.value.audit !== undefined) {
+        return bail(
+          "manifest.audit is not supported on this host. " +
+            "koi start does not wire audit sinks — remove the audit: block from the manifest " +
+            "to run under koi start, or use koi tui (which honors manifest.audit when " +
+            "KOI_ALLOW_MANIFEST_FILE_SINKS=1 is set).",
+        );
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // 2. API configuration
   // ---------------------------------------------------------------------------
