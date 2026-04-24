@@ -1,0 +1,15 @@
+import type { AgentId, MailboxComponent } from "@koi/core";
+
+/** Configuration for createLocalMailbox. */
+export interface LocalMailboxConfig {
+  readonly agentId: AgentId;
+  /** Maximum messages to retain before FIFO eviction. Default: 10_000. */
+  readonly maxMessages?: number | undefined;
+}
+
+/** In-process mailbox router for multi-agent scenarios. */
+export interface MailboxRouter {
+  readonly register: (agentId: AgentId, mailbox: MailboxComponent) => void;
+  readonly unregister: (agentId: AgentId) => void;
+  readonly get: (agentId: AgentId) => MailboxComponent | undefined;
+}
