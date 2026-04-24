@@ -632,6 +632,32 @@ describe("createRemoteAgentLifecycle", () => {
       expect(exits).toHaveLength(1);
       expect(exits[0]).toBe(0);
     });
+
+    test("done frame already in buffer wins over synthetic timeout", async () => {
+      // Regression: if the done frame arrives just as the timeout fires, the
+      // timeout must not clobber the done frame that is already readable.
+      const exits: number[] = [];
+      // Stream delivers done frame immediately but timeout fires at the same time.
+      const fetch = mockFetch(200, makeNdjsonStream({ kind: "done", exitCode: 0 }));
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          timeout: 1, // fire almost immediately
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+
+      // Whichever won, onExit must only fire once — no double-transition.
+      expect(exits).toHaveLength(1);
+    });
   });
 
   describe("throwing onExit", () => {
@@ -1446,6 +1472,77 @@ describe("createRemoteAgentLifecycle", () => {
 
       // Must not throw even though cancel endpoint fails.
       await expect(lifecycle.stop(state)).resolves.toBeUndefined();
+    });
+
+    test("calls cancelEndpoint on stream closed without done frame", async () => {
+      const cancelCalls: unknown[] = [];
+      const encoder = new TextEncoder();
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          if (String(url).includes("/cancel")) {
+            cancelCalls.push(JSON.parse(String(init?.body)));
+            return new Response(encoder.encode(""), { status: 200 });
+          }
+          // Stream closes immediately without any frames.
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(c) {
+                c.close();
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      ) as unknown as typeof globalThis.fetch;
+
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        cancelEndpoint: "https://agent.internal/cancel",
+        drainTimeoutMs: 20,
+        fetch: fetchSpy,
+      });
+      const output = createOutputStream();
+      await lifecycle.start(tid(), output, makeConfig({ correlationId: "cid-nodone" }));
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+      expect(cancelCalls.length).toBeGreaterThan(0);
+    });
+
+    test("calls cancelEndpoint on mid-stream transport error", async () => {
+      const cancelCalls: unknown[] = [];
+      const encoder = new TextEncoder();
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          if (String(url).includes("/cancel")) {
+            cancelCalls.push(JSON.parse(String(init?.body)));
+            return new Response(encoder.encode(""), { status: 200 });
+          }
+          // Stream delivers one chunk then errors.
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(c) {
+                c.enqueue(encoder.encode('{"kind":"chunk","text":"hi"}\n'));
+                c.error(new Error("connection reset"));
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      ) as unknown as typeof globalThis.fetch;
+
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        cancelEndpoint: "https://agent.internal/cancel",
+        drainTimeoutMs: 20,
+        fetch: fetchSpy,
+      });
+      const output = createOutputStream();
+      await lifecycle.start(tid(), output, makeConfig({ correlationId: "cid-transport" }));
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+      expect(cancelCalls.length).toBeGreaterThan(0);
     });
   });
 });

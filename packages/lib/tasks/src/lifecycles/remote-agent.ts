@@ -170,6 +170,20 @@ export function createRemoteAgentLifecycle(
         }
       };
 
+      // Best-effort cancel notification: fire-and-forget POST to cancelEndpoint on every
+      // post-accept terminal failure so the remote server can stop the associated work.
+      // taskId is included to distinguish retries sharing the same correlationId.
+      const notifyCancel = (): void => {
+        if (cancelEndpoint !== undefined) {
+          void fetchImpl(cancelEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...lifecycleHeaders },
+            body: JSON.stringify({ correlationId: config.correlationId, taskId }),
+            redirect: "error",
+          }).catch(() => undefined);
+        }
+      };
+
       // let justified: pipeRef used by timeout handler; assigned immediately below.
       let pipeRef: Promise<void> | undefined;
 
@@ -179,17 +193,7 @@ export function createRemoteAgentLifecycle(
         timeoutId = setTimeout(() => {
           timedOut = true;
           controller.abort();
-          // Best-effort: notify the remote server on timeout so it can stop.
-          // taskId is included so the server can distinguish retries keyed by the
-          // same correlationId — only this specific execution should be cancelled.
-          if (cancelEndpoint !== undefined) {
-            void fetchImpl(cancelEndpoint, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", ...lifecycleHeaders },
-              body: JSON.stringify({ correlationId: config.correlationId, taskId }),
-              redirect: "error",
-            }).catch(() => undefined);
-          }
+          notifyCancel();
           void (async () => {
             if (pipeRef !== undefined) await drainPipe(pipeRef, drainTimeoutMs);
             // Timeout must call onExit so TaskRunner can fail the task on the board.
@@ -239,6 +243,7 @@ export function createRemoteAgentLifecycle(
         if (response.body === null) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           if (!stopped && !timedOut) {
+            notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — response body is null]\n");
           }
           return;
@@ -267,6 +272,7 @@ export function createRemoteAgentLifecycle(
         const processLineBytes = (lineBytes: Uint8Array): boolean => {
           if (lineBytes.byteLength > MAX_FRAME_BYTES) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
+            notifyCancel();
             emitTerminal(
               1,
               "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
@@ -281,6 +287,7 @@ export function createRemoteAgentLifecycle(
             trimmed = new TextDecoder("utf-8", { fatal: true }).decode(lineBytes).trim();
           } catch {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
+            notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — invalid UTF-8]\n");
             teardownTransport();
             return true;
@@ -291,12 +298,14 @@ export function createRemoteAgentLifecycle(
             frame = JSON.parse(trimmed);
           } catch {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
+            notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — malformed frame]\n");
             teardownTransport();
             return true;
           }
           if (!isRemoteAgentFrame(frame)) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
+            notifyCancel();
             emitTerminal(1, "\n[cleanup-incomplete: protocol error — unknown frame kind]\n");
             teardownTransport();
             return true;
@@ -321,8 +330,9 @@ export function createRemoteAgentLifecycle(
           outer: while (true) {
             if (stopped || timedOut) break;
             const { done, value } = await reader.read();
-            // Re-check after await — timeout/cancel may have fired while read was pending.
-            if (stopped || timedOut) break;
+            // Only break on explicit cancel — if timedOut, still process already-received
+            // data so a done frame in the buffer can win over the synthetic timeout failure.
+            if (stopped) break;
             if (done) break;
 
             // Scan `value` for newlines at the raw byte level — never decode the
@@ -337,6 +347,7 @@ export function createRemoteAgentLifecycle(
                 const tailLen = value.byteLength - valStart;
                 if (rawBuf.byteLength + tailLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
+                  notifyCancel();
                   emitTerminal(
                     1,
                     "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
@@ -364,6 +375,7 @@ export function createRemoteAgentLifecycle(
                 // large; check lineLen before materializing the merged buffer.
                 if (lineLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
+                  notifyCancel();
                   emitTerminal(
                     1,
                     "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
@@ -380,7 +392,7 @@ export function createRemoteAgentLifecycle(
 
               valStart = nlPos + 1;
 
-              if (stopped || timedOut) break outer;
+              if (stopped) break outer;
               if (processLineBytes(lineBytes)) {
                 pipeError = true;
                 break outer;
@@ -393,6 +405,7 @@ export function createRemoteAgentLifecycle(
             const message = err instanceof Error ? err.message : String(err);
             // POST was accepted so the remote agent has started; transport loss
             // leaves it in an unknown state — signal cleanup-incomplete.
+            notifyCancel();
             emitTerminal(1, `\n[cleanup-incomplete: ${message}]\n`);
           }
           pipeError = true;
@@ -410,6 +423,7 @@ export function createRemoteAgentLifecycle(
         // Stream closed without a done frame — remote state unknown; cleanup-incomplete.
         if (!stopped && !timedOut && !receivedDone) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
+          notifyCancel();
           emitTerminal(
             1,
             "\n[cleanup-incomplete: protocol error — stream closed without done frame]\n",
@@ -433,19 +447,8 @@ export function createRemoteAgentLifecycle(
           terminal = true;
           output.write("\n[cleanup-incomplete: remote agent may still be running]\n");
         }
-        // Best-effort: notify the remote server so it can stop the associated work.
-        // taskId is included so the server can distinguish retries keyed by the
-        // same correlationId — only this specific execution should be cancelled.
-        // Fire-and-forget — failures are swallowed; cleanup-incomplete already covers
-        // the uncertain state and the board transition must not block on this.
-        if (cancelEndpoint !== undefined) {
-          void fetchImpl(cancelEndpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...lifecycleHeaders },
-            body: JSON.stringify({ correlationId: config.correlationId, taskId }),
-            redirect: "error",
-          }).catch(() => undefined);
-        }
+        // Best-effort cancel notification — same as timeout path.
+        notifyCancel();
       };
 
       return {
