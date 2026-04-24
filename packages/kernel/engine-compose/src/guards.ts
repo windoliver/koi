@@ -161,14 +161,27 @@ function createTimeoutRace(
  * Returned by `createIterationGuard`. Extends `KoiMiddleware` with a
  * `resetForRun()` method that resets the per-run iteration budget (turns,
  * wall-clock timer, inactivity timer). Called by the engine when
- * `resetIterationBudgetPerRun: true` is set, alongside the matching
- * governance `iteration_reset`. Not wired automatically — callers must invoke
+ * `resetBudgetPerRun: true` is set, alongside the matching
+ * governance `run_reset`. Not wired automatically — callers must invoke
  * it to keep guard and governance state in sync.
  */
 export interface IterationGuardHandle extends KoiMiddleware {
-  /** Reset per-run budgets. Pass runStartedAt (ms since epoch) to anchor the
-   * guard clock to the run() entry point rather than the reset call site. */
-  readonly resetForRun: (runStartedAt?: number) => void;
+  /**
+   * Reset per-run budgets.
+   *
+   * `runStartedAt` — ms-since-epoch timestamp for the duration anchor (when
+   * `run()` was entered). Anchoring duration to run() entry means startup
+   * work (forge refresh, dynamic-mw recomposition) counts against the wall-
+   * clock budget, which prevents a slow startup from silently extending the
+   * effective duration window.
+   *
+   * `activityStartedAt` — ms-since-epoch timestamp for the inactivity anchor.
+   * Defaults to `runStartedAt` when omitted. The engine passes the post-
+   * startup timestamp here so the inactivity clock starts AFTER initialization,
+   * giving the first model call its full inactivity window regardless of how
+   * long forge/dynamic-mw took to settle.
+   */
+  readonly resetForRun: (runStartedAt?: number, activityStartedAt?: number) => void;
 }
 
 /**
@@ -190,6 +203,15 @@ export function isIterationGuardHandle(mw: KoiMiddleware): mw is IterationGuardH
   if (!Object.hasOwn(mw, ITERATION_GUARD_BRAND)) return false;
   const candidate = mw as KoiMiddleware & { readonly resetForRun?: unknown };
   return typeof candidate.resetForRun === "function";
+}
+
+/**
+ * Returns true if `mw` carries ITERATION_GUARD_BRAND, regardless of whether
+ * it also implements resetForRun(). Use this to detect branded-but-broken
+ * guards (missing resetForRun) and fail closed at the reset boundary.
+ */
+export function hasIterationGuardBrand(mw: KoiMiddleware): boolean {
+  return Object.hasOwn(mw, ITERATION_GUARD_BRAND);
 }
 
 export function createIterationGuard(config?: Partial<IterationLimits>): IterationGuardHandle {
@@ -276,11 +298,16 @@ export function createIterationGuard(config?: Partial<IterationLimits>): Iterati
       lastActivityMs = Date.now();
     },
 
-    resetForRun: (runStartedAt?: number): void => {
-      const t = runStartedAt ?? Date.now();
+    resetForRun: (runStartedAt?: number, activityStartedAt?: number): void => {
+      const now = Date.now();
+      // Clamp future anchors and reject non-finite values (NaN/Infinity would disable
+      // comparisons) — mirrors governance controller boundaryTimestamp validation.
+      const safeTs = (v: number | undefined, fallback: number): number =>
+        v !== undefined && Number.isFinite(v) ? Math.min(v, now) : fallback;
+      const t = safeTs(runStartedAt, now);
       turns = 0;
       startedAt = t;
-      lastActivityMs = t;
+      lastActivityMs = safeTs(activityStartedAt, t);
     },
 
     wrapModelCall: async (_ctx, request, next) => {

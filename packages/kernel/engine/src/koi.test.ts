@@ -1792,10 +1792,10 @@ describe("createKoi duration fix", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createKoi — resetIterationBudgetPerRun (issue #1917)
+// createKoi — resetBudgetPerRun (issue #1939)
 // ---------------------------------------------------------------------------
 
-describe("createKoi resetIterationBudgetPerRun", () => {
+describe("createKoi resetBudgetPerRun", () => {
   test("second run() does not fail with stale duration accumulator", async () => {
     // Regression for #1917: the iteration guard's startedAt/lastActivityMs
     // accumulated across run() calls. With a tight maxDurationMs, the second
@@ -1826,7 +1826,7 @@ describe("createKoi resetIterationBudgetPerRun", () => {
       manifest: testManifest(),
       adapter,
       middleware: [guard],
-      resetIterationBudgetPerRun: true,
+      resetBudgetPerRun: true,
       loopDetection: false,
     });
 
@@ -1843,13 +1843,11 @@ describe("createKoi resetIterationBudgetPerRun", () => {
     expect(secondEvents.at(-1)?.kind).toBe("done");
   });
 
-  test("legacy guard (canonical name, no brand) emits console.warn instead of silent no-op", async () => {
+  test("legacy guard (canonical name, no brand) is rejected at construction when resetBudgetPerRun is true", async () => {
     // Regression guard for version-skew scenario: pre-#1917 @koi/engine-compose
-    // guards carry no ITERATION_GUARD_BRAND and no resetForRun(). The engine must
-    // warn loudly so operators notice rather than getting silent stale timeouts.
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    // Simulate a legacy guard using the canonical middleware name.
+    // guards carry no ITERATION_GUARD_BRAND and no resetForRun(). When resetBudgetPerRun
+    // is enabled the engine must fail closed at construction (not silently emit a
+    // misleading run_reset while leaving stale guard state in place).
     const legacyGuard: KoiMiddleware = {
       name: "koi:iteration-guard",
       describeCapabilities: () => undefined,
@@ -1860,22 +1858,245 @@ describe("createKoi resetIterationBudgetPerRun", () => {
     );
     const adapter = cooperatingAdapter(modelTerminal, [{ kind: "done", output: doneOutput() }]);
 
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter,
+        middleware: [legacyGuard],
+        resetBudgetPerRun: true,
+        loopDetection: false,
+      }),
+    ).rejects.toThrow("koi:iteration-guard");
+  });
+
+  test("emits run_reset with deterministic boundaryId on sequential runs (non-coop)", async () => {
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const { GOVERNANCE } = await import("@koi/core");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
     const runtime = await createKoi({
       manifest: testManifest(),
-      adapter,
-      middleware: [legacyGuard],
-      resetIterationBudgetPerRun: true,
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    // Spy on governance record after construction so we capture run_reset events.
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recordedEvents: import("@koi/core").GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      recordedEvents.push(event);
+      return original(event);
+    };
+
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+
+    const resets = recordedEvents.filter((e) => e.kind === "run_reset");
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+    expect(r0.source).toBe("engine");
+    expect(r0.boundaryId).toMatch(/:run:0$/);
+    expect(r1.boundaryId).toMatch(/:run:1$/);
+    expect(r0.boundaryId).not.toBe(r1.boundaryId);
+  });
+
+  test("throws at construction if branded guard lacks resetForRun", async () => {
+    const { ITERATION_GUARD_BRAND } = await import("@koi/engine-compose");
+    const brokenGuard: KoiMiddleware = Object.defineProperty(
+      { name: "broken-guard", describeCapabilities: () => undefined } as KoiMiddleware,
+      ITERATION_GUARD_BRAND,
+      { value: true, enumerable: false, configurable: false, writable: false },
+    ) as KoiMiddleware;
+
+    await expect(
+      createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([]),
+        middleware: [brokenGuard],
+        resetBudgetPerRun: true,
+      }),
+    ).rejects.toThrow("ITERATION_GUARD_BRAND");
+  });
+
+  test("cycleSession emits session_reset with source:host and deterministic boundaryId", async () => {
+    const { GOVERNANCE } = await import("@koi/core");
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recordedEvents: import("@koi/core").GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      recordedEvents.push(event);
+      return original(event);
+    };
+
+    await runtime.cycleSession?.();
+    await runtime.cycleSession?.();
+
+    const sessionResets = recordedEvents.filter((e) => e.kind === "session_reset");
+    expect(sessionResets.length).toBe(2);
+    const sr0 = sessionResets[0];
+    const sr1 = sessionResets[1];
+    if (sr0 === undefined || sr0.kind !== "session_reset")
+      throw new Error("expected session_reset[0]");
+    if (sr1 === undefined || sr1.kind !== "session_reset")
+      throw new Error("expected session_reset[1]");
+    expect(sr0.source).toBe("host");
+    expect(sr0.boundaryId).toMatch(/:session:0$/);
+    expect(sr1.boundaryId).toMatch(/:session:1$/);
+    expect(sr0.boundaryId).not.toBe(sr1.boundaryId);
+  });
+
+  test("run_reset.boundaryTimestamp reflects run() call time, not first iterator pull", async () => {
+    // Regression for the runEntryAt lazy-capture bug: if runEntryAt is set
+    // inside the generator body (first pull), a host that queues RunHandles
+    // before consuming them would exclude the queue gap from maxDurationMs.
+    // runEntryAt must be set synchronously inside run() before the handle
+    // is returned, so boundaryTimestamp is close to the run() call time.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const { GOVERNANCE } = await import("@koi/core");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recordedEvents: import("@koi/core").GovernanceEvent[] = [];
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      recordedEvents.push(event);
+      return original(event);
+    };
+
+    // First run: establish a reset event, discard it.
+    await collectEvents(runtime.run({ kind: "text", text: "warmup" }));
+    recordedEvents.length = 0;
+
+    // Second run: capture timestamp immediately before calling run().
+    const callTime = Date.now();
+    const handle = runtime.run({ kind: "text", text: "timed" });
+    // Delay 60ms before consuming — simulates a queued-RunHandle scenario.
+    await new Promise((r) => setTimeout(r, 60));
+    await collectEvents(handle);
+
+    const reset = recordedEvents.find((e) => e.kind === "run_reset");
+    if (reset === undefined || reset.kind !== "run_reset")
+      throw new Error("expected run_reset event");
+    // boundaryTimestamp must be within 40ms of callTime, not 60ms+ later.
+    expect(reset.boundaryTimestamp).toBeGreaterThanOrEqual(callTime - 5);
+    expect(reset.boundaryTimestamp).toBeLessThan(callTime + 40);
+  });
+
+  test("resetBudgetPerRun works with non-cooperating adapter (no adapter.terminals)", async () => {
+    // The cooperating-adapter path (adapter.terminals present) and the
+    // non-cooperating path each have their own resetForRun() call site in
+    // koi.ts. This test exercises the non-cooperating path.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const guard = createIterationGuard({
+      maxTurns: 100,
+      maxDurationMs: 120,
+      maxTokens: 100_000,
+    });
+
+    // mockAdapter has no .terminals — it is the non-cooperating path.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
       loopDetection: false,
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "first" }));
 
-    // Engine must have warned about the unresettable legacy guard.
-    const warnCalls = warnSpy.mock.calls.filter(
-      (args) => typeof args[0] === "string" && args[0].includes("resetIterationBudgetPerRun"),
+    // Sleep past the budget — a stale startedAt would cause immediate TIMEOUT.
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Re-create non-coop adapter for second run (mockAdapter is single-use).
+    const runtime2 = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+    const secondEvents = await collectEvents(runtime2.run({ kind: "text", text: "second" }));
+    expect(secondEvents.at(-1)?.kind).toBe("done");
+  });
+
+  test("warns when resetBudgetPerRun and resetIterationBudgetPerRun conflict", async () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+        resetBudgetPerRun: true,
+        resetIterationBudgetPerRun: false,
+        loopDetection: false,
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("takes precedence"));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("governance.record() throw during resetRunBoundary poisons the runtime", async () => {
+    // Fail-closed: if governance.record() throws on the run_reset event,
+    // the runtime must be poisoned and subsequent run() calls must reject.
+    const { createIterationGuard } = await import("@koi/engine-compose");
+    const { GOVERNANCE } = await import("@koi/core");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    // First run succeeds — establishes clean state.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Poison governance so the next run_reset throws.
+    type GovCtl = { record: (event: import("@koi/core").GovernanceEvent) => void | Promise<void> };
+    const govCtl = runtime.agent.component<GovCtl>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    govCtl.record = (event: import("@koi/core").GovernanceEvent) => {
+      if (event.kind === "run_reset") throw new Error("governance storage failure");
+      return undefined;
+    };
+
+    // Second run must throw due to governance failure during resetRunBoundary.
+    await expect(collectEvents(runtime.run({ kind: "text", text: "second" }))).rejects.toThrow(
+      "governance storage failure",
     );
-    expect(warnCalls.length).toBeGreaterThan(0);
-    warnSpy.mockRestore();
+
+    // Runtime must now be poisoned — run() itself throws synchronously.
+    expect(() => {
+      runtime.run({ kind: "text", text: "third" });
+    }).toThrow(/poisoned/i);
   });
 });
 

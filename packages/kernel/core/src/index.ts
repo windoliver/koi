@@ -585,7 +585,11 @@ export type {
   SensorReading,
 } from "./governance.js";
 // governance — runtime values
-export { GOVERNANCE_VARIABLES, governanceContributorToken } from "./governance.js";
+export {
+  GOVERNANCE_VARIABLES,
+  governanceContributorToken,
+  RESET_BOUNDARIES,
+} from "./governance.js";
 // governance backend — pluggable rule-based policy evaluation contract
 export type {
   AskId,

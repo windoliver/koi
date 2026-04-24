@@ -4198,6 +4198,23 @@ const queries: readonly QueryConfig[] = [
     afterRecord: recordAgentSummarySidecar,
   },
 
+  // run-reset: records a single run with resetBudgetPerRun=true active so
+  // the run_reset event fires at trajectory index 0 (non-cooperating adapter path).
+  // Two-submit sequential ordering and provenance (guard+governance alignment,
+  // boundaryId stability) are covered by the cassette-harness test in golden-replay.test.ts
+  // ("run_reset fires on cooperating adapter path (cassette replay, two sequential runs)")
+  // using fixtures/run-reset.cassette.json and the createCassetteAdapter two-call pattern.
+  // To record with a real LLM, add OPENROUTER_API_KEY to the environment.
+  {
+    name: "run-reset",
+    prompt: "Say 'hello' in exactly one word.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+  },
+
   // @koi/middleware-feedback-loop — model validation + tool-health middleware.
   // Exercises wrapModelCall with a pass-through validator and wrapToolCall
   // health tracking path. The validator always passes so the trajectory captures
