@@ -3193,13 +3193,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           : mcpConnections?.get(serverName);
         const resolver = isPlugin ? mcpPluginResolver : mcpResolver;
 
-        // Helper: reconnect the live connection (if not already connected) and
-        // force a resolver rediscovery so real tools replace pseudo-tools
-        // immediately — same recovery steps as the pseudo-tool path.
-        // Returns false if the reconnect failed so the caller can report a
-        // degraded result rather than claiming full success.
+        // Helper: rebuild the live transport and force a resolver rediscovery so
+        // real tools replace pseudo-tools immediately.
+        // Always closes + reconnects — HTTP MCP bakes the bearer token into
+        // transport headers at creation time, so a token refresh does not update
+        // an already-connected transport in place.
+        // Returns false if the reconnect failed (fail closed).
         const reconnectAndRediscover = async (): Promise<boolean> => {
-          if (connection !== undefined && connection.state.kind !== "connected") {
+          if (connection !== undefined) {
+            if (connection.state.kind === "connected") {
+              await connection.close().catch(() => {});
+            }
             const reconnResult = await connection
               .connect()
               .catch((): import("@koi/core").Result<void, import("@koi/core").KoiError> => ({

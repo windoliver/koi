@@ -225,7 +225,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen to fire onAuthRequired with URL through channel", () => {
+    test("wires onBrowserOpen to fire onAuthRequired with authUrl through channel", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -233,22 +233,23 @@ describe("createOAuthAwareMcpConnection", () => {
 
       // createRuntime must have been called with an onBrowserOpen option
       const runtimeCallArgs = localMocks.createRuntime.mock.calls[0] as [
-        { onBrowserOpen?: () => void } | undefined,
+        { onBrowserOpen?: (url: string) => void } | undefined,
       ];
       const onBrowserOpen = runtimeCallArgs?.[0]?.onBrowserOpen;
       expect(typeof onBrowserOpen).toBe("function");
       if (onBrowserOpen === undefined) return;
 
-      // Simulate the runtime calling onBrowserOpen (no URL — local loopback mode)
-      onBrowserOpen();
+      // Simulate the runtime calling onBrowserOpen with the authorization URL
+      const testAuthUrl = "https://example.com/auth?state=abc";
+      onBrowserOpen(testAuthUrl);
 
-      // channel.onAuthRequired must have been fired WITHOUT authUrl
-      // (MCP local loopback is not a usable paste-in fallback for headless/SSH)
+      // channel.onAuthRequired must have been fired with authUrl and mode:"local"
+      // so the TUI can display it as a fallback if browser launch fails (headless/SSH)
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };
       expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.authUrl).toBeUndefined();
+      expect(reqArg.authUrl).toBe(testAuthUrl);
       expect(reqArg.mode).toBe("local");
     });
   });

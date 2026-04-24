@@ -60,10 +60,11 @@ export function createOAuthAwareMcpConnection(
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (): void => {
+            onBrowserOpen: (authorizationUrl: string): void => {
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,
+                  authUrl: authorizationUrl,
                   message: `Opening browser to authorize ${server.name}`,
                   mode: "local",
                 }),
