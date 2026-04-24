@@ -71,6 +71,13 @@ export function createSkillProvider(
   config?: SkillProviderConfig,
 ): ComponentProvider {
   const progressive = config?.progressive ?? false;
+  if (progressive && !("clearPinnedBodies" in runtime)) {
+    throw new Error(
+      "createSkillProvider: progressive mode requires a session-pinned runtime. " +
+        "Use createProgressiveSkillProvider() instead — it bundles pinning and " +
+        "returns the pinned runtime that must also be passed to the Skill tool.",
+    );
+  }
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,

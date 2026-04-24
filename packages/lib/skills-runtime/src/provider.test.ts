@@ -172,7 +172,8 @@ describe("createSkillProvider — progressive mode", () => {
 
   test("progressive: true attaches skills with empty content (no body loaded)", async () => {
     await writeSkill(userRoot, "my-skill");
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
     const provider = createSkillProvider(runtime, { progressive: true });
 
     const result = await provider.attach(STUB_AGENT);
@@ -192,7 +193,8 @@ describe("createSkillProvider — progressive mode", () => {
   test("progressive: true does not load bodies even for multiple skills", async () => {
     await writeSkill(userRoot, "skill-a", "Long body A.");
     await writeSkill(userRoot, "skill-b", "Long body B.");
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
     const provider = createSkillProvider(runtime, { progressive: true });
 
     const result = await provider.attach(STUB_AGENT);
@@ -211,7 +213,8 @@ describe("createSkillProvider — progressive mode", () => {
       "---\nname: my-skill\ndescription: Does cool things.\n---\n\nBody.",
       { createPath: true },
     );
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
     const provider = createSkillProvider(runtime, { progressive: true });
 
     const result = await provider.attach(STUB_AGENT);
@@ -249,7 +252,8 @@ describe("createSkillProvider — progressive mode", () => {
     const blockedBody = '```typescript\neval("bad");\n```';
     await writeSkill(userRoot, "blocked-skill", blockedBody);
 
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, blockOnSeverity: "HIGH" });
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot, blockOnSeverity: "HIGH" });
+    const runtime = createProgressivePinnedRuntime(base);
     const provider = createSkillProvider(runtime, { progressive: true });
 
     const result = await provider.attach(STUB_AGENT);
@@ -275,7 +279,8 @@ describe("createSkillProvider — progressive mode", () => {
     // after startup, causing confusing NOT_FOUND errors from the Skill tool.
     // Tradeoff: edits to SKILL.md after session start are not visible until next session.
     await writeSkill(userRoot, "editable", "Original body.");
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
     const provider = createSkillProvider(runtime, { progressive: true });
 
     await provider.attach(STUB_AGENT);
@@ -295,7 +300,8 @@ describe("createSkillProvider — progressive mode", () => {
     // tool — its body was cached at attach time. This prevents the model from being told
     // a skill exists (via <available_skills>) but then getting a NOT_FOUND error.
     await writeSkill(userRoot, "deletable", "Body before deletion.");
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
     const provider = createSkillProvider(runtime, { progressive: true });
 
     await provider.attach(STUB_AGENT);
@@ -304,7 +310,7 @@ describe("createSkillProvider — progressive mode", () => {
     const { rmSync } = await import("node:fs");
     rmSync(`${userRoot}/deletable/SKILL.md`, { force: true });
 
-    // Must still be loadable from the LRU cache.
+    // Must still be loadable from the pinned session-snapshot map.
     const loaded = await runtime.load("deletable");
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.value.body).toContain("Body before deletion.");
@@ -315,8 +321,8 @@ describe("createSkillProvider — progressive mode", () => {
     // In eager mode, injectSkills() filters them via content === "" — they never reach systemPrompt.
     // Progressive mode must match this behavior: MCP skills must NOT get runtimeBacked: true and
     // must NOT appear in the <available_skills> XML block.
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
-    runtime.registerExternal([
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    base.registerExternal([
       {
         name: "mcp-tool",
         description: "",
@@ -324,6 +330,7 @@ describe("createSkillProvider — progressive mode", () => {
         dirPath: "mcp://test-server",
       },
     ]);
+    const runtime = createProgressivePinnedRuntime(base);
     const provider = createSkillProvider(runtime, { progressive: true });
 
     const result = await provider.attach(STUB_AGENT);
@@ -338,6 +345,13 @@ describe("createSkillProvider — progressive mode", () => {
     expect(component?.runtimeBacked).toBeUndefined();
     // Content should be empty (MCP body is description === "")
     expect(component?.content).toBe("");
+  });
+
+  test("throws when progressive: true is passed a non-pinned runtime", () => {
+    const unpinned = createSkillsRuntime({ bundledRoot: null, userRoot });
+    expect(() => createSkillProvider(unpinned, { progressive: true })).toThrow(
+      "createProgressiveSkillProvider()",
+    );
   });
 });
 
