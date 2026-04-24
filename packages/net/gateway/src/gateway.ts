@@ -41,7 +41,7 @@ export type SessionEvent =
 
 export interface Gateway {
   readonly start: (port: number) => Promise<void>;
-  readonly stop: () => Promise<void>;
+  readonly stop: () => Promise<Result<void, KoiError>>;
   readonly sessions: () => SessionStore;
   readonly onFrame: (handler: (session: Session, frame: GatewayFrame) => void) => () => void;
   readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
@@ -277,28 +277,34 @@ export function createGateway(
 
           if (!connMap.has(conn.id)) return;
 
-          // Evict the old connection BEFORE reading the persisted watermark. The old
-          // socket must stop processing frames before we snapshot remoteSeq; otherwise
-          // it could advance the store value between our store.get() and store.set(),
-          // rolling the watermark backward and re-opening a replay window.
+          // Two-phase reconnect cutover:
+          //   Phase 1 — fence the old connection so it can no longer write to the store,
+          //             then drain any already-running processMessage() work. We save the old
+          //             tracker so we can restore it if the store operations below fail and we
+          //             need to keep the old connection alive rather than losing the session.
+          //   Phase 2 — after persistence succeeds, complete eviction by closing the socket.
+          //   On any store failure between the two phases, un-fence the old connection so it
+          //             continues serving rather than dropping the session entirely.
           const prevConnId = connBySession.get(result.session.id);
+          let savedTracker: ReturnType<typeof createSequenceTracker> | undefined;
           if (prevConnId !== undefined && prevConnId !== conn.id) {
-            // Fence first: remove sessionByConn so any queued processMessage() calls
-            // for the old socket can no longer resolve the sessionId and write to the store.
             sessionByConn.delete(prevConnId);
+            savedTracker = trackers.get(prevConnId);
             trackers.delete(prevConnId);
-            // Drain any in-flight processMessage work before reading the watermark.
-            // processMessage reads sessionByConn (already cleared above), so no new
-            // store writes can start, but a frame mid-execution between store.get() and
-            // store.set() could still complete. Awaiting the tail of the queue ensures the
-            // snapshot we take below reflects the true final remoteSeq.
             const drainQueue = msgQueues.get(prevConnId) ?? Promise.resolve();
             msgQueues.delete(prevConnId);
-            const prevConn = connMap.get(prevConnId);
-            connMap.delete(prevConnId);
-            bp.remove(prevConnId);
-            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
             await drainQueue;
+          }
+
+          // Helper: un-fence the old conn and reject the new one on store failure.
+          function abortReconnect(closeCode: number, reason: string): void {
+            if (prevConnId !== undefined && prevConnId !== conn.id) {
+              sessionByConn.set(prevConnId, result.session.id);
+              if (savedTracker !== undefined) trackers.set(prevConnId, savedTracker);
+              msgQueues.set(prevConnId, Promise.resolve());
+            }
+            conn.close(closeCode, reason);
+            cleanupConn(conn, reason);
           }
 
           // Restore remoteSeq from any previously persisted session to prevent frame replay.
@@ -311,8 +317,7 @@ export function createGateway(
             if (prev.ok) startSeq = prev.value.remoteSeq;
             // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
           } catch {
-            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error on resume");
-            cleanupConn(conn, "session store failure on resume");
+            abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure on resume");
             return;
           }
           const tracker = createSequenceTracker(config.dedupWindowSize);
@@ -328,14 +333,20 @@ export function createGateway(
           try {
             storeResult = await Promise.resolve(store.set(sessionToStore));
           } catch {
-            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
-            cleanupConn(conn, "session store failure");
+            abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure");
             return;
           }
           if (!storeResult.ok) {
-            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
-            cleanupConn(conn, "session store failure");
+            abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure");
             return;
+          }
+
+          // Phase 2: Persistence succeeded — complete eviction of the old connection.
+          if (prevConnId !== undefined && prevConnId !== conn.id) {
+            const prevConn = connMap.get(prevConnId);
+            connMap.delete(prevConnId);
+            bp.remove(prevConnId);
+            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
           }
 
           // Install maps and send ack only after persistence — prevents read-before-write.
@@ -403,7 +414,7 @@ export function createGateway(
       }, 5_000);
     },
 
-    async stop(): Promise<void> {
+    async stop(): Promise<Result<void, KoiError>> {
       if (criticalSweep !== undefined) {
         clearInterval(criticalSweep);
         criticalSweep = undefined;
@@ -422,14 +433,17 @@ export function createGateway(
         }
       }
       const settled = await Promise.allSettled(deletePromises);
+      let cleanupFailed = false;
       for (const r of settled) {
         if (r.status === "rejected") {
           swallowError(r.reason as unknown, { package: "gateway", operation: "stop.delete" });
+          cleanupFailed = true;
         } else if (!r.value.ok) {
           swallowError(new Error(r.value.error.message), {
             package: "gateway",
             operation: "stop.delete",
           });
+          cleanupFailed = true;
         }
       }
       connMap.clear();
@@ -439,6 +453,19 @@ export function createGateway(
       pendingHandshakes.clear();
 
       deps.transport.close();
+
+      if (cleanupFailed) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: "Gateway stop: one or more session store deletions failed",
+            retryable: false,
+            context: {},
+          },
+        };
+      }
+      return { ok: true, value: undefined };
     },
 
     sessions(): SessionStore {
