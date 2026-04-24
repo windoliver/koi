@@ -129,7 +129,7 @@ export function createGateway(
       return false;
     }
     const bytes = conn.send(data);
-    if (bytes === -1) {
+    if (bytes <= 0) {
       conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
       cleanupConn(conn, "transport send failure");
       return false;
@@ -343,7 +343,7 @@ export function createGateway(
           sessionByConn.set(conn.id, result.session.id);
           connBySession.set(result.session.id, conn.id);
           const ackBytes = result.sendAck();
-          if (ackBytes === -1) {
+          if (ackBytes <= 0) {
             // Transport rejected the ack write — session is unusable before the client
             // received its sessionId/protocol. Tear down cleanly so the client reconnects.
             conn.close(CLOSE_CODES.ADMIN_CLOSED, "Ack send failed");
@@ -483,7 +483,7 @@ export function createGateway(
         };
       }
       const bytes = conn.send(encoded);
-      if (bytes === -1) {
+      if (bytes <= 0) {
         conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
         cleanupConn(conn, "transport send failure");
         const error: KoiError = {
