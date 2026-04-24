@@ -324,6 +324,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/gateway-types": {
+      "name": "@koi/gateway-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/git-utils": {
       "name": "@koi/git-utils",
       "version": "0.0.0",
@@ -1038,6 +1045,15 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/net/gateway-webhook": {
+      "name": "@koi/gateway-webhook",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+      },
+    },
     "packages/net/mcp": {
       "name": "@koi/mcp",
       "version": "0.0.0",
@@ -1644,6 +1660,10 @@
     "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
+
+    "@koi/gateway-types": ["@koi/gateway-types@workspace:packages/lib/gateway-types"],
+
+    "@koi/gateway-webhook": ["@koi/gateway-webhook@workspace:packages/net/gateway-webhook"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
