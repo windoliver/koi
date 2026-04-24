@@ -153,6 +153,30 @@ describe("detectInjection", () => {
     });
   });
 
+  describe("ANSI-C decoding coverage (round 3)", () => {
+    test("$'\\101' (octal escape for 'A') decodes through normalizer", () => {
+      // Raw input contains $' with escape — raw-obfuscation pattern fires first.
+      expect(detectInjection("$'\\101'").ok).toBe(false);
+    });
+
+    test("letter-escape $'\\n' inside content — raw-obfuscation does not fire", () => {
+      // \n is in the letter map but not in the obfuscation regex (which targets hex/octal).
+      // The decoded newline then passes matchPatterns without tripping any pattern.
+      expect(detectInjection("echo $'\\n'").ok).toBe(true);
+    });
+
+    test("unterminated $'...' (malformed — findClosingQuote returns -1)", () => {
+      // No closing quote; the $ is emitted as-is, then ' is stripped as ordinary quote.
+      // Should not crash and should not match anything dangerous.
+      expect(detectInjection("echo $'no-end").ok).toBe(true);
+    });
+
+    test('locale-translated $"..." strips the $ and quotes', () => {
+      // $"foo" → foo (no match)
+      expect(detectInjection('echo $"hello world"').ok).toBe(true);
+    });
+  });
+
   describe("unicode obfuscation normalization", () => {
     test("BUG regression: fullwidth Latin bypasses regex unless normalized", () => {
       // "ｒｍ" is fullwidth r + fullwidth m. Without NFKC normalization,

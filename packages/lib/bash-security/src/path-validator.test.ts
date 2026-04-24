@@ -167,6 +167,28 @@ describe("validatePath", () => {
       }
     });
 
+    test("BUG regression: dangling symlink pointing outside base is rejected (TOCTOU defense)", () => {
+      // A symlink whose target does not exist yet would pass the old walk
+      // because realpathSync threw and the walk treated the symlink name as
+      // a missing leaf. An attacker can later materialize the outside target
+      // between validation and the actual write. Reject such paths outright.
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-dangling-"));
+      try {
+        const ws = join(base, "workspace");
+        mkdirSync(ws);
+        // target does NOT exist yet
+        symlinkSync("/etc/brand-new-leaf-that-does-not-exist", join(ws, "trap"));
+        const result = validatePath(join(ws, "trap"), ws);
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.category).toBe("path-traversal");
+          expect(result.reason).toMatch(/dangling symlink/);
+        }
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
     test("allows non-existent leaf under base with no symlink tricks", () => {
       const base = mkdtempSync(join(tmpdir(), "koi-pv-new-"));
       try {

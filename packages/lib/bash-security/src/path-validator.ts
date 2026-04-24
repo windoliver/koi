@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { matchPatterns } from "./match.js";
 import type { ClassificationResult, ThreatPattern } from "./types.js";
@@ -43,26 +43,51 @@ const PATH_TRAVERSAL_PATTERNS: readonly ThreatPattern[] = [
 const NON_PRINTABLE = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 /**
- * Canonicalize a path by realpath'ing the longest existing prefix, then
- * appending the non-existent remainder verbatim.
- *
- * Why: `realpathSync` throws ENOENT when any path component is missing. A
- * naive fallback to `resolve()` does NOT follow symlinks, which lets an
- * attacker plant a symlink inside the workspace pointing outside and then
- * write to a non-existent leaf under it. Walking up to the longest existing
- * prefix guarantees the symlink resolution even when the leaf doesn't exist.
+ * Result of canonicalization — either a resolved path, or a dangling-symlink
+ * rejection signal. Dangling symlinks represent a TOCTOU hazard: their target
+ * may be created/swapped-in between validation and use, so they must not be
+ * treated as "missing leaf" for containment purposes.
  */
-function canonicalizeExisting(p: string): string {
+type CanonicalResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly reason: "dangling-symlink"; readonly component: string };
+
+/**
+ * Canonicalize a path by realpath'ing the longest existing prefix, then
+ * appending the non-existent remainder verbatim. Reject dangling symlinks
+ * (where the symlink exists but its target does not) — a later write could
+ * race with the attacker materializing the outside target.
+ *
+ * Why we walk: `realpathSync` throws ENOENT when any path component is
+ * missing. A naive fallback to `resolve()` does NOT follow symlinks, which
+ * would let an attacker plant `workspace/evil → /etc` and write to
+ * `workspace/evil/new-file`.
+ */
+function canonicalizeExisting(p: string): CanonicalResult {
   const absolute = resolve(p);
   const suffix: string[] = [];
   let cursor = absolute;
   while (true) {
     try {
       const real = realpathSync(cursor);
-      return suffix.length === 0 ? real : join(real, ...suffix);
+      return {
+        ok: true,
+        path: suffix.length === 0 ? real : join(real, ...suffix),
+      };
     } catch {
+      // realpathSync failed — either the component is genuinely missing, or
+      // it's a dangling symlink. lstat can distinguish: a dangling symlink
+      // returns a symlink stat, while a missing component throws.
+      try {
+        const stat = lstatSync(cursor);
+        if (stat.isSymbolicLink()) {
+          return { ok: false, reason: "dangling-symlink", component: cursor };
+        }
+      } catch {
+        // Not a symlink and doesn't exist — treat as missing, walk up.
+      }
       const parent = dirname(cursor);
-      if (parent === cursor) return absolute;
+      if (parent === cursor) return { ok: true, path: absolute };
       suffix.unshift(basename(cursor));
       cursor = parent;
     }
@@ -98,10 +123,30 @@ export function validatePath(path: string, baseDir?: string): ClassificationResu
   // 3. Symlink-safe canonicalization and base-directory containment check.
   //    Both sides go through the same walk — realpath the longest existing
   //    prefix, append the non-existent remainder — so string comparison is
-  //    apples-to-apples even for leaves that don't exist yet.
+  //    apples-to-apples even for leaves that don't exist yet. Dangling
+  //    symlinks are rejected explicitly to close the TOCTOU gap where an
+  //    attacker materializes an outside target between validation and use.
   if (baseDir !== undefined) {
-    const canonicalBase = canonicalizeExisting(baseDir);
-    const canonicalPath = canonicalizeExisting(resolve(baseDir, path));
+    const baseResult = canonicalizeExisting(baseDir);
+    const pathResult = canonicalizeExisting(resolve(baseDir, path));
+    if (!baseResult.ok) {
+      return {
+        ok: false,
+        reason: `Base directory contains a dangling symlink (${baseResult.component})`,
+        pattern: baseResult.component,
+        category: "path-traversal",
+      };
+    }
+    if (!pathResult.ok) {
+      return {
+        ok: false,
+        reason: `Path contains a dangling symlink (${pathResult.component}); its target may race an outside file`,
+        pattern: pathResult.component,
+        category: "path-traversal",
+      };
+    }
+    const canonicalBase = baseResult.path;
+    const canonicalPath = pathResult.path;
     const isContained =
       canonicalPath === canonicalBase || canonicalPath.startsWith(`${canonicalBase}/`);
     if (!isContained) {

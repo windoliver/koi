@@ -268,16 +268,36 @@ function checkDestructiveChmod(cmd: string): ClassificationResult {
 }
 
 /**
- * Git destructive operations. Subcommand + force-flag presence are checked
- * with independent linear regexes rather than a single greedy pattern so
- * inputs with many repeated subcommand words cannot force V8 backtracking.
- * Does NOT defeat quote-splitting obfuscation (`git reset --ha""rd`) — that
+ * Extract the subcommand and remaining args from a `git <subcmd> ...`
+ * invocation. Returns null if the command isn't a git invocation or has no
+ * subcommand. Skips top-level git options like `-c foo=bar` and `--git-dir=…`.
+ * Scoping destructive checks to the actual subcommand args avoids false
+ * positives on quoted commit messages (`git commit -m "… push --force …"`).
+ */
+function extractGitSubcommand(cmd: string): { subcommand: string; args: string } | null {
+  const match =
+    /\bgit\b((?:\s+(?:-[A-Za-z]+|--[A-Za-z-]+(?:=\S+)?))*)\s+([A-Za-z][\w-]*)\b(.*)/s.exec(cmd);
+  if (!match) return null;
+  return { subcommand: match[2] ?? "", args: match[3] ?? "" };
+}
+
+/**
+ * Git destructive operations. Matching is scoped to the actual subcommand
+ * arguments so a quoted commit message like
+ *   git commit -m "document --force policy"
+ * does not trigger the push-force check. Refspecs are enumerated across all
+ * tokens in the push arg list (not just the first position) so multi-refspec
+ * invocations like `git push origin main +HEAD:main` are caught.
+ *
+ * Does NOT defeat backslash-escape obfuscation (`git reset --ha\\rd`) — that
  * requires shell tokenization; see @koi/bash-ast for the AST-based classifier.
  */
 function checkDestructiveGit(cmd: string): ClassificationResult {
-  if (!/\bgit\b/.test(cmd)) return { ok: true };
+  const parsed = extractGitSubcommand(cmd);
+  if (parsed === null) return { ok: true };
+  const { subcommand, args } = parsed;
 
-  if (/\breset\b/.test(cmd) && /--hard\b/.test(cmd)) {
+  if (subcommand === "reset" && /--hard\b/.test(args)) {
     return {
       ok: false,
       reason: "git reset --hard discards uncommitted changes without confirmation",
@@ -285,20 +305,20 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
       category: "destructive",
     };
   }
-  if (
-    /\bpush\b/.test(cmd) &&
-    // Explicit force flags OR a refspec starting with `+` (bash force-update).
-    /(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b|\bpush\b\s+[^\s#]+\s+\+\w)/.test(cmd)
-  ) {
-    return {
-      ok: false,
-      reason:
-        "git push --force (or + refspec) rewrites remote history and can erase teammates' work",
-      pattern: "git+push+force",
-      category: "destructive",
-    };
+  if (subcommand === "push") {
+    const hasForceFlag = /(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b)/.test(args);
+    const hasForceRefspec = args.split(/\s+/).some((tok) => /^\+[\w/.:-]+/.test(tok));
+    if (hasForceFlag || hasForceRefspec) {
+      return {
+        ok: false,
+        reason:
+          "git push --force (or + refspec) rewrites remote history and can erase teammates' work",
+        pattern: "git+push+force",
+        category: "destructive",
+      };
+    }
   }
-  if (/\bclean\b/.test(cmd) && /(?:--force\b|\s-[a-zA-Z]*f)/.test(cmd)) {
+  if (subcommand === "clean" && /(?:--force\b|\s-[a-zA-Z]*f)/.test(args)) {
     return {
       ok: false,
       reason: "git clean -f permanently deletes untracked files",
@@ -307,11 +327,9 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
     };
   }
   if (
-    /\bbranch\b/.test(cmd) &&
-    // -D (force-delete), long-form --delete + --force in either order, or
-    // short-option pair -d + -f (in either order).
+    subcommand === "branch" &&
     /(?:\s-[a-zA-Z]*D\b|--delete\b[\s\S]{0,200}--force\b|--force\b[\s\S]{0,200}--delete\b|\s-[a-zA-Z]*d\b[\s\S]{0,200}\s-[a-zA-Z]*f\b|\s-[a-zA-Z]*f\b[\s\S]{0,200}\s-[a-zA-Z]*d\b)/.test(
-      cmd,
+      args,
     )
   ) {
     return {
@@ -321,11 +339,52 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
       category: "destructive",
     };
   }
-  if (/\bcheckout\b/.test(cmd) && /(?:--force\b|\s-[a-zA-Z]*f\b)/.test(cmd)) {
+  if (subcommand === "checkout" && /(?:--force\b|\s-[a-zA-Z]*f\b)/.test(args)) {
     return {
       ok: false,
       reason: "git checkout -f discards uncommitted changes in the working tree",
       pattern: "git+checkout+force",
+      category: "destructive",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Destructive command-pair checks: run as independent linear presence probes
+ * across the whole validated input, not as bounded-span regexes. A bounded
+ * gap becomes a padding bypass under the 8KB input limit.
+ */
+function checkDestructiveCommandPairs(cmd: string): ClassificationResult {
+  if (/\bdd\b/.test(cmd) && /\bof=\/dev\//.test(cmd)) {
+    return {
+      ok: false,
+      reason: "dd writing to a /dev/ block device destroys all data on the target disk",
+      pattern: "dd+of=/dev",
+      category: "destructive",
+    };
+  }
+  if (/\bfind\b/.test(cmd) && /-exec(?:dir)?\b/.test(cmd) && /\brm\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "find -exec rm deletes matched files without per-file confirmation",
+      pattern: "find+-exec+rm",
+      category: "destructive",
+    };
+  }
+  if (/\bfind\b/.test(cmd) && /-delete\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "find -delete removes matched files in-place",
+      pattern: "find+-delete",
+      category: "destructive",
+    };
+  }
+  if (/\bxargs\b/.test(cmd) && /\brm\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason: "xargs rm deletes files fed from stdin with no confirmation",
+      pattern: "xargs+rm",
       category: "destructive",
     };
   }
@@ -338,12 +397,6 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
     regex: /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap)\b/,
     category: "destructive",
     reason: "mkfs/mkswap formats a filesystem and destroys all data on the device",
-  },
-  {
-    // dd if=... of=/dev/<disk> — raw block-device write destroys the target disk
-    regex: new RegExp(`\\bdd\\b${B}\\bof=\\/dev\\/`),
-    category: "destructive",
-    reason: "dd writing to a /dev/ block device destroys all data on the target disk",
   },
   {
     // Classic fork bomb: :(){:|:&};:  (whitespace-tolerant)
@@ -362,24 +415,6 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
     regex: /\binit\s+[06]\b/,
     category: "destructive",
     reason: "init 0/6 halts or reboots the host",
-  },
-  {
-    // find -exec rm / -execdir rm — destructive chain that bypasses rm's -rf system-path guard
-    regex: new RegExp(`\\bfind\\b${B}-exec(?:dir)?\\b${B}\\brm\\b`),
-    category: "destructive",
-    reason: "find -exec rm deletes matched files without per-file confirmation",
-  },
-  {
-    // find -delete — in-tree destructive deletion
-    regex: new RegExp(`\\bfind\\b${B}-delete\\b`),
-    category: "destructive",
-    reason: "find -delete removes matched files in-place",
-  },
-  {
-    // xargs ... rm — delete-everything-from-stdin chain
-    regex: new RegExp(`\\bxargs\\b${B}\\brm\\b`),
-    category: "destructive",
-    reason: "xargs rm deletes files fed from stdin with no confirmation",
   },
 ] as const;
 
@@ -437,5 +472,7 @@ export function classifyCommand(command: string): ClassificationResult {
   if (!chmodResult.ok) return chmodResult;
   const gitResult = checkDestructiveGit(normalized);
   if (!gitResult.ok) return gitResult;
+  const pairResult = checkDestructiveCommandPairs(normalized);
+  if (!pairResult.ok) return pairResult;
   return matchPatterns(normalized, ALL_CLASSIFIER_PATTERNS);
 }

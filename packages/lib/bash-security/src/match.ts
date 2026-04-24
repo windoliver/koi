@@ -26,36 +26,88 @@ export const MAX_INPUT_LENGTH = 8192;
  * (e.g. `ha\rd`) are NOT normalized; that is a known limitation of the regex
  * classifier and belongs to the AST-based path in @koi/bash-ast.
  */
+/**
+ * Decode a bash ANSI-C escape sequence body (what's inside `$'...'`).
+ * Covers hex (`\xNN`), octal (`\NNN`), and the common letter escapes.
+ */
+function decodeAnsiC(body: string): string {
+  return body.replace(/\\(x[0-9a-fA-F]{1,2}|[0-7]{1,3}|[abefnrtv\\'"?])/g, (match, esc: string) => {
+    if (esc.startsWith("x")) return String.fromCharCode(parseInt(esc.slice(1), 16));
+    if (/^[0-7]+$/.test(esc)) return String.fromCharCode(parseInt(esc, 8));
+    const letterMap: Record<string, string> = {
+      a: "\x07",
+      b: "\b",
+      e: "\x1b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+      v: "\v",
+      "\\": "\\",
+      "'": "'",
+      '"': '"',
+      "?": "?",
+    };
+    return letterMap[esc] ?? match;
+  });
+}
+
 export function normalizeForMatch(input: string): string {
   const nfkc = input.normalize("NFKC");
-  // Strip unescaped quote chars. Dollar-quoted regions — bash ANSI-C quoting
-  // `$'...'` and locale-translated `$"..."` — are preserved intact because
-  // their delimiters carry semantic meaning that the injection patterns key
-  // on (`$'\x72\x6d'` detection). Backslash-escaped quotes (`\"` / `\'`) are
-  // also preserved by inspecting the preceding char.
+  // Shell quote removal + ANSI-C decoding so that bash-equivalent commands
+  // normalize to the form the classifier patterns expect:
+  //   - `$'r'$'m'` and `$'\x72\x6d'` decode to `rm`
+  //   - `$"foo"` (locale-translated) strips to `foo`
+  //   - `rm -r""f /etc` strips to `rm -rf /etc`
+  //   - `"$HOME"/.ssh/x` strips to `$HOME/.ssh/x`
+  // Concatenation of adjacent quoted segments (bash behavior) is implicit:
+  // removing the delimiters and continuing the loop leaves neighboring
+  // segments touching.
   let out = "";
-  let inDollarQuote: "'" | '"' | null = null;
-  for (let i = 0; i < nfkc.length; i++) {
-    const ch = nfkc[i] ?? "";
-    if (inDollarQuote !== null) {
-      out += ch;
-      if (ch === inDollarQuote && nfkc[i - 1] !== "\\") inDollarQuote = null;
-      continue;
-    }
-    if (ch === "$") {
-      const next = nfkc[i + 1];
-      if (next === "'" || next === '"') {
-        out += ch;
-        out += next;
-        inDollarQuote = next;
-        i++;
+  let i = 0;
+  while (i < nfkc.length) {
+    const ch = nfkc[i];
+    // ANSI-C quoted: $'...' — decode escapes, drop delimiters.
+    if (ch === "$" && nfkc[i + 1] === "'") {
+      const end = findClosingQuote(nfkc, i + 2, "'");
+      if (end !== -1) {
+        out += decodeAnsiC(nfkc.slice(i + 2, end));
+        i = end + 1;
         continue;
       }
     }
-    if ((ch === '"' || ch === "'") && nfkc[i - 1] !== "\\") continue;
+    // Locale-translated: $"..." — drop delimiters and `$`.
+    if (ch === "$" && nfkc[i + 1] === '"') {
+      const end = findClosingQuote(nfkc, i + 2, '"');
+      if (end !== -1) {
+        out += nfkc.slice(i + 2, end);
+        i = end + 1;
+        continue;
+      }
+    }
+    // Ordinary quotes: strip unescaped `'` and `"`.
+    if ((ch === '"' || ch === "'") && nfkc[i - 1] !== "\\") {
+      i++;
+      continue;
+    }
     out += ch;
+    i++;
   }
   return out;
+}
+
+/**
+ * Find the index of the next unescaped closing quote, respecting odd/even
+ * backslash counts. Returns -1 if none found (malformed input).
+ */
+function findClosingQuote(s: string, from: number, quote: "'" | '"'): number {
+  for (let i = from; i < s.length; i++) {
+    if (s[i] !== quote) continue;
+    let backslashes = 0;
+    for (let j = i - 1; j >= 0 && s[j] === "\\"; j--) backslashes++;
+    if (backslashes % 2 === 0) return i;
+  }
+  return -1;
 }
 
 /**

