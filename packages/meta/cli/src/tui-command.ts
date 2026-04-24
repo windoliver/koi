@@ -1097,14 +1097,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
-    // Use skipAuditValidation when the gate is off: a malformed audit: block
-    // in a shared repo must not abort startup for operators who have already
-    // provided KOI_AUDIT_* env-var overrides and are not relying on manifest
-    // paths at all. The gate-off fail-closed check below handles the case
-    // where the operator has NOT provided those overrides.
+    // Skip strict audit path validation when (a) the gate is off, OR (b) the
+    // gate is on but every audit sink is already covered by a KOI_AUDIT_* env
+    // var — in that case manifest paths will never be opened, so a stale or
+    // malformed manifest audit: block must not abort startup.
+    const allAuditSinksCoveredByEnv =
+      process.env.KOI_AUDIT_NDJSON !== undefined &&
+      process.env.KOI_AUDIT_SQLITE !== undefined &&
+      (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
     const manifestResult = await loadManifestConfig(resolvedManifestPath, {
       allowOAuthSchemes: true,
-      skipAuditValidation: process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1",
+      skipAuditValidation:
+        process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1" || allAuditSinksCoveredByEnv,
     });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
