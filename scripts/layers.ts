@@ -69,6 +69,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/browser-playwright",
   "@koi/checkpoint",
   "@koi/cost-aggregator",
+  "@koi/governance-approval-tiers",
   "@koi/loop",
   "@koi/mcp",
   "@koi/middleware-audit",

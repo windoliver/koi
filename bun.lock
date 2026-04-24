@@ -1039,6 +1039,15 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/security/governance-approval-tiers": {
+      "name": "@koi/governance-approval-tiers",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/security/governance-core": {
       "name": "@koi/governance-core",
       "version": "0.0.0",
@@ -1548,6 +1557,8 @@
     "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
+
+    "@koi/governance-approval-tiers": ["@koi/governance-approval-tiers@workspace:packages/security/governance-approval-tiers"],
 
     "@koi/governance-core": ["@koi/governance-core@workspace:packages/security/governance-core"],
 
