@@ -43,6 +43,9 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const addResult = await runGit(["worktree", "add", "-b", branchName, path], config.repoPath);
       if (!addResult.ok) return addResult;
 
+      // Register before the marker write so we can dispose on failure
+      registry.set(id, { path, branchName });
+
       const marker = JSON.stringify({
         id,
         agentId,
@@ -51,7 +54,24 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         branchName,
         repoPath: config.repoPath,
       });
-      await writeFile(join(path, ".koi-workspace"), marker, "utf8");
+
+      try {
+        await writeFile(join(path, ".koi-workspace"), marker, "utf8");
+      } catch (e: unknown) {
+        // Marker write failed — best-effort cleanup to avoid orphaned worktree/branch
+        registry.delete(id);
+        await runGit(["worktree", "remove", "--force", path], config.repoPath);
+        await runGit(["branch", "-D", branchName], config.repoPath);
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Failed to write workspace marker: ${e instanceof Error ? e.message : String(e)}`,
+            retryable: false,
+            cause: e,
+          },
+        };
+      }
 
       const info: WorkspaceInfo = {
         id,
@@ -60,7 +80,6 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         metadata: { branchName, repoPath: config.repoPath },
       };
 
-      registry.set(id, { path, branchName });
       return { ok: true, value: info };
     },
 

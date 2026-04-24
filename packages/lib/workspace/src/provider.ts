@@ -24,11 +24,20 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
   // Map agent.pid.id → workspace ID for cleanup on detach
   const attached = new Map<AgentId, WorkspaceId>();
 
-  async function disposeWithTimeout(wsId: WorkspaceId): Promise<void> {
-    const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Workspace dispose timed out")), timeoutMs),
-    );
-    await Promise.race([config.backend.dispose(wsId), timeout]);
+  async function tryDispose(wsId: WorkspaceId): Promise<boolean> {
+    const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs));
+    const disposeResult = await Promise.race([
+      config.backend.dispose(wsId).then((r) => r.ok),
+      timeout,
+    ]);
+    return disposeResult;
+  }
+
+  function shouldDispose(agent: Agent): boolean {
+    if (policy === "never") return false;
+    if (policy === "always") return true;
+    // on_success: only dispose if agent terminated successfully
+    return agent.terminationOutcome === "success";
   }
 
   return {
@@ -51,7 +60,13 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       const ws = result.value;
 
       if (config.postCreate) {
-        await config.postCreate(ws);
+        try {
+          await config.postCreate(ws);
+        } catch (e: unknown) {
+          // Best-effort cleanup to avoid orphaned worktree/branch on postCreate failure
+          await config.backend.dispose(ws.id).catch(() => undefined);
+          throw e;
+        }
       }
 
       attached.set(agentId, ws.id);
@@ -66,13 +81,17 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       const wsId = attached.get(agentId);
       if (!wsId) return;
 
-      attached.delete(agentId);
+      if (!shouldDispose(agent)) {
+        attached.delete(agentId);
+        return;
+      }
 
-      if (policy === "never") return;
-
-      await disposeWithTimeout(wsId).catch(() => {
-        // Dispose errors are non-fatal on detach
-      });
+      // Only remove from tracking after confirmed successful disposal.
+      // On failure or timeout, workspace remains in `attached` for retry or manual recovery.
+      const disposed = await tryDispose(wsId);
+      if (disposed) {
+        attached.delete(agentId);
+      }
     },
   };
 }

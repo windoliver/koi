@@ -120,6 +120,37 @@ describe("createWorkspaceProvider", () => {
     expect(backend.disposed.length).toBe(0);
   });
 
+  it("detach with cleanupPolicy=on_success disposes on success outcome", async () => {
+    const provider = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+    const agent = makeAgent();
+    agent.pid as unknown as Record<string, unknown>;
+    const successAgent = { ...agent, terminationOutcome: "success" } as unknown as Agent;
+    await provider.attach(successAgent);
+    await provider.detach?.(successAgent);
+    expect(backend.disposed.length).toBe(1);
+  });
+
+  it("detach with cleanupPolicy=on_success preserves workspace on error outcome", async () => {
+    const provider = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+    const agent = makeAgent();
+    const failedAgent = { ...agent, terminationOutcome: "error" } as unknown as Agent;
+    await provider.attach(failedAgent);
+    await provider.detach?.(failedAgent);
+    expect(backend.disposed.length).toBe(0);
+  });
+
+  it("postCreate failure disposes workspace and rethrows", async () => {
+    const provider = createWorkspaceProvider({
+      backend,
+      postCreate: async () => {
+        throw new Error("setup failed");
+      },
+    });
+    const agent = makeAgent();
+    await expect(provider.attach(agent)).rejects.toThrow("setup failed");
+    expect(backend.disposed.length).toBe(1);
+  });
+
   it("backend create failure propagates as thrown error", async () => {
     const failBackend = makeBackend({
       async create(): Promise<Result<WorkspaceInfo, KoiError>> {

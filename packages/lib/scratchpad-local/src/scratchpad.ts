@@ -56,7 +56,8 @@ function toEntry(m: MutableEntry): ScratchpadEntry {
     updatedAt: m.updatedAt,
     sizeBytes: m.sizeBytes,
     ...(m.ttlSeconds !== undefined ? { ttlSeconds: m.ttlSeconds } : {}),
-    ...(m.metadata !== undefined ? { metadata: m.metadata } : {}),
+    // Return a shallow copy so callers cannot mutate stored metadata
+    ...(m.metadata !== undefined ? { metadata: { ...m.metadata } as Record<string, unknown> } : {}),
   };
 }
 
@@ -70,7 +71,8 @@ function toSummary(m: MutableEntry): ScratchpadEntrySummary {
     updatedAt: m.updatedAt,
     sizeBytes: m.sizeBytes,
     ...(m.ttlSeconds !== undefined ? { ttlSeconds: m.ttlSeconds } : {}),
-    ...(m.metadata !== undefined ? { metadata: m.metadata } : {}),
+    // Return a shallow copy so callers cannot mutate stored metadata
+    ...(m.metadata !== undefined ? { metadata: { ...m.metadata } as Record<string, unknown> } : {}),
   };
 }
 
@@ -119,7 +121,11 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function notify(event: ScratchpadChangeEvent): void {
     for (const sub of subscribers) {
-      sub(event);
+      try {
+        sub(event);
+      } catch {
+        // Observer errors must not escape after mutation has committed
+      }
     }
   }
 
@@ -220,8 +226,9 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       ...(input.ttlSeconds !== undefined
         ? { ttlSeconds: input.ttlSeconds, expiresAt: Date.now() + input.ttlSeconds * 1000 }
         : {}),
+      // Freeze metadata on write so callers cannot mutate it without going through write()
       ...(input.metadata !== undefined
-        ? { metadata: input.metadata as Record<string, unknown> }
+        ? { metadata: Object.freeze({ ...input.metadata }) as Record<string, unknown> }
         : {}),
     };
 
