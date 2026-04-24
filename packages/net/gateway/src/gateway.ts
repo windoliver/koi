@@ -152,19 +152,26 @@ export function createGateway(
         .then((result) => {
           pendingHandshakes.delete(conn.id);
 
+          if (!connMap.has(conn.id)) return;
+
           const tracker = createSequenceTracker(config.dedupWindowSize);
           trackers.set(conn.id, tracker);
           sessionByConn.set(conn.id, result.session.id);
           connBySession.set(result.session.id, conn.id);
 
-          void Promise.resolve(store.set(result.session)).then((r) => {
-            if (!r.ok) {
+          void Promise.resolve(store.set(result.session))
+            .then((r) => {
+              if (!r.ok) {
+                conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
+                cleanupConn(conn, "session store failure");
+                return;
+              }
+              emitSessionEvent({ kind: "created", session: result.session });
+            })
+            .catch(() => {
               conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
               cleanupConn(conn, "session store failure");
-              return;
-            }
-            emitSessionEvent({ kind: "created", session: result.session });
-          });
+            });
         })
         .catch(() => {
           pendingHandshakes.delete(conn.id);
@@ -174,6 +181,14 @@ export function createGateway(
     },
 
     async onMessage(conn: TransportConnection, data: string): Promise<void> {
+      if (data.length > config.capabilities.maxFrameBytes) {
+        conn.send(
+          createErrorFrame(0, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
+        );
+        conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Frame too large");
+        return;
+      }
+
       const handshakeHandler = pendingHandshakes.get(conn.id);
       if (handshakeHandler !== undefined) {
         handshakeHandler(data);
@@ -183,7 +198,12 @@ export function createGateway(
       const sessionId = sessionByConn.get(conn.id);
       if (sessionId === undefined) return;
 
-      const sessionResult = await Promise.resolve(store.get(sessionId));
+      let sessionResult: Result<Session, KoiError>;
+      try {
+        sessionResult = await Promise.resolve(store.get(sessionId));
+      } catch {
+        return;
+      }
       if (!sessionResult.ok) return;
 
       const frameResult = parseFrame(data);
