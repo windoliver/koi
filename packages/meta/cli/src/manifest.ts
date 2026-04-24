@@ -903,7 +903,11 @@ function parseManifestAudit(
       };
     }
 
-    // If the file itself already exists, verify it is not a symlink.
+    // If the file itself already exists, verify it is neither a symlink nor a
+    // hard link to an inode outside the manifest tree. Hard links (nlink > 1)
+    // pass parent-directory containment checks because they live inside the
+    // manifest dir, but their inode may be shared with a file outside that
+    // tree, redirecting audit writes to an arbitrary host path.
     try {
       const stat = lstatSync(lexicalResolved);
       if (stat.isSymbolicLink()) {
@@ -912,6 +916,15 @@ function parseManifestAudit(
           error:
             `manifest.audit.${field}: "${value}" is a symlink — audit files cannot be written via ` +
             "symlinks when configured from manifest content. Replace the symlink with a regular file path.",
+        };
+      }
+      if (stat.nlink > 1) {
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: "${value}" is a hard link (nlink=${stat.nlink}) — audit files ` +
+            "must have a unique inode when configured from manifest content. Remove the hard link or " +
+            "delete the file so koi can create it fresh.",
         };
       }
     } catch (err: unknown) {
@@ -995,6 +1008,9 @@ export function revalidateAuditPathContainment(
     const stat = lstatSync(resolvedPath);
     if (stat.isSymbolicLink()) {
       return `"${resolvedPath}" is now a symlink`;
+    }
+    if (stat.nlink > 1) {
+      return `"${resolvedPath}" is now a hard link (nlink=${stat.nlink}) — inode may be shared with a path outside the manifest tree`;
     }
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException).code;

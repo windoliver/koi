@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadManifestConfig, revalidateAuditPathContainment } from "./manifest.js";
@@ -808,6 +808,29 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     if (result.ok) return;
     expect(result.error).toContain("ndjson");
   });
+
+  test("rejects ndjson path that is a hard link (nlink > 1)", async () => {
+    // Hard links share an inode with their target. A file inside the manifest
+    // tree could be a hard link to a file outside it — containment checks pass
+    // because the parent directory is safe, but writes reach the outside inode.
+    const externalFile = join(dir, "outside.audit.ndjson");
+    writeFileSync(externalFile, "");
+    const hardLink = join(dir, "logs", "session.audit.ndjson");
+    linkSync(externalFile, hardLink);
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ./logs/session.audit.ndjson",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ndjson");
+    expect(result.error).toContain("hard link");
+  });
 });
 
 describe("revalidateAuditPathContainment", () => {
@@ -867,5 +890,16 @@ describe("revalidateAuditPathContainment", () => {
     const result = revalidateAuditPathContainment(linkPath, manifestPath());
     expect(typeof result).toBe("string");
     expect(result).toContain("symlink");
+  });
+
+  test("returns error string when path is now a hard link (nlink > 1)", () => {
+    const externalFile = join(dir, "outside.ndjson");
+    writeFileSync(externalFile, "");
+    const hardLink = join(dir, "logs", "session.audit.ndjson");
+    linkSync(externalFile, hardLink);
+    writeFileSync(manifestPath(), "");
+    const result = revalidateAuditPathContainment(hardLink, manifestPath());
+    expect(typeof result).toBe("string");
+    expect(result).toContain("hard link");
   });
 });
