@@ -14,18 +14,21 @@ import type {
 } from "@koi/core";
 
 function buildAuthRequiredText(n: AuthRequiredNotification): string {
-  // For mode:"local", the OAuth callback listener is on 127.0.0.1 — the URL
-  // is only completable from the machine running Koi, not from a remote/SSH
-  // session. Showing it as a copy-pastable link misleads remote operators and
-  // leaks OAuth state parameters into transcript history. Only render the URL
-  // for mode:"remote" flows where the callback is explicitly reachable.
-  if (n.authUrl === undefined || n.mode !== "remote") {
+  if (n.authUrl === undefined) {
     return `**${n.message}**`;
   }
 
-  const remoteHint = n.instructions !== undefined ? `\n\n_${n.instructions}_` : "";
+  if (n.mode === "remote") {
+    // Remote flows: callback is reachable from any host — show the URL as a
+    // primary action link and include any instructions (e.g., "paste redirect URL").
+    const remoteHint = n.instructions !== undefined ? `\n\n_${n.instructions}_` : "";
+    return `**${n.message}**\n\nOpen this link in your browser to authorize ${n.provider}:\n${n.authUrl}${remoteHint}`;
+  }
 
-  return `**${n.message}**\n\nOpen this link in your browser to authorize ${n.provider}:\n${n.authUrl}${remoteHint}`;
+  // mode:"local" — the OAuth callback listener runs on 127.0.0.1 so the
+  // browser should open automatically. Include the URL as a fallback for
+  // headless or SSH sessions where the browser launch may fail silently.
+  return `**${n.message}**\n\n_If the browser does not open automatically, copy this link to authorize ${n.provider}:_\n${n.authUrl}`;
 }
 
 export function createOAuthChannel(options: {

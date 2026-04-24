@@ -170,6 +170,38 @@ describe("createOAuthChannel", () => {
     });
   });
 
+  describe("onAuthFailure", () => {
+    test("sends failure message containing provider and reason", async () => {
+      const { channel, sent } = makeChannel();
+      const oauthChannel = createOAuthChannel({
+        channel: channel as unknown as ChannelAdapter,
+      });
+
+      await oauthChannel.onAuthFailure?.({ provider: "github", reason: "User denied access" });
+
+      expect(sent).toHaveLength(1);
+      const text = sent[0]?.content[0]?.text ?? "";
+      expect(text).toContain("github");
+      expect(text).toContain("User denied access");
+    });
+
+    test("channel.send() error is swallowed and logged to console.warn", async () => {
+      const { channel } = makeChannel(async () => {
+        throw new Error("send failed");
+      });
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+      const oauthChannel = createOAuthChannel({
+        channel: channel as unknown as ChannelAdapter,
+      });
+
+      await oauthChannel.onAuthFailure?.({ provider: "github", reason: "timeout" });
+
+      expect(channel.send).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+  });
+
   describe("submitAuthCode", () => {
     test("calls onSubmit with url and correlationId when onSubmit is provided", () => {
       const { channel } = makeChannel();
