@@ -364,6 +364,20 @@ export interface LoadManifestOptions {
    * must pass `false` (the default) so typos and invalid paths are caught early.
    */
   readonly skipAuditValidation?: boolean | undefined;
+  /**
+   * Per-sink validation skip flags for use when the gate is ON but specific
+   * sinks are already covered by `KOI_AUDIT_*` env vars (or disabled by
+   * `--no-governance`). Skipped sinks return `undefined` without path
+   * validation — stale manifest paths that will never be opened must not
+   * abort startup.
+   */
+  readonly skipAuditValidationFor?:
+    | {
+        readonly ndjson?: boolean | undefined;
+        readonly sqlite?: boolean | undefined;
+        readonly violations?: boolean | undefined;
+      }
+    | undefined;
 }
 
 /**
@@ -483,7 +497,12 @@ export async function loadManifestConfig(
     return supervisionResult;
   }
 
-  const auditResult = parseManifestAudit(raw.audit, path, options?.skipAuditValidation === true);
+  const auditResult = parseManifestAudit(
+    raw.audit,
+    path,
+    options?.skipAuditValidation === true,
+    options?.skipAuditValidationFor,
+  );
   if (!auditResult.ok) {
     return auditResult;
   }
@@ -767,6 +786,11 @@ function parseManifestAudit(
   raw: unknown,
   manifestPath: string,
   lenient: boolean,
+  skipFor?: {
+    readonly ndjson?: boolean | undefined;
+    readonly sqlite?: boolean | undefined;
+    readonly violations?: boolean | undefined;
+  },
 ): ParseResult<ManifestAuditConfig | undefined> {
   if (raw === undefined) {
     return { ok: true, value: undefined };
@@ -1029,13 +1053,26 @@ function parseManifestAudit(
     return { ok: true, value: lexicalResolved };
   };
 
-  const ndjsonResult = anchorPath("ndjson", rec.ndjson);
+  // Per-sink skip: when a sink is already covered by a KOI_AUDIT_* env var
+  // (or violations is disabled by --no-governance), do not validate the
+  // manifest path — it will never be opened, so a stale or missing path must
+  // not block startup.
+  const ndjsonResult =
+    skipFor?.ndjson === true
+      ? ({ ok: true, value: undefined } as const)
+      : anchorPath("ndjson", rec.ndjson);
   if (!ndjsonResult.ok) return ndjsonResult;
 
-  const sqliteResult = anchorPath("sqlite", rec.sqlite);
+  const sqliteResult =
+    skipFor?.sqlite === true
+      ? ({ ok: true, value: undefined } as const)
+      : anchorPath("sqlite", rec.sqlite);
   if (!sqliteResult.ok) return sqliteResult;
 
-  const violationsResult = anchorPath("violations", rec.violations);
+  const violationsResult =
+    skipFor?.violations === true
+      ? ({ ok: true, value: undefined } as const)
+      : anchorPath("violations", rec.violations);
   if (!violationsResult.ok) return violationsResult;
 
   return {

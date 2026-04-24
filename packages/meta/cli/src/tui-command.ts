@@ -1097,18 +1097,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (resolvedManifestPath !== undefined) {
     // Pass allowOAuthSchemes so the manifest loader skips the local-only
     // scheme allowlist for this host — the TUI wires the auth loop below.
-    // Skip strict audit path validation when (a) the gate is off, OR (b) the
-    // gate is on but every audit sink is already covered by a KOI_AUDIT_* env
-    // var — in that case manifest paths will never be opened, so a stale or
-    // malformed manifest audit: block must not abort startup.
-    const allAuditSinksCoveredByEnv =
-      process.env.KOI_AUDIT_NDJSON !== undefined &&
-      process.env.KOI_AUDIT_SQLITE !== undefined &&
-      (!flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined);
+    // Use skipAuditValidation (full lenient mode) when the gate is off.
+    // When the gate is on, use per-sink skipAuditValidationFor to skip only
+    // the sinks that are already covered by KOI_AUDIT_* env vars or disabled
+    // by --no-governance — stale manifest paths for dead sinks must not abort
+    // startup.
     const manifestResult = await loadManifestConfig(resolvedManifestPath, {
       allowOAuthSchemes: true,
-      skipAuditValidation:
-        process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1" || allAuditSinksCoveredByEnv,
+      skipAuditValidation: process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1",
+      skipAuditValidationFor: {
+        ndjson: process.env.KOI_AUDIT_NDJSON !== undefined,
+        sqlite: process.env.KOI_AUDIT_SQLITE !== undefined,
+        violations: !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined,
+      },
     });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
