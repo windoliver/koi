@@ -170,6 +170,40 @@ describe("McpConnection.connect", () => {
     // State machine must reflect the failure — not stuck in "connecting"
     expect(conn.state.kind).toBe("error");
   });
+
+  test("connect — 401 → onUnauthorized refreshed → silent reconnect fails with transport error → returns EXTERNAL (no browser loop)", async () => {
+    // Regression test: after a successful token refresh (outcome="refreshed"), if the
+    // silent reconnect still fails — but with a transport error (connection refused, not
+    // another 401) — connect() must return that transport error directly.
+    // "onAuthNeeded" must NOT be called because the token is fresh; it's a transport outage.
+    const mockClient = createMockClient();
+    let connectAttempt = 0;
+    mockClient.connect = mock(async () => {
+      connectAttempt++;
+      if (connectAttempt === 1) {
+        throw new Error("HTTP 401 Unauthorized"); // auth challenge on first attempt
+      }
+      throw new Error("connection refused"); // transport outage on silent retry
+    }) as typeof mockClient.connect;
+    const onUnauthorized = mock(async (): Promise<UnauthorizedOutcome> => "refreshed");
+    const onAuthNeeded = mock(async () => false);
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      ...makeDeps(mockClient),
+      onUnauthorized,
+      onAuthNeeded,
+    });
+
+    const result = await conn.connect();
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // Transport error (connection refused), not an auth error
+      expect(result.error.code).not.toBe("AUTH_REQUIRED");
+    }
+    // Browser auth must NOT be triggered — fresh token, transport is just down
+    expect(onAuthNeeded).not.toHaveBeenCalled();
+    // Two connect attempts: initial 401 + silent retry after refresh
+    expect(connectAttempt).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -324,9 +324,11 @@ export function createMcpConnection(
       return { ok: false, error: notConnectedError(config.name) };
     }
 
-    // Only transition to connecting if not already in reconnecting
-    // (ensureConnected transitions to reconnecting before calling connect)
-    if (stateMachine.current.kind !== "reconnecting") {
+    // Skip transition if already in a mid-connect state:
+    // - "reconnecting": ensureConnected transitions here before calling connect
+    // - "connecting": recursive connect(true) after token refresh stays in connecting
+    const currentKind = stateMachine.current.kind;
+    if (currentKind !== "reconnecting" && currentKind !== "connecting") {
       stateMachine.transition({ kind: "connecting", attempt: 1 });
     }
 
