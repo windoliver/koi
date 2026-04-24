@@ -653,6 +653,9 @@ export function createGateway(
                         nextId,
                       ),
                     );
+                    // Fence before close so in-flight frames received before onClose cannot
+                    // pass processMessage() authorization after revocation is detected.
+                    cleanupConn(conn, "Session credential revoked");
                     conn.close(CLOSE_CODES.AUTH_FAILED, "Session credential revoked");
                   }
                 });
@@ -660,6 +663,7 @@ export function createGateway(
               .catch((err: unknown) => {
                 // Revocation check failed — close the session to avoid fail-open authorization.
                 swallowError(err, { package: "gateway", operation: "revocation.validate" });
+                cleanupConn(conn, "Revocation check failed");
                 conn.close(CLOSE_CODES.AUTH_FAILED, "Revocation check failed");
               });
           }
