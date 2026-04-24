@@ -74,6 +74,7 @@
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/middleware-feedback-loop": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
+    "@koi/bash-ast": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",

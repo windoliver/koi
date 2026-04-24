@@ -4,6 +4,8 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 ## Recent updates
 
+`@koi/tasks` local_agent lifecycle wired into CLI spawn stack (#1657): `@koi/tasks` was modified to add `createLocalAgentLifecycle`, which is now consumed by `@koi/cli`'s `spawn.ts` preset stack. The runtime integration is unchanged — `@koi/tasks` was already a dependency of `@koi/runtime` via the task-board tools wiring. The behavioral change is in `@koi/cli`: the spawn stack now auto-runs `local_agent` tasks from the task board using the agent's own `SpawnFn`, bridging the task board into the child-agent spawning system.
+
 `@koi/middleware-permissions` bash AST spec-guard wired (#2029): `@koi/bash-ast` is now integrated into the permissions middleware via `resolveBashCommand` + `enableBashSpecGuard` (default on). Any bash tool call whose command cannot be proven safe by a static exact-argv allow rule is downgraded to `ask` before the standard permission evaluation, even when a broad glob rule like `bash:*` would have permitted it. See `docs/L2/middleware-permissions.md` and `docs/L2/bash-ast.md` for the full spec-guard contract. The `@koi/permissions` package also gains `IS_EXACT_MATCH` symbol stamping on non-glob allow rules, enabling the spec-guard to skip its canary probe when the backend already confirmed an exact match.
 `@koi/file-type` wired (#1935): added as a dependency of `@koi/runtime`. Two standalone golden queries added to `golden-replay.test.ts` (`Golden: @koi/file-type`) covering PNG and PDF magic-byte detection. No cassette trajectory recorded — the package is a pure detection utility with no LLM interaction. `@koi/tool-browser` and `@koi/tui` also gained `@koi/file-type` as a direct dependency; their runtime wiring is unchanged.
 

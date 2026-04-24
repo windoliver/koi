@@ -228,6 +228,20 @@ export const LATE_PHASE_HOST_KEYS = {
    * system-prompt layers from `inheritedMiddleware`.
    */
   perChildManifestMiddlewareFactory: "perChildManifestMiddlewareFactory",
+  /**
+   * Getter for the current ManagedTaskBoard proxy (exported by
+   * executionStack). Late-phase stacks read this to create a
+   * TaskRunner that stays current across session resets — the
+   * proxy auto-delegates to boardRef.current after each swap.
+   */
+  getTaskBoard: "getTaskBoard",
+  /**
+   * Getter for the current TaskBoardStore (exported by executionStack).
+   * Late-phase stacks subscribe via store.watch() and must re-subscribe
+   * when the store rotates on session reset; calling getStore() at
+   * reset time yields the new store instance.
+   */
+  getStore: "getStore",
 } as const;
 
 /**
