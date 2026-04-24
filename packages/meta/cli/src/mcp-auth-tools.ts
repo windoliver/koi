@@ -76,73 +76,52 @@ function createAuthenticateTool(
   };
 
   const execute = async (_args: JsonObject): Promise<unknown> => {
-    // Wrap the full auth flow — startAuthFlow() can throw on timeout,
-    // callback port bind failure, OAuth error responses, etc. Convert
-    // those to structured tool errors so one bad attempt doesn't abort
-    // the turn.
-    try {
-      const success = await entry.provider.startAuthFlow();
-      if (!success) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                `Authentication failed for "${serverName}". The OAuth flow ` +
-                `did not complete — the user may not have authorized in time, ` +
-                `or the authorization server could not be reached. ` +
-                `The user can also try: koi mcp auth ${serverName}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // Reconnect now that tokens are stored
-      const connectResult = await entry.connection.connect();
-      if (!connectResult.ok) {
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                `Authentication succeeded for "${serverName}" but reconnection ` +
-                `failed: ${connectResult.error.message}. The server's tools ` +
-                `should appear on the next turn.`,
-            },
-          ],
-        };
-      }
-
-      // Re-discover so the resolver picks up real tools from the now-connected server
-      await rediscover();
-
+    const { triggerAuth } = entry.connection;
+    if (triggerAuth === undefined) {
       return {
         content: [
           {
             type: "text",
             text:
-              `Authentication successful for "${serverName}". ` +
-              `Tokens are stored and the server has been reconnected. ` +
-              `The server's tools are now available.`,
-          },
-        ],
-      };
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              `Authentication error for "${serverName}": ${message}. ` +
-              `Common causes: callback port already in use, auth timeout ` +
-              `(2min), or browser couldn't open. Try: koi mcp auth ${serverName}`,
+              `Authentication is not available for "${serverName}". ` +
+              `The server may not be configured for OAuth. Try: koi mcp auth ${serverName}`,
           },
         ],
         isError: true,
       };
     }
+
+    // Route through triggerAuth() so concurrent auth attempts share the
+    // singleflight and the onAuthComplete notification fires only once.
+    const result = await triggerAuth();
+    if (!result.ok) {
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Authentication failed for "${serverName}": ${result.error.message}. ` +
+              `The user can also try: koi mcp auth ${serverName}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Re-discover so the resolver replaces pseudo-tools with real server tools.
+    await rediscover();
+
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Authentication successful for "${serverName}". ` +
+            `Tokens are stored and the server has been reconnected. ` +
+            `The server's tools are now available.`,
+        },
+      ],
+    };
   };
 
   return { descriptor, origin: "operator", policy: DEFAULT_UNSANDBOXED_POLICY, execute };
