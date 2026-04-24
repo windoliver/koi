@@ -252,8 +252,11 @@ cwd). Parent directories must exist — audit sinks never silently create them.
 
 `koi tui` only: manifest audit paths are gated behind `KOI_ALLOW_MANIFEST_FILE_SINKS=1` (same gate
 as zone-B `manifest.middleware` file sinks) because `koi.yaml` is repo-authored content that can
-open files at arbitrary host paths. Without the gate, manifest audit config is silently ignored and
-env vars still work. `koi start` rejects manifests that contain `audit:`.
+open files at arbitrary host paths. Without the gate, `koi tui` refuses to start if `audit:` is
+present and any manifest-configured sink is not covered by its `KOI_AUDIT_*` env var — this
+prevents silently disabling audit logging when the operator clearly expressed audit intent in the
+manifest. To opt out of manifest-driven sinks without setting the gate, either remove the `audit:`
+block or set the corresponding `KOI_AUDIT_*` env vars. `koi start` rejects manifests that contain `audit:`.
 
 ```yaml
 audit:
