@@ -514,26 +514,39 @@ describe("createProgressivePinnedRuntime", () => {
     expect(afterClear.ok && afterClear.value.body).toContain("Updated body.");
   });
 
-  test("clearPinnedBodies() replays external skills after full invalidation", async () => {
-    // Full base.invalidate() clears external registrations, but clearPinnedBodies()
-    // replays lastExternalSkills so MCP bridge state survives the session reset.
+  test("clearPinnedBodies() replays all accumulated external skills after full invalidation", async () => {
+    // Multiple MCP servers each call registerExternal() with their own skills.
+    // clearPinnedBodies() must replay ALL accumulated externals — not just the last batch —
+    // so no server's skills silently disappear after session reset.
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const runtime = createProgressivePinnedRuntime(base);
 
+    // Simulate two MCP servers registering independently.
     runtime.registerExternal([
-      { name: "mcp-tool", description: "MCP tool.", source: "mcp", dirPath: "mcp://test" },
+      {
+        name: "server-a-tool",
+        description: "Tool from server A.",
+        source: "mcp",
+        dirPath: "mcp://a",
+      },
+    ]);
+    runtime.registerExternal([
+      {
+        name: "server-b-tool",
+        description: "Tool from server B.",
+        source: "mcp",
+        dirPath: "mcp://b",
+      },
     ]);
 
-    // Verify external is discoverable before clear.
-    const beforeClear = await runtime.discover();
-    expect(beforeClear.ok).toBe(true);
-    if (beforeClear.ok) expect(beforeClear.value.has("mcp-tool")).toBe(true);
-
-    // After clearPinnedBodies(), the external must be replayed.
+    // After clearPinnedBodies(), BOTH externals must be present — accumulated, not last-batch-only.
     runtime.clearPinnedBodies();
     const afterClear = await runtime.discover();
     expect(afterClear.ok).toBe(true);
-    if (afterClear.ok) expect(afterClear.value.has("mcp-tool")).toBe(true);
+    if (afterClear.ok) {
+      expect(afterClear.value.has("server-a-tool")).toBe(true);
+      expect(afterClear.value.has("server-b-tool")).toBe(true);
+    }
   });
 });
 

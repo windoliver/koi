@@ -54,17 +54,12 @@ export function createSkillProvider(
   runtime: SkillsRuntime,
   config?: SkillProviderConfig,
 ): ComponentProvider {
-  if (config?.progressive === true) {
-    throw new Error(
-      "createSkillProvider: progressive mode is not supported by this entrypoint. " +
-        "Use createProgressiveSkillProvider() instead — it bundles session-snapshot " +
-        "pinning and returns the pinned runtime that must also be passed to the Skill tool.",
-    );
-  }
+  const progressive = config?.progressive ?? false;
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
-    attach: async (_agent: Agent): Promise<AttachResult> => attachEager(runtime),
+    attach: async (_agent: Agent): Promise<AttachResult> =>
+      progressive ? attachProgressive(runtime) : attachEager(runtime),
   };
 }
 
@@ -259,9 +254,10 @@ export type PinnedRuntime = SkillsRuntime & {
 
 export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRuntime {
   const pinned = new Map<string, Result<SkillDefinition, KoiError>>();
-  // Tracks the last set of externals registered via registerExternal() so they
-  // can be replayed on the base runtime after a full invalidation in clearPinnedBodies().
-  let lastExternalSkills: readonly SkillMetadata[] = [];
+  // Accumulated external skills across all registerExternal() calls.
+  // Keyed by skill name so each batch can register independently without
+  // overwriting other servers' entries — all are replayed after clearPinnedBodies().
+  const accumulatedExternals = new Map<string, SkillMetadata>();
 
   const pinnedLoad = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
     const hit = pinned.get(name);
@@ -302,17 +298,21 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
       base.invalidate(name);
     },
     registerExternal: (skills: readonly SkillMetadata[]): void => {
-      lastExternalSkills = skills;
+      // Merge into the accumulated map by name — each server/connector can call
+      // registerExternal independently without overwriting other servers' entries.
+      for (const skill of skills) {
+        accumulatedExternals.set(skill.name, skill);
+      }
       base.registerExternal(skills);
     },
     clearPinnedBodies: (): void => {
       // Full base invalidation clears the discovery cache so the next loadAll()
       // re-scans the filesystem, picking up newly added or removed skill directories.
       // External/MCP skills are cleared too by base.invalidate(), but are immediately
-      // re-registered from lastExternalSkills so MCP bridge state survives the reset.
+      // re-registered from accumulatedExternals so all MCP bridge state survives the reset.
       base.invalidate();
-      if (lastExternalSkills.length > 0) {
-        base.registerExternal(lastExternalSkills);
+      if (accumulatedExternals.size > 0) {
+        base.registerExternal([...accumulatedExternals.values()]);
       }
       pinned.clear();
     },
