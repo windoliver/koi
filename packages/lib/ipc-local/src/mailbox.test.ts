@@ -444,46 +444,42 @@ describe("createLocalMailbox — local specifics", () => {
     mailbox.close();
   });
 
-  test("messages are retired from inbox after clean delivery to subscribers", async () => {
-    const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 2 });
-    mailbox.onMessage(() => {}); // non-throwing subscriber
-    await mailbox.send(makeInput("a"));
-    await mailbox.send(makeInput("b"));
-    // Both messages delivered cleanly — retired from inbox, capacity restored
-    expect(await mailbox.list()).toHaveLength(0);
-    const result = await mailbox.send(makeInput("c"));
-    expect(result.ok).toBe(true);
-    mailbox.close();
-  });
-
-  test("message preserved in inbox when subscriber throws synchronously", async () => {
-    const mailbox = createLocalMailbox({
-      agentId: OWNER,
-      onError: () => {},
+  test("inbox is durable — messages persist in list() after subscriber delivery", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const received: string[] = [];
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
     });
-    mailbox.onMessage(() => {
-      throw new Error("handler boom");
-    });
-    await mailbox.send(makeInput("retry-me"));
-    // Sync throw → message stays in list() for retry
+    await mailbox.send(makeInput("durable"));
+    expect(received).toEqual(["durable"]);
+    // Message stays in inbox after delivery — explicit drain() required to clear
     expect(await mailbox.list()).toHaveLength(1);
     mailbox.close();
   });
 
-  test("message preserved in inbox when async subscriber rejects", async () => {
+  test("inbox persists after subscriber throws synchronously", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER, onError: () => {} });
+    mailbox.onMessage(() => {
+      throw new Error("handler boom");
+    });
+    await mailbox.send(makeInput("retry-me"));
+    expect(await mailbox.list()).toHaveLength(1);
+    mailbox.close();
+  });
+
+  test("inbox persists after async subscriber rejects", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER, onError: () => {} });
     mailbox.onMessage(async () => {
       throw new Error("async fail");
     });
     await mailbox.send(makeInput("retry-async"));
     await Bun.sleep(10);
-    // Async rejection → message stays in list() for retry
     expect(await mailbox.list()).toHaveLength(1);
     mailbox.close();
   });
 
-  test("unsubscribed handler in snapshot still receives message and inbox is retired", async () => {
-    const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 1 });
+  test("unsubscribed handler in snapshot still receives message sent before unsub", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
     const received: string[] = [];
     const unsub = mailbox.onMessage((msg) => {
       received.push(msg.type);
@@ -491,11 +487,7 @@ describe("createLocalMailbox — local specifics", () => {
     void mailbox.send(makeInput("before-unsub"));
     unsub(); // removed from live set, but snapshot still holds reference
     await Bun.sleep(10);
-    // Handler was in snapshot at send time — still called; clean delivery retires inbox
     expect(received).toEqual(["before-unsub"]);
-    expect(await mailbox.list()).toHaveLength(0);
-    const r = await mailbox.send(makeInput("after"));
-    expect(r.ok).toBe(true);
     mailbox.close();
   });
 

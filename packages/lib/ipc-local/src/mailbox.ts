@@ -8,7 +8,7 @@ import type {
   MessageFilter,
   Result,
 } from "@koi/core";
-import { messageId } from "@koi/core";
+import { messageId, RETRYABLE_DEFAULTS } from "@koi/core";
 import type { LocalMailboxConfig } from "./types.js";
 
 const DEFAULT_MAX_MESSAGES = 10_000;
@@ -77,39 +77,24 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     }
   }
 
-  // Dispatches to the subscriber snapshot captured at send time. Returns hadSyncError
-  // and pending async handler promises (each resolves true if that handler rejected).
+  // Dispatches to the subscriber snapshot captured at send time, routing any errors
+  // to onError rather than propagating — isolation is preserved for all other handlers.
   function dispatchToSnapshot(
     snapshot: ReadonlySet<(message: AgentMessage) => void | Promise<void>>,
     msg: AgentMessage,
-  ): { hadSyncError: boolean; pending: Promise<boolean>[] } {
-    let hadSyncError = false;
-    const pending: Promise<boolean>[] = [];
+  ): void {
     for (const handler of snapshot) {
       try {
         const result = handler(msg);
         if (result instanceof Promise) {
-          pending.push(
-            result.then(
-              (): boolean => false,
-              (err: unknown): boolean => {
-                safeOnError(err, msg);
-                return true;
-              },
-            ),
-          );
+          result.catch((err: unknown) => {
+            safeOnError(err, msg);
+          });
         }
       } catch (err: unknown) {
         safeOnError(err, msg);
-        hadSyncError = true;
       }
     }
-    return { hadSyncError, pending };
-  }
-
-  function retireFromInbox(msg: AgentMessage): void {
-    const idx = messages.indexOf(msg);
-    if (idx !== -1) messages.splice(idx, 1);
   }
 
   self = {
@@ -159,14 +144,14 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       }
 
       // Reject when at capacity — explicit backpressure instead of silent eviction.
-      // Not retryable: caller must drain() the inbox before sending again.
+      // Retryable: capacity frees once drain() is called or subscribers retire messages.
       if (messages.length >= maxMessages) {
         return {
           ok: false,
           error: {
             code: "RESOURCE_EXHAUSTED",
             message: `Mailbox capacity exceeded (maxMessages=${maxMessages}). Call drain() to free capacity.`,
-            retryable: false,
+            retryable: RETRYABLE_DEFAULTS.RESOURCE_EXHAUSTED,
             context: { agentId: config.agentId, capacity: maxMessages },
           },
         };
@@ -206,22 +191,7 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       queueMicrotask(() => {
         // drain() or close() bumps generation — bail out to prevent duplicate processing.
         if (generation !== gen) return;
-
-        const { hadSyncError, pending } = dispatchToSnapshot(snapshot, msg);
-
-        if (hadSyncError || snapshot.size === 0) return;
-
-        if (pending.length === 0) {
-          // All sync handlers succeeded — retire immediately to free capacity.
-          retireFromInbox(msg);
-        } else {
-          // Async handlers in flight — retire only after all settle without error.
-          void Promise.all(pending).then((results) => {
-            if (generation !== gen) return; // drain()/close() during async settle
-            if (results.some((r) => r)) return;
-            retireFromInbox(msg);
-          });
-        }
+        dispatchToSnapshot(snapshot, msg);
       });
 
       return { ok: true, value: msg };
