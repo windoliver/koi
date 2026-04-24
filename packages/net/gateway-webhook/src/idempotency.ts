@@ -42,16 +42,23 @@ export interface IdempotencyStoreOptions {
   readonly maxSize?: number | undefined;
 }
 
+export type TryBeginResult = "ok" | "duplicate" | "in-flight";
+
 export interface IdempotencyStore {
   /**
-   * Atomically check and reserve a key. Returns true if this call wins the
-   * reservation (proceed with auth + dispatch). Returns false if the key is
-   * already committed or currently in-flight.
+   * Atomically check and reserve a key.
+   *
+   * Returns:
+   *  - `"ok"` — reservation won; proceed with auth + dispatch
+   *  - `"duplicate"` — key is already committed (seen); return 200 duplicate
+   *  - `"in-flight"` — key is currently processing by another request; return
+   *    a retryable non-2xx (503) so the provider keeps retrying until one
+   *    delivery is committed. Do NOT return 200 here — the original may fail.
    *
    * Runs synchronously — the JS event loop guarantees no interleaving between
    * check and reservation, preventing concurrent duplicate dispatch.
    */
-  readonly tryBegin: (key: string) => boolean;
+  readonly tryBegin: (key: string) => TryBeginResult;
   /** Permanently mark the key as seen. Call after fully successful dispatch. */
   readonly commit: (key: string) => void;
   /** Release the reservation without committing. Call after transient failure. */
@@ -78,19 +85,18 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
     }
   }
 
-  function tryBegin(key: string): boolean {
+  function tryBegin(key: string): TryBeginResult {
     prune();
     const existing = store.get(key);
     if (existing !== undefined) {
-      // Already committed (and not expired) or in-flight → reject
-      if (existing.state === "processing") return false;
-      if (existing.expiresAt > Date.now()) return false;
-      // Expired entry — allow retry
+      if (existing.state === "processing") return "in-flight";
+      if (existing.expiresAt > Date.now()) return "duplicate";
+      // Expired committed entry — allow fresh delivery
       store.delete(key);
     }
     // Reserve with a processing TTL so hung requests cannot permanently tombstone a key.
     store.set(key, { state: "processing", expiresAt: Date.now() + processingTtlMs });
-    return true;
+    return "ok";
   }
 
   function commit(key: string): void {

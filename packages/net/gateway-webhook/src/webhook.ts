@@ -205,8 +205,17 @@ export function createWebhookServer(
       // tryBegin() is synchronous: no await between check and reservation, so
       // concurrent requests cannot both pass before either records.
       if (verifyResult.dedupKey !== undefined) {
-        if (!idempotencyStore.tryBegin(verifyResult.dedupKey)) {
+        const beginResult = idempotencyStore.tryBegin(verifyResult.dedupKey);
+        if (beginResult === "duplicate") {
           return jsonResponse(200, { ok: true, duplicate: true });
+        }
+        if (beginResult === "in-flight") {
+          // Another request is processing this key. Return 503 so the provider
+          // keeps retrying — do NOT return 200 here, as the original may still fail.
+          return jsonResponse(503, {
+            ok: false,
+            error: "Delivery already in-flight, retry shortly",
+          });
         }
         pendingDedupKey = verifyResult.dedupKey;
       }

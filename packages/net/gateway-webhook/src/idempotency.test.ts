@@ -2,29 +2,29 @@ import { describe, expect, test } from "bun:test";
 import { createIdempotencyStore } from "./idempotency.js";
 
 describe("createIdempotencyStore", () => {
-  test("tryBegin returns true for new key", () => {
+  test("tryBegin returns ok for new key", () => {
     const store = createIdempotencyStore();
-    expect(store.tryBegin("key-1")).toBe(true);
+    expect(store.tryBegin("key-1")).toBe("ok");
   });
 
-  test("tryBegin returns false for in-flight key (concurrent duplicate)", () => {
+  test("tryBegin returns in-flight for concurrent duplicate (processing key)", () => {
     const store = createIdempotencyStore();
     store.tryBegin("key-1"); // reserve without committing
-    expect(store.tryBegin("key-1")).toBe(false); // concurrent retry blocked
+    expect(store.tryBegin("key-1")).toBe("in-flight"); // concurrent retry blocked
   });
 
-  test("tryBegin returns false after commit (permanent duplicate)", () => {
+  test("tryBegin returns duplicate after commit (permanent duplicate)", () => {
     const store = createIdempotencyStore();
     store.tryBegin("key-1");
     store.commit("key-1");
-    expect(store.tryBegin("key-1")).toBe(false);
+    expect(store.tryBegin("key-1")).toBe("duplicate");
   });
 
-  test("abort releases reservation — retry is accepted", () => {
+  test("abort releases reservation — retry returns ok", () => {
     const store = createIdempotencyStore();
     store.tryBegin("key-1");
     store.abort("key-1"); // transient failure — release
-    expect(store.tryBegin("key-1")).toBe(true); // retry accepted
+    expect(store.tryBegin("key-1")).toBe("ok"); // retry accepted
   });
 
   test("commit then abort does not re-open the key", () => {
@@ -32,16 +32,15 @@ describe("createIdempotencyStore", () => {
     store.tryBegin("key-1");
     store.commit("key-1");
     store.abort("key-1"); // no-op (committed entry stays)
-    // Should still be blocked
-    expect(store.tryBegin("key-1")).toBe(false);
+    expect(store.tryBegin("key-1")).toBe("duplicate");
   });
 
   test("different keys are independent", () => {
     const store = createIdempotencyStore();
     store.tryBegin("key-a");
     store.commit("key-a");
-    expect(store.tryBegin("key-b")).toBe(true);
-    expect(store.tryBegin("key-a")).toBe(false);
+    expect(store.tryBegin("key-b")).toBe("ok");
+    expect(store.tryBegin("key-a")).toBe("duplicate");
   });
 
   test("expired committed entry allows re-delivery", () => {
@@ -52,7 +51,7 @@ describe("createIdempotencyStore", () => {
     while (Date.now() < deadline) {
       /* spin */
     }
-    expect(store.tryBegin("key-1")).toBe(true);
+    expect(store.tryBegin("key-1")).toBe("ok");
   });
 
   test("maxSize evicts oldest committed entry on overflow", () => {
@@ -70,11 +69,11 @@ describe("createIdempotencyStore", () => {
     store.tryBegin("key-3");
     store.commit("key-3");
     // key-1 was evicted
-    expect(store.tryBegin("key-1")).toBe(true);
+    expect(store.tryBegin("key-1")).toBe("ok");
     // key-2 and key-3 are still committed
     // (tryBegin("key-1") above adds key-1 as processing, doesn't evict key-2 or key-3 yet)
-    expect(store.tryBegin("key-3")).toBe(false);
-    expect(store.tryBegin("key-2")).toBe(false);
+    expect(store.tryBegin("key-3")).toBe("duplicate");
+    expect(store.tryBegin("key-2")).toBe("duplicate");
   });
 
   test("prune removes expired committed entries", () => {
@@ -86,7 +85,7 @@ describe("createIdempotencyStore", () => {
       /* spin */
     }
     store.prune();
-    expect(store.tryBegin("key-expire")).toBe(true);
+    expect(store.tryBegin("key-expire")).toBe("ok");
   });
 
   test("expired processing reservation is pruned — hung request cannot permanently burn a key", () => {
@@ -99,6 +98,6 @@ describe("createIdempotencyStore", () => {
       /* spin */
     }
     // The stale processing entry should be evicted by tryBegin's internal prune.
-    expect(store.tryBegin("key-hung")).toBe(true);
+    expect(store.tryBegin("key-hung")).toBe("ok");
   });
 });

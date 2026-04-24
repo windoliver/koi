@@ -419,6 +419,59 @@ describe("WebhookServer — idempotency (commit-after-success)", () => {
     expect(dispatched).toHaveLength(2); // both dispatched
   });
 
+  test("concurrent duplicate returns 503 (in-flight) not 200", async () => {
+    // A provider retry that arrives while the first request is still processing
+    // must NOT get a 200 duplicate response. The first request may fail later,
+    // and a premature 200 would cause the provider to stop retrying.
+    // Use a custom store that pretends the key is in-flight.
+    const inFlightStore = {
+      tryBegin: (_key: string) => "in-flight" as const,
+      commit: (_key: string) => {},
+      abort: (_key: string) => {},
+      prune: () => {},
+    };
+    const secret = "test-secret";
+    const body = JSON.stringify({ event_id: "Ev1", type: "event_callback" });
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const sigPayload = `v0:${ts}:${body}`;
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const rawSig = await crypto.subtle.sign("HMAC", key, enc.encode(sigPayload));
+    const hex = Array.from(new Uint8Array(rawSig))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const sig = `v0=${hex}`;
+
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true, idempotencyStore: inFlightStore },
+      dispatcher,
+      undefined,
+      { slack: secret },
+    );
+    await server.start();
+
+    const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
+      method: "POST",
+      headers: {
+        "X-Slack-Signature": sig,
+        "X-Slack-Request-Timestamp": ts,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    expect(res.status).toBe(503);
+    const b = (await res.json()) as { ok: boolean; error: string };
+    expect(b.ok).toBe(false);
+    expect(b.error).toContain("in-flight");
+    expect(dispatched).toHaveLength(0);
+  });
+
   test("failed dispatch does not commit dedup key — retry is accepted", async () => {
     const secret = "test-secret";
     const body = JSON.stringify({ action: "push" });

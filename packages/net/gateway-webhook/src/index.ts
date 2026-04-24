@@ -1,4 +1,8 @@
-export { createIdempotencyStore, type IdempotencyStore } from "./idempotency.js";
+export {
+  createIdempotencyStore,
+  type IdempotencyStore,
+  type TryBeginResult,
+} from "./idempotency.js";
 export {
   ALL_PROVIDERS,
   getProvider,
