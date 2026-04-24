@@ -10986,8 +10986,11 @@ describe("Golden: @koi/engine — reset boundary semantics", () => {
 
     const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
 
+    // Fixed session id so boundaryId values are deterministic and assertable.
+    const FIXED_SESSION = sessionId("reset-boundary-test");
     const runtime = await createKoi({
       manifest: { name: "Golden Reset", version: "0.1.0", model: { name: "test-model" } },
+      sessionId: FIXED_SESSION,
       adapter: {
         engineId: "golden-reset-test",
         capabilities: { text: true, images: false, files: false, audio: false },
@@ -11030,8 +11033,9 @@ describe("Golden: @koi/engine — reset boundary semantics", () => {
     if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
     if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
     expect(r0.source).toBe("engine");
-    expect(r0.boundaryId).toMatch(/:run:\d+$/);
-    expect(r0.boundaryId).not.toBe(r1.boundaryId);
+    // Exact boundaryId — format: ${sessionId}:session:${cycleIndex}:run:${runIndex}
+    expect(r0.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:0`);
+    expect(r1.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:1`);
   });
 
   test("session_reset fires with source:host and monotonically increasing boundaryId", async () => {
@@ -11149,6 +11153,127 @@ describe("Golden: @koi/engine — reset boundary semantics", () => {
     // The two run_reset events must have distinct boundaryIds
     const resets = phased.filter((p) => p.kind === "run_reset");
     expect(resets.length).toBe(2);
+  });
+
+  test("run_reset fires on cooperating adapter path (cassette replay, two sequential runs)", async () => {
+    // Exercises the cooperating-adapter path: adapter has terminals, so the engine
+    // defers guard reset to applyRecomposition() after forge/dynamic-mw settle.
+    // Uses a real cassette + cooperating adapter to hit the production code path.
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const cassette = await loadCassette(`${FIXTURES}/simple-text.cassette.json`);
+    const simpleTextChunks = cassette.chunks;
+
+    // Cooperating adapter: provides terminals.modelStream so the engine uses the
+    // applyRecomposition() reset path rather than the immediate non-cooperating path.
+    // let: mutable call counter shared across runs
+    let modelCallCount = 0;
+    const cooperatingAdapter: EngineAdapter = {
+      engineId: "cassette-reset-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async (_req: ModelRequest): Promise<ModelResponse> => ({
+          content: "fallback",
+          model: MODEL,
+        }),
+        modelStream: (_req: ModelRequest): AsyncIterable<ModelChunk> => {
+          const call = modelCallCount;
+          modelCallCount++;
+          if (call === 0) return toAsyncIterable(simpleTextChunks);
+          return toAsyncIterable([
+            { kind: "text_delta" as const, delta: "ok" },
+            {
+              kind: "done" as const,
+              response: { content: "ok", model: MODEL, usage: { inputTokens: 5, outputTokens: 1 } },
+            },
+          ]);
+        },
+        toolCall: async (_req: ToolRequest): Promise<ToolResponse> => ({ output: "unused" }),
+      },
+      stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        const h = input.callHandlers;
+        if (!h) {
+          return (async function* () {
+            yield {
+              kind: "done" as const,
+              output: {
+                content: [],
+                stopReason: "error" as const,
+                metrics: {
+                  totalTokens: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  turns: 0,
+                  durationMs: 0,
+                },
+                metadata: { error: "No callHandlers" },
+              },
+            };
+          })();
+        }
+        const text = input.kind === "text" ? input.text : "";
+        const messages: InboundMessage[] = [
+          { senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] },
+        ];
+        return runTurn({ callHandlers: h, messages, signal: input.signal, maxTurns: 1 });
+      },
+    };
+
+    const FIXED_SESSION = sessionId("cooperating-reset-test");
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 30_000 });
+
+    const runtime = await createKoi({
+      manifest: { name: "Cooperating Reset", version: "0.1.0", model: { name: "test-model" } },
+      sessionId: FIXED_SESSION,
+      adapter: cooperatingAdapter,
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+    const recorded: Array<{ phase: "run1" | "run2"; event: GovernanceEvent }> = [];
+    let phase: "run1" | "run2" = "run1";
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      recorded.push({ phase, event: ev });
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    phase = "run2";
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    const run2Events = recorded.filter((r) => r.phase === "run2").map((r) => r.event);
+    // run_reset must be the first governance event in run2
+    expect(run2Events[0]?.kind).toBe("run_reset");
+
+    const resets = recorded.filter((r) => r.event.kind === "run_reset").map((r) => r.event);
+    expect(resets.length).toBe(2);
+    const r0 = resets[0];
+    const r1 = resets[1];
+    if (r0 === undefined || r0.kind !== "run_reset") throw new Error("expected run_reset[0]");
+    if (r1 === undefined || r1.kind !== "run_reset") throw new Error("expected run_reset[1]");
+
+    // Exact boundaryId — deterministic given fixed session id
+    expect(r0.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:0`);
+    expect(r1.boundaryId).toBe(`${FIXED_SESSION}:session:0:run:1`);
+    expect(r0.source).toBe("engine");
+    expect(r1.source).toBe("engine");
+
+    // boundaryTimestamp for run2 must be >= run1 (monotonically non-decreasing)
+    if (r0.boundaryTimestamp !== undefined && r1.boundaryTimestamp !== undefined) {
+      expect(r1.boundaryTimestamp).toBeGreaterThanOrEqual(r0.boundaryTimestamp);
+    }
   });
 });
 
