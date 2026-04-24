@@ -271,10 +271,11 @@ export function createGateway(
     }
 
     if (result === "buffered") {
-      // Charge buffered bytes against the per-connection inbound cap. Track per-seq so
-      // bytes are discharged precisely when a frame leaves the reorder buffer (appears
-      // in ready[1..]) rather than resetting to 0 on any partial progress — which would
-      // allow frames remaining in the tracker to escape the cap.
+      // Charge buffered bytes against per-connection inbound cap AND global bp so that
+      // globalBufferLimitBytes covers coordinated out-of-order inbound flooding.
+      // Track per-seq so bytes are discharged precisely when a frame leaves the reorder
+      // buffer (appears in ready[1..]) rather than resetting to 0 on partial progress —
+      // which would allow remaining frames to escape the cap.
       const frameBytes = Buffer.byteLength(data, "utf8");
       let seqBytes = inboundBufferedSeqs.get(conn.id);
       if (seqBytes === undefined) {
@@ -282,6 +283,7 @@ export function createGateway(
         inboundBufferedSeqs.set(conn.id, seqBytes);
       }
       seqBytes.set(frameResult.value.seq, frameBytes);
+      bp.record(conn.id, frameBytes);
       let total = 0;
       for (const b of seqBytes.values()) total += b;
       if (total > config.maxBufferBytesPerConnection) {
@@ -304,7 +306,12 @@ export function createGateway(
     // ready[0] is the just-received frame (never buffered); ready[1..] were in the tracker.
     const seqBytes = inboundBufferedSeqs.get(conn.id);
     if (seqBytes !== undefined) {
-      for (const f of ready.slice(1)) seqBytes.delete(f.seq);
+      let discharged = 0;
+      for (const f of ready.slice(1)) {
+        discharged += seqBytes.get(f.seq) ?? 0;
+        seqBytes.delete(f.seq);
+      }
+      if (discharged > 0) bp.drain(conn.id, discharged);
       if (seqBytes.size === 0) inboundBufferedSeqs.delete(conn.id);
     }
 
@@ -482,6 +489,10 @@ export function createGateway(
             return;
           }
           ownedSessionIds.add(result.session.id);
+          // Clear stale disconnectedAt so TTL sweep does not evict this session now
+          // that it is live again. Not clearing would race the sweep: a brief disconnect
+          // followed by reconnect before TTL expiry would silently delete the live session.
+          disconnectedAt.delete(result.session.id);
 
           // Phase 2: Persistence succeeded — complete eviction of the old connection.
           if (prevConnId !== undefined && prevConnId !== conn.id) {
@@ -597,8 +608,13 @@ export function createGateway(
         const ttl = config.disconnectedSessionTtlMs;
         if (ttl !== undefined && ttl > 0) {
           for (const [sessionId, ts] of disconnectedAt) {
+            // Skip sessions that have already reconnected — disconnectedAt.delete() is
+            // called in the reconnect path, but the sweep could fire between reconnect
+            // store.set() and the delete() call. Guard here as defense-in-depth.
+            if (connBySession.has(sessionId)) continue;
             if (now - ts > ttl) {
               disconnectedAt.delete(sessionId);
+              ownedSessionIds.delete(sessionId);
               void Promise.resolve(store.delete(sessionId)).catch(() => {});
             }
           }
