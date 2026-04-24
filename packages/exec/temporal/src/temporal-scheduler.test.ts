@@ -328,6 +328,23 @@ describe("cancel", () => {
     expect(await scheduler.cancel("nonexistent" as never)).toBe(false);
   });
 
+  test("cancel prevents getResult from overwriting cancelled status", async () => {
+    let resolveResult!: (value: unknown) => void;
+    const resultPromise = new Promise<unknown>((resolve) => {
+      resolveResult = resolve;
+    });
+    const client = makeMockClient({ getResult: mock(async () => resultPromise) });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await scheduler.cancel(id);
+    // Resolve getResult after cancel — should be a no-op
+    resolveResult({ done: true });
+    await new Promise((r) => setTimeout(r, 10));
+    // task should stay "failed" (cancelled), not flip to "completed"
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("failed");
+  });
+
   test("emits task:cancelled event", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     const events: unknown[] = [];
@@ -523,6 +540,15 @@ describe("query / stats / history", () => {
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
     expect((await scheduler.query({})).length).toBe(2);
+  });
+
+  test("dispatch task reaches completed immediately after signal delivery", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("completed");
+    const records = await scheduler.history({});
+    expect(records[0]?.status).toBe("completed");
   });
 
   test("query respects limit", async () => {

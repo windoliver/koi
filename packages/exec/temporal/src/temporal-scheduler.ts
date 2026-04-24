@@ -117,6 +117,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const schedules = new Map<string, CronSchedule>();
   const history: TaskRunRecord[] = [];
   const eventListeners = new Set<(event: SchedulerEvent) => void>();
+  // Tracks cancelled spawn tasks so background getResult handlers no-op after cancellation wins.
+  const cancelledTaskIds = new Set<string>();
   // Maps taskId → the actual Temporal workflowId used (spawn = task id, dispatch = agentId)
   const taskWorkflowIds = new Map<string, string>();
 
@@ -257,17 +259,35 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         return id;
       }
 
-      // Remote calls succeeded — record locally as running
+      // Remote calls succeeded — emit submitted then handle mode-specific lifecycle.
       taskWorkflowIds.set(id, targetWorkflowId);
       tasks.set(id, task);
       emit({ kind: "task:submitted", task });
-      const runningTask: ScheduledTask = { ...task, status: "running" };
-      tasks.set(id, runningTask);
 
-      if (mode === "spawn") {
+      if (mode === "dispatch") {
+        // Signal delivery is the entire task — mark completed immediately so
+        // query()/stats() don't accumulate stale running dispatch tasks.
+        const completedAt = Date.now();
+        tasks.set(id, { ...task, status: "completed" });
+        history.push({
+          taskId: id,
+          agentId,
+          status: "completed",
+          startedAt: now,
+          completedAt,
+          durationMs: completedAt - now,
+          retryAttempt: 0,
+        });
+        emit({ kind: "task:completed", taskId: id, result: undefined });
+      } else {
+        // Spawn: track actual workflow completion via getResult.
+        // Gate on cancelledTaskIds so a raced cancel wins and prevents double terminal events.
+        const runningTask: ScheduledTask = { ...task, status: "running" };
+        tasks.set(id, runningTask);
         const startedAt = now;
         void config.client.workflow.getResult(id).then(
           (result: unknown) => {
+            if (cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
             tasks.set(id, { ...runningTask, status: "completed" });
             history.push({
@@ -283,6 +303,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             emit({ kind: "task:completed", taskId: id, result });
           },
           (error: unknown) => {
+            if (cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
             tasks.set(id, { ...runningTask, status: "failed" });
             const koiError: KoiError = {
@@ -318,11 +339,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (task.mode === "dispatch") return false;
       const targetId = taskWorkflowIds.get(id) ?? id;
       try {
+        // Mark cancelled before the remote call so any concurrent getResult
+        // handler that fires during or after sees the cancelled gate first.
+        cancelledTaskIds.add(id);
         await config.client.workflow.cancel(targetId);
         tasks.set(id, { ...task, status: "failed" });
         emit({ kind: "task:cancelled", taskId: id });
         return true;
       } catch {
+        cancelledTaskIds.delete(id);
         return false;
       }
     },
@@ -488,6 +513,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       eventListeners.clear();
       tasks.clear();
       taskWorkflowIds.clear();
+      cancelledTaskIds.clear();
       schedules.clear();
     },
   };
