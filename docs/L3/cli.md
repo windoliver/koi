@@ -261,19 +261,21 @@ block or set the corresponding `KOI_AUDIT_*` env vars. `koi start` rejects manif
 ```yaml
 audit:
   ndjson: ./logs/session.audit.ndjson      # fallback for KOI_AUDIT_NDJSON; relative to manifest dir
-  sqlite: ./logs/session.audit.db          # fallback for KOI_AUDIT_SQLITE; relative to manifest dir
-  violations: ./logs/session.violations.db # overrides ~/.koi/violations.db default; relative to manifest dir
+  sqlite: ./logs/session.audit.db          # field accepted but NOT usable as manifest path (see below)
+  violations: ./logs/session.violations.db # field accepted but NOT usable as manifest path (see below)
 ```
+
+**Supported manifest sink: `audit.ndjson` only.** The ndjson sink is opened with `O_NOFOLLOW` and an fd-backed writer so the validated inode is what receives writes — no reopen by pathname. SQLite sinks (`audit.sqlite`, `audit.violations`) cannot be opened atomically because SQLite requires a pathname for WAL/SHM auxiliary files; manifest-derived SQLite paths are therefore rejected at startup. Use `KOI_AUDIT_SQLITE` and `KOI_AUDIT_VIOLATIONS` for those sinks.
 
 Paths must use audit-only filename suffixes (`.audit.ndjson`, `.audit.db`, `.violations.db`) and
 must be relative — no `..` traversal, no symlinks, parent directory must exist before `koi tui` runs.
 
 Precedence and override rules:
 - `KOI_AUDIT_NDJSON` set (even to `""`) → authoritative; `""` explicitly disables (does not fall back to manifest)
-- `KOI_AUDIT_NDJSON` absent → `audit.ndjson` manifest (requires gate) → off
-- Same for `KOI_AUDIT_SQLITE` / `audit.sqlite`
+- `KOI_AUDIT_NDJSON` absent → `audit.ndjson` manifest (requires gate, ndjson only) → off
+- `KOI_AUDIT_SQLITE` set (even to `""`) → authoritative; manifest `audit.sqlite` is not usable without env var
 - `KOI_AUDIT_VIOLATIONS` set (even to `""`) → authoritative; `""` falls through to `~/.koi/violations.db` default
-- `KOI_AUDIT_VIOLATIONS` absent → `audit.violations` manifest (requires gate) → `~/.koi/violations.db` default
+- `KOI_AUDIT_VIOLATIONS` absent → manifest `audit.violations` is not usable; falls through to `~/.koi/violations.db` default
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`

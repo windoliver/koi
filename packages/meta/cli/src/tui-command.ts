@@ -1184,6 +1184,35 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     }
 
+    // Gate-on: manifest.audit.sqlite and manifest.audit.violations are not yet
+    // supported as manifest-derived paths because SQLite must open by pathname
+    // (WAL/SHM sidecars are named relative to the database path), making an
+    // atomic O_NOFOLLOW-based open impossible without changing bun:sqlite's API.
+    // Manifest-derived ndjson is supported (fd-backed, fully atomic). For
+    // SQLite sinks, operators must use KOI_AUDIT_SQLITE / KOI_AUDIT_VIOLATIONS.
+    if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1") {
+      if (manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined) {
+        process.stderr.write(
+          "koi tui: manifest.audit.sqlite is not yet supported as a manifest-derived path — " +
+            "SQLite must open by pathname (WAL/SHM sidecars require it), preventing atomic " +
+            "containment enforcement. Set KOI_AUDIT_SQLITE to the desired path instead.\n",
+        );
+        process.exit(1);
+      }
+      const violationsWouldBeUsed =
+        flags.governance.enabled &&
+        manifestAudit.violations !== undefined &&
+        process.env.KOI_AUDIT_VIOLATIONS === undefined;
+      if (violationsWouldBeUsed) {
+        process.stderr.write(
+          "koi tui: manifest.audit.violations is not yet supported as a manifest-derived path — " +
+            "SQLite must open by pathname (WAL/SHM sidecars require it), preventing atomic " +
+            "containment enforcement. Set KOI_AUDIT_VIOLATIONS to the desired path instead.\n",
+        );
+        process.exit(1);
+      }
+    }
+
     if (manifestResult.value.filesystem !== undefined) {
       // Store the full config for async resolution before runtime assembly.
       // Apply the `FileSystemConfig.operations` contract's `["read"]`

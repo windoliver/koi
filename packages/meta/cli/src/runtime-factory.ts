@@ -2446,34 +2446,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
+      // manifest.audit.sqlite is rejected at tui-command.ts before this point
+      // (manifest-derived SQLite paths are not supported — SQLite must open by
+      // pathname for WAL/SHM sidecars, making atomic containment impossible).
+      // manifestSqliteSourcePath is therefore always undefined here; the check
+      // below is a defensive belt-and-suspenders guard only.
       if (config.manifestSqliteSourcePath !== undefined) {
-        const err = revalidateAuditPathContainment(
-          config.auditSqlitePath,
-          config.manifestSqliteSourcePath,
+        throw new Error(
+          "manifest.audit.sqlite: manifest-derived SQLite paths are not supported. " +
+            "Set KOI_AUDIT_SQLITE instead.",
         );
-        if (err !== undefined) {
-          throw new Error(
-            `manifest.audit.sqlite: path compromised after validation — ${err}. ` +
-              "Refusing to open sink to prevent out-of-manifest writes.",
-          );
-        }
-        // O_NOFOLLOW check immediately before SQLite opens by path — rejects
-        // final-component symlinks. SQLite must open by pathname (WAL auxiliary
-        // files are named relative to the db path), so a microsecond window
-        // between this close and the SQLite open remains; it is documented and
-        // accepted as the residual bound for database sinks.
-        const sqliteCheckFd = openSync(
-          config.auditSqlitePath,
-          fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
-        );
-        const sqliteCheckStat = fstatSync(sqliteCheckFd);
-        closeSync(sqliteCheckFd);
-        if (sqliteCheckStat.nlink > 1) {
-          throw new Error(
-            "manifest.audit.sqlite: file has more than one hard link — " +
-              "refusing to open to prevent writes escaping the manifest directory.",
-          );
-        }
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
@@ -2646,32 +2628,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
           mkdirSync(parent, { recursive: true });
         }
-        // O_NOFOLLOW check immediately before violation store open — applies
-        // only to manifest-derived paths. Same residual microsecond window as
-        // the sqlite audit sink (SQLite must open by name for WAL files).
+        // manifest.audit.violations is rejected at tui-command.ts before this
+        // point (same WAL/SHM atomic-open limitation as manifest.audit.sqlite).
+        // manifestDerived is therefore always false here; the guard below is
+        // defensive only.
         if (manifestDerived) {
-          const err = revalidateAuditPathContainment(
-            resolvedViolationPath,
-            config.manifestViolationsSourcePath,
+          throw new Error(
+            "manifest.audit.violations: manifest-derived SQLite paths are not supported. " +
+              "Set KOI_AUDIT_VIOLATIONS instead.",
           );
-          if (err !== undefined) {
-            throw new Error(
-              `manifest.audit.violations: path compromised after validation — ${err}. ` +
-                "Refusing to open violation store to prevent out-of-manifest writes.",
-            );
-          }
-          const violCheckFd = openSync(
-            resolvedViolationPath,
-            fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
-          );
-          const violCheckStat = fstatSync(violCheckFd);
-          closeSync(violCheckFd);
-          if (violCheckStat.nlink > 1) {
-            throw new Error(
-              "manifest.audit.violations: file has more than one hard link — " +
-                "refusing to open to prevent writes escaping the manifest directory.",
-            );
-          }
         }
         violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
         // Register close on manifest shutdown so `runtime.dispose()`
