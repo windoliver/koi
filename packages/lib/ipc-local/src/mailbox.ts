@@ -74,23 +74,39 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     }
   }
 
-  // Returns true if any sync subscriber threw — used to decide whether to retire the message.
-  function dispatchToSubscribers(msg: AgentMessage): boolean {
+  // Dispatches to all subscribers. Returns hadSyncError and a list of pending async
+  // handler promises (each resolves to true if that handler rejected).
+  function dispatchToSubscribers(msg: AgentMessage): {
+    hadSyncError: boolean;
+    pending: Promise<boolean>[];
+  } {
     let hadSyncError = false;
+    const pending: Promise<boolean>[] = [];
     for (const handler of subscribers) {
       try {
         const result = handler(msg);
         if (result instanceof Promise) {
-          result.catch((err: unknown) => {
-            safeOnError(err, msg);
-          });
+          pending.push(
+            result.then(
+              (): boolean => false,
+              (err: unknown): boolean => {
+                safeOnError(err, msg);
+                return true;
+              },
+            ),
+          );
         }
       } catch (err: unknown) {
         safeOnError(err, msg);
         hadSyncError = true;
       }
     }
-    return hadSyncError;
+    return { hadSyncError, pending };
+  }
+
+  function retireFromInbox(msg: AgentMessage): void {
+    const idx = messages.indexOf(msg);
+    if (idx !== -1) messages.splice(idx, 1);
   }
 
   self = {
@@ -178,15 +194,25 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       });
 
       messages.push(msg);
+      // Snapshot subscriber presence at accept time — retirement should reflect the
+      // delivery attempt that was queued, not the mutable subscriber set at dispatch time.
+      const hadSubscribersAtSend = subscribers.size > 0;
       // Decouple delivery from the send() call stack via microtask to prevent
       // re-entrant delivery loops when subscribers send cross-agent messages.
       queueMicrotask(() => {
-        const hadSyncError = dispatchToSubscribers(msg);
-        // Retire from inbox AFTER dispatch, and only on clean delivery — if any sync
-        // subscriber threw, the message stays in list() for inspection or retry.
-        if (!hadSyncError && subscribers.size > 0) {
-          const idx = messages.indexOf(msg);
-          if (idx !== -1) messages.splice(idx, 1);
+        const { hadSyncError, pending } = dispatchToSubscribers(msg);
+
+        if (hadSyncError || !hadSubscribersAtSend) return;
+
+        if (pending.length === 0) {
+          // All sync handlers succeeded — retire immediately to free capacity.
+          retireFromInbox(msg);
+        } else {
+          // Async handlers in flight — retire only after all settle without error.
+          void Promise.all(pending).then((results) => {
+            if (results.some((r) => r)) return;
+            retireFromInbox(msg);
+          });
         }
       });
 

@@ -446,6 +446,31 @@ describe("createLocalMailbox — local specifics", () => {
     mailbox.close();
   });
 
+  test("message preserved in inbox when async subscriber rejects", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER, onError: () => {} });
+    mailbox.onMessage(async () => {
+      throw new Error("async fail");
+    });
+    await mailbox.send(makeInput("retry-async"));
+    await Bun.sleep(10);
+    // Async rejection → message stays in list() for retry
+    expect(await mailbox.list()).toHaveLength(1);
+    mailbox.close();
+  });
+
+  test("message is retired when subscriber existed at send time but unsubscribed before delivery", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 1 });
+    const unsub = mailbox.onMessage(() => {});
+    void mailbox.send(makeInput("before-unsub"));
+    unsub(); // unsubscribe before microtask fires
+    await Bun.sleep(10);
+    // hadSubscribersAtSend=true — delivery was attempted, inbox cleared, capacity restored
+    expect(await mailbox.list()).toHaveLength(0);
+    const r = await mailbox.send(makeInput("after"));
+    expect(r.ok).toBe(true);
+    mailbox.close();
+  });
+
   test("drain() frees capacity so subsequent sends succeed", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 2 });
     await mailbox.send(makeInput("a"));
