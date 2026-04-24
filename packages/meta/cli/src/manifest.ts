@@ -775,10 +775,12 @@ function parseManifestAudit(
   //     gate-off check fires regardless of which env-var override path applies
   // These strings are NOT validated — callers must not use them as trusted paths.
   if (lenient) {
-    const rec =
-      typeof raw === "object" && raw !== null && !Array.isArray(raw)
-        ? (raw as Record<string, unknown>)
-        : {};
+    // Non-object audit blocks (audit: "string", audit: 42, audit: []) are also
+    // a clear authorial intent to configure auditing — mark all three sentinel.
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return { ok: true, value: { present: true, ndjson: "", sqlite: "", violations: "" } };
+    }
+    const rec = raw as Record<string, unknown>;
     const knownKeys = new Set(["ndjson", "sqlite", "violations"]);
     const hasUnknownKey = Object.keys(rec).some((k) => !knownKeys.has(k));
     // "" is the presence sentinel: key exists but value is not a usable path.
