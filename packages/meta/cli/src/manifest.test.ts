@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadManifestConfig } from "./manifest.js";
@@ -619,5 +619,68 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("sqlite");
+  });
+
+  test("rejects `..` traversal out of the manifest directory", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ../outside/audit.ndjson",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ndjson");
+    expect(result.error).toContain("..");
+  });
+
+  test("rejects path whose parent is a symlink escaping the manifest dir", async () => {
+    // Create a directory outside the manifest temp dir to serve as the
+    // symlink target — simulates a committed `logs -> /external` entry.
+    const externalDir = mkdtempSync(join(tmpdir(), "koi-audit-external-"));
+    try {
+      const logsLink = join(dir, "logs");
+      symlinkSync(externalDir, logsLink);
+      const p = writeManifest(
+        ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqlite: logs/audit.db"].join(
+          "\n",
+        ),
+      );
+      const result = await loadManifestConfig(p);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain("sqlite");
+      expect(result.error).toContain("symlink");
+    } finally {
+      rmSync(externalDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects path that is itself a symlink", async () => {
+    // Create a real file outside the manifest dir, then commit a
+    // symlink inside dir pointing to it.
+    const externalDir = mkdtempSync(join(tmpdir(), "koi-audit-external-"));
+    try {
+      const externalFile = join(externalDir, "audit.db");
+      writeFileSync(externalFile, "");
+      mkdirSync(join(dir, "logs"));
+      const fileLink = join(dir, "logs", "audit.db");
+      symlinkSync(externalFile, fileLink);
+      const p = writeManifest(
+        ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqlite: logs/audit.db"].join(
+          "\n",
+        ),
+      );
+      const result = await loadManifestConfig(p);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toContain("sqlite");
+      expect(result.error).toContain("symlink");
+    } finally {
+      rmSync(externalDir, { recursive: true, force: true });
+    }
   });
 });

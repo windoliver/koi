@@ -38,7 +38,8 @@
  *                                  #   per-host.
  */
 
-import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
 import { loadConfig } from "@koi/config";
 import type {
   ChildIsolation,
@@ -785,10 +786,14 @@ function parseManifestAudit(
 
   const manifestDir = dirname(resolvePath(manifestPath));
 
-  // Reject absolute paths — manifest content is repo-authored and must not
-  // write to arbitrary host locations. Paths must be relative so they resolve
-  // within the manifest directory. Hosts that need an absolute path must
-  // thread it via KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars instead.
+  // Validate a manifest-supplied audit path:
+  //   1. Reject absolute paths.
+  //   2. Reject lexical `..` traversal out of the manifest directory.
+  //   3. If the parent directory exists, resolve it via `realpathSync` and
+  //      confirm it is still inside the real manifest directory (blocks
+  //      symlink-escape where a repo commits `logs/` as a symlink to an
+  //      external location that passes lexical checks).
+  //   4. If the file itself already exists, confirm it is not a symlink.
   const anchorPath = (field: string, value: unknown): ParseResult<string | undefined> => {
     if (value === undefined) return { ok: true, value: undefined };
     if (typeof value !== "string" || value.length === 0) {
@@ -806,10 +811,68 @@ function parseManifestAudit(
           "Use a relative path (e.g. ./logs/audit.ndjson) or the KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars for absolute paths.",
       };
     }
-    return {
-      ok: true,
-      value: resolvePath(manifestDir, value),
-    };
+
+    // Lexical `..` check — catches traversal before any filesystem access.
+    const lexicalResolved = resolvePath(manifestDir, value);
+    const lexicalRel = relative(manifestDir, lexicalResolved);
+    if (lexicalRel.startsWith("..") || isAbsolute(lexicalRel)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: path "${value}" escapes the manifest directory via ".." traversal. ` +
+          "Audit paths must stay within the manifest directory when configured from manifest content. " +
+          "Use the KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars to point at paths outside the manifest directory.",
+      };
+    }
+
+    // Symlink-aware containment: resolve the parent directory to its real path
+    // and verify it is still inside the real manifest directory.
+    let realManifestDir: string;
+    try {
+      realManifestDir = realpathSync(manifestDir);
+    } catch (err: unknown) {
+      throw new Error(
+        `manifest.audit: cannot resolve manifest directory "${manifestDir}": ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+
+    const parentDir = dirname(lexicalResolved);
+    try {
+      const realParentDir = realpathSync(parentDir);
+      const parentRel = relative(realManifestDir, realParentDir);
+      if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: path "${value}" resolves through a symlinked parent directory ` +
+            `that escapes the manifest directory (real parent: "${realParentDir}", real manifest dir: "${realManifestDir}"). ` +
+            "Audit paths must stay within the manifest directory when configured from manifest content.",
+        };
+      }
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      // Parent doesn't exist yet — lexical check passed, accept.
+      return { ok: true, value: lexicalResolved };
+    }
+
+    // If the file itself already exists, verify it is not a symlink.
+    try {
+      const stat = lstatSync(lexicalResolved);
+      if (stat.isSymbolicLink()) {
+        return {
+          ok: false,
+          error:
+            `manifest.audit.${field}: "${value}" is a symlink — audit files cannot be written via ` +
+            "symlinks when configured from manifest content. Replace the symlink with a regular file path.",
+        };
+      }
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      // File doesn't exist yet — expected happy path.
+    }
+
+    return { ok: true, value: lexicalResolved };
   };
 
   const ndjsonResult = anchorPath("ndjson", rec.ndjson);
