@@ -94,6 +94,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const schedules = new Map<string, CronSchedule>();
   const history: TaskRunRecord[] = [];
   const eventListeners = new Set<(event: SchedulerEvent) => void>();
+  // Maps taskId → the actual Temporal workflowId used (spawn = task id, dispatch = agentId)
+  const taskWorkflowIds = new Map<string, string>();
 
   function emit(event: SchedulerEvent): void {
     for (const listener of eventListeners) {
@@ -222,6 +224,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       }
 
       // Remote calls succeeded — record locally as running
+      taskWorkflowIds.set(id, targetWorkflowId);
       tasks.set(id, task);
       emit({ kind: "task:submitted", task });
       const runningTask: ScheduledTask = { ...task, status: "running" };
@@ -275,8 +278,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async cancel(id: TaskId): Promise<boolean> {
       const task = tasks.get(id);
       if (task === undefined) return false;
+      const targetId = taskWorkflowIds.get(id) ?? id;
       try {
-        await config.client.workflow.cancel(id);
+        await config.client.workflow.cancel(targetId);
         tasks.set(id, { ...task, status: "failed" });
         emit({ kind: "task:cancelled", taskId: id });
         return true;
@@ -305,11 +309,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         paused: false,
       };
 
-      schedules.set(id, schedule);
-
       const initialMessages = mapEngineInputToMessages(input, id);
 
       // spawn: start a fresh workflow on each cron firing.
+      //   sessionId is intentionally omitted so each fired workflow uses its own
+      //   Temporal execution ID as the session namespace (no shared state collision).
       // dispatch: send a signal to the long-running agent workflow on each firing.
       const scheduleAction =
         mode === "spawn"
@@ -320,7 +324,6 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               args: [
                 {
                   agentId,
-                  sessionId: id,
                   stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
                   initialMessages,
                 },
@@ -333,6 +336,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               args: initialMessages,
             };
 
+      // Only insert locally after the remote create succeeds — no phantom schedule on failure.
       await config.client.schedule.create(id, {
         spec: {
           cronExpressions: [expression],
@@ -341,6 +345,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         action: scheduleAction,
       });
 
+      schedules.set(id, schedule);
       emit({ kind: "schedule:created", schedule });
       return id;
     },
@@ -429,6 +434,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async [Symbol.asyncDispose](): Promise<void> {
       eventListeners.clear();
       tasks.clear();
+      taskWorkflowIds.clear();
       schedules.clear();
     },
   };

@@ -35,9 +35,10 @@ function createCircuitBreaker(
   }
 
   return {
-    // Pure read — never mutates state. Only probing transitions OPEN → HALF_OPEN.
+    // Pure read — never mutates state. HALF_OPEN means the probe is in flight;
+    // traffic stays gated until a successful probe closes the circuit.
     isAllowed(): boolean {
-      return state === "CLOSED" || state === "HALF_OPEN";
+      return state === "CLOSED";
     },
 
     // Called by the poll path before each health check. Transitions OPEN → HALF_OPEN

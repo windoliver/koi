@@ -289,6 +289,15 @@ describe("cancel", () => {
     expect(client.workflow.cancel).toHaveBeenCalled();
   });
 
+  test("dispatch cancel targets the agent workflow, not the task id", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    await scheduler.cancel(id);
+    const cancelArgs = (client.workflow.cancel as ReturnType<typeof mock>).mock.calls[0];
+    expect(cancelArgs?.[0]).toBe(String(AGENT_ID));
+  });
+
   test("returns false for unknown task", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     expect(await scheduler.cancel("nonexistent" as never)).toBe(false);
@@ -356,6 +365,40 @@ describe("schedule / unschedule", () => {
   test("unschedule returns false for unknown schedule", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     expect(await scheduler.unschedule("nonexistent" as never)).toBe(false);
+  });
+
+  test("schedule creation failure leaves no phantom local schedule", async () => {
+    const client = {
+      ...makeMockClient(),
+      schedule: {
+        create: mock(async () => {
+          throw new Error("create failed");
+        }),
+        delete: mock(async () => undefined),
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+      },
+    };
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    let threw = false;
+    try {
+      await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    const s = await scheduler.stats();
+    expect(s.activeSchedules).toBe(0);
+  });
+
+  test("spawn schedule omits sessionId so each run uses its own execution id", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as { action: { args: readonly [Record<string, unknown>] } };
+    const wfConfig = opts.action.args[0];
+    expect(wfConfig).not.toHaveProperty("sessionId");
   });
 });
 

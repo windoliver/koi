@@ -157,7 +157,7 @@ describe("circuit breaker — isAvailable is side-effect free", () => {
     monitor?.dispose();
   });
 
-  test("isAvailable returns false during OPEN even after cooldown — requires successful probe", async () => {
+  test("isAvailable stays false during OPEN and HALF_OPEN — only CLOSED returns true", async () => {
     // Trip the circuit
     const healthCheck = mock(async () => false);
     monitor = createTemporalHealthMonitor(
@@ -169,10 +169,10 @@ describe("circuit breaker — isAvailable is side-effect free", () => {
     expect(monitor.isAvailable()).toBe(false);
     expect(monitor.snapshot().status).toBe("unavailable");
 
-    // Even after cooldown elapses, a read-only isAvailable() should NOT flip to true
-    // without a successful probe — just querying availability does not open the gate.
-    await new Promise((r) => setTimeout(r, 80));
-    // Health check is still returning false, so probe fails → stays OPEN
+    // After cooldown, poll transitions OPEN → HALF_OPEN and runs a probe.
+    // Health check still failing → probe fails → stays OPEN (or re-opens from HALF_OPEN).
+    // isAvailable() must NOT return true just because cooldown elapsed.
+    await new Promise((r) => setTimeout(r, 120));
     expect(monitor.isAvailable()).toBe(false);
   });
 
