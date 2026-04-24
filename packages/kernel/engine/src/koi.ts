@@ -797,9 +797,33 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (govCtl !== undefined) {
           await resetRunBoundary(sorted, govCtl, boundaryId);
         } else {
-          const resetAt = Date.now();
+          // No governance — same validation/anchoring as the governed path so
+          // fail-closed and duration semantics are identical regardless of whether
+          // a controller is installed.
           for (const mw of sorted) {
-            if (isIterationGuardHandle(mw)) mw.resetForRun(resetAt);
+            if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+              throw KoiRuntimeError.from(
+                "VALIDATION",
+                `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND but does ` +
+                  `not implement resetForRun(). All branded iteration guards must implement IterationGuardHandle.`,
+              );
+            }
+            if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
+              throw KoiRuntimeError.from(
+                "VALIDATION",
+                `[koi] Cooperating "koi:iteration-guard" does not implement resetForRun(). ` +
+                  `This is a pre-#1917 legacy guard. Remove it or upgrade @koi/engine-compose.`,
+              );
+            }
+          }
+          const resetAt = Date.now();
+          const durationAnchor = runEntryAt > 0 ? runEntryAt : resetAt;
+          const seen = new Set<IterationGuardHandle>();
+          for (const mw of sorted) {
+            if (isIterationGuardHandle(mw) && !seen.has(mw)) {
+              seen.add(mw);
+              mw.resetForRun(durationAnchor, resetAt);
+            }
           }
         }
         resetGuardsCurrentRun = undefined;
@@ -2488,10 +2512,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // inherited from the previous one. Token usage, accumulated cost,
           // and spawn counts remain CUMULATIVE so process-level safety/
           // spend ceilings still hold across the runtime lifetime.
+          // Increment unconditionally so boundaryId remains unique even when no
+          // governance controller is installed. govCtl block below uses the pre-bump
+          // value captured in sessionBoundaryId for the emitted event.
+          const sessionBoundaryId = `${factorySessionId}:session:${sessionCycleIndex}`;
+          sessionCycleIndex++;
           const govCtl = agent.component<GovernanceController>(GOVERNANCE);
           if (govCtl !== undefined) {
-            const sessionBoundaryId = `${factorySessionId}:session:${sessionCycleIndex}`;
-            sessionCycleIndex++;
             // boundaryTimestamp captured after teardown so the new session's
             // enforcement window doesn't inherit slow onSessionEnd latency.
             try {
