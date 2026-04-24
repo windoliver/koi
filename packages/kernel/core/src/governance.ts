@@ -119,7 +119,8 @@ export type GovernanceEvent =
    * turn/duration budget while keeping cumulative spend ceilings for the runtime lifetime.
    *
    * `source`     — who triggered the reset: "engine" (automatic), "host" (manual)
-   * `boundaryId` — deterministic `${sessionId}:run:${runIndex}`, stable across replays
+   * `boundaryId` — deterministic `${sessionId}:session:${cycleIndex}:run:${runIndex}`, unique
+   *               across session rotations even when the host reuses the same session ID
    */
   | {
       readonly kind: "run_reset";

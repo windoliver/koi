@@ -150,15 +150,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // per-run reset behavior. TypeScript callers see a compile warning from the deprecated
   // field. A host that sets both keys gets the explicit value of the new key.
   const legacyOpts = options as unknown as Record<string, unknown>;
-  if ("resetIterationBudgetPerRun" in legacyOpts && !("resetBudgetPerRun" in legacyOpts)) {
+  const usingLegacyOption =
+    "resetIterationBudgetPerRun" in legacyOpts && !("resetBudgetPerRun" in legacyOpts);
+  if (usingLegacyOption) {
     console.warn(
       "[koi] createKoi: `resetIterationBudgetPerRun` was renamed to `resetBudgetPerRun` in #1939. " +
         "The value has been remapped. Update your config to silence this warning.",
     );
   }
-  const resetBudgetPerRun =
+  // let justified: may be suppressed below when legacy option + incompatible guard detected
+  let resetBudgetPerRun =
     options.resetBudgetPerRun === true ||
-    (legacyOpts.resetIterationBudgetPerRun === true && !("resetBudgetPerRun" in legacyOpts));
+    (legacyOpts.resetIterationBudgetPerRun === true && usingLegacyOption);
 
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {
@@ -176,22 +179,33 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   //   (a) Branded guard missing resetForRun() — version-skew on the symbol contract
   //   (b) Unbranded guard with canonical name "koi:iteration-guard" — pre-#1917 legacy
   //       guard that would cause partial-reset divergence at runtime
+  // Compat window: hosts using the deprecated `resetIterationBudgetPerRun` alias get
+  // warn-and-suppress instead of throw — they may be in a version-skew state where
+  // @koi/engine was upgraded before @koi/engine-compose. Hosts using `resetBudgetPerRun`
+  // directly get the hard fail (they opted into the new API explicitly).
   if (resetBudgetPerRun) {
     for (const mw of allMiddleware) {
-      if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
+      const badBrandedGuard = hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw);
+      const badLegacyGuard = mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw);
+      if (badBrandedGuard || badLegacyGuard) {
+        if (usingLegacyOption) {
+          console.warn(
+            `[koi] createKoi: resetIterationBudgetPerRun is set but middleware ` +
+              `"${mw.name ?? "(unnamed)"}" cannot be reset per-run (missing resetForRun()). ` +
+              `Per-run budget reset is disabled for this instance. ` +
+              `Upgrade @koi/engine-compose and migrate to resetBudgetPerRun to enable it.`,
+          );
+          resetBudgetPerRun = false;
+          break;
+        }
+        const detail = badBrandedGuard
+          ? `carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
+            `Upgrade this guard to use IterationGuardHandle before enabling resetBudgetPerRun.`
+          : `is a legacy pre-#1917 guard that cannot be reset per-run. ` +
+            `Upgrade @koi/engine-compose or remove resetBudgetPerRun from options.`;
         throw KoiRuntimeError.from(
           "VALIDATION",
-          `[koi] Middleware "${mw.name ?? "(unnamed)"}" carries ITERATION_GUARD_BRAND ` +
-            `but does not implement resetForRun(). ` +
-            `Upgrade this guard to use IterationGuardHandle before enabling resetBudgetPerRun.`,
-        );
-      }
-      if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-        throw KoiRuntimeError.from(
-          "VALIDATION",
-          `[koi] Middleware "koi:iteration-guard" does not implement resetForRun(). ` +
-            `This is a legacy pre-#1917 guard that cannot be reset per-run. ` +
-            `Upgrade @koi/engine-compose or remove resetBudgetPerRun from options.`,
+          `[koi] Middleware "${mw.name ?? "(unnamed)"}" ${detail}`,
         );
       }
     }
@@ -771,7 +785,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // or dynamic-mw recompositions from consuming the pending reset prematurely.
       if (consumeReset && resetGuardsCurrentRun !== undefined) {
         runIndex++;
-        const boundaryId = `${factorySessionId}:run:${runIndex - 1}`;
+        const boundaryId = `${factorySessionId}:session:${sessionCycleIndex}:run:${runIndex - 1}`;
         const govCtl = agent.component<GovernanceController>(GOVERNANCE);
         if (govCtl !== undefined) {
           await resetRunBoundary(sorted, govCtl, boundaryId);
@@ -928,7 +942,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (!adapter.terminals) {
           // Non-cooperating adapters: reset immediately at run entry (guard set is fixed).
           runIndex++;
-          const boundaryId = `${factorySessionId}:run:${runIndex - 1}`;
+          const boundaryId = `${factorySessionId}:session:${sessionCycleIndex}:run:${runIndex - 1}`;
           const govCtl = agent.component<GovernanceController>(GOVERNANCE);
           if (govCtl !== undefined) {
             await resetRunBoundary(allMiddleware, govCtl, boundaryId);
