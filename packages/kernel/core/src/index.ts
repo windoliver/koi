@@ -821,6 +821,7 @@ export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
 // oauth-channel — shared OAuth authorization channel protocol
 export type {
   AuthCompleteNotification,
+  AuthFailureNotification,
   AuthRequiredNotification,
   OAuthChannel,
 } from "./oauth-channel.js";

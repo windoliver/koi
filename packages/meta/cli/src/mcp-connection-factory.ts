@@ -75,11 +75,20 @@ export function createOAuthAwareMcpConnection(
               }),
             ).catch(() => {});
             const authed = await provider.startAuthFlow();
-            // Notify best-effort — auth is already done regardless.
             if (authed) {
+              // Notify best-effort — auth is already done regardless.
               await Promise.resolve(oauthChannel.onAuthComplete({ provider: server.name })).catch(
                 () => {},
               );
+            } else {
+              // Surface the failure reason so the TUI can show actionable info
+              // rather than a generic AUTH_REQUIRED error.
+              void Promise.resolve(
+                oauthChannel.onAuthFailure?.({
+                  provider: server.name,
+                  reason: "Authorization was cancelled or failed. Run: koi mcp auth " + server.name,
+                }),
+              ).catch(() => {});
             }
             return authed;
           }

@@ -29,6 +29,13 @@ export interface AuthCompleteNotification {
   readonly provider: string;
 }
 
+/** Emitted when OAuth authorization fails (user cancelled, callback timeout, etc.). */
+export interface AuthFailureNotification {
+  readonly provider: string;
+  /** Human-readable reason for the failure, suitable for display. */
+  readonly reason: string;
+}
+
 /**
  * Shared protocol for OAuth authorization UX.
  *
@@ -39,6 +46,8 @@ export interface AuthCompleteNotification {
 export interface OAuthChannel {
   readonly onAuthRequired: (n: AuthRequiredNotification) => void | Promise<void>;
   readonly onAuthComplete: (n: AuthCompleteNotification) => void | Promise<void>;
+  /** Called when auth fails (user cancelled, callback timeout, token exchange error, etc.). Optional. */
+  readonly onAuthFailure?: (n: AuthFailureNotification) => void | Promise<void>;
   /** Forward a pasted redirect URL to the transport (remote mode only). */
   readonly submitAuthCode: (redirectUrl: string, correlationId?: string) => void;
 }

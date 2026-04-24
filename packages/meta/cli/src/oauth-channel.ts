@@ -7,6 +7,7 @@
 
 import type {
   AuthCompleteNotification,
+  AuthFailureNotification,
   AuthRequiredNotification,
   ChannelAdapter,
   OAuthChannel,
@@ -53,6 +54,18 @@ export function createOAuthChannel(options: {
         // eslint-disable-next-line no-console
         console.warn(
           `[oauth-channel] auth_complete delivery failed for ${n.provider}: ${String(_err)}`,
+        );
+      }
+    },
+
+    async onAuthFailure(n: AuthFailureNotification): Promise<void> {
+      const text = `**${n.provider} authorization failed:** ${n.reason}`;
+      try {
+        await channel.send({ content: [{ kind: "text", text }] });
+      } catch (_err: unknown) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[oauth-channel] auth_failure delivery failed for ${n.provider}: ${String(_err)}`,
         );
       }
     },

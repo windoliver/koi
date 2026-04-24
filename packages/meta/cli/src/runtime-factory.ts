@@ -2285,6 +2285,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
+    const mcpPluginOAuthCapableNames = stackContribution.exports.mcpPluginOAuthCapableNames as
+      | ReadonlySet<string>
+      | undefined;
     const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
       | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
       | undefined;
@@ -3122,11 +3125,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
-            // Plugin servers authenticate via their own auth pseudo-tools, not
-            // via nav:mcp-auth (which only handles .mcp.json entries). Force
-            // hasOAuth false so AUTH_REQUIRED plugin servers render as error
-            // rather than needs-auth, preventing a misleading recovery prompt.
-            oauthNames: undefined,
+            oauthNames: mcpPluginOAuthCapableNames,
           });
         if (sources.length === 0) return [];
 

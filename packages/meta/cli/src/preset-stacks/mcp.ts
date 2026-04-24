@@ -63,6 +63,9 @@ export const mcpStack: PresetStack = {
         ...(pluginMcpSetup !== undefined
           ? { mcpPluginTransportByName: pluginMcpSetup.transportByName }
           : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginOAuthCapableNames: pluginMcpSetup.oauthCapableNames }
+          : {}),
         ...(userMcpSetup !== undefined ? { mcpAuthProviders: userMcpSetup.authProviders } : {}),
         ...(userMcpSetup !== undefined ? { mcpConnections: userMcpSetup.connections } : {}),
         ...(pluginMcpSetup !== undefined
