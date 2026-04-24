@@ -599,6 +599,8 @@ export type {
   ConstraintQuery,
   GovernanceBackend,
   GovernanceVerdict,
+  PersistentGrant,
+  PersistentGrantCallback,
   PolicyEvaluator,
   PolicyRequest,
   PolicyRequestKind,
