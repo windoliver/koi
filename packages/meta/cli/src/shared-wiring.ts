@@ -283,24 +283,20 @@ export function buildPluginMcpSetup(
   if (pluginMcpServers.length === 0) return undefined;
 
   // Reject OAuth-bearing plugin MCP configs up front. Plugin-supplied OAuth
-  // configs cannot be authenticated without a host-controlled consent gate, so
-  // loading them would produce servers permanently stuck on AUTH_REQUIRED.
-  // Warn and strip them rather than silently loading broken entries.
+  // configs cannot be authenticated without a host-controlled consent gate.
+  // Throw so plugin activation fails visibly rather than silently losing servers.
   const unsupported = pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined);
   if (unsupported.length > 0) {
-    console.warn(
-      `[koi] Plugin MCP servers with OAuth are not supported without a host consent gate. ` +
-        `The following servers were skipped: ${unsupported.map((s) => s.name).join(", ")}`,
+    throw new Error(
+      `Plugin MCP servers with OAuth are not supported without a host consent gate. ` +
+        `Remove the oauth config or replace with a non-OAuth server: ` +
+        unsupported.map((s) => s.name).join(", "),
     );
   }
-  const eligibleServers = pluginMcpServers.filter(
-    (s) => !(s.kind === "http" && s.oauth !== undefined),
-  );
-  if (eligibleServers.length === 0) return undefined;
 
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
-  const connections = eligibleServers.map((server) => {
+  const connections = pluginMcpServers.map((server) => {
     const conn = createOAuthAwareMcpConnection(server);
     connectionsByName.set(server.name, conn);
     return conn;
@@ -316,7 +312,7 @@ export function buildPluginMcpSetup(
     dispose: () => {
       resolver.dispose();
     },
-    transportByName: new Map(eligibleServers.map((s) => [s.name, s.kind])),
+    transportByName: new Map(pluginMcpServers.map((s) => [s.name, s.kind])),
     oauthCapableNames: new Set<string>(),
     authProviders: new Map(),
     connections: connectionsByName,

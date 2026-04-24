@@ -239,7 +239,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen to fire onAuthRequired with authUrl (mode:local) through channel", () => {
+    test("wires onBrowserOpen to fire onAuthRequired (mode:local) without authUrl in channel", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -254,18 +254,17 @@ describe("createOAuthAwareMcpConnection", () => {
       if (onBrowserOpen === undefined) return;
 
       // Simulate the runtime calling onBrowserOpen with the authorization URL
-      const testAuthUrl = "https://example.com/auth?state=abc";
-      onBrowserOpen(testAuthUrl);
+      onBrowserOpen("https://example.com/auth?state=abc");
 
-      // channel.onAuthRequired must fire WITH authUrl so the TUI can display
-      // it as a fallback if the browser doesn't open automatically.
-      // mode:"local" signals the callback runs on 127.0.0.1 — only valid on
-      // the Koi machine.
+      // channel.onAuthRequired fires with provider + mode, but NO authUrl.
+      // authUrl is kept out of the channel to prevent raw OAuth URLs (including
+      // state params) from entering the model-visible add_user_message path.
+      // The runtime already logs the URL to console as a local fallback.
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };
       expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.authUrl).toBe(testAuthUrl);
+      expect(reqArg.authUrl).toBeUndefined();
       expect(reqArg.mode).toBe("local");
     });
   });
