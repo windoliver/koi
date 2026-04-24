@@ -241,6 +241,26 @@ describe("createLocalScratchpad", () => {
       if (wr.ok) return;
       expect(wr.error.code).toBe("RESOURCE_EXHAUSTED");
     });
+
+    it("returns VALIDATION error for non-JSON-serializable metadata (circular ref)", () => {
+      const circular: Record<string, unknown> = {};
+      circular["self"] = circular;
+      const wr = sp.write({ path: scratchpadPath("circ"), content: "x", metadata: circular });
+      expect(wr.ok).toBe(false);
+      if (wr.ok) return;
+      expect(wr.error.code).toBe("VALIDATION");
+    });
+
+    it("returns VALIDATION error for BigInt metadata value", () => {
+      const wr = sp.write({
+        path: scratchpadPath("bigint"),
+        content: "x",
+        metadata: { n: BigInt(42) } as unknown as Record<string, unknown>,
+      });
+      expect(wr.ok).toBe(false);
+      if (wr.ok) return;
+      expect(wr.error.code).toBe("VALIDATION");
+    });
   });
 
   describe("concurrent access", () => {

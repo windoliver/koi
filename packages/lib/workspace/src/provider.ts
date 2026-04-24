@@ -61,9 +61,13 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
 
       try {
         // Dispose any stale workspace from a previous attach (e.g. after an intentional
-        // preserve or a crash followed by re-attach). Abort if cleanup fails —
-        // keeping the old tracking is preferable to silently orphaning the worktree.
-        const staleWsId = attached.get(agentId);
+        // preserve or a crash followed by re-attach). Also scan via findByAgentId for
+        // workspaces that survived a process restart and are no longer in the in-memory map.
+        // Abort if cleanup fails — keeping old tracking is preferable to orphaning the worktree.
+        let staleWsId = attached.get(agentId);
+        if (staleWsId === undefined && config.backend.findByAgentId) {
+          staleWsId = await config.backend.findByAgentId(agentId);
+        }
         if (staleWsId !== undefined) {
           const disposed = await tryDispose(staleWsId);
           if (!disposed) {

@@ -232,6 +232,27 @@ describe("createWorkspaceProvider", () => {
     await expect(provider.attach(agent)).rejects.toThrow();
   });
 
+  it("attach reclaims crash-survivor workspace found via findByAgentId", async () => {
+    // Simulate a workspace that survived a process restart: not in `attached` map
+    // but discoverable via backend.findByAgentId (on-disk marker scan).
+    const survivorId = workspaceId("ws-survivor");
+    const backendWithFind = makeBackend({
+      async findByAgentId(_aid: AgentId): Promise<WorkspaceId | undefined> {
+        return survivorId;
+      },
+    });
+    const provider = createWorkspaceProvider({ backend: backendWithFind });
+    const agent = makeAgent();
+
+    // First attach — no in-memory state, findByAgentId returns survivor
+    await provider.attach(agent);
+    // Survivor was disposed before creating the new workspace
+    expect(backendWithFind.disposed).toContain(survivorId);
+    // A new workspace was created
+    expect(backendWithFind.created.length).toBe(1);
+    await provider.detach?.(agent);
+  });
+
   it("provider.name is set", () => {
     const provider = createWorkspaceProvider({ backend });
     expect(provider.name).toBe("workspace");

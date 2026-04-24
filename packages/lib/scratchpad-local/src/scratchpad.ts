@@ -255,6 +255,23 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
     const now = new Date().toISOString();
     const generation = (liveExisting?.generation ?? 0) + 1;
 
+    let clonedMetadata: Record<string, unknown> | undefined;
+    if (input.metadata !== undefined) {
+      try {
+        clonedMetadata = Object.freeze(cloneMetadata(input.metadata)) as Record<string, unknown>;
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message:
+              "Metadata must be JSON-serializable (no circular references, BigInt, or functions)",
+            retryable: false,
+          },
+        };
+      }
+    }
+
     const entry: MutableEntry = {
       path: input.path,
       content: input.content,
@@ -267,10 +284,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       ...(input.ttlSeconds !== undefined
         ? { ttlSeconds: input.ttlSeconds, expiresAt: Date.now() + input.ttlSeconds * 1000 }
         : {}),
-      // Deep-clone + freeze on write: severs all caller references, including nested objects
-      ...(input.metadata !== undefined
-        ? { metadata: Object.freeze(cloneMetadata(input.metadata)) as Record<string, unknown> }
-        : {}),
+      ...(clonedMetadata !== undefined ? { metadata: clonedMetadata } : {}),
     };
 
     store.entries.set(input.path, entry);
