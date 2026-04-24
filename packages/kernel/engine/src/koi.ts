@@ -2243,6 +2243,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     },
 
     cycleSession: async (): Promise<void> => {
+      // Capture boundary timestamp FIRST — before any guard checks or awaits —
+      // so governance duration windows anchor to the true host-requested boundary,
+      // not to when async teardown (onSessionEnd) finishes.
+      const sessionBoundaryTimestamp = Date.now();
       // #1742 round 14: refuse to cycle a disposed runtime.
       // Loop-3 round 3: also reject during the dispose-in-flight
       // window — see the parallel guard in run() above.
@@ -2426,7 +2430,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               kind: "session_reset",
               source: "host",
               boundaryId: sessionBoundaryId,
-              boundaryTimestamp: Date.now(),
+              boundaryTimestamp: sessionBoundaryTimestamp,
             });
           }
           // #1742: rotate the engine sessionId and rebuild the runtime-scoped

@@ -505,15 +505,18 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
       case "run_reset":
         // L0 contract: reset per-run UX budgets (turn_count, duration_ms).
         // Token usage, cost, spawn counts, and error-rate windows survive.
+        // Anchor to event.boundaryTimestamp (the true boundary time) so duration
+        // windows don't drift when record() is delayed by async I/O.
         state.turnCount = 0;
-        state.iterationStart = now();
+        state.iterationStart = event.boundaryTimestamp;
         return;
       case "session_reset":
         // L0 contract: reset iteration counters AND rolling error-rate window so
         // a fresh conversation doesn't inherit tool-error history. Token usage,
         // cost, and spawn_count remain cumulative.
+        // Anchor to event.boundaryTimestamp for the same drift-prevention reason.
         state.turnCount = 0;
-        state.iterationStart = now();
+        state.iterationStart = event.boundaryTimestamp;
         state.toolOutcomes.length = 0;
         return;
     }
