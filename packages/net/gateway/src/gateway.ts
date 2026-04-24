@@ -456,13 +456,10 @@ export function createGateway(
           }
           const tracker = createSequenceTracker(config.dedupWindowSize);
           if (startSeq > 0) tracker.reset(startSeq);
-          // Migrate buffered out-of-order frames from the old tracker so the client does not
-          // need to replay them — they arrived in the previous connection's window.
-          if (savedTracker !== undefined) {
-            for (const buffered of savedTracker.bufferedFrames()) {
-              tracker.accept(buffered);
-            }
-          }
+          // Buffered out-of-order frames from the old tracker are NOT migrated: carrying them
+          // into the new tracker without also transferring their inbound byte-accounting entries
+          // would silently bypass the per-connection buffer cap. The client replays any
+          // unacknowledged frames on reconnect, so no data is lost.
           trackers.set(conn.id, tracker);
 
           // Carry recovered remoteSeq into the persisted session so subsequent reconnects
@@ -567,22 +564,28 @@ export function createGateway(
             const sessionId = sessionByConn.get(connId);
             if (sessionId === undefined) continue;
             const sessionRes = store.get(sessionId);
-            void Promise.resolve(sessionRes).then((r) => {
-              if (!r.ok) return;
-              void Promise.resolve(validate(r.value)).then((valid) => {
-                if (!valid) {
-                  conn.send(
-                    createErrorFrame(
-                      nextServerSeq(conn),
-                      "AUTH_FAILED",
-                      "Session credential revoked",
-                      nextId,
-                    ),
-                  );
-                  conn.close(CLOSE_CODES.AUTH_FAILED, "Session credential revoked");
-                }
+            void Promise.resolve(sessionRes)
+              .then((r) => {
+                if (!r.ok) return;
+                return Promise.resolve(validate(r.value)).then((valid) => {
+                  if (!valid) {
+                    conn.send(
+                      createErrorFrame(
+                        nextServerSeq(conn),
+                        "AUTH_FAILED",
+                        "Session credential revoked",
+                        nextId,
+                      ),
+                    );
+                    conn.close(CLOSE_CODES.AUTH_FAILED, "Session credential revoked");
+                  }
+                });
+              })
+              .catch((err: unknown) => {
+                // Revocation check failed — close the session to avoid fail-open authorization.
+                swallowError(err, { package: "gateway", operation: "revocation.validate" });
+                conn.close(CLOSE_CODES.AUTH_FAILED, "Revocation check failed");
               });
-            });
           }
         }
 
@@ -694,7 +697,10 @@ export function createGateway(
           error: notFound(connId, `Connection not found for session: ${sessionId}`),
         };
       }
-      const encoded = encodeFrame(frame);
+      // Override caller-supplied seq: the gateway owns monotonic outbound sequencing
+      // so the client-side dedup window sees a single authoritative counter per connection.
+      const outboundFrame: GatewayFrame = { ...frame, seq: nextServerSeq(conn) };
+      const encoded = encodeFrame(outboundFrame);
       const frameBytes = Buffer.byteLength(encoded, "utf8");
       if (
         bp.buffered(connId) + frameBytes > config.maxBufferBytesPerConnection ||
