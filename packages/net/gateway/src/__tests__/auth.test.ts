@@ -59,7 +59,9 @@ describe("handleHandshake", () => {
     expect(result.session.agentId).toBe("agent-1");
     expect(result.session.seq).toBe(0);
     expect(result.session.remoteSeq).toBe(0);
-    // ack was sent
+    // ack not yet sent — caller must invoke sendAck() after persistence
+    expect(conn.sent.length).toBe(0);
+    result.sendAck();
     expect(conn.sent.length).toBeGreaterThan(0);
     const rawAck = conn.sent[0] ?? "";
     const ack = JSON.parse(rawAck) as Record<string, unknown>;
@@ -176,7 +178,8 @@ describe("handleHandshake", () => {
     });
 
     firstMessageHandler?.(createConnectMessage());
-    await handshakePromise;
+    const snapshotResult = await handshakePromise;
+    snapshotResult.sendAck();
     const rawSnapshotAck = conn.sent[0] ?? "";
     const ack = JSON.parse(rawSnapshotAck) as Record<string, unknown>;
     const payload = ack.payload as Record<string, unknown>;

@@ -36,6 +36,7 @@ export interface HandshakeOptions {
 export interface HandshakeResult {
   readonly session: Session;
   readonly connectFrame: ConnectFrame;
+  readonly sendAck: () => void;
 }
 
 /**
@@ -130,8 +131,11 @@ export function handleHandshake(
           };
 
           settle(() => {
-            conn.send(createAckFrame(0, undefined, ackPayload));
-            resolve({ session, connectFrame });
+            resolve({
+              session,
+              connectFrame,
+              sendAck: () => conn.send(createAckFrame(0, undefined, ackPayload)),
+            });
           });
         })
         .catch((err: unknown) => {

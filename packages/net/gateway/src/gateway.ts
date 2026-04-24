@@ -149,13 +149,13 @@ export function createGateway(
       void handleHandshake(conn, deps.auth, config.authTimeoutMs, handshakeOptions, (handler) => {
         pendingHandshakes.set(conn.id, handler);
       })
-        .then((result) => {
+        .then(async (result) => {
           pendingHandshakes.delete(conn.id);
 
           if (!connMap.has(conn.id)) return;
 
           // Evict any existing connection already bound to this session ID.
-          // Remove the old conn's maps first so its onClose/cleanupConn skips session teardown.
+          // Remove old conn maps first so its onClose/cleanupConn skips session teardown.
           const prevConnId = connBySession.get(result.session.id);
           if (prevConnId !== undefined && prevConnId !== conn.id) {
             sessionByConn.delete(prevConnId);
@@ -166,26 +166,38 @@ export function createGateway(
             prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
           }
 
+          // Restore remoteSeq from any previously persisted session to prevent frame replay.
+          let startSeq = 0;
+          try {
+            const prev = await Promise.resolve(store.get(result.session.id));
+            if (prev.ok) startSeq = prev.value.remoteSeq;
+          } catch {
+            // fresh session — start at 0
+          }
           const tracker = createSequenceTracker(config.dedupWindowSize);
+          if (startSeq > 0) tracker.reset(startSeq);
           trackers.set(conn.id, tracker);
 
-          void Promise.resolve(store.set(result.session))
-            .then((r) => {
-              if (!r.ok) {
-                conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
-                cleanupConn(conn, "session store failure");
-                return;
-              }
-              // Install session maps only after persistence to avoid read-before-write on async stores.
-              if (!connMap.has(conn.id)) return;
-              sessionByConn.set(conn.id, result.session.id);
-              connBySession.set(result.session.id, conn.id);
-              emitSessionEvent({ kind: "created", session: result.session });
-            })
-            .catch(() => {
-              conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
-              cleanupConn(conn, "session store failure");
-            });
+          let storeResult: Result<void, KoiError>;
+          try {
+            storeResult = await Promise.resolve(store.set(result.session));
+          } catch {
+            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
+            cleanupConn(conn, "session store failure");
+            return;
+          }
+          if (!storeResult.ok) {
+            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
+            cleanupConn(conn, "session store failure");
+            return;
+          }
+
+          // Install maps and send ack only after persistence — prevents read-before-write.
+          if (!connMap.has(conn.id)) return;
+          sessionByConn.set(conn.id, result.session.id);
+          connBySession.set(result.session.id, conn.id);
+          result.sendAck();
+          emitSessionEvent({ kind: "created", session: result.session });
         })
         .catch(() => {
           pendingHandshakes.delete(conn.id);
@@ -272,6 +284,22 @@ export function createGateway(
         clearInterval(criticalSweep);
         criticalSweep = undefined;
       }
+
+      // Close all live connections and emit destroy events before stopping transport.
+      for (const [connId, conn] of connMap) {
+        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
+        const sessionId = sessionByConn.get(connId);
+        if (sessionId !== undefined) {
+          void Promise.resolve(store.delete(sessionId));
+          emitSessionEvent({ kind: "destroyed", sessionId, reason: "server shutdown" });
+        }
+      }
+      connMap.clear();
+      sessionByConn.clear();
+      connBySession.clear();
+      trackers.clear();
+      pendingHandshakes.clear();
+
       deps.transport.close();
     },
 
