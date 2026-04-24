@@ -24,6 +24,25 @@ function deepFreeze(obj: JsonObject): JsonObject {
   return obj;
 }
 
+function safeCloneFreeze(
+  field: "payload" | "metadata",
+  value: JsonObject,
+): Result<JsonObject, KoiError> {
+  try {
+    return { ok: true, value: deepFreeze(structuredClone(value)) };
+  } catch (e: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Message ${field} is not serializable: ${e instanceof Error ? e.message : String(e)}`,
+        retryable: false,
+        context: { field },
+      },
+    };
+  }
+}
+
 export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent & {
   readonly agentId: AgentId;
   readonly close: () => void;
@@ -37,6 +56,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
   const subscribers = new Set<(message: AgentMessage) => void | Promise<void>>();
   // let rather than const: closed flag is explicitly mutable state
   let closed = false;
+  // Self-reference for identity check in close()
+  let self:
+    | (MailboxComponent & { readonly agentId: AgentId; readonly close: () => void })
+    | undefined;
 
   function evictIfNeeded(): void {
     while (messages.length > maxMessages) {
@@ -44,7 +67,7 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     }
   }
 
-  return {
+  self = {
     get agentId(): AgentId {
       return config.agentId;
     },
@@ -90,8 +113,17 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         };
       }
 
-      // Deep-clone then deep-freeze payload/metadata so neither the caller's
-      // original objects nor references returned to callers can mutate history.
+      // Deep-clone then deep-freeze payload/metadata — surface clone errors as Result.
+      const payloadResult = safeCloneFreeze("payload", input.payload);
+      if (!payloadResult.ok) return payloadResult;
+
+      let metadata: JsonObject | undefined;
+      if (input.metadata !== undefined) {
+        const metaResult = safeCloneFreeze("metadata", input.metadata);
+        if (!metaResult.ok) return metaResult;
+        metadata = metaResult.value;
+      }
+
       const msg: AgentMessage = Object.freeze({
         id: messageId(crypto.randomUUID()),
         createdAt: new Date().toISOString(),
@@ -99,12 +131,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         to: input.to,
         kind: input.kind,
         type: input.type,
-        payload: deepFreeze(structuredClone(input.payload)),
+        payload: payloadResult.value,
         ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
         ...(input.ttlSeconds !== undefined ? { ttlSeconds: input.ttlSeconds } : {}),
-        ...(input.metadata !== undefined
-          ? { metadata: deepFreeze(structuredClone(input.metadata)) }
-          : {}),
+        ...(metadata !== undefined ? { metadata } : {}),
       });
 
       messages.push(msg);
@@ -112,9 +142,18 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
 
       for (const handler of subscribers) {
         // Capture `closed` by reference — suppress delivery if close() runs
-        // before this microtask fires.
+        // before this microtask fires. Catch handler errors to prevent
+        // unhandled rejections from escaping the mailbox boundary.
         queueMicrotask(() => {
-          if (!closed) void handler(msg);
+          if (closed) return;
+          try {
+            const result = handler(msg);
+            if (result instanceof Promise) {
+              result.catch(() => {});
+            }
+          } catch {
+            // Handler threw synchronously — swallow to preserve isolation
+          }
         });
       }
 
@@ -146,8 +185,13 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       closed = true;
       messages.length = 0;
       subscribers.clear();
-      // Auto-unregister from router so dead mailboxes don't remain routable.
-      config.router?.unregister(config.agentId);
+      // Only unregister if the router still points to this instance — prevents
+      // a stale close() from evicting a live replacement registered after us.
+      if (config.router !== undefined && config.router.get(config.agentId) === self) {
+        config.router.unregister(config.agentId);
+      }
     },
   };
+
+  return self;
 }

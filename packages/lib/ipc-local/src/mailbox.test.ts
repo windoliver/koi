@@ -310,4 +310,47 @@ describe("createLocalMailbox — local specifics", () => {
     mailbox.close();
     expect(router.get(OWNER)).toBeUndefined();
   });
+
+  test("closing stale mailbox does not evict live replacement from router", async () => {
+    const { createLocalMailboxRouter } = await import("./router.js");
+    const router = createLocalMailboxRouter();
+    const mailboxOld = createLocalMailbox({ agentId: OWNER, router });
+    const mailboxNew = createLocalMailbox({ agentId: OWNER, router });
+    router.register(OWNER, mailboxOld);
+    router.register(OWNER, mailboxNew);
+    // Close the old mailbox — should NOT remove the new one
+    mailboxOld.close();
+    expect(router.get(OWNER)).toBe(mailboxNew);
+    mailboxNew.close();
+  });
+
+  test("send() returns VALIDATION error for non-cloneable payload", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    // Functions cannot be structuredCloned — they throw a DataCloneError
+    const result = await mailbox.send({
+      from: SENDER,
+      to: OWNER,
+      kind: "event",
+      type: "bad",
+      payload: { fn: () => {} } as unknown as import("@koi/core").JsonObject,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+    mailbox.close();
+  });
+
+  test("throwing subscriber does not propagate and does not affect other subscribers", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const received: string[] = [];
+    mailbox.onMessage(() => {
+      throw new Error("subscriber boom");
+    });
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+    await mailbox.send(makeInput("resilient"));
+    await Bun.sleep(10);
+    expect(received).toEqual(["resilient"]);
+    mailbox.close();
+  });
 });
