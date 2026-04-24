@@ -217,6 +217,12 @@ export function createWebhookServer(
             error: "Delivery already in-flight, retry shortly",
           });
         }
+        if (beginResult === "capacity-exceeded") {
+          return jsonResponse(503, {
+            ok: false,
+            error: "Idempotency store at capacity, retry shortly",
+          });
+        }
         pendingDedupKey = verifyResult.dedupKey;
       }
     }

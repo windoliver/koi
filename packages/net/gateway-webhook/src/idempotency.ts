@@ -13,7 +13,8 @@
  * hung or cancelled requests cannot permanently black-hole a delivery key. Tune
  * `processingTtlMs` to be longer than your slowest expected dispatch path.
  * Committed entries expire after `ttlMs` (default: 24 h). Bounded by `maxSize`
- * (default: 10 000) to cap memory; oldest committed entries evicted first.
+ * (default: 10 000) — capacity is enforced before each new reservation so a
+ * burst of unique in-flight requests cannot grow the store past the stated cap.
  *
  * **Scope:** this store is in-process only. Dedup state is lost on restart and
  * not shared across replicas. For cross-process replay protection, implement
@@ -42,7 +43,7 @@ export interface IdempotencyStoreOptions {
   readonly maxSize?: number | undefined;
 }
 
-export type TryBeginResult = "ok" | "duplicate" | "in-flight";
+export type TryBeginResult = "ok" | "duplicate" | "in-flight" | "capacity-exceeded";
 
 export interface IdempotencyStore {
   /**
@@ -54,6 +55,8 @@ export interface IdempotencyStore {
    *  - `"in-flight"` — key is currently processing by another request; return
    *    a retryable non-2xx (503) so the provider keeps retrying until one
    *    delivery is committed. Do NOT return 200 here — the original may fail.
+   *  - `"capacity-exceeded"` — store is full; return 503 so the provider retries
+   *    after expired entries are pruned and capacity is freed.
    *
    * Runs synchronously — the JS event loop guarantees no interleaving between
    * check and reservation, preventing concurrent duplicate dispatch.
@@ -94,21 +97,17 @@ export function createIdempotencyStore(options: IdempotencyStoreOptions = {}): I
       // Expired committed entry — allow fresh delivery
       store.delete(key);
     }
+    // Enforce capacity before inserting — processing entries count toward the cap.
+    // Without this, a burst of unique keys fills memory past maxSize.
+    if (store.size >= maxSize) return "capacity-exceeded";
     // Reserve with a processing TTL so hung requests cannot permanently tombstone a key.
     store.set(key, { state: "processing", expiresAt: Date.now() + processingTtlMs });
     return "ok";
   }
 
   function commit(key: string): void {
-    if (store.size > maxSize) {
-      // Evict oldest committed entry to stay within bounds
-      for (const [k, e] of store) {
-        if (e.state === "committed") {
-          store.delete(k);
-          break;
-        }
-      }
-    }
+    // commit() always replaces an existing processing reservation (same slot),
+    // so store.size does not change. Capacity was already enforced by tryBegin.
     store.set(key, { state: "committed", expiresAt: Date.now() + ttlMs });
   }
 
