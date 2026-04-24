@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { CLOSE_CODES } from "../close-codes.js";
 import type { Gateway } from "../gateway.js";
 import { createGateway } from "../gateway.js";
+import type { SessionStore } from "../session-store.js";
 import { createInMemorySessionStore } from "../session-store.js";
 import type { GatewayFrame } from "../types.js";
 import type { MockConnection, MockTransport } from "./test-utils.js";
@@ -16,6 +17,7 @@ import {
   createTestFrame,
   createTestSession,
   resetTestSeqCounter,
+  storeGet,
   storeHas,
   waitForCondition,
 } from "./test-utils.js";
@@ -264,6 +266,56 @@ describe("createGateway", () => {
       expect(received).toHaveLength(1); // only the first frame
     });
 
+    test("concurrent frames from same socket are serialized — no remoteSeq regression", async () => {
+      // Use a slow store to ensure the second frame's message handler fires before
+      // the first frame's store.set() resolves. Without per-connection serialization
+      // the second store.set() could overwrite remoteSeq with a stale value.
+      const base = createInMemorySessionStore();
+      let setDelay = 0;
+      const slowStore: SessionStore = {
+        get: (id) => base.get(id),
+        set: (session) => {
+          const delay = setDelay;
+          setDelay = 0; // one-shot delay for first frame only
+          if (delay === 0) return base.set(session);
+          return new Promise((resolve) =>
+            setTimeout(() => resolve(Promise.resolve(base.set(session))), delay),
+          );
+        },
+        has: (id) => base.has(id),
+        delete: (id) => base.delete(id),
+        size: () => base.size(),
+        entries: () => base.entries(),
+      };
+
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-serial",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth, store: slowStore });
+      await gateway.start(0);
+
+      const received: GatewayFrame[] = [];
+      gateway.onFrame((_sess, frame) => received.push(frame));
+
+      const conn = await authenticateConn(transport, gateway, "s-serial");
+
+      // Inject a 30 ms delay on the NEXT store.set() (first real frame)
+      setDelay = 30;
+      transport.simulateMessage(conn.id, frameStr({ seq: 0 }));
+      transport.simulateMessage(conn.id, frameStr({ seq: 1 })); // arrives before first store.set resolves
+
+      await waitForCondition(() => received.length >= 2);
+
+      // Both frames dispatched in order
+      expect(received.map((f) => f.seq)).toEqual([0, 1]);
+      // remoteSeq reflects both frames (not regressed back to 1)
+      const stored = storeGet(gateway.sessions(), "s-serial");
+      expect(stored?.remoteSeq).toBe(2);
+    });
+
     test("malformed frame sends error response, not dispatched", async () => {
       const auth = createTestAuthenticator({
         ok: true,
@@ -346,11 +398,33 @@ describe("createGateway", () => {
   // =========================================================================
 
   describe("destroySession", () => {
-    test("returns NOT_FOUND for unknown session", () => {
+    test("succeeds (idempotent) for unknown session", () => {
       gateway = createGateway({}, { transport, auth: createTestAuthenticator() });
       const r = gateway.destroySession("missing");
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error.code).toBe("NOT_FOUND");
+      expect(r.ok).toBe(true);
+    });
+
+    test("purges disconnected session from store without live connection", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-disc-purge",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const conn = await authenticateConn(transport, gateway, "s-disc-purge");
+      transport.simulateClose(conn.id); // disconnect — session stays in store
+      await waitForCondition(
+        () =>
+          !gateway.sessions().has("s-disc-purge") || storeHas(gateway.sessions(), "s-disc-purge"),
+      );
+      expect(storeHas(gateway.sessions(), "s-disc-purge")).toBe(true); // retained
+
+      gateway.destroySession("s-disc-purge");
+      await waitForCondition(() => !storeHas(gateway.sessions(), "s-disc-purge"));
+      expect(storeHas(gateway.sessions(), "s-disc-purge")).toBe(false);
     });
 
     test("closes connection with ADMIN_CLOSED code", async () => {

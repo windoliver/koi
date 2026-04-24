@@ -78,6 +78,10 @@ export function createGateway(
   const connBySession = new Map<string, string>(); // sessionId → connId
   const trackers = new Map<string, ReturnType<typeof createSequenceTracker>>();
   const pendingHandshakes = new Map<string, (data: string) => void>();
+  // Per-connection serial queues: each new message chains onto the previous so frames
+  // from the same socket are processed one-at-a-time through the async store path,
+  // preventing remoteSeq regression from interleaved store.set() completions.
+  const msgQueues = new Map<string, Promise<void>>();
 
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
@@ -117,6 +121,7 @@ export function createGateway(
     const sessionId = sessionByConn.get(conn.id);
     pendingHandshakes.delete(conn.id);
     trackers.delete(conn.id);
+    msgQueues.delete(conn.id);
     sessionByConn.delete(conn.id);
     connMap.delete(conn.id);
     bp.remove(conn.id);
@@ -127,6 +132,94 @@ export function createGateway(
       // network flaps and can be restored on reconnect. Explicit purge happens in
       // destroySession() and stop().
       emitSessionEvent({ kind: "destroyed", sessionId, reason });
+    }
+  }
+
+  async function processMessage(conn: TransportConnection, data: string): Promise<void> {
+    if (data.length > config.capabilities.maxFrameBytes) {
+      conn.send(
+        createErrorFrame(0, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
+      );
+      conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Frame too large");
+      return;
+    }
+
+    const handshakeHandler = pendingHandshakes.get(conn.id);
+    if (handshakeHandler !== undefined) {
+      handshakeHandler(data);
+      return;
+    }
+
+    const sessionId = sessionByConn.get(conn.id);
+    if (sessionId === undefined) return;
+
+    let sessionResult: Result<Session, KoiError>;
+    try {
+      sessionResult = await Promise.resolve(store.get(sessionId));
+    } catch {
+      sendFrame(
+        conn,
+        createErrorFrame(0, "SESSION_STORE_FAILURE", "Session lookup failed", nextId),
+      );
+      conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session lookup failed");
+      return;
+    }
+    if (!sessionResult.ok) {
+      sendFrame(conn, createErrorFrame(0, "SESSION_STORE_FAILURE", "Session not found", nextId));
+      conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
+      return;
+    }
+
+    const frameResult = parseFrame(data);
+    if (!frameResult.ok) {
+      sendFrame(
+        conn,
+        createErrorFrame(0, frameResult.error.code, frameResult.error.message, nextId),
+      );
+      return;
+    }
+
+    const tracker = trackers.get(conn.id);
+    if (tracker === undefined) return;
+
+    const { result, ready } = tracker.accept(frameResult.value);
+
+    if (result === "duplicate" || result === "out_of_window") {
+      sendFrame(conn, createAckFrame(frameResult.value.seq, frameResult.value.id, null, nextId));
+      return;
+    }
+
+    if (result === "buffered") return;
+
+    // Persist the nextExpected watermark (last dispatched seq + 1) so reconnect
+    // restoration resets the tracker past already-processed frames, preventing replay.
+    // Await persistence before dispatching so handlers cannot run against stale state.
+    const lastDispatched = ready[ready.length - 1];
+    if (lastDispatched !== undefined) {
+      const updatedSession: Session = {
+        ...sessionResult.value,
+        remoteSeq: lastDispatched.seq + 1,
+      };
+      let storeRes: Result<void, KoiError>;
+      try {
+        storeRes = await Promise.resolve(store.set(updatedSession));
+      } catch {
+        sendFrame(
+          conn,
+          createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+        );
+        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+        return;
+      }
+      if (!storeRes.ok) {
+        sendFrame(
+          conn,
+          createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+        );
+        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+        return;
+      }
+      emitFrames(updatedSession, ready);
     }
   }
 
@@ -226,92 +319,13 @@ export function createGateway(
         });
     },
 
-    async onMessage(conn: TransportConnection, data: string): Promise<void> {
-      if (data.length > config.capabilities.maxFrameBytes) {
-        conn.send(
-          createErrorFrame(0, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
-        );
-        conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Frame too large");
-        return;
-      }
-
-      const handshakeHandler = pendingHandshakes.get(conn.id);
-      if (handshakeHandler !== undefined) {
-        handshakeHandler(data);
-        return;
-      }
-
-      const sessionId = sessionByConn.get(conn.id);
-      if (sessionId === undefined) return;
-
-      let sessionResult: Result<Session, KoiError>;
-      try {
-        sessionResult = await Promise.resolve(store.get(sessionId));
-      } catch {
-        sendFrame(
-          conn,
-          createErrorFrame(0, "SESSION_STORE_FAILURE", "Session lookup failed", nextId),
-        );
-        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session lookup failed");
-        return;
-      }
-      if (!sessionResult.ok) {
-        sendFrame(conn, createErrorFrame(0, "SESSION_STORE_FAILURE", "Session not found", nextId));
-        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
-        return;
-      }
-
-      const frameResult = parseFrame(data);
-      if (!frameResult.ok) {
-        sendFrame(
-          conn,
-          createErrorFrame(0, frameResult.error.code, frameResult.error.message, nextId),
-        );
-        return;
-      }
-
-      const tracker = trackers.get(conn.id);
-      if (tracker === undefined) return;
-
-      const { result, ready } = tracker.accept(frameResult.value);
-
-      if (result === "duplicate" || result === "out_of_window") {
-        sendFrame(conn, createAckFrame(frameResult.value.seq, frameResult.value.id, null, nextId));
-        return;
-      }
-
-      if (result === "buffered") return;
-
-      // Persist the nextExpected watermark (last dispatched seq + 1) so reconnect
-      // restoration resets the tracker past already-processed frames, preventing replay.
-      // Await persistence before dispatching so handlers cannot run against stale state.
-      const lastDispatched = ready[ready.length - 1];
-      if (lastDispatched !== undefined) {
-        const updatedSession: Session = {
-          ...sessionResult.value,
-          remoteSeq: lastDispatched.seq + 1,
-        };
-        let storeRes: Result<void, KoiError>;
-        try {
-          storeRes = await Promise.resolve(store.set(updatedSession));
-        } catch {
-          sendFrame(
-            conn,
-            createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
-          );
-          conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
-          return;
-        }
-        if (!storeRes.ok) {
-          sendFrame(
-            conn,
-            createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
-          );
-          conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
-          return;
-        }
-        emitFrames(updatedSession, ready);
-      }
+    onMessage(conn: TransportConnection, data: string): void {
+      // Serialize per-connection: chain onto the tail of this connection's queue so
+      // each frame completes parse → accept → persist → emit before the next begins,
+      // preventing remoteSeq regression from interleaved async store.set() completions.
+      const prev = msgQueues.get(conn.id) ?? Promise.resolve();
+      const next = prev.then((): Promise<void> => processMessage(conn, data)).catch((): void => {});
+      msgQueues.set(conn.id, next);
     },
 
     onClose(conn: TransportConnection, _code: number, reason: string): void {
@@ -408,15 +422,15 @@ export function createGateway(
 
     destroySession(sessionId: string, reason = "administratively closed"): Result<void, KoiError> {
       const connId = connBySession.get(sessionId);
-      if (connId === undefined) {
-        return { ok: false, error: notFound(sessionId, `Session not found: ${sessionId}`) };
+      if (connId !== undefined) {
+        const conn = connMap.get(connId);
+        if (conn !== undefined) {
+          conn.send(createErrorFrame(0, "ADMIN_CLOSED", reason, nextId));
+          conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
+        }
       }
-      const conn = connMap.get(connId);
-      if (conn !== undefined) {
-        conn.send(createErrorFrame(0, "ADMIN_CLOSED", reason, nextId));
-        conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
-      }
-      // Purge persisted session so the store doesn't grow without bound on admin destroy.
+      // Purge from store regardless of live connection state so operators can remove
+      // stale disconnected sessions. Idempotent — store.delete is a no-op for unknowns.
       void Promise.resolve(store.delete(sessionId));
       return { ok: true, value: undefined };
     },
