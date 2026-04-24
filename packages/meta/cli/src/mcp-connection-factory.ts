@@ -51,7 +51,26 @@ export function createOAuthAwareMcpConnection(
     // rather than silently connecting without credentials (which would
     // cause opaque 401s instead of a clear platform error).
     const storage = createStorage();
-    const runtime = createRuntime();
+    // When a channel is present, surface the authorization URL through it as
+    // soon as the OAuth runtime knows it. This gives headless/SSH sessions an
+    // actionable fallback link in the TUI even when the local browser launch
+    // fails or is unavailable.
+    const runtime = createRuntime(
+      oauthChannel !== undefined
+        ? {
+            onBrowserOpen: (authorizationUrl: string): void => {
+              void Promise.resolve(
+                oauthChannel.onAuthRequired({
+                  provider: server.name,
+                  message: `Authorize ${server.name} in your browser`,
+                  authUrl: authorizationUrl,
+                  mode: "local",
+                }),
+              ).catch(() => {});
+            },
+          }
+        : undefined,
+    );
     const provider = createAuthProvider({
       serverName: server.name,
       serverUrl: server.url,
@@ -65,15 +84,9 @@ export function createOAuthAwareMcpConnection(
     const onAuthNeeded =
       oauthChannel !== undefined
         ? async (): Promise<boolean> => {
-            // Fire-and-forget — renderer latency or failure must never block
-            // the browser window from opening. startAuthFlow() starts immediately.
-            void Promise.resolve(
-              oauthChannel.onAuthRequired({
-                provider: server.name,
-                message: `${server.name} requires authorization`,
-                mode: "local",
-              }),
-            ).catch(() => {});
+            // onBrowserOpen (wired into the runtime above) fires onAuthRequired
+            // with the actual authorization URL the moment it is known — no need
+            // for an early generic notification here.
             const authed = await provider.startAuthFlow();
             if (authed) {
               // Notify best-effort — auth is already done regardless.

@@ -2294,6 +2294,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpPluginAuthProviders = stackContribution.exports.mcpPluginAuthProviders as
       | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
       | undefined;
+    const mcpConnections = stackContribution.exports.mcpConnections as
+      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
+      | undefined;
+    const mcpPluginConnections = stackContribution.exports.mcpPluginConnections as
+      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
+      | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
     // and the onViolation callback need a LIVE session id (rotates on
@@ -3182,17 +3188,25 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           ? mcpPluginAuthProviders?.get(serverName)
           : mcpAuthProviders?.get(serverName);
         if (provider === undefined) return false;
-        // Fire-and-forget — renderer latency must not block the browser opening.
-        void Promise.resolve(
-          channel.onAuthRequired({
-            provider: serverName,
-            message: `${serverName} requires authorization`,
-            mode: "local",
-          }),
-        ).catch(() => {});
+        const connection = isPlugin
+          ? mcpPluginConnections?.get(serverName)
+          : mcpConnections?.get(serverName);
+        const resolver = isPlugin ? mcpPluginResolver : mcpResolver;
+
+        // Helper: reconnect the live connection (if not already connected) and
+        // force a resolver rediscovery so real tools replace pseudo-tools
+        // immediately — same recovery steps as the pseudo-tool path.
+        const reconnectAndRediscover = async (): Promise<void> => {
+          if (connection !== undefined && connection.state.kind !== "connected") {
+            await connection.connect().catch(() => {});
+          }
+          await resolver?.discover().catch(() => {});
+        };
+
         const refreshOutcome = await provider.handleUnauthorized();
         if (refreshOutcome === "refreshed") {
-          // Silent token refresh succeeded — skip browser flow entirely.
+          // Silent token refresh succeeded — no browser flow needed.
+          await reconnectAndRediscover();
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
           return true;
         }
@@ -3207,14 +3221,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           return false;
         }
         // "needs-auth" — interactive OAuth required.
+        // onBrowserOpen (wired into the provider's runtime via mcp-connection-factory)
+        // fires onAuthRequired with the actual URL when it becomes known — no need
+        // for an early generic notification here.
         const authed = await provider.startAuthFlow();
         if (authed) {
+          await reconnectAndRediscover();
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
-          // Do NOT call connection.connect() here. If a callTool-triggered
-          // runAuthFlow() is also waiting on provider.startAuthFlow() (singleflight),
-          // both would call connect() simultaneously and interleave, closing each
-          // other's fresh client. The connection self-heals when getMcpStatus() runs
-          // (via listTools → ensureConnected → connect) or on the next tool call.
         }
         return authed;
       },

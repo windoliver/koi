@@ -191,7 +191,7 @@ describe("createOAuthAwareMcpConnection", () => {
       return callArgs[2]?.onAuthNeeded as (() => Promise<boolean>) | undefined;
     }
 
-    test("calls onAuthRequired, then startAuthFlow, then onAuthComplete when authed=true", async () => {
+    test("calls startAuthFlow then onAuthComplete when authed=true", async () => {
       const oauthChannel = makeOAuthChannel();
       const provider = makeProvider(true);
       const onAuthNeeded = extractOnAuthNeeded(oauthChannel, provider);
@@ -199,12 +199,6 @@ describe("createOAuthAwareMcpConnection", () => {
       if (onAuthNeeded === undefined) return;
 
       const result = await onAuthNeeded();
-
-      expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
-      const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
-        .calls[0]?.[0] as { provider: string; mode: string };
-      expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.mode).toBe("local");
 
       const startFlow = provider.startAuthFlow as ReturnType<typeof mock>;
       expect(startFlow).toHaveBeenCalledTimes(1);
@@ -216,7 +210,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(true);
     });
 
-    test("calls onAuthRequired and startAuthFlow but NOT onAuthComplete when authed=false", async () => {
+    test("calls startAuthFlow but NOT onAuthComplete when authed=false", async () => {
       const oauthChannel = makeOAuthChannel();
       const provider = makeProvider(false);
       const onAuthNeeded = extractOnAuthNeeded(oauthChannel, provider);
@@ -225,11 +219,37 @@ describe("createOAuthAwareMcpConnection", () => {
 
       const result = await onAuthNeeded();
 
-      expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const startFlow = provider.startAuthFlow as ReturnType<typeof mock>;
       expect(startFlow).toHaveBeenCalledTimes(1);
       expect(oauthChannel.onAuthComplete).not.toHaveBeenCalled();
       expect(result).toBe(false);
+    });
+
+    test("wires onBrowserOpen to fire onAuthRequired with URL through channel", () => {
+      const oauthChannel = makeOAuthChannel();
+      const localMocks = makeDeps();
+      const server = makeHttpOauthServer();
+      createOAuthAwareMcpConnection(server, undefined, oauthChannel, toDeps(localMocks));
+
+      // createRuntime must have been called with an onBrowserOpen option
+      const runtimeCallArgs = localMocks.createRuntime.mock.calls[0] as [
+        { onBrowserOpen?: (url: string) => void } | undefined,
+      ];
+      const onBrowserOpen = runtimeCallArgs?.[0]?.onBrowserOpen;
+      expect(typeof onBrowserOpen).toBe("function");
+      if (onBrowserOpen === undefined) return;
+
+      // Simulate the runtime calling onBrowserOpen with an auth URL
+      const fakeUrl = "https://example.com/oauth/authorize?client_id=x&...";
+      onBrowserOpen(fakeUrl);
+
+      // channel.onAuthRequired must have been fired with the URL
+      expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
+      const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
+        .calls[0]?.[0] as { provider: string; authUrl: string; mode: string };
+      expect(reqArg.provider).toBe("test-http");
+      expect(reqArg.authUrl).toBe(fakeUrl);
+      expect(reqArg.mode).toBe("local");
     });
   });
 });

@@ -31,9 +31,32 @@ interface OAuthRuntime {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createCliOAuthRuntime(): OAuthRuntime {
+export interface CliOAuthRuntimeOptions {
+  /**
+   * Called with the authorization URL the moment it is known, before the
+   * browser window opens. Use this to surface a fallback link through the
+   * channel for headless/SSH sessions where the browser may not open.
+   * Invoked fire-and-forget — errors are silently swallowed.
+   */
+  readonly onBrowserOpen?: ((authorizationUrl: string) => void) | undefined;
+}
+
+export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefined): OAuthRuntime {
   return {
-    authorize: startCallbackServer,
+    authorize: async (
+      authorizationUrl: string,
+      redirectUri: string,
+    ): Promise<OAuthCallbackResult> => {
+      // Surface the URL through the channel before opening the browser so
+      // headless/SSH sessions have an actionable fallback link even when
+      // the local browser launch fails or is unavailable.
+      try {
+        options?.onBrowserOpen?.(authorizationUrl);
+      } catch {
+        // Notification failure must never block the browser from opening.
+      }
+      return startCallbackServer(authorizationUrl, redirectUri);
+    },
     onReauthNeeded: async (serverName: string) => {
       console.log(
         `\nAuthentication expired for MCP server "${serverName}".` +
