@@ -62,6 +62,18 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           );
         }
         attached.delete(agentId);
+      } else if (config.backend.findByAgentId) {
+        // Crash-safe recovery: scan for a workspace created in a prior process/provider
+        // instance for this agent and reclaim it before creating a new one.
+        const recoveredWsId = await config.backend.findByAgentId(agentId);
+        if (recoveredWsId !== undefined) {
+          const disposed = await tryDispose(recoveredWsId);
+          if (!disposed) {
+            throw new Error(
+              `Cannot attach agent ${agentId}: recovered workspace ${recoveredWsId} from prior instance could not be disposed`,
+            );
+          }
+        }
       }
 
       const result = await config.backend.create(agentId, {

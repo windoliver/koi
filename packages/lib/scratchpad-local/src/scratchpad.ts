@@ -162,20 +162,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   sharedStore.refCount++;
   const store = sharedStore;
 
-  // Re-arm sweep timer if it was stopped by the last close()
-  if (store.timer === null && sweepIntervalMs > 0) {
-    const t = setInterval(() => {
-      for (const [path, entry] of store.entries) {
-        if (isExpired(entry)) store.entries.delete(path);
-      }
-    }, sweepIntervalMs);
-    if (t && typeof t === "object" && "unref" in t) {
-      (t as { unref: () => void }).unref();
-    }
-    store.timer = t;
-  }
-
   let closed = false;
+  // Per-instance subscription tracking so close() can remove only this handle's
+  // handlers without disturbing other open handles in the same group.
+  const instanceSubs = new Set<(event: ScratchpadChangeEvent) => void>();
 
   function notify(event: ScratchpadChangeEvent): void {
     for (const sub of store.subscribers) {
@@ -355,8 +345,10 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function onChange(handler: (event: ScratchpadChangeEvent) => void): () => void {
     if (closed) return () => {};
+    instanceSubs.add(handler);
     store.subscribers.add(handler);
     return () => {
+      instanceSubs.delete(handler);
       store.subscribers.delete(handler);
     };
   }
@@ -364,15 +356,17 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   function close(): void {
     if (closed) return;
     closed = true;
+    // Remove this instance's handlers regardless of other open handles
+    for (const h of instanceSubs) {
+      store.subscribers.delete(h);
+    }
+    instanceSubs.clear();
     store.refCount--;
     if (store.refCount <= 0) {
-      // Stop the sweep timer but preserve entries so state survives detach/reattach
-      // within the same process. Subscribers are cleared since they are per-handle.
       if (store.timer !== null) clearInterval(store.timer);
       store.timer = null;
-      store.subscribers.clear();
-      // Intentionally NOT removing from groupRegistry: a later createLocalScratchpad
-      // for the same groupId will reuse the store and see existing entries.
+      store.entries.clear();
+      groupRegistry.delete(groupId as string);
     }
   }
 

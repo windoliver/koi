@@ -25,6 +25,7 @@ interface RegistryEntry {
 interface WorkspaceMarker {
   readonly id?: string;
   readonly branchName?: string;
+  readonly agentId?: string;
 }
 
 export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): WorkspaceBackend {
@@ -159,6 +160,29 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
 
     isHealthy(wsId: WorkspaceId): boolean {
       return registry.has(wsId);
+    },
+
+    async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceId | undefined> {
+      const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
+      if (!listResult.ok) return undefined;
+
+      const blocks = listResult.value.split(/\n\n+/);
+      for (const block of blocks) {
+        const lines = block.trim().split("\n");
+        const pathLine = lines.find((l) => l.startsWith("worktree "));
+        if (!pathLine) continue;
+        const path = pathLine.slice("worktree ".length).trim();
+        try {
+          const markerText = await Bun.file(join(path, ".koi-workspace")).text();
+          const marker = JSON.parse(markerText) as WorkspaceMarker;
+          if (marker.agentId === (searchAgentId as string) && typeof marker.id === "string") {
+            return workspaceId(marker.id);
+          }
+        } catch {
+          // Marker missing or unreadable — skip
+        }
+      }
+      return undefined;
     },
   };
 }

@@ -348,20 +348,38 @@ describe("createLocalScratchpad", () => {
       }
     });
 
-    it("entries survive handle close and reopen (detach/reattach continuity)", () => {
+    it("entries are cleared when last handle closes", () => {
       const reopenGid = agentGroupId("group-reopen");
       const sp1 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
       sp1.write({ path: scratchpadPath("checkpoint"), content: "state-v1" });
-      sp1.close(); // refCount → 0, but entries should persist
+      sp1.close(); // refCount → 0, store cleared
 
+      // New handle for same groupId starts with a fresh store
       const sp2 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
       try {
         const r = sp2.read(scratchpadPath("checkpoint"));
-        expect(r.ok).toBe(true);
-        if (r.ok) expect(r.value.content).toBe("state-v1");
+        expect(r.ok).toBe(false); // entries cleared on last close
       } finally {
         sp2.close();
       }
+    });
+
+    it("closed handle stops receiving events while another handle remains open", () => {
+      const sp2 = createLocalScratchpad({ groupId: currentGid, authorId: agentId("agent-2") });
+      let sp1Events = 0;
+      let sp2Events = 0;
+      sp.onChange(() => {
+        sp1Events++;
+      });
+      sp2.onChange(() => {
+        sp2Events++;
+      });
+      sp.write({ path: scratchpadPath("ping"), content: "1" }); // both fire
+      sp.close(); // sp's handler should be removed
+      sp2.write({ path: scratchpadPath("ping"), content: "2" }); // only sp2 fires
+      expect(sp1Events).toBe(1);
+      expect(sp2Events).toBe(2);
+      sp2.close();
     });
   });
 });
