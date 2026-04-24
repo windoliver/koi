@@ -194,7 +194,14 @@ export interface PersistentGrant {
   readonly grantedAt: number;
 }
 
-/** Callback invoked exactly once per always-scoped approval. */
+/**
+ * Callback invoked exactly once per always-scoped approval.
+ *
+ * The governance middleware calls this fire-and-forget — it does NOT await
+ * the returned Promise. Async sinks MUST handle their own errors; unhandled
+ * rejections surface as process-level `unhandledRejection` events rather
+ * than reaching the caller.
+ */
 export type PersistentGrantCallback = (grant: PersistentGrant) => void | Promise<void>;
 
 // ---------------------------------------------------------------------------

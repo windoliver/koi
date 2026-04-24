@@ -1,6 +1,6 @@
 import { describe, expect, it, test } from "bun:test";
 import type { JsonObject } from "./common.js";
-import { agentId } from "./ecs.js";
+import { agentId, sessionId } from "./ecs.js";
 import type {
   AskId,
   ComplianceRecord,
@@ -434,9 +434,9 @@ describe("PersistentGrant (L0)", () => {
   it("accepts a structurally valid grant", () => {
     const g: PersistentGrant = {
       kind: "tool_call",
-      agentId: "a1" as never,
-      sessionId: "s1" as never,
-      payload: { tool: "bash" } as JsonObject,
+      agentId: agentId("a1"),
+      sessionId: sessionId("s1"),
+      payload: { tool: "bash" } satisfies JsonObject,
       grantKey: "deadbeef",
       grantedAt: 1_713_974_400_000,
     };
@@ -449,9 +449,9 @@ describe("PersistentGrant (L0)", () => {
     };
     cb({
       kind: "tool_call",
-      agentId: "a1" as never,
-      sessionId: "s1" as never,
-      payload: {} as JsonObject,
+      agentId: agentId("a1"),
+      sessionId: sessionId("s1"),
+      payload: {} satisfies JsonObject,
       grantKey: "x",
       grantedAt: 0,
     });
