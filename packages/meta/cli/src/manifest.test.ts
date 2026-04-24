@@ -525,17 +525,17 @@ describe("loadManifestConfig: audit block (#1994)", () => {
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "audit:",
-        "  ndjson: ./logs/audit.ndjson",
-        "  sqlite: logs/audit.db",
-        "  violations: ./logs/violations.db",
+        "  ndjson: ./logs/session.audit.ndjson",
+        "  sqlite: logs/session.audit.db",
+        "  violations: ./logs/session.violations.db",
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.audit?.ndjson).toBe(join(dir, "logs/audit.ndjson"));
-    expect(result.value.audit?.sqlite).toBe(join(dir, "logs/audit.db"));
-    expect(result.value.audit?.violations).toBe(join(dir, "logs/violations.db"));
+    expect(result.value.audit?.ndjson).toBe(join(dir, "logs/session.audit.ndjson"));
+    expect(result.value.audit?.sqlite).toBe(join(dir, "logs/session.audit.db"));
+    expect(result.value.audit?.violations).toBe(join(dir, "logs/session.violations.db"));
   });
 
   test("parses partial audit block (ndjson only)", async () => {
@@ -544,13 +544,13 @@ describe("loadManifestConfig: audit block (#1994)", () => {
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "audit:",
-        "  ndjson: ./logs/audit.ndjson",
+        "  ndjson: ./logs/session.audit.ndjson",
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.audit?.ndjson).toBe(join(dir, "logs/audit.ndjson"));
+    expect(result.value.audit?.ndjson).toBe(join(dir, "logs/session.audit.ndjson"));
     expect(result.value.audit?.sqlite).toBeUndefined();
     expect(result.value.audit?.violations).toBeUndefined();
   });
@@ -654,7 +654,7 @@ describe("loadManifestConfig: audit block (#1994)", () => {
           "model:",
           "  name: google/gemini-2.0-flash-001",
           "audit:",
-          "  sqlite: sinks/audit.db",
+          "  sqlite: sinks/session.audit.db",
         ].join("\n"),
       );
       const result = await loadManifestConfig(p);
@@ -671,14 +671,17 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     // logs/ is pre-created in beforeEach; place a symlink file inside it.
     const externalDir = mkdtempSync(join(tmpdir(), "koi-audit-external-"));
     try {
-      const externalFile = join(externalDir, "audit.db");
+      const externalFile = join(externalDir, "session.audit.db");
       writeFileSync(externalFile, "");
-      const fileLink = join(logsDir, "audit.db");
+      const fileLink = join(logsDir, "session.audit.db");
       symlinkSync(externalFile, fileLink);
       const p = writeManifest(
-        ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqlite: logs/audit.db"].join(
-          "\n",
-        ),
+        [
+          "model:",
+          "  name: google/gemini-2.0-flash-001",
+          "audit:",
+          "  sqlite: logs/session.audit.db",
+        ].join("\n"),
       );
       const result = await loadManifestConfig(p);
       expect(result.ok).toBe(false);
@@ -690,13 +693,46 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     }
   });
 
+  test("rejects ndjson path without required .audit.ndjson suffix (prevents targeting arbitrary files)", async () => {
+    // e.g. pointing at package.json or a source file
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ./logs/audit.log",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ndjson");
+    expect(result.error).toContain(".audit.ndjson");
+  });
+
+  test("rejects sqlite path without required .audit.db suffix", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  sqlite: ./logs/data.sqlite",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("sqlite");
+    expect(result.error).toContain(".audit.db");
+  });
+
   test("rejects ndjson path whose parent directory does not exist", async () => {
     const p = writeManifest(
       [
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "audit:",
-        "  ndjson: ./missing-dir/audit.ndjson",
+        "  ndjson: ./missing-dir/session.audit.ndjson",
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
@@ -712,7 +748,7 @@ describe("loadManifestConfig: audit block (#1994)", () => {
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "audit:",
-        "  sqlite: ./missing-dir/audit.db",
+        "  sqlite: ./missing-dir/session.audit.db",
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);

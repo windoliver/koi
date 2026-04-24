@@ -257,10 +257,13 @@ env vars still work. `koi start` rejects manifests that contain `audit:`.
 
 ```yaml
 audit:
-  ndjson: ./logs/audit.ndjson   # fallback for KOI_AUDIT_NDJSON; relative to manifest dir
-  sqlite: ./logs/audit.db        # fallback for KOI_AUDIT_SQLITE; relative to manifest dir
-  violations: ./logs/v.db        # overrides ~/.koi/violations.db default; relative to manifest dir
+  ndjson: ./logs/session.audit.ndjson      # fallback for KOI_AUDIT_NDJSON; relative to manifest dir
+  sqlite: ./logs/session.audit.db          # fallback for KOI_AUDIT_SQLITE; relative to manifest dir
+  violations: ./logs/session.violations.db # overrides ~/.koi/violations.db default; relative to manifest dir
 ```
+
+Paths must use audit-only filename suffixes (`.audit.ndjson`, `.audit.db`, `.violations.db`) and
+must be relative — no `..` traversal, no symlinks, parent directory must exist before `koi tui` runs.
 
 Precedence: `KOI_AUDIT_NDJSON` env var → `audit.ndjson` manifest (requires gate) → off; same for
 sqlite. For violations: `audit.violations` manifest (requires gate) → `~/.koi/violations.db` default.

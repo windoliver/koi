@@ -728,6 +728,17 @@ function parseManifestSupervision(
 
 const AUDIT_KNOWN_KEYS = new Set(["ndjson", "sqlite", "violations"]);
 
+// Required filename suffixes for each manifest audit field. Mirrors the
+// .audit.ndjson suffix already enforced by resolveAuditFilePath in
+// middleware-registry.ts. Prevents repo-authored config from pointing at
+// arbitrary in-tree files (package.json, bun.lock, source files) and
+// accidentally corrupting them when the sink opens for writing.
+const AUDIT_FIELD_SUFFIX: Readonly<Record<string, string>> = {
+  ndjson: ".audit.ndjson",
+  sqlite: ".audit.db",
+  violations: ".violations.db",
+} as const;
+
 /**
  * Parse the manifest `audit:` section.
  *
@@ -809,6 +820,20 @@ function parseManifestAudit(
           `manifest.audit.${field}: absolute path "${value}" is not allowed — ` +
           "manifest audit paths must be relative to the manifest directory. " +
           "Use a relative path (e.g. ./logs/audit.ndjson) or the KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars for absolute paths.",
+      };
+    }
+
+    // Require a dedicated audit-only suffix to prevent repo-authored config
+    // from targeting arbitrary in-tree files (package.json, bun.lock, etc.)
+    // and corrupting them when the sink opens for writing.
+    const requiredSuffix = AUDIT_FIELD_SUFFIX[field];
+    if (requiredSuffix !== undefined && !value.endsWith(requiredSuffix)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: "${value}" must end with "${requiredSuffix}". ` +
+          "The suffix requirement prevents manifest config from targeting arbitrary in-tree files. " +
+          `Example: ./logs/audit${requiredSuffix}`,
       };
     }
 
