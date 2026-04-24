@@ -102,12 +102,29 @@ function canonicalizeExisting(p: string): CanonicalResult {
  * remain under that base directory — symlink traversal and `../` sequences
  * that resolve outside are rejected.
  *
+ * **TOCTOU caveat**: this is a point-in-time containment check, not an atomic
+ * gate on subsequent filesystem use. A path whose intermediate components do
+ * not yet exist is validated by string-comparing the prefix; if an attacker
+ * materializes a symlink at that location between validation and the actual
+ * open/write, the write can escape the base. Callers writing files at a
+ * validated path MUST either:
+ *   - Re-validate immediately before the write, or
+ *   - Open via `O_NOFOLLOW`/`openat` with no-follow per component, or
+ *   - Create intermediate directories themselves (mkdir -p) before the check
+ *     so realpathSync sees the full existing prefix.
+ * Dangling symlinks — a symlink whose target does not exist yet — are
+ * already rejected outright to close the most obvious race, but no
+ * point-in-time validator can guarantee containment for a later write.
+ *
  * @param path - The path string to validate.
  * @param baseDir - If provided, the canonicalized path must be a descendant.
  */
 export function validatePath(path: string, baseDir?: string): ClassificationResult {
-  // 1. Pattern checks on the raw string (catches encoded variants before decode)
-  const patternResult = matchPatterns(path, PATH_TRAVERSAL_PATTERNS);
+  // 1. Pattern checks on the raw string (catches encoded variants before decode).
+  //    Path strings can legitimately contain `\` (on Windows paths) so we do
+  //    NOT apply the shell-command normalizer here — it would strip backslashes
+  //    and erase the `..\\` traversal signal.
+  const patternResult = matchPatterns(path, PATH_TRAVERSAL_PATTERNS, { normalize: false });
   if (!patternResult.ok) return patternResult;
 
   // 2. Non-printable character check (broad set not covered by regex patterns)

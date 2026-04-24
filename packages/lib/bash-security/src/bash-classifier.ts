@@ -268,36 +268,129 @@ function checkDestructiveChmod(cmd: string): ClassificationResult {
 }
 
 /**
- * Extract the subcommand and remaining args from a `git <subcmd> ...`
- * invocation. Returns null if the command isn't a git invocation or has no
- * subcommand. Skips top-level git options like `-c foo=bar` and `--git-dir=…`.
- * Scoping destructive checks to the actual subcommand args avoids false
- * positives on quoted commit messages (`git commit -m "… push --force …"`).
+ * Top-level git options that consume the next token as their value when
+ * written in space-separated form (e.g. `git -c foo=bar push ...`,
+ * `git -C /tmp push ...`). `--long=value` forms are always single tokens.
  */
-function extractGitSubcommand(cmd: string): { subcommand: string; args: string } | null {
-  const match =
-    /\bgit\b((?:\s+(?:-[A-Za-z]+|--[A-Za-z-]+(?:=\S+)?))*)\s+([A-Za-z][\w-]*)\b(.*)/s.exec(cmd);
-  if (!match) return null;
-  return { subcommand: match[2] ?? "", args: match[3] ?? "" };
+const GIT_OPTS_WITH_VALUE = new Set([
+  "-c",
+  "-C",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--super-prefix",
+  "--exec-path",
+]);
+
+interface GitInvocation {
+  readonly preOptions: readonly string[];
+  readonly subcommand: string;
+  readonly args: readonly string[];
 }
 
 /**
- * Git destructive operations. Matching is scoped to the actual subcommand
- * arguments so a quoted commit message like
+ * Extract a git invocation's subcommand and arg tokens from a normalized
+ * command string. Handles top-level options that take a value correctly so
+ *   git -c color.ui=false push --force origin main
+ *   git -C /tmp push --force
+ * identify `push` as the subcommand rather than the option value.
+ */
+function extractGitSubcommand(cmd: string): GitInvocation | null {
+  const tokens = cmd.split(/\s+/).filter((t) => t.length > 0);
+  const gitIdx = tokens.findIndex((t) => t === "git" || /\/git$/.test(t));
+  if (gitIdx === -1) return null;
+  const preOptions: string[] = [];
+  let i = gitIdx + 1;
+  while (i < tokens.length) {
+    const tok = tokens[i] ?? "";
+    if (tok === "") {
+      i++;
+      continue;
+    }
+    if (tok.startsWith("--") && tok.includes("=")) {
+      preOptions.push(tok);
+      i++;
+      continue;
+    }
+    if (GIT_OPTS_WITH_VALUE.has(tok)) {
+      preOptions.push(tok, tokens[i + 1] ?? "");
+      i += 2;
+      continue;
+    }
+    if (tok.startsWith("-")) {
+      preOptions.push(tok);
+      i++;
+      continue;
+    }
+    return { preOptions, subcommand: tok, args: tokens.slice(i + 1) };
+  }
+  return null;
+}
+
+/**
+ * Reject `-c alias.*` injections outright. Without this guard, an attacker
+ * can define a force-capable alias at invocation time
+ *   git -c alias.pu='push --force' pu origin main
+ * and bypass every scoped push/clean/branch/checkout check. Configure aliases
+ * in git config; not at invocation time behind this gate.
+ */
+function gitHasAliasOverride(preOptions: readonly string[]): boolean {
+  for (let i = 0; i < preOptions.length; i++) {
+    const tok = preOptions[i];
+    if (tok === "-c" && (preOptions[i + 1] ?? "").startsWith("alias.")) return true;
+    if (tok?.startsWith("--config=alias.")) return true;
+  }
+  return false;
+}
+
+/** Does an argv token match a force-flag in any short-bundle or long form? */
+function hasForceFlag(args: readonly string[]): boolean {
+  for (const tok of args) {
+    if (tok === "--force" || tok === "--force-with-lease") return true;
+    if (/^--force-/.test(tok)) return true;
+    if (/^-[A-Za-z]*f[A-Za-z]*$/.test(tok)) return true;
+  }
+  return false;
+}
+
+/** Does an argv token match a `branch -d`/`-D` form (force or short)? */
+function hasBranchDeleteFlag(args: readonly string[]): boolean {
+  for (const tok of args) {
+    if (tok === "--delete") return true;
+    if (/^-[A-Za-z]*[dD][A-Za-z]*$/.test(tok)) return true;
+  }
+  return false;
+}
+
+/** Does an argv token match a force-delete short form? */
+function hasBranchForceDeleteShort(args: readonly string[]): boolean {
+  return args.some((tok) => /^-[A-Za-z]*D[A-Za-z]*$/.test(tok));
+}
+
+/**
+ * Git destructive operations. Matching is scoped to argv tokens of the actual
+ * subcommand, not raw substring scans, so quoted commit messages like
  *   git commit -m "document --force policy"
- * does not trigger the push-force check. Refspecs are enumerated across all
- * tokens in the push arg list (not just the first position) so multi-refspec
- * invocations like `git push origin main +HEAD:main` are caught.
- *
- * Does NOT defeat backslash-escape obfuscation (`git reset --ha\\rd`) — that
- * requires shell tokenization; see @koi/bash-ast for the AST-based classifier.
+ * do not trigger the push-force check. Multi-refspec + short-bundle + alias
+ * injection are all covered. Backslash-escape obfuscation is handled by the
+ * normalizer upstream (match.normalizeForMatch).
  */
 function checkDestructiveGit(cmd: string): ClassificationResult {
   const parsed = extractGitSubcommand(cmd);
   if (parsed === null) return { ok: true };
-  const { subcommand, args } = parsed;
+  const { preOptions, subcommand, args } = parsed;
 
-  if (subcommand === "reset" && /--hard\b/.test(args)) {
+  if (gitHasAliasOverride(preOptions)) {
+    return {
+      ok: false,
+      reason:
+        "git -c alias.* override at invocation time can smuggle force-push or other destructive subcommands past scoped checks",
+      pattern: "git+alias-override",
+      category: "destructive",
+    };
+  }
+
+  if (subcommand === "reset" && args.some((t) => t === "--hard")) {
     return {
       ok: false,
       reason: "git reset --hard discards uncommitted changes without confirmation",
@@ -306,9 +399,8 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
     };
   }
   if (subcommand === "push") {
-    const hasForceFlag = /(?:--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b)/.test(args);
-    const hasForceRefspec = args.split(/\s+/).some((tok) => /^\+[\w/.:-]+/.test(tok));
-    if (hasForceFlag || hasForceRefspec) {
+    const hasForceRefspec = args.some((t) => /^\+[\w/.:-]+/.test(t));
+    if (hasForceFlag(args) || hasForceRefspec) {
       return {
         ok: false,
         reason:
@@ -318,7 +410,7 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
       };
     }
   }
-  if (subcommand === "clean" && /(?:--force\b|\s-[a-zA-Z]*f)/.test(args)) {
+  if (subcommand === "clean" && hasForceFlag(args)) {
     return {
       ok: false,
       reason: "git clean -f permanently deletes untracked files",
@@ -326,20 +418,17 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
       category: "destructive",
     };
   }
-  if (
-    subcommand === "branch" &&
-    /(?:\s-[a-zA-Z]*D\b|--delete\b[\s\S]{0,200}--force\b|--force\b[\s\S]{0,200}--delete\b|\s-[a-zA-Z]*d\b[\s\S]{0,200}\s-[a-zA-Z]*f\b|\s-[a-zA-Z]*f\b[\s\S]{0,200}\s-[a-zA-Z]*d\b)/.test(
-      args,
-    )
-  ) {
-    return {
-      ok: false,
-      reason: "git branch -D force-deletes a branch and can lose unmerged commits",
-      pattern: "git+branch+force-delete",
-      category: "destructive",
-    };
+  if (subcommand === "branch") {
+    if (hasBranchForceDeleteShort(args) || (hasBranchDeleteFlag(args) && hasForceFlag(args))) {
+      return {
+        ok: false,
+        reason: "git branch -D force-deletes a branch and can lose unmerged commits",
+        pattern: "git+branch+force-delete",
+        category: "destructive",
+      };
+    }
   }
-  if (subcommand === "checkout" && /(?:--force\b|\s-[a-zA-Z]*f\b)/.test(args)) {
+  if (subcommand === "checkout" && hasForceFlag(args)) {
     return {
       ok: false,
       reason: "git checkout -f discards uncommitted changes in the working tree",

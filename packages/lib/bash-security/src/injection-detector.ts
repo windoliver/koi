@@ -9,10 +9,11 @@ import type { ClassificationResult, ThreatPattern } from "./types.js";
  */
 const RAW_OBFUSCATION_PATTERNS: readonly ThreatPattern[] = [
   {
-    // ANSI-C hex-escaped strings like $'\x72\x6d' obfuscate dangerous commands
-    regex: /\$'(?:\\x[0-9a-fA-F]{2}|\\[0-7]{3})/,
+    // ANSI-C hex/octal/unicode escapes like $'\x72\x6d' / $'rm' /
+    // $'\U00000072\U0000006d' obfuscate dangerous commands
+    regex: /\$'(?:\\x[0-9a-fA-F]{2}|\\[0-7]{3}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})/,
     category: "injection",
-    reason: "Hex/octal-escaped ANSI-C string can obfuscate shell commands",
+    reason: "Hex/octal/unicode-escaped ANSI-C string can obfuscate shell commands",
   },
   {
     // Null bytes can bypass naive string-boundary security checks
