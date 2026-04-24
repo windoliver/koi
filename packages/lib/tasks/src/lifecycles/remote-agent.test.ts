@@ -340,7 +340,7 @@ describe("createRemoteAgentLifecycle", () => {
 
       expect(capturedInit?.method).toBe("POST");
       const body = JSON.parse(capturedInit?.body as string) as unknown;
-      expect(body).toEqual({ correlationId: "cid-99", payload: { x: 1 } });
+      expect(body).toEqual({ taskId: String(tid()), correlationId: "cid-99", payload: { x: 1 } });
       const headers = capturedInit?.headers as Record<string, string>;
       expect(headers["Content-Type"]).toBe("application/json");
       expect(headers.Authorization).toBe("Bearer tok");
@@ -442,6 +442,27 @@ describe("createRemoteAgentLifecycle", () => {
       expect(text).toContain("a");
       expect(text).toContain("b");
       expect(exits).toEqual([0]);
+    });
+
+    test("includes taskId in start POST body for attempt-scoped idempotency", async () => {
+      // taskId must be in the start request so the remote can distinguish retries
+      // sharing the same correlationId and map cancel requests to the right attempt.
+      let startBody: { taskId?: unknown; correlationId?: unknown; payload?: unknown } = {};
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          startBody = JSON.parse(String(init?.body)) as typeof startBody;
+          return new Response(makeNdjsonStream({ kind: "done", exitCode: 0 }), { status: 200 });
+        },
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch: fetchSpy });
+      const output = createOutputStream();
+      const id = tid(7);
+
+      await lifecycle.start(id, output, makeConfig({ correlationId: "corr-xyz" }));
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+      expect(startBody.taskId).toBe(String(id));
+      expect(startBody.correlationId).toBe("corr-xyz");
     });
   });
 
@@ -1084,6 +1105,43 @@ describe("createRemoteAgentLifecycle", () => {
         .map((c) => c.content)
         .join("");
       expect(text).toContain("frame exceeds maximum size");
+    });
+
+    test("transport chunk exceeding MAX_CHUNK_BYTES is rejected before per-frame scan", async () => {
+      // A chunk larger than 16 MiB must be rejected at the transport level before
+      // any per-frame guard runs, preventing the scan loop from processing it at all.
+      const exits: number[] = [];
+      // 16 MiB + 1 byte of raw bytes (no newlines so per-frame guard wouldn't fire first)
+      const hugeChunk = new Uint8Array(16 * 1024 * 1024 + 1).fill(65); // 'A'
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(hugeChunk);
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("transport chunk exceeds maximum size");
     });
   });
 

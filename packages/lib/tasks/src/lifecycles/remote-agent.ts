@@ -101,6 +101,10 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 2000;
 // 1 MiB per NDJSON line — protects against unbounded buffer growth from a
 // server that never emits a newline.
 const MAX_FRAME_BYTES = 1 * 1024 * 1024;
+// 16 MiB per transport chunk — a single reader.read() call returning more
+// than this is anomalous regardless of how many frames it contains, and
+// would force allocation of a large buffer before any per-frame guard fires.
+const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -219,6 +223,7 @@ export function createRemoteAgentLifecycle(
             method: "POST",
             headers: { "Content-Type": "application/json", ...lifecycleHeaders },
             body: JSON.stringify({
+              taskId: String(taskId),
               correlationId: config.correlationId,
               payload: config.payload,
             }),
@@ -340,6 +345,20 @@ export function createRemoteAgentLifecycle(
             // data so a done frame in the buffer can win over the synthetic timeout failure.
             if (stopped) break;
             if (done) break;
+
+            // Transport-level chunk cap: reject before scanning to prevent a
+            // single oversized read() call from forcing a large allocation.
+            if (value.byteLength > MAX_CHUNK_BYTES) {
+              if (timeoutId !== undefined) clearTimeout(timeoutId);
+              notifyCancel();
+              emitTerminal(
+                1,
+                "\n[cleanup-incomplete: protocol error — transport chunk exceeds maximum size]\n",
+              );
+              teardownTransport();
+              pipeError = true;
+              break;
+            }
 
             // Scan `value` for newlines at the raw byte level — never decode the
             // full chunk. Each segment between newlines is checked and decoded
