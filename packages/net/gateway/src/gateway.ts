@@ -427,17 +427,25 @@ export function createGateway(
         criticalSweep = undefined;
       }
 
-      // Close all live connections, emit destroy events, and await all store deletions
-      // before stopping the transport. Using allSettled so a single store failure doesn't
-      // block the rest of shutdown.
-      const deletePromises: Promise<Result<boolean, KoiError>>[] = [];
+      // Phase 1: Sever session↔conn mappings BEFORE closing sockets so that when the
+      // transport delivers onClose → cleanupConn(), sessionByConn is already cleared and
+      // no duplicate 'destroyed' events are emitted.
       for (const [connId, conn] of connMap) {
-        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
         const sessionId = sessionByConn.get(connId);
+        sessionByConn.delete(connId);
         if (sessionId !== undefined) {
-          deletePromises.push(Promise.resolve(store.delete(sessionId)));
+          connBySession.delete(sessionId);
           emitSessionEvent({ kind: "destroyed", sessionId, reason: "server shutdown" });
         }
+        conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
+      }
+
+      // Phase 2: Delete ALL sessions from the store — not just those with live connections.
+      // Sessions retained for reconnect (cleanupConn intentionally keeps them) must also
+      // be purged on shutdown so a restarting process doesn't inherit stale remoteSeq state.
+      const deletePromises: Promise<Result<boolean, KoiError>>[] = [];
+      for (const [sessionId] of store.entries()) {
+        deletePromises.push(Promise.resolve(store.delete(sessionId)));
       }
       const settled = await Promise.allSettled(deletePromises);
       let cleanupFailed = false;
@@ -453,12 +461,12 @@ export function createGateway(
           cleanupFailed = true;
         }
       }
+
       connMap.clear();
       sessionByConn.clear();
       connBySession.clear();
       trackers.clear();
       pendingHandshakes.clear();
-
       deps.transport.close();
 
       if (cleanupFailed) {
