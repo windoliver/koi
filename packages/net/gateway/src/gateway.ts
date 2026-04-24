@@ -233,9 +233,15 @@ export function createGateway(
       try {
         sessionResult = await Promise.resolve(store.get(sessionId));
       } catch {
+        conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session lookup failed", nextId));
+        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session lookup failed");
         return;
       }
-      if (!sessionResult.ok) return;
+      if (!sessionResult.ok) {
+        conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session not found", nextId));
+        conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
+        return;
+      }
 
       const frameResult = parseFrame(data);
       if (!frameResult.ok) {
@@ -253,10 +259,32 @@ export function createGateway(
         return;
       }
 
-      const updatedSession: Session = { ...sessionResult.value, remoteSeq: frameResult.value.seq };
-      void Promise.resolve(store.set(updatedSession));
+      if (result === "buffered") return;
 
-      emitFrames(updatedSession, ready);
+      // Persist only the highest contiguous dispatched sequence (last in ready[]).
+      const lastDispatched = ready[ready.length - 1];
+      if (lastDispatched !== undefined) {
+        const updatedSession: Session = {
+          ...sessionResult.value,
+          remoteSeq: lastDispatched.seq,
+        };
+        void Promise.resolve(store.set(updatedSession))
+          .then((r) => {
+            if (!r.ok) {
+              conn.send(
+                createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+              );
+              conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+            }
+          })
+          .catch(() => {
+            conn.send(
+              createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
+            );
+            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+          });
+        emitFrames(updatedSession, ready);
+      }
     },
 
     onClose(conn: TransportConnection, _code: number, reason: string): void {
@@ -333,8 +361,16 @@ export function createGateway(
       }
       const encoded = encodeFrame(frame);
       const bytes = conn.send(encoded);
-      // Only track bytes that were actually buffered; -1 means send failed.
-      if (bytes >= 0) bp.record(connId, encoded.length);
+      if (bytes === -1) {
+        const error: KoiError = {
+          code: "EXTERNAL",
+          message: `Transport send failed for session: ${sessionId}`,
+          retryable: false,
+          context: { sessionId },
+        };
+        return { ok: false, error };
+      }
+      bp.record(connId, encoded.length);
       return { ok: true, value: bytes };
     },
 
