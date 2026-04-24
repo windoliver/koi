@@ -90,6 +90,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/snapshot-store-sqlite",
   "@koi/task-tools",
   "@koi/tasks",
+  "@koi/temporal",
   "@koi/tools-bash",
   "@koi/workspace",
 ]);

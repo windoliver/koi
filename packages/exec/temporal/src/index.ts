@@ -12,25 +12,40 @@ export {
   type ApplicationFailurePayload,
   mapKoiErrorToApplicationFailure,
   mapTemporalError,
-} from "./errors.js";
-
+} from "./temporal-errors.js";
+export {
+  createTemporalHealthMonitor,
+  DEFAULT_TEMPORAL_HEALTH_CONFIG,
+  type TemporalHealthConfig,
+  type TemporalHealthMonitor,
+  type TemporalHealthSnapshot,
+  type TemporalHealthStatus,
+} from "./temporal-health.js";
 export {
   createTemporalScheduler,
   type TemporalClientLike,
   type TemporalSchedulerConfig,
-} from "./scheduler.js";
+} from "./temporal-scheduler.js";
 export {
   createTemporalSpawnLedger,
   DEFAULT_SPAWN_LEDGER_CONFIG,
   type SpawnLedgerSnapshot,
   type TemporalSpawnLedgerConfig,
-} from "./spawn-ledger.js";
+} from "./temporal-spawn-ledger.js";
+export type {
+  AgentStateRefs,
+  AgentWorkflowConfig,
+  IncomingMessage,
+  TemporalConfig,
+} from "./types.js";
+export { DEFAULT_TEMPORAL_CONFIG } from "./types.js";
+
 export {
   createTemporalWorker,
   type NativeConnectionLike,
-  type TemporalConfig,
   type WorkerAndConnection,
   type WorkerCreateParams,
+  type WorkerFactoryOptions,
   type WorkerHandle,
   type WorkerLike,
 } from "./worker-factory.js";

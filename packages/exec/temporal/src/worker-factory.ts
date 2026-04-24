@@ -18,16 +18,14 @@ export interface WorkerLike {
   readonly shutdown: () => void;
 }
 
-export interface TemporalConfig {
-  readonly url?: string | undefined;
-  readonly namespace?: string | undefined;
-  readonly taskQueue: string;
-  readonly maxCachedWorkflows?: number | undefined;
+import type { TemporalConfig } from "./types.js";
+
+export interface WorkerFactoryOptions {
+  readonly config: TemporalConfig;
 }
 
 export interface WorkerCreateParams {
   readonly serverUrl: string;
-  readonly namespace: string;
   readonly taskQueue: string;
   readonly maxCachedWorkflows: number;
   readonly workflowsPath: string;
@@ -67,7 +65,6 @@ async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAn
   try {
     const worker = await Worker.create({
       connection,
-      namespace: params.namespace,
       taskQueue: params.taskQueue,
       maxCachedWorkflows: params.maxCachedWorkflows,
       workflowsPath: params.workflowsPath,
@@ -85,26 +82,30 @@ async function defaultCreateWorker(params: WorkerCreateParams): Promise<WorkerAn
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a Temporal Worker bound to the given config.
+ *
+ * Temporal is optional infrastructure — callers must inject `createWorkerFn`
+ * to avoid a hard dependency on @temporalio/worker (which has native bindings).
+ * In production, pass a factory that wraps NativeConnection + Worker.create.
+ * In tests, inject a mock factory.
+ */
 export async function createTemporalWorker(
-  config: TemporalConfig,
-  activities: Record<string, (...args: readonly unknown[]) => unknown>,
+  options: WorkerFactoryOptions,
   workflowsPath: string,
+  activities: Record<string, (...args: readonly unknown[]) => unknown>,
   createWorkerFn: (
     params: WorkerCreateParams,
   ) => Promise<WorkerAndConnection> = defaultCreateWorker,
 ): Promise<WorkerHandle> {
   const { worker, connection } = await createWorkerFn({
-    serverUrl: config.url ?? "localhost:7233",
-    namespace: config.namespace ?? "default",
-    taskQueue: config.taskQueue,
-    maxCachedWorkflows: config.maxCachedWorkflows ?? 100,
+    serverUrl: options.config.url ?? "localhost:7233",
+    taskQueue: options.config.taskQueue,
+    maxCachedWorkflows: options.config.maxCachedWorkflows ?? 100,
     workflowsPath,
     activities,
   });
 
-  // Tracks the promise returned by worker.run() so dispose() can drain.
-  // wrappedWorker intercepts run() so any call path — handle.run() or
-  // handle.worker.run() — always records runPromise.
   let runPromise: Promise<void> | undefined;
 
   const wrappedWorker: WorkerLike = {
@@ -129,11 +130,8 @@ export async function createTemporalWorker(
 
     async dispose(): Promise<void> {
       if (runPromise === undefined) {
-        // Worker is INITIALIZED and holds a ref-count on the connection.
-        // NativeConnection.close() throws "Cannot close connection while Workers
-        // hold a reference" until the worker reaches STOPPED state. Start it
-        // now so shutdown() can transition it out of INITIALIZED and release
-        // the reference before we close the transport.
+        // Worker holds a ref-count on the connection. Start it so shutdown()
+        // can transition it to STOPPED and release the reference.
         runPromise = worker.run();
       }
       wrappedWorker.shutdown();
