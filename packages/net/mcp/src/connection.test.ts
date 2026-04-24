@@ -568,6 +568,34 @@ describe("McpConnection onAuthNeeded pause-and-retry", () => {
     expect(conn.state.kind).toBe("auth-needed");
   });
 
+  test("listTools — 401 → onUnauthorized refreshed → reconnects via reconnect() and returns tools", async () => {
+    // Regression: previously called connect(true) from "connected" state which is
+    // an illegal transition (connected -> connecting). reconnect() stages through
+    // "reconnecting" so passive discovery self-heals after a silent token refresh.
+    const mockClient = createUnauthorizedOnFirstCallClient({
+      tools: [{ name: "my-tool", description: "A tool", inputSchema: { type: "object" } }],
+    });
+    const mockTransport = createMockTransport();
+    const onUnauthorized = mock(async (): Promise<UnauthorizedOutcome> => "refreshed");
+
+    const conn = createMcpConnection(makeConfig(), undefined, {
+      createClient: (() => mockClient) as ConnectionDeps["createClient"],
+      createTransport: (() => mockTransport) as ConnectionDeps["createTransport"],
+      onUnauthorized,
+    });
+
+    await conn.connect();
+    const result = await conn.listTools();
+
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toHaveLength(1);
+      expect(result.value[0]?.name).toBe("my-tool");
+    }
+    expect(conn.state.kind).toBe("connected");
+  });
+
   test("callTool — onAuthNeeded returns true but reconnect fails → returns real reconnect error", async () => {
     // let justified: tracks how many times connect was attempted
     let connectAttempt = 0;

@@ -610,7 +610,11 @@ export function createMcpConnection(
             (): UnauthorizedOutcome => "transient-failure",
           );
           if (outcome === "refreshed") {
-            const reconnResult = await connect(true);
+            // Use reconnect() to rebuild transport: from "connected" state,
+            // connect(true) would attempt "connected -> connecting" which the
+            // state machine forbids. reconnect() properly stages through
+            // "reconnecting" first.
+            const reconnResult = await reconnect();
             if (reconnResult.ok) {
               return listTools(true); // retry with fresh token
             }
