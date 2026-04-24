@@ -70,11 +70,17 @@ export function createSkillProvider(
   config?: SkillProviderConfig,
 ): ComponentProvider {
   const progressive = config?.progressive ?? false;
+  // Progressive mode requires a session-pinned runtime for consistency: the
+  // advertised <available_skills> must match what the Skill tool actually loads.
+  // Auto-wrap here so any caller of createSkillProvider gets pinning for the
+  // provider's attach path. For full consistency (provider + Skill tool sharing
+  // the same pinned runtime) use createProgressiveSkillProvider() instead.
+  const effectiveRuntime = progressive ? createProgressivePinnedRuntime(runtime) : runtime;
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
     attach: async (_agent: Agent): Promise<AttachResult> =>
-      progressive ? attachProgressive(runtime) : attachEager(runtime),
+      progressive ? attachProgressive(effectiveRuntime) : attachEager(runtime),
   };
 }
 
@@ -266,13 +272,12 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): SkillsRunti
       }
       base.invalidate(name);
     },
-    registerExternal: (skills: readonly SkillMetadata[]): void => {
-      // Clear pinned entries for refreshed external skills so stale definitions
-      // cannot be served after a bridge reconnect, rename, or removal.
-      for (const meta of skills) {
-        pinned.delete(meta.name);
-      }
-      base.registerExternal(skills);
-    },
+    // Do NOT evict pins on registerExternal. Session-snapshot consistency means
+    // the advertised <available_skills> and the bodies served by the Skill tool
+    // must both reflect the session-start state for the session's lifetime.
+    // Evicting pins on MCP bridge refresh would let load() return a different
+    // body than what was advertised at attach time — that breaks the invariant.
+    // Hosts that need live refresh must start a new session.
+    registerExternal: (skills: readonly SkillMetadata[]): void => base.registerExternal(skills),
   };
 }

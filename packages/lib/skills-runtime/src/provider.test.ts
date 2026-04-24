@@ -423,33 +423,33 @@ describe("createProgressivePinnedRuntime", () => {
     if (result.ok) expect(result.value.has("skill-c")).toBe(true);
   });
 
-  test("registerExternal clears pinned entries for refreshed skills", async () => {
-    // Regression: external skills updated via registerExternal (MCP bridge refresh)
-    // must not serve stale pinned definitions after the refresh.
-    await writeSkill(userRoot, "ext-skill", "Original ext body.");
+  test("registerExternal preserves pinned entries — session-snapshot consistency", async () => {
+    // Session-snapshot model: pinned entries must NOT be evicted on registerExternal.
+    // Evicting would let load() return a different body than what was advertised in
+    // <available_skills> at attach time, breaking the advertised-equals-loadable invariant.
+    // Hosts that need live refresh should start a new session.
+    await writeSkill(userRoot, "ext-skill", "Session-start body.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const runtime = createProgressivePinnedRuntime(base);
 
-    // Pin the skill via loadAll.
+    // Pin the skill via loadAll (session start).
     await runtime.loadAll();
 
-    // Simulate external skill registration (e.g. MCP bridge reconnect)
-    // with a new version — this should evict the pin.
+    // Simulate MCP bridge reconnect — should NOT evict the pin.
     runtime.registerExternal([
       {
         name: "ext-skill",
-        description: "Updated external.",
+        description: "Updated external description.",
         source: "mcp",
         body: "",
         dirPath: "",
       },
     ]);
 
-    // After registerExternal, load() falls through to base (pin was cleared).
+    // The pin must survive registerExternal — load() returns session-start body.
     const result = await runtime.load("ext-skill");
-    // The base load re-reads from disk (original file still there),
-    // confirming the pin was cleared rather than stale value returned.
     expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.body).toContain("Session-start body.");
   });
 });
 
