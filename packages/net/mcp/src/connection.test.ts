@@ -568,7 +568,7 @@ describe("McpConnection onAuthNeeded pause-and-retry", () => {
     expect(conn.state.kind).toBe("auth-needed");
   });
 
-  test("callTool — onAuthNeeded returns true but reconnect fails → returns original auth error", async () => {
+  test("callTool — onAuthNeeded returns true but reconnect fails → returns real reconnect error", async () => {
     // let justified: tracks how many times connect was attempted
     let connectAttempt = 0;
     const mockTransport = createMockTransport();
@@ -600,8 +600,11 @@ describe("McpConnection onAuthNeeded pause-and-retry", () => {
 
     expect(onAuthNeeded).toHaveBeenCalledTimes(1);
     expect(result.ok).toBe(false);
+    // Auth succeeded but reconnect failed — surfaces the real transport error,
+    // not the original AUTH_REQUIRED, so callers can distinguish transport
+    // outages from actual auth failures.
     if (!result.ok) {
-      expect(result.error.code).toBe("AUTH_REQUIRED");
+      expect(result.error.code).not.toBe("AUTH_REQUIRED");
     }
   });
 });

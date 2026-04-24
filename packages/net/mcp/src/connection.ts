@@ -128,8 +128,10 @@ export function createMcpConnection(
   let transport: KoiMcpTransport | undefined;
   // Shared reconnection promise — prevents thundering herd
   let reconnecting: Promise<Result<void, KoiError>> | undefined;
-  // Singleflight for auth flow — prevents concurrent onAuthNeeded calls
-  let authInFlight: Promise<boolean> | undefined;
+  // Singleflight for auth flow — prevents concurrent onAuthNeeded calls.
+  // Carries a Result so reconnect failures surface as real errors rather than
+  // being collapsed into the original AUTH_REQUIRED that triggered the flow.
+  let authInFlight: Promise<Result<void, KoiError>> | undefined;
   // Tool change listeners
   const toolChangeListeners = new Set<() => void>();
 
@@ -137,26 +139,41 @@ export function createMcpConnection(
   // Auth flow (singleflight — deduplicates concurrent onAuthNeeded calls)
   // -------------------------------------------------------------------------
 
-  const runAuthFlow = (): Promise<boolean> => {
+  // Error returned when auth is declined or no handler is wired — the server
+  // still requires authentication so AUTH_REQUIRED is the correct code.
+  const authDeclinedError = (): KoiError => ({
+    code: "AUTH_REQUIRED",
+    message: `${config.name} requires authentication`,
+    retryable: true,
+    context: { serverName: config.name },
+  });
+
+  const runAuthFlow = (): Promise<Result<void, KoiError>> => {
     if (authInFlight !== undefined) return authInFlight;
-    authInFlight = (async (): Promise<boolean> => {
+    authInFlight = (async (): Promise<Result<void, KoiError>> => {
       await Promise.resolve(onUnauthorized?.()).catch(() => {});
-      if (onAuthNeeded === undefined) return false;
+      if (onAuthNeeded === undefined) {
+        return { ok: false, error: authDeclinedError() };
+      }
       try {
         const authed = await onAuthNeeded();
-        if (!authed) return false;
+        if (!authed) {
+          return { ok: false, error: authDeclinedError() };
+        }
         // Include the reconnect inside the singleflight so concurrent callers
         // awaiting authInFlight see the connected state when they wake up and
         // cannot race to call connect() simultaneously on the same connection.
-        const reconnResult = await connect();
-        return reconnResult.ok;
+        // Pass skipRefresh=true: onUnauthorized already ran above.
+        const reconnResult = await connect(true);
+        // Propagate reconnect failures so callers can surface the real error
+        // (transport outage, server 5xx) instead of a misleading AUTH_REQUIRED.
+        return reconnResult.ok ? { ok: true, value: undefined } : reconnResult;
       } catch (e: unknown) {
         // Preserve the real failure cause for observability instead of silently
-        // returning false. The original AUTH_REQUIRED error is still surfaced to
-        // the caller — this log provides the concrete reason (port bind failure,
-        // discovery error, timeout, etc.) that caused the OAuth flow to throw.
+        // swallowing it. The caller surfaces AUTH_REQUIRED separately; this log
+        // provides the concrete reason (port bind failure, discovery error, etc.)
         console.error(`[koi mcp] auth flow error for "${config.name}":`, e);
-        return false;
+        return { ok: false, error: authDeclinedError() };
       }
     })().finally(() => {
       authInFlight = undefined;
@@ -168,7 +185,7 @@ export function createMcpConnection(
   // Connect
   // -------------------------------------------------------------------------
 
-  const connect = async (): Promise<Result<void, KoiError>> => {
+  const connect = async (skipRefresh = false): Promise<Result<void, KoiError>> => {
     if (abortController.signal.aborted) {
       return { ok: false, error: notConnectedError(config.name) };
     }
@@ -298,9 +315,15 @@ export function createMcpConnection(
       const koiError = mapMcpError(error, { serverName: config.name });
 
       // Check for auth challenge (401 only, not 403 scope denials).
-      // connect() is passive — transition to auth-needed and surface the error;
-      // interactive auth is reserved for explicit callTool invocations.
+      // Attempt token refresh once before escalating to interactive auth so
+      // sessions with a valid refresh token self-heal without browser prompts.
       if (koiError.code === "AUTH_REQUIRED") {
+        if (!skipRefresh && onUnauthorized !== undefined) {
+          const refreshOk = await Promise.resolve(onUnauthorized()).catch(() => false);
+          if (refreshOk === true) {
+            return connect(true); // retry once with fresh token, no further refresh
+          }
+        }
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
             kind: "auth-needed",
@@ -413,7 +436,9 @@ export function createMcpConnection(
   // List tools
   // -------------------------------------------------------------------------
 
-  const listTools = async (): Promise<Result<readonly McpToolInfo[], KoiError>> => {
+  const listTools = async (
+    skipRefresh = false,
+  ): Promise<Result<readonly McpToolInfo[], KoiError>> => {
     const connResult = await ensureConnected();
     if (!connResult.ok) return connResult;
     if (client === undefined) {
@@ -430,11 +455,19 @@ export function createMcpConnection(
       return { ok: true, value: tools };
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
-      // 401 mid-session → auth-needed. 403 (insufficient scope, ACL denial)
-      // stays as a normal error — don't clear valid credentials.
-      // listTools() is passive (discovery/status) — transition state and
-      // surface AUTH_REQUIRED; interactive auth is reserved for callTool.
+      // 401 mid-session → attempt token refresh before escalating to
+      // interactive auth, so sessions with a valid refresh token self-heal.
+      // 403 (insufficient scope, ACL denial) stays as a normal error.
       if (koiError.code === "AUTH_REQUIRED") {
+        if (!skipRefresh && onUnauthorized !== undefined) {
+          const refreshOk = await Promise.resolve(onUnauthorized()).catch(() => false);
+          if (refreshOk === true) {
+            const reconnResult = await connect(true);
+            if (reconnResult.ok) {
+              return listTools(true); // retry with fresh token
+            }
+          }
+        }
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
             kind: "auth-needed",
@@ -498,8 +531,8 @@ export function createMcpConnection(
         }
         // runAuthFlow includes connect() in its singleflight, so after it
         // resolves, client is either set (auth+reconnect succeeded) or undefined.
-        const authed = await runAuthFlow();
-        if (authed && client !== undefined) {
+        const authResult = await runAuthFlow();
+        if (authResult.ok && client !== undefined) {
           try {
             const retryResult = await client.callTool({
               name,
@@ -512,7 +545,9 @@ export function createMcpConnection(
             return { ok: false, error: mapMcpError(retryErr, { serverName: config.name }) };
           }
         }
-        return { ok: false, error: koiError };
+        // Auth declined → original AUTH_REQUIRED. Reconnect failed after auth →
+        // propagate the real transport error rather than a misleading AUTH_REQUIRED.
+        return { ok: false, error: authResult.ok ? koiError : authResult.error };
       }
       if (stateMachine.canTransitionTo("error")) {
         stateMachine.transition({
