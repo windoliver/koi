@@ -33,11 +33,15 @@ interface OAuthRuntime {
 
 export interface CliOAuthRuntimeOptions {
   /**
-   * Called just before the browser window opens. Use this to fire a
-   * "browser opening" UX notification through the channel.
+   * Called just before the browser window opens. Receives the authorization
+   * URL (the OAuth provider's page — not the local callback) so the channel
+   * can surface it as a manual fallback if the browser launch fails.
+   * `mode: "local"` in the resulting channel notification means the callback
+   * server runs on 127.0.0.1 — the URL must be opened on the same machine as
+   * Koi, not on a remote browser.
    * Invoked fire-and-forget — errors are silently swallowed.
    */
-  readonly onBrowserOpen?: (() => void) | undefined;
+  readonly onBrowserOpen?: ((authorizationUrl: string) => void) | undefined;
 }
 
 export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefined): OAuthRuntime {
@@ -47,8 +51,10 @@ export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefin
       redirectUri: string,
     ): Promise<OAuthCallbackResult> => {
       // Notify the channel that the browser is about to open before doing so.
+      // Pass authorizationUrl so the TUI can display it as a fallback if the
+      // browser launch fails (the URL must be opened on this machine).
       try {
-        options?.onBrowserOpen?.();
+        options?.onBrowserOpen?.(authorizationUrl);
       } catch {
         // Notification failure must never block the browser from opening.
       }

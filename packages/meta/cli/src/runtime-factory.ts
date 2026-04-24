@@ -2285,9 +2285,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
-    const mcpPluginOAuthCapableNames = stackContribution.exports.mcpPluginOAuthCapableNames as
-      | ReadonlySet<string>
-      | undefined;
     const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
       | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
       | undefined;
@@ -3125,7 +3122,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
-            oauthNames: mcpPluginOAuthCapableNames,
+            // Plugin servers do not surface as OAuth-capable via nav:mcp-auth —
+            // they authenticate through their own pseudo-tools, not through the
+            // same first-party browser flow as user-configured .mcp.json entries.
+            // Routing plugins through triggerMcpServerAuth would widen the trust
+            // boundary to plugin-supplied OAuth endpoints without a consent gate.
+            oauthNames: undefined,
           });
         if (sources.length === 0) return [];
 
@@ -3176,6 +3178,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         qualifiedName: string,
         channel: import("@koi/core").OAuthChannel,
       ): Promise<boolean> => {
+        // Plugin-provided servers are not eligible for user-triggered auth via
+        // this path — they authenticate through their own pseudo-tools. Routing
+        // plugin servers here would allow plugin-supplied OAuth endpoints to
+        // drive the trusted browser flow without a consent gate.
+        if (qualifiedName.startsWith("plugin:")) return false;
+
         // Route to the correct source map using the namespace prefix so that
         // user:foo and plugin:foo cannot collide when both sources exist.
         const isPlugin = qualifiedName.startsWith("plugin:");
@@ -3238,16 +3246,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           return true;
         }
         if (refreshOutcome === "transient-failure") {
-          // Refresh endpoint temporarily unavailable — don't open browser.
-          void Promise.resolve(
-            channel.onAuthFailure?.({
-              provider: serverName,
-              reason: "Token refresh temporarily unavailable. Will retry automatically.",
-            }),
-          ).catch(() => {});
-          return false;
+          // Silent refresh failed but tokens exist — normally we'd wait for an
+          // automatic retry, but this is an explicit user-triggered auth request.
+          // Fall through to the interactive browser flow so the user can force a
+          // fresh consent even when the refresh endpoint is temporarily unavailable.
         }
-        // "needs-auth" — interactive OAuth required.
+        // "needs-auth" or "transient-failure" — interactive OAuth required.
         // onBrowserOpen (wired into the provider's runtime via mcp-connection-factory)
         // fires onAuthRequired when the browser is about to open.
         const authed = await provider.startAuthFlow();

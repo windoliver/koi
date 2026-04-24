@@ -60,10 +60,15 @@ export function createOAuthAwareMcpConnection(
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (): void => {
+            onBrowserOpen: (authorizationUrl: string): void => {
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,
+                  // Include the URL so the TUI can show it as a manual fallback
+                  // if the browser launch fails. mode:"local" signals that the
+                  // callback server runs on 127.0.0.1 — the URL must be opened on
+                  // the same machine as Koi, not on a remote browser.
+                  authUrl: authorizationUrl,
                   message: `Opening browser to authorize ${server.name}`,
                   mode: "local",
                 }),
