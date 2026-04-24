@@ -1,6 +1,6 @@
 {
   "name": "@koi/ipc-local",
-  "description": "Local in-memory IPC: MailboxComponent backed by in-memory storage with microtask dispatch, plus a MailboxRouter for in-process multi-agent communication",
+  "description": "In-process mailbox IPC: in-memory MailboxComponent with microtask dispatch and MailboxRouter for multi-agent routing",
   "version": "0.0.0",
   "private": true,
   "type": "module",
