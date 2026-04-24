@@ -151,6 +151,38 @@ describe("createWorkspaceProvider", () => {
     expect(backend.disposed.length).toBe(1);
   });
 
+  it("concurrent attach for same agent throws on second call", async () => {
+    let resolveCrate!: (info: WorkspaceInfo) => void;
+    const slowBackend = makeBackend({
+      async create(_aid, _cfg) {
+        await new Promise<void>((r) => {
+          resolveCrate = (info) => {
+            backend.created.push(info);
+            r();
+          };
+        });
+        const id = workspaceId("ws-slow");
+        return {
+          ok: true,
+          value: { id, path: "/tmp/ws-slow", createdAt: Date.now(), metadata: {} },
+        };
+      },
+    });
+    const provider = createWorkspaceProvider({ backend: slowBackend });
+    const agent = makeAgent();
+
+    const first = provider.attach(agent);
+    await expect(provider.attach(agent)).rejects.toThrow("Concurrent attach");
+    resolveCrate({
+      id: workspaceId("ws-slow"),
+      path: "/tmp/ws-slow",
+      createdAt: Date.now(),
+      metadata: {},
+    });
+    await provider.detach?.(agent);
+    await first;
+  });
+
   it("reattach after on_success non-disposal reclaims old workspace", async () => {
     const provider = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
     const agent = makeAgent();
@@ -184,7 +216,7 @@ describe("createWorkspaceProvider", () => {
       },
     });
     const agent = makeAgent();
-    await expect(provider.attach(agent)).rejects.toThrow("cleanup also failed");
+    await expect(provider.attach(agent)).rejects.toThrow("cleanup also timed out or failed");
     // Workspace should still be tracked so a later detach can retry cleanup
     await expect(provider.detach?.(agent)).resolves.toBeUndefined();
   });
