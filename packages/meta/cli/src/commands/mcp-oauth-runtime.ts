@@ -19,12 +19,19 @@ interface OAuthCallbackResult {
   readonly state: string | undefined;
 }
 
+interface OAuthFailureReason {
+  readonly kind: string;
+  readonly serverName: string;
+  readonly detail?: string | undefined;
+}
+
 interface OAuthRuntime {
   readonly authorize: (
     authorizationUrl: string,
     redirectUri: string,
   ) => Promise<OAuthCallbackResult>;
   readonly onReauthNeeded: (serverName: string) => Promise<void>;
+  readonly onAuthFailure?: ((reason: OAuthFailureReason) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +49,13 @@ export interface CliOAuthRuntimeOptions {
    * Invoked fire-and-forget — errors are silently swallowed.
    */
   readonly onBrowserOpen?: ((authorizationUrl: string) => void) | undefined;
+  /**
+   * Optional structured-failure observer. Fires when the provider takes a
+   * fail-closed branch — discovery failure, DCR rejection, token-exchange
+   * failure, etc. Lets hosts surface actionable diagnostics.
+   * Must not throw.
+   */
+  readonly onAuthFailure?: ((reason: OAuthFailureReason) => void) | undefined;
 }
 
 export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefined): OAuthRuntime {
@@ -65,6 +79,7 @@ export function createCliOAuthRuntime(options?: CliOAuthRuntimeOptions | undefin
           `\nRun: koi mcp auth ${serverName}`,
       );
     },
+    onAuthFailure: options?.onAuthFailure,
   };
 }
 

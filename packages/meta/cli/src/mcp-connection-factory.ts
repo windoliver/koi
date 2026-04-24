@@ -12,6 +12,28 @@ import { createMcpConnection, createOAuthAuthProvider, resolveServerConfig } fro
 import { createSecureStorage } from "@koi/secure-storage";
 import { createCliOAuthRuntime } from "./commands/mcp-oauth-runtime.js";
 
+function formatOAuthFailureReason(r: {
+  readonly kind: string;
+  readonly detail?: string | undefined;
+}): string {
+  switch (r.kind) {
+    case "discovery_failed":
+      return "Authorization server discovery failed. Check the server URL and OAuth config.";
+    case "dcr_unavailable":
+      return "Dynamic client registration endpoint is unavailable on this server.";
+    case "dcr_failed":
+      return `Client registration failed${r.detail !== undefined ? `: ${r.detail}` : ""}.`;
+    case "exchange_failed":
+      return "Authorization code exchange failed. Try authorizing again.";
+    case "state_mismatch":
+      return "OAuth state mismatch (possible CSRF). Authorization aborted.";
+    case "authorize_failed":
+      return `Browser authorization failed${r.detail !== undefined ? `: ${r.detail}` : ""}.`;
+    default:
+      return "OAuth authorization failed. Retry via the /mcp panel.";
+  }
+}
+
 /** Injectable factories for testing. All fields are optional — defaults are the real implementations. */
 export interface OAuthAwareMcpConnectionDeps {
   readonly createConnection?: typeof createMcpConnection;
@@ -56,6 +78,11 @@ export function createOAuthAwareMcpConnection(
     // MCP uses a local loopback callback (127.0.0.1). Pass authorizationUrl so
     // the user can copy-paste it into their local browser if auto-open fails.
     // The message also includes a CLI fallback for SSH/headless environments.
+    // let justified: captures last structured failure reason so onAuthNeeded
+    // can surface it instead of a generic "failed" message.
+    let lastOAuthFailure:
+      | { readonly kind: string; readonly detail?: string | undefined }
+      | undefined;
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
@@ -70,6 +97,21 @@ export function createOAuthAwareMcpConnection(
                   message: `Opening browser to authorize ${server.name}.`,
                   mode: "local",
                   authUrl: authorizationUrl,
+                }),
+              ).catch(() => {});
+            },
+            onAuthFailure: (reason: {
+              readonly kind: string;
+              readonly detail?: string | undefined;
+            }): void => {
+              lastOAuthFailure = reason;
+              // Eagerly surface the structured reason to the channel so
+              // the TUI can show actionable diagnostics without waiting for
+              // onAuthNeeded to fire (e.g., DCR failure before browser opens).
+              void Promise.resolve(
+                oauthChannel.onAuthFailure?.({
+                  provider: server.name,
+                  reason: formatOAuthFailureReason(reason),
                 }),
               ).catch(() => {});
             },
@@ -91,14 +133,17 @@ export function createOAuthAwareMcpConnection(
         ? async (): Promise<boolean> => {
             // onBrowserOpen (wired into the runtime above) fires onAuthRequired
             // the moment the browser opens — no need for an early notification here.
+            // Reset lastOAuthFailure before each attempt so stale reasons don't
+            // persist across retries.
+            lastOAuthFailure = undefined;
             const authed = await provider.startAuthFlow();
-            if (!authed) {
-              // Surface the failure so the TUI can show actionable info rather
-              // than a generic AUTH_REQUIRED error.
+            if (!authed && lastOAuthFailure === undefined) {
+              // No structured failure was reported (e.g., user cancelled in browser) —
+              // fire a generic failure so the channel still shows something.
               void Promise.resolve(
                 oauthChannel.onAuthFailure?.({
                   provider: server.name,
-                  reason: "Authorization was cancelled or failed. Retry via the /mcp panel.",
+                  reason: "Authorization was cancelled or did not complete.",
                 }),
               ).catch(() => {});
             }
