@@ -124,11 +124,14 @@ export type GovernanceEvent =
       /**
        * Wall-clock ms (Date.now()) at the true run boundary — the moment the engine
        * decided to reset, before any async middleware or controller I/O. Controllers
-       * MUST use this value to anchor duration-budget windows rather than calling
+       * SHOULD use this value to anchor duration-budget windows rather than calling
        * `Date.now()` themselves; the latter drifts when the record() call is delayed
        * by I/O or middleware latency.
+       *
+       * Optional for backward compatibility: controllers fall back to `Date.now()`
+       * when absent. Only reject non-finite or far-future values (> 60s from now).
        */
-      readonly boundaryTimestamp: number;
+      readonly boundaryTimestamp?: number | undefined;
     }
   /**
    * Emitted by `runtime.cycleSession()` at a host-driven conversation boundary
@@ -145,7 +148,7 @@ export type GovernanceEvent =
       readonly source: "host" | "engine";
       readonly reason?: string | undefined;
       readonly boundaryId: string;
-      readonly boundaryTimestamp: number;
+      readonly boundaryTimestamp?: number | undefined;
     };
 
 /**

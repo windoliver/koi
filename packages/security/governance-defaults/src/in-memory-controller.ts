@@ -509,10 +509,9 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         // Invalid values fall back to now() so a buggy caller cannot disable
         // duration enforcement by injecting NaN or a far-future timestamp.
         const runNow = now();
-        const runTs = event.boundaryTimestamp;
+        const runTs = event.boundaryTimestamp ?? runNow;
         state.turnCount = 0;
-        state.iterationStart =
-          Number.isFinite(runTs) && Math.abs(runTs - runNow) <= 60_000 ? runTs : runNow;
+        state.iterationStart = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
         return;
       }
       case "session_reset": {
@@ -520,10 +519,10 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         // a fresh conversation doesn't inherit tool-error history. Token usage,
         // cost, and spawn_count remain cumulative.
         const sessNow = now();
-        const sessTs = event.boundaryTimestamp;
+        const sessTs = event.boundaryTimestamp ?? sessNow;
         state.turnCount = 0;
         state.iterationStart =
-          Number.isFinite(sessTs) && Math.abs(sessTs - sessNow) <= 60_000 ? sessTs : sessNow;
+          Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
         state.toolOutcomes.length = 0;
         return;
       }

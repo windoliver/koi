@@ -301,14 +301,15 @@ export function createGovernanceController(
         // INTENTIONALLY NOT reset — they back runtime-wide spend safety
         // caps. Spawn counts and rolling error-rate windows are also
         // runtime-scoped and unaffected.
-        // Validate boundaryTimestamp before use: must be a finite number not
-        // more than 60s in the future (clock-skew tolerance). Invalid values
-        // fall back to Date.now() so a buggy/malicious caller cannot disable
-        // duration enforcement by injecting NaN or a far-future timestamp.
+        // Validate boundaryTimestamp before use: accept any finite value not
+        // more than 60s in the future (clock-skew tolerance). Past timestamps
+        // are accepted — they only tighten duration enforcement, never loosen
+        // it. Reject non-finite values and far-future timestamps; fall back to
+        // Date.now() so a buggy/malicious caller cannot disable enforcement.
         const runNow = Date.now();
-        const runTs = event.boundaryTimestamp;
+        const runTs = event.boundaryTimestamp ?? runNow;
         turnCount = 0;
-        startedAt = Number.isFinite(runTs) && Math.abs(runTs - runNow) <= 60_000 ? runTs : runNow;
+        startedAt = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
         break;
       }
       case "session_reset": {
@@ -320,10 +321,9 @@ export function createGovernanceController(
         // accumulated cost, and spawn counts remain CUMULATIVE so
         // process-level spend / fan-out ceilings still hold.
         const sessNow = Date.now();
-        const sessTs = event.boundaryTimestamp;
+        const sessTs = event.boundaryTimestamp ?? sessNow;
         turnCount = 0;
-        startedAt =
-          Number.isFinite(sessTs) && Math.abs(sessTs - sessNow) <= 60_000 ? sessTs : sessNow;
+        startedAt = Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
         errorWindow.clear();
         totalCallsWindow.clear();
         break;
