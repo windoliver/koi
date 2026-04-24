@@ -159,7 +159,7 @@ describe("skillDefinitionToComponent", () => {
   });
 });
 
-describe("createSkillProvider — progressive mode", () => {
+describe("createProgressiveSkillProvider — progressive attach behavior", () => {
   let userRoot: string;
 
   beforeEach(async () => {
@@ -170,11 +170,10 @@ describe("createSkillProvider — progressive mode", () => {
     await rm(userRoot, { recursive: true, force: true });
   });
 
-  test("progressive: true attaches skills with empty content (no body loaded)", async () => {
+  test("attaches skills with empty content (no body loaded)", async () => {
     await writeSkill(userRoot, "my-skill");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
-    const runtime = createProgressivePinnedRuntime(base);
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const { provider } = createProgressiveSkillProvider(base);
 
     const result = await provider.attach(STUB_AGENT);
     expect(isAttachResult(result)).toBe(true);
@@ -190,12 +189,11 @@ describe("createSkillProvider — progressive mode", () => {
     expect(component?.content).toBe("");
   });
 
-  test("progressive: true does not load bodies even for multiple skills", async () => {
+  test("does not load bodies even for multiple skills", async () => {
     await writeSkill(userRoot, "skill-a", "Long body A.");
     await writeSkill(userRoot, "skill-b", "Long body B.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
-    const runtime = createProgressivePinnedRuntime(base);
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const { provider } = createProgressiveSkillProvider(base);
 
     const result = await provider.attach(STUB_AGENT);
     expect(isAttachResult(result)).toBe(true);
@@ -207,15 +205,14 @@ describe("createSkillProvider — progressive mode", () => {
     expect(b?.content).toBe("");
   });
 
-  test("progressive: true preserves description for XML rendering", async () => {
+  test("preserves description for XML rendering", async () => {
     await Bun.write(
       join(userRoot, "my-skill", "SKILL.md"),
       "---\nname: my-skill\ndescription: Does cool things.\n---\n\nBody.",
       { createPath: true },
     );
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
-    const runtime = createProgressivePinnedRuntime(base);
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const { provider } = createProgressiveSkillProvider(base);
 
     const result = await provider.attach(STUB_AGENT);
     expect(isAttachResult(result)).toBe(true);
@@ -227,22 +224,7 @@ describe("createSkillProvider — progressive mode", () => {
     expect(component?.description).toBe("Does cool things.");
   });
 
-  test("progressive: false (explicit) uses eager path — content is non-empty", async () => {
-    await writeSkill(userRoot, "eager-skill", "Eager body.");
-    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot });
-    const provider = createSkillProvider(runtime, { progressive: false });
-
-    const result = await provider.attach(STUB_AGENT);
-    expect(isAttachResult(result)).toBe(true);
-    if (!isAttachResult(result)) return;
-
-    const component = result.components.get(skillToken("eager-skill")) as
-      | { content: string }
-      | undefined;
-    expect(component?.content).toContain("Eager body.");
-  });
-
-  test("progressive attach calls loadAll() so blocked skills appear in skipped (startup cost parity)", async () => {
+  test("calls loadAll() so blocked skills appear in skipped (startup cost parity)", async () => {
     // Both eager and progressive modes call loadAll() at startup — they have the same I/O
     // cost. Progressive mode's benefit is per-call token reduction (~100 tokens XML metadata
     // vs. full bodies injected at every model call). The bodies loaded by loadAll() remain
@@ -253,8 +235,7 @@ describe("createSkillProvider — progressive mode", () => {
     await writeSkill(userRoot, "blocked-skill", blockedBody);
 
     const base = createSkillsRuntime({ bundledRoot: null, userRoot, blockOnSeverity: "HIGH" });
-    const runtime = createProgressivePinnedRuntime(base);
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const { provider } = createProgressiveSkillProvider(base);
 
     const result = await provider.attach(STUB_AGENT);
     expect(isAttachResult(result)).toBe(true);
@@ -272,7 +253,7 @@ describe("createSkillProvider — progressive mode", () => {
     expect(skippedNames).toContain("blocked-skill");
   });
 
-  test("progressive attach keeps session-snapshot: Skill tool returns attach-time body", async () => {
+  test("keeps session-snapshot: pinnedRuntime returns attach-time body after in-session edit", async () => {
     // Session-snapshot consistency: advertised ECS components and cached bodies both
     // reflect session-start state. This prevents the stale-advertisement hazard where
     // <available_skills> lists a skill whose backing file was deleted or became invalid
@@ -280,29 +261,27 @@ describe("createSkillProvider — progressive mode", () => {
     // Tradeoff: edits to SKILL.md after session start are not visible until next session.
     await writeSkill(userRoot, "editable", "Original body.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
-    const runtime = createProgressivePinnedRuntime(base);
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const { provider, pinnedRuntime } = createProgressiveSkillProvider(base);
 
     await provider.attach(STUB_AGENT);
 
     // Overwrite the skill file to simulate an in-session edit.
     await writeSkill(userRoot, "editable", "Updated body.");
 
-    // The Skill tool calls runtime.load() — it must see the session-start snapshot,
+    // The Skill tool calls pinnedRuntime.load() — it must see the session-start snapshot,
     // not the in-session edit, to maintain advertisement/load consistency.
-    const loaded = await runtime.load("editable");
+    const loaded = await pinnedRuntime.load("editable");
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.value.body).toContain("Original body.");
   });
 
-  test("progressive attach consistency: skill deleted after attach still loads from cache", async () => {
+  test("skill deleted after attach still loads from pinned snapshot", async () => {
     // A skill deleted from disk after session start must still be loadable via the Skill
     // tool — its body was cached at attach time. This prevents the model from being told
     // a skill exists (via <available_skills>) but then getting a NOT_FOUND error.
     await writeSkill(userRoot, "deletable", "Body before deletion.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
-    const runtime = createProgressivePinnedRuntime(base);
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const { provider, pinnedRuntime } = createProgressiveSkillProvider(base);
 
     await provider.attach(STUB_AGENT);
 
@@ -311,12 +290,12 @@ describe("createSkillProvider — progressive mode", () => {
     rmSync(`${userRoot}/deletable/SKILL.md`, { force: true });
 
     // Must still be loadable from the pinned session-snapshot map.
-    const loaded = await runtime.load("deletable");
+    const loaded = await pinnedRuntime.load("deletable");
     expect(loaded.ok).toBe(true);
     if (loaded.ok) expect(loaded.value.body).toContain("Body before deletion.");
   });
 
-  test("progressive attach does not mark MCP external skills as runtimeBacked", async () => {
+  test("does not mark MCP external skills as runtimeBacked", async () => {
     // MCP skills registered via registerExternal() have source: "mcp" and body: description === "".
     // In eager mode, injectSkills() filters them via content === "" — they never reach systemPrompt.
     // Progressive mode must match this behavior: MCP skills must NOT get runtimeBacked: true and
@@ -330,8 +309,7 @@ describe("createSkillProvider — progressive mode", () => {
         dirPath: "mcp://test-server",
       },
     ]);
-    const runtime = createProgressivePinnedRuntime(base);
-    const provider = createSkillProvider(runtime, { progressive: true });
+    const { provider } = createProgressiveSkillProvider(base);
 
     const result = await provider.attach(STUB_AGENT);
     expect(isAttachResult(result)).toBe(true);
@@ -345,13 +323,6 @@ describe("createSkillProvider — progressive mode", () => {
     expect(component?.runtimeBacked).toBeUndefined();
     // Content should be empty (MCP body is description === "")
     expect(component?.content).toBe("");
-  });
-
-  test("throws when progressive: true is passed a non-pinned runtime", () => {
-    const unpinned = createSkillsRuntime({ bundledRoot: null, userRoot });
-    expect(() => createSkillProvider(unpinned, { progressive: true })).toThrow(
-      "createProgressiveSkillProvider()",
-    );
   });
 });
 
@@ -466,10 +437,9 @@ describe("createProgressivePinnedRuntime", () => {
     if (result.ok) expect(result.value.body).toContain("Session-start body.");
   });
 
-  test("clearPinnedBodies() resets pinnedPopulated so loadAll() re-pins next call", async () => {
-    // clearPinnedBodies is the session-reset primitive: clears session-local pins and
-    // resets the pinnedPopulated flag so the next loadAll() can re-populate fresh pins.
-    // The base runtime's LRU cache is intentionally preserved.
+  test("clearPinnedBodies() empties pin map so loadAll() re-pins next call", async () => {
+    // clearPinnedBodies is the session-reset primitive: clears session-local pins so the
+    // next loadAll() (pinned.size === 0) re-populates fresh pins for the new session.
     await writeSkill(userRoot, "session-skill", "Session-start body.");
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const runtime = createProgressivePinnedRuntime(base);
@@ -481,14 +451,12 @@ describe("createProgressivePinnedRuntime", () => {
     const beforeClear = await runtime.load("session-skill");
     expect(beforeClear.ok && beforeClear.value.body).toContain("Session-start body.");
 
-    // Clear pins (session reset path). Does NOT call base.invalidate().
+    // Clear pins (session reset path). Also calls base.invalidate(name) for each pin.
     runtime.clearPinnedBodies();
 
-    // After clear, pinnedPopulated = false — next loadAll() re-populates the pin map.
-    // Invalidate the base LRU to simulate a fresh start, then re-load.
-    base.invalidate("session-skill");
+    // Pin map is now empty — next loadAll() re-pins fresh state.
     await writeSkill(userRoot, "session-skill", "Updated body.");
-    await runtime.loadAll(); // re-pins with fresh base state
+    await runtime.loadAll(); // re-pins with fresh disk state
 
     const afterRepopulate = await runtime.load("session-skill");
     expect(afterRepopulate.ok && afterRepopulate.value.body).toContain("Updated body.");

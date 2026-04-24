@@ -1724,6 +1724,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Loop mode is a self-correcting execution, not a conversation.
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
     skillsRuntime: skillRuntime,
+    skillsProgressive: true,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(governance.enabled && (governance.maxSpendUsd ?? 0) > 0
       ? { maxSpendUsd: governance.maxSpendUsd }

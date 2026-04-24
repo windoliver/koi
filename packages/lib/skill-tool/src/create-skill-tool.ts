@@ -122,25 +122,32 @@ function buildDescription(skillListing: string): string {
  * @returns Result containing the Tool on success, or a KoiError if discovery fails.
  */
 export async function createSkillTool(config: SkillToolConfig): Promise<Result<Tool, KoiError>> {
-  // Discover skills for the tool description
-  const discoverResult = await config.resolver.discover();
-  if (!discoverResult.ok) return discoverResult;
+  // In progressive mode the host injects an <available_skills> XML block per model call
+  // from live ECS state. The tool description does not need a skill listing — it would
+  // duplicate a startup-time snapshot that goes stale after session resets. Skip discovery
+  // and use an empty listing so the XML block is the single authoritative catalog.
+  let skillListing = "";
+  if (!config.progressive) {
+    // Discover skills for the tool description
+    const discoverResult = await config.resolver.discover();
+    if (!discoverResult.ok) return discoverResult;
 
-  // Filter to only skills executable under the current config.
-  // Fork skills require spawnFn and valid spawn config to be executable.
-  const allSkills = [...discoverResult.value.values()];
-  const skills = allSkills.filter((skill) => {
-    const spawnResult = extractSpawnConfig(skill);
-    if (!spawnResult.ok && spawnResult.error.code === "NOT_FOUND") {
-      return true; // Inline-only skill — always executable
-    }
-    if (!spawnResult.ok) {
-      return false; // Spawn config validation failed — not executable
-    }
-    // Fork skill — only executable if spawnFn is configured
-    return config.spawnFn !== undefined;
-  });
-  const skillListing = formatSkillDescription(skills);
+    // Filter to only skills executable under the current config.
+    // Fork skills require spawnFn and valid spawn config to be executable.
+    const allSkills = [...discoverResult.value.values()];
+    const skills = allSkills.filter((skill) => {
+      const spawnResult = extractSpawnConfig(skill);
+      if (!spawnResult.ok && spawnResult.error.code === "NOT_FOUND") {
+        return true; // Inline-only skill — always executable
+      }
+      if (!spawnResult.ok) {
+        return false; // Spawn config validation failed — not executable
+      }
+      // Fork skill — only executable if spawnFn is configured
+      return config.spawnFn !== undefined;
+    });
+    skillListing = formatSkillDescription(skills);
+  }
   const description = buildDescription(skillListing);
 
   const tool: Tool = {

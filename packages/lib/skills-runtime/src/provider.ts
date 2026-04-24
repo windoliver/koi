@@ -26,63 +26,25 @@ import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface SkillProviderConfig {
-  /**
-   * When true: validate all skills at attach time via loadAll() but attach each
-   * successful skill with content: "" and runtimeBacked: true. The middleware
-   * injects a compact <available_skills> XML block per model call instead of full
-   * bodies, reducing per-call prompt tokens. Blocked/VALIDATION skills are still
-   * reported in AttachResult.skipped for operator visibility.
-   *
-   * Trade-off vs. eager mode (progressive: false):
-   * - Both modes call loadAll() at startup (same validation and startup cost)
-   * - Progressive: ~100 tokens injected per model call (XML metadata only)
-   * - Eager: body text injected at every model call (can be thousands of tokens)
-   *
-   * When false (default): call loadAll() and inject full bodies into systemPrompt
-   * at every model call.
-   */
-  readonly progressive?: boolean;
-}
-
 /**
  * Creates a ComponentProvider that bridges a SkillsRuntime to the agent ECS.
  *
- * Eager mode (default, progressive: false):
- *   Calls runtime.loadAll(), converts each SkillDefinition → SkillComponent
- *   with full body in content.
+ * Eager mode: Calls runtime.loadAll(), converts each SkillDefinition → SkillComponent
+ * with full body in content. Bodies are injected into the system prompt at every
+ * model call.
  *
- * Progressive mode (progressive: true):
- *   Calls runtime.loadAll() for full blocked/VALIDATION visibility, then attaches
- *   each successful skill with content: "" and runtimeBacked: true. Bodies are
- *   discarded at attach time; the Skill tool re-loads a body on demand when the
- *   model invokes a skill. The middleware injects an <available_skills> XML block.
- *
- * NOTE: Progressive mode requires a session-pinned runtime so the advertised
- * skills and the bodies served by the Skill tool remain consistent. Use
- * `createProgressiveSkillProvider()` instead of this function in progressive
- * mode — it bundles pinning automatically and returns the pinned runtime.
+ * For progressive mode (compact <available_skills> XML block per model call),
+ * use `createProgressiveSkillProvider()` instead — it bundles session-snapshot
+ * pinning automatically and returns the pinned runtime for the Skill tool.
  *
  * Compatible with Nexus in the future: swap the runtime implementation,
  * keep the same provider.
  */
-export function createSkillProvider(
-  runtime: SkillsRuntime,
-  config?: SkillProviderConfig,
-): ComponentProvider {
-  const progressive = config?.progressive ?? false;
-  if (progressive && !("clearPinnedBodies" in runtime)) {
-    throw new Error(
-      "createSkillProvider: progressive mode requires a session-pinned runtime. " +
-        "Use createProgressiveSkillProvider() instead — it bundles pinning and " +
-        "returns the pinned runtime that must also be passed to the Skill tool.",
-    );
-  }
+export function createSkillProvider(runtime: SkillsRuntime): ComponentProvider {
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
-    attach: async (_agent: Agent): Promise<AttachResult> =>
-      progressive ? attachProgressive(runtime) : attachEager(runtime),
+    attach: async (_agent: Agent): Promise<AttachResult> => attachEager(runtime),
   };
 }
 
@@ -92,9 +54,13 @@ export function createSkillProvider(
  * pass the same runtime to the Skill tool — ensuring the body served on
  * demand matches exactly what was valid when the session started.
  *
- * Use this instead of `createSkillProvider(runtime, { progressive: true })`
- * to guarantee consistency without having to manually call
- * `createProgressivePinnedRuntime` at the call site.
+ * Trade-off vs. eager mode (createSkillProvider):
+ * - Both modes call loadAll() at startup (same validation and startup cost)
+ * - Progressive: ~100 tokens injected per model call (XML metadata only)
+ * - Eager: body text injected at every model call (can be thousands of tokens)
+ *
+ * Blocked/VALIDATION skills are still reported in AttachResult.skipped for
+ * operator visibility regardless of mode.
  */
 export function createProgressiveSkillProvider(base: SkillsRuntime): {
   readonly provider: ComponentProvider;
@@ -111,10 +77,14 @@ export function createProgressiveSkillProvider(base: SkillsRuntime): {
   readonly reload: () => Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>>;
 } {
   const pinnedRuntime = createProgressivePinnedRuntime(base);
-  const provider = createSkillProvider(pinnedRuntime, { progressive: true });
+  const provider: ComponentProvider = {
+    name: "skills-runtime",
+    priority: COMPONENT_PRIORITY.BUNDLED,
+    attach: async (_agent: Agent): Promise<AttachResult> => attachProgressive(pinnedRuntime),
+  };
 
   const reload = async (): Promise<ReadonlyMap<SubsystemToken<SkillComponent>, SkillComponent>> => {
-    // clearPinnedBodies() now also calls base.invalidate(name) for each pinned key
+    // clearPinnedBodies() calls base.invalidate(name) for each pinned key
     // so base LRU entries are evicted before the fresh loadAll() below.
     pinnedRuntime.clearPinnedBodies();
     const result = await attachProgressive(pinnedRuntime);
@@ -269,8 +239,6 @@ export type PinnedRuntime = SkillsRuntime & {
 
 export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRuntime {
   const pinned = new Map<string, Result<SkillDefinition, KoiError>>();
-  // let justified: mutable flag, set once after first successful loadAll()
-  let pinnedPopulated = false;
 
   const pinnedLoad = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
     const hit = pinned.get(name);
@@ -282,8 +250,11 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
     Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>
   > => {
     const result = await base.loadAll();
-    if (result.ok && !pinnedPopulated) {
-      pinnedPopulated = true;
+    // Only pin when the map is empty (first call per session, or after clearPinnedBodies).
+    // This scopes pins to one session: once pinned, a second loadAll() during the same
+    // session cannot overwrite the snapshot with different disk state. clearPinnedBodies()
+    // empties the map so the next session's loadAll() re-pins fresh state.
+    if (result.ok && pinned.size === 0) {
       for (const [name, entry] of result.value) {
         pinned.set(name, entry);
       }
@@ -304,7 +275,6 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
         pinned.delete(name);
       } else {
         pinned.clear();
-        pinnedPopulated = false;
       }
       base.invalidate(name);
     },
@@ -325,7 +295,6 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
         base.invalidate(name);
       }
       pinned.clear();
-      pinnedPopulated = false;
     },
   };
 }
