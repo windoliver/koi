@@ -113,6 +113,8 @@ export interface HandshakeAckPayload {
   readonly protocol: number;
   readonly capabilities: GatewayCapabilities;
   readonly snapshot?: HandshakeSnapshot | undefined;
+  /** Server's next expected incoming seq from the client; client resumes replaying from here. */
+  readonly remoteSeq?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------

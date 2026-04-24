@@ -98,6 +98,14 @@ export function createGateway(
   // Session IDs created by this gateway instance. stop() only deletes owned sessions
   // so a shared/persistent store is not clobbered by an unrelated gateway shutdown.
   const ownedSessionIds = new Set<string>();
+  // In-flight handleHandshake continuations. stop() awaits these so a mid-auth client
+  // cannot complete store.set() after shutdown cleanup.
+  const pendingHandshakePromises = new Set<Promise<void>>();
+  // Per-connection abort callbacks for pending handshakes. stop() calls these so
+  // handshakes fail immediately rather than waiting for the auth timeout to fire.
+  const handshakeAborts = new Map<string, () => void>();
+  // Set to true by stop() so pending handshake continuations bail out before store.set().
+  let stopped = false;
 
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
@@ -407,13 +415,24 @@ export function createGateway(
           : {}),
       };
 
-      void handleHandshake(conn, deps.auth, config.authTimeoutMs, handshakeOptions, (handler) => {
-        pendingHandshakes.set(conn.id, handler);
-      })
+      const handshakeChain: Promise<void> = handleHandshake(
+        conn,
+        deps.auth,
+        config.authTimeoutMs,
+        handshakeOptions,
+        (handler) => {
+          pendingHandshakes.set(conn.id, handler);
+        },
+        (abort) => {
+          handshakeAborts.set(conn.id, abort);
+        },
+      )
         .then(async (result) => {
           pendingHandshakes.delete(conn.id);
+          handshakeAborts.delete(conn.id);
 
-          if (!connMap.has(conn.id)) return;
+          // Bail out if stop() was called while auth was in flight.
+          if (stopped || !connMap.has(conn.id)) return;
 
           // Two-phase reconnect cutover:
           //   Phase 1 — fence the old connection so it can no longer write to the store,
@@ -516,7 +535,7 @@ export function createGateway(
           if (!connMap.has(conn.id)) return;
           sessionByConn.set(conn.id, result.session.id);
           connBySession.set(result.session.id, conn.id);
-          const ackBytes = result.sendAck(nextServerSeq(conn));
+          const ackBytes = result.sendAck(nextServerSeq(conn), startSeq);
           if (ackBytes < 0) {
             // Transport rejected the ack write — session is unusable before the client
             // received its sessionId/protocol. Tear down cleanly so the client reconnects.
@@ -529,9 +548,14 @@ export function createGateway(
         })
         .catch(() => {
           pendingHandshakes.delete(conn.id);
+          handshakeAborts.delete(conn.id);
           connMap.delete(conn.id);
           bp.remove(conn.id);
         });
+      pendingHandshakePromises.add(handshakeChain);
+      void handshakeChain.finally(() => {
+        pendingHandshakePromises.delete(handshakeChain);
+      });
     },
 
     onMessage(conn: TransportConnection, data: string): void {
@@ -642,6 +666,9 @@ export function createGateway(
     },
 
     async stop(): Promise<Result<void, KoiError>> {
+      // Fence new handshakes immediately so any in-flight authenticate() that resolves
+      // after this point will bail before store.set() and cannot recreate sessions.
+      stopped = true;
       if (criticalSweep !== undefined) {
         clearInterval(criticalSweep);
         criticalSweep = undefined;
@@ -663,6 +690,13 @@ export function createGateway(
         }
         conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
       }
+
+      // Abort all pending handshakes so they fail immediately rather than waiting for
+      // the auth timeout. Then await the promises so stop() does not return before a
+      // mid-auth continuation could call store.set() and race our session deletions.
+      for (const abort of handshakeAborts.values()) abort();
+      handshakeAborts.clear();
+      await Promise.allSettled([...pendingHandshakePromises]);
 
       // Drain all in-flight per-connection message queues before touching the store so that
       // any handler currently executing can finish and its store.set() resolves cleanly.

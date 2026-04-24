@@ -38,8 +38,11 @@ export interface HandshakeOptions {
 export interface HandshakeResult {
   readonly session: Session;
   readonly connectFrame: ConnectFrame;
-  /** Send the handshake ack with the given server outbound seq. Returns transport byte count. */
-  readonly sendAck: (seq: number) => number;
+  /**
+   * Send the handshake ack. `seq` is the server outbound seq; `remoteSeq` is the server's
+   * next expected incoming seq from the client (replay watermark for reconnect).
+   */
+  readonly sendAck: (seq: number, remoteSeq?: number) => number;
 }
 
 /**
@@ -52,6 +55,7 @@ export function handleHandshake(
   timeoutMs: number,
   options: HandshakeOptions,
   onMessage: (handler: (data: string) => void) => void,
+  onAbort?: (abort: () => void) => void,
 ): Promise<HandshakeResult> {
   return new Promise<HandshakeResult>((resolve, reject) => {
     let settled = false;
@@ -71,6 +75,12 @@ export function handleHandshake(
         reject(new Error("Auth handshake timed out"));
       });
     }, timeoutMs);
+
+    onAbort?.(() => {
+      settle(() => {
+        reject(new Error("Handshake aborted"));
+      });
+    });
 
     onMessage((data: string) => {
       if (settled) return;
@@ -142,18 +152,20 @@ export function handleHandshake(
             ...(result.routing !== undefined ? { routing: result.routing } : {}),
           };
 
-          const ackPayload: HandshakeAckPayload = {
-            sessionId: session.id,
-            protocol: negotiatedVersion,
-            capabilities: options.capabilities,
-            ...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
-          };
-
           settle(() => {
             resolve({
               session,
               connectFrame,
-              sendAck: (seq: number) => conn.send(createAckFrame(seq, undefined, ackPayload)),
+              sendAck: (seq: number, remoteSeq?: number) => {
+                const ackPayload: HandshakeAckPayload = {
+                  sessionId: session.id,
+                  protocol: negotiatedVersion,
+                  capabilities: options.capabilities,
+                  ...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
+                  ...(remoteSeq !== undefined && remoteSeq > 0 ? { remoteSeq } : {}),
+                };
+                return conn.send(createAckFrame(seq, undefined, ackPayload));
+              },
             });
           });
         })
