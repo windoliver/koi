@@ -230,12 +230,12 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
 const SYSTEM_PATH_TARGETS =
   "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s|\\/)|\\$(?:\\{HOME\\}|HOME\\b)";
 
-/** Bounded wildcard span — caps backtrack state to prevent regex-DoS. */
-const B = "[^\\n#]{0,512}";
-
 // Anchor to start-of-string or whitespace so `dist/*`, `foo/etc`, etc. don't
-// trip the `/<sys-dir>` alternatives embedded mid-token.
-const SYSTEM_PATH_REGEX = new RegExp(`(?:^|\\s)(?:${SYSTEM_PATH_TARGETS})`);
+// trip the `/<sys-dir>` alternatives embedded mid-token. Case-insensitive so
+// macOS paths mounted on case-insensitive volumes (`/users`, `/system`,
+// `/library`, `/applications`) match the same system trees as their canonical
+// capitalized forms.
+const SYSTEM_PATH_REGEX = new RegExp(`(?:^|\\s)(?:${SYSTEM_PATH_TARGETS})`, "i");
 
 /**
  * Normalize path-like fragments so bash-equivalent forms collapse to a shape
@@ -417,15 +417,13 @@ function gitHasAliasOverride(preOptions: readonly string[]): boolean {
  */
 function hasGitConfigEnvAliasInjection(cmd: string): boolean {
   // Structured channel: GIT_CONFIG_COUNT=N GIT_CONFIG_KEY_i=... ...
-  if (/\bGIT_CONFIG_COUNT\s*=\s*[1-9]/.test(cmd)) {
-    if (
-      /\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./i.test(cmd) ||
-      /\bGIT_CONFIG_KEY_\d+\s*=\s*include\.path\b/i.test(cmd) ||
-      /\bGIT_CONFIG_KEY_\d+\s*=\s*includeIf\./i.test(cmd)
-    ) {
-      return true;
-    }
-  }
+  // Git parses the count through strtol, so `01`, `+1`, `0x1`, and leading
+  // whitespace forms all work. Fail closed whenever *any* GIT_CONFIG_KEY_*
+  // carries a dangerous config key — independent of the count value, which
+  // can also be set earlier in the same process environment.
+  if (/\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./i.test(cmd)) return true;
+  if (/\bGIT_CONFIG_KEY_\d+\s*=\s*include\.path\b/i.test(cmd)) return true;
+  if (/\bGIT_CONFIG_KEY_\d+\s*=\s*includeIf\./i.test(cmd)) return true;
   // Serialized channel: GIT_CONFIG_PARAMETERS="'alias.pu=!git push --force'"
   // Values are quoted and comma/space separated; each contains a key=value.
   if (/\bGIT_CONFIG_PARAMETERS\s*=/.test(cmd)) {
@@ -492,11 +490,19 @@ function checkGitInvocation(
     const hasDeleteFlag = args.some((t) => t === "--delete" || /^-[A-Za-z]*d[A-Za-z]*$/.test(t));
     const hasDeleteRefspec = args.some((t) => /^:[\w/.-]+/.test(t));
     const hasMirror = args.some((t) => t === "--mirror");
-    if (hasForceFlag(args) || hasForceRefspec || hasDeleteFlag || hasDeleteRefspec || hasMirror) {
+    const hasPrune = args.some((t) => t === "--prune");
+    if (
+      hasForceFlag(args) ||
+      hasForceRefspec ||
+      hasDeleteFlag ||
+      hasDeleteRefspec ||
+      hasMirror ||
+      hasPrune
+    ) {
       return {
         ok: false,
         reason:
-          "git push --force / +refspec / --delete / :<ref> deletion / --mirror can rewrite or remove remote refs",
+          "git push --force / +refspec / --delete / :<ref> deletion / --mirror / --prune can rewrite or remove remote refs",
         pattern: "git+push+destructive",
         category: "destructive",
       };
@@ -606,6 +612,15 @@ function resolveSimpleAssignments(cmd: string): string {
       const names = [...vars.keys()].sort((a, b) => b.length - a.length);
       for (const name of names) {
         const value = vars.get(name) ?? "";
+        // Ambiguity guard: an empty captured value can mean either a truly
+        // empty assignment (`s=`) or a quoted-whitespace assignment
+        // (`s=' '`) whose separator was word-split away by the normalizer.
+        // In the latter case, bash word-splitting would produce tokens that
+        // our regex checks cannot see (e.g. `rm${s}-rf${s}/etc` → `rm -rf
+        // /etc`). Leave such expansions unresolved so downstream
+        // checkDestructiveArgvExpansion fails closed on embedded `$name`
+        // adjacent to destructive commands.
+        if (value === "") continue;
         segment = segment.replace(new RegExp(`\\$\\{${name}\\}`, "g"), value);
         segment = segment.replace(new RegExp(`\\$${name}(?![A-Za-z0-9_])`, "g"), value);
         if (segment.length > MAX_INPUT_LENGTH) {
@@ -780,19 +795,45 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
 /**
  * Extended persistence patterns — SSH directory writes via expansion forms
  * that the literal `authorized_keys` substring check misses.
+ *
+ * Detects a write-redirect (`>`, `>>`, `>|`, `&>`, `>&`, optional fd prefix)
+ * followed by a `~/.ssh/` or `$HOME/.ssh/` target. This is kept as a regex
+ * because redirects are always adjacent to their target, so there is no
+ * padding-bypass surface.
  */
-const SSH_DIR_WRITE: ThreatPattern = {
-  // Write-redirect (`>`, `>>`, `>|` noclobber-override, `&>` & `>&`
-  // stderr+stdout, optional fd prefix like `3>`) or a file-write verb
-  // (tee/cp/mv/install), then a target under ~/.ssh, $HOME/.ssh, ${HOME}/.ssh.
-  // Quote normalization in match.ts removes split-quoting forms like
-  // `> "$HOME"/.ssh/x` before this pattern runs.
-  regex: new RegExp(
-    `(?:\\d*(?:>>?\\|?|&>|>&)\\s*|\\b(?:tee|cp|mv|install)\\b${B}\\s)(?:~|\\$HOME|\\$\\{HOME\\})\\/\\.ssh\\/`,
-  ),
+const SSH_DIR_WRITE_REDIRECT: ThreatPattern = {
+  regex: /\d*(?:>>?\|?|&>|>&)\s*(?:~|\$HOME|\$\{HOME\})\/\.ssh\//,
   category: "persistence",
   reason: "Writing into ~/.ssh establishes persistent SSH access",
 };
+
+/**
+ * Detect write-verb (`tee`, `cp`, `mv`, `install`) targeting `~/.ssh/...` by
+ * token-scanning the argv of each segment, not by regex with a bounded span
+ * between verb and target. An attacker can pad the argv with many operands
+ * to push the target past a bounded-span regex; an argv scan is linear in
+ * the token count and has no such blind spot.
+ */
+const SSH_DIR_WRITE_VERBS = new Set(["tee", "cp", "mv", "install"]);
+const SSH_DIR_TARGET = /^(?:~|\$HOME|\$\{HOME\})\/\.ssh\//;
+
+function checkSshDirWriteVerb(cmd: string): ClassificationResult {
+  for (const segment of splitShellSegments(cmd)) {
+    const tokens = segment.split(/\s+/).filter((t) => t.length > 0);
+    if (tokens.length === 0) continue;
+    const hasVerb = tokens.some((t) => SSH_DIR_WRITE_VERBS.has(t));
+    if (!hasVerb) continue;
+    if (tokens.some((t) => SSH_DIR_TARGET.test(t))) {
+      return {
+        ok: false,
+        reason: "Writing into ~/.ssh establishes persistent SSH access",
+        pattern: "ssh-dir-write-verb",
+        category: "persistence",
+      };
+    }
+  }
+  return { ok: true };
+}
 
 /** All classifier patterns ordered by threat severity (destructive first). */
 const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
@@ -800,7 +841,7 @@ const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
   ...REVERSE_SHELL_PATTERNS,
   ...PRIVILEGE_PATTERNS,
   ...PERSISTENCE_PATTERNS,
-  SSH_DIR_WRITE,
+  SSH_DIR_WRITE_REDIRECT,
   ...RECON_PATTERNS,
   ...EXFILTRATION_PATTERNS,
 ] as const;
@@ -849,6 +890,8 @@ export function classifyCommand(command: string): ClassificationResult {
   if (!gitResult.ok) return gitResult;
   const argExpansionResult = checkDestructiveArgvExpansion(resolved);
   if (!argExpansionResult.ok) return argExpansionResult;
+  const sshVerbResult = checkSshDirWriteVerb(resolved);
+  if (!sshVerbResult.ok) return sshVerbResult;
   const pairResult = checkDestructiveCommandPairs(resolved);
   if (!pairResult.ok) return pairResult;
   return matchPatterns(resolved, ALL_CLASSIFIER_PATTERNS);

