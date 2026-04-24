@@ -151,7 +151,7 @@ describe("createLocalMailboxRouter", () => {
 
     // A FRESH router.getView() returns the new view which reflects mailboxNew.
     const newView = router.getView(agentId("agent-x"));
-    const msgs = await newView?.list();
+    const msgs = (await newView?.list()) ?? [];
     expect(msgs).toHaveLength(1);
     expect(msgs[0]?.type).toBe("after-rereg");
     expect(await mailboxOld.list()).toHaveLength(0);
@@ -178,7 +178,7 @@ describe("createLocalMailboxRouter", () => {
 
     // The view's list() should reflect the mailbox's actual messages.
     const view = router.getView(agentId("agent-b"));
-    const msgs = await view?.list();
+    const msgs = (await view?.list()) ?? [];
     expect(msgs).toHaveLength(1);
     expect(msgs[0]?.type).toBe("hello");
     mailboxA.close();
