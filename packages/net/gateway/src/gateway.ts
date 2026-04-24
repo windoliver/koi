@@ -82,6 +82,9 @@ export function createGateway(
   // from the same socket are processed one-at-a-time through the async store path,
   // preventing remoteSeq regression from interleaved store.set() completions.
   const msgQueues = new Map<string, Promise<void>>();
+  // Per-connection inbound sequence-buffer pressure. SequenceTracker holds GatewayFrame
+  // objects for out-of-order gaps; without a byte cap this is an unbounded OOM path.
+  const inboundBuffered = new Map<string, number>();
 
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
@@ -99,15 +102,21 @@ export function createGateway(
   }
 
   function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
+    let firstError: unknown;
     for (const frame of frames) {
       for (const handler of frameHandlers) {
         try {
           handler(session, frame);
         } catch (err: unknown) {
           swallowError(err, { package: "gateway", operation: "onFrame" });
+          if (firstError === undefined) firstError = err;
         }
       }
     }
+    // Re-throw so processMessage can skip the watermark persist on handler failure,
+    // giving at-least-once delivery: the frame will be replayed on reconnect rather
+    // than silently lost with the watermark already advanced.
+    if (firstError !== undefined) throw firstError;
   }
 
   // Single send path for established-session writes so every outbound byte is
@@ -143,6 +152,7 @@ export function createGateway(
     pendingHandshakes.delete(conn.id);
     trackers.delete(conn.id);
     msgQueues.delete(conn.id);
+    inboundBuffered.delete(conn.id);
     sessionByConn.delete(conn.id);
     connMap.delete(conn.id);
     bp.remove(conn.id);
@@ -217,17 +227,39 @@ export function createGateway(
       return;
     }
 
-    if (result === "buffered") return;
+    if (result === "buffered") {
+      // Charge buffered bytes against the per-connection inbound cap so a hostile
+      // client sending many out-of-order frames cannot exhaust heap through the tracker.
+      const frameBytes = Buffer.byteLength(data, "utf8");
+      const prev = inboundBuffered.get(conn.id) ?? 0;
+      const updated = prev + frameBytes;
+      if (updated > config.maxBufferBytesPerConnection) {
+        sendFrame(
+          conn,
+          createErrorFrame(0, "BUFFER_LIMIT", "Inbound sequence buffer exceeded", nextId),
+        );
+        conn.close(CLOSE_CODES.BUFFER_LIMIT, "Inbound sequence buffer exceeded");
+        return;
+      }
+      inboundBuffered.set(conn.id, updated);
+      return;
+    }
 
-    // Persist the nextExpected watermark (last dispatched seq + 1) so reconnect
-    // restoration resets the tracker past already-processed frames, preventing replay.
-    // Await persistence before dispatching so handlers cannot run against stale state.
+    // A non-buffered result means frames are being dispatched; clear the inbound counter.
+    inboundBuffered.delete(conn.id);
+
+    // Dispatch handlers BEFORE persisting the watermark. If a handler throws, emitFrames
+    // re-throws so this processMessage call exits without advancing remoteSeq in the store.
+    // The frame will be replayed on reconnect (at-least-once) rather than silently lost with
+    // the watermark already advanced (at-most-once with no recovery path).
     const lastDispatched = ready[ready.length - 1];
     if (lastDispatched !== undefined) {
       const updatedSession: Session = {
         ...sessionResult.value,
         remoteSeq: lastDispatched.seq + 1,
       };
+      emitFrames(updatedSession, ready); // throws on handler failure → skips store.set below
+
       let storeRes: Result<void, KoiError>;
       try {
         storeRes = await Promise.resolve(store.set(updatedSession));
@@ -247,7 +279,6 @@ export function createGateway(
         conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
         return;
       }
-      emitFrames(updatedSession, ready);
     }
   }
 
@@ -549,6 +580,9 @@ export function createGateway(
       reason = "administratively closed",
     ): Promise<Result<void, KoiError>> {
       const connId = connBySession.get(sessionId);
+      // Save queue BEFORE cleanupConn removes it so we can drain it below.
+      const drainQueue =
+        connId !== undefined ? (msgQueues.get(connId) ?? Promise.resolve()) : Promise.resolve();
       if (connId !== undefined) {
         const conn = connMap.get(connId);
         if (conn !== undefined) {
@@ -559,6 +593,9 @@ export function createGateway(
           cleanupConn(conn, reason);
         }
       }
+      // Drain any in-flight processMessage that could call store.set(session) after we
+      // delete the session below, which would resurrect ghost state in the store.
+      await drainQueue;
       // Await deletion so callers get a real success/failure contract. Idempotent —
       // store.delete is a no-op for unknown sessions.
       let deleteResult: Result<boolean, KoiError>;
