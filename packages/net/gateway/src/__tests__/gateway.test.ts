@@ -137,7 +137,7 @@ describe("createGateway", () => {
       expect(events).toContain("created");
     });
 
-    test("destroys session on connection close", async () => {
+    test("destroys session live connection on close but retains store record for reconnect replay protection", async () => {
       const auth = createTestAuthenticator({
         ok: true,
         sessionId: "s-close",
@@ -148,10 +148,15 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const conn = await authenticateConn(transport, gateway, "s-close");
+      let destroyedEvent = false;
+      gateway.onSessionEvent((ev) => {
+        if (ev.kind === "destroyed" && ev.sessionId === "s-close") destroyedEvent = true;
+      });
       transport.simulateClose(conn.id);
 
-      await waitForCondition(() => !storeHas(gateway.sessions(), "s-close"));
-      expect(storeHas(gateway.sessions(), "s-close")).toBe(false);
+      // Session record is retained to preserve remoteSeq for reconnect replay protection.
+      await waitForCondition(() => destroyedEvent);
+      expect(storeHas(gateway.sessions(), "s-close")).toBe(true);
     });
 
     test("emits 'destroyed' session event on close", async () => {

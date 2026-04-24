@@ -116,7 +116,9 @@ export function createGateway(
 
     if (sessionId !== undefined) {
       connBySession.delete(sessionId);
-      void Promise.resolve(store.delete(sessionId));
+      // Session record is intentionally retained in the store so remoteSeq survives
+      // network flaps and can be restored on reconnect. Explicit purge happens in
+      // destroySession() and stop().
       emitSessionEvent({ kind: "destroyed", sessionId, reason });
     }
   }
@@ -261,28 +263,28 @@ export function createGateway(
 
       if (result === "buffered") return;
 
-      // Persist only the highest contiguous dispatched sequence (last in ready[]).
+      // Persist the nextExpected watermark (last dispatched seq + 1) so reconnect
+      // restoration resets the tracker past already-processed frames, preventing replay.
+      // Await persistence before dispatching so handlers cannot run against stale state.
       const lastDispatched = ready[ready.length - 1];
       if (lastDispatched !== undefined) {
         const updatedSession: Session = {
           ...sessionResult.value,
-          remoteSeq: lastDispatched.seq,
+          remoteSeq: lastDispatched.seq + 1,
         };
-        void Promise.resolve(store.set(updatedSession))
-          .then((r) => {
-            if (!r.ok) {
-              conn.send(
-                createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
-              );
-              conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
-            }
-          })
-          .catch(() => {
-            conn.send(
-              createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId),
-            );
-            conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
-          });
+        let storeRes: Result<void, KoiError>;
+        try {
+          storeRes = await Promise.resolve(store.set(updatedSession));
+        } catch {
+          conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId));
+          conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+          return;
+        }
+        if (!storeRes.ok) {
+          conn.send(createErrorFrame(0, "SESSION_STORE_FAILURE", "Session update failed", nextId));
+          conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session update failed");
+          return;
+        }
         emitFrames(updatedSession, ready);
       }
     },
@@ -292,7 +294,8 @@ export function createGateway(
     },
 
     onDrain(conn: TransportConnection): void {
-      bp.drain(conn.id, config.maxBufferBytesPerConnection);
+      // A drain event means Bun's write buffer has cleared; drain all tracked bytes.
+      bp.drain(conn.id, bp.buffered(conn.id));
     },
   };
 

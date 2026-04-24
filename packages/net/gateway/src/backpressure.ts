@@ -8,6 +8,7 @@ export interface BackpressureMonitor {
   readonly record: (connId: string, bytes: number) => BackpressureState;
   readonly drain: (connId: string, bytes: number) => BackpressureState;
   readonly state: (connId: string) => BackpressureState;
+  readonly buffered: (connId: string) => number;
   readonly remove: (connId: string) => void;
   readonly globalUsage: () => number;
   readonly canAccept: () => boolean;
@@ -79,6 +80,10 @@ export function createBackpressureMonitor(
     state(connId: string): BackpressureState {
       const s = conns.get(connId);
       return s === undefined ? "normal" : computeState(s);
+    },
+
+    buffered(connId: string): number {
+      return conns.get(connId)?.buffered ?? 0;
     },
 
     remove(connId: string): void {
