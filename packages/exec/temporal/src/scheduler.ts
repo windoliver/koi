@@ -80,7 +80,16 @@ function mapEngineInputToMessages(input: EngineInput, baseId: string): readonly 
         }),
       );
     case "resume":
-      return [{ id: `${baseId}:resume`, senderId: "scheduler", content: [], timestamp: now }];
+      return [
+        {
+          id: `${baseId}:resume`,
+          senderId: "scheduler",
+          content: [],
+          timestamp: now,
+          // Carry opaque resume state through to the workflow so it can restore checkpointed context
+          ...(input.state !== undefined && { resumeState: input.state }),
+        },
+      ];
   }
 }
 
@@ -137,6 +146,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         workflowId: rawId,
         args: [{ agentId, sessionId: rawId, messages, mode }],
         ...(options?.delayMs !== undefined && { startDelay: options.delayMs }),
+        ...(options?.timeoutMs !== undefined && { workflowExecutionTimeout: options.timeoutMs }),
+        ...(options?.maxRetries !== undefined && {
+          retryPolicy: { maximumAttempts: options.maxRetries },
+        }),
       });
 
       const running = { ...task, status: "running" as const, startedAt: Date.now() };
@@ -146,16 +159,17 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async cancel(id): Promise<boolean> {
-      const task = tasks.get(id);
-      if (task === undefined) return false;
       try {
         await config.client.workflow.cancel(id);
-        tasks.set(id, { ...task, status: "failed", completedAt: Date.now() });
-        emit({
-          kind: "task:failed",
-          taskId: id,
-          error: { code: "EXTERNAL", message: "Cancelled", retryable: false },
-        });
+        const task = tasks.get(id);
+        if (task !== undefined) {
+          tasks.set(id, { ...task, status: "failed", completedAt: Date.now() });
+          emit({
+            kind: "task:failed",
+            taskId: id,
+            error: { code: "EXTERNAL", message: "Cancelled", retryable: false },
+          });
+        }
         return true;
       } catch (_e: unknown) {
         return false;

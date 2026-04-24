@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { agentId } from "@koi/core";
+import { agentId, taskId } from "@koi/core";
 import type { TemporalClientLike } from "../scheduler.js";
 import { createTemporalScheduler } from "../scheduler.js";
 
@@ -179,6 +179,54 @@ describe("createTemporalScheduler", () => {
     const id = await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch");
     await sched.pause(id);
     expect(events).toContain("schedule:paused");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("cancel returns true and emits event even when task not in local cache", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    // Cancel a workflow ID that was never submitted to this scheduler instance
+    // (simulates process-restart scenario where in-memory cache is empty)
+    const foreignId = taskId("task-external-999");
+    const result = await sched.cancel(foreignId);
+    expect(result).toBe(true);
+    expect(client.workflow.cancel).toHaveBeenCalledTimes(1);
+    // No local task → no task:failed event emitted, but cancel still succeeds
+    expect(events).not.toContain("task:failed");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("submit forwards timeoutMs as workflowExecutionTimeout", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch", {
+      timeoutMs: 30000,
+      maxRetries: 2,
+    });
+    const startCall = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const opts = startCall[1];
+    expect(opts["workflowExecutionTimeout"]).toBe(30000);
+    expect((opts["retryPolicy"] as Record<string, unknown>)["maximumAttempts"]).toBe(2);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("resume input state is forwarded to workflow args", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const resumeState = { checkpoint: "abc123", step: 42 };
+    await sched.submit(A1, { kind: "resume", state: resumeState }, "dispatch");
+    const startCall = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const args = startCall[1]["args"] as [Record<string, unknown>];
+    const messages = args[0]["messages"] as [Record<string, unknown>];
+    expect(messages[0]).toHaveProperty("resumeState", resumeState);
     await sched[Symbol.asyncDispose]();
   });
 });
