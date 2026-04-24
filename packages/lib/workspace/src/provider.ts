@@ -51,10 +51,16 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       const agentId = agent.pid.id;
 
       // Dispose any stale workspace from a previous attach (e.g. after a crash
-      // and re-attach without an intervening detach).
+      // and re-attach without an intervening detach). Abort if cleanup fails —
+      // keeping the old tracking is preferable to silently orphaning the worktree.
       const staleWsId = attached.get(agentId);
       if (staleWsId !== undefined) {
-        await tryDispose(staleWsId);
+        const disposed = await tryDispose(staleWsId);
+        if (!disposed) {
+          throw new Error(
+            `Cannot reattach agent ${agentId}: previous workspace ${staleWsId} could not be disposed`,
+          );
+        }
         attached.delete(agentId);
       }
 

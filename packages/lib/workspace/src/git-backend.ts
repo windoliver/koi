@@ -65,7 +65,12 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       _cfg: ResolvedWorkspaceConfig,
     ): Promise<Result<WorkspaceInfo, KoiError>> {
       const id = workspaceId(`ws-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      const branchName = `workspace/${agentId}/${id}`;
+      // Sanitize agentId for use in a git ref: replace non-alphanumeric chars, collapse runs of dashes
+      const safeAgentSlug = (agentId as string)
+        .replace(/[^a-zA-Z0-9_]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+      const branchName = `workspace/${safeAgentSlug}/${id}`;
       const path = join(basePath, id);
 
       await mkdir(basePath, { recursive: true });

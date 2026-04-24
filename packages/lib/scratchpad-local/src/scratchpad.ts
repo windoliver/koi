@@ -45,6 +45,12 @@ export interface LocalScratchpad {
   readonly close: () => void;
 }
 
+// Deep-clone via JSON round-trip: constrains metadata to JSON-safe primitives
+// and breaks all shared references so stored state cannot be mutated out-of-band.
+function cloneMetadata(m: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(m)) as Record<string, unknown>;
+}
+
 function toEntry(m: MutableEntry): ScratchpadEntry {
   return {
     path: m.path,
@@ -56,8 +62,7 @@ function toEntry(m: MutableEntry): ScratchpadEntry {
     updatedAt: m.updatedAt,
     sizeBytes: m.sizeBytes,
     ...(m.ttlSeconds !== undefined ? { ttlSeconds: m.ttlSeconds } : {}),
-    // Return a shallow copy so callers cannot mutate stored metadata
-    ...(m.metadata !== undefined ? { metadata: { ...m.metadata } as Record<string, unknown> } : {}),
+    ...(m.metadata !== undefined ? { metadata: cloneMetadata(m.metadata) } : {}),
   };
 }
 
@@ -71,8 +76,7 @@ function toSummary(m: MutableEntry): ScratchpadEntrySummary {
     updatedAt: m.updatedAt,
     sizeBytes: m.sizeBytes,
     ...(m.ttlSeconds !== undefined ? { ttlSeconds: m.ttlSeconds } : {}),
-    // Return a shallow copy so callers cannot mutate stored metadata
-    ...(m.metadata !== undefined ? { metadata: { ...m.metadata } as Record<string, unknown> } : {}),
+    ...(m.metadata !== undefined ? { metadata: cloneMetadata(m.metadata) } : {}),
   };
 }
 
@@ -234,9 +238,9 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       ...(input.ttlSeconds !== undefined
         ? { ttlSeconds: input.ttlSeconds, expiresAt: Date.now() + input.ttlSeconds * 1000 }
         : {}),
-      // Freeze metadata on write so callers cannot mutate it without going through write()
+      // Deep-clone + freeze on write: severs all caller references, including nested objects
       ...(input.metadata !== undefined
-        ? { metadata: Object.freeze({ ...input.metadata }) as Record<string, unknown> }
+        ? { metadata: Object.freeze(cloneMetadata(input.metadata)) as Record<string, unknown> }
         : {}),
     };
 
