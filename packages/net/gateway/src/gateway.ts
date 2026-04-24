@@ -256,10 +256,20 @@ export function createGateway(
 
           if (!connMap.has(conn.id)) return;
 
-          // Snapshot the previous connection for this session ID — we defer eviction
-          // until after all store operations succeed (two-phase cutover). If store ops
-          // fail, the new connection is closed and the old session remains authoritative.
+          // Evict the old connection BEFORE reading the persisted watermark. The old
+          // socket must stop processing frames before we snapshot remoteSeq; otherwise
+          // it could advance the store value between our store.get() and store.set(),
+          // rolling the watermark backward and re-opening a replay window.
           const prevConnId = connBySession.get(result.session.id);
+          if (prevConnId !== undefined && prevConnId !== conn.id) {
+            sessionByConn.delete(prevConnId);
+            trackers.delete(prevConnId);
+            msgQueues.delete(prevConnId);
+            const prevConn = connMap.get(prevConnId);
+            connMap.delete(prevConnId);
+            bp.remove(prevConnId);
+            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
+          }
 
           // Restore remoteSeq from any previously persisted session to prevent frame replay.
           // Distinguish NOT_FOUND (new session → start at 0) from a store exception: if the
@@ -296,18 +306,6 @@ export function createGateway(
             conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
             cleanupConn(conn, "session store failure");
             return;
-          }
-
-          // All persistence succeeded — now atomically evict the previous connection.
-          // Remove old conn maps first so its onClose/cleanupConn skips session teardown.
-          if (prevConnId !== undefined && prevConnId !== conn.id) {
-            sessionByConn.delete(prevConnId);
-            trackers.delete(prevConnId);
-            msgQueues.delete(prevConnId);
-            const prevConn = connMap.get(prevConnId);
-            connMap.delete(prevConnId);
-            bp.remove(prevConnId);
-            prevConn?.close(CLOSE_CODES.ADMIN_CLOSED, "Session resumed on new connection");
           }
 
           // Install maps and send ack only after persistence — prevents read-before-write.
@@ -349,18 +347,19 @@ export function createGateway(
 
       criticalSweep = setInterval(() => {
         const now = Date.now();
-        // When global usage exceeds the limit, shed any connection already in critical
-        // state immediately rather than waiting for its per-connection timeout. This
-        // enforces globalBufferLimitBytes as an ongoing cap, not just an admission gate.
+        // When global usage exceeds the limit, shed any connection carrying buffered
+        // bytes (warning or critical) — not just individually-critical ones. A fleet
+        // of warning-state connections can collectively push aggregate usage over the
+        // cap while none individually triggers the criticalSince path.
         const globalOverLimit = !bp.canAccept();
         for (const [connId, conn] of connMap) {
           const since = bp.criticalSince(connId);
-          if (since !== undefined) {
-            const timedOut = now - since > config.backpressureCriticalTimeoutMs;
-            if (timedOut || globalOverLimit) {
-              conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Buffer limit exceeded", nextId));
-              conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
-            }
+          const timedOut =
+            since !== undefined && now - since > config.backpressureCriticalTimeoutMs;
+          const globalShed = globalOverLimit && bp.buffered(connId) > 0;
+          if (timedOut || globalShed) {
+            conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Buffer limit exceeded", nextId));
+            conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
           }
         }
       }, 5_000);
@@ -424,7 +423,7 @@ export function createGateway(
         };
         return { ok: false, error };
       }
-      bp.record(connId, encoded.length);
+      bp.record(connId, Buffer.byteLength(encoded, "utf8"));
       return { ok: true, value: bytes };
     },
 
