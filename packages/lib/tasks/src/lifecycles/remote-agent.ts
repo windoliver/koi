@@ -157,6 +157,10 @@ export function createRemoteAgentLifecycle(
       config: RemoteAgentConfig,
     ): Promise<RemoteAgentTask> => {
       const controller = new AbortController();
+      // Unique per-start identifier. The board reuses taskId across retries, so
+      // using taskId alone as the remote attempt key cannot distinguish a delayed
+      // cancel from an earlier run from a cancel targeting the current attempt.
+      const attemptId = crypto.randomUUID();
 
       // let justified: set-once, never reset
       let stopped = false; // explicit cancel — board transition owned by TaskRunner.stop()
@@ -176,13 +180,15 @@ export function createRemoteAgentLifecycle(
 
       // Best-effort cancel notification: fire-and-forget POST to cancelEndpoint on every
       // post-accept terminal failure so the remote server can stop the associated work.
-      // taskId is included to distinguish retries sharing the same correlationId.
+      // attemptId (not taskId) is the per-start discriminator — the board reuses taskId
+      // across retries, so a delayed cancel from an earlier attempt could otherwise
+      // target a later retry of the same task.
       const notifyCancel = (): void => {
         if (cancelEndpoint !== undefined) {
           void fetchImpl(cancelEndpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...lifecycleHeaders },
-            body: JSON.stringify({ correlationId: config.correlationId, taskId }),
+            body: JSON.stringify({ correlationId: config.correlationId, taskId, attemptId }),
             redirect: "error",
           }).catch(() => undefined);
         }
@@ -196,21 +202,23 @@ export function createRemoteAgentLifecycle(
       if (config.timeout !== undefined) {
         timeoutId = setTimeout(() => {
           timedOut = true;
-          controller.abort();
           void (async () => {
+            // Drain before aborting: allows any done frame already buffered in
+            // the ReadableStream internal queue to be consumed by the read loop
+            // before we tear down the connection.
             if (pipeRef !== undefined) await drainPipe(pipeRef, drainTimeoutMs);
-            // If a done frame raced the abort and was processed before the
-            // connection was killed, terminal is already set — emitTerminal is
-            // a no-op.  Snapshot before the call to know whether we committed.
+            // If a done frame was processed during the drain, terminal is
+            // already set — emitTerminal is a no-op. Snapshot to know whether
+            // we actually committed to timeout failure.
             const timedOutBeforeDone = !terminal;
             emitTerminal(1, "\n[timed out: remote agent may still be running]\n");
+            // Abort after the drain/decision — frees any blocked reader.read()
+            // that did not settle during the drain window.
+            controller.abort();
             // Only send cancel if we actually committed to timeout failure.
-            // If a done frame beat the abort (narrow race), sending cancel
-            // would interfere with work the remote side completed successfully.
+            // If a done frame won during drain, cancel would race a success.
             if (timedOutBeforeDone) notifyCancel();
-            // Force-remove from activePipes even if the pipe never settled — same
-            // as stop() does. handleNaturalExit does not call stop(), so without
-            // this, timed-out hung tasks would leak map entries indefinitely.
+            // Force-remove from activePipes even if the pipe never settled.
             activePipes.delete(taskId);
           })();
         }, config.timeout);
@@ -224,6 +232,7 @@ export function createRemoteAgentLifecycle(
             headers: { "Content-Type": "application/json", ...lifecycleHeaders },
             body: JSON.stringify({
               taskId: String(taskId),
+              attemptId,
               correlationId: config.correlationId,
               payload: config.payload,
             }),

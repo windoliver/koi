@@ -339,8 +339,17 @@ describe("createRemoteAgentLifecycle", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
 
       expect(capturedInit?.method).toBe("POST");
-      const body = JSON.parse(capturedInit?.body as string) as unknown;
-      expect(body).toEqual({ taskId: String(tid()), correlationId: "cid-99", payload: { x: 1 } });
+      const body = JSON.parse(capturedInit?.body as string) as {
+        taskId: unknown;
+        attemptId: unknown;
+        correlationId: unknown;
+        payload: unknown;
+      };
+      expect(body.taskId).toBe(String(tid()));
+      expect(typeof body.attemptId).toBe("string");
+      expect((body.attemptId as string).length).toBeGreaterThan(0);
+      expect(body.correlationId).toBe("cid-99");
+      expect(body.payload).toEqual({ x: 1 });
       const headers = capturedInit?.headers as Record<string, string>;
       expect(headers["Content-Type"]).toBe("application/json");
       expect(headers.Authorization).toBe("Bearer tok");
@@ -444,25 +453,33 @@ describe("createRemoteAgentLifecycle", () => {
       expect(exits).toEqual([0]);
     });
 
-    test("includes taskId in start POST body for attempt-scoped idempotency", async () => {
-      // taskId must be in the start request so the remote can distinguish retries
-      // sharing the same correlationId and map cancel requests to the right attempt.
-      let startBody: { taskId?: unknown; correlationId?: unknown; payload?: unknown } = {};
+    test("includes taskId and attemptId in start POST body; attemptId is per-start unique", async () => {
+      // attemptId (not taskId) scopes a single start attempt — the board reuses
+      // taskId across retries, so using taskId alone cannot distinguish attempts.
+      type StartBody = { taskId?: unknown; attemptId?: unknown; correlationId?: unknown };
+      const bodies: StartBody[] = [];
       const fetchSpy: typeof globalThis.fetch = mock(
         async (_url: string | URL | Request, init?: RequestInit) => {
-          startBody = JSON.parse(String(init?.body)) as typeof startBody;
+          bodies.push(JSON.parse(String(init?.body)) as StartBody);
           return new Response(makeNdjsonStream({ kind: "done", exitCode: 0 }), { status: 200 });
         },
       ) as unknown as typeof globalThis.fetch;
       const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch: fetchSpy });
-      const output = createOutputStream();
       const id = tid(7);
 
-      await lifecycle.start(id, output, makeConfig({ correlationId: "corr-xyz" }));
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      await lifecycle.start(id, createOutputStream(), makeConfig({ correlationId: "corr-xyz" }));
+      await lifecycle.start(id, createOutputStream(), makeConfig({ correlationId: "corr-xyz" }));
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
 
-      expect(startBody.taskId).toBe(String(id));
-      expect(startBody.correlationId).toBe("corr-xyz");
+      expect(bodies).toHaveLength(2);
+      const [first, second] = bodies;
+      // taskId is stable across retries.
+      expect(first?.taskId).toBe(String(id));
+      expect(second?.taskId).toBe(String(id));
+      // attemptId must be unique per start() call.
+      expect(typeof first?.attemptId).toBe("string");
+      expect(typeof second?.attemptId).toBe("string");
+      expect(first?.attemptId).not.toBe(second?.attemptId);
     });
   });
 
@@ -1443,21 +1460,20 @@ describe("createRemoteAgentLifecycle", () => {
     });
 
     test("sends POST to cancelEndpoint with correlationId when cancel() is called", async () => {
-      const cancelCalls: { correlationId: unknown }[] = [];
+      type CancelBody = { correlationId: unknown; taskId: unknown; attemptId: unknown };
+      const cancelCalls: CancelBody[] = [];
       const encoder = new TextEncoder();
       // Main stream never closes — we cancel it.
       const slowStream = new ReadableStream<Uint8Array>({ start() {} });
+      let startBody: { attemptId?: string } = {};
       const fetchSpy: typeof globalThis.fetch = mock(
         async (url: string | URL | Request, init?: RequestInit) => {
           const urlStr = String(url);
           if (urlStr.includes("/cancel")) {
-            const body = JSON.parse(String(init?.body)) as {
-              correlationId: unknown;
-              taskId: unknown;
-            };
-            cancelCalls.push(body);
+            cancelCalls.push(JSON.parse(String(init?.body)) as CancelBody);
             return new Response(encoder.encode(""), { status: 200 });
           }
+          startBody = JSON.parse(String(init?.body)) as { attemptId?: string };
           return new Response(slowStream, { status: 200 });
         },
       ) as unknown as typeof globalThis.fetch;
@@ -1477,21 +1493,19 @@ describe("createRemoteAgentLifecycle", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
       expect(cancelCalls.length).toBeGreaterThan(0);
       expect(cancelCalls[0]?.correlationId).toBe("cid-cancel");
-      // taskId must be included so the server can distinguish retries using the same correlationId.
       expect(cancelCalls[0]?.taskId).toBe(String(id));
+      // attemptId in cancel must match the one sent in start — scopes cancel to this attempt.
+      expect(cancelCalls[0]?.attemptId).toBe(startBody.attemptId);
     });
 
     test("sends POST to cancelEndpoint with correlationId on timeout", async () => {
-      const cancelCalls: { correlationId: unknown }[] = [];
+      type CancelBody = { correlationId: unknown; taskId: unknown; attemptId: unknown };
+      const cancelCalls: CancelBody[] = [];
       const encoder = new TextEncoder();
       const fetchSpy: typeof globalThis.fetch = mock(
         async (url: string | URL | Request, init?: RequestInit) => {
           if (String(url).includes("/cancel")) {
-            const body = JSON.parse(String(init?.body)) as {
-              correlationId: unknown;
-              taskId: unknown;
-            };
-            cancelCalls.push(body);
+            cancelCalls.push(JSON.parse(String(init?.body)) as CancelBody);
             return new Response(encoder.encode(""), { status: 200 });
           }
           return new Response(new ReadableStream({ start() {} }), { status: 200 });
@@ -1509,10 +1523,11 @@ describe("createRemoteAgentLifecycle", () => {
 
       await lifecycle.start(id, output, makeConfig({ correlationId: "cid-timeout", timeout: 50 }));
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
       expect(cancelCalls.length).toBeGreaterThan(0);
       expect(cancelCalls[0]?.correlationId).toBe("cid-timeout");
       expect(cancelCalls[0]?.taskId).toBe(String(id));
+      expect(typeof cancelCalls[0]?.attemptId).toBe("string");
     });
 
     test("cancelEndpoint failure is swallowed — does not propagate", async () => {
