@@ -191,33 +191,45 @@ export function createRemoteAgentLifecycle(
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        const encoder = new TextEncoder();
         let buffer = "";
         let receivedDone = false;
+
+        const frameTooLarge = (): boolean => {
+          if (timeoutId !== undefined) clearTimeout(timeoutId);
+          emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+          return true;
+        };
 
         try {
           while (true) {
             if (stopped || timedOut) break;
             const { done, value } = await reader.read();
             if (done) break;
+            // Pre-decode guard: when the chunk has no newlines, all of its bytes
+            // would extend the current incomplete frame. Reject before decoding
+            // to avoid materializing a huge string.
+            // Uses value.byteLength (raw) + buffer.length (chars, ≤ byte count)
+            // as a conservative lower bound — sufficient to prevent DoS.
+            if (value.indexOf(10) === -1 && buffer.length + value.byteLength > MAX_FRAME_BYTES) {
+              if (frameTooLarge()) return;
+            }
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split("\n");
             // last element is the incomplete line remainder
             buffer = lines.pop() ?? "";
-            // Guard: enforce limit on the current incomplete frame only (remainder),
-            // not the full pre-split buffer which may contain many valid complete lines.
-            if (buffer.length > MAX_FRAME_BYTES) {
-              if (timeoutId !== undefined) clearTimeout(timeoutId);
-              emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
-              return;
+            // Remainder check: byte-accurate, applied after split so completed
+            // lines are not counted against the incomplete frame.
+            if (encoder.encode(buffer).byteLength > MAX_FRAME_BYTES) {
+              if (frameTooLarge()) return;
             }
             for (const line of lines) {
               if (stopped || timedOut) break;
               const trimmed = line.trim();
               if (trimmed === "") continue;
-              if (trimmed.length > MAX_FRAME_BYTES) {
-                if (timeoutId !== undefined) clearTimeout(timeoutId);
-                emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
-                return;
+              // Byte-accurate per-line check.
+              if (encoder.encode(trimmed).byteLength > MAX_FRAME_BYTES) {
+                if (frameTooLarge()) return;
               }
               let frame: unknown;
               try {

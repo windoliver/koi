@@ -758,6 +758,84 @@ describe("createRemoteAgentLifecycle", () => {
       expect(exits).toEqual([0]);
     });
 
+    test("newline-free chunk that exceeds 1 MiB is rejected before decode", async () => {
+      // Server sends > 1 MiB with no newlines — must fail before materializing.
+      const exits: number[] = [];
+      const _encoder = new TextEncoder();
+      // A single raw chunk, no newlines, just over 1 MiB
+      const hugeBytes = new Uint8Array(1024 * 1024 + 1).fill(65); // 'A'
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(hugeBytes);
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("frame exceeds maximum size");
+    });
+
+    test("multibyte UTF-8 frame whose byte size exceeds cap is rejected", async () => {
+      // 'é' is 2 bytes in UTF-8 but 1 char in JS — so character count alone would
+      // pass a naive check while the actual byte count exceeds MAX_FRAME_BYTES.
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      // Each 'é' = 2 UTF-8 bytes; repeat 600k times → 1.2 MiB bytes, 600k chars
+      const multibyteText = "é".repeat(600_000);
+      const oversizedLine = `${JSON.stringify({ kind: "chunk", text: multibyteText })}\n`;
+      const doneFrame = `${JSON.stringify({ kind: "done", exitCode: 0 })}\n`;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(oversizedLine));
+          controller.enqueue(encoder.encode(doneFrame));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("frame exceeds maximum size");
+    });
+
     test("frame exceeding 1 MiB fails closed with protocol error", async () => {
       const exits: number[] = [];
       const encoder = new TextEncoder();
