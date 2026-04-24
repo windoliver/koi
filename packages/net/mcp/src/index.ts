@@ -38,7 +38,12 @@ export {
   validateMcpJson,
 } from "./config.js";
 // Connection
-export type { ConnectionDeps, McpConnection, McpToolInfo } from "./connection.js";
+export type {
+  ConnectionDeps,
+  McpConnection,
+  McpToolInfo,
+  UnauthorizedOutcome,
+} from "./connection.js";
 export { createMcpConnection } from "./connection.js";
 // Env expansion
 export { expandEnvVars, expandEnvVarsInRecord } from "./env.js";

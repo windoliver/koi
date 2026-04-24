@@ -3190,7 +3190,23 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             mode: "local",
           }),
         ).catch(() => {});
-        await provider.handleUnauthorized();
+        const refreshOutcome = await provider.handleUnauthorized();
+        if (refreshOutcome === "refreshed") {
+          // Silent token refresh succeeded — skip browser flow entirely.
+          await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
+          return true;
+        }
+        if (refreshOutcome === "transient-failure") {
+          // Refresh endpoint temporarily unavailable — don't open browser.
+          void Promise.resolve(
+            channel.onAuthFailure?.({
+              provider: serverName,
+              reason: "Token refresh temporarily unavailable. Will retry automatically.",
+            }),
+          ).catch(() => {});
+          return false;
+        }
+        // "needs-auth" — interactive OAuth required.
         const authed = await provider.startAuthFlow();
         if (authed) {
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});

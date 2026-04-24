@@ -59,6 +59,18 @@ interface SdkClientLike {
 }
 
 // ---------------------------------------------------------------------------
+// Auth outcome type
+// ---------------------------------------------------------------------------
+
+/**
+ * Tri-state result from an `onUnauthorized` / `handleUnauthorized` attempt:
+ * - "refreshed"         — new access token obtained; caller may retry silently
+ * - "needs-auth"        — refresh token gone; interactive OAuth required
+ * - "transient-failure" — tokens preserved but temporarily unavailable; retry later
+ */
+export type UnauthorizedOutcome = "refreshed" | "needs-auth" | "transient-failure";
+
+// ---------------------------------------------------------------------------
 // Connection interface
 // ---------------------------------------------------------------------------
 
@@ -93,11 +105,12 @@ export interface ConnectionDeps {
   readonly createTransport: CreateTransportFn;
   readonly random: () => number;
   /**
-   * Called on a mid-session 401. May attempt token refresh and return true when a
-   * fresh access token is available (caller can retry), or false/void when refresh
-   * failed (caller must escalate to interactive auth).
+   * Called on a mid-session 401. Returns an `UnauthorizedOutcome`:
+   * "refreshed" — fresh token obtained, caller may retry silently;
+   * "needs-auth" — refresh token gone, interactive OAuth required;
+   * "transient-failure" — tokens preserved but temporarily unavailable.
    */
-  readonly onUnauthorized?: () => boolean | undefined | Promise<boolean | undefined>;
+  readonly onUnauthorized?: () => UnauthorizedOutcome | Promise<UnauthorizedOutcome>;
   /**
    * Called when a mid-session 401 triggers auth-needed. The implementation
    * should perform the full OAuth flow and return true when tokens are ready,
@@ -155,19 +168,30 @@ export function createMcpConnection(
   const runAuthFlow = (): Promise<Result<void, KoiError>> => {
     if (authInFlight !== undefined) return authInFlight;
     authInFlight = (async (): Promise<Result<void, KoiError>> => {
-      // Try silent token refresh first. onUnauthorized() returns true when it
-      // obtained a fresh access token (handleUnauthorized succeeded). Only then
-      // do we attempt a silent reconnect so we can skip the browser OAuth prompt.
-      // If onUnauthorized is absent or returned false/void, fall through to
-      // interactive auth without wasting a connect() on stale credentials.
-      const refreshOk = await Promise.resolve(onUnauthorized?.()).catch(() => false);
-      if (refreshOk) {
+      const outcome = await Promise.resolve(onUnauthorized?.()).catch(
+        (): UnauthorizedOutcome => "transient-failure",
+      );
+      if (outcome === "refreshed") {
         const silentResult = await connect(true);
         if (silentResult.ok) {
           return { ok: true, value: undefined }; // self-healed without browser prompt
         }
+        // Silent reconnect failed despite fresh token — fall through to interactive.
       }
-      // Refresh absent, failed, or reconnect still failed — escalate to interactive auth.
+      if (outcome === "transient-failure") {
+        // Tokens are preserved but the refresh endpoint is temporarily unavailable.
+        // Do NOT launch the browser OAuth flow — the session is still recoverable.
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `${config.name}: token refresh temporarily unavailable. Retry later.`,
+            retryable: true,
+            context: { serverName: config.name },
+          },
+        };
+      }
+      // "needs-auth" (or no handler) — interactive OAuth required.
       if (onAuthNeeded === undefined) {
         return { ok: false, error: authDeclinedError() };
       }
@@ -330,15 +354,16 @@ export function createMcpConnection(
       const koiError = mapMcpError(error, { serverName: config.name });
 
       // Check for auth challenge (401 only, not 403 scope denials).
-      // Attempt token refresh once before escalating to interactive auth so
-      // sessions with a valid refresh token self-heal without browser prompts.
-      // onUnauthorized() returns void (clears in-memory token, triggers storage
-      // refresh); we retry unconditionally — if refresh failed the retry will
-      // get 401 again and fall through to auth-needed with skipRefresh=true.
+      // "refreshed" → retry once with a fresh token.
+      // "needs-auth" / "transient-failure" → fall through to auth-needed transition.
       if (koiError.code === "AUTH_REQUIRED") {
         if (!skipRefresh && onUnauthorized !== undefined) {
-          await Promise.resolve(onUnauthorized()).catch(() => {});
-          return connect(true); // retry once; skipRefresh prevents infinite loop
+          const outcome = await Promise.resolve(onUnauthorized()).catch(
+            (): UnauthorizedOutcome => "transient-failure",
+          );
+          if (outcome === "refreshed") {
+            return connect(true); // retry once; skipRefresh prevents infinite loop
+          }
         }
         if (stateMachine.canTransitionTo("auth-needed")) {
           stateMachine.transition({
@@ -476,13 +501,14 @@ export function createMcpConnection(
       // 403 (insufficient scope, ACL denial) stays as a normal error.
       if (koiError.code === "AUTH_REQUIRED") {
         if (!skipRefresh && onUnauthorized !== undefined) {
-          // onUnauthorized() returns void; retry unconditionally after clearing
-          // the stale token. If the refresh token is expired, connect(true) gets
-          // 401 again and transitions to auth-needed with skipRefresh=true.
-          await Promise.resolve(onUnauthorized()).catch(() => {});
-          const reconnResult = await connect(true);
-          if (reconnResult.ok) {
-            return listTools(true); // retry with fresh token
+          const outcome = await Promise.resolve(onUnauthorized()).catch(
+            (): UnauthorizedOutcome => "transient-failure",
+          );
+          if (outcome === "refreshed") {
+            const reconnResult = await connect(true);
+            if (reconnResult.ok) {
+              return listTools(true); // retry with fresh token
+            }
           }
         }
         if (stateMachine.canTransitionTo("auth-needed")) {

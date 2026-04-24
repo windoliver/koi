@@ -7,6 +7,7 @@
 
 import type { SecureStorage } from "@koi/secure-storage";
 import type { McpAuthProvider } from "../auth.js";
+import type { UnauthorizedOutcome } from "../connection.js";
 import { discoverAuthServer } from "./discovery.js";
 import { createPkceChallenge } from "./pkce.js";
 import { registerDynamicClient } from "./registration.js";
@@ -42,11 +43,12 @@ export interface OAuthAuthProvider extends McpAuthProvider {
   /** Run the full interactive OAuth authorization flow. */
   readonly startAuthFlow: () => Promise<boolean>;
   /**
-   * Attempt token refresh on a 401. Returns true when a fresh access token was
-   * obtained (caller may retry without interactive auth); false when refresh
-   * failed or no refresh token exists (caller must escalate to interactive auth).
+   * Attempt token refresh on a 401. Returns an `UnauthorizedOutcome`:
+   * "refreshed" — new token obtained, retry silently;
+   * "needs-auth" — refresh token gone, interactive OAuth required;
+   * "transient-failure" — tokens preserved but temporarily unavailable.
    */
-  readonly handleUnauthorized: () => Promise<boolean>;
+  readonly handleUnauthorized: () => Promise<UnauthorizedOutcome>;
 }
 
 // ---------------------------------------------------------------------------
@@ -606,24 +608,22 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   // refresh token in place via tokens.ts; we detect that by re-checking
   // hasTokens() and skipping the destructive path so a temporary outage
   // can't force-logout an otherwise-healthy session.
-  const handleUnauthorized = async (): Promise<boolean> => {
+  const handleUnauthorized = async (): Promise<UnauthorizedOutcome> => {
     const tm = await getTokenManager();
     const refreshed = await tm.getAccessToken();
     if (refreshed !== undefined) {
-      // Refresh succeeded — caller can retry without interactive auth.
-      return true;
+      return "refreshed"; // fresh token — caller may retry silently
     }
     // refreshed === undefined could mean either:
     //   (a) terminal refresh failure → tokens.ts already cleared storage
     //   (b) transient failure → tokens.ts deliberately preserved tokens
-    // Distinguish by inspecting storage. Only call clearTokens +
-    // onReauthNeeded in the (a) case so transient outages do not
-    // permanently delete a still-valid refresh token.
+    // Distinguish by inspecting storage. Only call onReauthNeeded in the (a) case
+    // so transient outages do not permanently delete a still-valid refresh token.
     if (await tm.hasTokens()) {
-      return false; // transient failure — tokens preserved, but can't reconnect yet
+      return "transient-failure"; // tokens preserved but temporarily unavailable
     }
     await runtime.onReauthNeeded(serverName);
-    return false; // terminal failure — must do interactive auth
+    return "needs-auth"; // terminal — interactive OAuth required
   };
 
   return {
