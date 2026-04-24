@@ -36,6 +36,7 @@ export type {
   AgentStateRefs,
   AgentWorkflowConfig,
   IncomingMessage,
+  ScheduledSpawnArgs,
   TemporalConfig,
 } from "./types.js";
 export { DEFAULT_TEMPORAL_CONFIG } from "./types.js";

@@ -8,6 +8,15 @@ export interface AgentWorkflowConfig {
   readonly initialMessages?: readonly IncomingMessage[] | undefined;
 }
 
+// Args for workflows started by a cron schedule (spawn mode).
+// sessionId is intentionally absent — each Temporal execution provides its own
+// workflow execution ID as the session namespace, preventing cross-run state collision.
+export interface ScheduledSpawnArgs {
+  readonly agentId: AgentId;
+  readonly stateRefs: AgentStateRefs;
+  readonly initialMessages?: readonly IncomingMessage[] | undefined;
+}
+
 export interface AgentStateRefs {
   readonly lastTurnId: string | undefined;
   readonly turnsProcessed: number;

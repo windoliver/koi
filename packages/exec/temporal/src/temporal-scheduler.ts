@@ -14,7 +14,7 @@ import type {
   TaskRunRecord,
   TaskScheduler,
 } from "@koi/core";
-import type { IncomingMessage } from "./types.js";
+import type { IncomingMessage, ScheduledSpawnArgs } from "./types.js";
 
 function toTaskId(id: string): TaskId {
   return id as TaskId;
@@ -89,6 +89,16 @@ export interface TemporalSchedulerConfig {
   readonly workflowType: string;
 }
 
+/**
+ * Creates a Temporal-backed TaskScheduler.
+ *
+ * **In-memory limitation**: task/schedule state is stored in ephemeral Maps.
+ * After a process restart, `cancel()`, `query()`, `history()`, `pause()`, and
+ * `resume()` lose visibility into previously-created Temporal resources. For spawn
+ * tasks, `cancel(taskId)` still attempts a remote cancel because the taskId equals
+ * the workflowId at submission time. Dispatch-mode resources cannot be recovered
+ * this way. For production reliability, back this with an external state store.
+ */
 export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskScheduler {
   const tasks = new Map<string, ScheduledTask>();
   const schedules = new Map<string, CronSchedule>();
@@ -147,6 +157,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       mode: "spawn" | "dispatch",
       options?: TaskOptions,
     ): Promise<TaskId> {
+      if (mode === "dispatch" && options?.delayMs !== undefined) {
+        throw new Error(
+          "delayMs is not supported for dispatch mode — dispatch targets a running workflow and cannot defer signal delivery",
+        );
+      }
+
       const id = toTaskId(`task:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`);
       const now = Date.now();
 
@@ -277,11 +293,14 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
     async cancel(id: TaskId): Promise<boolean> {
       const task = tasks.get(id);
-      if (task === undefined) return false;
+      // Attempt remote cancel even without local state: for spawn tasks, taskId === workflowId
+      // so post-restart cancel requests can still reach the running workflow.
       const targetId = taskWorkflowIds.get(id) ?? id;
       try {
         await config.client.workflow.cancel(targetId);
-        tasks.set(id, { ...task, status: "failed" });
+        if (task !== undefined) {
+          tasks.set(id, { ...task, status: "failed" });
+        }
         emit({ kind: "task:cancelled", taskId: id });
         return true;
       } catch {
@@ -312,22 +331,21 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       const initialMessages = mapEngineInputToMessages(input, id);
 
       // spawn: start a fresh workflow on each cron firing.
-      //   sessionId is intentionally omitted so each fired workflow uses its own
-      //   Temporal execution ID as the session namespace (no shared state collision).
+      //   ScheduledSpawnArgs intentionally omits sessionId — each Temporal execution
+      //   uses its own execution ID as the session namespace (no cross-run state collision).
       // dispatch: send a signal to the long-running agent workflow on each firing.
+      const spawnArgs: ScheduledSpawnArgs = {
+        agentId,
+        stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+        initialMessages,
+      };
       const scheduleAction =
         mode === "spawn"
           ? {
               type: "startWorkflow",
               workflowType: config.workflowType,
               taskQueue: config.taskQueue,
-              args: [
-                {
-                  agentId,
-                  stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-                  initialMessages,
-                },
-              ],
+              args: [spawnArgs],
             }
           : {
               type: "sendSignal",

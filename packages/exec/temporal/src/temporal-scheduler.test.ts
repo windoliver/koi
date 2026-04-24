@@ -134,6 +134,13 @@ describe("submit", () => {
     expect(payload.pinned).toBe(true);
   });
 
+  test("throws when delayMs is used with dispatch mode", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { delayMs: 1000 }),
+    ).rejects.toThrow("delayMs is not supported for dispatch mode");
+  });
+
   test("passes startDelay when delayMs is set", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
@@ -298,9 +305,20 @@ describe("cancel", () => {
     expect(cancelArgs?.[0]).toBe(String(AGENT_ID));
   });
 
-  test("returns false for unknown task", async () => {
-    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+  test("returns false for unknown task when remote cancel also fails", async () => {
+    const client = makeMockClient({
+      cancel: mock(async () => {
+        throw new Error("workflow not found");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
     expect(await scheduler.cancel("nonexistent" as never)).toBe(false);
+  });
+
+  test("returns true for unknown local task when remote cancel succeeds (post-restart spawn recovery)", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    // No submit — simulates a task created before a process restart
+    expect(await scheduler.cancel("task:123:abc" as never)).toBe(true);
   });
 
   test("emits task:cancelled event", async () => {
