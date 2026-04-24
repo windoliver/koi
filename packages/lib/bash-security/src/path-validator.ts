@@ -9,8 +9,11 @@ import type { ClassificationResult, ThreatPattern } from "./types.js";
  */
 const PATH_TRAVERSAL_PATTERNS: readonly ThreatPattern[] = [
   {
-    // Raw directory traversal: ../ or ..\ or bare .. at end of path
-    regex: /\.\.(\/|\\|$)/,
+    // Raw directory traversal: ../ or ..\ or bare .. at end of path,
+    // OR literal `..` followed by a URL-encoded separator (`%2f`, `%5c`,
+    // double-encoded `%252f`, `%255c`). A caller that URL-decodes after
+    // validation would otherwise see `..` + `/` and escape the base.
+    regex: /\.\.(\/|\\|%2f|%5c|%252f|%255c|$)/i,
     category: "path-traversal",
     reason: "Directory traversal sequence detected (../)",
   },

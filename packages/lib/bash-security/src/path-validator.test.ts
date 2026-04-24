@@ -320,6 +320,28 @@ describe("validatePath", () => {
     });
   });
 
+  describe("literal dot + encoded separator (round 10)", () => {
+    test("..%2fetc/passwd is rejected", () => {
+      expect(validatePath("..%2fetc/passwd").ok).toBe(false);
+    });
+
+    test("..%5cetc is rejected (encoded backslash)", () => {
+      expect(validatePath("..%5cetc").ok).toBe(false);
+    });
+
+    test("..%252fetc/passwd is rejected (double-encoded slash)", () => {
+      expect(validatePath("..%252fetc/passwd").ok).toBe(false);
+    });
+
+    test("..%255cetc is rejected (double-encoded backslash)", () => {
+      expect(validatePath("..%255cetc").ok).toBe(false);
+    });
+
+    test("uppercase ..%2F is rejected (case-insensitive)", () => {
+      expect(validatePath("..%2Fetc").ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = validatePath("../../etc");

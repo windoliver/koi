@@ -225,10 +225,13 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
  * Alternatives (after path-simplification in simplifyPathTokens):
  *   - `/` followed by end/space/star or a system top-level name
  *   - `~` end/space/`/` — so `~`, `~ `, `~/`, `~/.ssh` all match
+ *   - `~user` — bash expands `~root`, `~www-data`, etc. to that user's home
+ *     before the command runs; we do not know who that is, so treat every
+ *     named-user tilde as a home target
  *   - `$HOME` / `${HOME}` references
  */
 const SYSTEM_PATH_TARGETS =
-  "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s|\\/)|\\$(?:\\{HOME\\}|HOME\\b)";
+  "\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b|Users\\b|System\\b|Library\\b|Applications\\b|private\\b)|~(?:$|\\s|\\/|[A-Za-z0-9_.-]+)|\\$(?:\\{HOME\\}|HOME\\b)";
 
 // Anchor to start-of-string or whitespace so `dist/*`, `foo/etc`, etc. don't
 // trip the `/<sys-dir>` alternatives embedded mid-token. Case-insensitive so
@@ -332,7 +335,13 @@ interface GitInvocation {
  */
 function extractGitSubcommand(cmd: string): GitInvocation | null {
   const tokens = cmd.split(/\s+/).filter((t) => t.length > 0);
-  const gitIdx = tokens.findIndex((t) => t === "git" || /\/git$/.test(t));
+  // Strip leading shell-grouping/control characters — `(`, `{`, `!` — from each
+  // token before matching `git`. Bash treats `(git reset --hard HEAD~1)` as a
+  // subshell grouping where the `(` is a control token attached to the `git`
+  // word, not part of the executable name. Matching the raw token would miss
+  // the destructive git invocation inside the subshell.
+  const cleaned = tokens.map((t) => t.replace(/^[(!{]+/, ""));
+  const gitIdx = cleaned.findIndex((t) => t === "git" || /\/git$/.test(t));
   if (gitIdx === -1) return null;
   const preOptions: string[] = [];
   let i = gitIdx + 1;
