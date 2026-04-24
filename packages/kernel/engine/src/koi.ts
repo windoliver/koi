@@ -163,10 +163,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     (hasLegacyKey &&
       !("resetBudgetPerRun" in legacyOpts) &&
       legacyOpts.resetIterationBudgetPerRun === true);
-  // True when resetBudgetPerRun came exclusively from the legacy key: unbranded
-  // guards get a warn+skip (old behavior) instead of a hard throw so mixed-version
-  // installs (new @koi/engine + old @koi/engine-compose) don't fail at construction.
-  const fromLegacyOption = resetBudgetPerRun && options.resetBudgetPerRun !== true;
 
   // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
   for (const mw of allMiddleware) {
@@ -195,22 +191,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         );
       }
       if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-        if (fromLegacyOption) {
-          // Mixed-version install: new engine + old engine-compose guard.
-          // Warn and degrade gracefully (old behavior) instead of failing at construction.
-          console.warn(
-            `[koi] createKoi: legacy guard "koi:iteration-guard" cannot be reset per-run. ` +
-              `Per-run budget reset is disabled for this guard. ` +
-              `Upgrade @koi/engine-compose to enable full reset semantics.`,
-          );
-        } else {
-          throw KoiRuntimeError.from(
-            "VALIDATION",
-            `[koi] Middleware "koi:iteration-guard" does not implement resetForRun(). ` +
-              `This is a legacy pre-#1917 guard that cannot be reset per-run. ` +
-              `Upgrade @koi/engine-compose or remove resetBudgetPerRun from options.`,
-          );
-        }
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          `[koi] Middleware "koi:iteration-guard" does not implement resetForRun(). ` +
+            `This is a legacy pre-#1917 guard that cannot be reset per-run. ` +
+            `Upgrade @koi/engine-compose or remove resetBudgetPerRun from options.`,
+        );
       }
     }
   }
