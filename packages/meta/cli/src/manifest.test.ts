@@ -474,3 +474,124 @@ describe("loadManifestConfig: supervision block", () => {
     expect(result.error).toContain("supervision");
   });
 });
+
+describe("loadManifestConfig: audit block (#1994)", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-audit-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits audit when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.audit).toBeUndefined();
+  });
+
+  test("parses full audit block with absolute paths", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        '  ndjson: "/abs/logs/audit.ndjson"',
+        '  sqlite: "/abs/logs/audit.db"',
+        '  violations: "/abs/logs/violations.db"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.audit).toEqual({
+      ndjson: "/abs/logs/audit.ndjson",
+      sqlite: "/abs/logs/audit.db",
+      violations: "/abs/logs/violations.db",
+    });
+  });
+
+  test("anchors relative paths to manifest dir", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ./logs/audit.ndjson",
+        "  sqlite: logs/audit.db",
+        "  violations: ./logs/violations.db",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.audit?.ndjson).toBe(join(dir, "logs/audit.ndjson"));
+    expect(result.value.audit?.sqlite).toBe(join(dir, "logs/audit.db"));
+    expect(result.value.audit?.violations).toBe(join(dir, "logs/violations.db"));
+  });
+
+  test("parses partial audit block (ndjson only)", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "audit:",
+        "  ndjson: ./logs/audit.ndjson",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.audit?.ndjson).toBe(join(dir, "logs/audit.ndjson"));
+    expect(result.value.audit?.sqlite).toBeUndefined();
+    expect(result.value.audit?.violations).toBeUndefined();
+  });
+
+  test("returns undefined audit when all fields absent from block", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "audit: {}"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.audit).toBeUndefined();
+  });
+
+  test("rejects non-object audit block", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "audit: not-an-object"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("audit");
+  });
+
+  test("rejects empty string ndjson path", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "audit:", '  ndjson: ""'].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ndjson");
+  });
+
+  test("rejects non-string sqlite path", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqlite: 42"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("sqlite");
+  });
+});

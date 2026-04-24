@@ -1067,6 +1067,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   let manifestGovernance: import("./manifest.js").ManifestGovernanceConfig | undefined;
   let manifestSupervision: import("@koi/core").SupervisionConfig | undefined;
+  let manifestAudit: import("./manifest.js").ManifestAuditConfig | undefined;
   // Mirror start.ts: when resuming without an explicit --manifest, bypass
   // auto-discovery so the cwd manifest cannot silently override the model,
   // stacks, plugins, filesystem scope, or governance of the original session.
@@ -1109,6 +1110,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
     manifestGovernance = manifestResult.value.governance;
     manifestSupervision = manifestResult.value.supervision;
+    manifestAudit = manifestResult.value.audit;
 
     if (manifestResult.value.filesystem !== undefined) {
       // Store the full config for async resolution before runtime assembly.
@@ -1828,17 +1830,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // initOtelSdk() registers a global TracerProvider so middleware-otel's
     // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
     ...(otelEnabled ? { otel: true as const } : {}),
-    // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
-    // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
-    // every model/tool call is recorded as a hash-chained NDJSON entry.
+    // KOI_AUDIT_NDJSON=<path> opts into security-grade audit logging.
+    // Manifest audit.ndjson is the fallback when the env var is absent.
+    // Precedence: env var → manifest → off.
     ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
       ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
-      : {}),
-    // KOI_AUDIT_SQLITE=<absolute path> opts into SQLite-backed audit
-    // logging. Wires @koi/middleware-audit + @koi/audit-sink-sqlite so
-    // every model/tool call is recorded in a WAL-mode SQLite database.
+      : manifestAudit?.ndjson !== undefined
+        ? { auditNdjsonPath: manifestAudit.ndjson }
+        : {}),
+    // KOI_AUDIT_SQLITE=<path> opts into SQLite-backed audit logging.
+    // Manifest audit.sqlite is the fallback when the env var is absent.
+    // Precedence: env var → manifest → off.
     ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
       ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+      : manifestAudit?.sqlite !== undefined
+        ? { auditSqlitePath: manifestAudit.sqlite }
+        : {}),
+    // Manifest audit.violations overrides the ~/.koi/violations.db default.
+    // No env var equivalent today — manifest is the only override surface.
+    // Precedence: manifest → default (~/.koi/violations.db).
+    ...(manifestAudit?.violations !== undefined
+      ? { violationSqlitePath: manifestAudit.violations }
       : {}),
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.

@@ -289,6 +289,29 @@ export interface ManifestConfig {
    * at parse time so malformed configs fail fast.
    */
   readonly supervision: SupervisionConfig | undefined;
+  /**
+   * Optional audit sink configuration. Each field supplies a default for the
+   * matching env var (`KOI_AUDIT_NDJSON`, `KOI_AUDIT_SQLITE`). Env vars, when
+   * set, win over manifest values. Paths are anchored to the manifest directory.
+   * Parent directories must already exist — audit sinks never silently create them.
+   *
+   *   audit:
+   *     ndjson: ./logs/audit.ndjson
+   *     sqlite: ./logs/audit.db
+   *     violations: ./logs/violations.db
+   */
+  readonly audit: ManifestAuditConfig | undefined;
+}
+
+/**
+ * Audit sink paths lifted from the manifest. Each field is the absolute path
+ * (anchored to manifest dir at parse time) for the corresponding sink.
+ * Precedence: env var → manifest → default (violations only).
+ */
+export interface ManifestAuditConfig {
+  readonly ndjson: string | undefined;
+  readonly sqlite: string | undefined;
+  readonly violations: string | undefined;
 }
 
 /**
@@ -437,6 +460,11 @@ export async function loadManifestConfig(
     return supervisionResult;
   }
 
+  const auditResult = parseManifestAudit(raw.audit, path);
+  if (!auditResult.ok) {
+    return auditResult;
+  }
+
   // `trustedHost` is not an accepted manifest field. Earlier
   // designs exposed a per-layer security opt-out surface here, but
   // the runtime factory never actually omitted the corresponding
@@ -538,6 +566,7 @@ export async function loadManifestConfig(
       middleware: middlewareResult.value,
       governance: governanceResult.value,
       supervision: supervisionResult.value,
+      audit: auditResult.value,
     },
   };
 }
@@ -680,6 +709,72 @@ function parseManifestSupervision(
     return { ok: false, error: `manifest.supervision: ${valid.error.message}` };
   }
   return { ok: true, value: valid.value };
+}
+
+/**
+ * Parse the manifest `audit:` section. Accepts any subset of:
+ *   ndjson (non-empty string — anchored to manifest dir if relative)
+ *   sqlite (non-empty string — anchored to manifest dir if relative)
+ *   violations (non-empty string — anchored to manifest dir if relative)
+ *
+ * Returns `{ ok: true, value: undefined }` when absent.
+ */
+function parseManifestAudit(
+  raw: unknown,
+  manifestPath: string,
+): ParseResult<ManifestAuditConfig | undefined> {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        "manifest.audit must be an object, e.g. audit: { ndjson: ./logs/audit.ndjson, sqlite: ./logs/audit.db }",
+    };
+  }
+  const rec = raw as Record<string, unknown>;
+  const manifestDir = dirname(resolvePath(manifestPath));
+
+  const anchorPath = (field: string, value: unknown): ParseResult<string | undefined> => {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (typeof value !== "string" || value.length === 0) {
+      return {
+        ok: false,
+        error: `manifest.audit.${field} must be a non-empty string path`,
+      };
+    }
+    return {
+      ok: true,
+      value: isAbsolute(value) ? value : resolvePath(manifestDir, value),
+    };
+  };
+
+  const ndjsonResult = anchorPath("ndjson", rec.ndjson);
+  if (!ndjsonResult.ok) return ndjsonResult;
+
+  const sqliteResult = anchorPath("sqlite", rec.sqlite);
+  if (!sqliteResult.ok) return sqliteResult;
+
+  const violationsResult = anchorPath("violations", rec.violations);
+  if (!violationsResult.ok) return violationsResult;
+
+  if (
+    ndjsonResult.value === undefined &&
+    sqliteResult.value === undefined &&
+    violationsResult.value === undefined
+  ) {
+    return { ok: true, value: undefined };
+  }
+
+  return {
+    ok: true,
+    value: {
+      ndjson: ndjsonResult.value,
+      sqlite: sqliteResult.value,
+      violations: violationsResult.value,
+    },
+  };
 }
 
 /**

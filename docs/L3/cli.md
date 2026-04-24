@@ -246,6 +246,21 @@ koi tui
 | `KOI_FEEDBACK_LOOP_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-feedback-loop` in observe-only mode (`feedbackLoop: {}`). The middleware intercepts every model response and tool call: validators run against each response chunk sequence (pass-through by default), transport errors are classified and counted against per-category retry budgets, and tool health is tracked via a ring-buffer quarantine tracker. No validators are registered by default so the middleware is a no-op fence until validators or a custom `FeedbackLoopConfig` are supplied at the programmatic API level. |
 | `KOI_WEB_CACHE_TTL_MS` | no | `60000` | Response-cache TTL (milliseconds) for `web_fetch` GET/HEAD without custom headers and without a request body. `@koi/tools-web` ships disabled (TTL `0`) as an L2 opt-in contract; the CLI opts in with a 60 s default so back-to-back identical fetches within a session return `cached: true` instead of re-issuing live network calls. Only `200` responses without revalidation directives (`no-store`, `no-cache`, `private`, `must-revalidate`, `max-age=0`, `Pragma: no-cache`, past `Expires`, or any `Vary`) are stored; each entry's lifetime is capped to origin's remaining freshness (`max-age − Age`). `web_fetch` also accepts a per-call `noCache: true` that forces a live fetch with no stale fallback (evicts the entry; failures leave the key empty). Accepts any non-negative integer; `0` disables the cache for a run. **Malformed values (non-integer, negative, non-numeric) fail startup loudly** — an operator fixing staleness during an incident deserves an obvious error, not a silent 60 s stale-read window. (#1903) |
 
+**Manifest `audit:` block (#1994):** Audit sinks can be configured in `koi.yaml` so projects enable
+audit logging without shell/init plumbing. All paths anchor to the manifest directory (not the shell
+cwd). Parent directories must exist — audit sinks never silently create them. Env vars take
+precedence over manifest values; `violations` defaults to `~/.koi/violations.db` when absent.
+
+```yaml
+audit:
+  ndjson: ./logs/audit.ndjson   # fallback for KOI_AUDIT_NDJSON; relative to manifest dir
+  sqlite: ./logs/audit.db        # fallback for KOI_AUDIT_SQLITE; relative to manifest dir
+  violations: ./logs/v.db        # overrides ~/.koi/violations.db default; relative to manifest dir
+```
+
+Precedence: `KOI_AUDIT_NDJSON` env var → `audit.ndjson` manifest → off (for ndjson); same for
+sqlite. For violations: `audit.violations` manifest → `~/.koi/violations.db` default.
+
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
 so the key is not forwarded to OpenRouter.
