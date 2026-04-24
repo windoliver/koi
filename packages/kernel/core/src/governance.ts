@@ -106,6 +106,11 @@ export type GovernanceEvent =
   | { readonly kind: "tool_error"; readonly toolName: string }
   | { readonly kind: "tool_success"; readonly toolName: string }
   /**
+   * @deprecated Renamed to `run_reset` in #1939. Handled as a no-provenance run_reset for
+   * one release so existing hosts that emit this event keep working. Remove in next major.
+   */
+  | { readonly kind: "iteration_reset" }
+  /**
    * Emitted at the start of each `runtime.run()` when `resetBudgetPerRun: true`.
    * Resets per-run UX budgets — turn count and duration — so each `run()` call
    * gets a fresh model-call and wall-clock window. Token usage, cost, spawn counts,
@@ -129,7 +134,8 @@ export type GovernanceEvent =
        * by I/O or middleware latency.
        *
        * Optional for backward compatibility: controllers fall back to `Date.now()`
-       * when absent. Only reject non-finite or far-future values (> 60s from now).
+       * when absent. Future values are clamped to now (non-finite values fall back
+       * to now) so a buggy host cannot extend the duration window into the future.
        */
       readonly boundaryTimestamp?: number | undefined;
     }

@@ -502,16 +502,19 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         state.toolOutcomes.push(true);
         if (state.toolOutcomes.length > errorRateWindow) state.toolOutcomes.shift();
         return;
+      case "iteration_reset":
+        // Deprecated alias for run_reset (renamed in #1939). No boundaryTimestamp.
+        state.turnCount = 0;
+        state.iterationStart = now();
+        return;
       case "run_reset": {
         // L0 contract: reset per-run UX budgets (turn_count, duration_ms).
         // Token usage, cost, spawn counts, and error-rate windows survive.
-        // Validate boundaryTimestamp: finite, not more than 60s in the future.
-        // Invalid values fall back to now() so a buggy caller cannot disable
-        // duration enforcement by injecting NaN or a far-future timestamp.
+        // Clamp future timestamps to now so duration_ms stays non-negative.
         const runNow = now();
         const runTs = event.boundaryTimestamp ?? runNow;
         state.turnCount = 0;
-        state.iterationStart = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
+        state.iterationStart = Number.isFinite(runTs) ? Math.min(runTs, runNow) : runNow;
         return;
       }
       case "session_reset": {
@@ -521,8 +524,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         const sessNow = now();
         const sessTs = event.boundaryTimestamp ?? sessNow;
         state.turnCount = 0;
-        state.iterationStart =
-          Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
+        state.iterationStart = Number.isFinite(sessTs) ? Math.min(sessTs, sessNow) : sessNow;
         state.toolOutcomes.length = 0;
         return;
       }

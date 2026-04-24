@@ -294,6 +294,11 @@ export function createGovernanceController(
       case "tool_success":
         totalCallsWindow.record(Date.now());
         break;
+      case "iteration_reset":
+        // Deprecated alias for run_reset (renamed in #1939). No boundaryTimestamp.
+        turnCount = 0;
+        startedAt = Date.now();
+        break;
       case "run_reset": {
         // #1939: reset per-run UX budgets (turn count, run duration)
         // so each `runtime.run()` invocation gets a fresh model-call /
@@ -301,15 +306,13 @@ export function createGovernanceController(
         // INTENTIONALLY NOT reset — they back runtime-wide spend safety
         // caps. Spawn counts and rolling error-rate windows are also
         // runtime-scoped and unaffected.
-        // Validate boundaryTimestamp before use: accept any finite value not
-        // more than 60s in the future (clock-skew tolerance). Past timestamps
-        // are accepted — they only tighten duration enforcement, never loosen
-        // it. Reject non-finite values and far-future timestamps; fall back to
-        // Date.now() so a buggy/malicious caller cannot disable enforcement.
+        // Clamp boundaryTimestamp to now: past values tighten enforcement
+        // (safe), future values are floored to now so duration_ms stays
+        // non-negative and enforcement is never disabled by clock skew.
         const runNow = Date.now();
         const runTs = event.boundaryTimestamp ?? runNow;
         turnCount = 0;
-        startedAt = Number.isFinite(runTs) && runTs <= runNow + 60_000 ? runTs : runNow;
+        startedAt = Number.isFinite(runTs) ? Math.min(runTs, runNow) : runNow;
         break;
       }
       case "session_reset": {
@@ -323,7 +326,7 @@ export function createGovernanceController(
         const sessNow = Date.now();
         const sessTs = event.boundaryTimestamp ?? sessNow;
         turnCount = 0;
-        startedAt = Number.isFinite(sessTs) && sessTs <= sessNow + 60_000 ? sessTs : sessNow;
+        startedAt = Number.isFinite(sessTs) ? Math.min(sessTs, sessNow) : sessNow;
         errorWindow.clear();
         totalCallsWindow.clear();
         break;
