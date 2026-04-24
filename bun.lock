@@ -687,6 +687,7 @@
         "@koi/artifacts": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
+        "@koi/bash-ast": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
@@ -992,6 +993,14 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-reconcile": "workspace:*",
+      },
+    },
+    "packages/net/gateway": {
+      "name": "@koi/gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/net/mcp": {
@@ -1544,6 +1553,8 @@
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
 
     "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
+
+    "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 

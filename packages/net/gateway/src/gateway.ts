@@ -1,0 +1,292 @@
+/**
+ * Gateway factory: wires transport, auth, sessions, sequencing, and backpressure
+ * into a minimal WebSocket control-plane entry point.
+ *
+ * Intentionally omits: node registry, tool routing, session resume TTL,
+ * channel binding, scheduler, and heartbeat sweep — those belong in future issues.
+ */
+
+import type { KoiError, Result } from "@koi/core";
+import { notFound } from "@koi/core";
+import { swallowError } from "@koi/errors";
+import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
+import { handleHandshake } from "./auth.js";
+import { createBackpressureMonitor } from "./backpressure.js";
+import { CLOSE_CODES } from "./close-codes.js";
+import {
+  createAckFrame,
+  createErrorFrame,
+  createFrameIdGenerator,
+  encodeFrame,
+  parseFrame,
+} from "./protocol.js";
+import { createSequenceTracker } from "./sequence-tracker.js";
+import type { SessionStore } from "./session-store.js";
+import { createInMemorySessionStore } from "./session-store.js";
+import type { Transport, TransportConnection, TransportHandler } from "./transport.js";
+import type { GatewayConfig, GatewayFrame, Session } from "./types.js";
+import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Session events
+// ---------------------------------------------------------------------------
+
+export type SessionEvent =
+  | { readonly kind: "created"; readonly session: Session }
+  | { readonly kind: "destroyed"; readonly sessionId: string; readonly reason: string };
+
+// ---------------------------------------------------------------------------
+// Gateway interface
+// ---------------------------------------------------------------------------
+
+export interface Gateway {
+  readonly start: (port: number) => Promise<void>;
+  readonly stop: () => Promise<void>;
+  readonly sessions: () => SessionStore;
+  readonly onFrame: (handler: (session: Session, frame: GatewayFrame) => void) => () => void;
+  readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
+  readonly dispatch: (session: Session, frame: GatewayFrame) => void;
+  readonly destroySession: (sessionId: string, reason?: string) => Result<void, KoiError>;
+  readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Deps
+// ---------------------------------------------------------------------------
+
+export interface GatewayDeps {
+  readonly transport: Transport;
+  readonly auth: GatewayAuthenticator;
+  readonly store?: SessionStore | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createGateway(
+  configOverrides: Readonly<Partial<GatewayConfig>>,
+  deps: GatewayDeps,
+): Gateway {
+  const config: GatewayConfig = { ...DEFAULT_GATEWAY_CONFIG, ...configOverrides };
+  const store = deps.store ?? createInMemorySessionStore();
+  const bp = createBackpressureMonitor(config);
+  const nextId = createFrameIdGenerator();
+
+  const connMap = new Map<string, TransportConnection>();
+  const sessionByConn = new Map<string, string>(); // connId → sessionId
+  const connBySession = new Map<string, string>(); // sessionId → connId
+  const trackers = new Map<string, ReturnType<typeof createSequenceTracker>>();
+  const pendingHandshakes = new Map<string, (data: string) => void>();
+
+  const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
+  const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
+
+  let criticalSweep: ReturnType<typeof setInterval> | undefined;
+
+  function emitSessionEvent(event: SessionEvent): void {
+    for (const handler of sessionEventHandlers) {
+      try {
+        handler(event);
+      } catch (err: unknown) {
+        swallowError(err, { package: "gateway", operation: "onSessionEvent" });
+      }
+    }
+  }
+
+  function emitFrames(session: Session, frames: readonly GatewayFrame[]): void {
+    for (const frame of frames) {
+      for (const handler of frameHandlers) {
+        try {
+          handler(session, frame);
+        } catch (err: unknown) {
+          swallowError(err, { package: "gateway", operation: "onFrame" });
+        }
+      }
+    }
+  }
+
+  function cleanupConn(conn: TransportConnection, reason: string): void {
+    const sessionId = sessionByConn.get(conn.id);
+    pendingHandshakes.delete(conn.id);
+    trackers.delete(conn.id);
+    sessionByConn.delete(conn.id);
+    connMap.delete(conn.id);
+    bp.remove(conn.id);
+
+    if (sessionId !== undefined) {
+      connBySession.delete(sessionId);
+      void Promise.resolve(store.delete(sessionId));
+      emitSessionEvent({ kind: "destroyed", sessionId, reason });
+    }
+  }
+
+  const transportHandler: TransportHandler = {
+    onOpen(conn: TransportConnection): void {
+      if (connMap.size >= config.maxConnections) {
+        conn.send(createErrorFrame(0, "MAX_CONNECTIONS", "Max connections exceeded", nextId));
+        conn.close(CLOSE_CODES.MAX_CONNECTIONS, "Max connections exceeded");
+        return;
+      }
+
+      connMap.set(conn.id, conn);
+
+      const handshakeOptions: HandshakeOptions = {
+        minProtocolVersion: config.minProtocolVersion,
+        maxProtocolVersion: config.maxProtocolVersion,
+        capabilities: config.capabilities,
+        ...(config.includeSnapshot
+          ? { snapshot: { serverTime: Date.now(), activeConnections: connMap.size } }
+          : {}),
+      };
+
+      void handleHandshake(conn, deps.auth, config.authTimeoutMs, handshakeOptions, (handler) => {
+        pendingHandshakes.set(conn.id, handler);
+      })
+        .then((result) => {
+          pendingHandshakes.delete(conn.id);
+
+          const tracker = createSequenceTracker(config.dedupWindowSize);
+          trackers.set(conn.id, tracker);
+          sessionByConn.set(conn.id, result.session.id);
+          connBySession.set(result.session.id, conn.id);
+
+          void Promise.resolve(store.set(result.session)).then((r) => {
+            if (!r.ok) {
+              conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session store error");
+              cleanupConn(conn, "session store failure");
+              return;
+            }
+            emitSessionEvent({ kind: "created", session: result.session });
+          });
+        })
+        .catch(() => {
+          pendingHandshakes.delete(conn.id);
+          connMap.delete(conn.id);
+          bp.remove(conn.id);
+        });
+    },
+
+    onMessage(conn: TransportConnection, data: string): void {
+      const handshakeHandler = pendingHandshakes.get(conn.id);
+      if (handshakeHandler !== undefined) {
+        handshakeHandler(data);
+        return;
+      }
+
+      const sessionId = sessionByConn.get(conn.id);
+      if (sessionId === undefined) return;
+
+      const sessionResult = store.get(sessionId) as Result<Session, KoiError>;
+      if (!sessionResult.ok) return;
+
+      const frameResult = parseFrame(data);
+      if (!frameResult.ok) {
+        conn.send(createErrorFrame(0, frameResult.error.code, frameResult.error.message, nextId));
+        return;
+      }
+
+      const tracker = trackers.get(conn.id);
+      if (tracker === undefined) return;
+
+      const { result, ready } = tracker.accept(frameResult.value);
+
+      if (result === "duplicate" || result === "out_of_window") {
+        conn.send(createAckFrame(frameResult.value.seq, frameResult.value.id, null, nextId));
+        return;
+      }
+
+      const updatedSession: Session = { ...sessionResult.value, remoteSeq: frameResult.value.seq };
+      void Promise.resolve(store.set(updatedSession));
+
+      bp.record(conn.id, data.length);
+      emitFrames(updatedSession, ready);
+    },
+
+    onClose(conn: TransportConnection, _code: number, reason: string): void {
+      cleanupConn(conn, reason || "connection closed");
+    },
+
+    onDrain(conn: TransportConnection): void {
+      bp.drain(conn.id, config.maxBufferBytesPerConnection);
+    },
+  };
+
+  return {
+    async start(port: number): Promise<void> {
+      await deps.transport.listen(port, transportHandler);
+
+      criticalSweep = setInterval(() => {
+        const now = Date.now();
+        for (const [connId, conn] of connMap) {
+          const since = bp.criticalSince(connId);
+          if (since !== undefined && now - since > config.backpressureCriticalTimeoutMs) {
+            conn.send(createErrorFrame(0, "BUFFER_LIMIT", "Buffer limit exceeded", nextId));
+            conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Backpressure timeout");
+          }
+        }
+      }, 5_000);
+    },
+
+    async stop(): Promise<void> {
+      if (criticalSweep !== undefined) {
+        clearInterval(criticalSweep);
+        criticalSweep = undefined;
+      }
+      deps.transport.close();
+    },
+
+    sessions(): SessionStore {
+      return store;
+    },
+
+    onFrame(handler: (session: Session, frame: GatewayFrame) => void): () => void {
+      frameHandlers.add(handler);
+      return () => {
+        frameHandlers.delete(handler);
+      };
+    },
+
+    send(sessionId: string, frame: GatewayFrame): Result<number, KoiError> {
+      const connId = connBySession.get(sessionId);
+      if (connId === undefined) {
+        return { ok: false, error: notFound(sessionId, `Session not connected: ${sessionId}`) };
+      }
+      const conn = connMap.get(connId);
+      if (conn === undefined) {
+        return {
+          ok: false,
+          error: notFound(connId, `Connection not found for session: ${sessionId}`),
+        };
+      }
+      const encoded = encodeFrame(frame);
+      const bytes = conn.send(encoded);
+      bp.record(connId, encoded.length);
+      return { ok: true, value: bytes };
+    },
+
+    dispatch(session: Session, frame: GatewayFrame): void {
+      emitFrames(session, [frame]);
+    },
+
+    destroySession(sessionId: string, reason = "administratively closed"): Result<void, KoiError> {
+      const connId = connBySession.get(sessionId);
+      if (connId === undefined) {
+        return { ok: false, error: notFound(sessionId, `Session not found: ${sessionId}`) };
+      }
+      const conn = connMap.get(connId);
+      if (conn !== undefined) {
+        conn.send(createErrorFrame(0, "ADMIN_CLOSED", reason, nextId));
+        conn.close(CLOSE_CODES.ADMIN_CLOSED, reason);
+      }
+      return { ok: true, value: undefined };
+    },
+
+    onSessionEvent(handler: (event: SessionEvent) => void): () => void {
+      sessionEventHandlers.add(handler);
+      return () => {
+        sessionEventHandlers.delete(handler);
+      };
+    },
+  };
+}
