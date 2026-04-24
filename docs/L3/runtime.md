@@ -390,3 +390,23 @@ createRuntime({
 **Cooperative cancellation hint.** `onIdleWarn` is a synchronous observer callback; hosts wiring it through a middleware can inject a `<system-reminder>` on the next prompt ("you've been idle for N seconds, are you stuck?"). The core runtime does not ship such a middleware — it is a per-deployment choice.
 
 <!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
+
+---
+
+## @koi/tasks RemoteAgentTask lifecycle hardening (#2043)
+
+`@koi/tasks` received correctness fixes for the `remote_agent` lifecycle that affect
+observable runtime behaviour. No new golden queries or cassettes were required (no new
+tools or middleware); the 2 new `@koi/tasks` golden-replay tests are standalone and
+require no LLM.
+
+Changes visible at the `@koi/runtime` integration boundary:
+
+- **Composite stop key**: `TaskRunner` now scopes stop-suppression to
+  `${taskId}:${attemptId}`. A retry attempt on the same `taskId` will no longer
+  inherit stop-suppression from a prior attempt, so natural exits from retry B
+  correctly transition the board to `completed`/`failed`.
+- **Cancel-notify observability**: explicit `stop()` now awaits cancel-notify
+  delivery before the board `kill` transition. Failure notes (`[cancel-notify:
+  failed — HTTP NNN]`) land in the task's output stream and are readable via
+  `readOutput()` after the stop call returns.

@@ -762,3 +762,11 @@ CLI surface changes:
 See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`activity.idle.warning`, `activity.terminated.idle`, `activity.terminated.wall_clock`), and the `done.output.metadata` contract consumers can read.
 
 <!-- #1769: watch_patterns E2E touches this package (createdBy/lastAssignedTo, task_output ACL + matches_only, sandbox-os callback cap-survival, turn-prelude middleware wiring). -->
+
+---
+
+## @koi/tasks RemoteAgentTask lifecycle hardening (#2043)
+
+`@koi/tasks` received correctness fixes for the `remote_agent` lifecycle. No CLI
+surface changes. See `docs/L2/tasks.md` for the detailed change log and
+`docs/L3/runtime.md` for the runtime-boundary impact summary.
