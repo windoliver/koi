@@ -2540,7 +2540,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     if (resolvedViolationPath !== undefined) {
       try {
         const parent = dirname(resolvedViolationPath);
+        const explicitPath =
+          config.violationSqlitePath !== undefined && config.violationSqlitePath.length > 0;
         if (!existsSync(parent)) {
+          // Only auto-create the parent directory for the implicit default path
+          // (~/.koi/). Explicit operator-supplied paths must already have their
+          // parent present — silently creating directories for explicitly-
+          // configured paths expands the trust boundary beyond "open a file".
+          if (explicitPath) {
+            throw new Error(
+              `violation store: parent directory "${parent}" does not exist. ` +
+                "Create it before starting, or remove the explicit path to use the default (~/.koi/violations.db).",
+            );
+          }
           mkdirSync(parent, { recursive: true });
         }
         violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
