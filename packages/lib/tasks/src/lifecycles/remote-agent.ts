@@ -180,11 +180,13 @@ export function createRemoteAgentLifecycle(
           timedOut = true;
           controller.abort();
           // Best-effort: notify the remote server on timeout so it can stop.
+          // taskId is included so the server can distinguish retries keyed by the
+          // same correlationId — only this specific execution should be cancelled.
           if (cancelEndpoint !== undefined) {
             void fetchImpl(cancelEndpoint, {
               method: "POST",
               headers: { "Content-Type": "application/json", ...lifecycleHeaders },
-              body: JSON.stringify({ correlationId: config.correlationId }),
+              body: JSON.stringify({ correlationId: config.correlationId, taskId }),
               redirect: "error",
             }).catch(() => undefined);
           }
@@ -194,6 +196,10 @@ export function createRemoteAgentLifecycle(
             // The cleanup-incomplete message communicates that remote termination is
             // unconfirmed — the remote agent may still be running.
             emitTerminal(1, "\n[timed out: remote agent may still be running]\n");
+            // Force-remove from activePipes even if the pipe never settled — same
+            // as stop() does. handleNaturalExit does not call stop(), so without
+            // this, timed-out hung tasks would leak map entries indefinitely.
+            activePipes.delete(taskId);
           })();
         }, config.timeout);
       }
@@ -428,13 +434,15 @@ export function createRemoteAgentLifecycle(
           output.write("\n[cleanup-incomplete: remote agent may still be running]\n");
         }
         // Best-effort: notify the remote server so it can stop the associated work.
+        // taskId is included so the server can distinguish retries keyed by the
+        // same correlationId — only this specific execution should be cancelled.
         // Fire-and-forget — failures are swallowed; cleanup-incomplete already covers
         // the uncertain state and the board transition must not block on this.
         if (cancelEndpoint !== undefined) {
           void fetchImpl(cancelEndpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...lifecycleHeaders },
-            body: JSON.stringify({ correlationId: config.correlationId }),
+            body: JSON.stringify({ correlationId: config.correlationId, taskId }),
             redirect: "error",
           }).catch(() => undefined);
         }
