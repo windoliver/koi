@@ -4201,7 +4201,11 @@ const queries: readonly QueryConfig[] = [
   // run-reset: records a single run with resetBudgetPerRun=true active so
   // the run_reset event fires at trajectory index 0 (non-cooperating adapter path).
   // Full two-run provenance assertions (guard+governance alignment, boundaryId
-  // stability) are covered by standalone golden tests in golden-replay.test.ts.
+  // stability, event ordering) are covered by standalone golden tests in golden-replay.test.ts
+  // (search for "Golden: @koi/engine — reset boundary semantics").
+  // TODO(#1939): add a two-submit cassette that exercises run_reset between sequential
+  // runs through the real replay harness. Requires extending QueryConfig to support
+  // multiple sequential prompts and re-recording with OPENROUTER_API_KEY.
   {
     name: "run-reset",
     prompt: "Say 'hello' in exactly one word.",

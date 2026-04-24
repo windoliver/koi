@@ -723,9 +723,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // `run_reset` is only emitted when the reset is fully complete. If a guard
       // throws, we poison the runtime and re-throw; governance is never told about
       // a reset that didn't happen.
+      // Deduplication: middleware is composed additively (static + forged + dynamic),
+      // so the same guard instance can appear multiple times. Track by identity so each
+      // guard is reset exactly once, even if it appears from multiple sources.
       try {
+        const seen = new Set<IterationGuardHandle>();
         for (const mw of guards) {
-          if (isIterationGuardHandle(mw)) {
+          if (isIterationGuardHandle(mw) && !seen.has(mw)) {
+            seen.add(mw);
             mw.resetForRun(resetAt);
           }
         }

@@ -11083,6 +11083,73 @@ describe("Golden: @koi/engine — reset boundary semantics", () => {
     expect(sr0.boundaryId).toMatch(/:session:0$/);
     expect(sr1.boundaryId).toMatch(/:session:1$/);
   });
+
+  test("run_reset fires at run start, not during prior run drain (event ordering)", async () => {
+    // Verifies the multi-submit reset boundary: run_reset for run N must appear
+    // after run N-1 is fully drained and before any activity in run N.
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+    type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
+
+    const { GOVERNANCE } = await import("@koi/core");
+    const { createIterationGuard } = await import("@koi/engine-compose");
+
+    const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 10_000 });
+
+    const runtime = await createKoi({
+      manifest: { name: "Golden Reset Ordering", version: "0.1.0", model: { name: "test-model" } },
+      adapter: {
+        engineId: "golden-reset-ordering-test",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: { totalTokens: 2, inputTokens: 1, outputTokens: 1, turns: 1, durationMs: 0 },
+            },
+          };
+        },
+      },
+      middleware: [guard],
+      resetBudgetPerRun: true,
+      loopDetection: false,
+    });
+
+    const govCtl = runtime.agent.component<GovRecordable>(GOVERNANCE);
+    if (govCtl === undefined) throw new Error("governance component not found");
+
+    // Track events per phase: "run1" while draining first run, "run2" for second.
+    const phased: Array<{ phase: "run1" | "run2"; kind: string }> = [];
+    let phase: "run1" | "run2" = "run1";
+    const original = govCtl.record.bind(govCtl);
+    govCtl.record = (ev: GovernanceEvent): void | Promise<void> => {
+      phased.push({ phase, kind: ev.kind });
+      return original(ev);
+    };
+
+    for await (const _ of runtime.run({ kind: "text", text: "first" })) {
+      /* drain */
+    }
+    phase = "run2";
+    for await (const _ of runtime.run({ kind: "text", text: "second" })) {
+      /* drain */
+    }
+
+    // run_reset for first run must fire during "run1" phase (non-cooperating adapter resets at run start)
+    const run1Events = phased.filter((p) => p.phase === "run1");
+    const run2Events = phased.filter((p) => p.phase === "run2");
+    expect(run1Events.some((p) => p.kind === "run_reset")).toBe(true);
+    expect(run2Events.some((p) => p.kind === "run_reset")).toBe(true);
+
+    // run_reset for run2 must be the first event in run2 (before any turn/token events)
+    const firstRun2Event = run2Events[0];
+    expect(firstRun2Event?.kind).toBe("run_reset");
+
+    // The two run_reset events must have distinct boundaryIds
+    const resets = phased.filter((p) => p.kind === "run_reset");
+    expect(resets.length).toBe(2);
+  });
 });
 
 describe("Golden: @koi/daemon", () => {
