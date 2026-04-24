@@ -51,6 +51,7 @@
     { "path": "../../mm/middleware-extraction" },
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../net/daemon" },
+    { "path": "../../net/gateway" },
     { "path": "../../net/mcp" },
     { "path": "../../net/mcp-server" },
     { "path": "../../lib/middleware-feedback-loop" },
