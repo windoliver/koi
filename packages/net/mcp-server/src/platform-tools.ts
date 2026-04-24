@@ -185,6 +185,42 @@ function createListMessagesTool(mailbox: MailboxComponent): Tool {
   return result.value;
 }
 
+function createListMailboxTool(mailbox: MailboxComponent): Tool {
+  const result = buildTool({
+    name: "koi_list_mailbox",
+    description:
+      "List envelope headers from the agent's mailbox (non-destructive). Returns id, from, to, kind, type, and createdAt for each message — no payloads. Use koi_list_messages for payload access or filtered queries.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "number",
+          description: `Max headers to return (default ${DEFAULT_LIST_LIMIT}, max ${MAX_LIST_LIMIT}).`,
+        },
+      },
+    },
+    origin: "primordial",
+    sandbox: false,
+    async execute(args: JsonObject): Promise<unknown> {
+      const limit = clampLimit(args.limit);
+      const messages = await mailbox.list({ limit });
+      return {
+        count: messages.length,
+        messages: messages.map((m) => ({
+          id: m.id,
+          from: m.from,
+          to: m.to,
+          kind: m.kind,
+          type: m.type,
+          createdAt: m.createdAt,
+        })),
+      };
+    },
+  });
+  if (!result.ok) throw new Error(`Failed to build koi_list_mailbox: ${result.error.message}`);
+  return result.value;
+}
+
 function createListTasksTool(taskBoard: ManagedTaskBoard): Tool {
   const result = buildTool({
     name: "koi_list_tasks",
@@ -458,6 +494,7 @@ export function createPlatformTools(capabilities: PlatformCapabilities): readonl
   if (mailbox !== undefined) {
     tools.push(createSendMessageTool(callerId, mailbox));
     tools.push(createListMessagesTool(mailbox));
+    tools.push(createListMailboxTool(mailbox));
   }
 
   if (taskBoard !== undefined) {

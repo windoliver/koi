@@ -32,9 +32,12 @@ describe("@koi/ipc-local — API surface", () => {
     const router = createLocalMailboxRouter();
     const _register: typeof router.register = router.register;
     const _unregister: typeof router.unregister = router.unregister;
+    const _getView: typeof router.getView = router.getView;
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     const _get: typeof router.get = router.get;
     void _register;
     void _unregister;
+    void _getView;
     void _get;
   });
 });

@@ -8030,10 +8030,11 @@ describe("Golden: @koi/mcp-server", () => {
 
     // Verify tools/list returns platform tools
     const tools = await client.listTools();
-    expect(tools.tools.length).toBe(2); // koi_send_message + koi_list_messages
+    expect(tools.tools.length).toBe(3); // koi_send_message + koi_list_messages + koi_list_mailbox
     const names = tools.tools.map((t) => t.name);
     expect(names).toContain("koi_send_message");
     expect(names).toContain("koi_list_messages");
+    expect(names).toContain("koi_list_mailbox");
 
     // Verify tool schemas have required fields
     const sendTool = tools.tools.find((t) => t.name === "koi_send_message");
@@ -12409,23 +12410,24 @@ describe("Golden: @koi/ipc-local", () => {
     const { agentId } = await import("@koi/core");
 
     const router = createLocalMailboxRouter();
-    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a") });
-    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b") });
+    // Mailboxes must be created with the router they will be registered in —
+    // this binds their inbound-auth guard to the router's trust domain.
+    const mailboxA = createLocalMailbox({ agentId: agentId("agent-a"), router });
+    const mailboxB = createLocalMailbox({ agentId: agentId("agent-b"), router });
 
     router.register(agentId("agent-a"), mailboxA);
     router.register(agentId("agent-b"), mailboxB);
 
-    const target = router.get(agentId("agent-b"));
-    expect(target).toBeDefined();
-    if (target === undefined) return;
-
-    await target.send({
+    // Send via mailboxA's outbound path — the authenticated cross-agent route.
+    // router.getView() is a read-only lookup; message delivery goes through the mailbox.
+    const result = await mailboxA.send({
       from: agentId("agent-a"),
       to: agentId("agent-b"),
       kind: "request",
       type: "task",
       payload: { action: "run" },
     });
+    expect(result.ok).toBe(true);
 
     const bMsgs = await mailboxB.list();
     expect(bMsgs).toHaveLength(1);
@@ -12434,8 +12436,8 @@ describe("Golden: @koi/ipc-local", () => {
 
     // Unregister removes from routing table
     router.unregister(agentId("agent-a"));
-    expect(router.get(agentId("agent-a"))).toBeUndefined();
-    expect(router.get(agentId("agent-b"))).toBeDefined();
+    expect(router.getView(agentId("agent-a"))).toBeUndefined();
+    expect(router.getView(agentId("agent-b"))).toBeDefined();
 
     mailboxA.close();
     mailboxB.close();
