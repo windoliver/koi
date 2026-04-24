@@ -1,0 +1,137 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { ResolvedWorkspaceConfig } from "@koi/core";
+import { agentId } from "@koi/core";
+import { createGitWorktreeBackend } from "./git-backend.js";
+
+const aid = agentId("test-agent");
+
+const defaultConfig: ResolvedWorkspaceConfig = {
+  cleanupPolicy: "always",
+  cleanupTimeoutMs: 5_000,
+};
+
+async function createTempGitRepo(): Promise<string> {
+  const dir = join(
+    import.meta.dir,
+    "__test-repos__",
+    `repo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  await mkdir(dir, { recursive: true });
+  const proc = Bun.spawn(["git", "init", "--initial-branch=main"], { cwd: dir });
+  await proc.exited;
+  const cfg = Bun.spawn(["git", "config", "user.email", "test@test.com"], { cwd: dir });
+  await cfg.exited;
+  const cfg2 = Bun.spawn(["git", "config", "user.name", "Test"], { cwd: dir });
+  await cfg2.exited;
+  // Need at least one commit for worktrees to work
+  await writeFile(join(dir, "README.md"), "test repo");
+  const add = Bun.spawn(["git", "add", "."], { cwd: dir });
+  await add.exited;
+  const commit = Bun.spawn(["git", "commit", "-m", "init"], { cwd: dir });
+  await commit.exited;
+  return dir;
+}
+
+describe("createGitWorktreeBackend", () => {
+  let repoPath: string;
+
+  beforeEach(async () => {
+    repoPath = await createTempGitRepo();
+  });
+
+  afterEach(async () => {
+    await rm(repoPath, { recursive: true, force: true });
+    // Also clean up __test-repos__ dir if empty
+    await rm(join(import.meta.dir, "__test-repos__"), { recursive: true, force: true });
+  });
+
+  it("creates an isolated git worktree directory", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    expect(ws.path).toBeTruthy();
+
+    // Directory must exist
+    const stat = await Bun.file(join(ws.path, ".koi-workspace")).exists();
+    expect(stat).toBe(true);
+
+    // Cleanup
+    await backend.dispose(ws.id);
+  });
+
+  it("workspace path is inside basePath", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    await backend.dispose(result.value.id);
+  });
+
+  it("dispose removes the worktree directory", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const path = result.value.path;
+    const disposeResult = await backend.dispose(result.value.id);
+    expect(disposeResult.ok).toBe(true);
+
+    // Directory should be gone
+    const exists = await Bun.file(join(path, ".koi-workspace")).exists();
+    expect(exists).toBe(false);
+  });
+
+  it("dispose returns NOT_FOUND for unknown workspace id", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const { workspaceId } = await import("@koi/core");
+    const result = await backend.dispose(workspaceId("nonexistent"));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  it("isHealthy returns true for an existing workspace", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(backend.isHealthy(result.value.id)).toBe(true);
+    await backend.dispose(result.value.id);
+  });
+
+  it("isHealthy returns false for unknown workspace", async () => {
+    const { workspaceId } = await import("@koi/core");
+    const backend = createGitWorktreeBackend({ repoPath });
+    expect(backend.isHealthy(workspaceId("ghost"))).toBe(false);
+  });
+
+  it("metadata contains branchName", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.metadata.branchName).toBeTruthy();
+    expect(result.value.metadata.branchName).toContain("test-agent");
+    await backend.dispose(result.value.id);
+  });
+
+  it("supports worktreeBasePath override", async () => {
+    const customBase = join(repoPath, "custom-worktrees");
+    const backend = createGitWorktreeBackend({ repoPath, worktreeBasePath: customBase });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.path.startsWith(customBase)).toBe(true);
+    await backend.dispose(result.value.id);
+  });
+});

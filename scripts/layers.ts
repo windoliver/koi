@@ -81,10 +81,12 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/session",
   "@koi/skill-tool",
   "@koi/skills-runtime",
+  "@koi/scratchpad-local",
   "@koi/snapshot-store-sqlite",
   "@koi/task-tools",
   "@koi/tasks",
   "@koi/tools-bash",
+  "@koi/workspace",
 ]);
 
 /**
