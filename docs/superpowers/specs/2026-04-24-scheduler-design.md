@@ -127,6 +127,11 @@ interface ScheduleStore extends AsyncDisposable {
   readonly saveSchedule: (schedule: CronSchedule) => void | Promise<void>
   readonly removeSchedule: (id: ScheduleId) => void | Promise<void>
   readonly loadSchedules: () => readonly CronSchedule[] | Promise<readonly CronSchedule[]>
+  // updateSchedule used by pause/resume to persist the paused flag before returning.
+  // Durability requirement: pause() and resume() MUST call updateSchedule() and await
+  // persistence before mutating in-memory croner state or returning to the caller.
+  // A process restart must reproduce the paused/active state from the store, not memory.
+  readonly updateSchedule: (id: ScheduleId, patch: Partial<Pick<CronSchedule, "paused" | "last_run_at">>) => void | Promise<void>
 }
 
 // SchedulerConfig — exact L0 definition (no dbPath — passed to SQLite store factory separately):
@@ -186,9 +191,11 @@ CREATE TABLE koi_schedules (
 -- Immutable append-only run history: one row per execution attempt.
 -- Never updated. Rows keyed by (task_id, retry_attempt).
 -- Supports TaskRunRecord[] returned by history() and scheduler_history tool.
+-- No foreign key cascade: run history must survive task row deletion.
+-- Task rows may be removed (cancelled, cleaned up); run history is retained independently.
 CREATE TABLE koi_task_runs (
   id TEXT PRIMARY KEY,            -- unique run ID (branded RunId)
-  task_id TEXT NOT NULL REFERENCES koi_tasks(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL,          -- no CASCADE: history is independent of task lifecycle
   agent_id TEXT NOT NULL,
   status TEXT NOT NULL,           -- "completed" | "failed"
   started_at INTEGER NOT NULL,
@@ -197,8 +204,12 @@ CREATE TABLE koi_task_runs (
   retry_attempt INTEGER NOT NULL,
   error TEXT,                     -- JSON: KoiError | null
   result TEXT,                    -- JSON: unknown | null
-  UNIQUE(task_id, retry_attempt)  -- one row per attempt; INSERT OR IGNORE on re-insertion
+  UNIQUE(task_id, retry_attempt)  -- enforces one row per attempt; INSERT fails loudly on conflict
 );
+-- Duplicate-execution policy: since timeout is terminal (dead_letter, no retry),
+-- and stale-task recovery increments retries++ (new attempt number), legitimate
+-- duplicate inserts for the same (task_id, retry_attempt) should not occur.
+-- If a conflict arises, fail loudly (do NOT use INSERT OR IGNORE) — it signals a logic bug.
 ```
 
 ### Task Lifecycle
@@ -346,8 +357,9 @@ All tools created by `attach(component: SchedulerComponent)`. The provider recei
 | Test | File |
 |------|------|
 | Cron schedule fires at correct time | `scheduler.test.ts` |
-| One-shot schedule fires once | `scheduler.test.ts` |
+| One-shot schedule fires once (submit with delayMs) | `scheduler.test.ts` |
 | Recurring task re-schedules | `scheduler.test.ts` |
+| Paused schedule stays paused after restart (SQLite round-trip) | `sqlite-store.test.ts` |
 | Task registry tracks active schedules | `scheduler.test.ts` |
 | Schedule persists across restart (SQLite round-trip) | `sqlite-store.test.ts` |
 | Invalid cron expression rejected | `scheduler.test.ts` |
