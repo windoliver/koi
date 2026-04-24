@@ -514,14 +514,15 @@ describe("createProgressivePinnedRuntime", () => {
     expect(afterClear.ok && afterClear.value.body).toContain("Updated body.");
   });
 
-  test("clearPinnedBodies() replays all accumulated external skills after full invalidation", async () => {
-    // Multiple MCP servers each call registerExternal() with their own skills.
-    // clearPinnedBodies() must replay ALL accumulated externals — not just the last batch —
-    // so no server's skills silently disappear after session reset.
+  test("clearPinnedBodies() replays last registerExternal snapshot — honors replacement semantics", async () => {
+    // SkillsRuntime.registerExternal() uses full-replacement semantics: each call replaces
+    // the entire external set. The pinned wrapper preserves that contract: clearPinnedBodies()
+    // replays only the most recent snapshot, not an accumulated union of all calls.
+    // This prevents stale MCP skills from reappearing after a server disconnects.
     const base = createSkillsRuntime({ bundledRoot: null, userRoot });
     const runtime = createProgressivePinnedRuntime(base);
 
-    // Simulate two MCP servers registering independently.
+    // First batch registered (simulates server A connecting first).
     runtime.registerExternal([
       {
         name: "server-a-tool",
@@ -530,6 +531,8 @@ describe("createProgressivePinnedRuntime", () => {
         dirPath: "mcp://a",
       },
     ]);
+    // Second batch replaces the first (simulates server B's registration, or server A
+    // disconnecting and B taking over with only its own skills).
     runtime.registerExternal([
       {
         name: "server-b-tool",
@@ -539,13 +542,14 @@ describe("createProgressivePinnedRuntime", () => {
       },
     ]);
 
-    // After clearPinnedBodies(), BOTH externals must be present — accumulated, not last-batch-only.
+    // After clearPinnedBodies(), only the last snapshot is replayed — honoring replacement
+    // semantics. Server A's tool is gone (matching what the base runtime would have had).
     runtime.clearPinnedBodies();
     const afterClear = await runtime.discover();
     expect(afterClear.ok).toBe(true);
     if (afterClear.ok) {
-      expect(afterClear.value.has("server-a-tool")).toBe(true);
       expect(afterClear.value.has("server-b-tool")).toBe(true);
+      expect(afterClear.value.has("server-a-tool")).toBe(false);
     }
   });
 });

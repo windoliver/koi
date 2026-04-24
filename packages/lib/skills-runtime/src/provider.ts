@@ -27,39 +27,37 @@ import type { SkillDefinition, SkillMetadata, SkillQuery, SkillsRuntime } from "
 // ---------------------------------------------------------------------------
 
 /**
- * Config for `createSkillProvider`. Accepts no options — exists so callers
- * that previously passed `{ progressive: true }` receive an explicit runtime
- * error pointing to `createProgressiveSkillProvider()` instead of silently
- * falling back to eager mode.
+ * Config for `createSkillProvider`. Reserved for future eager-mode options.
+ * Do not add a `progressive` flag here — progressive mode requires the pinned
+ * runtime wrapper that only `createProgressiveSkillProvider()` provides.
  */
-export interface SkillProviderConfig {
-  readonly progressive?: boolean;
-}
+export type SkillProviderConfig = {};
 
 /**
  * Creates a ComponentProvider that bridges a SkillsRuntime to the agent ECS.
  *
- * Eager mode: Calls runtime.loadAll(), converts each SkillDefinition → SkillComponent
+ * Eager mode only: Calls runtime.loadAll(), converts each SkillDefinition → SkillComponent
  * with full body in content. Bodies are injected into the system prompt at every
  * model call.
  *
  * For progressive mode (compact <available_skills> XML block per model call),
  * use `createProgressiveSkillProvider()` instead — it bundles session-snapshot
  * pinning automatically and returns the pinned runtime for the Skill tool.
+ * Passing `progressive: true` here is intentionally unsupported: the unpinned
+ * path can advertise a different skill body than the Skill tool later loads,
+ * causing stale-catalog failures mid-session.
  *
  * Compatible with Nexus in the future: swap the runtime implementation,
  * keep the same provider.
  */
 export function createSkillProvider(
   runtime: SkillsRuntime,
-  config?: SkillProviderConfig,
+  _config?: SkillProviderConfig,
 ): ComponentProvider {
-  const progressive = config?.progressive ?? false;
   return {
     name: "skills-runtime",
     priority: COMPONENT_PRIORITY.BUNDLED,
-    attach: async (_agent: Agent): Promise<AttachResult> =>
-      progressive ? attachProgressive(runtime) : attachEager(runtime),
+    attach: async (_agent: Agent): Promise<AttachResult> => attachEager(runtime),
   };
 }
 
@@ -242,22 +240,25 @@ export type PinnedRuntime = SkillsRuntime & {
   /**
    * Clears pinned bodies and invalidates the corresponding base LRU entries,
    * then clears the base runtime's discovery cache so the next `loadAll()`
-   * re-scans the filesystem. Externals registered via `registerExternal()` are
-   * preserved and re-applied immediately so MCP skills survive the reset.
+   * re-scans the filesystem. The most recent `registerExternal()` snapshot is
+   * re-applied immediately, honoring full-replacement semantics — stale skills
+   * from disconnected MCP servers are not resurrected.
    *
    * Use on session reset to pick up added/removed filesystem skills and refreshed
-   * skill bodies. The external-skill registry is NOT lost — it is replayed on the
-   * base runtime after the full invalidation.
+   * skill bodies. The last external snapshot is replayed on the base runtime after
+   * the full invalidation so currently-connected MCP skills survive the reset.
    */
   readonly clearPinnedBodies: () => void;
 };
 
 export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRuntime {
   const pinned = new Map<string, Result<SkillDefinition, KoiError>>();
-  // Accumulated external skills across all registerExternal() calls.
-  // Keyed by skill name so each batch can register independently without
-  // overwriting other servers' entries — all are replayed after clearPinnedBodies().
-  const accumulatedExternals = new Map<string, SkillMetadata>();
+  // Snapshot of the last registerExternal() call. The SkillsRuntime contract
+  // specifies full replacement semantics — each call replaces all previous
+  // externals. We honor that here: clearPinnedBodies() replays only the most
+  // recent snapshot, so a disconnected MCP server's stale skills are not
+  // re-registered on session reset.
+  let lastExternalSkills: readonly SkillMetadata[] = [];
 
   const pinnedLoad = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
     const hit = pinned.get(name);
@@ -298,21 +299,19 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): PinnedRunti
       base.invalidate(name);
     },
     registerExternal: (skills: readonly SkillMetadata[]): void => {
-      // Merge into the accumulated map by name — each server/connector can call
-      // registerExternal independently without overwriting other servers' entries.
-      for (const skill of skills) {
-        accumulatedExternals.set(skill.name, skill);
-      }
+      // Honor full-replacement semantics from the SkillsRuntime contract:
+      // each call replaces the entire external set, so we track only the latest.
+      lastExternalSkills = skills;
       base.registerExternal(skills);
     },
     clearPinnedBodies: (): void => {
       // Full base invalidation clears the discovery cache so the next loadAll()
       // re-scans the filesystem, picking up newly added or removed skill directories.
       // External/MCP skills are cleared too by base.invalidate(), but are immediately
-      // re-registered from accumulatedExternals so all MCP bridge state survives the reset.
+      // re-registered from the last known snapshot to restore the session-start state.
       base.invalidate();
-      if (accumulatedExternals.size > 0) {
-        base.registerExternal([...accumulatedExternals.values()]);
+      if (lastExternalSkills.length > 0) {
+        base.registerExternal(lastExternalSkills);
       }
       pinned.clear();
     },

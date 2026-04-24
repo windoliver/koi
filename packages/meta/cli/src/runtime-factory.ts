@@ -661,6 +661,13 @@ export interface KoiRuntimeConfig {
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
   /**
+   * When true, the Skill meta-tool description omits the static skill listing
+   * and defers to the per-turn `<available_skills>` XML block injected by the
+   * progressive middleware. Must be forwarded into `earlyContextHost` so the
+   * `skillsStack` preset picks it up via `ctx.host.skillsProgressive`.
+   */
+  readonly skillsProgressive?: boolean | undefined;
+  /**
    * Persistent approval store for cross-session "always" grants.
    * When provided, durable approvals survive process restart.
    */
@@ -1380,6 +1387,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+    ...(config.skillsProgressive === true ? { skillsProgressive: true } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
     approvalHandler,
     agentId: precomputedAgentId,
