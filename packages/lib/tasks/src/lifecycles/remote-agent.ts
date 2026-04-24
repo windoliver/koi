@@ -187,12 +187,20 @@ export function createRemoteAgentLifecycle(
       // target a later retry of the same task.
       const notifyCancel = (): void => {
         if (cancelEndpoint !== undefined) {
-          void fetchImpl(cancelEndpoint, {
+          fetchImpl(cancelEndpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...lifecycleHeaders },
             body: JSON.stringify({ correlationId: config.correlationId, taskId, attemptId }),
             redirect: "error",
-          }).catch(() => undefined);
+          }).then(
+            () => undefined,
+            (err: unknown) => {
+              // Cancel delivery failed — surface in output so operators can
+              // detect runaway remote work rather than getting a silent leak.
+              const msg = err instanceof Error ? err.message : String(err);
+              output.write(`\n[cancel-notify: failed to reach cancelEndpoint — ${msg}]\n`);
+            },
+          );
         }
       };
 

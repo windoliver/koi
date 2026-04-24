@@ -1530,7 +1530,7 @@ describe("createRemoteAgentLifecycle", () => {
       expect(typeof cancelCalls[0]?.attemptId).toBe("string");
     });
 
-    test("cancelEndpoint failure is swallowed — does not propagate", async () => {
+    test("cancelEndpoint failure does not propagate but appears in output", async () => {
       const fetchSpy: typeof globalThis.fetch = mock(async (url: string | URL | Request) => {
         if (String(url).includes("/cancel")) {
           throw new Error("cancel endpoint unreachable");
@@ -1549,6 +1549,15 @@ describe("createRemoteAgentLifecycle", () => {
 
       // Must not throw even though cancel endpoint fails.
       await expect(lifecycle.stop(state)).resolves.toBeUndefined();
+
+      // Cancel failure must be visible in output so operators can detect runaway remote work.
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("cancel-notify");
+      expect(text).toContain("cancel endpoint unreachable");
     });
 
     test("calls cancelEndpoint on non-OK HTTP response", async () => {
