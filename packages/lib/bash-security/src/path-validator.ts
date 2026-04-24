@@ -58,6 +58,51 @@ const PATH_TRAVERSAL_PATTERNS: readonly ThreatPattern[] = [
 const NON_PRINTABLE = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 /**
+ * Perform one pass of URL decoding on `%XX` sequences for traversal-relevant
+ * bytes only:
+ *   `.` 0x2e, `/` 0x2f, `\` 0x5c, null 0x00
+ *   `%` 0x25 — needed so multi-level encoding chains like `%252e` unwind
+ *              (`%25` → `%`, next pass sees `%2e` → `.`)
+ * Other codes stay intact so `%20` is not turned into whitespace that
+ * subsequent passes misread.
+ */
+function decodeOnce(s: string): string {
+  return s.replace(/%([0-9a-fA-F]{2})/g, (match, hex: string) => {
+    const code = parseInt(hex, 16);
+    if (code === 0x2e || code === 0x2f || code === 0x5c || code === 0x00 || code === 0x25) {
+      return String.fromCharCode(code);
+    }
+    return match;
+  });
+}
+
+/**
+ * Iteratively URL-decode the path up to a small fixed depth, checking
+ * traversal patterns after each decode pass. Defeats mixed single/double-
+ * encoded variants like `%252e.%252fetc` or `.%252e%252fetc` that an
+ * ad-hoc regex enumeration can miss: each pass rewrites some encoded
+ * triplets to their literal forms, and traversal checks re-run against
+ * the partially-decoded string.
+ *
+ * Depth bound (4) covers single, double, and triple encoding with
+ * headroom; deeper chains are not seen in real-world callers and would
+ * signal a path that should be rejected outright anyway.
+ */
+function checkIterativePathTraversal(path: string): ClassificationResult {
+  let current = path;
+  for (let i = 0; i < 4; i++) {
+    const result = matchPatterns(current, PATH_TRAVERSAL_PATTERNS, {
+      normalize: false,
+    });
+    if (!result.ok) return result;
+    const next = decodeOnce(current);
+    if (next === current) break;
+    current = next;
+  }
+  return { ok: true };
+}
+
+/**
  * Result of canonicalization — either a resolved path, or a rejection signal.
  * Dangling symlinks and missing intermediates both represent TOCTOU hazards:
  * their target (or an intermediate directory) may be created/swapped-in
@@ -191,11 +236,15 @@ function canonicalizeExisting(p: string): CanonicalResult {
  * @param baseDir - If provided, the canonicalized path must be a descendant.
  */
 export function validatePath(path: string, baseDir?: string): ClassificationResult {
-  // 1. Pattern checks on the raw string (catches encoded variants before decode).
+  // 1. Iterative traversal check: run PATH_TRAVERSAL_PATTERNS against the raw
+  //    string first, then against each URL-decoded form up to a small fixed
+  //    depth. Single and double encoding plus mixed literal/encoded variants
+  //    all decode to `../` within a few passes; iterative decode + re-check
+  //    catches every combination an ad-hoc regex enumeration would miss.
   //    Path strings can legitimately contain `\` (on Windows paths) so we do
-  //    NOT apply the shell-command normalizer here — it would strip backslashes
-  //    and erase the `..\\` traversal signal.
-  const patternResult = matchPatterns(path, PATH_TRAVERSAL_PATTERNS, { normalize: false });
+  //    NOT apply the shell-command normalizer here — it would strip
+  //    backslashes and erase the `..\\` traversal signal.
+  const patternResult = checkIterativePathTraversal(path);
   if (!patternResult.ok) return patternResult;
 
   // 2. Non-printable character check (broad set not covered by regex patterns)

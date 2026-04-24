@@ -342,6 +342,24 @@ describe("validatePath", () => {
     });
   });
 
+  describe("iterative URL-decode traversal (round 11)", () => {
+    test("%252e.%252fetc/passwd is rejected (mixed double/literal)", () => {
+      expect(validatePath("%252e.%252fetc/passwd").ok).toBe(false);
+    });
+
+    test(".%252e%252fetc is rejected (literal + double-encoded)", () => {
+      expect(validatePath(".%252e%252fetc").ok).toBe(false);
+    });
+
+    test("%252e%2e%252fetc is rejected (triple-mixed)", () => {
+      expect(validatePath("%252e%2e%252fetc").ok).toBe(false);
+    });
+
+    test("%25252e%25252e%25252fetc (triple-encoded) is rejected", () => {
+      expect(validatePath("%25252e%25252e%25252fetc").ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = validatePath("../../etc");

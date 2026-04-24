@@ -50,19 +50,22 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
   },
   {
     // source / dot-command executes arbitrary scripts from the filesystem.
-    // Lookbehind excludes the common false-positive contexts: preceding word
-    // chars (e.g. `--source`), `.` (path component like `.ssh` or a quoted
-    // sentence-period), or `-` (flag continuation). Every legitimate command
-    // position — `^`, whitespace, `;`, `|`, `&`, `(`, `$(`, `{`, `!`, reserved
-    // words like `if`/`then`/`else` — has either nothing before or a non
-    // [\w.-] character before the `source`/`.`, so it matches.
+    // Command-position anchor (start-of-input or command-separator) so that
+    // `find . -name '*.ts'` does not match — the `.` there is a path
+    // argument, not a dot-source command. Legitimate command positions are:
+    //   ^          start-of-input
+    //   ;          statement separator
+    //   | & (){ !  pipe, background, subshell, brace group, bang negation
+    //   \n         newline
+    //   && ||      short-circuit operators
     // The trailing alternation matches either `\s+\S` (regular `source /path`)
     // OR an immediately-adjacent `$VAR`/backtick expansion. The latter covers
     // the `source$IFS/path` and `.${IFS}/path` bypass — bash word-splits $IFS
     // into whitespace before the builtin runs, so `source$IFS/path` executes
     // as `source /path`. We can't tell at classify time what $IFS expands to,
     // so any expansion adjacent to source/dot is treated as unsafe.
-    regex: /(?<![\w.-])(?:source|\.)(?:\s+\S|\$[A-Za-z_{(]|`)/,
+    regex:
+      /(?:^|[;|&(){!\n]|&&|\|\||\b(?:if|then|else|elif|do|while|until|case|esac)\s+)\s*(?:source|\.)(?:\s+\S|\$[A-Za-z_{(]|`)/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },
@@ -107,4 +110,15 @@ export function detectInjection(command: string): ClassificationResult {
     }
   }
   return matchPatterns(command, INJECTION_PATTERNS);
+}
+
+/**
+ * Run INJECTION_PATTERNS against an already-normalized/resolved string.
+ * Used by `classifyCommand` so that `x=s; y=ource; $x$y /tmp/evil.sh` —
+ * which resolves to `source /tmp/evil.sh` after assignment substitution —
+ * is caught by the source/eval guards. Skips RAW_OBFUSCATION_PATTERNS
+ * because those were already decoded in normalization.
+ */
+export function detectInjectionOnResolved(resolved: string): ClassificationResult {
+  return matchPatterns(resolved, INJECTION_PATTERNS, { normalize: false });
 }

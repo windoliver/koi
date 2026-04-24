@@ -1,3 +1,4 @@
+import { detectInjectionOnResolved } from "./injection-detector.js";
 import { MAX_INPUT_LENGTH, matchPatterns, normalizeForMatch } from "./match.js";
 import type { ClassificationResult, ThreatPattern } from "./types.js";
 
@@ -268,14 +269,18 @@ function simplifyPathTokens(cmd: string): string {
 function checkDestructiveRm(cmd: string): ClassificationResult {
   if (!/\brm\b/.test(cmd)) return { ok: true };
   const hasRecursive = /(?:\s-[a-zA-Z]*[rR][a-zA-Z]*|\s--recursive\b)/.test(cmd);
-  const hasForce = /(?:\s-[a-zA-Z]*[fF][a-zA-Z]*|\s--force\b)/.test(cmd);
-  if (!hasRecursive || !hasForce) return { ok: true };
+  if (!hasRecursive) return { ok: true };
   const simplified = simplifyPathTokens(cmd);
   if (!SYSTEM_PATH_REGEX.test(simplified)) return { ok: true };
+  // For system/home targets, recursive rm is destructive regardless of -f.
+  // An attacker (or a script with `yes |` feeding the prompt, or a non-
+  // interactive context where rm skips the prompt entirely) can delete
+  // /etc without -f.
   return {
     ok: false,
-    reason: "rm -rf targeting the root, a system directory, or the home directory is unrecoverable",
-    pattern: "rm+recursive+force+system-path",
+    reason:
+      "recursive rm targeting the root, a system directory, or the home directory is unrecoverable — the -f flag is not required in non-interactive contexts to remove protected paths",
+    pattern: "rm+recursive+system-path",
     category: "destructive",
   };
 }
@@ -453,6 +458,16 @@ function hasGitConfigEnvAliasInjection(cmd: string): boolean {
       return true;
     }
   }
+  // Config-file selectors: GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM point git
+  // at an attacker-controlled config file wholesale, which can carry any
+  // alias or include.path. HOME= and XDG_CONFIG_HOME= redirect ~/.gitconfig
+  // lookup to an attacker path. Any of these on the same command line as a
+  // git invocation is unsafe regardless of what other options follow.
+  if (/\bGIT_CONFIG_GLOBAL\s*=/.test(cmd)) return true;
+  if (/\bGIT_CONFIG_SYSTEM\s*=/.test(cmd)) return true;
+  if (/\bGIT_CONFIG_NOSYSTEM\s*=/.test(cmd)) return true;
+  if (/\bHOME\s*=[^\s]/.test(cmd) && /\bgit\b/.test(cmd)) return true;
+  if (/\bXDG_CONFIG_HOME\s*=/.test(cmd) && /\bgit\b/.test(cmd)) return true;
   return false;
 }
 
@@ -824,7 +839,14 @@ const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
  * padding-bypass surface.
  */
 const SSH_DIR_WRITE_REDIRECT: ThreatPattern = {
-  regex: /\d*(?:>>?\|?|&>|>&)\s*(?:~|\$HOME|\$\{HOME\})\/\.ssh\//,
+  // Home prefix alternatives (all decode to a user's home at exec time):
+  //   ~              bare tilde
+  //   ~user          tilde+user (root, www-data, etc.)
+  //   $HOME          env var
+  //   ${HOME}        brace form
+  //   ${HOME:?msg}   bash's error-if-unset form (:? :- := :+ all common)
+  // Followed by `/.ssh/`.
+  regex: /\d*(?:>>?\|?|&>|>&)\s*(?:~[A-Za-z0-9_.-]*|\$HOME|\$\{HOME(?::[-?=+][^}]*)?\})\/\.ssh\//,
   category: "persistence",
   reason: "Writing into ~/.ssh establishes persistent SSH access",
 };
@@ -837,7 +859,7 @@ const SSH_DIR_WRITE_REDIRECT: ThreatPattern = {
  * the token count and has no such blind spot.
  */
 const SSH_DIR_WRITE_VERBS = new Set(["tee", "cp", "mv", "install"]);
-const SSH_DIR_TARGET = /^(?:~|\$HOME|\$\{HOME\})\/\.ssh\//;
+const SSH_DIR_TARGET = /^(?:~[A-Za-z0-9_.-]*|\$HOME|\$\{HOME(?::[-?=+][^}]*)?\})\/\.ssh\//;
 
 function checkSshDirWriteVerb(cmd: string): ClassificationResult {
   for (const segment of splitShellSegments(cmd)) {
@@ -914,6 +936,12 @@ export function classifyCommand(command: string): ClassificationResult {
   if (!argExpansionResult.ok) return argExpansionResult;
   const sshVerbResult = checkSshDirWriteVerb(resolved);
   if (!sshVerbResult.ok) return sshVerbResult;
+  // Re-run injection detection on the resolved form. A command like
+  //   x=s; y=ource; $x$y /tmp/evil.sh
+  // normalizes + resolves to `source /tmp/evil.sh`, which the classifier's
+  // TTP patterns do not cover but the injection patterns do.
+  const resolvedInjection = detectInjectionOnResolved(resolved);
+  if (!resolvedInjection.ok) return resolvedInjection;
   const pairResult = checkDestructiveCommandPairs(resolved);
   if (!pairResult.ok) return pairResult;
   return matchPatterns(resolved, ALL_CLASSIFIER_PATTERNS);

