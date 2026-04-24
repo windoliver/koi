@@ -23,7 +23,7 @@ import type { DangerousPattern } from "./types.js";
 // either a bare `/` (end-of-string, whitespace, or wildcard), a top-level
 // system directory, or the literal home indicator.
 const SYSTEM_TARGET =
-  "(?:\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b)|~(?:$|\\s)|\\$HOME\\b)";
+  "(?:\\/(?:$|\\s|\\*|etc\\b|usr\\b|bin\\b|boot\\b|dev\\b|lib(?:32|64)?\\b|sbin\\b|var\\b|opt\\b|root\\b|srv\\b|home\\b)|~(?:$|[\\/\\s])|\\$HOME(?:$|[\\/\\s]))";
 
 const PROCESS_SPAWN: readonly DangerousPattern[] = [
   {
@@ -39,7 +39,7 @@ const FILE_DESTRUCTIVE: readonly DangerousPattern[] = [
   {
     id: "rm-rf-system",
     regex: new RegExp(
-      `\\brm\\b[^\\n#]*\\s(?:--recursive\\s+--force|--force\\s+--recursive|-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)[^\\n#]*?\\s${SYSTEM_TARGET}`,
+      `\\brm\\b[^\\n#]*(?:(?:--recursive\\b|-[a-zA-Z]*[rR][a-zA-Z]*)[^\\n#]*(?:--force\\b|-[a-zA-Z]*[fF][a-zA-Z]*)|(?:--force\\b|-[a-zA-Z]*[fF][a-zA-Z]*)[^\\n#]*(?:--recursive\\b|-[a-zA-Z]*[rR][a-zA-Z]*)|-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)[^\\n#]*?\\s${SYSTEM_TARGET}`,
     ),
     category: "file-destructive",
     severity: "critical",
@@ -100,6 +100,14 @@ const NETWORK_EXFIL: readonly DangerousPattern[] = [
     message: "netcat with listen or exec flags is a reverse-shell vector",
     commandPrefixes: ["nc", "ncat"],
   },
+  {
+    id: "gh-api",
+    regex: /\bgh\b[^#\n]*\bapi\b/,
+    category: "network-exfil",
+    severity: "medium",
+    message: "gh api can issue arbitrary GitHub API requests",
+    commandPrefixes: ["gh"],
+  },
 ];
 
 const CODE_EXEC: readonly DangerousPattern[] = [
@@ -131,7 +139,7 @@ const CODE_EXEC: readonly DangerousPattern[] = [
   },
   {
     id: "powershell-invoke-expression",
-    regex: /\bInvoke-Expression\b/,
+    regex: /\bInvoke-Expression\b/i,
     category: "code-exec",
     severity: "high",
     message: "PowerShell Invoke-Expression executes arbitrary strings as commands",
@@ -139,15 +147,47 @@ const CODE_EXEC: readonly DangerousPattern[] = [
   },
   {
     id: "powershell-iex",
-    regex: /\bIEX\b/,
+    regex: /\bIEX\b/i,
     category: "code-exec",
     severity: "high",
     message: "PowerShell IEX is the Invoke-Expression alias",
     commandPrefixes: ["powershell", "pwsh"],
   },
+  {
+    id: "ssh-remote-shell",
+    regex: /\bssh\b/,
+    category: "code-exec",
+    severity: "medium",
+    message: "ssh can open remote shells or execute arbitrary remote commands",
+    commandPrefixes: ["ssh"],
+  },
+  {
+    id: "kubectl-exec",
+    regex: /\bkubectl\b[^#\n]*\bexec\b/,
+    category: "code-exec",
+    severity: "high",
+    message: "kubectl exec runs arbitrary commands inside a container",
+    commandPrefixes: ["kubectl"],
+  },
+  {
+    id: "aws-ssm-start-session",
+    regex: /\baws\b[^#\n]*\bssm\b[^#\n]*\bstart-session\b/,
+    category: "code-exec",
+    severity: "high",
+    message: "aws ssm start-session opens an interactive remote command session",
+    commandPrefixes: ["aws"],
+  },
 ];
 
 const MODULE_LOAD: readonly DangerousPattern[] = [
+  {
+    id: "tsx-script",
+    regex: /\btsx\b/,
+    category: "module-load",
+    severity: "high",
+    message: "tsx executes arbitrary TypeScript/JavaScript entrypoints",
+    commandPrefixes: ["tsx"],
+  },
   {
     // python -c / -cm inline string execution.
     id: "python-dash-c",
@@ -156,6 +196,22 @@ const MODULE_LOAD: readonly DangerousPattern[] = [
     severity: "high",
     message: "python -c evaluates an arbitrary script string",
     commandPrefixes: ["python", "python2", "python3"],
+  },
+  {
+    id: "npx-runner",
+    regex: /\bnpx\b/,
+    category: "module-load",
+    severity: "high",
+    message: "npx executes package-provided code from npm packages",
+    commandPrefixes: ["npx"],
+  },
+  {
+    id: "bunx-runner",
+    regex: /\bbunx\b/,
+    category: "module-load",
+    severity: "high",
+    message: "bunx executes package-provided code from npm packages",
+    commandPrefixes: ["bunx"],
   },
   {
     // node / deno / bun -e | --eval / --print inline string execution.
@@ -234,7 +290,7 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
   {
     id: "chmod-777-system",
     regex: new RegExp(
-      `\\bchmod\\b[^\\n#]*\\s-[a-zA-Z]*R[a-zA-Z]*\\s+[0-7]*777[0-7]*\\s+${SYSTEM_TARGET}`,
+      `\\bchmod\\b[^\\n#]*\\s(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive\\b)\\s+[0-7]*777[0-7]*\\s+${SYSTEM_TARGET}`,
     ),
     category: "privilege-escalation",
     severity: "high",

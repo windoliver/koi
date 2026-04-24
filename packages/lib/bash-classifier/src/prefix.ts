@@ -371,6 +371,11 @@ function normalize(tokens: readonly string[]): readonly string[] {
   return current;
 }
 
+/** Normalize wrapper-prefixed tokens the same way `prefix()` does. */
+export function normalizeTokens(tokens: readonly string[]): readonly string[] {
+  return normalize(tokens);
+}
+
 /** Shell interpreter binaries whose `-c <arg>` form wraps a nested command. */
 const SHELL_INTERP = /^(?:ba|z|da|a)?sh$/;
 
@@ -469,7 +474,7 @@ const BASH_LONG_FLAGS_WITH_ARG: ReadonlySet<string> = new Set([
  *
  * Returns `null` when `-c` is not found before script argv starts.
  */
-function extractShellDashCArgFromTokens(tokens: readonly string[]): string | null {
+export function extractShellDashCArgFromTokens(tokens: readonly string[]): string | null {
   if (tokens.length < 2) return null;
 
   const first = tokens[0];
@@ -517,6 +522,38 @@ function extractShellDashCArgFromTokens(tokens: readonly string[]): string | nul
 
 function extractShellDashCArg(cmdLine: string): string | null {
   return extractShellDashCArgFromTokens(shellTokenize(cmdLine));
+}
+
+/**
+ * Unwrap nested shell-interpreter hops (`bash -x -c`, `env bash -c`, etc.)
+ * and return the innermost script string when safe to do so.
+ *
+ * Returns `null` when the command is not an interpreter hop, when the
+ * nesting budget is exhausted, or when the command uses an `env -S`
+ * shell-string form that this package intentionally treats as fail-closed.
+ */
+export function extractNestedShellCommand(cmdLine: string, depth: number = 0): string | null {
+  const trimmed = cmdLine.trim();
+  if (trimmed.length === 0) return null;
+  if (depth >= MAX_INTERP_DEPTH) return null;
+
+  const directInner = extractShellDashCArg(trimmed);
+  if (directInner !== null) {
+    return extractNestedShellCommand(directInner, depth + 1) ?? directInner;
+  }
+
+  const rawTokens = shellTokenize(trimmed);
+  if (isEnvDashS(rawTokens)) return null;
+
+  const normalized = normalize(rawTokens);
+  if (isEnvDashS(normalized)) return null;
+
+  const innerAfterNormalize = extractShellDashCArgFromTokens(normalized);
+  if (innerAfterNormalize !== null) {
+    return extractNestedShellCommand(innerAfterNormalize, depth + 1) ?? innerAfterNormalize;
+  }
+
+  return null;
 }
 
 const MAX_INTERP_DEPTH = 4;
