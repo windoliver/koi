@@ -175,8 +175,11 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       });
 
       messages.push(msg);
-      // Dispatch synchronously so send() success means subscribers were called.
-      dispatchToSubscribers(msg);
+      // Decouple delivery from the send() call stack via microtask to prevent
+      // re-entrant delivery loops when subscribers send cross-agent messages.
+      queueMicrotask(() => {
+        dispatchToSubscribers(msg);
+      });
 
       return { ok: true, value: msg };
     },

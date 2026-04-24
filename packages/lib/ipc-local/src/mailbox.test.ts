@@ -126,14 +126,14 @@ describe("createLocalMailbox — local specifics", () => {
     expect(msgs).toHaveLength(0);
   });
 
-  test("subscriber is called synchronously during send()", async () => {
+  test("subscriber is notified before the next await checkpoint after send()", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER });
     const received: string[] = [];
     mailbox.onMessage((msg) => {
       received.push(msg.type);
     });
     await mailbox.send(makeInput("sync"));
-    // Synchronous dispatch: handler fires before send() resolves
+    // queueMicrotask dispatch fires before the await continuation resumes here
     expect(received).toEqual(["sync"]);
     mailbox.close();
   });

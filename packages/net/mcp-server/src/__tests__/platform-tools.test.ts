@@ -47,6 +47,7 @@ function mockMailbox(): MailboxComponent & { calls: readonly unknown[] } {
     }),
     onMessage: () => () => {},
     list: mock(async () => []),
+    drain: () => {},
   };
 }
 

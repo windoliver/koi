@@ -85,6 +85,7 @@ function createMockMailbox(): MailboxComponent {
     }),
     onMessage: () => () => {},
     list: mock(async () => messages),
+    drain: () => {},
   };
 }
 

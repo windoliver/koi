@@ -87,6 +87,7 @@ export interface MessageFilter {
  * - `send` — dispatch a message to another agent's mailbox
  * - `onMessage` — subscribe to incoming messages (returns unsubscribe fn)
  * - `list` — query inbox with optional filter
+ * - `drain` — discard all buffered messages (frees capacity for new sends)
  */
 export interface MailboxComponent {
   readonly send: (message: AgentMessageInput) => Promise<Result<AgentMessage, KoiError>>;
@@ -94,4 +95,5 @@ export interface MailboxComponent {
   readonly list: (
     filter?: MessageFilter,
   ) => readonly AgentMessage[] | Promise<readonly AgentMessage[]>;
+  readonly drain: () => void | Promise<void>;
 }
