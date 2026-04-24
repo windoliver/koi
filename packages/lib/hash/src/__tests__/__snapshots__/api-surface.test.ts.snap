@@ -1,7 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hash API surface . has stable type surface 1`] = `
-"import { BrickId, SigningBackend } from '@koi/core';
+"import { BrickId, JsonObject, SigningBackend } from '@koi/core';
+import { PolicyRequestKind } from '@koi/core/governance-backend';
 
 /**
  * Content-addressed BrickId computation.
@@ -73,6 +74,18 @@ declare function computeStringHash(content: string): string;
 declare function fnv1a(input: string): number;
 
 /**
+ * Compute a stable SHA-256 hex digest for a (kind, payload) pair.
+ *
+ * Canonicalization rules:
+ *   - Object keys are sorted recursively.
+ *   - Arrays preserve order (semantically meaningful).
+ *   - \`undefined\` values are dropped (JSON semantics).
+ *   - Values with a \`toJSON()\` method (e.g., \`Date\`) are serialized via
+ *     that method before canonicalization (standard JSON.stringify behavior).
+ */
+declare function computeGrantKey(kind: PolicyRequestKind, payload: JsonObject): string;
+
+/**
  * HMAC-SHA256 signing backend — default pluggable signer for forge attestation.
  *
  * Uses node:crypto createHmac + timingSafeEqual. Implements the SigningBackend
@@ -95,6 +108,6 @@ declare function createHmacSigner(secretKey: Uint8Array): SigningBackend;
 /** Generate a ULID — 26-char, time-sortable, crypto-random unique ID. */
 declare function generateUlid(): string;
 
-export { computeBrickId, computeCompositeBrickId, computeContentHash, computePipelineBrickId, computeStringHash, createHmacSigner, fnv1a, generateUlid, isBrickId };
+export { computeBrickId, computeCompositeBrickId, computeContentHash, computeGrantKey, computePipelineBrickId, computeStringHash, createHmacSigner, fnv1a, generateUlid, isBrickId };
 "
 `;
