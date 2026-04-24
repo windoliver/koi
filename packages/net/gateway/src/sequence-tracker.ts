@@ -17,6 +17,8 @@ export interface SequenceTracker {
   };
   readonly expectedSeq: () => number;
   readonly bufferedCount: () => number;
+  /** Returns frames currently held in the reorder buffer (not yet dispatchable). */
+  readonly bufferedFrames: () => readonly GatewayFrame[];
   readonly reset: (startSeq?: number) => void;
 }
 
@@ -84,6 +86,10 @@ export function createSequenceTracker(windowSize: number): SequenceTracker {
 
     bufferedCount(): number {
       return buffer.size;
+    },
+
+    bufferedFrames(): readonly GatewayFrame[] {
+      return [...buffer.values()].sort((a, b) => a.seq - b.seq);
     },
 
     reset(startSeq = 0): void {

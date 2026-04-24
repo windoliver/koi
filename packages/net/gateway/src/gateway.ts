@@ -94,6 +94,9 @@ export function createGateway(
   const connOutboundSeq = new Map<string, number>();
   // Disconnect timestamps for TTL sweep of retained sessions (connId-less, in-store).
   const disconnectedAt = new Map<string, number>(); // sessionId → ms since epoch
+  // Session IDs created by this gateway instance. stop() only deletes owned sessions
+  // so a shared/persistent store is not clobbered by an unrelated gateway shutdown.
+  const ownedSessionIds = new Set<string>();
 
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
   const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
@@ -453,6 +456,13 @@ export function createGateway(
           }
           const tracker = createSequenceTracker(config.dedupWindowSize);
           if (startSeq > 0) tracker.reset(startSeq);
+          // Migrate buffered out-of-order frames from the old tracker so the client does not
+          // need to replay them — they arrived in the previous connection's window.
+          if (savedTracker !== undefined) {
+            for (const buffered of savedTracker.bufferedFrames()) {
+              tracker.accept(buffered);
+            }
+          }
           trackers.set(conn.id, tracker);
 
           // Carry recovered remoteSeq into the persisted session so subsequent reconnects
@@ -471,6 +481,7 @@ export function createGateway(
             abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure");
             return;
           }
+          ownedSessionIds.add(result.session.id);
 
           // Phase 2: Persistence succeeded — complete eviction of the old connection.
           if (prevConnId !== undefined && prevConnId !== conn.id) {
@@ -613,13 +624,15 @@ export function createGateway(
       await Promise.allSettled([...msgQueues.values()]);
       msgQueues.clear();
 
-      // Phase 2: Delete ALL sessions from the store — not just those with live connections.
-      // Sessions retained for reconnect (cleanupConn intentionally keeps them) must also
-      // be purged on shutdown so a restarting process doesn't inherit stale remoteSeq state.
+      // Phase 2: Delete only sessions owned by this gateway instance. A shared/persistent
+      // store may hold sessions from other gateway processes; we must not clobber them.
+      // Sessions retained for reconnect (cleanupConn keeps them) are included because
+      // ownedSessionIds is populated at handshake persist time and cleared in destroySession.
       const deletePromises: Promise<Result<boolean, KoiError>>[] = [];
-      for (const [sessionId] of store.entries()) {
+      for (const sessionId of ownedSessionIds) {
         deletePromises.push(Promise.resolve(store.delete(sessionId)));
       }
+      ownedSessionIds.clear();
       const settled = await Promise.allSettled(deletePromises);
       let cleanupFailed = false;
       for (const r of settled) {
@@ -758,6 +771,7 @@ export function createGateway(
         return { ok: false, error: deleteResult.error };
       }
       disconnectedAt.delete(sessionId);
+      ownedSessionIds.delete(sessionId);
       return { ok: true, value: undefined };
     },
 
