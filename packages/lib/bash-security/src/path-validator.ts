@@ -27,6 +27,18 @@ const PATH_TRAVERSAL_PATTERNS: readonly ThreatPattern[] = [
     reason: "Double URL-encoded directory traversal detected (%252e%252e)",
   },
   {
+    // Mixed literal + encoded dot: `%2e.` or `.%2e` decodes to `..`
+    regex: /(?:%2e\.|\.%2e)(?:\/|\\|%2f|%5c|$)/i,
+    category: "path-traversal",
+    reason: "Mixed literal + URL-encoded directory traversal detected",
+  },
+  {
+    // Mixed double-encoded dot: `%252e.` or `.%252e` decodes to `..`
+    regex: /(?:%252e\.|\.%252e)(?:\/|\\|%2f|%5c|$)/i,
+    category: "path-traversal",
+    reason: "Mixed literal + double-URL-encoded directory traversal detected",
+  },
+  {
     // Null byte injection in paths
     // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — security pattern detects null byte injection
     regex: /\u0000/,
@@ -153,11 +165,24 @@ function canonicalizeExisting(p: string): CanonicalResult {
  * files at a validated path must `mkdir -p` the parent directory before
  * calling, so only the leaf can be absent.
  *
- * **Residual TOCTOU**: even with strict intermediates, the leaf is still
- * subject to a narrower race — the parent directory itself could be swapped
- * between validation and open. Callers that need atomicity should either
- * re-validate immediately before the write, or open via `O_NOFOLLOW`/`openat`
- * with no-follow per component.
+ * **Residual TOCTOU (important, callers must read)**: even with strict
+ * intermediates, a missing leaf is inherently non-atomic with its later use.
+ * Between `validatePath` returning `ok` and the caller opening the path, the
+ * leaf OR its parent directory can be replaced with a symlink to an outside
+ * target. `validatePath` returns only a boolean/classification, so callers
+ * cannot bind the subsequent filesystem call to the validated canonical
+ * entry. This gap cannot be closed with a point-in-time string check alone.
+ *
+ * Mitigations callers MUST apply for security-sensitive writes:
+ *   1. `mkdir -p` the parent directory before validating, so only the leaf
+ *      is absent.
+ *   2. Open with `O_NOFOLLOW` on the leaf and `openat()`-style no-follow
+ *      descent for each intermediate. Use `fs.openSync(path, fs.constants.O_NOFOLLOW | fs.constants.O_CREAT)`
+ *      or equivalent — raw `fs.writeFileSync` does NOT provide this.
+ *   3. Re-validate immediately before the write, and prefer `fs.realpathSync`
+ *      on the written file descriptor after open to confirm containment.
+ * Callers that cannot guarantee any of the above must NOT rely on
+ * `validatePath` as the sole write-authorization check.
  *
  * @param path - The path string to validate.
  * @param baseDir - If provided, the canonicalized path must be a descendant.

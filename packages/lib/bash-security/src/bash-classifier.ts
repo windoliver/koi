@@ -277,17 +277,25 @@ function checkDestructiveRm(cmd: string): ClassificationResult {
   };
 }
 
+/**
+ * Recursive chmod/chown against a system path is destructive regardless of
+ * mode: the classifier cannot reason about whether `a+rwx`, `g+w`, `+s`, or
+ * numeric `755` is safer than `777` once it is applied across `/etc`, `/usr`,
+ * or `$HOME`. Fail closed on any recursive mode with a system-path target.
+ */
 function checkDestructiveChmod(cmd: string): ClassificationResult {
-  if (!/\bchmod\b/.test(cmd)) return { ok: true };
+  const isChmod = /\bchmod\b/.test(cmd);
+  const isChown = /\bchown\b/.test(cmd);
+  if (!isChmod && !isChown) return { ok: true };
   const hasRecursive = /(?:\s-[a-zA-Z]*R[a-zA-Z]*|\s--recursive\b)/.test(cmd);
-  const has777 = /\b[0-7]*777[0-7]*\b/.test(cmd);
-  if (!hasRecursive || !has777) return { ok: true };
+  if (!hasRecursive) return { ok: true };
   const simplified = simplifyPathTokens(cmd);
   if (!SYSTEM_PATH_REGEX.test(simplified)) return { ok: true };
   return {
     ok: false,
-    reason: "chmod -R 777 on the root or a system directory is a catastrophic permission change",
-    pattern: "chmod+recursive+777+system-path",
+    reason:
+      "Recursive chmod/chown targeting the root, a system directory, or the home directory is destructive regardless of mode (777, a+rwx, g+w, ownership change) — system permissions and ownership must not be rewritten in bulk",
+    pattern: "chmod-or-chown+recursive+system-path",
     category: "destructive",
   };
 }
@@ -300,6 +308,8 @@ function checkDestructiveChmod(cmd: string): ClassificationResult {
 const GIT_OPTS_WITH_VALUE = new Set([
   "-c",
   "-C",
+  "--config",
+  "--config-env",
   "--git-dir",
   "--work-tree",
   "--namespace",
@@ -389,10 +399,13 @@ function isDangerousConfigKey(key: string): boolean {
 function gitHasAliasOverride(preOptions: readonly string[]): boolean {
   for (let i = 0; i < preOptions.length; i++) {
     const tok = preOptions[i];
-    if (tok === "-c") {
+    // Value-taking options in space-separated form: -c KEY=VAL,
+    // --config KEY=VAL, --config-env KEY=ENVVAR.
+    if (tok === "-c" || tok === "--config" || tok === "--config-env") {
       const keyPart = (preOptions[i + 1] ?? "").split("=")[0] ?? "";
       if (isDangerousConfigKey(keyPart)) return true;
     }
+    // --long=value single-token forms
     if (tok?.startsWith("--config=")) {
       const keyPart = tok.slice("--config=".length).split("=")[0] ?? "";
       if (isDangerousConfigKey(keyPart)) return true;

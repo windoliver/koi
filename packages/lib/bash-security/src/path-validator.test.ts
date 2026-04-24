@@ -287,6 +287,39 @@ describe("validatePath", () => {
     });
   });
 
+  describe("mixed URL-encoded traversal (round 9)", () => {
+    test("%2e./etc/passwd is rejected", () => {
+      const result = validatePath("%2e./etc/passwd");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("path-traversal");
+    });
+
+    test(".%2e/etc/passwd is rejected", () => {
+      const result = validatePath(".%2e/etc/passwd");
+      expect(result.ok).toBe(false);
+    });
+
+    test("%252e./etc/passwd is rejected (double-encoded)", () => {
+      const result = validatePath("%252e./etc/passwd");
+      expect(result.ok).toBe(false);
+    });
+
+    test(".%252e/etc is rejected (mixed literal + double-encoded)", () => {
+      const result = validatePath(".%252e/etc");
+      expect(result.ok).toBe(false);
+    });
+
+    test("%2e.%2fetc is rejected (encoded dot + encoded slash)", () => {
+      const result = validatePath("%2e.%2fetc");
+      expect(result.ok).toBe(false);
+    });
+
+    test("uppercase %2E. is rejected (case-insensitive)", () => {
+      const result = validatePath("%2E./etc/passwd");
+      expect(result.ok).toBe(false);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = validatePath("../../etc");

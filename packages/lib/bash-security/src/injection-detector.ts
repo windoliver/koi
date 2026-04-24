@@ -56,9 +56,13 @@ const INJECTION_PATTERNS: readonly ThreatPattern[] = [
     // position — `^`, whitespace, `;`, `|`, `&`, `(`, `$(`, `{`, `!`, reserved
     // words like `if`/`then`/`else` — has either nothing before or a non
     // [\w.-] character before the `source`/`.`, so it matches.
-    // `\s+\S` requires whitespace + a non-whitespace arg so package names
-    // like `source-map` (no space after) do not match.
-    regex: /(?<![\w.-])(?:source|\.)\s+\S/,
+    // The trailing alternation matches either `\s+\S` (regular `source /path`)
+    // OR an immediately-adjacent `$VAR`/backtick expansion. The latter covers
+    // the `source$IFS/path` and `.${IFS}/path` bypass — bash word-splits $IFS
+    // into whitespace before the builtin runs, so `source$IFS/path` executes
+    // as `source /path`. We can't tell at classify time what $IFS expands to,
+    // so any expansion adjacent to source/dot is treated as unsafe.
+    regex: /(?<![\w.-])(?:source|\.)(?:\s+\S|\$[A-Za-z_{(]|`)/,
     category: "injection",
     reason: "source/. executes an arbitrary script file",
   },
