@@ -582,7 +582,11 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.error).toContain("sqltie");
   });
 
-  test("accepts unknown keys in lenient mode (skipAuditValidation)", async () => {
+  test("accepts unknown keys in lenient mode but surfaces them as presence sentinels", async () => {
+    // A typo'd key (sqltie instead of sqlite) must not block startup, but it
+    // signals attempted audit configuration. The gate-off fail-closed check in
+    // tui-command.ts uses presence sentinels ("") to refuse startup unless the
+    // operator provides KOI_AUDIT_* overrides.
     const p = writeManifest(
       ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqltie: ./logs/audit.db"].join(
         "\n",
@@ -591,9 +595,12 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     const result = await loadManifestConfig(p, { skipAuditValidation: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // Lenient: block presence detected, no validation
     expect(result.value.audit?.present).toBe(true);
-    expect(result.value.audit?.ndjson).toBeUndefined();
+    // Unknown key → all three known fields get "" sentinel (not undefined) so
+    // the gate-off check fires for any of the three override env vars.
+    expect(result.value.audit?.ndjson).toBe("");
+    expect(result.value.audit?.sqlite).toBe("");
+    expect(result.value.audit?.violations).toBe("");
   });
 
   test("rejects non-object audit block", async () => {

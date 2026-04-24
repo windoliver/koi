@@ -764,24 +764,42 @@ function parseManifestAudit(
     return { ok: true, value: undefined };
   }
 
-  // Lenient mode: treat any present audit key as block-presence metadata.
-  // Skip all path validation so malformed values (scalars, arrays, null, bad
-  // keys) cannot abort startup on hosts where the feature gate is off.
-  // We do surface non-empty string values so the gate-off fail-closed check in
-  // tui-command.ts can determine which sinks the manifest attempted to configure
-  // and match them against operator env-var overrides per-sink. These strings
-  // are NOT validated — callers must not use them as trusted paths.
+  // Lenient mode: detect key presence without validating values so the
+  // gate-off fail-closed check in tui-command.ts can refuse startup whenever
+  // the manifest author clearly attempted to configure a sink — even when the
+  // value is the wrong type (ndjson: 42), an empty string, or a typo'd key.
+  // Rules:
+  //   • Known key exists (any value) → set field to the string value if it is a
+  //     non-empty string, otherwise "" (sentinel: key attempted, value unusable)
+  //   • Unknown/typo'd key exists → mark ALL three known fields "" so the
+  //     gate-off check fires regardless of which env-var override path applies
+  // These strings are NOT validated — callers must not use them as trusted paths.
   if (lenient) {
     const rec =
       typeof raw === "object" && raw !== null && !Array.isArray(raw)
         ? (raw as Record<string, unknown>)
         : {};
+    const knownKeys = new Set(["ndjson", "sqlite", "violations"]);
+    const hasUnknownKey = Object.keys(rec).some((k) => !knownKeys.has(k));
+    // "" is the presence sentinel: key exists but value is not a usable path.
     const lNdjson =
-      typeof rec.ndjson === "string" && rec.ndjson.length > 0 ? rec.ndjson : undefined;
+      "ndjson" in rec || hasUnknownKey
+        ? typeof rec.ndjson === "string" && rec.ndjson.length > 0
+          ? rec.ndjson
+          : ""
+        : undefined;
     const lSqlite =
-      typeof rec.sqlite === "string" && rec.sqlite.length > 0 ? rec.sqlite : undefined;
+      "sqlite" in rec || hasUnknownKey
+        ? typeof rec.sqlite === "string" && rec.sqlite.length > 0
+          ? rec.sqlite
+          : ""
+        : undefined;
     const lViolations =
-      typeof rec.violations === "string" && rec.violations.length > 0 ? rec.violations : undefined;
+      "violations" in rec || hasUnknownKey
+        ? typeof rec.violations === "string" && rec.violations.length > 0
+          ? rec.violations
+          : ""
+        : undefined;
     return {
       ok: true,
       value: { present: true, ndjson: lNdjson, sqlite: lSqlite, violations: lViolations },
