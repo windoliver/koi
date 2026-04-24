@@ -84,6 +84,9 @@ export interface RemoteAgentLifecycleOptions {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 2000;
+// 1 MiB per NDJSON line — protects against unbounded buffer growth from a
+// server that never emits a newline.
+const MAX_FRAME_BYTES = 1 * 1024 * 1024;
 
 async function drainPipe(pipe: Promise<void>, drainTimeoutMs: number): Promise<void> {
   await Promise.race([pipe, new Promise<void>((resolve) => setTimeout(resolve, drainTimeoutMs))]);
@@ -159,6 +162,8 @@ export function createRemoteAgentLifecycle(
               payload: config.payload,
             }),
             signal: controller.signal,
+            // Fail on redirects — prevents SSRF bypass via 3xx from trusted endpoint.
+            redirect: "error",
           });
         } catch (err: unknown) {
           if (controller.signal.aborted) return;
@@ -195,6 +200,11 @@ export function createRemoteAgentLifecycle(
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
+            if (buffer.length > MAX_FRAME_BYTES) {
+              if (timeoutId !== undefined) clearTimeout(timeoutId);
+              emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+              return;
+            }
             const lines = buffer.split("\n");
             // last element is the incomplete line remainder
             buffer = lines.pop() ?? "";

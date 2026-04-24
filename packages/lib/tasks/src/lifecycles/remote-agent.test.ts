@@ -686,4 +686,75 @@ describe("createRemoteAgentLifecycle", () => {
       expect(text).toContain("[exit code: 0]");
     });
   });
+
+  describe("SSRF redirect protection", () => {
+    test("redirect: error causes fetch error that is surfaced as lifecycle error", async () => {
+      const exits: number[] = [];
+      // Simulate what a real fetch does when redirect:"error" encounters a 3xx:
+      // it rejects with a TypeError.
+      const redirectFetch: typeof globalThis.fetch = mock(
+        async (_url: string | URL | Request, _init?: RequestInit) =>
+          Promise.reject(new TypeError("redirect was blocked")),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch: redirectFetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("redirect was blocked");
+    });
+  });
+
+  describe("max frame size guard", () => {
+    test("frame exceeding 1 MiB fails closed with protocol error", async () => {
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      // Produce a JSON chunk whose text field pushes the line over 1 MiB
+      const bigText = "x".repeat(1024 * 1024 + 1);
+      const oversizedLine = `${JSON.stringify({ kind: "chunk", text: bigText })}\n`;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(oversizedLine));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("frame exceeds maximum size");
+    });
+  });
 });
