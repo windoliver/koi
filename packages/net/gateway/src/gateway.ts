@@ -49,7 +49,11 @@ export interface Gateway {
     agentId: string,
     handler: (session: Session, frame: GatewayFrame) => void | Promise<void>,
   ) => () => void;
-  readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
+  readonly send: (
+    agentId: string,
+    sessionId: string,
+    frame: GatewayFrame,
+  ) => Result<number, KoiError>;
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
   readonly destroySession: (sessionId: string, reason?: string) => Promise<Result<void, KoiError>>;
   readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
@@ -1142,10 +1146,22 @@ export function createGateway(
       };
     },
 
-    send(sessionId: string, frame: GatewayFrame): Result<number, KoiError> {
+    send(agentId: string, sessionId: string, frame: GatewayFrame): Result<number, KoiError> {
       const connId = connBySession.get(sessionId);
       if (connId === undefined) {
         return { ok: false, error: notFound(sessionId, `Session not connected: ${sessionId}`) };
+      }
+      const ownedSession = connSessionCache.get(connId);
+      if (ownedSession === undefined || ownedSession.agentId !== agentId) {
+        return {
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: `Agent ${agentId} is not authorized to send to session: ${sessionId}`,
+            retryable: false,
+            context: { agentId, sessionId },
+          } satisfies KoiError,
+        };
       }
       const conn = connMap.get(connId);
       if (conn === undefined) {

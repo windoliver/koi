@@ -495,9 +495,26 @@ describe("createGateway", () => {
   describe("send", () => {
     test("returns error for unknown sessionId", () => {
       gateway = createGateway({}, { transport, auth: createTestAuthenticator() });
-      const r = gateway.send("nonexistent", createTestFrame());
+      const r = gateway.send("any-agent", "nonexistent", createTestFrame());
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error.code).toBe("NOT_FOUND");
+    });
+
+    test("returns PERMISSION error when agentId does not own the session", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-send-perm",
+        agentId: "a1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      await authenticateConn(transport, gateway, "s-send-perm");
+
+      const r = gateway.send("wrong-agent", "s-send-perm", createTestFrame());
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("PERMISSION");
     });
 
     test("sends encoded frame to connection", async () => {
@@ -514,7 +531,7 @@ describe("createGateway", () => {
       const sentBefore = conn.sent.length;
 
       const frame = createTestFrame({ seq: 99 });
-      const r = gateway.send("s-send", frame);
+      const r = gateway.send("a1", "s-send", frame);
       expect(r.ok).toBe(true);
       expect(conn.sent.length).toBeGreaterThan(sentBefore);
     });
@@ -741,7 +758,7 @@ describe("createGateway", () => {
       // Advance the outbound counter via send() with no subsequent inbound frame.
       // Without the on-disconnect persist, store.seq stays at 0 (set during handshake)
       // and reconnect would reuse seq numbers already consumed by the send() call.
-      gateway.send("s-seq-persist", createTestFrame());
+      gateway.send("a1", "s-seq-persist", createTestFrame());
 
       // Disconnect without destroySession — session is retained for reconnect.
       transport.simulateClose(conn.id);
@@ -764,7 +781,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const conn = await authenticateConn(transport, gateway, "s-seq-destroy-race");
-      gateway.send("s-seq-destroy-race", createTestFrame());
+      gateway.send("a1", "s-seq-destroy-race", createTestFrame());
       transport.simulateClose(conn.id);
 
       // destroySession must await the pending persist before deleting so the persist
