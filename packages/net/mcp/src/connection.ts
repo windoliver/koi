@@ -142,7 +142,22 @@ export function createMcpConnection(
     authInFlight = (async (): Promise<boolean> => {
       await Promise.resolve(onUnauthorized?.()).catch(() => {});
       if (onAuthNeeded === undefined) return false;
-      return onAuthNeeded().catch(() => false);
+      try {
+        const authed = await onAuthNeeded();
+        if (!authed) return false;
+        // Include the reconnect inside the singleflight so concurrent callers
+        // awaiting authInFlight see the connected state when they wake up and
+        // cannot race to call connect() simultaneously on the same connection.
+        const reconnResult = await connect();
+        return reconnResult.ok;
+      } catch (e: unknown) {
+        // Preserve the real failure cause for observability instead of silently
+        // returning false. The original AUTH_REQUIRED error is still surfaced to
+        // the caller — this log provides the concrete reason (port bind failure,
+        // discovery error, timeout, etc.) that caused the OAuth flow to throw.
+        console.error(`[koi mcp] auth flow error for "${config.name}":`, e);
+        return false;
+      }
     })().finally(() => {
       authInFlight = undefined;
     });
@@ -319,13 +334,18 @@ export function createMcpConnection(
       return { ok: false, error: notConnectedError(config.name) };
     }
 
-    // auth-needed → if auth flow is in progress, await it; then reconnect.
-    // The auth-needed state only allows "connecting" or "closed" transitions.
+    // auth-needed → if auth flow is in progress, await it (auth+reconnect are
+    // now atomic in the singleflight), then check state. Checking state rather
+    // than `client !== undefined` prevents using a stale pre-auth client that
+    // hasn't been replaced yet during the reconnect window.
     if (stateMachine.current.kind === "auth-needed") {
       if (authInFlight !== undefined) {
         await authInFlight;
-        // If the in-flight auth handler already called connect(), client is set
-        if (client !== undefined) {
+        // Re-read state: authInFlight now covers auth+reconnect, so state
+        // may have advanced to "connected" by the time we wake up.
+        // Cast breaks TS narrowing from the outer auth-needed guard.
+        const postAuthState = stateMachine.current.kind as TransportState["kind"];
+        if (postAuthState === "connected" && client !== undefined) {
           return { ok: true, value: undefined };
         }
       }
@@ -449,10 +469,9 @@ export function createMcpConnection(
       authInFlight === undefined &&
       reconnecting === undefined
     ) {
-      const authed = await runAuthFlow();
-      if (authed) {
-        await connect();
-      }
+      // runAuthFlow now includes connect() so the full auth+reconnect is
+      // atomic in one singleflight promise.
+      await runAuthFlow();
     }
     const connResult = await ensureConnected();
     if (!connResult.ok) return connResult;
@@ -477,21 +496,20 @@ export function createMcpConnection(
             challenge: { type: "oauth" },
           });
         }
+        // runAuthFlow includes connect() in its singleflight, so after it
+        // resolves, client is either set (auth+reconnect succeeded) or undefined.
         const authed = await runAuthFlow();
-        if (authed) {
-          const reconnResult = await connect();
-          if (reconnResult.ok && client !== undefined) {
-            try {
-              const retryResult = await client.callTool({
-                name,
-                arguments: args as Record<string, unknown>,
-              });
-              return parseCallToolResult(retryResult, name, config.name);
-            } catch (retryErr: unknown) {
-              // Surface the actual post-auth error so callers can distinguish
-              // auth failure from execution failures (timeout, revoked scope, etc.)
-              return { ok: false, error: mapMcpError(retryErr, { serverName: config.name }) };
-            }
+        if (authed && client !== undefined) {
+          try {
+            const retryResult = await client.callTool({
+              name,
+              arguments: args as Record<string, unknown>,
+            });
+            return parseCallToolResult(retryResult, name, config.name);
+          } catch (retryErr: unknown) {
+            // Surface the actual post-auth error so callers can distinguish
+            // auth failure from execution failures (timeout, revoked scope, etc.)
+            return { ok: false, error: mapMcpError(retryErr, { serverName: config.name }) };
           }
         }
         return { ok: false, error: koiError };
