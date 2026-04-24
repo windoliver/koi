@@ -226,27 +226,39 @@ session-first, then snapshot. On `start()` / successful `resume()`:
 
 1. Write a session record with `status = "starting"` AND
    `lastHeartbeatAt = Date.now()` via `sessionPersistence.saveSession`
-   **before** any harness snapshot advance. Seeding the heartbeat at creation
-   is critical: it starts the TTL clock immediately so reclamation is
-   bounded, but `"starting"` alone is not a dead-owner signal until the TTL
-   elapses.
+   **before** any harness snapshot advance.
    If this fails → abort with `CHECKPOINT_WRITE_FAILED`; harness head is
    unchanged, no orphan is possible.
-2. Start the heartbeat loop (so `lastHeartbeatAt` stays fresh during the
-   short window between step 1 and step 4).
-3. CAS-advance harness snapshot to `active` with the new generation + new
-   `lastSessionId` pointing at the record just written.
-4. Mark the session `"running"` via `setSessionStatus`.
-5. Mint the `SessionLease`, add to `activeLeases` WeakSet, and return.
+2. Start the heartbeat loop immediately so `lastHeartbeatAt` stays fresh
+   through every subsequent step.
+3. Mint the `SessionLease` and add it to `activeLeases` WeakSet (but do NOT
+   return it to the caller yet — still inside activation).
+4. CAS-advance harness snapshot to `active` with the new generation,
+   `lastSessionId` pointing at the record from step 1, and
+   `activatedAt = Date.now()`. If CAS fails → rollback: remove lease from
+   WeakSet, stop heartbeats, best-effort `removeSession(sid)`, return
+   `CONCURRENT_RESUME`. Any durable orphan is cleaned by reconciliation.
+5. Attempt `sessionPersistence.setSessionStatus(sid, "running")`.
+   - **On success:** return `ResumeResult` / `StartResult` with the lease.
+   - **On failure:** the harness snapshot is already `active`, the
+     heartbeat is running, and the lease is minted. Do NOT try to revert
+     the snapshot — CAS-reverting would leave the heartbeat-less owner
+     potentially reclaimable if the revert itself fails. Instead: return
+     the lease AND the error as
+     `Err(KoiError { code: "ACTIVATION_STATUS_WRITE_FAILED", retryable: true })`
+     alongside the lease via an out-param (`StartResult.activationWarning`).
+     The caller owns a valid lease and MUST either proceed (accepting
+     that `SessionRecord.status` remains `"starting"`, which reclaim treats
+     identically to `"running"` via TTL) or explicitly `pause`/`fail` to
+     relinquish. Heartbeats keep the lease live regardless of status-write
+     success. This collapses the post-publish ambiguity: the caller is
+     always given back an actionable lease.
 
-A crash between (1) and (3) leaves an orphan session record with no pointer
-from the harness — harmless, pruned by reconciliation (below). A crash between
-(3) and (4) leaves an `active` harness pointing at a `"starting"` session
-record — NOT immediately reclaimable: reclamation treats `"starting"` with
-the same TTL rule as `"running"` (see Reclamation check below). A live owner
-in the middle of a normal activation continues heartbeating and cannot be
-fenced; a crashed owner's heartbeat goes stale within `leaseTtlMs` and is
-reclaimed.
+A crash between (1) and (4) leaves an orphan session record with no pointer
+from the harness — harmless, pruned by reconciliation (below). A crash
+between (4) and (5) leaves an `active` harness pointing at a `"starting"`
+session record — NOT immediately reclaimable because reclaim uses TTL,
+not status.
 
 **Resume flow:**
 
@@ -268,23 +280,37 @@ reclaimed.
 Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
 
 1. `sessionPersistence.loadSession(sid)` → `record: SessionRecord | NOT_FOUND`.
-2. Decide the owner's liveness:
-   - `NOT_FOUND` → owner never finished writing; **dead**. Reclaim.
-   - `record.status === "done"` → owner finished but crashed before advancing
-     harness; **dead**. Reclaim.
-   - `record.status === "idle"` → owner cleanly exited without calling
-     `pause`; **dead**. Reclaim.
+2. Decide the owner's liveness. **TTL staleness is the ONLY primary
+   dead-owner signal** — status flags are advisory. This avoids relying on
+   cross-store read-after-write consistency between `harnessStore` and
+   `sessionPersistence`, which L0 does not guarantee:
+   - `NOT_FOUND` → session-record read lagging behind the snapshot write
+     is indistinguishable from "owner never wrote"; treat as **unknown**
+     until the harness-snapshot's `activatedAt` is older than `leaseTtlMs`.
+     - `now - snapshot.checkpointedAt > leaseTtlMs` → reclaimable (the
+       owner has had ample time to publish a session record; if the store
+       still can't read it after TTL, the owner is not producing
+       observable liveness).
+     - Otherwise → `ALREADY_ACTIVE` (retryable).
+   - `record.status === "done"` → advisory signal of clean exit, but still
+     require TTL-stale heartbeat before reclaim (protects against lagged
+     reads of an old status).
+   - `record.status === "idle"` → same: advisory, require TTL-stale
+     heartbeat.
    - `record.status ∈ { "starting", "running" }` — apply TTL rule:
-     - `now - record.lastHeartbeatAt > leaseTtlMs` (default 90s) → owner's
-       heartbeat is stale; **dead**. Reclaim.
+     - `now - record.lastHeartbeatAt > leaseTtlMs` → **dead**. Reclaim.
      - Heartbeat fresh → **live**. `ALREADY_ACTIVE`.
 
-Rationale: `"starting"` is NOT an immediate dead-owner signal, only an
-informational marker ("session never observed in running state"). A live
-owner mid-activation heartbeats (loop started in step 2 of activation) and
-holds the lease; a crashed mid-activation owner goes stale within TTL.
-This closes the race where store latency between `active` snapshot publish
-and `"running"` status flip could let a peer fence a live owner.
+Unified rule: **reclaim only when at least one independent timestamp
+(heartbeat OR snapshot `activatedAt`/`checkpointedAt`) proves inactivity
+beyond `leaseTtlMs`.** Status flags accelerate recognition of genuinely
+dead owners but never override TTL for liveness decisions, because status
+reads may cross a lagging durability boundary.
+
+`"starting"` is informational only. A live owner mid-activation heartbeats
+(loop started in activation step 2) and holds the lease; a crashed
+mid-activation owner goes stale within TTL. This closes both the
+activation-latency race and the cross-store-lag race.
 3. To reclaim: CAS-advance `prev` → `next` with
    `phase = "suspended"`, `generation = prev.generation + 1`,
    `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. This fences the dead owner's
@@ -385,38 +411,47 @@ loudly refuse to lie about it.
 
 ### Cleanup on Abandonment
 
-`dispose()` is idempotent and follows the same quiesce-before-publish rule as
-durability-loss handling. It MUST NOT publish a `suspended` snapshot while
-the engine is still producing side effects — that would let a replacement
-process resume in parallel with the original run.
+`dispose()` is idempotent and follows the quiesce-before-publish rule. It
+MUST NOT publish a `suspended` snapshot while the engine is still producing
+side effects — that would let a replacement process resume in parallel with
+the original run.
 
-Steps:
+Unambiguous algorithm:
 
-1. Stop the heartbeat timer and the timeout timer.
-2. If phase is `active`:
-   - Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
-     In-process callers with the old reference now fail identity check.
-   - **Keep the heartbeat loop running.** Heartbeats must continue emitting
-     until engine quiescence is confirmed, otherwise
-     `(now - lastPersistedHeartbeatAt)` can exceed `leaseTtlMs` while the
-     engine is still executing and a reclaimer can race in. This is a
-     non-negotiable invariant.
-   - Wait up to `abortTimeoutMs` for the engine adapter to quiesce.
-   - **On quiescence:** only NOW stop the heartbeat loop, then CAS-advance
-     to `suspended` with `failureReason = "disposed before completion"`.
-     Best-effort snapshot write — if it fails, heartbeat-staleness will
-     reclaim (safe now because the engine is confirmed stopped). Return
-     `Ok(undefined)`.
-   - **On abort timeout (engine refuses to stop):** do NOT publish
-     `suspended`. Heartbeat loop keeps running (detached from `dispose`;
-     retained by the process until SIGKILL or until the engine eventually
-     stops and the harness is garbage-collected). Lease remains live from
-     the store's perspective (session `"running"`, heartbeat fresh). Flip
-     `status().durability` to `"unhealthy"`, invoke `onDurabilityLost`
-     with `KoiError { code: "ABORT_TIMEOUT" }`, and return
-     `Err(ABORT_TIMEOUT)`.
-3. Release references to stores (callers own their lifecycle), EXCEPT the
-   heartbeat loop — it is retained until engine quiescence OR process exit.
+1. Stop ONLY the wall-clock timeout timer (`clearTimeout(timeoutHandle)`).
+   **Do NOT stop the heartbeat timer.** Heartbeats must continue.
+2. If phase is not `active`, return `Ok(undefined)` — nothing further.
+3. Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
+   In-process callers with the old reference now fail identity check.
+4. Signal the engine adapter to stop, then `await quiesce(abortTimeoutMs)`.
+5. Throughout step 4, the heartbeat loop continues unchanged. Config
+   invariant `abortTimeoutMs < leaseTtlMs - 2 * heartbeatIntervalMs`
+   guarantees at least one heartbeat will succeed during the quiesce
+   window even if one misses.
+6. Branch on the quiesce outcome:
+   - **Quiescent:** THIS is the first place the heartbeat loop is stopped.
+     Then CAS-advance to `suspended` with
+     `failureReason = "disposed before completion"`. Best-effort snapshot
+     write — if it fails, heartbeat-staleness will reclaim (safe now
+     because the engine is confirmed stopped). Release store references.
+     Return `Ok(undefined)`.
+   - **Timed out (engine ignored abort):** do NOT publish `suspended`.
+     Do NOT stop the heartbeat loop. The heartbeat loop is detached from
+     `dispose`'s lifetime and retained by the process until either (a)
+     the engine eventually stops and a separate `dispose` round finishes
+     cleanup, or (b) process exit releases all resources. Lease remains
+     live from the store's perspective (session status unchanged,
+     heartbeat fresh). Flip `status().durability` to `"unhealthy"`,
+     invoke `onDurabilityLost(KoiError { code: "ABORT_TIMEOUT" })`, and
+     return `Err(ABORT_TIMEOUT)`. The host is expected to SIGKILL.
+
+Invariant checklist an implementer MUST verify:
+- No code path between `start/resume` and `dispose` quiesce success stops
+  the heartbeat timer. (Audit: heartbeat stop appears only inside the
+  quiescent branch of step 6 and inside `pause`/`fail` after their own
+  quiesce waits.)
+- No path publishes `suspended` before engine quiescence is confirmed.
+- No path publishes `failed` before engine quiescence is confirmed.
 
 **Invariant (spec-enforced):** `abortTimeoutMs < leaseTtlMs - 2 *
 heartbeatIntervalMs`. The config constructor validates this at
@@ -640,7 +675,18 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   stops or the process is killed. No post-terminal side effects observed.
 - **Activation rollback:** session `saveSession` succeeds but CAS fails →
   orphan session is cleaned via `removeSession` best-effort; harness head
-  unchanged.
+  unchanged; heartbeat loop stopped; lease removed from WeakSet.
+- **Activation status-write failure (post-publish):** `saveSession` ok, CAS
+  ok, but `setSessionStatus("running")` fails. Caller receives a valid
+  lease AND `ACTIVATION_STATUS_WRITE_FAILED`. Proceeding with the lease
+  succeeds (heartbeats keep it live); explicit `pause(lease, ...)`
+  cleanly transitions to `suspended`. A concurrent `resume()` sees TTL-fresh
+  heartbeat and returns `ALREADY_ACTIVE`, not reclaim.
+- **Cross-store lag (reclaim safety):** simulated `sessionPersistence` that
+  returns `NOT_FOUND` for a freshly-written session record while the
+  snapshot store already shows `active`. Reclamation does NOT treat this
+  as dead-owner; it returns `ALREADY_ACTIVE` until `activatedAt` exceeds
+  TTL. (Regression against cross-store split-brain.)
 
 ### Unit: `checkpoint-policy.test.ts`
 
@@ -699,6 +745,7 @@ All errors are `KoiError` from L0. Codes used:
 | `HEARTBEAT_STALE` | heartbeat persistence approaching TTL with recent failure | false |
 | `ABORT_TIMEOUT` | engine did not quiesce within `abortTimeoutMs` | false |
 | `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
+| `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; lease is still valid, caller must proceed or relinquish | true |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
@@ -715,7 +762,10 @@ This design requires four additive changes to `@koi/core` / `@koi/session` L0
 types before the L2 package can be implemented:
 
 1. `HarnessSnapshot.generation: number` — monotonic per harness, incremented on
-   every session transition. Drives lease fencing.
+   every session transition. Drives lease fencing. Plus
+   `HarnessSnapshot.activatedAt: number | undefined` — activation wall-clock
+   time used as the fallback liveness signal when session-record reads
+   lag across stores.
 2. `SnapshotChainStore.compareAndPut(expectedHead, next)` — CAS-conditioned
    advance. Existing `put` is insufficient for exclusivity guarantees.
 3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal for
