@@ -245,14 +245,17 @@ describe("createRemoteAgentLifecycle", () => {
         },
       ) as unknown as typeof globalThis.fetch;
 
-      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch: fetchSpy });
+      const lifecycle = createRemoteAgentLifecycle({
+        ...FAST_OPTIONS,
+        fetch: fetchSpy,
+        headers: { Authorization: "Bearer tok" },
+      });
       const output = createOutputStream();
 
       await lifecycle.start(
         tid(),
         output,
         makeConfig({
-          headers: { Authorization: "Bearer tok" },
           payload: { x: 1 },
           correlationId: "cid-99",
         }),
@@ -719,7 +722,71 @@ describe("createRemoteAgentLifecycle", () => {
     });
   });
 
+  describe("lifecycle-level headers (auth trust boundary)", () => {
+    test("auth headers set at lifecycle construction are sent with every request", async () => {
+      let capturedHeaders: Record<string, string> | undefined;
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          capturedHeaders = init?.headers as Record<string, string>;
+          return new Response(makeNdjsonStream({ kind: "done", exitCode: 0 }), { status: 200 });
+        },
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({
+        ...FAST_OPTIONS,
+        fetch: fetchSpy,
+        headers: { Authorization: "Bearer lifecycle-token" },
+      });
+      const output = createOutputStream();
+
+      await lifecycle.start(tid(), output, makeConfig());
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+      expect(capturedHeaders?.Authorization).toBe("Bearer lifecycle-token");
+    });
+  });
+
   describe("max frame size guard", () => {
+    test("oversized chunk with newlines: per-frame check rejects huge line, small lines pass", async () => {
+      // One huge line (> 1 MiB) followed by a small done frame — the huge line
+      // must fail closed even though the chunk contains newlines (bypassing the
+      // pre-decode guard that only fired on newline-free chunks).
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      const hugeText = "x".repeat(1024 * 1024 + 1);
+      const hugeChunkLine = `${JSON.stringify({ kind: "chunk", text: hugeText })}\n`;
+      const doneFrame = `${JSON.stringify({ kind: "done", exitCode: 0 })}\n`;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          // Both lines in one chunk — chunk has newlines so old guard would have skipped
+          controller.enqueue(encoder.encode(hugeChunkLine + doneFrame));
+          controller.close();
+        },
+      });
+      const fetch = mock(async () =>
+        Promise.resolve(new Response(stream, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      expect(exits).toEqual([1]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("frame exceeds maximum size");
+    });
+
     test("many small frames coalesced into one large chunk still succeed", async () => {
       // Total chunk > 1 MiB, but each individual NDJSON line is small.
       // The guard must not trip on the combined buffer before line splitting.

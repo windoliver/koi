@@ -7,12 +7,14 @@
  *   { kind: "done", exitCode: number } — terminal frame (required for success)
  *
  * Protocol is fail-closed: a valid `done` frame is required for any success
- * exit. Stream close without one, null bodies, and malformed frames all map
- * to a protocol-error failure.
+ * exit. Stream close without one, null bodies, malformed frames, and unknown
+ * frame kinds all map to a protocol-error failure.
  *
- * SSRF boundary: the target endpoint is fixed at lifecycle construction time
- * (RemoteAgentLifecycleOptions.endpoint), not supplied per-task. Per-task
- * config carries only correlationId, payload, and optional auth headers.
+ * SSRF boundary: the target endpoint AND all outbound headers are fixed at
+ * lifecycle construction time (RemoteAgentLifecycleOptions), not supplied
+ * per-task. Per-task config carries only correlationId, payload, and lifecycle
+ * callbacks. This prevents per-task auth/tenant header injection from using
+ * the trusted endpoint under a different backend identity.
  *
  * Cancel vs timeout:
  * - cancel() — TaskRunner.stop() owns the board transition (killOwnedTask).
@@ -52,11 +54,6 @@ export interface RemoteAgentConfig {
   readonly payload: unknown;
   readonly timeout?: number | undefined;
   /**
-   * Per-task HTTP headers (e.g. bearer tokens). Merged over the
-   * Content-Type header set by the lifecycle.
-   */
-  readonly headers?: Readonly<Record<string, string>> | undefined;
-  /**
    * Called when the task reaches a confirmed terminal state:
    * - done frame received (natural completion, any exitCode)
    * - HTTP error / network error / protocol error (code 1)
@@ -73,6 +70,12 @@ export interface RemoteAgentLifecycleOptions {
    * per-task — to enforce the SSRF boundary at wiring time.
    */
   readonly endpoint: string;
+  /**
+   * HTTP headers merged into every outbound request (e.g. auth tokens).
+   * Fixed at lifecycle construction — not per-task — so auth/tenant context
+   * cannot be overridden by less-trusted task config.
+   */
+  readonly headers?: Readonly<Record<string, string>> | undefined;
   /** Max ms to wait for the pipe to drain after abort. Default: 2000. */
   readonly drainTimeoutMs?: number | undefined;
   /** Injectable fetch implementation — defaults to globalThis.fetch. For testing. */
@@ -100,6 +103,7 @@ export function createRemoteAgentLifecycle(
   options: RemoteAgentLifecycleOptions,
 ): TaskKindLifecycle<RemoteAgentConfig, RemoteAgentTask> {
   const { endpoint } = options;
+  const lifecycleHeaders = options.headers;
   const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
   const fetchImpl = options.fetch ?? globalThis.fetch;
 
@@ -156,7 +160,7 @@ export function createRemoteAgentLifecycle(
         try {
           response = await fetchImpl(endpoint, {
             method: "POST",
-            headers: { "Content-Type": "application/json", ...config.headers },
+            headers: { "Content-Type": "application/json", ...lifecycleHeaders },
             body: JSON.stringify({
               correlationId: config.correlationId,
               payload: config.payload,
@@ -190,78 +194,106 @@ export function createRemoteAgentLifecycle(
         }
 
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        const encoder = new TextEncoder();
-        let buffer = "";
+        // let justified: accumulates raw bytes for the current incomplete NDJSON line.
+        // Byte-level scanning avoids decoding a huge string before size checks run.
+        let rawBuf = new Uint8Array(0);
         let receivedDone = false;
+        // let justified: set when pipe must return early (error or done).
+        let pipeError = false;
 
-        const frameTooLarge = (): boolean => {
+        const NL = 10; // 0x0A — safe to scan in raw UTF-8 bytes (never a continuation byte)
+
+        // Decode and process one complete NDJSON line (raw bytes, no trailing newline).
+        // Returns true if the pipe should stop reading (error or done frame).
+        const processLineBytes = (lineBytes: Uint8Array): boolean => {
+          if (lineBytes.byteLength > MAX_FRAME_BYTES) {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+            emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+            return true;
+          }
+          const trimmed = new TextDecoder().decode(lineBytes).trim();
+          if (trimmed === "") return false;
+          let frame: unknown;
+          try {
+            frame = JSON.parse(trimmed);
+          } catch {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+            emitTerminal(1, "\n[error: protocol error — malformed frame]\n");
+            return true;
+          }
+          if (!isRemoteAgentFrame(frame)) {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+            emitTerminal(1, "\n[error: protocol error — unknown frame kind]\n");
+            return true;
+          }
+          if (frame.kind === "chunk") {
+            output.write(frame.text);
+            return false;
+          }
+          // done frame — hard terminal; cancel transport to stop server streaming.
+          receivedDone = true;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+          const exitMsg =
+            frame.exitCode === 0
+              ? "\n[exit code: 0]\n"
+              : `\n[exit code: ${String(frame.exitCode)}]\n`;
+          emitTerminal(frame.exitCode, exitMsg);
+          reader.cancel().catch(() => undefined);
           return true;
         };
 
         try {
-          while (true) {
+          outer: while (true) {
             if (stopped || timedOut) break;
             const { done, value } = await reader.read();
             // Re-check after await — timeout/cancel may have fired while read was pending.
             if (stopped || timedOut) break;
             if (done) break;
-            // Pre-decode guard: when the chunk has no newlines, all of its bytes
-            // would extend the current incomplete frame. Reject before decoding
-            // to avoid materializing a huge string.
-            // Uses value.byteLength (raw) + buffer.length (chars, ≤ byte count)
-            // as a conservative lower bound — sufficient to prevent DoS.
-            if (value.indexOf(10) === -1 && buffer.length + value.byteLength > MAX_FRAME_BYTES) {
-              if (frameTooLarge()) return;
-            }
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            // last element is the incomplete line remainder
-            buffer = lines.pop() ?? "";
-            // Remainder check: byte-accurate, applied after split so completed
-            // lines are not counted against the incomplete frame.
-            if (encoder.encode(buffer).byteLength > MAX_FRAME_BYTES) {
-              if (frameTooLarge()) return;
-            }
-            for (const line of lines) {
-              if (stopped || timedOut) break;
-              const trimmed = line.trim();
-              if (trimmed === "") continue;
-              // Byte-accurate per-line check.
-              if (encoder.encode(trimmed).byteLength > MAX_FRAME_BYTES) {
-                if (frameTooLarge()) return;
+
+            // Scan `value` for newlines at the raw byte level — never decode the
+            // full chunk. Each segment between newlines is checked and decoded
+            // individually, capping per-frame allocation at MAX_FRAME_BYTES.
+            let valStart = 0;
+            while (valStart <= value.byteLength) {
+              const nlPos = value.indexOf(NL, valStart);
+
+              if (nlPos === -1) {
+                // No more newlines — remaining bytes extend the incomplete line.
+                const tailLen = value.byteLength - valStart;
+                if (rawBuf.byteLength + tailLen > MAX_FRAME_BYTES) {
+                  if (timeoutId !== undefined) clearTimeout(timeoutId);
+                  emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+                  pipeError = true;
+                  break outer;
+                }
+                const next = new Uint8Array(rawBuf.byteLength + tailLen);
+                next.set(rawBuf);
+                next.set(value.subarray(valStart), rawBuf.byteLength);
+                rawBuf = next;
+                break;
               }
-              let frame: unknown;
-              try {
-                frame = JSON.parse(trimmed);
-              } catch {
-                // Malformed JSON — protocol violation; fail closed.
-                if (timeoutId !== undefined) clearTimeout(timeoutId);
-                emitTerminal(1, "\n[error: protocol error — malformed frame]\n");
-                return;
-              }
-              if (!isRemoteAgentFrame(frame)) {
-                // Valid JSON but unrecognised shape — protocol violation; fail closed.
-                // The protocol only defines chunk/done; unknown kinds can wedge tasks indefinitely.
-                if (timeoutId !== undefined) clearTimeout(timeoutId);
-                emitTerminal(1, "\n[error: protocol error — unknown frame kind]\n");
-                return;
-              }
-              if (frame.kind === "chunk") {
-                output.write(frame.text);
+
+              // Found newline at nlPos — complete the current line.
+              const segLen = nlPos - valStart;
+              const lineLen = rawBuf.byteLength + segLen;
+
+              let lineBytes: Uint8Array;
+              if (rawBuf.byteLength === 0) {
+                lineBytes = value.subarray(valStart, nlPos);
               } else {
-                // done is a hard terminal — cancel transport to stop server streaming.
-                receivedDone = true;
-                if (timeoutId !== undefined) clearTimeout(timeoutId);
-                const exitMsg =
-                  frame.exitCode === 0
-                    ? "\n[exit code: 0]\n"
-                    : `\n[exit code: ${String(frame.exitCode)}]\n`;
-                emitTerminal(frame.exitCode, exitMsg);
-                reader.cancel().catch(() => undefined);
-                return; // exit pipe; finally{} releases reader lock
+                // Merge rawBuf + this segment (max MAX_FRAME_BYTES each).
+                lineBytes = new Uint8Array(lineLen);
+                lineBytes.set(rawBuf);
+                lineBytes.set(value.subarray(valStart, nlPos), rawBuf.byteLength);
+                rawBuf = new Uint8Array(0);
+              }
+
+              valStart = nlPos + 1;
+
+              if (stopped || timedOut) break outer;
+              if (processLineBytes(lineBytes)) {
+                pipeError = true;
+                break outer;
               }
             }
           }
@@ -271,31 +303,16 @@ export function createRemoteAgentLifecycle(
             const message = err instanceof Error ? err.message : String(err);
             emitTerminal(1, `\n[error: ${message}]\n`);
           }
+          pipeError = true;
         } finally {
           reader.releaseLock();
         }
 
-        // Flush decoder — releases any bytes held for multibyte UTF-8 boundary.
-        buffer += decoder.decode();
+        if (pipeError) return;
 
-        // Process any remaining buffer content (done frame with no trailing newline).
-        if (!stopped && !timedOut && !receivedDone && buffer.trim() !== "") {
-          let frame: unknown;
-          try {
-            frame = JSON.parse(buffer.trim());
-          } catch {
-            if (timeoutId !== undefined) clearTimeout(timeoutId);
-            emitTerminal(1, "\n[error: protocol error — malformed frame]\n");
-          }
-          if (frame !== undefined && isRemoteAgentFrame(frame) && frame.kind === "done") {
-            receivedDone = true;
-            if (timeoutId !== undefined) clearTimeout(timeoutId);
-            const exitMsg =
-              frame.exitCode === 0
-                ? "\n[exit code: 0]\n"
-                : `\n[exit code: ${String(frame.exitCode)}]\n`;
-            emitTerminal(frame.exitCode, exitMsg);
-          }
+        // Process any remaining raw bytes (done frame with no trailing newline).
+        if (!stopped && !timedOut && !receivedDone && rawBuf.byteLength > 0) {
+          processLineBytes(rawBuf);
         }
 
         // Stream closed without a done frame — protocol violation; fail closed.
