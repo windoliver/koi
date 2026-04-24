@@ -328,17 +328,40 @@ function extractGitSubcommand(cmd: string): GitInvocation | null {
 }
 
 /**
- * Reject `-c alias.*` injections outright. Without this guard, an attacker
- * can define a force-capable alias at invocation time
+ * Reject git alias injection through every channel git accepts:
+ *   - `-c alias.*=...` invocation-time config
+ *   - `--config=alias.*=...`
+ *   - `--config-env=alias.*=ENVVAR`
+ * Without this guard, an attacker can define a force-capable alias
  *   git -c alias.pu='push --force' pu origin main
- * and bypass every scoped push/clean/branch/checkout check. Configure aliases
- * in git config; not at invocation time behind this gate.
+ * and bypass every scoped push/clean/branch/checkout check because git
+ * resolves the alias internally.
  */
 function gitHasAliasOverride(preOptions: readonly string[]): boolean {
   for (let i = 0; i < preOptions.length; i++) {
     const tok = preOptions[i];
     if (tok === "-c" && (preOptions[i + 1] ?? "").startsWith("alias.")) return true;
     if (tok?.startsWith("--config=alias.")) return true;
+    if (tok?.startsWith("--config-env=alias.")) return true;
+  }
+  return false;
+}
+
+/**
+ * Git also resolves aliases from environment variables set on the SAME
+ * command line as the `git` invocation (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/
+ * `GIT_CONFIG_VALUE_*` channel). Detect those prefixes before the `git` token
+ * so the attacker cannot smuggle an alias through the process environment.
+ */
+function hasGitConfigEnvAliasInjection(cmd: string): boolean {
+  // Match VAR=VALUE ... git, where VAR is a GIT_CONFIG_* channel that can
+  // carry alias injection. The regex is bounded so it does not force
+  // backtracking on pathological input.
+  if (
+    /\bGIT_CONFIG_COUNT\s*=\s*[1-9]/.test(cmd) &&
+    /\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./.test(cmd)
+  ) {
+    return true;
   }
   return false;
 }
@@ -368,23 +391,19 @@ function hasBranchForceDeleteShort(args: readonly string[]): boolean {
 }
 
 /**
- * Git destructive operations. Matching is scoped to argv tokens of the actual
- * subcommand, not raw substring scans, so quoted commit messages like
- *   git commit -m "document --force policy"
- * do not trigger the push-force check. Multi-refspec + short-bundle + alias
- * injection are all covered. Backslash-escape obfuscation is handled by the
- * normalizer upstream (match.normalizeForMatch).
+ * Check a single git invocation's subcommand + args for destructive forms.
+ * Helper used by the multi-segment scanner below.
  */
-function checkDestructiveGit(cmd: string): ClassificationResult {
-  const parsed = extractGitSubcommand(cmd);
-  if (parsed === null) return { ok: true };
-  const { preOptions, subcommand, args } = parsed;
-
+function checkGitInvocation(
+  preOptions: readonly string[],
+  subcommand: string,
+  args: readonly string[],
+): ClassificationResult {
   if (gitHasAliasOverride(preOptions)) {
     return {
       ok: false,
       reason:
-        "git -c alias.* override at invocation time can smuggle force-push or other destructive subcommands past scoped checks",
+        "git alias override at invocation time (-c / --config / --config-env) can smuggle force-push or other destructive subcommands past scoped checks",
       pattern: "git+alias-override",
       category: "destructive",
     };
@@ -400,12 +419,15 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
   }
   if (subcommand === "push") {
     const hasForceRefspec = args.some((t) => /^\+[\w/.:-]+/.test(t));
-    if (hasForceFlag(args) || hasForceRefspec) {
+    const hasDeleteFlag = args.some((t) => t === "--delete" || /^-[A-Za-z]*d[A-Za-z]*$/.test(t));
+    const hasDeleteRefspec = args.some((t) => /^:[\w/.-]+/.test(t));
+    const hasMirror = args.some((t) => t === "--mirror");
+    if (hasForceFlag(args) || hasForceRefspec || hasDeleteFlag || hasDeleteRefspec || hasMirror) {
       return {
         ok: false,
         reason:
-          "git push --force (or + refspec) rewrites remote history and can erase teammates' work",
-        pattern: "git+push+force",
+          "git push --force / +refspec / --delete / :<ref> deletion / --mirror can rewrite or remove remote refs",
+        pattern: "git+push+destructive",
         category: "destructive",
       };
     }
@@ -435,6 +457,72 @@ function checkDestructiveGit(cmd: string): ClassificationResult {
       pattern: "git+checkout+force",
       category: "destructive",
     };
+  }
+  return { ok: true };
+}
+
+/**
+ * Split a normalized command on shell segment separators so each simple
+ * command can be analyzed independently. Splitting avoids the prior bug where
+ * `git status | git push --force` or `git log; git reset --hard` analyzed
+ * only the first git invocation and missed the destructive second one.
+ */
+function splitShellSegments(cmd: string): string[] {
+  return cmd
+    .split(/\|\||&&|[;|&\n]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Git destructive operations. The command is split into shell segments and
+ * every git invocation across the pipeline is analyzed. Env-var channels
+ * that can smuggle aliases (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`) are
+ * rejected whenever they appear alongside a git invocation.
+ */
+function checkDestructiveGit(cmd: string): ClassificationResult {
+  if (hasGitConfigEnvAliasInjection(cmd) && /\bgit\b/.test(cmd)) {
+    return {
+      ok: false,
+      reason:
+        "GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* env channels can inject aliases that bypass scoped destructive checks",
+      pattern: "git+env-alias-injection",
+      category: "destructive",
+    };
+  }
+  for (const segment of splitShellSegments(cmd)) {
+    const parsed = extractGitSubcommand(segment);
+    if (parsed === null) continue;
+    const result = checkGitInvocation(parsed.preOptions, parsed.subcommand, parsed.args);
+    if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+
+/**
+ * Flag any segment whose first token starts with `$` (variable expansion) or
+ * `` ` `` (legacy command substitution). These command-position expansions
+ * hide the actual command from any regex-based classifier: an attacker can
+ * do `a=r; b=m; $a$b -rf /etc` and bash will execute `rm -rf /etc` after
+ * classification has already approved the input.
+ *
+ * Known false-positive: `$HOME/bin/tool` and `$EDITOR file.txt` are flagged.
+ * Agents writing commands through this gate should use explicit paths rather
+ * than env-var indirection. Callers that need variable-as-command support
+ * must resolve the expansion before calling the classifier.
+ */
+function checkCommandPositionExpansion(cmd: string): ClassificationResult {
+  for (const segment of splitShellSegments(cmd)) {
+    const firstTok = segment.split(/\s+/)[0] ?? "";
+    if (/^\$[\w({]/.test(firstTok) || firstTok.startsWith("`")) {
+      return {
+        ok: false,
+        reason:
+          "Command-position variable or command substitution hides the real command from classification; use an explicit command literal instead",
+        pattern: "expansion-at-command-position",
+        category: "injection",
+      };
+    }
   }
   return { ok: true };
 }
@@ -555,6 +643,8 @@ export function classifyCommand(command: string): ClassificationResult {
     };
   }
   const normalized = normalizeForMatch(command);
+  const expansionResult = checkCommandPositionExpansion(normalized);
+  if (!expansionResult.ok) return expansionResult;
   const rmResult = checkDestructiveRm(normalized);
   if (!rmResult.ok) return rmResult;
   const chmodResult = checkDestructiveChmod(normalized);

