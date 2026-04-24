@@ -690,7 +690,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
      * Reset all branded iteration guards in the given set and record a run_reset
      * governance event. Falls back to no governance record when govCtl is absent.
      * Throws KoiRuntimeError if a branded guard lacks resetForRun() — the
-     * construction-time gate (above) should have already caught this.
+     * construction-time gate (above) should have already caught this for static middleware.
+     * For dynamic/forged guards: throws unless the caller used the deprecated
+     * resetIterationBudgetPerRun option, in which case warns and returns without resetting.
      *
      * Async so that governance controllers with async record() implementations
      * are properly awaited; guard/governance state cannot diverge on failure.
@@ -707,21 +709,28 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // this defends against dynamic/forged guards added after construction):
       //   (a) Branded guard missing resetForRun()
       //   (b) Unbranded canonical-name "koi:iteration-guard" (pre-#1917 legacy)
+      // Compat: if the caller used the deprecated resetIterationBudgetPerRun option,
+      // apply the same warn-and-return path for dynamic/forged guards as the
+      // construction gate does, so version-skewed hosts don't get a runtime poison.
       for (const mw of guards) {
-        if (hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw)) {
-          throw KoiRuntimeError.from(
-            "VALIDATION",
-            `[koi] Middleware carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
+        const badBranded = hasIterationGuardBrand(mw) && !isIterationGuardHandle(mw);
+        const badLegacy = mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw);
+        if (badBranded || badLegacy) {
+          if (usingLegacyOption) {
+            console.warn(
+              `[koi] resetRunBoundary: dynamic/forged middleware "${mw.name ?? "(unnamed)"}" ` +
+                `cannot be reset per-run (missing resetForRun()). ` +
+                `Skipping per-run reset for this run. Upgrade @koi/engine-compose to fix.`,
+            );
+            return;
+          }
+          const detail = badBranded
+            ? `carries ITERATION_GUARD_BRAND but does not implement resetForRun(). ` +
               `All branded iteration guards must implement IterationGuardHandle. ` +
-              `Guard: ${mw.name ?? "(unnamed)"}`,
-          );
-        }
-        if (mw.name === "koi:iteration-guard" && !isIterationGuardHandle(mw)) {
-          throw KoiRuntimeError.from(
-            "VALIDATION",
-            `[koi] Dynamic/forged middleware "koi:iteration-guard" does not implement resetForRun(). ` +
-              `This is a legacy pre-#1917 guard. Remove it or upgrade @koi/engine-compose.`,
-          );
+              `Guard: ${mw.name ?? "(unnamed)"}`
+            : `"koi:iteration-guard" does not implement resetForRun(). ` +
+              `This is a legacy pre-#1917 guard. Remove it or upgrade @koi/engine-compose.`;
+          throw KoiRuntimeError.from("VALIDATION", `[koi] Middleware ${detail}`);
         }
       }
       // Consume the run-entry timestamp captured before any async startup work.
@@ -2458,12 +2467,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             sessionCycleIndex++;
             // boundaryTimestamp captured after teardown so the new session's
             // enforcement window doesn't inherit slow onSessionEnd latency.
-            await govCtl.record({
-              kind: "session_reset",
-              source: "host",
-              boundaryId: sessionBoundaryId,
-              boundaryTimestamp: Date.now(),
-            });
+            try {
+              await govCtl.record({
+                kind: "session_reset",
+                source: "host",
+                boundaryId: sessionBoundaryId,
+                boundaryTimestamp: Date.now(),
+              });
+            } catch (govResetError: unknown) {
+              // session_reset record failure leaves the runtime half-cycled
+              // (onSessionEnd fired, counters not cleared). Poison so no subsequent
+              // run can proceed with stale state; same discipline as run_reset.
+              poisoned = true;
+              throw KoiRuntimeError.from(
+                "INTERNAL",
+                `cycleSession failed: governance session_reset record threw (${
+                  govResetError instanceof Error ? govResetError.message : String(govResetError)
+                }). Runtime is poisoned; dispose and recreate.`,
+                { cause: govResetError },
+              );
+            }
           }
           // #1742: rotate the engine sessionId and rebuild the runtime-scoped
           // lifecycle ctx so checkpoint chains, persistent approval keys,
