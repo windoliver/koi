@@ -375,4 +375,40 @@ describe("createLocalMailbox — local specifics", () => {
     expect(errors).toHaveLength(1);
     mailbox.close();
   });
+
+  test("throwing onError observer does not break delivery", async () => {
+    const received: string[] = [];
+    const mailbox = createLocalMailbox({
+      agentId: OWNER,
+      onError: () => {
+        throw new Error("observer exploded");
+      },
+    });
+    mailbox.onMessage(() => {
+      throw new Error("subscriber boom");
+    });
+    mailbox.onMessage((msg) => {
+      received.push(msg.type);
+    });
+    // Should not throw — onError's own throw is swallowed
+    await mailbox.send(makeInput("safe"));
+    expect(received).toEqual(["safe"]);
+    mailbox.close();
+  });
+
+  test("drain() frees capacity so subsequent sends succeed", async () => {
+    const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 2 });
+    await mailbox.send(makeInput("a"));
+    await mailbox.send(makeInput("b"));
+    const full = await mailbox.send(makeInput("c"));
+    expect(full.ok).toBe(false);
+    if (!full.ok) expect(full.error.code).toBe("RESOURCE_EXHAUSTED");
+
+    mailbox.drain();
+    expect(await mailbox.list()).toHaveLength(0);
+
+    const after = await mailbox.send(makeInput("d"));
+    expect(after.ok).toBe(true);
+    mailbox.close();
+  });
 });

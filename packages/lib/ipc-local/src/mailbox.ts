@@ -45,6 +45,8 @@ function safeCloneFreeze(
 
 export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent & {
   readonly agentId: AgentId;
+  /** Remove all messages from the inbox, freeing capacity for new sends. */
+  readonly drain: () => void;
   readonly close: () => void;
 } {
   const rawMax = config.maxMessages ?? DEFAULT_MAX_MESSAGES;
@@ -58,8 +60,20 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
   let closed = false;
   // Self-reference for identity check in close()
   let self:
-    | (MailboxComponent & { readonly agentId: AgentId; readonly close: () => void })
+    | (MailboxComponent & {
+        readonly agentId: AgentId;
+        readonly drain: () => void;
+        readonly close: () => void;
+      })
     | undefined;
+
+  function safeOnError(err: unknown, msg: AgentMessage): void {
+    try {
+      config.onError?.(err, msg);
+    } catch {
+      // Observer itself threw — swallow to preserve isolation
+    }
+  }
 
   function dispatchToSubscribers(msg: AgentMessage): void {
     for (const handler of subscribers) {
@@ -67,11 +81,11 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         const result = handler(msg);
         if (result instanceof Promise) {
           result.catch((err: unknown) => {
-            config.onError?.(err, msg);
+            safeOnError(err, msg);
           });
         }
       } catch (err: unknown) {
-        config.onError?.(err, msg);
+        safeOnError(err, msg);
       }
     }
   }
@@ -123,13 +137,14 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       }
 
       // Reject when at capacity — explicit backpressure instead of silent eviction.
+      // Not retryable: caller must drain() the inbox before sending again.
       if (messages.length >= maxMessages) {
         return {
           ok: false,
           error: {
             code: "RESOURCE_EXHAUSTED",
-            message: `Mailbox capacity exceeded (maxMessages=${maxMessages})`,
-            retryable: true,
+            message: `Mailbox capacity exceeded (maxMessages=${maxMessages}). Call drain() to free capacity.`,
+            retryable: false,
             context: { agentId: config.agentId, capacity: maxMessages },
           },
         };
@@ -185,6 +200,10 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         if (filter?.limit !== undefined && result.length >= filter.limit) break;
       }
       return result;
+    },
+
+    drain(): void {
+      messages.length = 0;
     },
 
     close(): void {
