@@ -751,6 +751,17 @@ function parseManifestAudit(
   if (raw === undefined) {
     return { ok: true, value: undefined };
   }
+
+  // Lenient mode: treat any present audit key as block-presence metadata.
+  // Skip all validation so malformed values (scalars, arrays, null, bad keys)
+  // cannot abort startup on hosts where the feature gate is off.
+  if (lenient) {
+    return {
+      ok: true,
+      value: { present: true, ndjson: undefined, sqlite: undefined, violations: undefined },
+    };
+  }
+
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return {
       ok: false,
@@ -760,15 +771,7 @@ function parseManifestAudit(
   }
   const rec = raw as Record<string, unknown>;
 
-  // Lenient mode: just record block presence, skip all field validation.
-  if (lenient) {
-    return {
-      ok: true,
-      value: { present: true, ndjson: undefined, sqlite: undefined, violations: undefined },
-    };
-  }
-
-  // Strict mode: reject unknown keys so typos are caught, not silently ignored.
+  // Reject unknown keys so typos are caught, not silently ignored.
   for (const key of Object.keys(rec)) {
     if (!AUDIT_KNOWN_KEYS.has(key)) {
       return {
@@ -782,6 +785,10 @@ function parseManifestAudit(
 
   const manifestDir = dirname(resolvePath(manifestPath));
 
+  // Reject absolute paths — manifest content is repo-authored and must not
+  // write to arbitrary host locations. Paths must be relative so they resolve
+  // within the manifest directory. Hosts that need an absolute path must
+  // thread it via KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars instead.
   const anchorPath = (field: string, value: unknown): ParseResult<string | undefined> => {
     if (value === undefined) return { ok: true, value: undefined };
     if (typeof value !== "string" || value.length === 0) {
@@ -790,9 +797,18 @@ function parseManifestAudit(
         error: `manifest.audit.${field} must be a non-empty string path`,
       };
     }
+    if (isAbsolute(value)) {
+      return {
+        ok: false,
+        error:
+          `manifest.audit.${field}: absolute path "${value}" is not allowed — ` +
+          "manifest audit paths must be relative to the manifest directory. " +
+          "Use a relative path (e.g. ./logs/audit.ndjson) or the KOI_AUDIT_NDJSON / KOI_AUDIT_SQLITE env vars for absolute paths.",
+      };
+    }
     return {
       ok: true,
-      value: isAbsolute(value) ? value : resolvePath(manifestDir, value),
+      value: resolvePath(manifestDir, value),
     };
   };
 

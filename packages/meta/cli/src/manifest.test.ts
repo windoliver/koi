@@ -498,26 +498,20 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.value.audit).toBeUndefined();
   });
 
-  test("parses full audit block with absolute paths", async () => {
+  test("rejects absolute paths (manifest content must not write to arbitrary host locations)", async () => {
     const p = writeManifest(
       [
         "model:",
         "  name: google/gemini-2.0-flash-001",
         "audit:",
         '  ndjson: "/abs/logs/audit.ndjson"',
-        '  sqlite: "/abs/logs/audit.db"',
-        '  violations: "/abs/logs/violations.db"',
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.audit).toEqual({
-      present: true,
-      ndjson: "/abs/logs/audit.ndjson",
-      sqlite: "/abs/logs/audit.db",
-      violations: "/abs/logs/violations.db",
-    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ndjson");
+    expect(result.error).toContain("absolute");
   });
 
   test("anchors relative paths to manifest dir", async () => {
