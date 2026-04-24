@@ -3231,31 +3231,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
           return true;
         }
-        if (refreshOutcome === "transient-failure") {
-          // Silent refresh failed but tokens exist — normally we'd wait for an
-          // automatic retry, but this is an explicit user-triggered auth request.
-          // Fall through to the interactive browser flow so the user can force a
-          // fresh consent even when the refresh endpoint is temporarily unavailable.
-        }
         // "needs-auth" or "transient-failure" — interactive OAuth required.
-        // onBrowserOpen (wired into the provider's runtime via mcp-connection-factory)
-        // fires onAuthRequired when the browser is about to open.
-        const authed = await provider.startAuthFlow();
-        if (authed) {
-          const reconnected = await reconnectAndRediscover();
-          if (!reconnected) {
+        // Route through the connection's triggerAuth to serialize against any
+        // in-flight automatic 401-recovery and prevent duplicate browser windows.
+        // triggerAuth fires onAuthComplete internally via ConnectionDeps after
+        // a successful reconnect, so we skip the manual channel call here.
+        if (connection?.triggerAuth !== undefined) {
+          const result = await connection.triggerAuth();
+          if (!result.ok) {
             void Promise.resolve(
               channel.onAuthFailure?.({
                 provider: serverName,
-                reason:
-                  "Authorized but could not reconnect to the server. Retry or restart the session.",
+                reason: result.error.message,
               }),
             ).catch(() => {});
             return false;
           }
-          await Promise.resolve(channel.onAuthComplete({ provider: serverName })).catch(() => {});
+          // Trigger resolver rediscovery so real tools replace pseudo-tools immediately.
+          await resolver?.discover().catch(() => {});
+          return true;
         }
-        return authed;
+        // Fallback for connections without triggerAuth (non-OAuth connections).
+        return false;
       },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];

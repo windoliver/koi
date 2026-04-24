@@ -60,14 +60,11 @@ export function createOAuthAwareMcpConnection(
     const runtime = createRuntime(
       oauthChannel !== undefined
         ? {
-            onBrowserOpen: (authorizationUrl: string): void => {
-              // Write to stderr — not captured by the model-visible channel so
-              // the OAuth URL (including state params) never enters the model
-              // transcript, but still reachable in the terminal as a copy-paste
-              // fallback if the browser doesn't open automatically.
-              process.stderr.write(
-                `[koi mcp] Auth URL for ${server.name} (open in browser if needed):\n  ${authorizationUrl}\n`,
-              );
+            onBrowserOpen: (_authorizationUrl: string): void => {
+              // Raw auth URLs (including state params) must not appear in logs,
+              // CI artifacts, or session recorders. The runtime already writes the
+              // URL to the terminal via console.log in startCallbackServer, which
+              // is the appropriate ephemeral fallback for copy-paste recovery.
               void Promise.resolve(
                 oauthChannel.onAuthRequired({
                   provider: server.name,

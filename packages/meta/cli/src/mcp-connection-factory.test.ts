@@ -239,7 +239,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen: writes URL to stderr (non-transcript fallback) and fires onAuthRequired without authUrl", () => {
+    test("wires onBrowserOpen: fires onAuthRequired without authUrl (URL stays in runtime console.log, not logs/CI)", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -253,25 +253,12 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(typeof onBrowserOpen).toBe("function");
       if (onBrowserOpen === undefined) return;
 
-      const stderrWrites: string[] = [];
-      const origWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = (chunk: unknown): boolean => {
-        stderrWrites.push(String(chunk));
-        return true;
-      };
+      onBrowserOpen("https://example.com/auth?state=abc");
 
-      const testAuthUrl = "https://example.com/auth?state=abc";
-      try {
-        onBrowserOpen(testAuthUrl);
-      } finally {
-        process.stderr.write = origWrite;
-      }
-
-      // URL written to stderr as a copy-paste fallback — not in the channel
-      // payload so it never reaches the model-visible add_user_message path.
-      expect(stderrWrites.some((s) => s.includes(testAuthUrl))).toBe(true);
-
-      // Channel notification fires with provider + mode only (no authUrl).
+      // Channel notification fires with provider + mode only — no authUrl.
+      // Raw auth URLs (with state params) must not appear in logs, CI artifacts,
+      // or session recorders. The runtime's startCallbackServer already writes
+      // the URL to console.log for ephemeral copy-paste recovery.
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };

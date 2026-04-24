@@ -98,6 +98,15 @@ export interface McpConnection {
   readonly onStateChange: (listener: TransportStateListener) => () => void;
   /** Subscribe to tool list changes. Returns unsubscribe function. */
   readonly onToolsChanged: (listener: () => void) => () => void;
+  /**
+   * User-initiated auth entry point. Shares the same `authInFlight` singleflight
+   * as the automatic 401-recovery path so only one browser window can open per
+   * server at a time — callers that race are coalesced onto the same promise.
+   * Unlike automatic recovery, skips the silent-refresh attempt and goes directly
+   * to the interactive OAuth flow even when a transient refresh failure exists.
+   * Undefined when the connection was created without an `onAuthNeeded` dep.
+   */
+  readonly triggerAuth?: () => Promise<Result<void, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +256,40 @@ export function createMcpConnection(
     });
     return authInFlight;
   };
+
+  // User-initiated auth: goes straight to onAuthNeeded (skips silent refresh)
+  // and shares authInFlight so concurrent user clicks are coalesced.
+  const triggerAuth: McpConnection["triggerAuth"] =
+    onAuthNeeded !== undefined
+      ? (): Promise<Result<void, KoiError>> => {
+          if (authInFlight !== undefined) return authInFlight;
+          authInFlight = (async (): Promise<Result<void, KoiError>> => {
+            try {
+              const authed = await onAuthNeeded();
+              if (!authed) return { ok: false, error: authDeclinedError() };
+              const reconnResult = await connect(true);
+              if (!reconnResult.ok) return reconnResult;
+              await Promise.resolve(onAuthComplete?.()).catch(() => {});
+              return { ok: true, value: undefined };
+            } catch (e: unknown) {
+              const reason = e instanceof Error ? e.message : String(e);
+              console.error(`[koi mcp] auth flow error for "${config.name}":`, e);
+              return {
+                ok: false,
+                error: {
+                  code: "AUTH_REQUIRED",
+                  message: `${config.name}: auth flow failed — ${reason}`,
+                  retryable: true,
+                  context: { serverName: config.name },
+                },
+              };
+            }
+          })().finally(() => {
+            authInFlight = undefined;
+          });
+          return authInFlight;
+        }
+      : undefined;
 
   // -------------------------------------------------------------------------
   // Connect
@@ -730,6 +773,7 @@ export function createMcpConnection(
         toolChangeListeners.delete(listener);
       };
     },
+    ...(triggerAuth !== undefined ? { triggerAuth } : {}),
   };
 }
 
