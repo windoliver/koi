@@ -36,7 +36,7 @@ export interface HandshakeOptions {
 export interface HandshakeResult {
   readonly session: Session;
   readonly connectFrame: ConnectFrame;
-  readonly sendAck: () => void;
+  readonly sendAck: () => number;
 }
 
 /**

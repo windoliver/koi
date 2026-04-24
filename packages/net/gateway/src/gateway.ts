@@ -312,7 +312,15 @@ export function createGateway(
           if (!connMap.has(conn.id)) return;
           sessionByConn.set(conn.id, result.session.id);
           connBySession.set(result.session.id, conn.id);
-          result.sendAck();
+          const ackBytes = result.sendAck();
+          if (ackBytes === -1) {
+            // Transport rejected the ack write — session is unusable before the client
+            // received its sessionId/protocol. Tear down cleanly so the client reconnects.
+            conn.close(CLOSE_CODES.ADMIN_CLOSED, "Ack send failed");
+            cleanupConn(conn, "ack send failed");
+            return;
+          }
+          bp.record(conn.id, ackBytes);
           emitSessionEvent({ kind: "created", session: result.session });
         })
         .catch(() => {
@@ -371,15 +379,19 @@ export function createGateway(
         criticalSweep = undefined;
       }
 
-      // Close all live connections and emit destroy events before stopping transport.
+      // Close all live connections, emit destroy events, and await all store deletions
+      // before stopping the transport. Using allSettled so a single store failure doesn't
+      // block the rest of shutdown.
+      const deletePromises: Promise<unknown>[] = [];
       for (const [connId, conn] of connMap) {
         conn.close(CLOSE_CODES.SERVER_SHUTTING_DOWN, "Server shutting down");
         const sessionId = sessionByConn.get(connId);
         if (sessionId !== undefined) {
-          void Promise.resolve(store.delete(sessionId));
+          deletePromises.push(Promise.resolve(store.delete(sessionId)));
           emitSessionEvent({ kind: "destroyed", sessionId, reason: "server shutdown" });
         }
       }
+      await Promise.allSettled(deletePromises);
       connMap.clear();
       sessionByConn.clear();
       connBySession.clear();
