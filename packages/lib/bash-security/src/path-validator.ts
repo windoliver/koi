@@ -43,54 +43,66 @@ const PATH_TRAVERSAL_PATTERNS: readonly ThreatPattern[] = [
 const NON_PRINTABLE = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 /**
- * Result of canonicalization — either a resolved path, or a dangling-symlink
- * rejection signal. Dangling symlinks represent a TOCTOU hazard: their target
- * may be created/swapped-in between validation and use, so they must not be
- * treated as "missing leaf" for containment purposes.
+ * Result of canonicalization — either a resolved path, or a rejection signal.
+ * Dangling symlinks and missing intermediates both represent TOCTOU hazards:
+ * their target (or an intermediate directory) may be created/swapped-in
+ * between validation and use, so they must not be treated as safe.
  */
 type CanonicalResult =
   | { readonly ok: true; readonly path: string }
-  | { readonly ok: false; readonly reason: "dangling-symlink"; readonly component: string };
+  | { readonly ok: false; readonly reason: "dangling-symlink"; readonly component: string }
+  | { readonly ok: false; readonly reason: "missing-intermediate"; readonly component: string };
 
 /**
- * Canonicalize a path by realpath'ing the longest existing prefix, then
- * appending the non-existent remainder verbatim. Reject dangling symlinks
- * (where the symlink exists but its target does not) — a later write could
- * race with the attacker materializing the outside target.
+ * Canonicalize a path by realpath'ing the existing prefix. At most the final
+ * path component (the leaf) may be missing; every intermediate directory must
+ * already exist. Reject dangling symlinks and any form where more than the
+ * leaf is absent, because a concurrent actor could materialize an attacker-
+ * controlled symlink at a missing intermediate between validation and the
+ * subsequent open/write.
  *
- * Why we walk: `realpathSync` throws ENOENT when any path component is
- * missing. A naive fallback to `resolve()` does NOT follow symlinks, which
- * would let an attacker plant `workspace/evil → /etc` and write to
- * `workspace/evil/new-file`.
+ * Why we walk at all instead of just realpath: `realpathSync` throws ENOENT
+ * when any component is missing, including the leaf. Callers legitimately
+ * validate the path of a file they are about to create, so we allow the
+ * single leaf to be absent — but no deeper.
  */
 function canonicalizeExisting(p: string): CanonicalResult {
   const absolute = resolve(p);
-  const suffix: string[] = [];
-  let cursor = absolute;
-  while (true) {
+  try {
+    const real = realpathSync(absolute);
+    return { ok: true, path: real };
+  } catch {
+    // Leaf missing or dangling. Distinguish: if the leaf is a symlink whose
+    // target does not exist, that is a dangling-symlink rejection.
     try {
-      const real = realpathSync(cursor);
-      return {
-        ok: true,
-        path: suffix.length === 0 ? real : join(real, ...suffix),
-      };
-    } catch {
-      // realpathSync failed — either the component is genuinely missing, or
-      // it's a dangling symlink. lstat can distinguish: a dangling symlink
-      // returns a symlink stat, while a missing component throws.
-      try {
-        const stat = lstatSync(cursor);
-        if (stat.isSymbolicLink()) {
-          return { ok: false, reason: "dangling-symlink", component: cursor };
-        }
-      } catch {
-        // Not a symlink and doesn't exist — treat as missing, walk up.
+      const stat = lstatSync(absolute);
+      if (stat.isSymbolicLink()) {
+        return { ok: false, reason: "dangling-symlink", component: absolute };
       }
-      const parent = dirname(cursor);
-      if (parent === cursor) return { ok: true, path: absolute };
-      suffix.unshift(basename(cursor));
-      cursor = parent;
+    } catch {
+      // Leaf does not exist at all — fall through to parent check.
     }
+  }
+  // Leaf is absent and not a symlink. Parent MUST exist and realpath cleanly.
+  const parent = dirname(absolute);
+  if (parent === absolute) return { ok: true, path: absolute };
+  try {
+    const realParent = realpathSync(parent);
+    return { ok: true, path: join(realParent, basename(absolute)) };
+  } catch {
+    // Parent missing — either a dangling-symlink parent or a missing
+    // intermediate directory. Both are unsafe: a concurrent actor could
+    // create `parent` as a symlink to an outside target before the caller
+    // creates the leaf.
+    try {
+      const stat = lstatSync(parent);
+      if (stat.isSymbolicLink()) {
+        return { ok: false, reason: "dangling-symlink", component: parent };
+      }
+    } catch {
+      // Not a symlink and doesn't exist — treat as missing intermediate.
+    }
+    return { ok: false, reason: "missing-intermediate", component: parent };
   }
 }
 
@@ -102,19 +114,19 @@ function canonicalizeExisting(p: string): CanonicalResult {
  * remain under that base directory — symlink traversal and `../` sequences
  * that resolve outside are rejected.
  *
- * **TOCTOU caveat**: this is a point-in-time containment check, not an atomic
- * gate on subsequent filesystem use. A path whose intermediate components do
- * not yet exist is validated by string-comparing the prefix; if an attacker
- * materializes a symlink at that location between validation and the actual
- * open/write, the write can escape the base. Callers writing files at a
- * validated path MUST either:
- *   - Re-validate immediately before the write, or
- *   - Open via `O_NOFOLLOW`/`openat` with no-follow per component, or
- *   - Create intermediate directories themselves (mkdir -p) before the check
- *     so realpathSync sees the full existing prefix.
- * Dangling symlinks — a symlink whose target does not exist yet — are
- * already rejected outright to close the most obvious race, but no
- * point-in-time validator can guarantee containment for a later write.
+ * **Strict containment**: only the final leaf component may be missing. Every
+ * intermediate directory must exist and realpath cleanly inside the base; if
+ * it does not, the call is rejected. This closes the race where a concurrent
+ * actor materializes an attacker-controlled symlink at a missing intermediate
+ * directory between validation and the subsequent open/write. Callers writing
+ * files at a validated path must `mkdir -p` the parent directory before
+ * calling, so only the leaf can be absent.
+ *
+ * **Residual TOCTOU**: even with strict intermediates, the leaf is still
+ * subject to a narrower race — the parent directory itself could be swapped
+ * between validation and open. Callers that need atomicity should either
+ * re-validate immediately before the write, or open via `O_NOFOLLOW`/`openat`
+ * with no-follow per component.
  *
  * @param path - The path string to validate.
  * @param baseDir - If provided, the canonicalized path must be a descendant.
@@ -138,18 +150,21 @@ export function validatePath(path: string, baseDir?: string): ClassificationResu
   }
 
   // 3. Symlink-safe canonicalization and base-directory containment check.
-  //    Both sides go through the same walk — realpath the longest existing
-  //    prefix, append the non-existent remainder — so string comparison is
-  //    apples-to-apples even for leaves that don't exist yet. Dangling
-  //    symlinks are rejected explicitly to close the TOCTOU gap where an
-  //    attacker materializes an outside target between validation and use.
+  //    Both sides go through the same walk — realpath the existing parent,
+  //    append only the missing leaf — so string comparison is apples-to-apples
+  //    for leaves that don't exist yet. Missing intermediates and dangling
+  //    symlinks are rejected: both represent races where an attacker could
+  //    materialize an outside target between validation and use.
   if (baseDir !== undefined) {
     const baseResult = canonicalizeExisting(baseDir);
     const pathResult = canonicalizeExisting(resolve(baseDir, path));
     if (!baseResult.ok) {
       return {
         ok: false,
-        reason: `Base directory contains a dangling symlink (${baseResult.component})`,
+        reason:
+          baseResult.reason === "dangling-symlink"
+            ? `Base directory contains a dangling symlink (${baseResult.component})`
+            : `Base directory is missing (${baseResult.component}); it must exist before validation`,
         pattern: baseResult.component,
         category: "path-traversal",
       };
@@ -157,7 +172,10 @@ export function validatePath(path: string, baseDir?: string): ClassificationResu
     if (!pathResult.ok) {
       return {
         ok: false,
-        reason: `Path contains a dangling symlink (${pathResult.component}); its target may race an outside file`,
+        reason:
+          pathResult.reason === "dangling-symlink"
+            ? `Path contains a dangling symlink (${pathResult.component}); its target may race an outside file`
+            : `Path's parent directory does not exist (${pathResult.component}); mkdir -p the parent before validating, so only the leaf can be absent`,
         pattern: pathResult.component,
         category: "path-traversal",
       };

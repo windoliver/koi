@@ -68,33 +68,62 @@ describe("validatePath", () => {
 
   describe("base-directory containment (with baseDir)", () => {
     test("allows path within base dir", () => {
-      expect(validatePath("packages/lib", "/workspace").ok).toBe(true);
+      // Base + path must both exist (strict-intermediate rule).
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-contain-"));
+      try {
+        mkdirSync(join(base, "packages", "lib"), { recursive: true });
+        expect(validatePath("packages/lib", base).ok).toBe(true);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
     });
 
     test("allows exact base dir match", () => {
-      expect(validatePath("/workspace", "/workspace").ok).toBe(true);
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-exact-"));
+      try {
+        expect(validatePath(base, base).ok).toBe(true);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
     });
 
     test("blocks path resolving outside base dir", () => {
-      const result = validatePath("/etc/passwd", "/workspace");
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.category).toBe("path-traversal");
-        expect(result.reason).toMatch(/outside/);
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-outside-"));
+      try {
+        const result = validatePath("/etc/passwd", base);
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.category).toBe("path-traversal");
+          expect(result.reason).toMatch(/outside/);
+        }
+      } finally {
+        rmSync(base, { recursive: true, force: true });
       }
     });
 
     test("blocks traversal that resolves outside", () => {
       // Even though ../ is caught by pattern, test the realpath check independently
-      // by providing a path that resolves outside after canonicalization
-      const result = validatePath("/etc/passwd", "/workspace");
-      expect(result.ok).toBe(false);
+      // by providing a path that resolves outside after canonicalization.
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-trav-"));
+      try {
+        const result = validatePath("/etc/passwd", base);
+        expect(result.ok).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
     });
 
     test("blocks base-dir prefix collision", () => {
-      // /workspaceExtra should NOT be considered inside /workspace
-      const result = validatePath("/workspaceExtra/secrets", "/workspace");
-      expect(result.ok).toBe(false);
+      // /tmp/koi-pv-foo-SIBLING should NOT be considered inside /tmp/koi-pv-foo-BASE
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-pfx-"));
+      const sibling = mkdtempSync(join(tmpdir(), "koi-pv-pfx-"));
+      try {
+        const result = validatePath(sibling, base);
+        expect(result.ok).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+        rmSync(sibling, { recursive: true, force: true });
+      }
     });
   });
 
@@ -189,11 +218,31 @@ describe("validatePath", () => {
       }
     });
 
-    test("allows non-existent leaf under base with no symlink tricks", () => {
-      const base = mkdtempSync(join(tmpdir(), "koi-pv-new-"));
+    test("allows non-existent leaf under base when its parent exists", () => {
+      // Strict-intermediate rule: only the leaf may be missing. Parent MUST
+      // already exist and realpath cleanly inside the base.
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-leaf-"));
       try {
+        mkdirSync(join(base, "deep", "nested"), { recursive: true });
         const result = validatePath(join(base, "deep/nested/new.txt"), base);
         expect(result.ok).toBe(true);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    test("blocks write path with missing intermediate directory (TOCTOU defense)", () => {
+      // Without this guard, a concurrent actor could create the missing
+      // intermediate as a symlink to an outside directory between validation
+      // and the caller's write. mkdir -p the parent before validating.
+      const base = mkdtempSync(join(tmpdir(), "koi-pv-miss-"));
+      try {
+        const result = validatePath(join(base, "deep/nested/new.txt"), base);
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.category).toBe("path-traversal");
+          expect(result.reason).toMatch(/parent|missing/i);
+        }
       } finally {
         rmSync(base, { recursive: true, force: true });
       }

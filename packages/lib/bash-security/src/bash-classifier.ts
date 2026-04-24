@@ -328,42 +328,69 @@ function extractGitSubcommand(cmd: string): GitInvocation | null {
 }
 
 /**
- * Reject git alias injection through every channel git accepts:
- *   - `-c alias.*=...` invocation-time config
- *   - `--config=alias.*=...`
- *   - `--config-env=alias.*=ENVVAR`
+ * Config keys that let an attacker smuggle force-destructive behavior through
+ * a scoped git subcommand:
+ *   - `alias.<name>` redefines `<name>` to any command ("push --force", "!sh").
+ *   - `include.path` / `includeIf.*.path` loads an external config file that
+ *     can itself define aliases, yielding the same bypass one level removed.
+ * Both must be rejected in every channel git reads (`-c`, `--config`,
+ * `--config-env`, and the `GIT_CONFIG_*` env series).
+ */
+function isDangerousConfigKey(key: string): boolean {
+  if (key.startsWith("alias.")) return true;
+  if (key === "include.path") return true;
+  if (/^includeIf\..*\.path$/.test(key)) return true;
+  return false;
+}
+
+/**
+ * Reject git config override injection through every channel git accepts:
+ *   - `-c <key>=<value>` invocation-time config
+ *   - `--config=<key>=<value>`
+ *   - `--config-env=<key>=ENVVAR`
  * Without this guard, an attacker can define a force-capable alias
  *   git -c alias.pu='push --force' pu origin main
+ * or load an attacker-controlled config file
+ *   git -c include.path=/tmp/evil.cfg fp origin main
  * and bypass every scoped push/clean/branch/checkout check because git
- * resolves the alias internally.
+ * resolves the alias/include internally before the subcommand runs.
  */
 function gitHasAliasOverride(preOptions: readonly string[]): boolean {
   for (let i = 0; i < preOptions.length; i++) {
     const tok = preOptions[i];
-    if (tok === "-c" && (preOptions[i + 1] ?? "").startsWith("alias.")) return true;
-    if (tok?.startsWith("--config=alias.")) return true;
-    if (tok?.startsWith("--config-env=alias.")) return true;
+    if (tok === "-c") {
+      const keyPart = (preOptions[i + 1] ?? "").split("=")[0] ?? "";
+      if (isDangerousConfigKey(keyPart)) return true;
+    }
+    if (tok?.startsWith("--config=")) {
+      const keyPart = tok.slice("--config=".length).split("=")[0] ?? "";
+      if (isDangerousConfigKey(keyPart)) return true;
+    }
+    if (tok?.startsWith("--config-env=")) {
+      const keyPart = tok.slice("--config-env=".length).split("=")[0] ?? "";
+      if (isDangerousConfigKey(keyPart)) return true;
+    }
   }
   return false;
 }
 
 /**
- * Git also resolves aliases from environment variables set on the SAME
- * command line as the `git` invocation (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/
- * `GIT_CONFIG_VALUE_*` channel). Detect those prefixes before the `git` token
- * so the attacker cannot smuggle an alias through the process environment.
+ * Git also resolves aliases and includes from environment variables set on
+ * the SAME command line as the `git` invocation
+ * (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` channel).
+ * Detect those prefixes before the `git` token so the attacker cannot smuggle
+ * either an alias or an `include.path` through the process environment.
  */
 function hasGitConfigEnvAliasInjection(cmd: string): boolean {
   // Match VAR=VALUE ... git, where VAR is a GIT_CONFIG_* channel that can
-  // carry alias injection. The regex is bounded so it does not force
-  // backtracking on pathological input.
-  if (
-    /\bGIT_CONFIG_COUNT\s*=\s*[1-9]/.test(cmd) &&
-    /\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./.test(cmd)
-  ) {
-    return true;
-  }
-  return false;
+  // carry alias or include injection. The regex is bounded so it does not
+  // force backtracking on pathological input.
+  if (!/\bGIT_CONFIG_COUNT\s*=\s*[1-9]/.test(cmd)) return false;
+  return (
+    /\bGIT_CONFIG_KEY_\d+\s*=\s*alias\./.test(cmd) ||
+    /\bGIT_CONFIG_KEY_\d+\s*=\s*include\.path\b/.test(cmd) ||
+    /\bGIT_CONFIG_KEY_\d+\s*=\s*includeIf\./.test(cmd)
+  );
 }
 
 /** Does an argv token match a force-flag in any short-bundle or long form? */
@@ -403,8 +430,8 @@ function checkGitInvocation(
     return {
       ok: false,
       reason:
-        "git alias override at invocation time (-c / --config / --config-env) can smuggle force-push or other destructive subcommands past scoped checks",
-      pattern: "git+alias-override",
+        "git alias or include.path override at invocation time (-c / --config / --config-env) can smuggle force-push or other destructive subcommands past scoped checks",
+      pattern: "git+config-override",
       category: "destructive",
     };
   }
@@ -475,22 +502,81 @@ function splitShellSegments(cmd: string): string[] {
 }
 
 /**
+ * Resolve simple `VAR=VALUE` assignments within the command before pattern
+ * matching. Destructive classifiers compare literal tokens (e.g. `--force`,
+ * `/etc`), so an attacker can hide dangerous inputs in a prior assignment:
+ *
+ *     target=/etc; rm -rf "$target"          → rm -rf /etc
+ *     force=--force; git push $force origin  → git push --force origin
+ *     f=f; rm -r$f /etc                      → rm -rf /etc
+ *
+ * Scope is intentionally narrow: only `NAME=VALUE` at the start of a segment
+ * with an unquoted VALUE (quote removal already ran in normalizeForMatch).
+ * Array assignments, compound expansions, `local`/`export` prefixes, and
+ * indirect references are NOT resolved — for those cases the segment-start
+ * `$` token will still trigger the command-position-expansion check.
+ *
+ * Substitutions apply to subsequent segments in the same pipeline/sequence.
+ */
+function resolveSimpleAssignments(cmd: string): string {
+  // Preserve the segment separators by splitting with a capturing group.
+  const parts = cmd.split(/(\|\||&&|[;|&\n])/);
+  const vars = new Map<string, string>();
+  const out: string[] = [];
+  const assignment = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)=(\S*)(\s+|$)/;
+  for (const part of parts) {
+    if (/^(?:\|\||&&|[;|&\n])$/.test(part)) {
+      out.push(part);
+      continue;
+    }
+    let segment = part;
+    // Consume any number of leading VAR=VALUE assignments.
+    while (true) {
+      const m = segment.match(assignment);
+      if (!m) break;
+      const name = m[2] ?? "";
+      const value = m[3] ?? "";
+      vars.set(name, value);
+      segment = segment.slice((m[0] ?? "").length);
+    }
+    if (vars.size > 0) {
+      // Substitute longest names first so $VAR1 is not eaten by $VAR.
+      const names = [...vars.keys()].sort((a, b) => b.length - a.length);
+      for (const name of names) {
+        const value = vars.get(name) ?? "";
+        segment = segment.replace(new RegExp(`\\$\\{${name}\\}`, "g"), value);
+        segment = segment.replace(new RegExp(`\\$${name}(?![A-Za-z0-9_])`, "g"), value);
+      }
+    }
+    // Re-emit the consumed assignments so the segment-count downstream is
+    // unaffected, but with their VALUE stripped of the VAR= so subsequent
+    // segment scans don't re-consume them.
+    out.push(segment);
+  }
+  return out.join("");
+}
+
+/**
  * Git destructive operations. The command is split into shell segments and
  * every git invocation across the pipeline is analyzed. Env-var channels
  * that can smuggle aliases (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`) are
  * rejected whenever they appear alongside a git invocation.
+ *
+ * The caller passes the pre-resolved (post-normalization, pre-assignment-
+ * substitution) command so that `GIT_CONFIG_COUNT=N ...` prefixes are still
+ * visible here — the assignment resolver otherwise consumes them.
  */
-function checkDestructiveGit(cmd: string): ClassificationResult {
-  if (hasGitConfigEnvAliasInjection(cmd) && /\bgit\b/.test(cmd)) {
+function checkDestructiveGit(preResolved: string, resolved: string): ClassificationResult {
+  if (hasGitConfigEnvAliasInjection(preResolved) && /\bgit\b/.test(preResolved)) {
     return {
       ok: false,
       reason:
-        "GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* env channels can inject aliases that bypass scoped destructive checks",
-      pattern: "git+env-alias-injection",
+        "GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* env channels can inject aliases or include.path overrides that bypass scoped destructive checks",
+      pattern: "git+env-config-injection",
       category: "destructive",
     };
   }
-  for (const segment of splitShellSegments(cmd)) {
+  for (const segment of splitShellSegments(resolved)) {
     const parsed = extractGitSubcommand(segment);
     if (parsed === null) continue;
     const result = checkGitInvocation(parsed.preOptions, parsed.subcommand, parsed.args);
@@ -643,15 +729,19 @@ export function classifyCommand(command: string): ClassificationResult {
     };
   }
   const normalized = normalizeForMatch(command);
-  const expansionResult = checkCommandPositionExpansion(normalized);
+  // Resolve simple `VAR=VALUE; CMD $VAR` assignments so literal checks like
+  // "does args contain --force" and "does the command touch /etc" see the
+  // expanded form rather than a symbolic `$VAR`.
+  const resolved = resolveSimpleAssignments(normalized);
+  const expansionResult = checkCommandPositionExpansion(resolved);
   if (!expansionResult.ok) return expansionResult;
-  const rmResult = checkDestructiveRm(normalized);
+  const rmResult = checkDestructiveRm(resolved);
   if (!rmResult.ok) return rmResult;
-  const chmodResult = checkDestructiveChmod(normalized);
+  const chmodResult = checkDestructiveChmod(resolved);
   if (!chmodResult.ok) return chmodResult;
-  const gitResult = checkDestructiveGit(normalized);
+  const gitResult = checkDestructiveGit(normalized, resolved);
   if (!gitResult.ok) return gitResult;
-  const pairResult = checkDestructiveCommandPairs(normalized);
+  const pairResult = checkDestructiveCommandPairs(resolved);
   if (!pairResult.ok) return pairResult;
-  return matchPatterns(normalized, ALL_CLASSIFIER_PATTERNS);
+  return matchPatterns(resolved, ALL_CLASSIFIER_PATTERNS);
 }
