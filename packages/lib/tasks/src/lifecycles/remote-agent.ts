@@ -192,17 +192,18 @@ export function createRemoteAgentLifecycle(
       if (config.timeout !== undefined) {
         timeoutId = setTimeout(() => {
           timedOut = true;
-          notifyCancel();
+          controller.abort();
           void (async () => {
-            // Drain before aborting: if a done frame is already buffered in the
-            // reader, the pipe can consume it and set terminal before we commit
-            // to the timeout failure path.
             if (pipeRef !== undefined) await drainPipe(pipeRef, drainTimeoutMs);
-            // If done was processed during the drain, terminal is already set —
-            // emitTerminal is a no-op.
+            // If a done frame raced the abort and was processed before the
+            // connection was killed, terminal is already set — emitTerminal is
+            // a no-op.  Snapshot before the call to know whether we committed.
+            const timedOutBeforeDone = !terminal;
             emitTerminal(1, "\n[timed out: remote agent may still be running]\n");
-            // Abort after drain — frees any blocked reader.read() that didn't settle.
-            controller.abort();
+            // Only send cancel if we actually committed to timeout failure.
+            // If a done frame beat the abort (narrow race), sending cancel
+            // would interfere with work the remote side completed successfully.
+            if (timedOutBeforeDone) notifyCancel();
             // Force-remove from activePipes even if the pipe never settled — same
             // as stop() does. handleNaturalExit does not call stop(), so without
             // this, timed-out hung tasks would leak map entries indefinitely.
