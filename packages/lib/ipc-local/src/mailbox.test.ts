@@ -102,16 +102,19 @@ describe("createLocalMailbox — contract", () => {
 });
 
 describe("createLocalMailbox — local specifics", () => {
-  test("FIFO eviction when at capacity", async () => {
+  test("send() returns RESOURCE_EXHAUSTED when at capacity", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER, maxMessages: 3 });
-    for (const i of [1, 2, 3, 4]) {
-      await mailbox.send(makeInput(`msg-${i}`));
+    for (const i of [1, 2, 3]) {
+      const r = await mailbox.send(makeInput(`msg-${i}`));
+      expect(r.ok).toBe(true);
     }
+    // 4th send exceeds capacity — must return an error, not silently drop
+    const overflow = await mailbox.send(makeInput("msg-4"));
+    expect(overflow.ok).toBe(false);
+    if (!overflow.ok) expect(overflow.error.code).toBe("RESOURCE_EXHAUSTED");
+    // Inbox still has the original 3 messages
     const msgs = await mailbox.list();
     expect(msgs).toHaveLength(3);
-    expect(msgs[0]?.type).toBe("msg-2");
-    expect(msgs[1]?.type).toBe("msg-3");
-    expect(msgs[2]?.type).toBe("msg-4");
     mailbox.close();
   });
 
@@ -123,16 +126,15 @@ describe("createLocalMailbox — local specifics", () => {
     expect(msgs).toHaveLength(0);
   });
 
-  test("microtask dispatch delivers after current task", async () => {
+  test("subscriber is called synchronously during send()", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER });
     const received: string[] = [];
     mailbox.onMessage((msg) => {
       received.push(msg.type);
     });
-    await mailbox.send(makeInput("deferred"));
-    await Bun.sleep(5);
-    expect(received).toHaveLength(1);
-    expect(received[0]).toBe("deferred");
+    await mailbox.send(makeInput("sync"));
+    // Synchronous dispatch: handler fires before send() resolves
+    expect(received).toEqual(["sync"]);
     mailbox.close();
   });
 
@@ -252,18 +254,14 @@ describe("createLocalMailbox — local specifics", () => {
     expect(received).toHaveLength(0);
   });
 
-  test("queued microtask suppressed when close() fires before it runs", async () => {
+  test("send() after close() does not deliver to subscribers", async () => {
     const mailbox = createLocalMailbox({ agentId: OWNER });
     const received: string[] = [];
     mailbox.onMessage((msg) => {
       received.push(msg.type);
     });
-    // send() has no internal await so it runs synchronously and queues the microtask
-    // before returning. close() immediately after sets closed=true before the
-    // queued microtask fires.
-    void mailbox.send(makeInput("race"));
     mailbox.close();
-    await Bun.sleep(10);
+    await mailbox.send(makeInput("after-close"));
     expect(received).toHaveLength(0);
   });
 
@@ -340,7 +338,13 @@ describe("createLocalMailbox — local specifics", () => {
   });
 
   test("throwing subscriber does not propagate and does not affect other subscribers", async () => {
-    const mailbox = createLocalMailbox({ agentId: OWNER });
+    const errors: unknown[] = [];
+    const mailbox = createLocalMailbox({
+      agentId: OWNER,
+      onError: (err) => {
+        errors.push(err);
+      },
+    });
     const received: string[] = [];
     mailbox.onMessage(() => {
       throw new Error("subscriber boom");
@@ -349,8 +353,26 @@ describe("createLocalMailbox — local specifics", () => {
       received.push(msg.type);
     });
     await mailbox.send(makeInput("resilient"));
-    await Bun.sleep(10);
     expect(received).toEqual(["resilient"]);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("subscriber boom");
+    mailbox.close();
+  });
+
+  test("async subscriber rejection is routed to onError", async () => {
+    const errors: unknown[] = [];
+    const mailbox = createLocalMailbox({
+      agentId: OWNER,
+      onError: (err) => {
+        errors.push(err);
+      },
+    });
+    mailbox.onMessage(async () => {
+      throw new Error("async boom");
+    });
+    await mailbox.send(makeInput("async-err"));
+    await Bun.sleep(10);
+    expect(errors).toHaveLength(1);
     mailbox.close();
   });
 });

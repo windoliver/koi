@@ -61,9 +61,18 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
     | (MailboxComponent & { readonly agentId: AgentId; readonly close: () => void })
     | undefined;
 
-  function evictIfNeeded(): void {
-    while (messages.length > maxMessages) {
-      messages.shift();
+  function dispatchToSubscribers(msg: AgentMessage): void {
+    for (const handler of subscribers) {
+      try {
+        const result = handler(msg);
+        if (result instanceof Promise) {
+          result.catch((err: unknown) => {
+            config.onError?.(err, msg);
+          });
+        }
+      } catch (err: unknown) {
+        config.onError?.(err, msg);
+      }
     }
   }
 
@@ -113,6 +122,19 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
         };
       }
 
+      // Reject when at capacity — explicit backpressure instead of silent eviction.
+      if (messages.length >= maxMessages) {
+        return {
+          ok: false,
+          error: {
+            code: "RESOURCE_EXHAUSTED",
+            message: `Mailbox capacity exceeded (maxMessages=${maxMessages})`,
+            retryable: true,
+            context: { agentId: config.agentId, capacity: maxMessages },
+          },
+        };
+      }
+
       // Deep-clone then deep-freeze payload/metadata — surface clone errors as Result.
       const payloadResult = safeCloneFreeze("payload", input.payload);
       if (!payloadResult.ok) return payloadResult;
@@ -138,24 +160,8 @@ export function createLocalMailbox(config: LocalMailboxConfig): MailboxComponent
       });
 
       messages.push(msg);
-      evictIfNeeded();
-
-      for (const handler of subscribers) {
-        // Capture `closed` by reference — suppress delivery if close() runs
-        // before this microtask fires. Catch handler errors to prevent
-        // unhandled rejections from escaping the mailbox boundary.
-        queueMicrotask(() => {
-          if (closed) return;
-          try {
-            const result = handler(msg);
-            if (result instanceof Promise) {
-              result.catch(() => {});
-            }
-          } catch {
-            // Handler threw synchronously — swallow to preserve isolation
-          }
-        });
-      }
+      // Dispatch synchronously so send() success means subscribers were called.
+      dispatchToSubscribers(msg);
 
       return { ok: true, value: msg };
     },

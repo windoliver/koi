@@ -11,6 +11,14 @@ export interface LocalMailboxConfig {
    * send() accepts all messages into this inbox (useful for test helpers).
    */
   readonly router?: MailboxRouter | undefined;
+  /**
+   * Optional error observer for subscriber failures. Called when a subscriber
+   * throws synchronously or rejects an async handler. Provides observability
+   * without breaking delivery isolation.
+   */
+  readonly onError?:
+    | ((error: unknown, message: import("@koi/core").AgentMessage) => void)
+    | undefined;
 }
 
 /** In-process mailbox router for multi-agent scenarios. */
