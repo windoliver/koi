@@ -636,8 +636,10 @@ describe("createRemoteAgentLifecycle", () => {
     test("done frame already in buffer wins over synthetic timeout", async () => {
       // Regression: if the done frame arrives just as the timeout fires, the
       // timeout must not clobber the done frame that is already readable.
+      // Abort is deferred to after the drain so reader.read() can return the
+      // buffered done frame before the connection is killed.
       const exits: number[] = [];
-      // Stream delivers done frame immediately but timeout fires at the same time.
+      // Stream delivers done immediately — done frame is buffered before timeout fires.
       const fetch = mockFetch(200, makeNdjsonStream({ kind: "done", exitCode: 0 }));
       const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
       const output = createOutputStream();
@@ -655,8 +657,10 @@ describe("createRemoteAgentLifecycle", () => {
 
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
 
-      // Whichever won, onExit must only fire once — no double-transition.
+      // onExit must fire exactly once.
       expect(exits).toHaveLength(1);
+      // The done frame was buffered and should win — exit code must be 0, not 1.
+      expect(exits[0]).toBe(0);
     });
   });
 
@@ -1472,6 +1476,60 @@ describe("createRemoteAgentLifecycle", () => {
 
       // Must not throw even though cancel endpoint fails.
       await expect(lifecycle.stop(state)).resolves.toBeUndefined();
+    });
+
+    test("calls cancelEndpoint on non-OK HTTP response", async () => {
+      const cancelCalls: unknown[] = [];
+      const encoder = new TextEncoder();
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          if (String(url).includes("/cancel")) {
+            cancelCalls.push(JSON.parse(String(init?.body)));
+            return new Response(encoder.encode(""), { status: 200 });
+          }
+          return new Response(encoder.encode("Internal Server Error"), { status: 500 });
+        },
+      ) as unknown as typeof globalThis.fetch;
+
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        cancelEndpoint: "https://agent.internal/cancel",
+        drainTimeoutMs: 20,
+        fetch: fetchSpy,
+      });
+      const output = createOutputStream();
+      await lifecycle.start(tid(), output, makeConfig({ correlationId: "cid-5xx" }));
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+      expect(cancelCalls.length).toBeGreaterThan(0);
+    });
+
+    test("calls cancelEndpoint on fetch transport error", async () => {
+      const cancelCalls: unknown[] = [];
+      const encoder = new TextEncoder();
+      const fetchSpy: typeof globalThis.fetch = mock(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          if (String(url).includes("/cancel")) {
+            cancelCalls.push(JSON.parse(String(init?.body)));
+            return new Response(encoder.encode(""), { status: 200 });
+          }
+          throw new Error("ECONNREFUSED");
+        },
+      ) as unknown as typeof globalThis.fetch;
+
+      const lifecycle = createRemoteAgentLifecycle({
+        endpoint: "https://agent.internal/run",
+        cancelEndpoint: "https://agent.internal/cancel",
+        drainTimeoutMs: 20,
+        fetch: fetchSpy,
+      });
+      const output = createOutputStream();
+      await lifecycle.start(tid(), output, makeConfig({ correlationId: "cid-netfail" }));
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+      expect(cancelCalls.length).toBeGreaterThan(0);
     });
 
     test("calls cancelEndpoint on stream closed without done frame", async () => {

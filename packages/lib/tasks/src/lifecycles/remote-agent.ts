@@ -192,14 +192,17 @@ export function createRemoteAgentLifecycle(
       if (config.timeout !== undefined) {
         timeoutId = setTimeout(() => {
           timedOut = true;
-          controller.abort();
           notifyCancel();
           void (async () => {
+            // Drain before aborting: if a done frame is already buffered in the
+            // reader, the pipe can consume it and set terminal before we commit
+            // to the timeout failure path.
             if (pipeRef !== undefined) await drainPipe(pipeRef, drainTimeoutMs);
-            // Timeout must call onExit so TaskRunner can fail the task on the board.
-            // The cleanup-incomplete message communicates that remote termination is
-            // unconfirmed — the remote agent may still be running.
+            // If done was processed during the drain, terminal is already set —
+            // emitTerminal is a no-op.
             emitTerminal(1, "\n[timed out: remote agent may still be running]\n");
+            // Abort after drain — frees any blocked reader.read() that didn't settle.
+            controller.abort();
             // Force-remove from activePipes even if the pipe never settled — same
             // as stop() does. handleNaturalExit does not call stop(), so without
             // this, timed-out hung tasks would leak map entries indefinitely.
@@ -227,6 +230,7 @@ export function createRemoteAgentLifecycle(
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           const message = err instanceof Error ? err.message : String(err);
           // POST body may have been sent before the network error — remote state unknown.
+          notifyCancel();
           emitTerminal(1, `\n[cleanup-incomplete: ${message}]\n`);
           return;
         }
@@ -235,6 +239,7 @@ export function createRemoteAgentLifecycle(
           if (controller.signal.aborted) return;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           // 5xx can be returned after work started; treat all non-OK as cleanup-incomplete.
+          notifyCancel();
           emitTerminal(1, `\n[cleanup-incomplete: HTTP ${String(response.status)}]\n`);
           return;
         }
@@ -328,7 +333,7 @@ export function createRemoteAgentLifecycle(
 
         try {
           outer: while (true) {
-            if (stopped || timedOut) break;
+            if (stopped) break;
             const { done, value } = await reader.read();
             // Only break on explicit cancel — if timedOut, still process already-received
             // data so a done frame in the buffer can win over the synthetic timeout failure.
