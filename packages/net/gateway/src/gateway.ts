@@ -112,9 +112,17 @@ export function createGateway(
 
   // Single send path for established-session writes so every outbound byte is
   // backpressure-accounted, including error/ack frames that bypass gateway.send().
-  // Returns false when the transport rejected the write (-1); callers should abort
-  // any further processing for that connection.
+  // Returns false when the transport rejected the write (-1) or the connection is
+  // already at or above its per-connection buffer limit; callers should abort any
+  // further processing for that connection.
   function sendFrame(conn: TransportConnection, data: string): boolean {
+    // Pre-write admission control: close immediately if already at the per-connection
+    // or global limit rather than waiting for the 5-second sweep.
+    if (bp.state(conn.id) === "critical" || !bp.canAccept()) {
+      conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Buffer limit exceeded");
+      cleanupConn(conn, "buffer limit exceeded");
+      return false;
+    }
     const bytes = conn.send(data);
     if (bytes === -1) {
       conn.close(CLOSE_CODES.ADMIN_CLOSED, "Transport send failure");
@@ -435,6 +443,19 @@ export function createGateway(
         return {
           ok: false,
           error: notFound(connId, `Connection not found for session: ${sessionId}`),
+        };
+      }
+      if (bp.state(connId) === "critical" || !bp.canAccept()) {
+        conn.close(CLOSE_CODES.BACKPRESSURE_TIMEOUT, "Buffer limit exceeded");
+        cleanupConn(conn, "buffer limit exceeded");
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Buffer limit exceeded for session: ${sessionId}`,
+            retryable: false,
+            context: { sessionId },
+          } satisfies KoiError,
         };
       }
       const encoded = encodeFrame(frame);
