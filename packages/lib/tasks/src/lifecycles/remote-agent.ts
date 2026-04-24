@@ -334,6 +334,13 @@ export function createRemoteAgentLifecycle(
             return false;
           }
           // done frame — hard terminal; cancel transport to stop server streaming.
+          // Reject if timeout already fired: deadline is hard and must not
+          // depend on abort-propagation timing. The timeout handler will emit
+          // the timeout failure via the timedOutBeforeDone snapshot guard.
+          if (timedOut) {
+            teardownTransport();
+            return true;
+          }
           receivedDone = true;
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           const exitMsg =

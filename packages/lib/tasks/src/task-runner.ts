@@ -148,7 +148,7 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
             return;
           }
         }
-        void handleNaturalExit(taskId, code);
+        void handleNaturalExit(taskId, code, attemptRef.value);
         callerOnExit?.(code);
       };
 
@@ -164,8 +164,15 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
   /**
    * Async handler for natural process exits. Awaits board transitions and
    * handles failures so tasks don't remain stuck in_progress.
+   *
+   * @param exitAttemptId - For attempt-scoped lifecycles (remote_agent), the
+   *   attemptId of the exit source. Used to drop stale exits from old attempts.
    */
-  async function handleNaturalExit(taskId: TaskItemId, code: number): Promise<void> {
+  async function handleNaturalExit(
+    taskId: TaskItemId,
+    code: number,
+    exitAttemptId?: string,
+  ): Promise<void> {
     // Ignore exits from intentionally stopped tasks
     if (stoppedTaskIds.has(taskId)) {
       stoppedTaskIds.delete(taskId);
@@ -173,7 +180,11 @@ export function createTaskRunner(config: TaskRunnerConfig): TaskRunner {
     }
     const task = activeTasks.get(taskId);
     if (task === undefined) {
-      // Task may not be registered yet (fast exit during lifecycle.start()).
+      // For attempt-scoped exits: the task is already gone (cleanup ran before
+      // this async exit arrived). Don't stash — a future retry will start with
+      // a different attemptId and must not inherit this stale exit code.
+      if (exitAttemptId !== undefined) return;
+      // Non-attempt-scoped: task may not be registered yet (fast-exit race).
       // Stash the exit code; start() will drain it after activeTasks.set().
       pendingExits.set(taskId, code);
       return;
