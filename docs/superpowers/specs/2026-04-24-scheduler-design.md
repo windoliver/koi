@@ -52,12 +52,10 @@ Total: ~1325 LOC
 ```typescript
 // Dispatcher contract — agentId, EngineInput, mode, AbortSignal.
 // signal is aborted when timeoutMs elapses. Dispatchers SHOULD propagate it.
-// Dispatchers that cannot cooperatively cancel MUST ensure their operations are
-// idempotent — the task ID serves as the idempotency key for at-most-once
-// semantic enforcement by callers. A timed-out attempt is treated as
-// indeterminate: the scheduler will not retry until staleTaskThresholdMs elapses
-// and recovery moves the task back to pending (retries++), providing a natural
-// deduplication window for idempotent dispatchers.
+// Timeout policy: terminal. A timed-out task moves directly to dead_letter — it is
+// NOT retried. This prevents duplicate execution of non-idempotent side effects.
+// Dispatchers that cannot cooperatively cancel MUST document their work as idempotent,
+// since the original dispatch may complete after the AbortSignal fires.
 type TaskDispatcher = (
   agentId: AgentId,
   input: EngineInput,
@@ -190,7 +188,7 @@ CREATE TABLE koi_schedules (
 -- Supports TaskRunRecord[] returned by history() and scheduler_history tool.
 CREATE TABLE koi_task_runs (
   id TEXT PRIMARY KEY,            -- unique run ID (branded RunId)
-  task_id TEXT NOT NULL,
+  task_id TEXT NOT NULL REFERENCES koi_tasks(id) ON DELETE CASCADE,
   agent_id TEXT NOT NULL,
   status TEXT NOT NULL,           -- "completed" | "failed"
   started_at INTEGER NOT NULL,
@@ -198,7 +196,8 @@ CREATE TABLE koi_task_runs (
   duration_ms INTEGER NOT NULL,
   retry_attempt INTEGER NOT NULL,
   error TEXT,                     -- JSON: KoiError | null
-  result TEXT                     -- JSON: unknown | null
+  result TEXT,                    -- JSON: unknown | null
+  UNIQUE(task_id, retry_attempt)  -- one row per attempt; INSERT OR IGNORE on re-insertion
 );
 ```
 
