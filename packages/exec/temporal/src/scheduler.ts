@@ -166,9 +166,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async cancel(id): Promise<boolean> {
       try {
         await config.client.workflow.cancel(id);
-        const task = tasks.get(id);
-        if (task !== undefined) {
-          tasks.set(id, { ...task, status: "failed", completedAt: Date.now() });
+        if (tasks.has(id)) {
+          // Remove from active tracking — cancelled work should not show in
+          // failed stats or query results; it was an explicit operator action.
+          tasks.delete(id);
           emit({ kind: "task:cancelled", taskId: id });
         }
         return true;
