@@ -151,7 +151,7 @@ describe("createRemoteAgentLifecycle", () => {
       expect(exits).toEqual([42]);
     });
 
-    test("fires onExit(0) when stream ends without done frame", async () => {
+    test("fails with protocol error when stream ends without done frame", async () => {
       const exits: number[] = [];
       const fetch = mockFetch(200, makeNdjsonStream({ kind: "chunk", text: "partial" }));
       const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
@@ -168,7 +168,72 @@ describe("createRemoteAgentLifecycle", () => {
       );
 
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
-      expect(exits).toEqual([0]);
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("protocol error");
+      expect(exits).toEqual([1]);
+    });
+
+    test("fails with protocol error on null response body", async () => {
+      const exits: number[] = [];
+      const fetchNull: typeof globalThis.fetch = mock(
+        async (_url: string | URL | Request, _init?: RequestInit) =>
+          Promise.resolve(new Response(null, { status: 200 })),
+      ) as unknown as typeof globalThis.fetch;
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch: fetchNull });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("protocol error");
+      expect(exits).toEqual([1]);
+    });
+
+    test("fails with protocol error on malformed JSON frame", async () => {
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      const badStream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(encoder.encode("not-json\n"));
+          c.close();
+        },
+      });
+      const fetch = mockFetch(200, badStream);
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("protocol error");
+      expect(exits).toEqual([1]);
     });
 
     test("sends correct POST body and headers", async () => {
@@ -201,6 +266,34 @@ describe("createRemoteAgentLifecycle", () => {
       const headers = capturedInit?.headers as Record<string, string>;
       expect(headers["Content-Type"]).toBe("application/json");
       expect(headers.Authorization).toBe("Bearer tok");
+    });
+
+    test("handles done frame with no trailing newline (buffer remainder)", async () => {
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      // No trailing \n after done frame
+      const noNewlineStream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(encoder.encode('{"kind":"done","exitCode":0}'));
+          c.close();
+        },
+      });
+      const fetch = mockFetch(200, noNewlineStream);
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(exits).toEqual([0]);
     });
 
     test("handles NDJSON split across read() boundaries (chunked transport)", async () => {
@@ -351,8 +444,14 @@ describe("createRemoteAgentLifecycle", () => {
       await lifecycle.stop(state);
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
 
-      // onExit must NOT be called on explicit cancel
+      // onExit must NOT be called on explicit cancel — remote termination unconfirmed
       expect(exits).toEqual([]);
+      // cleanup-incomplete marker must be written to surface the uncertain state
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("cleanup-incomplete");
     });
 
     test("stop() resolves without error after cancel", async () => {
@@ -368,7 +467,7 @@ describe("createRemoteAgentLifecycle", () => {
   });
 
   describe("timeout", () => {
-    test("fires onExit(1) and writes [timed out] after timeout elapses", async () => {
+    test("writes cleanup-incomplete marker on timeout — onExit NOT called", async () => {
       const exits: number[] = [];
       const slowStream = new ReadableStream<Uint8Array>({ start() {} });
       const fetch = mockFetch(200, slowStream);
@@ -392,8 +491,11 @@ describe("createRemoteAgentLifecycle", () => {
         .read(0)
         .map((c) => c.content)
         .join("");
+      // Timeout cannot confirm remote stopped — must emit cleanup-incomplete, not success
       expect(text).toContain("timed out");
-      expect(exits).toEqual([1]);
+      expect(text).toContain("remote agent may still be running");
+      // onExit must NOT be called on timeout — remote termination unconfirmed
+      expect(exits).toEqual([]);
     });
 
     test("onExit is called at most once even on timeout + natural exit race", async () => {
