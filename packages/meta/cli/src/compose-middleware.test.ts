@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { KoiMiddleware } from "@koi/core";
-import { buildInheritedMiddlewareForChildren } from "./compose-middleware.js";
+import {
+  buildInheritedMiddlewareForChildren,
+  composeRuntimeMiddleware,
+} from "./compose-middleware.js";
 
 function stub(name: string): KoiMiddleware {
   return { name, phase: "resolve", priority: 0, describeCapabilities: () => undefined };
@@ -95,5 +98,47 @@ describe("buildInheritedMiddlewareForChildren", () => {
     });
     expect(result).toContain(systemPrompt);
     expect(result).toContain(skillInjector);
+  });
+});
+
+describe("composeRuntimeMiddleware — skill injector ordering", () => {
+  function stub(name: string): KoiMiddleware {
+    return { name, phase: "resolve", priority: 0, describeCapabilities: () => undefined };
+  }
+
+  const hook = stub("hook");
+  const permissions = stub("permissions");
+  const exfiltrationGuard = stub("exfiltration-guard");
+
+  test("skillInjector slot appears after permissions (post-permissions zone)", () => {
+    // Regression for #1986: root agent skill injector must not check request.tools
+    // before permissions has filtered them. Placing it after permissions ensures
+    // the Skill tool gate operates on the final filtered tool list.
+    const skillInjector = stub("skill-injector");
+    const result = composeRuntimeMiddleware({
+      hook,
+      permissions,
+      exfiltrationGuard,
+      skillInjector,
+    });
+    expect(result.indexOf(skillInjector)).toBeGreaterThan(result.indexOf(permissions));
+  });
+
+  test("skillInjector appears before systemPrompt in root chain", () => {
+    const skillInjector = stub("skill-injector");
+    const systemPrompt = stub("system-prompt");
+    const result = composeRuntimeMiddleware({
+      hook,
+      permissions,
+      exfiltrationGuard,
+      skillInjector,
+      systemPrompt,
+    });
+    expect(result.indexOf(skillInjector)).toBeLessThan(result.indexOf(systemPrompt));
+  });
+
+  test("omits skillInjector when not provided", () => {
+    const result = composeRuntimeMiddleware({ hook, permissions, exfiltrationGuard });
+    expect(result.some((mw) => mw.name === "skill-injector")).toBe(false);
   });
 });

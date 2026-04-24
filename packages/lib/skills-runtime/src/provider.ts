@@ -266,6 +266,13 @@ export function createProgressivePinnedRuntime(base: SkillsRuntime): SkillsRunti
       }
       base.invalidate(name);
     },
-    registerExternal: (skills: readonly SkillMetadata[]): void => base.registerExternal(skills),
+    registerExternal: (skills: readonly SkillMetadata[]): void => {
+      // Clear pinned entries for refreshed external skills so stale definitions
+      // cannot be served after a bridge reconnect, rename, or removal.
+      for (const meta of skills) {
+        pinned.delete(meta.name);
+      }
+      base.registerExternal(skills);
+    },
   };
 }

@@ -458,13 +458,18 @@ only when the model explicitly invokes the `Skill` tool.
 ### Phase 1 — Discovery (session start, ~100 tokens per model call)
 
 ```typescript
-import { createSkillProvider, createSkillInjectorMiddleware } from "@koi/skills-runtime";
+import { createProgressiveSkillProvider, createSkillInjectorMiddleware } from "@koi/skills-runtime";
 import { createSkillTool } from "@koi/skill-tool";
+
+// createProgressiveSkillProvider bundles session-snapshot pinning automatically.
+// Use this instead of createSkillProvider(..., { progressive: true }) — the latter
+// requires you to manually wrap the runtime with createProgressivePinnedRuntime()
+// and pass the same pinned runtime to both the provider and the Skill tool.
+const { provider, pinnedRuntime } = createProgressiveSkillProvider(createSkillsRuntime());
 
 const ref: { current?: Agent } = {};
 const mw = createSkillInjectorMiddleware({ agent: () => ref.current!, progressive: true });
-const provider = createSkillProvider(runtime, { progressive: true });
-const skillTool = await createSkillTool({ resolver: runtime, signal: new AbortController().signal });
+const skillTool = await createSkillTool({ resolver: pinnedRuntime, signal: new AbortController().signal });
 
 const koi = await createKoi({ providers: [provider], middleware: [mw], tools: [skillTool.value] });
 ref.current = koi.agent;

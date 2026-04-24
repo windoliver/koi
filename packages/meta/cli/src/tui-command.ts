@@ -1751,7 +1751,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // sub-agents. Workflows that delegate browser work to a child agent
     // will lose those tools after the spawn. This is a known scope
     // restriction of the mock dev/test path, not a bug in production.
-    extraMiddleware: [skillInjectorMw],
+    // Post-permissions slot: runs inside the security layers so request.tools
+    // is permissions-filtered when the injector checks for the Skill tool.
+    skillInjector: skillInjectorMw,
     // Propagate skill injection into spawned children so they also receive
     // the <available_skills> XML block. The tool:Skill tool is already
     // inherited by children via InheritedComponentProvider; the middleware

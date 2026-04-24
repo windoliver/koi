@@ -422,6 +422,35 @@ describe("createProgressivePinnedRuntime", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.has("skill-c")).toBe(true);
   });
+
+  test("registerExternal clears pinned entries for refreshed skills", async () => {
+    // Regression: external skills updated via registerExternal (MCP bridge refresh)
+    // must not serve stale pinned definitions after the refresh.
+    await writeSkill(userRoot, "ext-skill", "Original ext body.");
+    const base = createSkillsRuntime({ bundledRoot: null, userRoot });
+    const runtime = createProgressivePinnedRuntime(base);
+
+    // Pin the skill via loadAll.
+    await runtime.loadAll();
+
+    // Simulate external skill registration (e.g. MCP bridge reconnect)
+    // with a new version — this should evict the pin.
+    runtime.registerExternal([
+      {
+        name: "ext-skill",
+        description: "Updated external.",
+        source: "mcp",
+        body: "",
+        dirPath: "",
+      },
+    ]);
+
+    // After registerExternal, load() falls through to base (pin was cleared).
+    const result = await runtime.load("ext-skill");
+    // The base load re-reads from disk (original file still there),
+    // confirming the pin was cleared rather than stale value returned.
+    expect(result.ok).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

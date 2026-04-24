@@ -796,16 +796,21 @@ export interface KoiRuntimeConfig {
   /**
    * Host-provided middleware appended to the `presetExtras` slot (phase
    * "resolve", after stack middleware). Used to wire host-owned middleware
-   * that doesn't fit a preset stack (e.g. skill-injector in progressive mode).
-   * Order preserved.
+   * that doesn't fit a preset stack. Order preserved.
    */
   readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Progressive skill injector middleware for the root agent.
+   * Placed in the post-permissions slot (zone C-bottom, after planPersist and
+   * before systemPrompt) so `request.tools` is permissions-filtered when the
+   * injector checks whether the Skill tool is active.
+   */
+  readonly skillInjector?: KoiMiddleware | undefined;
   /**
    * Skill injector middleware to propagate into spawned child agents.
    * When set, child model calls receive the same `<available_skills>` injection
    * as the root agent. The middleware reads from its original agent reference
    * (typically the root agent's ECS), which reflects the global skill set.
-   * Only relevant when `extraMiddleware` contains a progressive skill injector.
    */
   readonly childSkillInjector?: KoiMiddleware | undefined;
 }
@@ -2570,6 +2575,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...(config.extraMiddleware ?? []),
       ],
       manifestMiddleware: zoneBMiddleware,
+      ...(config.skillInjector !== undefined ? { skillInjector: config.skillInjector } : {}),
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
     });

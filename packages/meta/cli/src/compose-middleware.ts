@@ -93,6 +93,13 @@ export interface MiddlewareCompositionInput {
    * loader, so zone B can never reorder or replace them.
    */
   readonly manifestMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Skill injection middleware. Placed after planPersist and before systemPrompt
+   * so it runs inside the permissions layer — `request.tools` reflects the
+   * permissions-filtered tool list when the injector checks for the Skill tool.
+   * Matches the ordering in buildInheritedMiddlewareForChildren for children.
+   */
+  readonly skillInjector?: KoiMiddleware | undefined;
   /** System prompt injection — innermost so children can inherit it cleanly. */
   readonly systemPrompt?: KoiMiddleware | undefined;
   /**
@@ -119,6 +126,9 @@ export interface MiddlewareCompositionInput {
  *                                         already-redacted traffic
  *   [zone C-bottom]
  *             modelRouter?
+ *             plan?
+ *             planPersist?
+ *             skillInjector?  — post-permissions: request.tools is filtered
  *             systemPrompt?
  *             sessionTranscript?
  *
@@ -162,6 +172,9 @@ export function composeRuntimeMiddleware(
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
     ...(input.plan !== undefined ? [input.plan] : []),
     ...(input.planPersist !== undefined ? [input.planPersist] : []),
+    // Skill injector sits after planPersist so it runs inside the permissions
+    // layer — the tool list is permissions-filtered when it checks for Skill.
+    ...(input.skillInjector !== undefined ? [input.skillInjector] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.sessionTranscript !== undefined ? [input.sessionTranscript] : []),
   ];
