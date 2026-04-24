@@ -93,11 +93,17 @@ interface LongRunningConfig {
   readonly maxKeyArtifacts?: number;          // default 10
   readonly pruningPolicy?: PruningPolicy;     // default { retainCount: 10 }
   readonly timeoutMs?: number;                // optional wall-clock deadline per session
+  readonly leaseTtlMs?: number;               // heartbeat staleness threshold; default 90_000
+  readonly heartbeatIntervalMs?: number;      // how often to bump heartbeat; default 30_000
   readonly saveState?: SaveStateCallback;     // capture engine state on soft checkpoint
   readonly onCompleted?: OnCompletedCallback;
   readonly onFailed?: OnFailedCallback;
+  readonly onDurabilityLost?: (err: KoiError) => void | Promise<void>;
 }
 ```
+
+`leaseTtlMs` MUST be >= 3× `heartbeatIntervalMs` to tolerate transient pauses
+without false reclamation. Defaults satisfy this (90s vs. 30s).
 
 ### `LongRunningHarness`
 
@@ -165,40 +171,95 @@ We never mutate stored state in place. A crashed write leaves the prior snapshot
 as the valid resume point. This matches v1 behavior and relies on
 `SnapshotChainStore` (already validated in L0).
 
-### Resume — Exclusive Lease Protocol
+### Resume — Exclusive Lease Protocol with Crash Reclamation
 
-Concurrent resume attempts must not both produce an active session. The lease
-protocol below fences duplicate execution:
+Concurrent resume attempts must not both produce an active session. Crashed or
+abandoned `active` snapshots must be reclaimable, not permanently stuck. The
+protocol combines CAS fencing with startup reconciliation against
+`SessionPersistence`.
+
+**Activation ordering (crash-safe):** every state-advancing operation follows
+session-first, then snapshot. On `start()` / successful `resume()`:
+
+1. Write a session record with `status = "starting"` via
+   `sessionPersistence.saveSession` **before** any harness snapshot advance.
+   If this fails → abort with `CHECKPOINT_WRITE_FAILED`; harness head is
+   unchanged, no orphan is possible.
+2. CAS-advance harness snapshot to `active` with the new generation + new
+   `lastSessionId` pointing at the record just written.
+3. Mark the session `"running"` via `setSessionStatus`.
+4. Mint and return the `SessionLease`.
+
+A crash between (1) and (2) leaves an orphan session record with no pointer
+from the harness — harmless, pruned by reconciliation (below). A crash between
+(2) and (3) leaves an `active` harness pointing at a `"starting"` session
+record — reclaimable because `"starting"` implies "never observed running".
+
+**Resume flow:**
 
 1. Read `harnessStore.latest()` → `prev: HarnessSnapshot | undefined`.
-   - Undefined → `KoiError { code: "NOT_FOUND" }`.
+   - Undefined → `KoiError { code: "NOT_FOUND" }` (unless called via `start`).
    - `prev.phase ∈ { completed, failed }` → `KoiError { code: "TERMINAL" }`.
-   - `prev.phase === "active"` → `KoiError { code: "ALREADY_ACTIVE", retryable: true }`
-     (a peer holds the lease; caller can retry after a bounded wait).
-2. Build `next: HarnessSnapshot` from `prev` with:
-   `phase = "active"`, `sessionSeq = prev.sessionSeq + 1`,
-   `generation = prev.generation + 1`, `lastSessionId = newSessionId`.
-3. `harnessStore.compareAndPut(prev.chainHead, next)` — CAS-conditioned advance.
-   If CAS fails (another caller raced us) → `KoiError { code: "CONCURRENT_RESUME", retryable: true }`.
-4. Only after CAS success: mint a `SessionLease { sessionId, generation }`,
-   mark session "running" via `sessionPersistence.setSessionStatus`, build resume
-   context, return `ResumeResult` carrying the lease.
+   - `prev.phase === "suspended"` → proceed to activation (normal resume).
+   - `prev.phase === "active"` → run **reclamation check** (below). If the
+     active owner is live, reject `ALREADY_ACTIVE` (retryable). If dead,
+     fence-and-reclaim.
+2. Run activation ordering above, using `prev.chainHead` as the CAS expected
+   value.
+3. If CAS fails (peer raced us) → `KoiError { code: "CONCURRENT_RESUME", retryable: true }`;
+   roll back the orphan session record written in step 1 via `removeSession`
+   (best-effort; reconciliation sweeps any survivors).
 
-`start()` uses the same protocol with `prev === undefined` as the precondition
-(the CAS tolerates absence → initial snapshot).
+**Reclamation check for `active` snapshots:**
+
+Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
+
+1. `sessionPersistence.loadSession(sid)` → `record: SessionRecord | NOT_FOUND`.
+2. Decide the owner's liveness:
+   - `NOT_FOUND` → owner never finished writing; **dead**. Reclaim.
+   - `record.status === "done"` → owner finished but crashed before advancing
+     harness; **dead**. Reclaim.
+   - `record.status === "idle"` → owner cleanly exited without calling
+     `pause`; **dead**. Reclaim.
+   - `record.status === "starting"` → owner crashed during activation;
+     **dead**. Reclaim.
+   - `record.status === "running"` AND `now - record.lastHeartbeatAt > leaseTtlMs`
+     (default 90s) → owner's heartbeat is stale; **dead**. Reclaim.
+   - `record.status === "running"` AND heartbeat fresh → **live**.
+     `ALREADY_ACTIVE`.
+3. To reclaim: CAS-advance `prev` → `next` with
+   `phase = "suspended"`, `generation = prev.generation + 1`,
+   `failureReason = "RECLAIMED_FROM_DEAD_OWNER"`. This fences the dead owner's
+   lease. Then re-enter the resume flow from step 1 with the now-suspended
+   snapshot.
+
+Requires `SessionRecord.lastHeartbeatAt: number | undefined` and a heartbeat
+bump that the harness issues on every soft checkpoint and pause. Both are
+additive to `@koi/core` / `@koi/session`.
+
+**Start:**
+
+`start()` is `resume()` with `prev === undefined` as precondition. CAS tolerates
+absence → initial snapshot. If `prev` exists and is not terminal, `start()`
+rejects with `INVALID_STATE` (caller should use `resume`).
+
+**Lease enforcement on mutating calls:**
 
 All mutating calls (`pause`, `fail`, `completeTask`, `failTask`, checkpoint
 middleware writes) take the `SessionLease` as an explicit argument. Before every
 store write, the harness asserts `lease.generation === currentSnapshot.generation`.
-Stale leases (timed-out sessions, superseded runs) are rejected with
-`KoiError { code: "STALE_SESSION", retryable: false }` and their writes are
-never persisted. This closes the "late callback after timeout" and "replacement
-session already claimed the harness" races.
+Stale leases (timed-out sessions, superseded runs, reclaimed runs) are rejected
+with `KoiError { code: "STALE_SESSION", retryable: false }` and their writes
+are never persisted.
 
-Requires L0 support: `HarnessSnapshot.generation: number` and
-`SnapshotChainStore.compareAndPut(expectedHead, next)`. If either is missing,
-add them as a prerequisite L0 PR before implementing this L2 package — the
-design does not regress to lease-less semantics.
+**L0 prerequisites (required, additive):**
+
+1. `HarnessSnapshot.generation: number` — monotonic per harness.
+2. `SnapshotChainStore.compareAndPut(expectedHead, next)` — CAS advance.
+3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal.
+4. `SessionStatus` adds `"starting"` between `idle` and `running`.
+
+These must land in a prerequisite L0 PR before the L2 package ships.
 
 ### Progress Tracking
 
@@ -262,9 +323,28 @@ Single hook: `afterTurn`. On each turn boundary:
    - If `continueWithoutDurability === true`: emit warning event, allow the
      turn to continue (caller accepted the risk).
    - Otherwise (default): fail the turn with
-     `KoiError { code: "CHECKPOINT_WRITE_FAILED", retryable: true }`, invoke
-     `onDurabilityLost`, and transition the harness to `suspended` (best-effort
-     snapshot skipped — durability is already broken).
+     `KoiError { code: "CHECKPOINT_WRITE_FAILED", retryable: true }` and
+     invoke `onDurabilityLost`.
+
+**Degraded-durability recovery path.** On I/O failure, the authoritative store
+still points at the previous `active` snapshot. We do NOT attempt a second
+CAS to transition to `suspended` — if the store is unhealthy, that write would
+also likely fail or partially succeed. Instead:
+
+- The harness records `SessionRecord` status = `"idle"` via
+  `setSessionStatus` (different storage path from the snapshot store; may still
+  be healthy) AND stops issuing heartbeats.
+- If that session-record update also fails, the harness simply stops issuing
+  heartbeats. Either way, reclamation will detect the dead owner:
+  - If session record updated: `status === "idle"` → reclaimed.
+  - If session record stuck at `"running"`: heartbeat staleness
+    (`now - lastHeartbeatAt > leaseTtlMs`) → reclaimed.
+
+This means: a crash or unrecoverable durability loss during an active session
+is always recoverable by a later `resume()` call, because reclamation uses two
+independent signals (session-record status and heartbeat freshness) and at
+least one will reveal the dead owner within `leaseTtlMs`. The `active` snapshot
+is never a terminal trap.
 
 Rationale: a package whose entire purpose is durable long-running state must
 not silently degrade to memory-only. Silent failure turns an eventual crash
@@ -340,6 +420,26 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   new lease; an in-flight caller holding the first lease attempts
   `completeTask` → rejected with `STALE_SESSION`; new lease's writes succeed.
 
+### Unit: crash recovery (`harness.test.ts`)
+
+- **Crash after activation, before first heartbeat:** snapshot=`active` + session
+  record=`"starting"`. Second process calls `resume()` → reclamation detects
+  dead owner via `"starting"` status → fences + reclaims → new session runs.
+- **Crash mid-run with stale heartbeat:** snapshot=`active` + session record
+  `status="running"`, `lastHeartbeatAt < now - leaseTtlMs`. `resume()` reclaims.
+- **Live owner blocks reclaim:** snapshot=`active` + fresh heartbeat →
+  `resume()` returns `ALREADY_ACTIVE`.
+- **Orphan session record after partial activation:** session written but CAS
+  failed. Next `resume()` ignores orphan (no pointer from harness); periodic
+  reconciliation (`pruneOrphanSessions`) removes it.
+- **Durability loss mid-run:** simulated I/O failure on soft checkpoint →
+  middleware stops heartbeats + marks session `idle` → next `resume()` reclaims
+  via session-record status (primary) or heartbeat staleness (fallback). No
+  permanent `ALREADY_ACTIVE` trap.
+- **Activation rollback:** session `saveSession` succeeds but CAS fails →
+  orphan session is cleaned via `removeSession` best-effort; harness head
+  unchanged.
+
 ### Unit: `checkpoint-policy.test.ts`
 
 - `shouldSoftCheckpoint` boundary cases (0, interval, interval+1).
@@ -406,16 +506,20 @@ All errors are `KoiError` from L0. Codes used:
 
 ## L0 Prerequisites
 
-This design requires two additions to `@koi/core` before the L2 package can be
-implemented:
+This design requires four additive changes to `@koi/core` / `@koi/session` L0
+types before the L2 package can be implemented:
 
 1. `HarnessSnapshot.generation: number` — monotonic per harness, incremented on
    every session transition. Drives lease fencing.
 2. `SnapshotChainStore.compareAndPut(expectedHead, next)` — CAS-conditioned
    advance. Existing `put` is insufficient for exclusivity guarantees.
+3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal for
+   crash reclamation.
+4. `SessionStatus` gains `"starting"` between `idle` and `running` — marks
+   mid-activation sessions so a crash before the first heartbeat is
+   unambiguously reclaimable.
 
-Both are additive (backward-compatible) L0 changes and should land in a
-prerequisite PR.
+All four are backward-compatible and should land in a prerequisite L0 PR.
 
 ## Open Questions
 
