@@ -340,12 +340,13 @@ interface GitInvocation {
  */
 function extractGitSubcommand(cmd: string): GitInvocation | null {
   const tokens = cmd.split(/\s+/).filter((t) => t.length > 0);
-  // Strip leading shell-grouping/control characters — `(`, `{`, `!` — from each
-  // token before matching `git`. Bash treats `(git reset --hard HEAD~1)` as a
-  // subshell grouping where the `(` is a control token attached to the `git`
-  // word, not part of the executable name. Matching the raw token would miss
-  // the destructive git invocation inside the subshell.
-  const cleaned = tokens.map((t) => t.replace(/^[(!{]+/, ""));
+  // Strip leading shell-grouping/control characters — `(`, `{`, `!`, `<(`, `>(`,
+  // plus repetitions like `<(` + `(` — from each token before matching `git`.
+  // Bash treats `(git reset --hard HEAD~1)` as a subshell grouping and
+  // `cat <(git push --force origin main)` as a process substitution where the
+  // `<(`/`>(` prefix attaches to the `git` word. Matching the raw token would
+  // miss the destructive git invocation inside either form.
+  const cleaned = tokens.map((t) => t.replace(/^(?:[<>]\(|[({!])+/, ""));
   const gitIdx = cleaned.findIndex((t) => t === "git" || /\/git$/.test(t));
   if (gitIdx === -1) return null;
   const preOptions: string[] = [];
@@ -471,12 +472,32 @@ function hasGitConfigEnvAliasInjection(cmd: string): boolean {
   return false;
 }
 
+/**
+ * Git accepts unambiguous long-option abbreviations — `git reset --har` is
+ * treated as `--hard`, `git clean --for -d` as `--force -d`, etc. Match any
+ * proper prefix of the canonical long option from 2 chars up to full length.
+ * 2-char `--<ch>` is the minimum unambiguous length for these flags within
+ * their subcommands; anything shorter (e.g. `--` alone) is not a flag.
+ */
+function isLongOptionAbbreviation(tok: string, canonical: string): boolean {
+  if (!tok.startsWith("--") || !canonical.startsWith("--")) return false;
+  if (tok.length < 4) return false; // `--h` minimum to be a meaningful abbrev
+  if (tok.length > canonical.length) return false;
+  return canonical.startsWith(tok);
+}
+
 /** Does an argv token match a force-flag in any short-bundle or long form? */
 function hasForceFlag(args: readonly string[]): boolean {
   for (const tok of args) {
     if (tok === "--force" || tok === "--force-with-lease") return true;
     if (/^--force-/.test(tok)) return true;
     if (/^-[A-Za-z]*f[A-Za-z]*$/.test(tok)) return true;
+    // Long-option abbreviations: git accepts `--for` as `--force`, `--forc`
+    // as `--force`, and similar for the `--force-*` family. Consumers should
+    // only pass sub-prefixes that are unambiguous for the subcommand; we err
+    // on the side of catching more.
+    if (isLongOptionAbbreviation(tok, "--force")) return true;
+    if (isLongOptionAbbreviation(tok, "--force-with-lease")) return true;
   }
   return false;
 }
@@ -486,6 +507,7 @@ function hasBranchDeleteFlag(args: readonly string[]): boolean {
   for (const tok of args) {
     if (tok === "--delete") return true;
     if (/^-[A-Za-z]*[dD][A-Za-z]*$/.test(tok)) return true;
+    if (isLongOptionAbbreviation(tok, "--delete")) return true;
   }
   return false;
 }
@@ -493,6 +515,11 @@ function hasBranchDeleteFlag(args: readonly string[]): boolean {
 /** Does an argv token match a force-delete short form? */
 function hasBranchForceDeleteShort(args: readonly string[]): boolean {
   return args.some((tok) => /^-[A-Za-z]*D[A-Za-z]*$/.test(tok));
+}
+
+/** `--hard` and its abbreviations (--h, --ha, --har, --hard). */
+function hasResetHardFlag(args: readonly string[]): boolean {
+  return args.some((tok) => tok === "--hard" || isLongOptionAbbreviation(tok, "--hard"));
 }
 
 /**
@@ -514,7 +541,7 @@ function checkGitInvocation(
     };
   }
 
-  if (subcommand === "reset" && args.some((t) => t === "--hard")) {
+  if (subcommand === "reset" && hasResetHardFlag(args)) {
     return {
       ok: false,
       reason: "git reset --hard discards uncommitted changes without confirmation",
@@ -524,10 +551,15 @@ function checkGitInvocation(
   }
   if (subcommand === "push") {
     const hasForceRefspec = args.some((t) => /^\+[\w/.:-]+/.test(t));
-    const hasDeleteFlag = args.some((t) => t === "--delete" || /^-[A-Za-z]*d[A-Za-z]*$/.test(t));
+    const hasDeleteFlag = args.some(
+      (t) =>
+        t === "--delete" ||
+        /^-[A-Za-z]*d[A-Za-z]*$/.test(t) ||
+        isLongOptionAbbreviation(t, "--delete"),
+    );
     const hasDeleteRefspec = args.some((t) => /^:[\w/.-]+/.test(t));
-    const hasMirror = args.some((t) => t === "--mirror");
-    const hasPrune = args.some((t) => t === "--prune");
+    const hasMirror = args.some((t) => t === "--mirror" || isLongOptionAbbreviation(t, "--mirror"));
+    const hasPrune = args.some((t) => t === "--prune" || isLongOptionAbbreviation(t, "--prune"));
     if (
       hasForceFlag(args) ||
       hasForceRefspec ||
@@ -792,14 +824,15 @@ const COMMAND_WRAPPERS = new Set([
 
 function checkCommandPositionExpansion(cmd: string): ClassificationResult {
   for (const segment of splitShellSegments(cmd)) {
-    // Walk past shell grouping/control prefixes (`(`, `{`, `!`) and execution
-    // wrappers (`env`, `time`, `sudo`, ...) so that `($CMD -rf /etc)`,
+    // Walk past shell grouping/control prefixes (`(`, `{`, `!`, `<(`, `>(`) and
+    // execution wrappers (`env`, `time`, `sudo`, ...) so that `($CMD -rf /etc)`,
     // `{ $CMD -rf /etc; }`, `time $CMD -rf /etc`, and `env $CMD -rf /etc`
     // all surface `$CMD` as the real command-position token.
-    let rest = segment.replace(/^[({!\s]+/, "");
+    let rest = segment.replace(/^(?:[<>]\(|[({!\s])+/, "");
     // Consume any number of wrapper commands. `env VAR=val time sudo $CMD`
     // needs iterative unwrapping. Also skip env-style `VAR=val` prefixes
     // because those are assignments, not executables.
+    let consumedWrapper = false;
     while (true) {
       const tokMatch = rest.match(/^([^\s]+)\s*/);
       if (tokMatch === null) break;
@@ -811,6 +844,7 @@ function checkCommandPositionExpansion(cmd: string): ClassificationResult {
       }
       // Wrapper command followed by the real argv. Skip flags too.
       if (COMMAND_WRAPPERS.has(tok)) {
+        consumedWrapper = true;
         rest = rest.slice(tokMatch[0].length);
         // Skip this wrapper's own flags (`-a`, `--preserve-status`, etc.)
         while (/^-\S*\s+/.test(rest)) {
@@ -829,6 +863,22 @@ function checkCommandPositionExpansion(cmd: string): ClassificationResult {
         reason:
           "Command-position variable or command substitution hides the real command from classification; use an explicit command literal instead",
         pattern: "expansion-at-command-position",
+        category: "injection",
+      };
+    }
+    // Post-wrapper operand-as-command bypass: `timeout 5 $CMD -rf /etc`,
+    // `nice -n 10 $CMD -rf /etc`. After the wrapper + its flags are consumed,
+    // the next token is a numeric/path operand (`5`, `10`) that we can't
+    // classify as a command, followed by the real `$CMD` expansion. Any
+    // subsequent whitespace-delimited `$VAR`/backtick inside the wrapper
+    // chain's remaining argv is unsafe — we cannot verify it resolves to a
+    // non-destructive command.
+    if (consumedWrapper && /\s(?:\$[\w({]|`)/.test(rest)) {
+      return {
+        ok: false,
+        reason:
+          "Execution wrapper (timeout/nice/env/sudo/…) with an unresolved command-position expansion in its argv cannot be safely classified; use an explicit command literal",
+        pattern: "wrapper+expansion",
         category: "injection",
       };
     }

