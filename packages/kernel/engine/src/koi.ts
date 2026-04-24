@@ -733,10 +733,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           throw KoiRuntimeError.from("VALIDATION", `[koi] Middleware ${detail}`);
         }
       }
-      // Consume the run-entry timestamp captured before any async startup work.
-      // Falls back to Date.now() for host-emitted resets (where runBoundaryEntryAt is unset).
-      const resetAt = runBoundaryEntryAt ?? Date.now();
+      // Two separate timestamps for two distinct purposes:
+      //   boundaryTs — run() entry, used in the governance event so duration accounting
+      //                starts from submission time (not post-startup).
+      //   resetAt    — post-validation, used for guard resetForRun() so the inactivity
+      //                window does not start until startup work completes. resetForRun(t)
+      //                sets both startedAt and lastActivityMs to t; using a pre-startup
+      //                timestamp would trip maxInactivityMs before the first model call.
+      const boundaryTs = runBoundaryEntryAt ?? Date.now();
       runBoundaryEntryAt = undefined;
+      const resetAt = Date.now();
       // Reset all guards FIRST — before committing the governance event — so that
       // `run_reset` is only emitted when the reset is fully complete. If a guard
       // throws, we poison the runtime and re-throw; governance is never told about
@@ -760,7 +766,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           kind: "run_reset",
           source: "engine",
           boundaryId,
-          boundaryTimestamp: resetAt,
+          boundaryTimestamp: boundaryTs,
         });
       } catch (e) {
         poisoned = true;

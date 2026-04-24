@@ -137,8 +137,10 @@ export type GovernanceEvent =
       /**
        * Wall-clock ms (Date.now()) captured at `runtime.run()` entry — before any
        * async startup work (forge refresh, dynamic-mw recomposition) — so the
-       * enforcement window is anchored to when the user submitted, not when the
-       * engine finished booting. Startup latency counts against `maxDurationMs`.
+       * governance duration sensor is anchored to submission time, not boot completion.
+       * Note: iteration guards use a separate post-startup timestamp for their
+       * inactivity window (`lastActivityMs`) so startup latency cannot trip
+       * `maxInactivityMs` before the first model/tool call.
        *
        * Optional for backward compatibility: controllers fall back to `Date.now()`
        * when absent. Future values are clamped to now (non-finite values fall back
