@@ -1130,8 +1130,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // requires openat-style APIs unavailable in Node.js/Bun). The manifest block
     // is a declarative intent marker: its presence requires matching KOI_AUDIT_*
     // env vars so the operator explicitly controls every declared sink.
-    // KOI_AUDIT_NDJSON="" / KOI_AUDIT_SQLITE="" are authoritative empty overrides
-    // (disable the sink) and satisfy the intent check — undefined is the failure case.
+    // KOI_AUDIT_NDJSON="" / KOI_AUDIT_SQLITE="" / KOI_AUDIT_VIOLATIONS="" are
+    // authoritative overrides that satisfy the intent check — undefined is the failure
+    // case. For violations, empty string is passed through to the runtime which treats
+    // length===0 as explicit disable (no fallback to ~/.koi/violations.db).
     //
     // Two cases based on block shape:
     //   Malformed — require all three env vars (can't infer per-sink intent)
@@ -1172,7 +1174,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           process.stderr.write(
             "koi tui: manifest.audit declares audit sinks but the matching KOI_AUDIT_* env vars are absent — " +
               "refusing to start to prevent silently dropping declared audit logging. " +
-              "Set each matching KOI_AUDIT_* env var (use empty string to explicitly disable a sink), " +
+              "Set each matching KOI_AUDIT_* env var (empty string disables that sink — for violations, empty string prevents the ~/.koi/violations.db fallback), " +
               "or remove the sink key from manifest.audit.\n",
           );
           process.exit(1);
@@ -1203,7 +1205,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // original session config (model, stacks, plugins) cannot be silently overridden.
   // Audit intent enforcement must still run — discover the project manifest solely
   // for the fail-closed audit check; never apply its config values here.
-  if (skipManifestDiscovery && flags.resume !== undefined) {
+  // Guard with !flags.noManifest: --no-manifest is an explicit operator opt-out
+  // and must not be overridden by the audit discovery pass.
+  if (skipManifestDiscovery && flags.resume !== undefined && !flags.noManifest) {
     const auditDiscovery = resolveManifestPath(process.cwd(), undefined, false);
     if (auditDiscovery.ok && auditDiscovery.path !== undefined) {
       const auditLoadResult = await loadManifestConfig(auditDiscovery.path, {
@@ -1268,7 +1272,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             process.stderr.write(
               "koi tui: manifest.audit declares audit sinks but the matching KOI_AUDIT_* env vars are absent — " +
                 "refusing to start to prevent silently dropping declared audit logging. " +
-                "Set each matching KOI_AUDIT_* env var (use empty string to explicitly disable a sink), " +
+                "Set each matching KOI_AUDIT_* env var (empty string disables that sink — for violations, empty string prevents the ~/.koi/violations.db fallback), " +
                 "or remove the sink key from manifest.audit.\n",
             );
             process.exit(1);
@@ -2048,11 +2052,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Manifest audit.violations is the fallback when the env var is absent.
     // Gated behind KOI_ALLOW_MANIFEST_FILE_SINKS=1 for manifest paths.
     // Precedence: env var (present, even "") → manifest (gate required) → default (~/.koi/violations.db).
-    // Setting the env var to "" is an explicit disable that falls through to the default.
+    // Setting the env var to "" passes the empty string through — runtime-factory treats
+    // length===0 as an explicit disable (no violations DB), preventing the default fallback.
     ...(process.env.KOI_AUDIT_VIOLATIONS !== undefined
-      ? process.env.KOI_AUDIT_VIOLATIONS !== ""
-        ? { violationSqlitePath: process.env.KOI_AUDIT_VIOLATIONS }
-        : {}
+      ? { violationSqlitePath: process.env.KOI_AUDIT_VIOLATIONS }
       : manifestAudit?.violations !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
         ? { violationSqlitePath: manifestAudit.violations }
         : {}),

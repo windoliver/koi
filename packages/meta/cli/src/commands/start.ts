@@ -594,7 +594,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // On resume without --manifest, manifest discovery was skipped. koi start
   // hard-rejects manifest.audit — run the check independently so resume cannot
   // bypass the host-level safety contract.
-  if (skipManifestDiscovery && flags.resume !== undefined) {
+  // Guard with !flags.noManifest: --no-manifest is an explicit operator opt-out.
+  if (skipManifestDiscovery && flags.resume !== undefined && !flags.noManifest) {
     const auditDiscovery = resolveManifestPath(process.cwd(), undefined, false);
     if (auditDiscovery.ok && auditDiscovery.path !== undefined) {
       const auditLoadResult = await loadManifestConfig(auditDiscovery.path, {
