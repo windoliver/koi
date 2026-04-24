@@ -4,7 +4,9 @@
  *
  * Intentionally omits: node registry, tool routing, session resume TTL,
  * channel binding, scheduler, heartbeat sweep, auth token revocation / periodic
- * re-validation, and disconnected-session TTL sweep — those belong in future issues.
+ * re-validation, disconnected-session TTL sweep, and per-route onFrame handler
+ * isolation (routing enforcement lives in the node-registry layer) — those belong
+ * in future issues.
  */
 
 import type { KoiError, Result } from "@koi/core";

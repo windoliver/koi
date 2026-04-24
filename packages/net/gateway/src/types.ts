@@ -137,7 +137,8 @@ export interface GatewayConfig {
   readonly dedupWindowSize: number;
   readonly authTimeoutMs: number;
   readonly backpressureCriticalTimeoutMs: number;
-  readonly routing?: RoutingConfig | undefined;
+  // routing?: RoutingConfig — deferred: per-route handler isolation belongs to
+  // the node registry layer, not the transport gateway. See intentional omissions.
 }
 
 export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
