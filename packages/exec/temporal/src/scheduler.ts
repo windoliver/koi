@@ -157,9 +157,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         }),
       });
 
-      const running = { ...task, status: "running" as const, startedAt: Date.now() };
-      tasks.set(id, running);
-      emit({ kind: "task:submitted", task: running });
+      // Keep as pending: we have no real execution-start signal from Temporal,
+      // so promoting to running here would misrepresent delayed/queued work.
+      emit({ kind: "task:submitted", task });
       return id;
     },
 

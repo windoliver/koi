@@ -99,7 +99,9 @@ describe("createTemporalScheduler", () => {
     await sched.submit(A1, { kind: "text", text: "a" }, "dispatch");
     await sched.submit(A1, { kind: "text", text: "b" }, "dispatch");
     const stats = sched.stats();
-    expect(stats.running).toBe(2);
+    // Tasks remain pending until Temporal sends an execution-start signal
+    expect(stats.pending).toBe(2);
+    expect(stats.running).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 
