@@ -1133,16 +1133,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // because runtime-factory ignores violationSqlitePath in that case.
     if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1") {
       if (manifestAudit.malformed === true) {
+        const violationsCoveredByEnv =
+          !flags.governance.enabled || process.env.KOI_AUDIT_VIOLATIONS !== undefined;
         const allCoveredByEnv =
           process.env.KOI_AUDIT_NDJSON !== undefined &&
           process.env.KOI_AUDIT_SQLITE !== undefined &&
-          process.env.KOI_AUDIT_VIOLATIONS !== undefined;
+          violationsCoveredByEnv;
         if (!allCoveredByEnv) {
+          const missingVars = [
+            process.env.KOI_AUDIT_NDJSON === undefined ? "KOI_AUDIT_NDJSON" : "",
+            process.env.KOI_AUDIT_SQLITE === undefined ? "KOI_AUDIT_SQLITE" : "",
+            flags.governance.enabled && process.env.KOI_AUDIT_VIOLATIONS === undefined
+              ? "KOI_AUDIT_VIOLATIONS"
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" + ");
           process.stderr.write(
             "koi tui: manifest.audit has an unrecognized format (unknown fields or invalid value) — " +
               "refusing to start because audit intent cannot be determined. " +
-              "Fix the manifest, or set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS " +
-              "to override all audit sinks, or remove the audit: block.\n",
+              `Fix the manifest, or set ${missingVars} to override all active audit sinks, or remove the audit: block.\n`,
           );
           process.exit(1);
         }
