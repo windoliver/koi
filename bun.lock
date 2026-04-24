@@ -723,6 +723,7 @@
         "@koi/sandbox-os": "workspace:*",
         "@koi/secure-storage": "workspace:*",
         "@koi/session": "workspace:*",
+        "@koi/settings": "workspace:*",
         "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
         "@koi/snapshot-store-sqlite": "workspace:*",
