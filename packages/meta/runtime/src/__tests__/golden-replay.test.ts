@@ -11156,80 +11156,29 @@ describe("Golden: @koi/engine — reset boundary semantics", () => {
   });
 
   test("run_reset fires on cooperating adapter path (cassette replay, two sequential runs)", async () => {
-    // Exercises the cooperating-adapter path: adapter has terminals, so the engine
-    // defers guard reset to applyRecomposition() after forge/dynamic-mw settle.
-    // Uses a real cassette + cooperating adapter to hit the production code path.
+    // Exercises the cooperating-adapter path through the production cassette harness:
+    // createCassetteAdapter provides terminals.modelStream so the engine defers guard
+    // reset to applyRecomposition() after forge/dynamic-mw settle (not at run entry).
+    // Uses fixtures/run-reset.cassette.json for run1, second-call text for run2.
     type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
     type GovRecordable = { record: (event: GovernanceEvent) => void | Promise<void> };
 
     const { GOVERNANCE } = await import("@koi/core");
     const { createIterationGuard } = await import("@koi/engine-compose");
 
-    const cassette = await loadCassette(`${FIXTURES}/simple-text.cassette.json`);
-    const simpleTextChunks = cassette.chunks;
-
-    // Cooperating adapter: provides terminals.modelStream so the engine uses the
-    // applyRecomposition() reset path rather than the immediate non-cooperating path.
-    // let: mutable call counter shared across runs
-    let modelCallCount = 0;
-    const cooperatingAdapter: EngineAdapter = {
-      engineId: "cassette-reset-test",
-      capabilities: { text: true, images: false, files: false, audio: false },
-      terminals: {
-        modelCall: async (_req: ModelRequest): Promise<ModelResponse> => ({
-          content: "fallback",
-          model: MODEL,
-        }),
-        modelStream: (_req: ModelRequest): AsyncIterable<ModelChunk> => {
-          const call = modelCallCount;
-          modelCallCount++;
-          if (call === 0) return toAsyncIterable(simpleTextChunks);
-          return toAsyncIterable([
-            { kind: "text_delta" as const, delta: "ok" },
-            {
-              kind: "done" as const,
-              response: { content: "ok", model: MODEL, usage: { inputTokens: 5, outputTokens: 1 } },
-            },
-          ]);
-        },
-        toolCall: async (_req: ToolRequest): Promise<ToolResponse> => ({ output: "unused" }),
-      },
-      stream(input: EngineInput): AsyncIterable<EngineEvent> {
-        const h = input.callHandlers;
-        if (!h) {
-          return (async function* () {
-            yield {
-              kind: "done" as const,
-              output: {
-                content: [],
-                stopReason: "error" as const,
-                metrics: {
-                  totalTokens: 0,
-                  inputTokens: 0,
-                  outputTokens: 0,
-                  turns: 0,
-                  durationMs: 0,
-                },
-                metadata: { error: "No callHandlers" },
-              },
-            };
-          })();
-        }
-        const text = input.kind === "text" ? input.text : "";
-        const messages: InboundMessage[] = [
-          { senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] },
-        ];
-        return runTurn({ callHandlers: h, messages, signal: input.signal, maxTurns: 1 });
-      },
-    };
+    const runResetCassette = await loadCassette(`${FIXTURES}/run-reset.cassette.json`);
+    const adapter = createCassetteAdapter(runResetCassette.chunks, {
+      secondCallText: "second-response",
+      useTurnRunner: true,
+    });
 
     const FIXED_SESSION = sessionId("cooperating-reset-test");
     const guard = createIterationGuard({ maxTurns: 100, maxDurationMs: 30_000 });
 
     const runtime = await createKoi({
-      manifest: { name: "Cooperating Reset", version: "0.1.0", model: { name: "test-model" } },
+      manifest: { name: "Cooperating Reset", version: "0.1.0", model: { name: MODEL } },
       sessionId: FIXED_SESSION,
-      adapter: cooperatingAdapter,
+      adapter,
       middleware: [guard],
       resetBudgetPerRun: true,
       loopDetection: false,

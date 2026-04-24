@@ -2596,6 +2596,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         );
       }
       factorySessionId = sessionId(id);
+      // Reset runIndex so the first run after rebind emits :run:0.
+      // Without this, the reboundrun_reset would inherit the old lineage's
+      // counter, making a fresh session identity look like a continuation.
+      runIndex = 0;
       lifecycleSessionCtx = buildLifecycleSessionCtx();
       // Bump epoch so any pre-existing iterable created before the
       // rebind is rejected on first iteration — same invariant as

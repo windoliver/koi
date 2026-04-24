@@ -1,0 +1,35 @@
+{
+  "name": "run-reset",
+  "model": "synthetic",
+  "recordedAt": 1775692710024,
+  "chunks": [
+    {
+      "kind": "text_delta",
+      "delta": "first-response"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 10,
+      "outputTokens": 2
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "first-response",
+        "model": "synthetic",
+        "stopReason": "stop",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "first-response"
+          }
+        ],
+        "usage": {
+          "inputTokens": 10,
+          "outputTokens": 2
+        }
+      }
+    }
+  ],
+  "schemaVersion": "cassette-v1"
+}
