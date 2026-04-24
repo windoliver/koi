@@ -127,11 +127,10 @@ export type GovernanceEvent =
       readonly reason?: string | undefined;
       readonly boundaryId: string;
       /**
-       * Wall-clock ms (Date.now()) at the true run boundary — the moment the engine
-       * decided to reset, before any async middleware or controller I/O. Controllers
-       * SHOULD use this value to anchor duration-budget windows rather than calling
-       * `Date.now()` themselves; the latter drifts when the record() call is delayed
-       * by I/O or middleware latency.
+       * Wall-clock ms (Date.now()) captured immediately before this event is
+       * passed to `governance.record()` — after all async startup work (forge
+       * refresh, dynamic-mw recomposition) finishes, so the enforcement window
+       * does not pre-consume budget from slow lifecycle latency.
        *
        * Optional for backward compatibility: controllers fall back to `Date.now()`
        * when absent. Future values are clamped to now (non-finite values fall back

@@ -728,12 +728,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // (async I/O failure), guards are already reset — poison the runtime so
       // no subsequent run can proceed with split-brain state (guards fresh,
       // controller still carrying the exhausted previous run's budgets).
+      // boundaryTimestamp captured HERE (after all slow guard/recomposition
+      // work) so the enforcement window does not pre-consume budget from
+      // forge refresh or dynamic-mw startup latency.
       try {
         await governance.record({
           kind: "run_reset",
           source: "engine",
           boundaryId,
-          boundaryTimestamp: runStartedAt,
+          boundaryTimestamp: Date.now(),
         });
       } catch (e) {
         poisoned = true;
@@ -2256,10 +2259,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     },
 
     cycleSession: async (): Promise<void> => {
-      // Capture boundary timestamp FIRST — before any guard checks or awaits —
-      // so governance duration windows anchor to the true host-requested boundary,
-      // not to when async teardown (onSessionEnd) finishes.
-      const sessionBoundaryTimestamp = Date.now();
       // #1742 round 14: refuse to cycle a disposed runtime.
       // Loop-3 round 3: also reject during the dispose-in-flight
       // window — see the parallel guard in run() above.
@@ -2439,11 +2438,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           if (govCtl !== undefined) {
             const sessionBoundaryId = `${factorySessionId}:session:${sessionCycleIndex}`;
             sessionCycleIndex++;
+            // boundaryTimestamp captured after teardown so the new session's
+            // enforcement window doesn't inherit slow onSessionEnd latency.
             await govCtl.record({
               kind: "session_reset",
               source: "host",
               boundaryId: sessionBoundaryId,
-              boundaryTimestamp: sessionBoundaryTimestamp,
+              boundaryTimestamp: Date.now(),
             });
           }
           // #1742: rotate the engine sessionId and rebuild the runtime-scoped
