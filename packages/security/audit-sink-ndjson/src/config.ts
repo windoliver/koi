@@ -8,6 +8,15 @@ import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 export interface NdjsonAuditSinkConfig {
   /** Absolute or relative path to the NDJSON output file. */
   readonly filePath: string;
+  /**
+   * Pre-opened file descriptor for the output file. When provided, the
+   * writer is backed by this fd instead of re-opening `filePath` by path —
+   * this closes the TOCTOU window for manifest-derived paths where the
+   * caller has already validated and opened the file with O_NOFOLLOW.
+   * The fd must be opened with O_WRONLY | O_APPEND and must stay open until
+   * after the sink is closed. `getEntries` and `query` still read via `filePath`.
+   */
+  readonly fd?: number | undefined;
   /** Flush interval in milliseconds. Default: 2000. */
   readonly flushIntervalMs?: number;
 }

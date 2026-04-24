@@ -26,7 +26,15 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  constants as fsConstants,
+  fstatSync,
+  mkdirSync,
+  openSync,
+} from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
@@ -2335,10 +2343,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
         }
       }
-      // Final containment check immediately before open — narrows the TOCTOU
-      // window between the pre-runtime check in tui-command.ts and the actual
-      // file open syscall. Only runs for manifest-derived paths; env-var paths
-      // are operator-trusted and skip this check.
+      // For manifest-derived paths: open with O_NOFOLLOW so the final-component
+      // symlink swap is caught at open time, not just at pre-check time. Keeping
+      // the fd open until after the sink is created ensures the validated inode
+      // is the one the writer uses — no separate reopen by pathname.
+      let ndjsonFd: number | undefined;
       if (config.manifestNdjsonSourcePath !== undefined) {
         const err = revalidateAuditPathContainment(
           config.auditNdjsonPath,
@@ -2350,8 +2359,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               "Refusing to open sink to prevent out-of-manifest writes.",
           );
         }
+        // O_NOFOLLOW rejects symlinks at the final path component at open time.
+        // ELOOP from O_NOFOLLOW is indistinguishable from a symlink loop — both
+        // mean the target is not a regular file we can trust.
+        ndjsonFd = openSync(
+          config.auditNdjsonPath,
+          fsConstants.O_CREAT |
+            fsConstants.O_WRONLY |
+            fsConstants.O_APPEND |
+            fsConstants.O_NOFOLLOW,
+        );
+        const ndjsonStat = fstatSync(ndjsonFd);
+        if (ndjsonStat.nlink > 1) {
+          closeSync(ndjsonFd);
+          throw new Error(
+            "manifest.audit.ndjson: file has more than one hard link — " +
+              "refusing to open to prevent writes escaping the manifest directory.",
+          );
+        }
       }
-      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
+      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath, fd: ndjsonFd });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       complianceRecorders.push(
         createAuditSinkComplianceRecorder(auditSink, {
@@ -2428,6 +2455,23 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           throw new Error(
             `manifest.audit.sqlite: path compromised after validation — ${err}. ` +
               "Refusing to open sink to prevent out-of-manifest writes.",
+          );
+        }
+        // O_NOFOLLOW check immediately before SQLite opens by path — rejects
+        // final-component symlinks. SQLite must open by pathname (WAL auxiliary
+        // files are named relative to the db path), so a microsecond window
+        // between this close and the SQLite open remains; it is documented and
+        // accepted as the residual bound for database sinks.
+        const sqliteCheckFd = openSync(
+          config.auditSqlitePath,
+          fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+        );
+        const sqliteCheckStat = fstatSync(sqliteCheckFd);
+        closeSync(sqliteCheckFd);
+        if (sqliteCheckStat.nlink > 1) {
+          throw new Error(
+            "manifest.audit.sqlite: file has more than one hard link — " +
+              "refusing to open to prevent writes escaping the manifest directory.",
           );
         }
       }
@@ -2602,9 +2646,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
           mkdirSync(parent, { recursive: true });
         }
-        // Final containment check immediately before violation store open.
-        // Only applies to manifest-derived paths (explicit violationSqlitePath
-        // that came from manifest.audit.violations via tui-command.ts).
+        // O_NOFOLLOW check immediately before violation store open — applies
+        // only to manifest-derived paths. Same residual microsecond window as
+        // the sqlite audit sink (SQLite must open by name for WAL files).
         if (manifestDerived) {
           const err = revalidateAuditPathContainment(
             resolvedViolationPath,
@@ -2614,6 +2658,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             throw new Error(
               `manifest.audit.violations: path compromised after validation — ${err}. ` +
                 "Refusing to open violation store to prevent out-of-manifest writes.",
+            );
+          }
+          const violCheckFd = openSync(
+            resolvedViolationPath,
+            fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+          );
+          const violCheckStat = fstatSync(violCheckFd);
+          closeSync(violCheckFd);
+          if (violCheckStat.nlink > 1) {
+            throw new Error(
+              "manifest.audit.violations: file has more than one hard link — " +
+                "refusing to open to prevent writes escaping the manifest directory.",
             );
           }
         }

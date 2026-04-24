@@ -22,8 +22,11 @@ export function createNdjsonAuditSink(config: NdjsonAuditSinkConfig): AuditSink 
 } {
   const flushIntervalMs = config.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
 
-  // Open the write stream once — buffered, append-mode
-  const writer = Bun.file(config.filePath).writer();
+  // When an fd is provided (manifest-derived, pre-opened with O_NOFOLLOW),
+  // back the writer by the fd so writes go to the validated inode rather
+  // than reopening by pathname. Falls back to filePath for non-manifest paths.
+  const writer =
+    config.fd !== undefined ? Bun.file(config.fd).writer() : Bun.file(config.filePath).writer();
 
   const timer = setInterval(() => {
     void writer.flush();
