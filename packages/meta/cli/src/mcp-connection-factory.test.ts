@@ -225,7 +225,7 @@ describe("createOAuthAwareMcpConnection", () => {
       expect(result).toBe(false);
     });
 
-    test("wires onBrowserOpen to fire onAuthRequired with authUrl through channel", () => {
+    test("wires onBrowserOpen to fire onAuthRequired through channel (no authUrl — local loopback)", () => {
       const oauthChannel = makeOAuthChannel();
       const localMocks = makeDeps();
       const server = makeHttpOauthServer();
@@ -233,23 +233,23 @@ describe("createOAuthAwareMcpConnection", () => {
 
       // createRuntime must have been called with an onBrowserOpen option
       const runtimeCallArgs = localMocks.createRuntime.mock.calls[0] as [
-        { onBrowserOpen?: (url: string) => void } | undefined,
+        { onBrowserOpen?: () => void } | undefined,
       ];
       const onBrowserOpen = runtimeCallArgs?.[0]?.onBrowserOpen;
       expect(typeof onBrowserOpen).toBe("function");
       if (onBrowserOpen === undefined) return;
 
-      // Simulate the runtime calling onBrowserOpen with the authorization URL
-      const testAuthUrl = "https://example.com/auth?state=abc";
-      onBrowserOpen(testAuthUrl);
+      // Simulate the runtime calling onBrowserOpen
+      onBrowserOpen();
 
-      // channel.onAuthRequired must have been fired with authUrl and mode:"local"
-      // so the TUI can display it as a fallback if browser launch fails (headless/SSH)
+      // channel.onAuthRequired must fire WITHOUT authUrl — the MCP callback server
+      // listens on 127.0.0.1 (local loopback), which is not completable from a
+      // remote browser; including the URL would mislead SSH/headless users.
       expect(oauthChannel.onAuthRequired).toHaveBeenCalledTimes(1);
       const reqArg = (oauthChannel.onAuthRequired as ReturnType<typeof mock>).mock
         .calls[0]?.[0] as { provider: string; authUrl?: string; mode: string };
       expect(reqArg.provider).toBe("test-http");
-      expect(reqArg.authUrl).toBe(testAuthUrl);
+      expect(reqArg.authUrl).toBeUndefined();
       expect(reqArg.mode).toBe("local");
     });
   });

@@ -77,6 +77,13 @@ export type UnauthorizedOutcome = "refreshed" | "needs-auth" | "transient-failur
 export interface McpConnection {
   /** Connect to the MCP server. */
   readonly connect: () => Promise<Result<void, KoiError>>;
+  /**
+   * Force a transport rebuild without terminating the connection.
+   * Transitions through "reconnecting" state so the token manager is
+   * re-consulted — use this after an auth token refresh to pick up fresh
+   * credentials, even when the connection currently reports "connected".
+   */
+  readonly reconnect: () => Promise<Result<void, KoiError>>;
   /** List available tools on the server. */
   readonly listTools: () => Promise<Result<readonly McpToolInfo[], KoiError>>;
   /** Call a tool by name with arguments. */
@@ -607,6 +614,23 @@ export function createMcpConnection(
   // Close
   // -------------------------------------------------------------------------
 
+  const reconnect = async (): Promise<Result<void, KoiError>> => {
+    if (abortController.signal.aborted) {
+      return { ok: false, error: notConnectedError(config.name) };
+    }
+    // Transition through "reconnecting" so connect() can run from any live state.
+    // "connected" → "reconnecting" is a valid state-machine transition; connect()
+    // skips its own state transition when it sees "reconnecting" already set.
+    if (stateMachine.canTransitionTo("reconnecting")) {
+      stateMachine.transition({
+        kind: "reconnecting",
+        attempt: 1,
+        lastError: notConnectedError(config.name),
+      });
+    }
+    return connect();
+  };
+
   const close = async (): Promise<void> => {
     abortController.abort();
 
@@ -655,6 +679,7 @@ export function createMcpConnection(
 
   return {
     connect,
+    reconnect,
     listTools,
     callTool,
     close,
