@@ -100,7 +100,12 @@ function mapEngineInputToMessages(input: EngineInput, baseId: string): readonly 
 export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskScheduler {
   const workflowType = config.workflowType ?? "agentWorkflow";
 
-  // In-memory registries (Temporal is source of truth for execution)
+  // In-memory registries track submitted tasks within this process lifetime only.
+  // Temporal is the source of truth for execution state; terminal-state
+  // reconciliation (completion, dead-letter recovery, cross-process restart)
+  // requires a Temporal event listener or periodic describe() poll wired by
+  // the host. query()/stats() therefore reflect what THIS process submitted;
+  // history() is intentionally empty until reconciliation is wired.
   const tasks = new Map<TaskId, ScheduledTask>();
   const schedules = new Map<ScheduleId, CronSchedule>();
   const history: TaskRunRecord[] = [];
@@ -164,11 +169,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         const task = tasks.get(id);
         if (task !== undefined) {
           tasks.set(id, { ...task, status: "failed", completedAt: Date.now() });
-          emit({
-            kind: "task:failed",
-            taskId: id,
-            error: { code: "EXTERNAL", message: "Cancelled", retryable: false },
-          });
+          emit({ kind: "task:cancelled", taskId: id });
         }
         return true;
       } catch (_e: unknown) {
@@ -188,6 +189,12 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           workflowType,
           taskQueue: config.taskQueue,
           args: [{ agentId, sessionId: rawId, messages, mode }],
+          ...(options?.timeoutMs !== undefined && {
+            workflowExecutionTimeout: options.timeoutMs,
+          }),
+          ...(options?.maxRetries !== undefined && {
+            retryPolicy: { maximumAttempts: options.maxRetries },
+          }),
         },
         memo: { agentId, mode, metadata: options?.metadata },
       });

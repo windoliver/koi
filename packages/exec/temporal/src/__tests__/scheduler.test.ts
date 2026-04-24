@@ -193,8 +193,37 @@ describe("createTemporalScheduler", () => {
     const result = await sched.cancel(foreignId);
     expect(result).toBe(true);
     expect(client.workflow.cancel).toHaveBeenCalledTimes(1);
-    // No local task → no task:failed event emitted, but cancel still succeeds
+    // No local task → no task:cancelled event emitted, but cancel still succeeds
+    expect(events).not.toContain("task:cancelled");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("cancel emits task:cancelled (not task:failed) for known tasks", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    const id = await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.cancel(id);
+    expect(events).toContain("task:cancelled");
     expect(events).not.toContain("task:failed");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("schedule forwards timeoutMs and maxRetries into the workflow action", async () => {
+    const client = makeClient();
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.schedule("0 * * * *", A1, { kind: "text", text: "tick" }, "dispatch", {
+      timeoutMs: 60000,
+      maxRetries: 3,
+    });
+    const createCall = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    const action = createCall[1].action as Record<string, unknown>;
+    expect(action["workflowExecutionTimeout"]).toBe(60000);
+    expect((action["retryPolicy"] as Record<string, unknown>)["maximumAttempts"]).toBe(3);
     await sched[Symbol.asyncDispose]();
   });
 
