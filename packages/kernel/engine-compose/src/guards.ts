@@ -299,10 +299,13 @@ export function createIterationGuard(config?: Partial<IterationLimits>): Iterati
     },
 
     resetForRun: (runStartedAt?: number, activityStartedAt?: number): void => {
-      const t = runStartedAt ?? Date.now();
+      const now = Date.now();
+      // Clamp future anchors to now — matching governance controller behavior so
+      // guard and governance elapsed times cannot diverge under buggy/manual calls.
+      const t = runStartedAt !== undefined ? Math.min(runStartedAt, now) : now;
       turns = 0;
       startedAt = t;
-      lastActivityMs = activityStartedAt ?? t;
+      lastActivityMs = activityStartedAt !== undefined ? Math.min(activityStartedAt, now) : t;
     },
 
     wrapModelCall: async (_ctx, request, next) => {

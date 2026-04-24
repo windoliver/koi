@@ -3141,7 +3141,26 @@ describe("resetForRun regression (#1917)", () => {
     expect(next).toHaveBeenCalledTimes(2);
   });
 
-  test("resetForRun with explicit runStartedAt timestamp", async () => {
+  test("resetForRun with explicit past runStartedAt preserves dual-anchor semantics", async () => {
+    const guard = createIterationGuard({ maxDurationMs: 2000 });
+    const wrap = getModelWrap(guard);
+    const ctx = mockTurnContext();
+    const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+
+    // First call
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Reset with an explicit past timestamp (run entry was 50ms ago) — this is the
+    // normal engine-driven usage: runEntryAt captured before startup work.
+    const pastTime = Date.now() - 50;
+    guard.resetForRun(pastTime);
+
+    // Elapsed is ~50ms from the past anchor — well within 2000ms budget.
+    await wrap(ctx, mockModelRequest(), next);
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  test("resetForRun clamps future runStartedAt to now", async () => {
     const guard = createIterationGuard({ maxDurationMs: 100 });
     const wrap = getModelWrap(guard);
     const ctx = mockTurnContext();
@@ -3150,14 +3169,12 @@ describe("resetForRun regression (#1917)", () => {
     // First call
     await wrap(ctx, mockModelRequest(), next);
 
-    // Wait 80ms
+    // Wait 80ms then reset with a future timestamp — future must be clamped to now
+    // so the guard and governance clocks stay in sync.
     await new Promise((r) => setTimeout(r, 80));
+    guard.resetForRun(Date.now() + 500);
 
-    // Reset with explicit future timestamp (ahead by 500ms)
-    const futureTime = Date.now() + 500;
-    guard.resetForRun(futureTime);
-
-    // Call immediately — should not timeout because startedAt is 500ms in the future
+    // Elapsed ≈ 0 after clamped reset — should not timeout.
     await wrap(ctx, mockModelRequest(), next);
     expect(next).toHaveBeenCalledTimes(2);
   });
