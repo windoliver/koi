@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { agentId, taskId } from "@koi/core";
-import type { TemporalClientLike } from "../scheduler.js";
+import type { TemporalClientLike, WorkflowExecutionStatus } from "../scheduler.js";
 import { createTemporalScheduler } from "../scheduler.js";
 
 const A1 = agentId("agent-1");
@@ -12,6 +12,25 @@ function makeClient(): TemporalClientLike {
     workflow: {
       start: mock(async () => ({ workflowId: "wf-1" })),
       cancel: mock(async () => {}),
+      // describe absent → no Temporal reconciliation (process-local state only)
+    },
+    schedule: {
+      create: mock(async () => {}),
+      delete: mock(async () => {}),
+      pause: mock(async () => {}),
+      unpause: mock(async () => {}),
+    },
+  };
+}
+
+function makeClientWithDescribe(
+  statusFn: (workflowId: string) => WorkflowExecutionStatus,
+): TemporalClientLike {
+  return {
+    workflow: {
+      start: mock(async () => ({ workflowId: "wf-1" })),
+      cancel: mock(async () => {}),
+      describe: mock(async (id: string) => statusFn(id)),
     },
     schedule: {
       create: mock(async () => {}),
@@ -93,15 +112,14 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("stats reflects submitted tasks", async () => {
+  test("stats reflects submitted tasks (no describe → pending, no reconciliation)", async () => {
     const client = makeClient();
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     await sched.submit(A1, { kind: "text", text: "a" }, "dispatch");
     await sched.submit(A1, { kind: "text", text: "b" }, "dispatch");
-    const stats = sched.stats();
     // Tasks remain pending until Temporal sends an execution-start signal
-    expect(stats.pending).toBe(2);
-    expect(stats.running).toBe(0);
+    expect(sched.stats().pending).toBe(2);
+    expect(sched.stats().running).toBe(0);
     await sched[Symbol.asyncDispose]();
   });
 
@@ -132,8 +150,8 @@ describe("createTemporalScheduler", () => {
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
     await sched[Symbol.asyncDispose]();
-    const stats = sched.stats();
-    expect(stats.running).toBe(0);
+    expect(sched.stats().running).toBe(0);
+    expect(sched.stats().pending).toBe(0);
   });
 
   test("schedule omits sessionId from workflow args — each firing derives session from Temporal workflowId", async () => {
@@ -145,7 +163,7 @@ describe("createTemporalScheduler", () => {
       Record<string, unknown>,
     ];
     const action = createCall[1].action as Record<string, unknown>;
-    const args = action["args"] as [Record<string, unknown>];
+    const args = action.args as [Record<string, unknown>];
     // sessionId must NOT be present — cron firings must NOT share a session
     expect(args[0]).not.toHaveProperty("sessionId");
     // but agentId and mode must still be present
@@ -193,13 +211,10 @@ describe("createTemporalScheduler", () => {
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     const events: string[] = [];
     sched.watch((e) => events.push(e.kind));
-    // Cancel a workflow ID that was never submitted to this scheduler instance
-    // (simulates process-restart scenario where in-memory cache is empty)
     const foreignId = taskId("task-external-999");
     const result = await sched.cancel(foreignId);
     expect(result).toBe(true);
     expect(client.workflow.cancel).toHaveBeenCalledTimes(1);
-    // No local task → no task:cancelled event emitted, but cancel still succeeds
     expect(events).not.toContain("task:cancelled");
     await sched[Symbol.asyncDispose]();
   });
@@ -262,6 +277,162 @@ describe("createTemporalScheduler", () => {
     const args = startCall[1]["args"] as [Record<string, unknown>];
     const messages = args[0]["messages"] as [Record<string, unknown>];
     expect(messages[0]).toHaveProperty("resumeState", resumeState);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Temporal reconciliation via describe
+  // Reconciliation is triggered by query(). stats() reads the already-reconciled
+  // cache — call query({}) first to get up-to-date stats.
+  // ---------------------------------------------------------------------------
+
+  test("reconcile RUNNING: task transitions to running and emits task:started", async () => {
+    const client = makeClientWithDescribe(() => ({ status: "RUNNING", startTime: 1000 }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.query({}); // triggers reconciliation
+    expect(sched.stats().running).toBe(1);
+    expect(sched.stats().pending).toBe(0);
+    expect(events).toContain("task:started");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("reconcile COMPLETED: task removed from active, added to history, emits task:completed", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "COMPLETED",
+      startTime: 1000,
+      closeTime: 2000,
+    }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    const results = await sched.query({}); // triggers reconciliation
+    expect(results).toHaveLength(0); // removed from active tasks
+    expect(events).toContain("task:completed");
+    const hist = await sched.history({});
+    expect(hist).toHaveLength(1);
+    expect(hist[0]?.status).toBe("completed");
+    expect(hist[0]?.durationMs).toBe(1000);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("reconcile FAILED: task removed, added to history as failed, emits task:failed", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "FAILED",
+      startTime: 1000,
+      closeTime: 3000,
+      failure: { message: "boom" },
+    }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.query({}); // triggers reconciliation
+    expect(events).toContain("task:failed");
+    const hist = await sched.history({});
+    expect(hist).toHaveLength(1);
+    expect(hist[0]?.status).toBe("failed");
+    expect(hist[0]?.error).toBe("boom");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("reconcile TIMED_OUT: task added to history as failed with timeout message", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "TIMED_OUT",
+      startTime: 1000,
+      closeTime: 4000,
+    }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.query({});
+    expect(events).toContain("task:failed");
+    const hist = await sched.history({});
+    expect(hist[0]?.error).toBe("workflow timed out");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("reconcile TERMINATED: task removed silently, emits task:cancelled", async () => {
+    const client = makeClientWithDescribe(() => ({ status: "TERMINATED" }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    const events: string[] = [];
+    sched.watch((e) => events.push(e.kind));
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.query({});
+    expect(sched.stats().pending).toBe(0);
+    expect(events).toContain("task:cancelled");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("history() filters by agentId", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "COMPLETED",
+      startTime: 0,
+      closeTime: 1,
+    }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(AA, { kind: "text", text: "x" }, "dispatch");
+    await sched.submit(AB, { kind: "text", text: "y" }, "dispatch");
+    await sched.query({}); // reconcile both to completed
+    const forA = await sched.history({ agentId: AA });
+    expect(forA).toHaveLength(1);
+    expect(forA[0]?.agentId).toBe(AA);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("history() filter by status=failed", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "FAILED",
+      startTime: 0,
+      closeTime: 1,
+    }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.query({});
+    expect(await sched.history({ status: "failed" })).toHaveLength(1);
+    expect(await sched.history({ status: "completed" })).toHaveLength(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("history() limit caps results", async () => {
+    const client = makeClientWithDescribe(() => ({
+      status: "COMPLETED",
+      startTime: 0,
+      closeTime: 1,
+    }));
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "a" }, "dispatch");
+    await sched.submit(A1, { kind: "text", text: "b" }, "dispatch");
+    await sched.submit(A1, { kind: "text", text: "c" }, "dispatch");
+    await sched.query({}); // reconcile all three
+    expect(await sched.history({ limit: 2 })).toHaveLength(2);
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("describe error is swallowed — task stays pending", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        describe: mock(async () => {
+          throw new Error("network error");
+        }),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await sched.submit(A1, { kind: "text", text: "x" }, "dispatch");
+    await sched.query({}); // reconcile attempt fails silently
+    expect(sched.stats().pending).toBe(1); // still pending
     await sched[Symbol.asyncDispose]();
   });
 });

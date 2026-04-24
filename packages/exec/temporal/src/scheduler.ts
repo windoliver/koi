@@ -10,6 +10,7 @@ import type {
   ContentBlock,
   CronSchedule,
   EngineInput,
+  KoiError,
   ScheduledTask,
   ScheduleId,
   SchedulerEvent,
@@ -25,6 +26,26 @@ import { scheduleId, taskId } from "@koi/core";
 // Structural types (no @temporalio/* imports)
 // ---------------------------------------------------------------------------
 
+/** Terminal and in-progress states reported by Temporal workflow describe. */
+export type TemporalWorkflowStatus =
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED"
+  | "TERMINATED"
+  | "CONTINUED_AS_NEW"
+  | "TIMED_OUT";
+
+export interface WorkflowExecutionStatus {
+  readonly status: TemporalWorkflowStatus;
+  /** Epoch ms when execution started on a worker. */
+  readonly startTime?: number | undefined;
+  /** Epoch ms when execution reached a terminal state. */
+  readonly closeTime?: number | undefined;
+  /** Failure message for FAILED/TIMED_OUT workflows. */
+  readonly failure?: { readonly message: string } | undefined;
+}
+
 export interface TemporalClientLike {
   readonly workflow: {
     readonly start: (
@@ -32,6 +53,12 @@ export interface TemporalClientLike {
       options: Record<string, unknown>,
     ) => Promise<{ readonly workflowId: string }>;
     readonly cancel: (workflowId: string) => Promise<void>;
+    /**
+     * Fetch current execution status for a workflow by ID.
+     * Optional — when absent, task state is process-local only with no
+     * Temporal reconciliation.
+     */
+    readonly describe?: (workflowId: string) => Promise<WorkflowExecutionStatus>;
   };
   readonly schedule: {
     readonly create: (scheduleId: string, options: Record<string, unknown>) => Promise<unknown>;
@@ -100,12 +127,6 @@ function mapEngineInputToMessages(input: EngineInput, baseId: string): readonly 
 export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskScheduler {
   const workflowType = config.workflowType ?? "agentWorkflow";
 
-  // In-memory registries track submitted tasks within this process lifetime only.
-  // Temporal is the source of truth for execution state; terminal-state
-  // reconciliation (completion, dead-letter recovery, cross-process restart)
-  // requires a Temporal event listener or periodic describe() poll wired by
-  // the host. query()/stats() therefore reflect what THIS process submitted;
-  // history() is intentionally empty until reconciliation is wired.
   const tasks = new Map<TaskId, ScheduledTask>();
   const schedules = new Map<ScheduleId, CronSchedule>();
   const history: TaskRunRecord[] = [];
@@ -138,6 +159,96 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     };
   }
 
+  // Reconciles a single task against Temporal describe result.
+  // Terminal tasks are removed from `tasks`, added to `history`, and events fired.
+  async function reconcileTask(id: TaskId, task: ScheduledTask): Promise<void> {
+    const describeFn = config.client.workflow.describe;
+    if (describeFn === undefined) return;
+    let info: WorkflowExecutionStatus;
+    try {
+      info = await describeFn(id as string);
+    } catch {
+      return; // describe unavailable or network error — keep current state
+    }
+
+    switch (info.status) {
+      case "RUNNING":
+      case "CONTINUED_AS_NEW": {
+        if (task.status !== "running") {
+          const updated: ScheduledTask = {
+            ...task,
+            status: "running",
+            ...(info.startTime !== undefined && { startedAt: info.startTime }),
+          };
+          tasks.set(id, updated);
+          emit({ kind: "task:started", taskId: id });
+        }
+        break;
+      }
+
+      case "COMPLETED": {
+        const startedAt = info.startTime ?? task.startedAt ?? task.createdAt;
+        const completedAt = info.closeTime ?? Date.now();
+        history.push({
+          taskId: id,
+          agentId: task.agentId,
+          status: "completed",
+          startedAt,
+          completedAt,
+          durationMs: completedAt - startedAt,
+          retryAttempt: task.retries,
+        });
+        tasks.delete(id);
+        emit({ kind: "task:completed", taskId: id, result: undefined });
+        break;
+      }
+
+      case "FAILED":
+      case "TIMED_OUT": {
+        const startedAt = info.startTime ?? task.startedAt ?? task.createdAt;
+        const completedAt = info.closeTime ?? Date.now();
+        const errorMessage =
+          info.failure?.message ??
+          (info.status === "TIMED_OUT" ? "workflow timed out" : "workflow failed");
+        const koiError: KoiError = {
+          code: info.status === "TIMED_OUT" ? "TIMEOUT" : "INTERNAL",
+          message: errorMessage,
+          retryable: false,
+        };
+        history.push({
+          taskId: id,
+          agentId: task.agentId,
+          status: "failed",
+          startedAt,
+          completedAt,
+          durationMs: completedAt - startedAt,
+          error: errorMessage,
+          retryAttempt: task.retries,
+        });
+        tasks.delete(id);
+        emit({ kind: "task:failed", taskId: id, error: koiError });
+        break;
+      }
+
+      case "TERMINATED":
+      case "CANCELLED": {
+        // Operator-initiated termination — remove without surfacing as failure.
+        tasks.delete(id);
+        emit({ kind: "task:cancelled", taskId: id });
+        break;
+      }
+    }
+  }
+
+  // Reconciles all locally-tracked pending/running tasks against Temporal.
+  async function reconcileAll(): Promise<void> {
+    if (config.client.workflow.describe === undefined) return;
+    const active = [...tasks.entries()].filter(
+      ([, t]) => t.status === "pending" || t.status === "running",
+    );
+    await Promise.all(active.map(([id, task]) => reconcileTask(id, task)));
+  }
+
   return {
     async submit(agentId, input, mode, options): Promise<TaskId> {
       const rawId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -158,8 +269,6 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         }),
       });
 
-      // Keep as pending: no real execution-start signal from Temporal, so
-      // promoting to running here would misrepresent delayed/queued work.
       tasks.set(id, task);
       emit({ kind: "task:submitted", task });
       return id;
@@ -169,8 +278,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       try {
         await config.client.workflow.cancel(id);
         if (tasks.has(id)) {
-          // Remove from active tracking — cancelled work should not show in
-          // failed stats or query results; it was an explicit operator action.
+          // Remove from active tracking — cancellation is an operator action,
+          // not an execution failure.
           tasks.delete(id);
           emit({ kind: "task:cancelled", taskId: id });
         }
@@ -191,10 +300,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           type: "startWorkflow",
           workflowType,
           taskQueue: config.taskQueue,
-          // sessionId is intentionally absent here: each Temporal workflow
-          // execution for this schedule gets a unique workflowId, and the
-          // workflow should derive its sessionId from workflowInfo().workflowId
-          // so that independent firings never share session-keyed state.
+          // sessionId is intentionally absent: each Temporal execution gets a
+          // unique workflowId and should derive its sessionId from
+          // workflowInfo().workflowId so independent firings never share state.
           args: [{ agentId, messages, mode }],
           ...(options?.timeoutMs !== undefined && {
             workflowExecutionTimeout: options.timeoutMs,
@@ -260,7 +368,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       }
     },
 
-    query(filter): readonly ScheduledTask[] {
+    async query(filter): Promise<readonly ScheduledTask[]> {
+      await reconcileAll();
       let results = [...tasks.values()];
       if (filter.agentId !== undefined) {
         results = results.filter((t) => t.agentId === filter.agentId);
@@ -273,6 +382,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     stats(): SchedulerStats {
+      // Reads from the local cache. Call query({}) first to reconcile against
+      // Temporal when describe is available.
       const all = [...tasks.values()];
       const allSchedules = [...schedules.values()];
       return {
@@ -286,8 +397,22 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       };
     },
 
-    history(_filter): readonly TaskRunRecord[] {
-      return [...history];
+    history(filter): readonly TaskRunRecord[] {
+      let results = [...history];
+      if (filter.agentId !== undefined) {
+        results = results.filter((r) => r.agentId === filter.agentId);
+      }
+      if (filter.status !== undefined) {
+        results = results.filter((r) => r.status === filter.status);
+      }
+      if (filter.since !== undefined) {
+        const since = filter.since;
+        results = results.filter((r) => r.completedAt >= since);
+      }
+      if (filter.limit !== undefined) {
+        results = results.slice(0, filter.limit);
+      }
+      return results;
     },
 
     watch(listener): () => void {
