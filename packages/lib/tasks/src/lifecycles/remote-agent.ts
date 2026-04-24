@@ -7,8 +7,11 @@
  *   { kind: "done", exitCode: number } — terminal frame (required for success)
  *
  * Protocol is fail-closed: a valid `done` frame is required for any success
- * exit. Stream close without one, null bodies, malformed frames, and unknown
- * frame kinds all map to a protocol-error failure.
+ * exit. All stream-phase failures (malformed frames, unknown frame kinds, size
+ * violations, connection drops, stream close without done) emit cleanup-incomplete
+ * because the POST was already accepted — the remote agent has started and its
+ * state after local abort is unknown. Pre-response failures (network error before
+ * response, non-OK HTTP status) emit [error: ...] because the remote never started.
  *
  * SSRF boundary: the target endpoint AND all outbound headers are fixed at
  * lifecycle construction time (RemoteAgentLifecycleOptions), not supplied
@@ -184,11 +187,11 @@ export function createRemoteAgentLifecycle(
           return;
         }
 
-        // Null body: protocol violation — server must stream a done frame.
+        // Null body: 200 accepted but no stream — remote agent state is unknown.
         if (response.body === null) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           if (!stopped && !timedOut) {
-            emitTerminal(1, "\n[error: protocol error — response body is null]\n");
+            emitTerminal(1, "\n[cleanup-incomplete: protocol error — response body is null]\n");
           }
           return;
         }
@@ -216,7 +219,10 @@ export function createRemoteAgentLifecycle(
         const processLineBytes = (lineBytes: Uint8Array): boolean => {
           if (lineBytes.byteLength > MAX_FRAME_BYTES) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+            emitTerminal(
+              1,
+              "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
+            );
             teardownTransport();
             return true;
           }
@@ -227,13 +233,13 @@ export function createRemoteAgentLifecycle(
             frame = JSON.parse(trimmed);
           } catch {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            emitTerminal(1, "\n[error: protocol error — malformed frame]\n");
+            emitTerminal(1, "\n[cleanup-incomplete: protocol error — malformed frame]\n");
             teardownTransport();
             return true;
           }
           if (!isRemoteAgentFrame(frame)) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
-            emitTerminal(1, "\n[error: protocol error — unknown frame kind]\n");
+            emitTerminal(1, "\n[cleanup-incomplete: protocol error — unknown frame kind]\n");
             teardownTransport();
             return true;
           }
@@ -273,7 +279,10 @@ export function createRemoteAgentLifecycle(
                 const tailLen = value.byteLength - valStart;
                 if (rawBuf.byteLength + tailLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
-                  emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+                  emitTerminal(
+                    1,
+                    "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
+                  );
                   teardownTransport();
                   pipeError = true;
                   break outer;
@@ -297,7 +306,10 @@ export function createRemoteAgentLifecycle(
                 // large; check lineLen before materializing the merged buffer.
                 if (lineLen > MAX_FRAME_BYTES) {
                   if (timeoutId !== undefined) clearTimeout(timeoutId);
-                  emitTerminal(1, "\n[error: protocol error — frame exceeds maximum size]\n");
+                  emitTerminal(
+                    1,
+                    "\n[cleanup-incomplete: protocol error — frame exceeds maximum size]\n",
+                  );
                   teardownTransport();
                   pipeError = true;
                   break outer;
@@ -321,7 +333,9 @@ export function createRemoteAgentLifecycle(
           if (!controller.signal.aborted && !stopped && !timedOut) {
             if (timeoutId !== undefined) clearTimeout(timeoutId);
             const message = err instanceof Error ? err.message : String(err);
-            emitTerminal(1, `\n[error: ${message}]\n`);
+            // POST was accepted so the remote agent has started; transport loss
+            // leaves it in an unknown state — signal cleanup-incomplete.
+            emitTerminal(1, `\n[cleanup-incomplete: ${message}]\n`);
           }
           pipeError = true;
         } finally {
@@ -335,10 +349,13 @@ export function createRemoteAgentLifecycle(
           processLineBytes(rawBuf);
         }
 
-        // Stream closed without a done frame — protocol violation; fail closed.
+        // Stream closed without a done frame — remote state unknown; cleanup-incomplete.
         if (!stopped && !timedOut && !receivedDone) {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          emitTerminal(1, "\n[error: protocol error — stream closed without done frame]\n");
+          emitTerminal(
+            1,
+            "\n[cleanup-incomplete: protocol error — stream closed without done frame]\n",
+          );
         }
       })().finally(() => {
         activePipes.delete(taskId);

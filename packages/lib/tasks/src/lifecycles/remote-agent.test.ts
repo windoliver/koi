@@ -236,6 +236,81 @@ describe("createRemoteAgentLifecycle", () => {
       expect(exits).toEqual([1]);
     });
 
+    test("stream-phase protocol error emits cleanup-incomplete (remote state unknown)", async () => {
+      // Malformed frame: POST was accepted (200), so remote has started.
+      // Output must carry cleanup-incomplete to signal uncertain remote state.
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      const badStream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(encoder.encode("not-json\n"));
+          c.close();
+        },
+      });
+      const fetch = mockFetch(200, badStream);
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("cleanup-incomplete");
+      expect(text).toContain("protocol error");
+      expect(exits).toEqual([1]);
+    });
+
+    test("mid-stream connection loss emits cleanup-incomplete (remote state unknown)", async () => {
+      // Stream throws after a chunk is enqueued — simulates network drop after
+      // the POST was accepted and the remote agent has started work.
+      const exits: number[] = [];
+      const encoder = new TextEncoder();
+      let pulled = 0;
+      const dropStream = new ReadableStream<Uint8Array>({
+        pull(c) {
+          pulled += 1;
+          if (pulled === 1) {
+            c.enqueue(encoder.encode(`${JSON.stringify({ kind: "chunk", text: "hi" })}\n`));
+          } else {
+            throw new Error("simulated connection drop");
+          }
+        },
+      });
+      const fetch = mockFetch(200, dropStream);
+      const lifecycle = createRemoteAgentLifecycle({ ...FAST_OPTIONS, fetch });
+      const output = createOutputStream();
+
+      await lifecycle.start(
+        tid(),
+        output,
+        makeConfig({
+          onExit: (code) => {
+            exits.push(code);
+          },
+        }),
+      );
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const text = output
+        .read(0)
+        .map((c) => c.content)
+        .join("");
+      expect(text).toContain("cleanup-incomplete");
+      expect(text).not.toContain("[error:");
+      expect(exits).toEqual([1]);
+    });
+
     test("sends correct POST body and headers", async () => {
       let capturedInit: RequestInit | undefined;
       const fetchSpy: typeof globalThis.fetch = mock(
