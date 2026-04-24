@@ -334,25 +334,37 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       //   ScheduledSpawnArgs intentionally omits sessionId — each Temporal execution
       //   uses its own execution ID as the session namespace (no cross-run state collision).
       // dispatch: send a signal to the long-running agent workflow on each firing.
-      const spawnArgs: ScheduledSpawnArgs = {
-        agentId,
-        stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-        initialMessages,
-      };
-      const scheduleAction =
-        mode === "spawn"
-          ? {
-              type: "startWorkflow",
-              workflowType: config.workflowType,
-              taskQueue: config.taskQueue,
-              args: [spawnArgs],
-            }
-          : {
-              type: "sendSignal",
-              workflowId: String(agentId),
-              signalName: "message",
-              args: initialMessages,
-            };
+      //   A schedule fires exactly one action per interval, so only a single signal can
+      //   be delivered. Multi-message inputs (>1 IncomingMessage) are rejected at
+      //   schedule creation time to avoid silent message loss.
+      let scheduleAction: Record<string, unknown>;
+      if (mode === "spawn") {
+        const spawnArgs: ScheduledSpawnArgs = {
+          agentId,
+          stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+          initialMessages,
+        };
+        scheduleAction = {
+          type: "startWorkflow",
+          workflowType: config.workflowType,
+          taskQueue: config.taskQueue,
+          args: [spawnArgs],
+        };
+      } else {
+        if (initialMessages.length !== 1) {
+          throw new Error(
+            `Scheduled dispatch supports exactly one message per firing but got ${initialMessages.length}. ` +
+              "Use a single-message EngineInput or submit() for multi-message delivery.",
+          );
+        }
+        scheduleAction = {
+          type: "sendSignal",
+          workflowId: String(agentId),
+          signalName: "message",
+          // One positional arg matching direct-dispatch signal shape (signal(wfId, "message", msg))
+          args: [initialMessages[0]],
+        };
+      }
 
       // Only insert locally after the remote create succeeds — no phantom schedule on failure.
       await config.client.schedule.create(id, {

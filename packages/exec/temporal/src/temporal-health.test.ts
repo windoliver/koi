@@ -197,6 +197,37 @@ describe("circuit breaker — isAvailable is side-effect free", () => {
   });
 });
 
+describe("single-flight poll guard", () => {
+  let monitor: TemporalHealthMonitor;
+
+  afterEach(() => {
+    monitor?.dispose();
+  });
+
+  test("concurrent poll ticks do not run multiple health checks simultaneously", async () => {
+    let resolveCheck!: () => void;
+    let callCount = 0;
+    // First check hangs until resolved; if concurrent checks fire, callCount > 1 before resolve
+    const healthCheck = mock(async () => {
+      callCount++;
+      if (callCount === 1) {
+        await new Promise<void>((r) => {
+          resolveCheck = r;
+        });
+      }
+      return true;
+    });
+    monitor = createTemporalHealthMonitor(makeConfig({ pollIntervalMs: 20 }), healthCheck);
+    monitor.start();
+    // Let two poll intervals elapse while first check is still in flight
+    await new Promise((r) => setTimeout(r, 60));
+    expect(callCount).toBe(1); // second tick skipped — first still in flight
+    resolveCheck();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(callCount).toBeGreaterThan(1); // subsequent ticks resume after in-flight completes
+  });
+});
+
 describe("dispose", () => {
   test("stops polling after dispose", async () => {
     const healthCheck = mock(async () => true);

@@ -409,6 +409,32 @@ describe("schedule / unschedule", () => {
     expect(s.activeSchedules).toBe(0);
   });
 
+  test("dispatch schedule with multi-message input throws to prevent silent message loss", async () => {
+    const twoMessages = {
+      kind: "messages",
+      messages: [
+        { content: [{ kind: "text", text: "msg1" }], senderId: "u1", timestamp: 1 },
+        { content: [{ kind: "text", text: "msg2" }], senderId: "u2", timestamp: 2 },
+      ],
+    } as unknown as EngineInput;
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.schedule("0 0 * * *", AGENT_ID, twoMessages, "dispatch"),
+    ).rejects.toThrow("Scheduled dispatch supports exactly one message per firing");
+  });
+
+  test("dispatch schedule sends single message as first positional arg matching direct-dispatch shape", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as { action: { args: readonly unknown[] } };
+    expect(opts.action.args).toHaveLength(1);
+    expect((opts.action.args[0] as { content: unknown[] }).content).toEqual([
+      { kind: "text", text: "hello" },
+    ]);
+  });
+
   test("spawn schedule omits sessionId so each run uses its own execution id", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));

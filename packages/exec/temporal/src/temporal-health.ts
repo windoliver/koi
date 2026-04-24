@@ -127,6 +127,7 @@ export function createTemporalHealthMonitor(
   let lastCheckAt = 0;
   let lastStatus: TemporalHealthStatus = "healthy";
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let pollInFlight = false;
   const listeners: Set<(snapshot: TemporalHealthSnapshot) => void> = new Set();
 
   function computeStatus(): TemporalHealthStatus {
@@ -163,22 +164,30 @@ export function createTemporalHealthMonitor(
   }
 
   async function poll(): Promise<void> {
-    lastCheckAt = clock();
-    circuit.allowProbe(); // OPEN → HALF_OPEN if cooldown elapsed (before, not after, the probe)
+    // Single-flight guard: if the previous check is still in flight (e.g. slow or timing out),
+    // skip this interval rather than running concurrent mutations on circuit-breaker state.
+    if (pollInFlight) return;
+    pollInFlight = true;
     try {
-      const ok = await checkHealth(config.url, config.timeoutMs);
-      if (ok) {
-        consecutiveFailures = 0;
-        circuit.recordSuccess();
-      } else {
+      lastCheckAt = clock();
+      circuit.allowProbe(); // OPEN → HALF_OPEN if cooldown elapsed (before, not after, the probe)
+      try {
+        const ok = await checkHealth(config.url, config.timeoutMs);
+        if (ok) {
+          consecutiveFailures = 0;
+          circuit.recordSuccess();
+        } else {
+          consecutiveFailures++;
+          circuit.recordFailure();
+        }
+      } catch {
         consecutiveFailures++;
         circuit.recordFailure();
       }
-    } catch {
-      consecutiveFailures++;
-      circuit.recordFailure();
+      notifyIfChanged();
+    } finally {
+      pollInFlight = false;
     }
-    notifyIfChanged();
   }
 
   return {
