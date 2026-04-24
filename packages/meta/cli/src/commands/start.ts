@@ -591,35 +591,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }
   }
 
-  // On resume without --manifest, manifest discovery was skipped. koi start
-  // hard-rejects manifest.audit — run the check independently so resume cannot
-  // bypass the host-level safety contract.
-  // Guard with !flags.noManifest: --no-manifest is an explicit operator opt-out.
-  if (skipManifestDiscovery && flags.resume !== undefined && !flags.noManifest) {
-    const auditDiscovery = resolveManifestPath(process.cwd(), undefined, false);
-    if (auditDiscovery.ok && auditDiscovery.path !== undefined) {
-      const auditLoadResult = await loadManifestConfig(auditDiscovery.path, {
-        skipAuditValidation: true,
-      });
-      if (!auditLoadResult.ok) {
-        // Manifest exists but cannot be parsed — cannot prove audit: is absent. Fail closed.
-        return bail(
-          "project manifest found during resume but could not be parsed — " +
-            "refusing to start because manifest.audit presence cannot be verified. " +
-            "Fix the manifest to run under koi start, or pass --no-manifest.",
-        );
-      }
-      if (auditLoadResult.value.audit !== undefined) {
-        return bail(
-          "manifest.audit is not supported on this host. " +
-            "koi start does not wire audit sinks — remove the audit: block from the manifest " +
-            "to run under koi start, or use koi tui (which honors manifest.audit when " +
-            "KOI_ALLOW_MANIFEST_FILE_SINKS=1 is set).",
-        );
-      }
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // 2. API configuration
   // ---------------------------------------------------------------------------
