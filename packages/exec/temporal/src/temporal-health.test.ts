@@ -150,6 +150,53 @@ describe("circuit breaker", () => {
   });
 });
 
+describe("circuit breaker — isAvailable is side-effect free", () => {
+  let monitor: TemporalHealthMonitor;
+
+  afterEach(() => {
+    monitor?.dispose();
+  });
+
+  test("isAvailable returns false during OPEN even after cooldown — requires successful probe", async () => {
+    // Trip the circuit
+    const healthCheck = mock(async () => false);
+    monitor = createTemporalHealthMonitor(
+      makeConfig({ pollIntervalMs: 30, failureThreshold: 3, cooldownMs: 50 }),
+      healthCheck,
+    );
+    monitor.start();
+    await new Promise((r) => setTimeout(r, 150));
+    expect(monitor.isAvailable()).toBe(false);
+    expect(monitor.snapshot().status).toBe("unavailable");
+
+    // Even after cooldown elapses, a read-only isAvailable() should NOT flip to true
+    // without a successful probe — just querying availability does not open the gate.
+    await new Promise((r) => setTimeout(r, 80));
+    // Health check is still returning false, so probe fails → stays OPEN
+    expect(monitor.isAvailable()).toBe(false);
+  });
+
+  test("isAvailable becomes true only after a successful probe post-cooldown", async () => {
+    let shouldSucceed = false;
+    const healthCheck = mock(async () => shouldSucceed);
+    monitor = createTemporalHealthMonitor(
+      makeConfig({ pollIntervalMs: 30, failureThreshold: 3, cooldownMs: 50 }),
+      healthCheck,
+    );
+    monitor.start();
+
+    // Trip the circuit
+    await new Promise((r) => setTimeout(r, 150));
+    expect(monitor.isAvailable()).toBe(false);
+
+    // Let the dependency recover and wait for a successful probe
+    shouldSucceed = true;
+    await new Promise((r) => setTimeout(r, 150));
+    expect(monitor.isAvailable()).toBe(true);
+    expect(monitor.snapshot().status).toBe("healthy");
+  });
+});
+
 describe("dispose", () => {
   test("stops polling after dispose", async () => {
     const healthCheck = mock(async () => true);

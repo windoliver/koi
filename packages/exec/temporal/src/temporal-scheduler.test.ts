@@ -179,6 +179,107 @@ describe("submit", () => {
   });
 });
 
+describe("dispatch mode", () => {
+  test("dispatch does NOT start a new workflow", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    expect(client.workflow.start).not.toHaveBeenCalled();
+  });
+
+  test("dispatch signals the existing agent workflow by agentId", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
+    expect(signalArgs?.[0]).toBe(String(AGENT_ID));
+  });
+
+  test("spawn starts a new workflow with a unique id", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    expect(client.workflow.start).toHaveBeenCalledTimes(1);
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const opts = startArgs?.[1] as Record<string, unknown>;
+    expect(typeof opts.workflowId).toBe("string");
+    expect(opts.workflowId).not.toBe(String(AGENT_ID));
+  });
+
+  test("dispatch schedule uses sendSignal action not startWorkflow", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as { action: { type: string; workflowId: string } };
+    expect(opts.action.type).toBe("sendSignal");
+    expect(opts.action.workflowId).toBe(String(AGENT_ID));
+  });
+
+  test("spawn schedule uses startWorkflow action", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as { action: { type: string } };
+    expect(opts.action.type).toBe("startWorkflow");
+  });
+});
+
+describe("rollback safety", () => {
+  test("workflow.start failure: task recorded as failed, no stale pending state", async () => {
+    const client = makeMockClient({
+      start: mock(async () => {
+        throw new Error("connection refused");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("failed");
+    const records = await scheduler.history({});
+    expect(records[0]?.status).toBe("failed");
+    expect(records[0]?.error).toContain("connection refused");
+    // task id still returned (caller can observe the failure)
+    expect(typeof id).toBe("string");
+  });
+
+  test("workflow.start failure: attempts to cancel the orphaned workflow", async () => {
+    const client = makeMockClient({
+      start: mock(async () => {
+        throw new Error("start failed");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    expect(client.workflow.cancel).toHaveBeenCalled();
+  });
+
+  test("workflow.signal failure after start: task recorded as failed, cancel called", async () => {
+    const client = makeMockClient({
+      signal: mock(async () => {
+        throw new Error("signal failed");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("failed");
+    expect(client.workflow.cancel).toHaveBeenCalled();
+  });
+
+  test("start+signal success: task emitted as submitted before running", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const events: string[] = [];
+    scheduler.watch((e) => events.push(e.kind));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    expect(events).toContain("task:submitted");
+    const tasks = await scheduler.query({});
+    expect(tasks[0]?.status).toBe("running");
+  });
+});
+
 describe("cancel", () => {
   test("cancels an existing task", async () => {
     const client = makeMockClient();

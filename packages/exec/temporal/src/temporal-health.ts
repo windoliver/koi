@@ -9,6 +9,7 @@ interface CircuitBreakerSnapshot {
 
 interface CircuitBreaker {
   readonly isAllowed: () => boolean;
+  readonly allowProbe: () => void;
   readonly recordSuccess: () => CircuitBreakerSnapshot;
   readonly recordFailure: () => CircuitBreakerSnapshot;
   readonly getSnapshot: () => CircuitBreakerSnapshot;
@@ -34,19 +35,16 @@ function createCircuitBreaker(
   }
 
   return {
+    // Pure read — never mutates state. Only probing transitions OPEN → HALF_OPEN.
     isAllowed(): boolean {
-      switch (state) {
-        case "CLOSED":
-          return true;
-        case "OPEN": {
-          if (clock() - lastTransitionAt >= cooldownMs) {
-            transitionTo("HALF_OPEN");
-            return true;
-          }
-          return false;
-        }
-        case "HALF_OPEN":
-          return true;
+      return state === "CLOSED" || state === "HALF_OPEN";
+    },
+
+    // Called by the poll path before each health check. Transitions OPEN → HALF_OPEN
+    // once cooldown has elapsed, allowing one probe through without resuming traffic.
+    allowProbe(): void {
+      if (state === "OPEN" && clock() - lastTransitionAt >= cooldownMs) {
+        transitionTo("HALF_OPEN");
       }
     },
 
@@ -165,6 +163,7 @@ export function createTemporalHealthMonitor(
 
   async function poll(): Promise<void> {
     lastCheckAt = clock();
+    circuit.allowProbe(); // OPEN → HALF_OPEN if cooldown elapsed (before, not after, the probe)
     try {
       const ok = await checkHealth(config.url, config.timeoutMs);
       if (ok) {

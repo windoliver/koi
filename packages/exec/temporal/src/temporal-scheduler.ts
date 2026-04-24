@@ -163,26 +163,71 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         metadata: options?.metadata,
       };
 
-      tasks.set(id, task);
-      emit({ kind: "task:submitted", task });
-
       const messages = mapEngineInputToMessages(input, id);
 
-      const handle = await config.client.workflow.start(config.workflowType, {
-        taskQueue: config.taskQueue,
-        workflowId: id,
-        args: [{ agentId, sessionId: id, stateRefs: { lastTurnId: undefined, turnsProcessed: 0 } }],
-        ...(options?.delayMs !== undefined ? { startDelay: `${options.delayMs}ms` } : {}),
-      });
+      // Only record locally after the remote call succeeds to keep state consistent.
+      // For spawn: start a new workflow then signal it with each message.
+      // For dispatch: signal an existing workflow identified by agentId — no new workflow.
+      let targetWorkflowId: string;
+      try {
+        if (mode === "spawn") {
+          const handle = await config.client.workflow.start(config.workflowType, {
+            taskQueue: config.taskQueue,
+            workflowId: id,
+            args: [
+              { agentId, sessionId: id, stateRefs: { lastTurnId: undefined, turnsProcessed: 0 } },
+            ],
+            ...(options?.delayMs !== undefined ? { startDelay: `${options.delayMs}ms` } : {}),
+          });
+          targetWorkflowId = handle.workflowId;
+        } else {
+          // dispatch: target the long-running workflow for this agent
+          targetWorkflowId = String(agentId);
+        }
 
-      for (const msg of messages) {
-        await config.client.workflow.signal(handle.workflowId, "message", msg);
+        for (const msg of messages) {
+          await config.client.workflow.signal(targetWorkflowId, "message", msg);
+        }
+      } catch (err: unknown) {
+        // Compensate: if spawn started but signal failed, cancel the orphaned workflow
+        if (mode === "spawn") {
+          try {
+            await config.client.workflow.cancel(id);
+          } catch {
+            // Best-effort — workflow may not have started yet
+          }
+        }
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        const koiError: KoiError = {
+          code: "EXTERNAL",
+          message: errorMsg,
+          retryable: false,
+          context: { taskId: id, agentId },
+        };
+        const failedTask: ScheduledTask = { ...task, status: "failed" };
+        tasks.set(id, failedTask);
+        emit({ kind: "task:submitted", task: failedTask });
+        history.push({
+          taskId: id,
+          agentId,
+          status: "failed",
+          startedAt: now,
+          completedAt: Date.now(),
+          durationMs: Date.now() - now,
+          error: errorMsg,
+          retryAttempt: 0,
+        });
+        emit({ kind: "task:failed", taskId: id, error: koiError });
+        return id;
       }
 
+      // Remote calls succeeded — record locally as running
+      tasks.set(id, task);
+      emit({ kind: "task:submitted", task });
       const runningTask: ScheduledTask = { ...task, status: "running" };
       tasks.set(id, runningTask);
 
-      if (config.client.workflow.getResult !== undefined) {
+      if (config.client.workflow.getResult !== undefined && mode === "spawn") {
         const startedAt = now;
         void config.client.workflow.getResult(id).then(
           (result: unknown) => {
@@ -264,24 +309,36 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       const initialMessages = mapEngineInputToMessages(input, id);
 
+      // spawn: start a fresh workflow on each cron firing.
+      // dispatch: send a signal to the long-running agent workflow on each firing.
+      const scheduleAction =
+        mode === "spawn"
+          ? {
+              type: "startWorkflow",
+              workflowType: config.workflowType,
+              taskQueue: config.taskQueue,
+              args: [
+                {
+                  agentId,
+                  sessionId: id,
+                  stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+                  initialMessages,
+                },
+              ],
+            }
+          : {
+              type: "sendSignal",
+              workflowId: String(agentId),
+              signalName: "message",
+              args: initialMessages,
+            };
+
       await config.client.schedule.create(id, {
         spec: {
           cronExpressions: [expression],
           ...(options?.timezone !== undefined ? { timezone: options.timezone } : {}),
         },
-        action: {
-          type: "startWorkflow",
-          workflowType: config.workflowType,
-          taskQueue: config.taskQueue,
-          args: [
-            {
-              agentId,
-              sessionId: id,
-              stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-              initialMessages,
-            },
-          ],
-        },
+        action: scheduleAction,
       });
 
       emit({ kind: "schedule:created", schedule });
