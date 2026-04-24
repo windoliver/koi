@@ -34,8 +34,79 @@ Spawn-depth budget inheritance is the engine's responsibility (#1473). Parent re
 ## Out of scope
 
 - URL / filesystem / credentials scope subsystem — follow-up package
-- Approval / deferral UX (three-tier allow/deny/ask) — requires L0 `GovernanceVerdict` extension
 - Persistent compliance storage — use `@koi/audit-sink-*`
+
+## Ternary verdict — ask flow (gov-11)
+
+`GovernanceVerdict` now supports three outcomes (L0 extension): `{ ok: true }`,
+`{ ok: false }`, and `{ ok: "ask", prompt, askId, metadata? }`. An ask verdict
+pauses the call and routes an `ApprovalRequest` to the host's `ApprovalHandler`
+(e.g., the TUI permission prompt via `TurnContext.requestApproval`).
+
+### Handler resolution and fail-closed
+
+- Missing handler → `KoiRuntimeError.from("PERMISSION", ...)` (deny).
+- Handler throws → propagates as deny (fail closed, matches existing rule-level
+  contract).
+- Timeout → `ApprovalTimeoutError` → deny. Default `DEFAULT_APPROVAL_TIMEOUT_MS
+  = 60_000`, overridable via `GovernanceMiddlewareConfig.approvalTimeoutMs`.
+
+### Decision mapping
+
+`ApprovalDecision` from handler:
+
+| Decision | Behavior |
+|----------|----------|
+| `allow` | Proceed once; no caching |
+| `always-allow` (session) | Record session grant keyed by `computeGrantKey(kind, payload)`; subsequent identical asks skip the handler for the rest of the session |
+| `always-allow` (permanent) | Same session grant + one-shot `onApprovalPersist(PersistentGrant)` callback for the host to persist |
+| `deny` | `KoiRuntimeError.from("PERMISSION", ...)` — turn fails |
+| `modify` | Currently treated as deny; modify-path is a follow-up |
+
+### Inflight coalescing and session lifecycle
+
+- Duplicate asks within a session (same `askId`) coalesce: the first creator
+  awaits the handler, other callers await the same promise. Only the creator
+  fires `onApprovalPersist` on `always-allow` permanent — downstream waiters
+  are idempotent.
+- `onSessionEnd` aborts every pending ask via a per-session `AbortController`
+  and drops the session's grant set, so leaked promises can't outlive the
+  turn.
+
+### AskId brand and type guard
+
+New L0 additions (`@koi/core`):
+
+- `AskId` — branded string (`string & { [__askIdBrand]: "AskId" }`). Construct
+  with `askId(id: string): AskId`.
+- `isAskVerdict(v): v is Extract<GovernanceVerdict, { ok: "ask" }>` — narrow
+  verdicts in backend adapters and tests.
+
+Backends generate ask IDs however they like (deterministic hash, UUID, etc.) —
+the middleware treats them opaquely for coalescing only.
+
+### Config additions
+
+```ts
+createGovernanceMiddleware({
+  backend, controller, cost,
+  approvalTimeoutMs: 30_000,             // optional, default 60s
+  onApprovalPersist: (grant) => { /* persist PersistentGrant */ },
+});
+```
+
+`PersistentGrant` shape: `{ kind, agentId, sessionId, payload, grantKey,
+grantedAt }`. `grantKey` is a deterministic SHA-256 of canonicalized
+`{kind,payload}` via `computeGrantKey` — hosts can use it as a stable storage
+key without re-hashing.
+
+### Architectural note — why the middleware owns ask routing
+
+There is only one interposition layer (`KoiMiddleware`). The governance
+middleware already sees every model/tool call; routing asks from here keeps
+verdict handling in one place and avoids a parallel `EngineHooks` channel.
+TUI/CLI hosts surface asks through the existing `TurnContext.requestApproval`
+primitive — no new L0 contract is required.
 
 ## Per-variable alert thresholds (gov-9)
 
