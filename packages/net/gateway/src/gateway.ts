@@ -108,6 +108,15 @@ export function createGateway(
   // capture outbound seq advanced by gateway.send() after the last inbound frame.
   // destroySession and reconnect await these before touching the store to prevent races.
   const pendingSeqPersists = new Map<string, Promise<void>>();
+  // Per-connection outbound transport-buffer bytes. Tracked separately from inbound
+  // reorder-buffer bytes so onDrain discharges only the outbound portion and inbound
+  // buffered frames remain charged until they are actually flushed from the reorder buffer.
+  const connOutboundBp = new Map<string, number>();
+  // In-memory authoritative outbound seq snapshot captured on disconnect. Used by the
+  // reconnect path as the primary source for prevOutboundSeq, falling back to the store
+  // only if no in-memory entry exists. This prevents seq reuse when the async
+  // disconnect persist fails or has not completed before the reconnect reads the store.
+  const lastKnownOutboundSeq = new Map<string, number>();
   // Set to true by stop() so pending handshake continuations bail out before store.set().
   let stopped = false;
 
@@ -176,7 +185,10 @@ export function createGateway(
     // Only charge bp when bytes > 0: the transport actually buffered data.
     // bytes === 0 means the write was accepted synchronously with nothing queued;
     // charging it would inflate bp.buffered() for traffic that was never held.
-    if (bytes > 0) bp.record(conn.id, bytes);
+    if (bytes > 0) {
+      bp.record(conn.id, bytes);
+      connOutboundBp.set(conn.id, (connOutboundBp.get(conn.id) ?? 0) + bytes);
+    }
     return true;
   }
 
@@ -189,6 +201,7 @@ export function createGateway(
     msgQueues.delete(conn.id);
     inboundBufferedSeqs.delete(conn.id);
     connOutboundSeq.delete(conn.id);
+    connOutboundBp.delete(conn.id);
     sessionByConn.delete(conn.id);
     connMap.delete(conn.id);
     bp.remove(conn.id);
@@ -207,6 +220,10 @@ export function createGateway(
       // already persisted an equal or higher value.
       if (seqToSave > 0) {
         const id = sessionId; // stable capture
+        // In-memory snapshot is the primary source for same-process reconnects.
+        // The async persist below covers cross-process/restart cases, but any failure
+        // there is opaque to the reconnect path — the in-memory value does not fail.
+        lastKnownOutboundSeq.set(id, seqToSave);
         const persist = (async (): Promise<void> => {
           const r = await Promise.resolve(store.get(id));
           if (r.ok && r.value.seq < seqToSave) {
@@ -550,9 +567,6 @@ export function createGateway(
             if (prev.ok) {
               startSeq = prev.value.remoteSeq;
               prevOutboundSeq = prev.value.seq;
-              // Restore outbound seq so server frames continue monotonically after reconnect
-              // rather than resetting to 0 and colliding with pre-reconnect frame IDs.
-              connOutboundSeq.set(conn.id, prevOutboundSeq);
               isNewSession = false; // session already existed in the store
             }
             // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
@@ -560,6 +574,15 @@ export function createGateway(
             abortReconnect(CLOSE_CODES.SESSION_STORE_FAILURE, "session store failure on resume");
             return;
           }
+          // Prefer the in-memory snapshot over the stored value: it is authoritative for
+          // same-process reconnects and immune to async persist failures. This prevents
+          // seq reuse when the disconnect persist lost a race or the store threw.
+          const memSeq = lastKnownOutboundSeq.get(result.session.id) ?? 0;
+          if (memSeq > prevOutboundSeq) prevOutboundSeq = memSeq;
+          lastKnownOutboundSeq.delete(result.session.id);
+          // Restore outbound seq so server frames continue monotonically after reconnect
+          // rather than resetting to 0 and colliding with pre-reconnect frame IDs.
+          if (prevOutboundSeq > 0) connOutboundSeq.set(conn.id, prevOutboundSeq);
           const tracker = createSequenceTracker(config.dedupWindowSize);
           if (startSeq > 0) tracker.reset(startSeq);
           // Buffered out-of-order frames from the old tracker are NOT migrated: carrying them
@@ -612,7 +635,10 @@ export function createGateway(
             cleanupConn(conn, "ack send failed");
             return;
           }
-          if (ackBytes > 0) bp.record(conn.id, ackBytes);
+          if (ackBytes > 0) {
+            bp.record(conn.id, ackBytes);
+            connOutboundBp.set(conn.id, (connOutboundBp.get(conn.id) ?? 0) + ackBytes);
+          }
           emitSessionEvent({ kind: "created", session: result.session });
         })
         .catch(() => {
@@ -641,8 +667,15 @@ export function createGateway(
     },
 
     onDrain(conn: TransportConnection): void {
-      // A drain event means Bun's write buffer has cleared; drain all tracked bytes.
-      bp.drain(conn.id, bp.buffered(conn.id));
+      // Transport write buffer cleared: discharge only the outbound bytes we charged.
+      // Inbound reorder-buffer bytes (charged when OOO frames are held in SequenceTracker)
+      // must stay charged until the frames are actually flushed; zeroing everything here
+      // would let a client reclaim inbound buffer headroom without releasing the frames.
+      const outbound = connOutboundBp.get(conn.id) ?? 0;
+      if (outbound > 0) {
+        bp.drain(conn.id, outbound);
+        connOutboundBp.set(conn.id, 0);
+      }
     },
   };
 
@@ -727,24 +760,32 @@ export function createGateway(
             // store.set() and the delete() call. Guard here as defense-in-depth.
             if (connBySession.has(sessionId)) continue;
             if (now - ts > ttl) {
-              // Clear bookkeeping only after a successful delete so that a store failure
-              // leaves the session in disconnectedAt for retry on the next sweep tick.
-              try {
-                void Promise.resolve(store.delete(sessionId))
-                  .then((r) => {
-                    if (r.ok) {
-                      disconnectedAt.delete(sessionId);
-                      ownedSessionIds.delete(sessionId);
-                    }
-                  })
-                  .catch((err: unknown) => {
-                    // Log async failure — session stays in disconnectedAt for retry on next tick.
-                    swallowError(err, { package: "gateway", operation: "ttl.delete" });
-                  });
-              } catch (err: unknown) {
-                // Sync throw: log and leave in disconnectedAt for next sweep.
-                swallowError(err, { package: "gateway", operation: "ttl.delete" });
-              }
+              // Sequential get→check→delete→check to reduce (not eliminate; atomic CAS
+              // would be needed for that) the window where a reconnecting session's record
+              // is clobbered by a concurrent TTL eviction.
+              void (async () => {
+                try {
+                  const snapshot = await Promise.resolve(store.get(sessionId));
+                  if (!snapshot.ok) return; // already gone
+                  // Re-check liveness after get: reconnect may have started during the read.
+                  if (connBySession.has(sessionId)) return;
+                  const r = await Promise.resolve(store.delete(sessionId));
+                  if (!r.ok) return;
+                  // Post-check: reconnect may have completed during the delete.
+                  if (connBySession.has(sessionId)) {
+                    // Delete raced a successful reconnect. Best-effort restore so the live
+                    // connection finds its session record on the next inbound frame.
+                    void Promise.resolve(store.set(snapshot.value)).catch((err: unknown) => {
+                      swallowError(err, { package: "gateway", operation: "ttl.restore" });
+                    });
+                  } else {
+                    disconnectedAt.delete(sessionId);
+                    ownedSessionIds.delete(sessionId);
+                  }
+                } catch (err: unknown) {
+                  swallowError(err, { package: "gateway", operation: "ttl.delete" });
+                }
+              })();
             }
           }
         }
@@ -824,8 +865,10 @@ export function createGateway(
       trackers.clear();
       pendingHandshakes.clear();
       connOutboundSeq.clear();
+      connOutboundBp.clear();
       disconnectedAt.clear();
       pendingSeqPersists.clear();
+      lastKnownOutboundSeq.clear();
       deps.transport.close();
 
       if (cleanupFailed) {
@@ -898,7 +941,10 @@ export function createGateway(
         };
         return { ok: false, error };
       }
-      if (bytes > 0) bp.record(connId, bytes);
+      if (bytes > 0) {
+        bp.record(connId, bytes);
+        connOutboundBp.set(connId, (connOutboundBp.get(connId) ?? 0) + bytes);
+      }
       return { ok: true, value: bytes };
     },
 
@@ -952,6 +998,7 @@ export function createGateway(
       }
       disconnectedAt.delete(sessionId);
       ownedSessionIds.delete(sessionId);
+      lastKnownOutboundSeq.delete(sessionId);
       emitSessionEvent({ kind: "destroyed", sessionId, reason });
       return { ok: true, value: undefined };
     },
