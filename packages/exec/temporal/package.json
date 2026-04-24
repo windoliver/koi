@@ -13,6 +13,18 @@
   "dependencies": {
     "@koi/core": "workspace:*"
   },
+  "peerDependencies": {
+    "@temporalio/client": ">=1.11.0",
+    "@temporalio/worker": ">=1.11.0"
+  },
+  "peerDependenciesMeta": {
+    "@temporalio/client": {
+      "optional": true
+    },
+    "@temporalio/worker": {
+      "optional": true
+    }
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
