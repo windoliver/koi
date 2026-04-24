@@ -74,6 +74,10 @@ export interface Session {
   readonly remoteSeq: number;
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly routing?: RoutingContext | undefined;
+  /** Ms-since-epoch when the session was last disconnected. Set by the gateway on
+   *  disconnect and cleared on reconnect. Persisted so TTL eviction survives process
+   *  restarts — the reconnect path rejects sessions whose disconnectedAt is past TTL. */
+  readonly disconnectedAt?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------

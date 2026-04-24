@@ -235,28 +235,33 @@ export function createGateway(
       // Persist the final outbound seq so reconnects restore the correct server window.
       // processMessage only persists seq on inbound frames; gateway.send()-only traffic
       // after the last inbound frame would be lost without this on-disconnect write.
-      // The guard (r.value.seq < seqToSave) avoids a no-op write when processMessage
-      // already persisted an equal or higher value.
+      // We also stamp disconnectedAt so TTL eviction survives process restarts — the
+      // reconnect path rejects sessions whose stored disconnectedAt is past TTL.
+      const id = sessionId; // stable capture
       if (seqToSave > 0) {
-        const id = sessionId; // stable capture
         // In-memory snapshot is the primary source for same-process reconnects.
-        // The async persist below covers cross-process/restart cases, but any failure
-        // there is opaque to the reconnect path — the in-memory value does not fail.
+        // The async persist below covers cross-process/restart cases.
         lastKnownOutboundSeq.set(id, seqToSave);
-        const persist = (async (): Promise<void> => {
-          const r = await Promise.resolve(store.get(id));
-          if (r.ok && r.value.seq < seqToSave) {
-            await Promise.resolve(store.set({ ...r.value, seq: seqToSave }));
-          }
-        })()
-          .catch((err: unknown) => {
-            swallowError(err, { package: "gateway", operation: "disconnect.seq.persist" });
-          })
-          .finally(() => {
-            pendingSeqPersists.delete(id);
-          });
-        pendingSeqPersists.set(id, persist);
       }
+      const disconnectTs = Date.now();
+      const persist = (async (): Promise<void> => {
+        const r = await Promise.resolve(store.get(id));
+        if (r.ok) {
+          const updated: Session = {
+            ...r.value,
+            seq: r.value.seq < seqToSave ? seqToSave : r.value.seq,
+            disconnectedAt: disconnectTs,
+          };
+          await Promise.resolve(store.set(updated));
+        }
+      })()
+        .catch((err: unknown) => {
+          swallowError(err, { package: "gateway", operation: "disconnect.seq.persist" });
+        })
+        .finally(() => {
+          pendingSeqPersists.delete(id);
+        });
+      pendingSeqPersists.set(id, persist);
 
       // Emit 'disconnected' (not 'destroyed') — the session still exists in the store
       // and may reconnect. Reserve 'destroyed' for paths that permanently delete the record.
@@ -272,6 +277,7 @@ export function createGateway(
       conn.send(
         createErrorFrame(errSeq, "FRAME_TOO_LARGE", "Frame exceeds maxFrameBytes limit", nextId),
       );
+      cleanupConn(conn, "Frame too large");
       conn.close(CLOSE_CODES.INVALID_HANDSHAKE, "Frame too large");
       return;
     }
@@ -310,6 +316,7 @@ export function createGateway(
           nextId,
         ),
       );
+      cleanupConn(conn, "Session lookup failed");
       conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session lookup failed");
       return;
     }
@@ -318,6 +325,7 @@ export function createGateway(
         conn,
         createErrorFrame(nextServerSeq(conn), "SESSION_STORE_FAILURE", "Session not found", nextId),
       );
+      cleanupConn(conn, "Session not found");
       conn.close(CLOSE_CODES.SESSION_STORE_FAILURE, "Session not found");
       return;
     }
@@ -374,6 +382,7 @@ export function createGateway(
             nextId,
           ),
         );
+        cleanupConn(conn, "Global inbound buffer limit exceeded");
         conn.close(CLOSE_CODES.BUFFER_LIMIT, "Global inbound buffer limit exceeded");
         return;
       }
@@ -389,6 +398,7 @@ export function createGateway(
             nextId,
           ),
         );
+        cleanupConn(conn, "Inbound sequence buffer exceeded");
         conn.close(CLOSE_CODES.BUFFER_LIMIT, "Inbound sequence buffer exceeded");
         return;
       }
@@ -651,9 +661,23 @@ export function createGateway(
           try {
             const prev = await Promise.resolve(store.get(result.session.id));
             if (prev.ok) {
-              startSeq = prev.value.remoteSeq;
-              prevOutboundSeq = prev.value.seq;
-              isNewSession = false; // session already existed in the store
+              // Honour stored disconnectedAt for crash-durable TTL: if the session
+              // disconnected before a process restart, the in-memory disconnectedAt map
+              // is gone but the persisted timestamp survives. Treat expired sessions as
+              // NOT_FOUND so the client starts fresh rather than replaying from stale state.
+              const ttl = config.disconnectedSessionTtlMs;
+              const storedDisconnectedAt = prev.value.disconnectedAt;
+              const isExpired =
+                ttl !== undefined &&
+                ttl > 0 &&
+                storedDisconnectedAt !== undefined &&
+                Date.now() - storedDisconnectedAt > ttl;
+              if (!isExpired) {
+                startSeq = prev.value.remoteSeq;
+                prevOutboundSeq = prev.value.seq;
+                isNewSession = false; // session already existed in the store
+              }
+              // isExpired → treat as new session (start at 0, isNewSession stays true)
             }
             // !prev.ok (e.g. NOT_FOUND) → genuinely new session, start at 0
           } catch {
@@ -1089,7 +1113,11 @@ export function createGateway(
         connSessionCache.set(connId, { ...cachedSession, seq: latestSeq });
         const seqTarget = latestSeq;
         const sidTarget = sessionId;
-        void (async () => {
+        // Chain into pendingSeqPersists so destroySession/stop() await this persist
+        // before store.delete(), preventing resurrection of a deleted session by a
+        // concurrent in-flight write completing after the delete.
+        const chainedAfter = pendingSeqPersists.get(sidTarget) ?? Promise.resolve();
+        const sendPersist: Promise<void> = chainedAfter.then(async (): Promise<void> => {
           try {
             const current = await Promise.resolve(store.get(sidTarget));
             if (!current.ok) return; // session gone (destroyed or TTL evicted)
@@ -1102,7 +1130,13 @@ export function createGateway(
           } catch (err: unknown) {
             swallowError(err, { package: "gateway", operation: "send.seq.persist" });
           }
-        })();
+        });
+        pendingSeqPersists.set(sidTarget, sendPersist);
+        void sendPersist.finally(() => {
+          if (pendingSeqPersists.get(sidTarget) === sendPersist) {
+            pendingSeqPersists.delete(sidTarget);
+          }
+        });
       }
       return { ok: true, value: bytes };
     },
