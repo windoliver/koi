@@ -349,20 +349,25 @@ export function createGateway(
     // store (which we did not update), so the failed frame is replayed (at-least-once).
     const lastDispatched = ready[ready.length - 1];
     if (lastDispatched !== undefined) {
-      const updatedSession: Session = {
+      const sessionForHandlers: Session = {
         ...sessionResult.value,
         remoteSeq: lastDispatched.seq + 1,
-        // Snapshot current outbound seq so reconnect can restore it and keep server
-        // frames monotonic across the connection boundary.
-        seq: connOutboundSeq.get(conn.id) ?? 0,
       };
       try {
-        emitFrames(updatedSession, ready);
+        emitFrames(sessionForHandlers, ready);
       } catch {
         conn.close(CLOSE_CODES.ADMIN_CLOSED, "Frame handler failure");
         cleanupConn(conn, "frame handler failure");
         return;
       }
+
+      // Snapshot outbound seq AFTER handlers run: handlers may call gateway.send() which
+      // advances connOutboundSeq; capturing before emitFrames() would persist a stale value
+      // and allow reconnect to reuse already-issued seq numbers.
+      const updatedSession: Session = {
+        ...sessionForHandlers,
+        seq: connOutboundSeq.get(conn.id) ?? 0,
+      };
 
       let storeRes: Result<void, KoiError>;
       try {
@@ -695,9 +700,13 @@ export function createGateway(
                       ownedSessionIds.delete(sessionId);
                     }
                   })
-                  .catch(() => {});
-              } catch {
-                // Sync throw: leave in disconnectedAt for next sweep
+                  .catch((err: unknown) => {
+                    // Log async failure — session stays in disconnectedAt for retry on next tick.
+                    swallowError(err, { package: "gateway", operation: "ttl.delete" });
+                  });
+              } catch (err: unknown) {
+                // Sync throw: log and leave in disconnectedAt for next sweep.
+                swallowError(err, { package: "gateway", operation: "ttl.delete" });
               }
             }
           }
