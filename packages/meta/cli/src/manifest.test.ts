@@ -582,11 +582,11 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.error).toContain("sqltie");
   });
 
-  test("accepts unknown keys in lenient mode but surfaces them as presence sentinels", async () => {
+  test("marks malformed:true for unknown keys in lenient mode without fabricating unrelated sentinels", async () => {
     // A typo'd key (sqltie instead of sqlite) must not block startup, but it
-    // signals attempted audit configuration. The gate-off fail-closed check in
-    // tui-command.ts uses presence sentinels ("") to refuse startup unless the
-    // operator provides KOI_AUDIT_* overrides.
+    // signals attempted audit configuration. The malformed flag lets tui-command
+    // emit a clear "fix the manifest" error instead of requiring unrelated
+    // KOI_AUDIT_* overrides for sinks the author never configured.
     const p = writeManifest(
       ["model:", "  name: google/gemini-2.0-flash-001", "audit:", "  sqltie: ./logs/audit.db"].join(
         "\n",
@@ -596,11 +596,23 @@ describe("loadManifestConfig: audit block (#1994)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.audit?.present).toBe(true);
-    // Unknown key → all three known fields get "" sentinel (not undefined) so
-    // the gate-off check fires for any of the three override env vars.
-    expect(result.value.audit?.ndjson).toBe("");
-    expect(result.value.audit?.sqlite).toBe("");
-    expect(result.value.audit?.violations).toBe("");
+    expect(result.value.audit?.malformed).toBe(true);
+    // Unknown key only (no known keys) → all three remain undefined.
+    expect(result.value.audit?.ndjson).toBeUndefined();
+    expect(result.value.audit?.sqlite).toBeUndefined();
+    expect(result.value.audit?.violations).toBeUndefined();
+  });
+
+  test("marks malformed:true for non-object audit block in lenient mode", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "audit: not-an-object"].join("\n"),
+    );
+    const result = await loadManifestConfig(p, { skipAuditValidation: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.audit?.present).toBe(true);
+    expect(result.value.audit?.malformed).toBe(true);
+    expect(result.value.audit?.ndjson).toBeUndefined();
   });
 
   test("rejects non-object audit block", async () => {

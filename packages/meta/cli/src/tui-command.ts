@@ -1120,32 +1120,52 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestAudit = manifestResult.value.audit;
     manifestLoadPath = resolvedManifestPath;
 
-    // Fail closed per-sink when manifest.audit is present and the gate is off.
-    // In lenient (gate-off) mode the loader reports unvalidated path strings for
-    // any audit key that was present in the manifest block, which lets us check
-    // each sink independently: if the manifest configured it but the operator
-    // did not provide the matching KOI_AUDIT_* env var, block startup.
-    // If the operator provides an env var for every manifest-configured sink,
-    // those env vars fully supersede the manifest block and we proceed.
-    // The violations sink is treated independently from ndjson/sqlite because it
-    // already has a default-path fallback — only block when the manifest
-    // explicitly configured it without an operator override.
+    // Fail closed when manifest.audit is present and the gate is off.
+    // Two cases based on whether the block is malformed:
+    //
+    // Malformed (unknown keys, wrong type, non-object) — the manifest intended
+    // to configure auditing but in a shape we can't interpret. Require all three
+    // KOI_AUDIT_* overrides or block, because we can't infer per-sink intent.
+    //
+    // Well-formed (known keys only) — per-sink check: only block when a
+    // manifest-configured sink is not covered by its env var. The violations
+    // sink is skipped when governance is disabled at the CLI (--no-governance)
+    // because runtime-factory ignores violationSqlitePath in that case.
     if (manifestAudit !== undefined && process.env.KOI_ALLOW_MANIFEST_FILE_SINKS !== "1") {
-      const ndjsonExposed =
-        manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
-      const sqliteExposed =
-        manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
-      const violationsExposed =
-        manifestAudit.violations !== undefined && process.env.KOI_AUDIT_VIOLATIONS === undefined;
-      if (ndjsonExposed || sqliteExposed || violationsExposed) {
-        process.stderr.write(
-          "koi tui: manifest.audit is set but KOI_ALLOW_MANIFEST_FILE_SINKS is not 1 — " +
-            "refusing to start to prevent silently disabled audit logging. " +
-            "Set KOI_ALLOW_MANIFEST_FILE_SINKS=1 to enable manifest-configured audit sinks, " +
-            "or set the matching KOI_AUDIT_* env var for each manifest-configured sink, " +
-            "or remove the audit: block from the manifest.\n",
-        );
-        process.exit(1);
+      if (manifestAudit.malformed === true) {
+        const allCoveredByEnv =
+          process.env.KOI_AUDIT_NDJSON !== undefined &&
+          process.env.KOI_AUDIT_SQLITE !== undefined &&
+          process.env.KOI_AUDIT_VIOLATIONS !== undefined;
+        if (!allCoveredByEnv) {
+          process.stderr.write(
+            "koi tui: manifest.audit has an unrecognized format (unknown fields or invalid value) — " +
+              "refusing to start because audit intent cannot be determined. " +
+              "Fix the manifest, or set KOI_AUDIT_NDJSON + KOI_AUDIT_SQLITE + KOI_AUDIT_VIOLATIONS " +
+              "to override all audit sinks, or remove the audit: block.\n",
+          );
+          process.exit(1);
+        }
+      } else {
+        const ndjsonExposed =
+          manifestAudit.ndjson !== undefined && process.env.KOI_AUDIT_NDJSON === undefined;
+        const sqliteExposed =
+          manifestAudit.sqlite !== undefined && process.env.KOI_AUDIT_SQLITE === undefined;
+        // violations sink is disabled by --no-governance; skip when gate is off.
+        const violationsExposed =
+          flags.governance.enabled &&
+          manifestAudit.violations !== undefined &&
+          process.env.KOI_AUDIT_VIOLATIONS === undefined;
+        if (ndjsonExposed || sqliteExposed || violationsExposed) {
+          process.stderr.write(
+            "koi tui: manifest.audit is set but KOI_ALLOW_MANIFEST_FILE_SINKS is not 1 — " +
+              "refusing to start to prevent silently disabled audit logging. " +
+              "Set KOI_ALLOW_MANIFEST_FILE_SINKS=1 to enable manifest-configured audit sinks, " +
+              "or set the matching KOI_AUDIT_* env var for each manifest-configured sink, " +
+              "or remove the audit: block from the manifest.\n",
+          );
+          process.exit(1);
+        }
       }
     }
 

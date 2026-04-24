@@ -315,6 +315,14 @@ export interface ManifestConfig {
  */
 export interface ManifestAuditConfig {
   readonly present: true;
+  /**
+   * True when the audit block had an unrecognized shape in lenient mode:
+   * unknown keys, wrong-type values at the block level, or a non-object.
+   * The tui-command gate-off check uses this to emit a clear "fix the
+   * manifest" error rather than requiring unrelated KOI_AUDIT_* overrides
+   * for sinks the manifest author never intended to configure.
+   */
+  readonly malformed?: true;
   readonly ndjson: string | undefined;
   readonly sqlite: string | undefined;
   readonly violations: string | undefined;
@@ -775,29 +783,73 @@ function parseManifestAudit(
   //     gate-off check fires regardless of which env-var override path applies
   // These strings are NOT validated — callers must not use them as trusted paths.
   if (lenient) {
-    // Non-object audit blocks (audit: "string", audit: 42, audit: []) are also
-    // a clear authorial intent to configure auditing — mark all three sentinel.
+    // Non-object audit blocks (audit: "string", audit: 42, audit: []) signal
+    // authorial intent without a usable shape — mark malformed so tui-command
+    // can emit a clear "fix the manifest" error rather than a per-sink override
+    // requirement for sinks that were never individually specified.
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      return { ok: true, value: { present: true, ndjson: "", sqlite: "", violations: "" } };
+      return {
+        ok: true,
+        value: {
+          present: true,
+          malformed: true,
+          ndjson: undefined,
+          sqlite: undefined,
+          violations: undefined,
+        },
+      };
     }
     const rec = raw as Record<string, unknown>;
     const knownKeys = new Set(["ndjson", "sqlite", "violations"]);
     const hasUnknownKey = Object.keys(rec).some((k) => !knownKeys.has(k));
-    // "" is the presence sentinel: key exists but value is not a usable path.
+    // Unknown/typo'd keys → malformed marker, no sentinel fabrication for
+    // unrelated known sinks. Known-key sentinels ("") still signal key presence
+    // even when the value is a wrong type or empty string.
+    if (hasUnknownKey) {
+      const lNdjson =
+        "ndjson" in rec
+          ? typeof rec.ndjson === "string" && rec.ndjson.length > 0
+            ? rec.ndjson
+            : ""
+          : undefined;
+      const lSqlite =
+        "sqlite" in rec
+          ? typeof rec.sqlite === "string" && rec.sqlite.length > 0
+            ? rec.sqlite
+            : ""
+          : undefined;
+      const lViolations =
+        "violations" in rec
+          ? typeof rec.violations === "string" && rec.violations.length > 0
+            ? rec.violations
+            : ""
+          : undefined;
+      return {
+        ok: true,
+        value: {
+          present: true,
+          malformed: true,
+          ndjson: lNdjson,
+          sqlite: lSqlite,
+          violations: lViolations,
+        },
+      };
+    }
+    // Object with only known keys: per-key presence sentinels, no malformed flag.
     const lNdjson =
-      "ndjson" in rec || hasUnknownKey
+      "ndjson" in rec
         ? typeof rec.ndjson === "string" && rec.ndjson.length > 0
           ? rec.ndjson
           : ""
         : undefined;
     const lSqlite =
-      "sqlite" in rec || hasUnknownKey
+      "sqlite" in rec
         ? typeof rec.sqlite === "string" && rec.sqlite.length > 0
           ? rec.sqlite
           : ""
         : undefined;
     const lViolations =
-      "violations" in rec || hasUnknownKey
+      "violations" in rec
         ? typeof rec.violations === "string" && rec.violations.length > 0
           ? rec.violations
           : ""
