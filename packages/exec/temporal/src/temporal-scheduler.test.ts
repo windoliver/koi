@@ -517,6 +517,19 @@ describe("schedule / unschedule", () => {
     expect(payload).toEqual({ kind: "text", text: "hello" });
   });
 
+  test("schedule() rejects non-plain objects (Date, Map, Set, class instances)", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    const badInput = {
+      kind: "messages",
+      messages: [
+        { content: [{ kind: "text", text: "ok", ts: new Date() }], senderId: "u1", timestamp: 1 },
+      ],
+    } as unknown as EngineInput;
+    await expect(scheduler.schedule("0 0 * * *", AGENT_ID, badInput, "spawn")).rejects.toThrow(
+      "non-plain object",
+    );
+  });
+
   test("schedule() rejects payload with non-JSON-serializable content (circular reference)", async () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular; // circular ref causes JSON.stringify to throw
@@ -627,5 +640,47 @@ describe("dispose", () => {
     await scheduler[Symbol.asyncDispose]();
     expect((await scheduler.query({})).length).toBe(0);
     expect((await scheduler.stats()).pending).toBe(0);
+  });
+});
+
+describe("state persistence (dbPath)", () => {
+  test("restores tasks from disk so query/history survive restart", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const client = makeMockClient();
+
+    // First scheduler: submit a task then dispose.
+    const s1 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await s1.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await s1[Symbol.asyncDispose]();
+
+    // Second scheduler with same dbPath: should restore the task.
+    const s2 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const tasks = await s2.query({});
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]?.agentId).toBe(AGENT_ID);
+    expect(tasks[0]?.status).toBe("running");
+    await s2[Symbol.asyncDispose]();
+  });
+
+  test("restores schedules from disk across restart", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const client = makeMockClient();
+
+    const s1 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await s1.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    await s1[Symbol.asyncDispose]();
+
+    const s2 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const stats = await s2.stats();
+    expect(stats.activeSchedules).toBe(1);
+    await s2[Symbol.asyncDispose]();
+  });
+
+  test("works without dbPath (no persistence, no error)", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    const tasks = await scheduler.query({});
+    expect(tasks.length).toBe(1);
+    await scheduler[Symbol.asyncDispose]();
   });
 });

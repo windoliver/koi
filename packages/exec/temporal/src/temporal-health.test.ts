@@ -23,23 +23,23 @@ describe("createTemporalHealthMonitor", () => {
     monitor?.dispose();
   });
 
-  test("starts in healthy state", () => {
+  test("starts in degraded state before first probe (fail-closed)", () => {
     monitor = createTemporalHealthMonitor(
       makeConfig(),
       mock(async () => true),
     );
     const snap = monitor.snapshot();
-    expect(snap.status).toBe("healthy");
+    expect(snap.status).toBe("degraded");
     expect(snap.consecutiveFailures).toBe(0);
     expect(snap.url).toBe("localhost:7233");
   });
 
-  test("isAvailable returns true when healthy", () => {
+  test("isAvailable returns false before first probe completes", () => {
     monitor = createTemporalHealthMonitor(
       makeConfig(),
       mock(async () => true),
     );
-    expect(monitor.isAvailable()).toBe(true);
+    expect(monitor.isAvailable()).toBe(false);
   });
 
   test("polls health check on start", async () => {

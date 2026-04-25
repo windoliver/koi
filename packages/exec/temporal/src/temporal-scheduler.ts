@@ -1,9 +1,11 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import type {
   AgentId,
   CronSchedule,
   EngineInput,
   KoiError,
   ScheduledTask,
+  ScheduledTaskStatus,
   ScheduleId,
   SchedulerEvent,
   SchedulerStats,
@@ -15,6 +17,95 @@ import type {
   TaskScheduler,
 } from "@koi/core";
 import type { IncomingMessage, ScheduledInputPayload, ScheduledSpawnArgs } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Durable state persistence (used when config.dbPath is set)
+// ---------------------------------------------------------------------------
+
+interface PersistedTask {
+  readonly id: string;
+  readonly agentId: string;
+  readonly mode: "spawn" | "dispatch";
+  readonly input: ScheduledInputPayload;
+  readonly priority: number;
+  readonly status: string;
+  readonly createdAt: number;
+  readonly scheduledAt: number | undefined;
+  readonly startedAt: number | undefined;
+  readonly completedAt: number | undefined;
+  readonly retries: number;
+  readonly maxRetries: number;
+  readonly timeoutMs: number | undefined;
+  readonly lastError: unknown;
+  readonly metadata: Record<string, unknown> | undefined;
+}
+
+interface PersistedSchedule {
+  readonly id: string;
+  readonly expression: string;
+  readonly agentId: string;
+  readonly input: ScheduledInputPayload;
+  readonly mode: "spawn" | "dispatch";
+  readonly timezone: string | undefined;
+  readonly paused: boolean;
+}
+
+interface PersistedState {
+  readonly tasks: readonly [string, PersistedTask][];
+  readonly taskWorkflowIds: readonly [string, string][];
+  readonly cancelledTaskIds: readonly string[];
+  readonly schedules: readonly [string, PersistedSchedule][];
+  readonly history: readonly TaskRunRecord[];
+}
+
+function loadStateSync(dbPath: string): PersistedState | undefined {
+  try {
+    return JSON.parse(readFileSync(dbPath, "utf8")) as PersistedState;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveStateSync(dbPath: string, state: PersistedState): void {
+  try {
+    writeFileSync(dbPath, JSON.stringify(state));
+  } catch {
+    // best-effort — failure must never propagate to callers
+  }
+}
+
+function reconstructTask(v: PersistedTask): ScheduledTask {
+  return {
+    id: v.id as TaskId,
+    agentId: v.agentId as AgentId,
+    // callHandlers and signal are process-local and cannot survive restart.
+    input: v.input as unknown as EngineInput,
+    mode: v.mode,
+    priority: v.priority,
+    status: v.status as ScheduledTaskStatus,
+    createdAt: v.createdAt,
+    scheduledAt: v.scheduledAt,
+    startedAt: v.startedAt,
+    completedAt: v.completedAt,
+    retries: v.retries,
+    maxRetries: v.maxRetries,
+    timeoutMs: v.timeoutMs,
+    lastError: v.lastError as KoiError | undefined,
+    metadata: v.metadata,
+  };
+}
+
+function reconstructSchedule(v: PersistedSchedule): CronSchedule {
+  return {
+    id: v.id as ScheduleId,
+    expression: v.expression,
+    agentId: v.agentId as AgentId,
+    input: v.input as unknown as EngineInput,
+    mode: v.mode,
+    timezone: v.timezone,
+    paused: v.paused,
+  };
+}
 
 function toTaskId(id: string): TaskId {
   return id as TaskId;
@@ -76,6 +167,17 @@ function assertJsonSafeValue(value: unknown, path: string): void {
           assertJsonSafeValue(value[i], `${path}[${i}]`);
         }
       } else {
+        // Reject non-plain objects: Date, Map, Set, Error, typed arrays, class instances
+        // all stringify lossily (empty object, string coercion, etc.) without throwing.
+        const proto = Object.getPrototypeOf(value) as object | null;
+        if (proto !== Object.prototype && proto !== null) {
+          const ctorName =
+            (value as { constructor?: { name?: string } }).constructor?.name ?? "unknown";
+          throw new Error(
+            `schedule() payload contains a non-plain object (${ctorName}) at "${path}". ` +
+              "Only plain JSON values are allowed — remove Dates, Maps, Sets, class instances, and typed arrays.",
+          );
+        }
         for (const key of Object.keys(value)) {
           assertJsonSafeValue((value as Record<string, unknown>)[key], `${path}.${key}`);
         }
@@ -139,18 +241,14 @@ export interface TemporalSchedulerConfig {
   readonly client: TemporalClientLike;
   readonly taskQueue: string;
   readonly workflowType: string;
+  /**
+   * Path to a JSON file for durable state persistence. When provided, task/schedule
+   * state is written on each mutation and restored on startup, preserving management
+   * API visibility across process restarts. When absent, state is ephemeral.
+   */
+  readonly dbPath?: string | undefined;
 }
 
-/**
- * Creates a Temporal-backed TaskScheduler.
- *
- * **In-memory limitation**: task/schedule state is stored in ephemeral Maps.
- * After a process restart, `cancel()`, `query()`, `history()`, `pause()`, and
- * `resume()` lose visibility into previously-created Temporal resources. For spawn
- * tasks, `cancel(taskId)` still attempts a remote cancel because the taskId equals
- * the workflowId at submission time. Dispatch-mode resources cannot be recovered
- * this way. For production reliability, back this with an external state store.
- */
 export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskScheduler {
   const tasks = new Map<string, ScheduledTask>();
   const schedules = new Map<string, CronSchedule>();
@@ -160,6 +258,59 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const cancelledTaskIds = new Set<string>();
   // Maps taskId → the actual Temporal workflowId used (spawn = task id, dispatch = agentId)
   const taskWorkflowIds = new Map<string, string>();
+
+  // Restore state from disk if dbPath is configured and a prior snapshot exists.
+  if (config.dbPath !== undefined) {
+    const saved = loadStateSync(config.dbPath);
+    if (saved !== undefined) {
+      for (const [k, v] of saved.tasks) tasks.set(k, reconstructTask(v));
+      for (const [k, v] of saved.taskWorkflowIds) taskWorkflowIds.set(k, v);
+      for (const id of saved.cancelledTaskIds) cancelledTaskIds.add(id);
+      for (const [k, v] of saved.schedules) schedules.set(k, reconstructSchedule(v));
+      for (const record of saved.history) history.push(record);
+    }
+  }
+
+  function persist(): void {
+    if (config.dbPath === undefined) return;
+    saveStateSync(config.dbPath, {
+      tasks: [...tasks.entries()].map(([k, v]) => [
+        k,
+        {
+          id: v.id,
+          agentId: v.agentId,
+          mode: v.mode,
+          input: mapEngineInputToScheduledPayload(v.input),
+          priority: v.priority,
+          status: v.status,
+          createdAt: v.createdAt,
+          scheduledAt: v.scheduledAt,
+          startedAt: v.startedAt,
+          completedAt: v.completedAt,
+          retries: v.retries,
+          maxRetries: v.maxRetries,
+          timeoutMs: v.timeoutMs,
+          lastError: v.lastError,
+          metadata: v.metadata as Record<string, unknown> | undefined,
+        } satisfies PersistedTask,
+      ]),
+      taskWorkflowIds: [...taskWorkflowIds.entries()],
+      cancelledTaskIds: [...cancelledTaskIds],
+      schedules: [...schedules.entries()].map(([k, v]) => [
+        k,
+        {
+          id: v.id,
+          expression: v.expression,
+          agentId: v.agentId,
+          mode: v.mode,
+          input: mapEngineInputToScheduledPayload(v.input),
+          timezone: v.timezone,
+          paused: v.paused,
+        } satisfies PersistedSchedule,
+      ]),
+      history,
+    });
+  }
 
   function emit(event: SchedulerEvent): void {
     for (const listener of eventListeners) {
@@ -297,6 +448,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           retryAttempt: 0,
         });
         emit({ kind: "task:failed", taskId: id, error: koiError });
+        persist();
         throw new Error(`submit() could not reach Temporal for agent ${agentId}: ${errorMsg}`, {
           cause: err,
         });
@@ -322,11 +474,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           retryAttempt: 0,
         });
         emit({ kind: "task:completed", taskId: id, result: undefined });
+        persist();
       } else {
         // Spawn: track actual workflow completion via getResult.
         // Gate on cancelledTaskIds so a raced cancel wins and prevents double terminal events.
         const runningTask: ScheduledTask = { ...task, status: "running" };
         tasks.set(id, runningTask);
+        persist();
         const startedAt = now;
         void config.client.workflow.getResult(targetWorkflowId).then(
           (result: unknown) => {
@@ -344,6 +498,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               retryAttempt: 0,
             });
             emit({ kind: "task:completed", taskId: id, result });
+            persist();
           },
           (error: unknown) => {
             if (cancelledTaskIds.has(id)) return;
@@ -366,6 +521,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               retryAttempt: 0,
             });
             emit({ kind: "task:failed", taskId: id, error: koiError });
+            persist();
           },
         );
       }
@@ -388,6 +544,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         await config.client.workflow.cancel(targetId);
         tasks.set(id, { ...task, status: "failed" });
         emit({ kind: "task:cancelled", taskId: id });
+        persist();
         return true;
       } catch {
         cancelledTaskIds.delete(id);
@@ -476,6 +633,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       schedules.set(id, schedule);
       emit({ kind: "schedule:created", schedule });
+      persist();
       return id;
     },
 
@@ -485,6 +643,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         await config.client.schedule.delete(id);
         schedules.delete(id);
         emit({ kind: "schedule:removed", scheduleId: id });
+        persist();
         return true;
       } catch {
         return false;
@@ -498,6 +657,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         await config.client.schedule.pause(id);
         schedules.set(id, { ...schedule, paused: true });
         emit({ kind: "schedule:paused", scheduleId: id });
+        persist();
         return true;
       } catch {
         return false;
@@ -511,6 +671,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         await config.client.schedule.unpause(id);
         schedules.set(id, { ...schedule, paused: false });
         emit({ kind: "schedule:resumed", scheduleId: id });
+        persist();
         return true;
       } catch {
         return false;

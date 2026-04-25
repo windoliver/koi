@@ -129,12 +129,16 @@ export function createTemporalHealthMonitor(
 
   let consecutiveFailures = 0;
   let lastCheckAt = 0;
-  let lastStatus: TemporalHealthStatus = "healthy";
+  // Fail closed: isAvailable() returns false until the first probe completes,
+  // preventing traffic to Temporal before connectivity is confirmed.
+  let firstProbeCompleted = false;
+  let lastStatus: TemporalHealthStatus = "degraded";
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let pollInFlight = false;
   const listeners: Set<(snapshot: TemporalHealthSnapshot) => void> = new Set();
 
   function computeStatus(): TemporalHealthStatus {
+    if (!firstProbeCompleted) return "degraded";
     const snap = circuit.getSnapshot();
     switch (snap.state) {
       case "CLOSED":
@@ -188,6 +192,7 @@ export function createTemporalHealthMonitor(
         consecutiveFailures++;
         circuit.recordFailure();
       }
+      firstProbeCompleted = true;
       notifyIfChanged();
     } finally {
       pollInFlight = false;
@@ -198,7 +203,7 @@ export function createTemporalHealthMonitor(
     snapshot: buildSnapshot,
 
     isAvailable(): boolean {
-      return circuit.isAllowed();
+      return firstProbeCompleted && circuit.isAllowed();
     },
 
     onStatusChange(listener) {
