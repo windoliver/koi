@@ -1023,7 +1023,7 @@ describe("createTemporalScheduler", () => {
         cancel: mock(async () => {}),
         describe: mock(async () => ({
           status: "RUNNING" as const,
-          memo: { workflowType: "agentWorkflow", taskQueue: "test" },
+          memo: { agentId: "some-agent", workflowType: "agentWorkflow", taskQueue: "test" },
         })),
       },
       schedule: {
