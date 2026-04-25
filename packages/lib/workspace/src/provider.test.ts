@@ -221,6 +221,27 @@ describe("createWorkspaceProvider", () => {
     await provider.detach?.(agent);
   });
 
+  it("cleanupPolicy=never reattach recreates workspace when preserved one is unhealthy", async () => {
+    let healthy = true;
+    const unhealthyBackend = makeBackend({
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return healthy;
+      },
+    });
+    const provider = createWorkspaceProvider({ backend: unhealthyBackend, cleanupPolicy: "never" });
+    const agent = makeAgent();
+    await provider.attach(agent);
+    await provider.detach?.(agent);
+
+    // Simulate external deletion of the worktree
+    healthy = false;
+
+    // Reattach — preserved workspace is unhealthy, so a new one must be created
+    await provider.attach(agent);
+    expect(unhealthyBackend.created.length).toBe(2); // new workspace created
+    await provider.detach?.(agent);
+  });
+
   it("postCreate + dispose both fail: tracks workspace for retry and throws combined error", async () => {
     const failDisposeBackend = makeBackend({
       async dispose(): Promise<Result<void, KoiError>> {

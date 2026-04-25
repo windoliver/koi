@@ -143,4 +143,23 @@ describe("createGitWorktreeBackend", () => {
       "must not be inside the repository",
     );
   });
+
+  it("findByAgentId locates a workspace by branch naming convention", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    const found = await backend.findByAgentId?.(aid);
+    expect(found).toBe(ws.id);
+
+    await backend.dispose(ws.id);
+  });
+
+  it("findByAgentId returns undefined when no workspace for that agent", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const found = await backend.findByAgentId?.(agentId("unknown-agent"));
+    expect(found).toBeUndefined();
+  });
 });

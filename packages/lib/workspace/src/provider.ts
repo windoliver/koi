@@ -69,9 +69,14 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         const staleInfo = attached.get(agentId);
 
         // Under cleanupPolicy="never", reuse the preserved workspace rather than creating
-        // a new one — auto-disposing would destroy the workspace the operator asked to keep.
+        // a new one. Validate liveness first — the worktree may have been manually deleted
+        // or pruned since detach. If unhealthy, drop the stale entry and recreate.
         if (staleInfo !== undefined && policy === "never") {
-          return makeResult(staleInfo);
+          const healthy = await config.backend.isHealthy(staleInfo.id);
+          if (healthy) {
+            return makeResult(staleInfo);
+          }
+          attached.delete(agentId);
         }
 
         // For non-"never" policies, also scan via findByAgentId for workspaces that survived

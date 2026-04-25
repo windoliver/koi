@@ -174,24 +174,33 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     },
 
     async findByAgentId(searchAgentId: AgentId): Promise<WorkspaceId | undefined> {
+      // Derive ownership from the git-owned branch name (set at create time, not writable
+      // by agent code) rather than the .koi-workspace marker inside the worktree.
+      // Branch format: workspace/<safeAgentSlug>/<wsId>
+      const expectedSlug = (searchAgentId as string)
+        .replace(/[^a-zA-Z0-9_]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       if (!listResult.ok) return undefined;
 
       const blocks = listResult.value.split(/\n\n+/);
       for (const block of blocks) {
         const lines = block.trim().split("\n");
-        const pathLine = lines.find((l) => l.startsWith("worktree "));
-        if (!pathLine) continue;
-        const path = pathLine.slice("worktree ".length).trim();
-        try {
-          const markerText = await Bun.file(join(path, ".koi-workspace")).text();
-          const marker = JSON.parse(markerText) as WorkspaceMarker;
-          if (marker.agentId === (searchAgentId as string) && typeof marker.id === "string") {
-            return workspaceId(marker.id);
-          }
-        } catch {
-          // Marker missing or unreadable — skip
-        }
+        const branchRef =
+          lines
+            .find((l) => l.startsWith("branch "))
+            ?.slice("branch ".length)
+            .trim() ?? "";
+        const branchName = branchRef.startsWith("refs/heads/")
+          ? branchRef.slice("refs/heads/".length)
+          : branchRef;
+        // Expected: workspace/<expectedSlug>/<wsId>
+        const parts = branchName.split("/");
+        if (parts.length !== 3 || parts[0] !== "workspace" || parts[1] !== expectedSlug) continue;
+        const wsId = parts[2];
+        if (wsId) return workspaceId(wsId);
       }
       return undefined;
     },
