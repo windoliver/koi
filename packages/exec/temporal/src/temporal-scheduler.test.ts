@@ -253,21 +253,21 @@ describe("dispatch mode", () => {
 });
 
 describe("rollback safety", () => {
-  test("workflow.start failure: task recorded as failed, no stale pending state", async () => {
+  test("workflow.start failure: rejects and records task as failed for observability", async () => {
     const client = makeMockClient({
       start: mock(async () => {
         throw new Error("connection refused");
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
-    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
+      "connection refused",
+    );
     const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("failed");
     const records = await scheduler.history({});
     expect(records[0]?.status).toBe("failed");
     expect(records[0]?.error).toContain("connection refused");
-    // task id still returned (caller can observe the failure)
-    expect(typeof id).toBe("string");
   });
 
   test("workflow.start failure: attempts to cancel the orphaned workflow", async () => {
@@ -277,18 +277,18 @@ describe("rollback safety", () => {
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
-    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow();
     expect(client.workflow.cancel).toHaveBeenCalled();
   });
 
-  test("workflow.signal failure after start: task recorded as failed, cancel called", async () => {
+  test("workflow.signal failure after start: rejects and records failed task, cancel called", async () => {
     const client = makeMockClient({
       signal: mock(async () => {
         throw new Error("signal failed");
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
-    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow("signal failed");
     const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("failed");
     expect(client.workflow.cancel).toHaveBeenCalled();
@@ -478,6 +478,24 @@ describe("schedule / unschedule", () => {
     await expect(
       scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", { maxRetries: 3 }),
     ).rejects.toThrow("does not enforce");
+  });
+
+  test("schedule() rejects delayMs — cron schedules fire on the tick, not with a delay", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", { delayMs: 1000 }),
+    ).rejects.toThrow("does not enforce");
+  });
+
+  test("spawn schedule includes explicit workflowId for deterministic Temporal overlap policies", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as { action: { type: string; workflowId: string } };
+    expect(opts.action.type).toBe("startWorkflow");
+    expect(typeof opts.action.workflowId).toBe("string");
+    expect(opts.action.workflowId).toContain("sched:");
   });
 
   test("spawn schedule strips non-serializable EngineInput fields", async () => {

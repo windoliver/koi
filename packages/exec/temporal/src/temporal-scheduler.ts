@@ -297,7 +297,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           retryAttempt: 0,
         });
         emit({ kind: "task:failed", taskId: id, error: koiError });
-        return id;
+        throw new Error(`submit() could not reach Temporal for agent ${agentId}: ${errorMsg}`, {
+          cause: err,
+        });
       }
 
       // Remote calls succeeded — emit submitted then handle mode-specific lifecycle.
@@ -402,9 +404,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     ): Promise<ScheduleId> {
       // timeoutMs and maxRetries cannot be plumbed into Temporal schedule policies —
       // accepting them silently would give callers a false guarantee of enforcement.
-      if (options?.timeoutMs !== undefined || options?.maxRetries !== undefined) {
+      if (
+        options?.timeoutMs !== undefined ||
+        options?.maxRetries !== undefined ||
+        options?.delayMs !== undefined
+      ) {
         throw new Error(
-          "schedule() does not enforce timeoutMs or maxRetries via Temporal schedule policies. " +
+          "schedule() does not enforce timeoutMs, maxRetries, or delayMs via Temporal schedule policies. " +
             "Remove these options or implement them inside the target workflow.",
         );
       }
@@ -445,6 +451,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           type: "startWorkflow",
           workflowType: config.workflowType,
           taskQueue: config.taskQueue,
+          // Explicit workflowId so Temporal can apply overlap/reuse policies deterministically.
+          // The schedule ID is the stable base; Temporal's overlap policy governs concurrent firings.
+          workflowId: id,
           args: [spawnArgs],
         };
       } else {
