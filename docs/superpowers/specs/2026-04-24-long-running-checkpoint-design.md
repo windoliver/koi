@@ -101,6 +101,22 @@ type WorkerHandle = string; // opaque, supervisor-defined; MUST embed
                             // "unit:koi-worker@invocation=def-456").
 ```
 
+**One-session-per-worker isolation (mandatory).** A given
+`WorkerHandle` MUST identify a worker that runs at most ONE
+long-running harness session at a time. The supervisor's
+`killAndConfirm(handle)` is necessarily process- (or pod-, or
+unit-) scoped; if multiple long-running sessions shared a worker,
+reclaiming one stale session would terminate every other active
+session in that worker, causing cross-session data loss. Hosts
+deploying this package MUST run each long-running harness in a
+dedicated worker (a dedicated `@koi/daemon` worker process, a
+dedicated pod, a dedicated systemd unit). Multi-session-per-worker
+deployments are explicitly out of scope; if they are needed
+later, the supervisor contract will need a session-scoped kill
+primitive (out of scope for this PR's 500-LOC budget). Reviewers
+SHOULD reject configurations that violate the one-session
+invariant.
+
 **Non-reusability requirement.** `WorkerHandle` MUST include a
 non-reusable identity component so that probe/kill cannot target a
 reused OS identifier. Bare PIDs are NOT acceptable (PIDs are
@@ -362,7 +378,17 @@ interface ForceReclaimInput {
    *      trustedSingleProcess mode.
    */
   readonly evidence:
-    | { readonly kind: "manualHandle"; readonly handle: WorkerHandle; readonly supervisor: Supervisor }
+    | {
+        readonly kind: "manualHandle";
+        readonly handle: WorkerHandle;
+        readonly supervisor: Supervisor;
+        // Required ONLY for the no-binding cases (session record
+        // missing the workerHandle, or session record itself absent).
+        // When set, the durable handle-equality check is skipped and
+        // fencing falls back to (harnessId, sessionId, phase==="active").
+        // The override is logged in audit trail.
+        readonly override?: boolean;
+      }
     | { readonly kind: "hostConfirmedDead" };
 }
 
@@ -1966,6 +1992,7 @@ Additive changes required (part of the coordinated migration):
                         | undefined, KoiError>>
        | Result<...>;
      readonly compareAndPut: (
+       chainId: ChainId,                       // chain target (mandatory)
        expected: ChainHead | undefined,        // undefined = chain empty
        next: T,
      ) => Promise<Result<{ readonly head: ChainHead }, KoiError>>
@@ -1976,10 +2003,16 @@ Additive changes required (part of the coordinated migration):
    }
    ```
 
-   The spec uses `latest()` and `compareAndPut(prev.head, next)` throughout
-   — both must exist in L0 before implementation. Existing `put()` remains
-   for non-advancing writes (e.g. recording orphan snapshots during
-   reconciliation).
+   `chainId` is mandatory on every `compareAndPut`. It both
+   identifies which chain to update under contention AND
+   disambiguates the empty-chain case (`expected === undefined`)
+   for chain creation. `ChainHead` carries position only; chain
+   identity always comes from the explicit `chainId` argument.
+
+   The spec uses `latest(chainId)` and `compareAndPut(chainId,
+   prev.head, next)` throughout — both must exist in L0 before
+   implementation. Existing `put()` remains for non-advancing
+   writes (e.g. recording orphan snapshots during reconciliation).
 
 **`@koi/core` — `SessionRecord`/`SessionStatus`/`SessionPersistence`
 (session.ts):**
