@@ -17,7 +17,6 @@ import type {
   EngineInput,
   KoiError,
   ScheduledTask,
-  ScheduledTaskStatus,
   ScheduleId,
   SchedulerEvent,
   SchedulerStats,
@@ -139,7 +138,11 @@ export function createScheduler(
     if (scheduleStore !== undefined) {
       const schedules = await scheduleStore.loadSchedules();
       for (const sched of schedules) {
-        if (!sched.paused) registerCron(sched);
+        registerCron(sched);
+        if (sched.paused) {
+          const job = cronJobs.get(sched.id);
+          if (job !== undefined) job.pause();
+        }
       }
     }
   }
@@ -353,7 +356,7 @@ export function createScheduler(
     async cancel(id: TaskId): Promise<boolean> {
       const removed = heap.remove((t) => t.id === id);
       if (removed) {
-        await store.updateStatus(id, "completed" as ScheduledTaskStatus);
+        await store.remove(id);
         emit({ kind: "task:cancelled", taskId: id });
         return true;
       }
