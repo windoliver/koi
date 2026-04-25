@@ -72,6 +72,7 @@
     { "path": "../../security/governance-approval-tiers" },
     { "path": "../../security/governance-core" },
     { "path": "../../security/governance-defaults" },
+    { "path": "../../security/governance-delegation" },
     { "path": "../../lib/bash-ast" },
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
