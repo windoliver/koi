@@ -117,25 +117,47 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
 
         // Under "never" policy: reuse the preserved workspace rather than discarding it.
         // In-process reuse (staleInfo from attached map) is always trusted.
-        // Crash-survivor reuse (from findByAgentId) requires a sandboxed backend:
-        // unsandboxed backends share git repo access with the workspace process, so
-        // both ownership (branch naming) and attestation (git refs) can be spoofed.
-        // For unsandboxed crash survivors, dispose and recreate instead.
+        // Crash-survivor reuse (from findByAgentId) requires backend-level recovery proof:
+        // the backend must implement verifySetupComplete, which attests both ownership and
+        // setup completion in a form the provider trusts. Backends without this method
+        // cannot provide a non-forgeable recovery signal; their survivors are disposed+recreated.
+        // When reusing a crash survivor, postCreate is re-run to repair any setup drift
+        // (e.g. files deleted after setup). Callers using cleanupPolicy="never" must ensure
+        // postCreate is idempotent.
         if (staleInfo2 !== undefined && policy === "never") {
           const wsId = staleInfo2.id;
-          if (!setupFailed.has(wsId) && (!isFromCrashRecovery || config.backend.isSandboxed)) {
+          const hasTrustedRecovery =
+            !isFromCrashRecovery || config.backend.verifySetupComplete !== undefined;
+          if (!setupFailed.has(wsId) && hasTrustedRecovery) {
             const [healthy, setupComplete] = await Promise.all([
               config.backend.isHealthy(wsId),
               isSetupComplete(staleInfo2),
             ]);
             if (healthy && setupComplete) {
+              if (isFromCrashRecovery && config.postCreate) {
+                try {
+                  await config.postCreate(staleInfo2);
+                } catch (e: unknown) {
+                  const didDispose = await tryDispose(wsId);
+                  if (!didDispose) {
+                    setupFailed.add(wsId);
+                    attached.set(agentId, staleInfo2);
+                    throw new Error(
+                      `Crash-survivor postCreate failed; cleanup also timed out: workspace ${wsId} is still alive`,
+                      { cause: e },
+                    );
+                  }
+                  attached.delete(agentId);
+                  throw e;
+                }
+              }
               attached.set(agentId, staleInfo2);
               return makeResult(staleInfo2);
             }
           }
           setupFailed.delete(wsId);
           attached.delete(agentId);
-          // Unhealthy, setup incomplete, or unsandboxed crash survivor — dispose + recreate
+          // Unhealthy, setup incomplete, or no trusted recovery proof — dispose + recreate
         }
 
         if (staleInfo2 !== undefined) {

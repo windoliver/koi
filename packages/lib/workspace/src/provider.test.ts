@@ -348,6 +348,7 @@ describe("createWorkspaceProvider", () => {
   it("cleanupPolicy=never reuses crash-surviving workspace found via findByAgentId", async () => {
     // After restart, `attached` map is empty but findByAgentId finds survivor.
     // With never policy, it should be reused if healthy and setup was proven complete.
+    // The backend must implement verifySetupComplete to provide a trusted recovery signal.
     const survivorId = workspaceId("ws-survivor-never");
     const survivorInfo: WorkspaceInfo = {
       id: survivorId,
@@ -355,49 +356,6 @@ describe("createWorkspaceProvider", () => {
       createdAt: Date.now(),
       metadata: {},
     };
-    // Simulate the prior process having written the setup-ok marker after successful setup
-    await writeSetupOkMarker(survivorInfo);
-    try {
-      const backendWithFind = makeBackend({
-        async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
-          return survivorInfo;
-        },
-        isHealthy(_wsId: WorkspaceId): boolean {
-          return true;
-        },
-      });
-      const provider = createWorkspaceProvider({
-        backend: backendWithFind,
-        cleanupPolicy: "never",
-      });
-      const agent = makeAgent();
-
-      const result = await provider.attach(agent);
-      // Survivor should be REUSED, not disposed
-      expect(backendWithFind.disposed).not.toContain(survivorId);
-      // No new workspace created — existing one reused
-      expect(backendWithFind.created.length).toBe(0);
-      // Returned workspace is the survivor
-      const attachResult = isAttachResult(result) ? result : { components: result, skipped: [] };
-      const ws = attachResult.components.get(WORKSPACE as string) as WorkspaceInfo;
-      expect(ws.id).toBe(survivorId);
-      await provider.detach?.(agent);
-    } finally {
-      await removeSetupOkMarker(survivorInfo);
-    }
-  });
-
-  it("cleanupPolicy=never disposes and recreates crash-survivor whose setup marker is missing", async () => {
-    // Crash survivor found via findByAgentId but without a setup-ok marker
-    // (setup never completed before crash) — must not be reused.
-    const survivorId = workspaceId("ws-no-setup-marker");
-    const survivorInfo: WorkspaceInfo = {
-      id: survivorId,
-      path: "/tmp/ws-no-setup-marker",
-      createdAt: Date.now(),
-      metadata: {},
-    };
-    // Deliberately NOT writing setup-ok marker
     const backendWithFind = makeBackend({
       async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
         return survivorInfo;
@@ -405,15 +363,122 @@ describe("createWorkspaceProvider", () => {
       isHealthy(_wsId: WorkspaceId): boolean {
         return true;
       },
+      async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
+        return true;
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendWithFind,
+      cleanupPolicy: "never",
+    });
+    const agent = makeAgent();
+
+    const result = await provider.attach(agent);
+    // Survivor should be REUSED, not disposed
+    expect(backendWithFind.disposed).not.toContain(survivorId);
+    // No new workspace created — existing one reused
+    expect(backendWithFind.created.length).toBe(0);
+    // Returned workspace is the survivor
+    const attachResult = isAttachResult(result) ? result : { components: result, skipped: [] };
+    const ws = attachResult.components.get(WORKSPACE as string) as WorkspaceInfo;
+    expect(ws.id).toBe(survivorId);
+    await provider.detach?.(agent);
+  });
+
+  it("cleanupPolicy=never disposes and recreates crash-survivor whose setup was incomplete", async () => {
+    // Crash survivor found via findByAgentId but verifySetupComplete returns false
+    // (setup never completed before crash) — must not be reused.
+    const survivorId = workspaceId("ws-no-setup-complete");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-no-setup-complete",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendWithFind = makeBackend({
+      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
+        return survivorInfo;
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true;
+      },
+      async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
+        return false;
+      },
     });
     const provider = createWorkspaceProvider({ backend: backendWithFind, cleanupPolicy: "never" });
     const agent = makeAgent();
 
     await provider.attach(agent);
-    // Survivor was disposed (no setup marker → treat as incomplete setup)
+    // Survivor was disposed (setup incomplete) and a new workspace created
     expect(backendWithFind.disposed).toContain(survivorId);
-    // A new workspace was created
     expect(backendWithFind.created.length).toBe(1);
+    await provider.detach?.(agent);
+  });
+
+  it("cleanupPolicy=never disposes and recreates crash-survivor when backend has no verifySetupComplete", async () => {
+    // Backend without verifySetupComplete cannot provide trusted recovery proof — recreate.
+    const survivorId = workspaceId("ws-no-trusted-recovery");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-no-trusted-recovery",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendWithFind = makeBackend({
+      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
+        return survivorInfo;
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true;
+      },
+      // No verifySetupComplete — no trusted recovery
+    });
+    const provider = createWorkspaceProvider({ backend: backendWithFind, cleanupPolicy: "never" });
+    const agent = makeAgent();
+
+    await provider.attach(agent);
+    expect(backendWithFind.disposed).toContain(survivorId);
+    expect(backendWithFind.created.length).toBe(1);
+    await provider.detach?.(agent);
+  });
+
+  it("cleanupPolicy=never reruns postCreate on crash-surviving workspace to repair drift", async () => {
+    const survivorId = workspaceId("ws-survivor-rerun");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-survivor-rerun",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    let postCreateCallCount = 0;
+    const backendWithFind = makeBackend({
+      async findByAgentId(_aid: AgentId): Promise<WorkspaceInfo | undefined> {
+        return survivorInfo;
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true;
+      },
+      async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
+        return true;
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendWithFind,
+      cleanupPolicy: "never",
+      postCreate: async (_ws) => {
+        postCreateCallCount++;
+      },
+    });
+    const agent = makeAgent();
+    const result = await provider.attach(agent);
+    // Survivor reused — no new workspace
+    expect(backendWithFind.created.length).toBe(0);
+    // postCreate was rerun to repair any drift
+    expect(postCreateCallCount).toBe(1);
+    const attachResult = isAttachResult(result) ? result : { components: result, skipped: [] };
+    const ws = attachResult.components.get(WORKSPACE as string) as WorkspaceInfo;
+    expect(ws.id).toBe(survivorId);
     await provider.detach?.(agent);
   });
 
