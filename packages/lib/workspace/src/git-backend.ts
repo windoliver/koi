@@ -48,6 +48,9 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const pathLine = lines.find((l) => l.startsWith("worktree "));
       if (!pathLine) continue;
       const path = pathLine.slice("worktree ".length).trim();
+      // Scope to this backend's base path — prevents cross-instance disposal when two
+      // providers share a repo but use different worktreeBasePath roots.
+      if (!path.startsWith(resolvedBase + sep)) continue;
       const branchRef =
         lines
           .find((l) => l.startsWith("branch "))
@@ -264,11 +267,28 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     },
 
     async verifySetupComplete(wsId: WorkspaceId): Promise<boolean> {
-      const result = await runGit(
+      const entry = registry.get(wsId);
+      if (!entry) return false;
+      // Verify the attestation ref exists
+      const refResult = await runGit(
         ["rev-parse", "--verify", `refs/koi-setup-ok/${wsId}`],
         config.repoPath,
       );
-      return result.ok;
+      if (!refResult.ok) return false;
+      // Verify the attested commit is still an ancestor of the current branch HEAD.
+      // If the agent hard-reset the branch to a commit before setup, this fails and
+      // we refuse reuse — preventing resurrection of pre-setup state after a crash.
+      // Forward commits (normal agent work) are fine: the attested commit remains reachable.
+      const ancestorResult = await runGit(
+        [
+          "merge-base",
+          "--is-ancestor",
+          `refs/koi-setup-ok/${wsId}`,
+          `refs/heads/${entry.branchName}`,
+        ],
+        config.repoPath,
+      );
+      return ancestorResult.ok;
     },
   };
 }

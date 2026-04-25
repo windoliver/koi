@@ -209,4 +209,92 @@ describe("createGitWorktreeBackend", () => {
       "Cannot attest setup for unknown workspace",
     );
   });
+
+  it("verifySetupComplete returns false after agent hard-resets the branch before the attested commit", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const ws = result.value;
+
+    // Make a commit in the worktree so there is a parent to reset to
+    await writeFile(join(ws.path, "agent-work.txt"), "work");
+    const a = Bun.spawn(["git", "add", "."], { cwd: ws.path });
+    await a.exited;
+    const c = Bun.spawn(["git", "commit", "-m", "agent work", "--no-verify"], {
+      cwd: ws.path,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_AUTHOR_NAME: "T",
+        GIT_COMMITTER_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "T",
+      },
+    });
+    await c.exited;
+
+    // Attest AFTER the commit — attested SHA is the commit above
+    await backend.attestSetupComplete?.(ws.id);
+    expect(await backend.verifySetupComplete?.(ws.id)).toBe(true);
+
+    // Agent resets the branch back to the parent (before the attested commit)
+    const r = Bun.spawn(["git", "reset", "--hard", "HEAD~1"], { cwd: ws.path });
+    await r.exited;
+
+    // Attestation should now fail: the attested commit is no longer reachable
+    expect(await backend.verifySetupComplete?.(ws.id)).toBe(false);
+
+    await backend.dispose(ws.id);
+  });
+
+  it("verifySetupComplete remains valid after agent commits more work on top of attested state", async () => {
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const ws = result.value;
+
+    // Attest at creation state, then agent makes a forward commit
+    await backend.attestSetupComplete?.(ws.id);
+
+    await writeFile(join(ws.path, "agent-work.txt"), "work");
+    const a = Bun.spawn(["git", "add", "."], { cwd: ws.path });
+    await a.exited;
+    const c = Bun.spawn(["git", "commit", "-m", "agent work", "--no-verify"], {
+      cwd: ws.path,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_AUTHOR_NAME: "T",
+        GIT_COMMITTER_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "T",
+      },
+    });
+    await c.exited;
+
+    // Verification should still pass: attested commit is an ancestor of current HEAD
+    expect(await backend.verifySetupComplete?.(ws.id)).toBe(true);
+
+    await backend.dispose(ws.id);
+  });
+
+  it("recoverEntry is scoped to this backend's base path", async () => {
+    const basePath1 = join(repoPath, "..", `wt-recover1-${Date.now()}`);
+    const basePath2 = join(repoPath, "..", `wt-recover2-${Date.now()}`);
+    const backend1 = createGitWorktreeBackend({ repoPath, worktreeBasePath: basePath1 });
+    const backend2 = createGitWorktreeBackend({ repoPath, worktreeBasePath: basePath2 });
+
+    const aid2 = agentId("agent-recover");
+    const r2 = await backend2.create(aid2, defaultConfig);
+    expect(r2.ok).toBe(true);
+    if (!r2.ok) return;
+
+    // backend1 should NOT dispose backend2's workspace (recoverEntry is scoped to basePath1)
+    const disposeResult = await backend1.dispose(r2.value.id);
+    // Must fail: workspace is outside backend1's base path
+    expect(disposeResult.ok).toBe(false);
+    if (!disposeResult.ok) expect(disposeResult.error.code).toBe("NOT_FOUND");
+
+    await backend2.dispose(r2.value.id);
+  });
 });
