@@ -763,6 +763,8 @@
         "@koi/rules-loader": "workspace:*",
         "@koi/runtime": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-provider": "workspace:*",
         "@koi/secure-storage": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
@@ -841,6 +843,7 @@
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
+        "@koi/gateway": "workspace:*",
         "@koi/governance-core": "workspace:*",
         "@koi/governance-defaults": "workspace:*",
         "@koi/harness": "workspace:*",
@@ -880,6 +883,8 @@
         "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-provider": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
         "@koi/skill-scanner": "workspace:*",
@@ -1059,6 +1064,24 @@
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/sched/scheduler": {
+      "name": "@koi/scheduler",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "croner": "9.0.0",
+      },
+    },
+    "packages/sched/scheduler-provider": {
+      "name": "@koi/scheduler-provider",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/scheduler": "workspace:*",
       },
     },
     "packages/security/audit-sink-ndjson": {
@@ -1710,6 +1733,10 @@
 
     "@koi/sandbox-os": ["@koi/sandbox-os@workspace:packages/sandbox/sandbox-os"],
 
+    "@koi/scheduler": ["@koi/scheduler@workspace:packages/sched/scheduler"],
+
+    "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/sched/scheduler-provider"],
+
     "@koi/secure-storage": ["@koi/secure-storage@workspace:packages/lib/secure-storage"],
 
     "@koi/session": ["@koi/session@workspace:packages/lib/session"],
@@ -2339,6 +2366,8 @@
     "cookie-signature": ["cookie-signature@1.2.2", "", {}, "sha512-D76uU73ulSXrD1UXF4KE2TMxVVwhsnCgfAyTg9k8P6KGZjlXKrOLe4dJQKI3Bxi5wjesZoFXJWElNWBjPZMbhg=="],
 
     "cors": ["cors@2.8.6", "", { "dependencies": { "object-assign": "^4", "vary": "^1" } }, "sha512-tJtZBBHA6vjIAaF6EnIaq6laBBP9aq/Y3ouVJjEfoHbRBcHBAHYcMh/w8LDrk2PvIMMq8gmopa5D4V8RmbrxGw=="],
+
+    "croner": ["croner@9.0.0", "", {}, "sha512-onMB0OkDjkXunhdW9htFjEhqrD54+M94i6ackoUkjHKbRnXdyEyKRelp4nJ1kAz32+s27jP1FsebpJCVl0BsvA=="],
 
     "cross-spawn": ["cross-spawn@7.0.6", "", { "dependencies": { "path-key": "^3.1.0", "shebang-command": "^2.0.0", "which": "^2.0.1" } }, "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA=="],
 

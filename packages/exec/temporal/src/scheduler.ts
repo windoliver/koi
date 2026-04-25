@@ -758,6 +758,10 @@ export function createTemporalScheduler(
       return results;
     },
 
+    querySchedules(agentId: AgentId): readonly CronSchedule[] {
+      return [...schedules.values()].filter((s) => s.agentId === agentId);
+    },
+
     watch(listener): () => void {
       listeners.add(listener);
       return () => {

@@ -484,3 +484,13 @@ E2E_TESTS=1 bun test packages/engine/src/__tests__/e2e-scheduler.test.ts
 | 6 | Multi-tool sequence | schedule + pause + resume + history in one agent turn |
 | 7 | SCHEDULER token access | Real scheduler via ECS component token |
 | 8 | Real scheduler round-trip | schedule + pause + verify + resume + verify + history |
+
+## TUI Wiring (#1384)
+
+`@koi/scheduler-provider` is wired into the TUI via the `schedulerStack` preset
+(`packages/meta/cli/src/preset-stacks/scheduler.ts`). The preset creates an in-memory
+SQLite database, a no-op dispatcher (TUI sessions don't spawn real agents), and pins
+the agentId from `AGENT_ID_HOST_KEY` in the host context (falls back to `"tui"`).
+
+Each of the 9 `Tool` objects returned by `createSchedulerProvider()` is wrapped in a
+`createSingleToolProvider` so it participates in the normal ECS assembly lifecycle.
