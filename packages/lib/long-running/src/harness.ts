@@ -29,6 +29,7 @@ import type {
   SessionRecord,
   SnapshotNode,
   Task,
+  TaskResult,
 } from "@koi/core";
 import { chainId as toChainId, sessionId as toSessionId } from "@koi/core";
 
@@ -506,11 +507,15 @@ export function createLongRunningHarness(
     let foundStartedAt: number | undefined;
     const tNow = now();
     const items = state.taskBoard.items.map((t: Task) => {
-      if (t.id === taskId && (t.status === "pending" || t.status === "in_progress")) {
+      // L0 task-board contract: only `in_progress` may transition to
+      // `completed` / `failed`. A `pending` task must first be started.
+      // Reject stale/out-of-order callbacks for `pending` tasks here so
+      // we never short-circuit `remaining === 0` from an unstarted task.
+      if (t.id === taskId && t.status === "in_progress") {
         found = true;
         foundStartedAt = t.startedAt;
-        // Mirror the L0 task-board terminal-transition rules: clear
-        // transient `activeForm`, bump `version`, set `updatedAt`.
+        // Mirror the L0 terminal-transition rules: clear transient
+        // `activeForm`, bump `version`, set `updatedAt`.
         const next: Task = {
           ...t,
           status: nextStatus,
@@ -532,16 +537,67 @@ export function createLongRunningHarness(
         return "[unserializable]";
       }
     };
+    // Preserve structured TaskResult fields when the caller passes a
+    // result object conforming to the TaskResult shape. Each optional
+    // field is validated to be JSON-safe before passthrough — the
+    // snapshot store serializes via JSON.stringify, and a non-JSON-safe
+    // payload must not be allowed to brick durable snapshot writes.
+    const isJsonSafe = (v: unknown): boolean => {
+      try {
+        JSON.stringify(v);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const clampDuration = (n: number, fallback: number): number =>
+      Number.isFinite(n) && n >= 0 ? n : fallback;
+    const buildResult = (v: unknown): TaskResult => {
+      const fallbackDuration =
+        foundStartedAt !== undefined ? Math.max(0, tNow - foundStartedAt) : 0;
+      if (v !== null && typeof v === "object") {
+        const r = v as Partial<TaskResult> & Record<string, unknown>;
+        const hasOutput = typeof r.output === "string";
+        const hasDuration = typeof r.durationMs === "number";
+        if (hasOutput || hasDuration) {
+          const base: TaskResult = {
+            taskId: taskId as Task["id"],
+            output: hasOutput ? (r.output as string) : safeStringify(v),
+            durationMs: hasDuration
+              ? clampDuration(r.durationMs as number, fallbackDuration)
+              : fallbackDuration,
+          };
+          // Pass-through optional structured fields only if they are
+          // JSON-safe. Anything cyclic or otherwise non-serializable is
+          // dropped — better to lose the field than corrupt the snapshot.
+          const extras: Partial<TaskResult> = {};
+          if (r.results !== undefined && isJsonSafe(r.results)) {
+            (extras as Record<string, unknown>).results = r.results;
+          }
+          if (Array.isArray(r.artifacts) && isJsonSafe(r.artifacts)) {
+            (extras as Record<string, unknown>).artifacts = r.artifacts;
+          }
+          if (Array.isArray(r.decisions) && isJsonSafe(r.decisions)) {
+            (extras as Record<string, unknown>).decisions = r.decisions;
+          }
+          if (Array.isArray(r.warnings) && r.warnings.every((w) => typeof w === "string")) {
+            (extras as Record<string, unknown>).warnings = r.warnings;
+          }
+          if (r.metadata !== undefined && isJsonSafe(r.metadata)) {
+            (extras as Record<string, unknown>).metadata = r.metadata;
+          }
+          return { ...base, ...extras };
+        }
+      }
+      return {
+        taskId: taskId as Task["id"],
+        output: safeStringify(v),
+        durationMs: fallbackDuration,
+      };
+    };
     const results =
       found && nextStatus === "completed"
-        ? [
-            ...state.taskBoard.results,
-            {
-              taskId: taskId as Task["id"],
-              output: safeStringify(result),
-              durationMs: foundStartedAt !== undefined ? Math.max(0, tNow - foundStartedAt) : 0,
-            },
-          ]
+        ? [...state.taskBoard.results, buildResult(result)]
         : state.taskBoard.results;
     const taskBoard = { items, results };
     const remaining = items.filter(
@@ -618,7 +674,19 @@ export function createLongRunningHarness(
         const e = verifyLease(lease);
         if (e) return { ok: false, error: e };
         if (taskError.retryable) return softCheckpoint();
-        const { delta } = buildTaskUpdateDelta(taskId, "failed", null, taskError);
+        const { delta, found } = buildTaskUpdateDelta(taskId, "failed", null, taskError);
+        // Reject stale/out-of-order callbacks for a non-empty board: the
+        // L0 contract only allows in_progress -> failed, and we must not
+        // publish a `failed` harness while leaving a pending task with
+        // no recorded error on the board.
+        if (!found && state.taskBoard.items.length > 0) {
+          return {
+            ok: false,
+            error: err("NOT_FOUND", `task ${taskId} not in_progress on board`, false, {
+              taskId,
+            }),
+          };
+        }
         return publishTerminal("failed", taskError.message, () => delta);
       }),
     dispose: (lease) =>
