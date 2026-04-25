@@ -219,10 +219,25 @@ interface Supervisor {
 ```
 
 **Reclaim probe-then-kill protocol.** Reclaim resolves the worker
-handle via `loadSession(prev.lastSessionId).workerHandle` first. If
-the session record is missing the handle (legacy data, activation
-crash before handle persistence), or the session record itself is
-missing for the entire orphan-detection window, reclaim returns
+handle from TWO durable sources, in priority order:
+1. `prev.workerHandle` directly off the active `HarnessSnapshot`
+   (the snapshot itself carries the active worker's handle —
+   added to the L0 prereqs as `HarnessSnapshot.workerHandle:
+   WorkerHandle | undefined`, written at the same activation step
+   that mints the handle and persists the session record).
+2. `loadSession(prev.lastSessionId).workerHandle` as the fallback
+   for activation paths that wrote the session record before the
+   snapshot CAS but didn't yet propagate the handle to the
+   snapshot (transient state during the brief window inside
+   activation).
+
+Carrying the handle on the snapshot makes reclaim robust to
+session-record loss: a corrupt or pruned session row no longer
+strands the snapshot chain in `active`, because the chain itself
+records the supervisor identity that must be fenced.
+
+If BOTH sources are missing the handle (snapshot lacks it AND
+session record is absent or missing the field) reclaim returns
 `Err(WORKER_HANDLE_MISSING, retryable: false)` — there is no safe
 automatic takeover without the durable supervisor identity, so the
 package never falls back to a sessionId-based kill. Recovery in
@@ -503,13 +518,27 @@ Behavior:
    `override` and a strict-binding case present (workerHandle
    exists), the override is ignored (the strict equality check
    still applies).
-1b. **Mode fencing.** `hostConfirmedDead` evidence is ONLY accepted
-   for harnesses configured with `trustedSingleProcess === true`.
-   `manualHandle` evidence is ONLY accepted for harnesses with a
-   `Supervisor`. The harness mode is recorded on the
-   `HarnessSnapshot` (new `mode: "supervised" | "trustedSingleProcess"`
-   field — added to the L0 prereqs) so forceReclaim can read it
-   alongside `prev`. Wrong-mode evidence returns
+1b. **Mode fencing.** Evidence shape is mode-gated as follows:
+   - `{ kind: "hostConfirmedDead" }` (no supervisor): ONLY accepted
+     for harnesses configured with `trustedSingleProcess === true`.
+   - `{ kind: "manualHandle" }` without `override`: ONLY accepted
+     for supervised harnesses (mode = `"supervised"`).
+   - `{ kind: "manualHandle", override: true, hostConfirmedDead:
+     true, ... }`: accepted in BOTH modes — this is the canonical
+     supervised override path for `WORKER_HANDLE_MISSING` /
+     missing-session cases. The `hostConfirmedDead` flag inside
+     `manualHandle` evidence is NOT the same code path as the
+     standalone `{ kind: "hostConfirmedDead" }` evidence: the
+     standalone form is supervisor-less recovery for trusted
+     mode; the flag-on-manualHandle form is supervised recovery
+     with combined operator+supervisor evidence.
+
+   The harness mode is recorded on the `HarnessSnapshot` (new
+   `mode: "supervised" | "trustedSingleProcess"` field — added to
+   the L0 prereqs) so forceReclaim can read it alongside `prev`.
+   Wrong-mode evidence (e.g., standalone `hostConfirmedDead` for
+   a supervised harness, or plain `manualHandle` without override
+   for a trusted harness) returns
    `Err(INVALID_CONFIG, retryable: false)`.
 2. For `manualHandle` evidence: run the supervisor probe-then-kill
    protocol against the supplied handle. Live owner →
@@ -2206,10 +2235,22 @@ Additive changes required (part of the coordinated migration):
 
 10. `HarnessSnapshot.mode: "supervised" | "trustedSingleProcess"`
    — recorded at activation so `forceReclaim` can mode-fence
-   evidence (`hostConfirmedDead` only for trusted mode;
-   `manualHandle` only for supervised). Mode is immutable per
-   harness; it is set from `LongRunningConfig` at the first
-   `start()` and preserved across resumes.
+   evidence (standalone `hostConfirmedDead` only for trusted
+   mode; plain `manualHandle` only for supervised; combined
+   `manualHandle + override + hostConfirmedDead` accepted in
+   both). Mode is immutable per harness; it is set from
+   `LongRunningConfig` at the first `start()` and preserved
+   across resumes.
+
+11. `HarnessSnapshot.workerHandle: WorkerHandle | undefined` —
+   duplicate of `SessionRecord.workerHandle` carried on the
+   snapshot itself, written at the activation CAS that publishes
+   `phase: "active"`. Reclaim's primary lookup; the session-row
+   handle is the secondary fallback. Carrying the handle on the
+   snapshot makes reclaim robust to loss/corruption of the
+   session-persistence row — a single session row going missing
+   no longer wedges the chain in `active`. Set to `undefined`
+   when the snapshot's phase is non-`active`.
 
 These land across the migration PRs listed above, not a single "prereq PR".
 Implementation of `@koi/long-running` is blocked on ALL of the above.
