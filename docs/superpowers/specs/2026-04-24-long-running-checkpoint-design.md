@@ -387,19 +387,65 @@ as `dispose`:
      violation: a peer reclaiming later would replay already-emitted
      side effects.
 
-     **Terminal intent (durable).** Before the engine starts executing
-     a task's terminal branch (task-completion handler, final model
-     call, etc.), the caller MUST invoke
-     `harness.recordTerminalIntent(lease, taskId)`, which writes a
-     dedicated `TerminalIntent` record via
-     `sessionPersistence.recordTerminalIntent(sid, taskId, ts)`. This
-     is a separate durable write keyed by `(sessionId, taskId)`;
-     when any harness (same process or a reclaimer) performs
-     reclamation, it first reads all pending terminal intents and
-     treats those tasks as IF they had been marked terminal in the
-     task board, regardless of what the snapshot says. A fresh
-     process reclaiming a pre-terminal snapshot thus sees the intent
-     record and refuses to replay the terminal branch.
+     **TerminalOutcome (durable, outcome-carrying).** There is NO
+     caller-visible "record-intent-before-branch" API; it would be too
+     easy for callers to forget and would not prove the branch
+     completed. Instead, `completeTask(lease, id, result)`,
+     `failTask(lease, id, err)`, `fail(lease, err)`, and timeout
+     handlers internally use the following ordering:
+
+     1. Validate lease, revoke lease, quiesce engine (phase-machine
+        steps 1–5).
+     2. **Write a durable `TerminalOutcome` record** via
+        `sessionPersistence.recordTerminalOutcome(sid, outcome)`.
+        `outcome` is a discriminated union carrying the full terminal
+        result:
+        ```
+        type TerminalOutcome =
+          | { kind: "task-completed"; taskId: TaskItemId; result: TaskResult }
+          | { kind: "task-failed";    taskId: TaskItemId; error: KoiError }
+          | { kind: "harness-failed"; error: KoiError }  // fail()/timeout
+          | { kind: "harness-completed" };               // all tasks done
+        ```
+        The record is keyed by `(sessionId, monotonically-increasing seq)`
+        so a session can have multiple outcomes (task-level + eventual
+        harness-level). The write is durable and must succeed before
+        the snapshot CAS is attempted. Failure at this step: retry 4
+        times with backoff, then return
+        `Err(TERMINAL_WRITE_FAILED)` — but **engine is already
+        quiesced and the terminal outcome has NOT been committed**,
+        so the reclaimer will see no outcome record and correctly
+        treat the task as still pending.
+     3. Attempt the snapshot CAS to the terminal phase. If it
+        succeeds, the outcome record is redundant (snapshot already
+        encodes it) but harmless. If it fails, background retry +
+        reclaimer-side replay (below).
+
+     **Reclaimer-side replay.** On reclamation, after
+     `killAndConfirm` succeeds, the reclaimer:
+     1. Calls `sessionPersistence.listTerminalOutcomes(sid)` →
+        ordered list of committed outcomes.
+     2. Applies each outcome to the snapshot's task board in order
+        (e.g. `task-completed` → mark `taskId` completed with
+        `result`).
+     3. If the outcomes include `harness-completed` or
+        `harness-failed`, CAS-advances the snapshot directly to
+        `completed`/`failed` with the recorded outcome — this is the
+        deferred terminalization the original process could not
+        finish. No replay of the terminal branch occurs; the
+        branch's side effects and task-board updates are taken from
+        the durable record.
+     4. Otherwise, if only task-level outcomes are recorded,
+        CAS-advances to `suspended` with updated task board, and
+        `resume()` proceeds normally.
+
+     This closes three gaps: the terminal-intent API is internal
+     (callers cannot forget it); "started" is never an authoritative
+     signal (the record is written AFTER the branch's logical
+     completion but BEFORE the snapshot CAS, so it represents a
+     committed outcome, not a started-but-incomplete branch);
+     and the same mechanism covers task-level, harness-fail, and
+     timeout-terminalization paths uniformly.
 
      **Terminal CAS authority.** The CAS itself takes the harness's
      internal head pointer + the next snapshot; it does not need a
@@ -414,13 +460,16 @@ as `dispose`:
      `onDurabilityLost(TERMINAL_WRITE_FAILED)` is invoked on first
      failure and on every backoff tick.
 
-     **Exactly-once across process death.** The combination of
-     `TerminalIntent` + background retry + reclaimer-side intent
-     replay guarantees exactly-once durable terminal state even if the
-     original process dies before the CAS succeeds: the reclaimer sees
-     the intent, does not re-execute, and CAS-advances to the terminal
-     phase itself (using the replay of the intent as evidence — same
-     durable-state contract, different actor).
+     **Exactly-once across process death.** The combination of the
+     durable `TerminalOutcome` record (written before the snapshot
+     CAS) + background retry + reclaimer-side outcome application
+     guarantees exactly-once durable terminal state even if the
+     original process dies before the CAS succeeds: the reclaimer
+     sees the outcome, applies it to the snapshot's task board, and
+     CAS-advances to the terminal phase using the outcome as its
+     authority — same durable-state contract, different actor. The
+     outcome carries the full result, so no re-execution of the
+     terminal branch occurs.
    - **Abort timeout:** do NOT publish the target phase. Keep
      heartbeats alive. Start the same background cleanup watcher
      described in the dispose path: it polls the engine adapter's
@@ -1356,11 +1405,14 @@ Additive changes required (part of the coordinated migration):
 5. `SessionPersistence.setHeartbeat(sessionId, timestampMs)` — dedicated
    cheap-write method so the heartbeat loop does not compete with full
    `saveSession` writes.
-6. `SessionPersistence.recordTerminalIntent(sid, taskId, ts)` +
-   `listTerminalIntents(sid)` — durable record of "this task's terminal
-   branch has started executing"; consulted by reclaimers to enforce
-   exactly-once across process death (see Terminal Intent in phase
-   machine).
+6. `SessionPersistence.recordTerminalOutcome(sid, outcome)` +
+   `listTerminalOutcomes(sid)` — durable records of committed terminal
+   outcomes (`task-completed`, `task-failed`, `harness-failed`,
+   `harness-completed`). Written after engine quiescence but before
+   the snapshot CAS; consulted by reclaimers to apply committed
+   outcomes to the task board and deferred-CAS any missed terminal
+   phase. Enforces exactly-once terminal durable state across process
+   death. See TerminalOutcome in phase machine.
 
 **`@koi/core` — `HarnessStatus` (harness.ts):**
 7. `durability: "ok" | "unhealthy"` — observable degraded-state signal.
