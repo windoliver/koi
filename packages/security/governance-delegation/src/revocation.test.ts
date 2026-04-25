@@ -90,4 +90,25 @@ describe("createMemoryCapabilityRevocationRegistry", () => {
     await reg.register(mkToken("C", "B"));
     expect(await reg.isRevoked(capabilityId("C"))).toBe(true);
   });
+
+  test("out-of-order parent attachment cascades to existing children (codex round-3: medium)", async () => {
+    // Sequence: revoke A → register C as child of B (B unknown) →
+    // register B as child of A. Round-2 marked B revoked but left C
+    // alive because the parents-walk only ran for the token being
+    // registered. Round-3 cascades through existing children.
+    const reg = createMemoryCapabilityRevocationRegistry();
+    await reg.register(mkToken("A"));
+    await reg.revoke(capabilityId("A"), true);
+    // C registered before B exists — at this point C has no known
+    // ancestor chain leading to A.
+    await reg.register(mkToken("C", "B"));
+    expect(await reg.isRevoked(capabilityId("C"))).toBe(false);
+    // Now B is registered under A. A is revoked, so B inherits revoked,
+    // and that revocation must cascade into the already-known descendant
+    // C — otherwise C remains a stale live grant despite a revoked
+    // ancestor.
+    await reg.register(mkToken("B", "A"));
+    expect(await reg.isRevoked(capabilityId("B"))).toBe(true);
+    expect(await reg.isRevoked(capabilityId("C"))).toBe(true);
+  });
 });

@@ -41,6 +41,23 @@ export function createMemoryCapabilityRevocationRegistry(): CapabilityRevocation
     return false;
   }
 
+  function cascadeRevokeFrom(start: CapabilityId): void {
+    const queue: CapabilityId[] = [start];
+    const seen = new Set<CapabilityId>([start]);
+    while (queue.length > 0) {
+      const next = queue.shift();
+      if (next === undefined) break;
+      const kids = children.get(next);
+      if (!kids) continue;
+      for (const kid of kids) {
+        if (seen.has(kid)) continue;
+        seen.add(kid);
+        revoked.add(kid);
+        queue.push(kid);
+      }
+    }
+  }
+
   return {
     register(token: CapabilityToken): void {
       tokens.set(token.id, token);
@@ -50,7 +67,14 @@ export function createMemoryCapabilityRevocationRegistry(): CapabilityRevocation
         children.set(token.parentId, set);
         parents.set(token.id, token.parentId);
         if (isAnyAncestorRevoked(token.parentId)) {
+          // Token's ancestor is revoked — mark this token AND cascade to
+          // any descendants that were registered before this token's
+          // parent edge existed. Without the cascade step, an
+          // out-of-order registration sequence (revoke A → register C
+          // as child of B → register B as child of A) leaves C alive
+          // despite A's revocation having already been declared.
           revoked.add(token.id);
+          cascadeRevokeFrom(token.id);
         }
       }
     },
@@ -60,20 +84,7 @@ export function createMemoryCapabilityRevocationRegistry(): CapabilityRevocation
     revoke(id: CapabilityId, cascade: boolean): void {
       revoked.add(id);
       if (!cascade) return;
-      const queue: CapabilityId[] = [id];
-      const seen = new Set<CapabilityId>([id]);
-      while (queue.length > 0) {
-        const next = queue.shift();
-        if (next === undefined) break;
-        const kids = children.get(next);
-        if (!kids) continue;
-        for (const kid of kids) {
-          if (seen.has(kid)) continue;
-          seen.add(kid);
-          revoked.add(kid);
-          queue.push(kid);
-        }
-      }
+      cascadeRevokeFrom(id);
     },
     get(id: CapabilityId): CapabilityToken | undefined {
       return tokens.get(id);

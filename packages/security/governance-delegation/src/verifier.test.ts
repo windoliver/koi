@@ -137,7 +137,7 @@ describe("createCapabilityVerifier", () => {
     const { token } = await newHmacRoot();
     const verifier = createCapabilityVerifier({
       // No hmac key configured.
-      ed25519: { publicKeys: new Map() },
+      ed25519: { publicKeys: new Map(), issuerKeys: new Map() },
       scopeChecker: createGlobScopeChecker(),
     });
     const result = await verifier.verify(token, ctx());
@@ -181,7 +181,10 @@ describe("createCapabilityVerifier", () => {
       now: () => 1000,
     });
     const verifier = createCapabilityVerifier({
-      ed25519: { publicKeys: new Map([[fp, pubDer]]) },
+      ed25519: {
+        publicKeys: new Map([[fp, pubDer]]),
+        issuerKeys: new Map([[fp, agentId("engine")]]),
+      },
       scopeChecker: createGlobScopeChecker(),
     });
     const result = await verifier.verify(tok, ctx());
@@ -456,6 +459,82 @@ describe("round-2 hardening", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("Ed25519 publicKeys-only mode is no longer permitted — issuerKeys is required (codex round-3: critical)", async () => {
+    // Round-2 left issuerKeys optional. Round-3 closes the fail-open path:
+    // configuring publicKeys without issuerKeys would have allowed any
+    // configured key to sign any claimed issuerId. The TypeScript shape is
+    // now required, but at runtime an attacker-supplied empty issuerKeys
+    // map must still reject every Ed25519 token (no fingerprint bound).
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const pubDer = publicKey.export({ format: "der", type: "spki" });
+    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const fp = Buffer.from(pubDer).toString("base64");
+    const tok = await issueRootCapability({
+      signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      ed25519: {
+        publicKeys: new Map([[fp, pubDer]]),
+        issuerKeys: new Map(), // empty — fingerprint not bound
+      },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(tok, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("non-finite timestamps rejected at verify time (codex round-3: high)", async () => {
+    // Without explicit Number.isFinite gating, NaN expiresAt would make
+    // both `now < createdAt` and `now >= expiresAt` evaluate false, so a
+    // signed token with NaN expiry would verify indefinitely.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const { signHmac } = await import("./hmac.js");
+    const { capabilityId } = await import("@koi/core");
+    const unsigned = {
+      id: capabilityId("nan-token"),
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      chainDepth: 0,
+      maxChainDepth: 3,
+      createdAt: 1000,
+      expiresAt: Number.NaN, // forged
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    const digest = signHmac(unsigned, signer.secret);
+    const forged = { ...unsigned, proof: { kind: "hmac-sha256" as const, digest } };
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(forged, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("non-finite ttlMs rejected at issue time (codex round-3: high)", async () => {
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    await expect(
+      issueRootCapability({
+        signer,
+        issuerId: agentId("engine"),
+        delegateeId: agentId("alice"),
+        scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+        ttlMs: Number.NaN, // would produce expiresAt=NaN
+        maxChainDepth: 3,
+      }),
+    ).rejects.toThrow();
   });
 
   test("default scope checker rejects resource-scoped tokens (codex round-2: high)", async () => {

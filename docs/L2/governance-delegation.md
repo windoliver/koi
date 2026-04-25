@@ -19,12 +19,14 @@ L2 library that implements the L0 capability + delegation contracts in
   - `hmac?: { secret, rootIssuer? }` — HMAC-SHA256 key plus an optional
     AgentId binding. When `rootIssuer` is set, chainDepth=0 tokens whose
     `issuerId` does not match are rejected as `invalid_signature`.
-  - `ed25519?: { publicKeys, issuerKeys? }` — fingerprint→key map plus
-    an optional fingerprint→AgentId binding applied at every chain depth.
-    When `issuerKeys` is set, EVERY Ed25519 token is rejected unless
+  - `ed25519?: { publicKeys, issuerKeys }` — fingerprint→key map plus a
+    REQUIRED fingerprint→AgentId binding applied at every chain depth.
+    EVERY Ed25519 token is rejected unless
     `issuerKeys.get(proof.publicKey) === token.issuerId`. This prevents
     cross-issuer forgery where a configured key for issuer A signs a
-    token claiming issuerId=B (matching some parent's delegateeId).
+    token claiming issuerId=B (matching some parent's delegateeId). The
+    binding is required (not optional) because a fail-open default would
+    leave any deployment that omits it vulnerable to the forgery class.
   - `scopeChecker` (required) — see `createGlobScopeChecker()`.
   - `revocations?: CapabilityRevocationRegistry` — when provided,
     every token id is checked against the registry.
@@ -52,22 +54,27 @@ L2 library that implements the L0 capability + delegation contracts in
 
 For every token (leaf and ancestors):
 
-1. Signature dispatch on `proof.kind` — HMAC, Ed25519, or
+1. **Numeric finiteness** — `createdAt`, `expiresAt`, `chainDepth`,
+   `maxChainDepth`, and `ctx.now` must all be finite (`Number.isFinite`).
+   NaN/Infinity → `invalid_signature`. Without this, a forged NaN
+   `expiresAt` would defeat both `now < createdAt` and `now >= expiresAt`
+   ordered comparisons.
+2. Signature dispatch on `proof.kind` — HMAC, Ed25519, or
    `proof_type_unsupported`. The proof is verified against the
    configured key.
-2. `now < createdAt` → `invalid_signature` (clock skew = tampered).
-3. `now >= expiresAt` → `expired`.
-4. `!activeSessionIds.has(scope.sessionId)` → `session_invalid`.
-5. `revocations?.isRevoked(token.id)` → `revoked`.
-6. **Issuer-key binding** — for HMAC, `hmac.rootIssuer` (when configured)
+3. `now < createdAt` → `invalid_signature` (clock skew = tampered).
+4. `now >= expiresAt` → `expired`.
+5. `!activeSessionIds.has(scope.sessionId)` → `session_invalid`.
+6. `revocations?.isRevoked(token.id)` → `revoked`.
+7. **Issuer-key binding** — for HMAC, `hmac.rootIssuer` (when configured)
    restricts chainDepth=0 tokens to a single issuer. For Ed25519,
-   `ed25519.issuerKeys` (when configured) is enforced at EVERY chain
-   depth: each token's `proof.publicKey` must map to its `issuerId`.
-   Otherwise `invalid_signature`.
+   `ed25519.issuerKeys` is enforced at EVERY chain depth: each token's
+   `proof.publicKey` must map to its `issuerId`. Otherwise
+   `invalid_signature`.
 
 For the leaf token only:
 
-7. **Chain walk** (chainDepth > 0) — via `tokenStore.get(parentId)`,
+8. **Chain walk** (chainDepth > 0) — via `tokenStore.get(parentId)`,
    recursively verify the parent. Without a `tokenStore`, chainDepth>0
    tokens are rejected as `unknown_grant`. The walk enforces:
    - parent.delegateeId === child.issuerId (continuity)
@@ -78,7 +85,7 @@ For the leaf token only:
    - child.scope.sessionId === parent.scope.sessionId
    - `isPermissionSubset(child.permissions, parent.permissions)`
    - resource attenuation (child.resources subset of parent.resources)
-8. **Scope check** — `scopeChecker.isAllowed(toolId, scope)` →
+9. **Scope check** — `scopeChecker.isAllowed(toolId, scope)` →
    `scope_exceeded` on false.
 
 ## Issue-time checks (`delegateCapability`)

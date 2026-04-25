@@ -30,11 +30,16 @@ async function signAndRegister(
 }
 
 export async function issueRootCapability(opts: IssueRootOptions): Promise<CapabilityToken> {
-  if (opts.ttlMs <= 0) throw new Error("issueRootCapability: ttlMs must be > 0");
-  if (opts.maxChainDepth < 0) {
-    throw new Error("issueRootCapability: maxChainDepth must be >= 0");
+  if (!Number.isFinite(opts.ttlMs) || opts.ttlMs <= 0) {
+    throw new Error("issueRootCapability: ttlMs must be a finite number > 0");
+  }
+  if (!Number.isFinite(opts.maxChainDepth) || opts.maxChainDepth < 0) {
+    throw new Error("issueRootCapability: maxChainDepth must be a finite number >= 0");
   }
   const now = opts.now?.() ?? Date.now();
+  if (!Number.isFinite(now)) {
+    throw new Error("issueRootCapability: now() must return a finite number");
+  }
   const unsigned: CapabilityToken = {
     id: capabilityId(randomUUID()),
     issuerId: opts.issuerId,
@@ -94,8 +99,13 @@ function fail(reason: DelegationFailureReason): KoiError {
 export async function delegateCapability(
   opts: DelegateOptions,
 ): Promise<Result<CapabilityToken, KoiError>> {
-  if (opts.ttlMs <= 0) throw new Error("delegateCapability: ttlMs must be > 0");
+  if (!Number.isFinite(opts.ttlMs) || opts.ttlMs <= 0) {
+    throw new Error("delegateCapability: ttlMs must be a finite number > 0");
+  }
   const now = opts.now?.() ?? Date.now();
+  if (!Number.isFinite(now)) {
+    throw new Error("delegateCapability: now() must return a finite number");
+  }
   const parent = opts.parent;
 
   if (parent.expiresAt <= now) {

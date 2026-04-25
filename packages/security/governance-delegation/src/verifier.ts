@@ -20,16 +20,17 @@ export interface CapabilityVerifierOptions {
    */
   readonly hmac?: { readonly secret: Uint8Array; readonly rootIssuer?: AgentId };
   /**
-   * Ed25519 verifier configuration. `issuerKeys` (when set) binds each
-   * public-key fingerprint to the AgentId it is authorized to sign tokens
-   * for, at any chain depth. Every Ed25519 token whose proof.publicKey is
-   * not in the map, or whose issuerId disagrees with the bound AgentId, is
-   * rejected — this prevents cross-issuer forgery where a key configured
-   * for issuer A signs a token claiming issuerId=B.
+   * Ed25519 verifier configuration. `issuerKeys` is REQUIRED — it binds
+   * each public-key fingerprint to the AgentId authorized to sign tokens
+   * for, at any chain depth. Without this binding, any configured key
+   * could sign a token claiming any `issuerId` matching some parent's
+   * delegateeId in the chain, defeating attenuation. Every Ed25519 token
+   * whose `proof.publicKey` is not in `issuerKeys`, or whose `issuerId`
+   * disagrees with the bound AgentId, is rejected.
    */
   readonly ed25519?: {
     readonly publicKeys: ReadonlyMap<string, Uint8Array>;
-    readonly issuerKeys?: ReadonlyMap<string, AgentId>;
+    readonly issuerKeys: ReadonlyMap<string, AgentId>;
   };
   readonly scopeChecker: ScopeChecker;
   readonly revocations?: CapabilityRevocationRegistry;
@@ -75,15 +76,13 @@ async function verifySignature(
       return deny({ ok: false, reason: "invalid_signature" });
     }
     // Issuer-key binding applies at every chain depth, not just root.
-    // Without this, a configured Ed25519 key for issuer A could sign a
-    // child token claiming issuerId=B (matching some parent.delegateeId
-    // in the chain), and the chain walk's continuity check would pass.
-    const map = opts.ed25519.issuerKeys;
-    if (map !== undefined) {
-      const bound = map.get(token.proof.publicKey);
-      if (bound === undefined || bound !== token.issuerId) {
-        return deny({ ok: false, reason: "invalid_signature" });
-      }
+    // Required (not optional) — without this, a configured Ed25519 key
+    // for issuer A could sign a child token claiming issuerId=B (matching
+    // some parent.delegateeId in the chain), and the chain walk's
+    // continuity check would pass.
+    const bound = opts.ed25519.issuerKeys.get(token.proof.publicKey);
+    if (bound === undefined || bound !== token.issuerId) {
+      return deny({ ok: false, reason: "invalid_signature" });
     }
     return undefined;
   }
@@ -114,6 +113,18 @@ async function verifyStructural(
   ctx: VerifyContext,
   opts: CapabilityVerifierOptions,
 ): Promise<CapabilityVerifyResult | undefined> {
+  // Reject non-finite numeric fields up front — NaN/Infinity break every
+  // ordered comparison below (NaN < x and NaN >= x both yield false), so
+  // a token with NaN expiresAt would otherwise verify indefinitely.
+  if (
+    !Number.isFinite(token.createdAt) ||
+    !Number.isFinite(token.expiresAt) ||
+    !Number.isFinite(token.chainDepth) ||
+    !Number.isFinite(token.maxChainDepth) ||
+    !Number.isFinite(ctx.now)
+  ) {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
   const sig = await verifySignature(token, opts);
   if (sig) return sig;
   if (ctx.now < token.createdAt) {
