@@ -345,8 +345,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         history,
       });
     } catch (err: unknown) {
-      // Hard error: log so operators are alerted — silently swallowing would hide data loss
-      console.error("[temporal-scheduler] persistence write failed:", err);
+      // Re-throw so the mutating API call (submit/schedule/cancel/…) surfaces the error to
+      // the caller. The remote Temporal operation may already have succeeded at this point, so
+      // the error message states that explicitly to help operators distinguish the failure mode.
+      throw new Error(
+        "[temporal-scheduler] durability write failed — the Temporal operation was accepted " +
+          "but state tracking could not be persisted. Restart recovery may be incomplete. " +
+          `Cause: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
     }
   }
 
@@ -416,7 +423,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           retryAttempt: 0,
         });
         emit({ kind: "task:completed", taskId: taskId as TaskId, result });
-        persist();
+        try {
+          persist();
+        } catch (e) {
+          console.error("[temporal-scheduler] background persist failed:", e);
+        }
       },
       (error: unknown) => {
         if (disposed || cancelledTaskIds.has(taskId)) return;
@@ -439,7 +450,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           retryAttempt: 0,
         });
         emit({ kind: "task:failed", taskId: taskId as TaskId, error: koiError });
-        persist();
+        try {
+          persist();
+        } catch (e) {
+          console.error("[temporal-scheduler] background persist failed:", e);
+        }
       },
     );
   }
@@ -587,7 +602,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               retryAttempt: 0,
             });
             emit({ kind: "task:completed", taskId: id, result });
-            persist();
+            try {
+              persist();
+            } catch (e) {
+              console.error("[temporal-scheduler] background persist failed:", e);
+            }
           },
           (error: unknown) => {
             if (disposed || cancelledTaskIds.has(id)) return;
@@ -610,7 +629,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               retryAttempt: 0,
             });
             emit({ kind: "task:failed", taskId: id, error: koiError });
-            persist();
+            try {
+              persist();
+            } catch (e) {
+              console.error("[temporal-scheduler] background persist failed:", e);
+            }
           },
         );
       }
@@ -648,16 +671,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       mode: "spawn" | "dispatch",
       options?: TaskOptions & { readonly timezone?: string | undefined },
     ): Promise<ScheduleId> {
-      // timeoutMs and maxRetries cannot be plumbed into Temporal schedule policies —
-      // accepting them silently would give callers a false guarantee of enforcement.
+      // timeoutMs, maxRetries, delayMs, priority, and metadata cannot be plumbed into Temporal
+      // schedule policies — accepting them silently would give callers a false guarantee that
+      // these options survive persistence and affect fired executions.
       if (
         options?.timeoutMs !== undefined ||
         options?.maxRetries !== undefined ||
-        options?.delayMs !== undefined
+        options?.delayMs !== undefined ||
+        options?.priority !== undefined ||
+        options?.metadata !== undefined
       ) {
         throw new Error(
-          "schedule() does not enforce timeoutMs, maxRetries, or delayMs via Temporal schedule policies. " +
-            "Remove these options or implement them inside the target workflow.",
+          "schedule() does not support timeoutMs, maxRetries, delayMs, priority, or metadata — " +
+            "these options cannot be persisted or enforced by Temporal schedule policies. " +
+            "Remove them or implement the constraints inside the target workflow.",
         );
       }
 

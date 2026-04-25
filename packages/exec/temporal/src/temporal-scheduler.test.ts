@@ -470,21 +470,21 @@ describe("schedule / unschedule", () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await expect(
       scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", { timeoutMs: 5000 }),
-    ).rejects.toThrow("does not enforce timeoutMs");
+    ).rejects.toThrow("does not support");
   });
 
   test("schedule() rejects maxRetries to prevent false guarantee of enforcement", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await expect(
       scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", { maxRetries: 3 }),
-    ).rejects.toThrow("does not enforce");
+    ).rejects.toThrow("does not support");
   });
 
   test("schedule() rejects delayMs — cron schedules fire on the tick, not with a delay", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await expect(
       scheduler.schedule("0 0 * * *", AGENT_ID, TEXT_INPUT, "spawn", { delayMs: 1000 }),
-    ).rejects.toThrow("does not enforce");
+    ).rejects.toThrow("does not support");
   });
 
   test("spawn schedule includes explicit workflowId for deterministic Temporal overlap policies", async () => {
@@ -774,6 +774,67 @@ describe("schedule — overlap and reuse policy", () => {
     expect(action?.workflowIdReusePolicy).toBeUndefined();
     expect(policies?.overlapPolicy).toBe("SKIP");
 
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("rejects priority option in schedule", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn", { priority: 1 }),
+    ).rejects.toThrow(/does not support/);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("rejects metadata option in schedule", async () => {
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await expect(
+      scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn", {
+        metadata: { tag: "test" },
+      }),
+    ).rejects.toThrow(/does not support/);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("persist durability — mutation APIs propagate write failures", () => {
+  const VALID_INITIAL_STATE = JSON.stringify({
+    tasks: [],
+    taskWorkflowIds: [],
+    cancelledTaskIds: [],
+    schedules: [],
+    history: [],
+  });
+
+  test("submit throws when persistence write fails", async () => {
+    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(dbPath, VALID_INITIAL_STATE);
+    // Block writes by making the directory unwritable — .tmp file creation will fail
+    chmodSync(dir, 0o555);
+    const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
+      /durability write failed/,
+    );
+    chmodSync(dir, 0o755);
+    rmdirSync(dir, { recursive: true });
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("schedule throws when persistence write fails", async () => {
+    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(dbPath, VALID_INITIAL_STATE);
+    chmodSync(dir, 0o555);
+    const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    await expect(scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
+      /durability write failed/,
+    );
+    chmodSync(dir, 0o755);
+    rmdirSync(dir, { recursive: true });
     await scheduler[Symbol.asyncDispose]();
   });
 });
