@@ -29,10 +29,10 @@ export function createSchedulerComponent(
   scheduler: TaskScheduler,
   pinnedAgentId: AgentId,
 ): SchedulerComponent {
-  // Tracks ScheduleIds created by this component instance for ownership checks.
-  const ownedScheduleIds = new Set<ScheduleId>();
-  // Tracks paused state for owned schedules.
-  const pausedScheduleIds = new Set<ScheduleId>();
+  async function ownsSchedule(id: ScheduleId): Promise<boolean> {
+    const schedules = await scheduler.querySchedules(pinnedAgentId);
+    return schedules.some((s) => s.id === id);
+  }
 
   async function submit(
     input: EngineInput,
@@ -43,7 +43,6 @@ export function createSchedulerComponent(
   }
 
   async function cancel(id: TaskId): Promise<boolean> {
-    // Ownership check: task must belong to this agent.
     const tasks = await scheduler.query({ agentId: pinnedAgentId });
     const owned = tasks.some((t: ScheduledTask) => t.id === id);
     if (!owned) return false;
@@ -56,33 +55,22 @@ export function createSchedulerComponent(
     mode: "spawn" | "dispatch",
     options?: TaskOptions & { readonly timezone?: string | undefined },
   ): Promise<ScheduleId> {
-    const sid = await scheduler.schedule(expression, pinnedAgentId, input, mode, options);
-    ownedScheduleIds.add(sid);
-    return sid;
+    return scheduler.schedule(expression, pinnedAgentId, input, mode, options);
   }
 
   async function unschedule(id: ScheduleId): Promise<boolean> {
-    if (!ownedScheduleIds.has(id)) return false;
-    const result = await scheduler.unschedule(id);
-    if (result) {
-      ownedScheduleIds.delete(id);
-      pausedScheduleIds.delete(id);
-    }
-    return result;
+    if (!(await ownsSchedule(id))) return false;
+    return scheduler.unschedule(id);
   }
 
   async function pause(id: ScheduleId): Promise<boolean> {
-    if (!ownedScheduleIds.has(id)) return false;
-    const result = await scheduler.pause(id);
-    if (result) pausedScheduleIds.add(id);
-    return result;
+    if (!(await ownsSchedule(id))) return false;
+    return scheduler.pause(id);
   }
 
   async function resume(id: ScheduleId): Promise<boolean> {
-    if (!ownedScheduleIds.has(id)) return false;
-    const result = await scheduler.resume(id);
-    if (result) pausedScheduleIds.delete(id);
-    return result;
+    if (!(await ownsSchedule(id))) return false;
+    return scheduler.resume(id);
   }
 
   async function query(filter: TaskFilter): Promise<readonly ScheduledTask[]> {
@@ -90,7 +78,11 @@ export function createSchedulerComponent(
   }
 
   async function stats(): Promise<SchedulerStats> {
-    const tasks = await scheduler.query({ agentId: pinnedAgentId });
+    const [tasks, schedules] = await Promise.all([
+      scheduler.query({ agentId: pinnedAgentId }),
+      scheduler.querySchedules(pinnedAgentId),
+    ]);
+
     let pending = 0;
     let running = 0;
     let completed = 0;
@@ -117,8 +109,8 @@ export function createSchedulerComponent(
       }
     }
 
-    const activeSchedules = ownedScheduleIds.size - pausedScheduleIds.size;
-    const pausedSchedules = pausedScheduleIds.size;
+    const activeSchedules = schedules.filter((s) => !s.paused).length;
+    const pausedSchedules = schedules.filter((s) => s.paused).length;
 
     return {
       pending,

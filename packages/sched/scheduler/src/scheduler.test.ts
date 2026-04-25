@@ -96,7 +96,13 @@ describe("createScheduler", () => {
       if (attempts < 2) throw new Error("transient failure");
     };
     const scheduler = createScheduler(
-      { ...DEFAULT_SCHEDULER_CONFIG, pollIntervalMs: 10 },
+      {
+        ...DEFAULT_SCHEDULER_CONFIG,
+        pollIntervalMs: 10,
+        baseRetryDelayMs: 1,
+        maxRetryDelayMs: 1,
+        retryJitterMs: 0,
+      },
       createSqliteTaskStore(makeDb()),
       dispatcher,
       clock,

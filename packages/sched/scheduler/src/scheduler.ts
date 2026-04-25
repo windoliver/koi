@@ -288,24 +288,7 @@ export function createScheduler(
           lastError: koiError,
         };
         await store.save(retried);
-        // Insert into the heap without scheduledAt so poll() dispatches the
-        // retry immediately rather than waiting for the full backoff window.
-        // The stored record retains scheduledAt for audit / crash-recovery.
-        const retriedImmediate: ScheduledTask = {
-          id: retried.id,
-          agentId: retried.agentId,
-          input: retried.input,
-          mode: retried.mode,
-          priority: retried.priority,
-          status: retried.status,
-          createdAt: retried.createdAt,
-          retries: retried.retries,
-          maxRetries: retried.maxRetries,
-          lastError: retried.lastError,
-          ...(retried.timeoutMs !== undefined ? { timeoutMs: retried.timeoutMs } : {}),
-          ...(retried.metadata !== undefined ? { metadata: retried.metadata } : {}),
-        };
-        heap.insert(retriedImmediate);
+        heap.insert(retried);
         poll();
 
         runStore?.saveRun({
@@ -440,10 +423,10 @@ export function createScheduler(
       const job = cronJobs.get(id);
       const meta = cronMeta.get(id);
       if (job === undefined || meta === undefined) return false;
-      job.pause();
       const updated: CronSchedule = { ...meta, paused: true };
-      cronMeta.set(id, updated);
       if (scheduleStore !== undefined) await scheduleStore.saveSchedule(updated);
+      cronMeta.set(id, updated);
+      job.pause();
       emit({ kind: "schedule:paused", scheduleId: id });
       return true;
     },
@@ -452,16 +435,20 @@ export function createScheduler(
       const job = cronJobs.get(id);
       const meta = cronMeta.get(id);
       if (job === undefined || meta === undefined) return false;
-      job.resume();
       const updated: CronSchedule = { ...meta, paused: false };
-      cronMeta.set(id, updated);
       if (scheduleStore !== undefined) await scheduleStore.saveSchedule(updated);
+      cronMeta.set(id, updated);
+      job.resume();
       emit({ kind: "schedule:resumed", scheduleId: id });
       return true;
     },
 
     async query(filter: TaskFilter): Promise<readonly ScheduledTask[]> {
       return store.query(filter);
+    },
+
+    querySchedules(agentId: AgentId): readonly CronSchedule[] {
+      return [...cronMeta.values()].filter((s) => s.agentId === agentId);
     },
 
     stats(): SchedulerStats {
