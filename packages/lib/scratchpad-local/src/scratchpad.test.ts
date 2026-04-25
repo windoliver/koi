@@ -456,6 +456,25 @@ describe("createLocalScratchpad", () => {
       }
     });
 
+    it("closing one handle does not remove the same callback registered by another handle", () => {
+      // Both handles register the EXACT same function reference.
+      // With Set-based dedup, closing sp1 would delete the function from the Set,
+      // silently removing sp2's subscription too. Token-keyed Map prevents this.
+      const sp2 = createLocalScratchpad({ groupId: currentGid, authorId: agentId("agent-2") });
+      let callCount = 0;
+      const sharedHandler = (): void => {
+        callCount++;
+      };
+      sp.onChange(sharedHandler);
+      sp2.onChange(sharedHandler);
+      sp.write({ path: scratchpadPath("a"), content: "1" }); // fires twice (both subs)
+      expect(callCount).toBe(2);
+      sp.close(); // removes sp's token — sp2's token must survive
+      sp2.write({ path: scratchpadPath("a"), content: "2" }); // should still fire for sp2
+      expect(callCount).toBe(3); // would be 2 if sp.close() removed sp2's sub too
+      sp2.close();
+    });
+
     it("closed handle stops receiving events while another handle remains open", () => {
       const sp2 = createLocalScratchpad({ groupId: currentGid, authorId: agentId("agent-2") });
       let sp1Events = 0;

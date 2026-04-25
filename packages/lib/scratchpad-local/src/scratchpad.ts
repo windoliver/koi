@@ -20,8 +20,9 @@ export interface LocalScratchpadConfig {
   readonly sweepIntervalMs?: number;
   /**
    * How long (ms) to retain a dormant group store after the last handle closes.
-   * Allows reattachment cycles to find prior cross-turn state.
-   * Defaults to 300_000 ms (5 min). Set to 0 to evict immediately on last close.
+   * Defaults to 0 (immediate eviction) to prevent cross-lifecycle state leaks when
+   * a groupId is recycled. Set to a positive value only when cross-turn state sharing
+   * is intentional and the groupId is guaranteed to be unique per agent lifecycle.
    */
   readonly dormantTtlMs?: number;
 }
@@ -55,7 +56,10 @@ export interface LocalScratchpad {
 // the same group observe each other's writes, CAS conflicts, and change events.
 interface GroupStore {
   entries: Map<ScratchpadPath, MutableEntry>;
-  subscribers: Set<(event: ScratchpadChangeEvent) => void>;
+  // Keyed by unique symbol per registration so the same function from two handles
+  // gets two independent entries — preventing one handle's close from silently
+  // unregistering another handle's listener.
+  subscribers: Map<symbol, (event: ScratchpadChangeEvent) => void>;
   refCount: number;
   timer: ReturnType<typeof setInterval> | null;
   dormantTimer: ReturnType<typeof setTimeout> | null;
@@ -150,11 +154,14 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   if (sharedStore === undefined) {
     sharedStore = {
       entries: new Map(),
-      subscribers: new Set(),
+      subscribers: new Map(),
       refCount: 0,
       timer: null,
       dormantTimer: null,
-      dormantTtlMs: config.dormantTtlMs ?? 300_000,
+      // Default 0 = evict immediately when last handle closes (opt-in retention via dormantTtlMs).
+      // Non-zero values allow cross-turn state sharing but risk leaking into a later
+      // group that reuses the same groupId — callers must use stable, unique groupIds.
+      dormantTtlMs: config.dormantTtlMs ?? 0,
     };
     groupRegistry.set(groupId as string, sharedStore);
   }
@@ -180,12 +187,13 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   const store = sharedStore;
 
   let closed = false;
-  // Per-instance subscription tracking so close() can remove only this handle's
-  // handlers without disturbing other open handles in the same group.
-  const instanceSubs = new Set<(event: ScratchpadChangeEvent) => void>();
+  // Per-registration tokens for this handle — symbol keys match store.subscribers entries.
+  // Using symbol tokens (not function identity) means two handles registering the same
+  // function get independent entries; closing one handle never removes the other's listener.
+  const instanceTokens = new Set<symbol>();
 
   function notify(event: ScratchpadChangeEvent): void {
-    for (const sub of store.subscribers) {
+    for (const sub of store.subscribers.values()) {
       try {
         sub(event);
       } catch {
@@ -389,22 +397,24 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
 
   function onChange(handler: (event: ScratchpadChangeEvent) => void): () => void {
     if (closed) return () => {};
-    instanceSubs.add(handler);
-    store.subscribers.add(handler);
+    const token = Symbol();
+    instanceTokens.add(token);
+    store.subscribers.set(token, handler);
     return () => {
-      instanceSubs.delete(handler);
-      store.subscribers.delete(handler);
+      instanceTokens.delete(token);
+      store.subscribers.delete(token);
     };
   }
 
   function close(): void {
     if (closed) return;
     closed = true;
-    // Remove this instance's handlers regardless of other open handles
-    for (const h of instanceSubs) {
-      store.subscribers.delete(h);
+    // Remove only this handle's subscriptions — token-keyed so other handles
+    // registering the same function are unaffected.
+    for (const token of instanceTokens) {
+      store.subscribers.delete(token);
     }
-    instanceSubs.clear();
+    instanceTokens.clear();
     store.refCount--;
     if (store.refCount <= 0) {
       if (store.timer !== null) clearInterval(store.timer);

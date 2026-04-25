@@ -1,3 +1,5 @@
+import { access, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type {
   Agent,
   AgentId,
@@ -54,6 +56,25 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     return { components, skipped: [] };
   }
 
+  // Write a setup-complete marker OUTSIDE the worktree (sibling in the same base directory)
+  // so it cannot be tampered by agent code running inside the worktree.
+  function setupCompletePath(ws: WorkspaceInfo): string {
+    return join(dirname(ws.path), `${ws.id}.setup-ok`);
+  }
+
+  async function markSetupComplete(ws: WorkspaceInfo): Promise<void> {
+    await writeFile(setupCompletePath(ws), "", "utf8");
+  }
+
+  async function isSetupComplete(ws: WorkspaceInfo): Promise<boolean> {
+    try {
+      await access(setupCompletePath(ws));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   return {
     name: "workspace",
 
@@ -77,37 +98,24 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         }
 
         // Under "never" policy: reuse the preserved workspace rather than discarding it.
-        // Only if healthy AND its prior setup completed — a failed-setup workspace must not
-        // be silently resurrected even if it is technically alive on disk.
-        // For crash survivors (staleInfo is undefined → recovered from disk, not this process),
-        // re-run postCreate to verify setup: we cannot know if it completed before the crash.
+        // Requires: healthy (git-validated) AND setup proved complete via out-of-worktree marker.
+        // The marker is written after postCreate succeeds and lives outside the worktree so
+        // agent code cannot spoof it. In-memory setupFailed catches failures within this process.
         if (staleInfo2 !== undefined && policy === "never") {
           const wsId = staleInfo2.id;
-          const isCrashSurvivor = staleInfo === undefined;
           if (!setupFailed.has(wsId)) {
-            const healthy = await config.backend.isHealthy(wsId);
-            if (healthy) {
-              if (isCrashSurvivor && config.postCreate) {
-                // Re-run setup for recovered workspaces — setupFailed is not persisted,
-                // so we must re-verify. postCreate should be idempotent for recovery.
-                try {
-                  await config.postCreate(staleInfo2);
-                } catch (e: unknown) {
-                  const didDispose = await tryDispose(wsId);
-                  if (!didDispose) {
-                    setupFailed.add(wsId);
-                    attached.set(agentId, staleInfo2);
-                  }
-                  throw e;
-                }
-              }
+            const [healthy, setupComplete] = await Promise.all([
+              config.backend.isHealthy(wsId),
+              isSetupComplete(staleInfo2),
+            ]);
+            if (healthy && setupComplete) {
               attached.set(agentId, staleInfo2);
               return makeResult(staleInfo2);
             }
           }
           setupFailed.delete(wsId);
           attached.delete(agentId);
-          // Unhealthy or setup-failed — fall through to dispose + recreate
+          // Unhealthy or setup incomplete — fall through to dispose + recreate
         }
 
         if (staleInfo2 !== undefined) {
@@ -153,6 +161,10 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           }
         }
 
+        // Write setup-complete marker outside the worktree so crash recovery can
+        // confirm setup completed without replaying postCreate on the recovered workspace.
+        await markSetupComplete(ws);
+
         attached.set(agentId, ws);
         return makeResult(ws);
       } finally {
@@ -177,6 +189,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       if (disposed) {
         attached.delete(agentId);
         setupFailed.delete(wsInfo.id);
+        // Best-effort cleanup of the setup-complete marker — failure is not fatal
+        await rm(setupCompletePath(wsInfo), { force: true });
       }
     },
   };
