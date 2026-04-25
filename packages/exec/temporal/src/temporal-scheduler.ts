@@ -584,7 +584,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // Gate on cancelledTaskIds so a raced cancel wins and prevents double terminal events.
         const runningTask: ScheduledTask = { ...task, status: "running" };
         tasks.set(id, runningTask);
-        persist();
+        // Attach the watcher BEFORE persist so we never lose tracking of a live workflow.
+        // If persist subsequently fails, we cancel the workflow and re-throw rather than
+        // leaving it running without local observability or restart-recovery coverage.
         const startedAt = now;
         void config.client.workflow.getResult(targetWorkflowId).then(
           (result: unknown) => {
@@ -636,6 +638,18 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             }
           },
         );
+        // Persist the running state. If the write fails, cancel the workflow so we never
+        // have a live remote workflow without local tracking or restart-recovery coverage.
+        try {
+          persist();
+        } catch (persistErr: unknown) {
+          try {
+            await config.client.workflow.cancel(targetWorkflowId);
+          } catch {
+            // Best-effort — workflow may not be cancellable, but we still surface persist error
+          }
+          throw persistErr;
+        }
       }
 
       return id;
@@ -649,19 +663,24 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // all in-flight work for that agent, not just this task.
       if (task.mode === "dispatch") return false;
       const targetId = taskWorkflowIds.get(id) ?? id;
+      // Mark cancelled before the remote call so any concurrent getResult
+      // handler that fires during or after sees the cancelled gate first.
+      cancelledTaskIds.add(id);
       try {
-        // Mark cancelled before the remote call so any concurrent getResult
-        // handler that fires during or after sees the cancelled gate first.
-        cancelledTaskIds.add(id);
         await config.client.workflow.cancel(targetId);
-        tasks.set(id, { ...task, status: "failed" });
-        emit({ kind: "task:cancelled", taskId: id });
-        persist();
-        return true;
       } catch {
+        // Remote cancel failed — remove the guard and report failure.
         cancelledTaskIds.delete(id);
         return false;
       }
+      // Remote cancel succeeded — update local state and persist.
+      // Keep the cancellation guard set even if persist fails: reporting false
+      // while the workflow is already cancelled would mislead the caller and
+      // allow stale getResult callbacks to overwrite the cancelled status.
+      tasks.set(id, { ...task, status: "failed" });
+      emit({ kind: "task:cancelled", taskId: id });
+      persist(); // propagates durability failure as an exception
+      return true;
     },
 
     async schedule(
@@ -755,7 +774,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       schedules.set(id, schedule);
       emit({ kind: "schedule:created", schedule });
-      persist();
+      try {
+        persist();
+      } catch (persistErr: unknown) {
+        // Compensate: delete the remote schedule so a caller retry does not create a second
+        // live schedule with a different id. The schedule id is random so retries are not
+        // idempotent without this rollback.
+        schedules.delete(id);
+        try {
+          await config.client.schedule.delete(id);
+        } catch {
+          // Best-effort — surface the original persist error regardless
+        }
+        throw persistErr;
+      }
       return id;
     },
 
