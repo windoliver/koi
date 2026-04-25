@@ -413,12 +413,26 @@ as `dispose`:
 3. Keep the heartbeat loop running.
 4. Signal the engine adapter and `await quiesce(abortTimeoutMs)`.
 5. Branch on quiesce outcome:
-   - **Quiescent:** stop the heartbeat loop, then CAS-advance to the
-     target phase. For **non-terminal** transitions (`pause →
-     suspended`), CAS failure falls back to retry (up to 4 tries with
-     exponential backoff 100/500/2500/12500 ms), then returns
-     `Err(CHECKPOINT_WRITE_FAILED)` — no tombstone fallback. For
-     **terminal** transitions (`completed` / `failed`), CAS failure
+   - **Quiescent:** CAS-advance to the target phase. For
+     **non-terminal** transitions (`pause → suspended`), retry the
+     CAS up to 4 times with exponential backoff
+     100/500/2500/12500 ms. **Heartbeats stay running until the CAS
+     succeeds** — stopping them before durable publication would, in
+     `trustedSingleProcess` mode (where reclaim is disabled), wedge
+     the harness in `active` indefinitely with no recovery path. On
+     CAS success, stop heartbeats and return `Ok`. On retry
+     exhaustion: keep heartbeats running, transition
+     `durability = "unhealthy"`, durably call
+     `markCleanupUnhealthy(sid, "PAUSE_WRITE_FAILED")`, schedule the
+     same background retry loop used for terminal failures
+     (15s exponential, 5min cap; CAS continues until success or the
+     harness object is released), and return
+     `Err(CHECKPOINT_WRITE_FAILED, retryable: true)`. The pause()
+     contract therefore guarantees: either the snapshot is durably
+     `suspended` and heartbeats stop, or the harness remains
+     reclaim-safe (heartbeats live, snapshot still `active`) while
+     background retry drives convergence — no wedged middle state.
+     For **terminal** transitions (`completed` / `failed`), CAS failure
      MUST retry until either success or a hard retry budget exhausts
      (4 tries, same backoff). Terminal transitions cannot fall back to
      tombstones or TTL reclaim because that would leave the harness
@@ -906,14 +920,16 @@ Stale leases (timed-out sessions, superseded runs, reclaimed runs) are rejected
 with `KoiError { code: "STALE_SESSION", retryable: false }` and their writes
 are never persisted.
 
-**L0 prerequisites (required, additive):**
-
-1. `HarnessSnapshot.generation: number` — monotonic per harness.
-2. `SnapshotChainStore.compareAndPut(expectedHead, next)` — CAS advance.
-3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal.
-4. `SessionStatus` adds `"starting"` between `idle` and `running`.
-
-These must land in a prerequisite L0 PR before the L2 package ships.
+**L0 prerequisites:** see the canonical "L0 Prerequisites (coordinated
+breaking change)" section below for the complete dependency list.
+That section is authoritative — implementers MUST consult it (not any
+shorter summary) before treating prereqs as met. The list there
+includes generation, CAS, lastHeartbeatAt, the SessionStatus delta,
+`SnapshotChainStore.latest()`, `setHeartbeat()`,
+`recordTerminalOutcome()`/`listTerminalOutcomes()`,
+`HarnessStatus.durability`, and `cleanupHealth` +
+`markCleanupUnhealthy`/`clearCleanupUnhealthy`. Skipping any of them
+silently drops reclaim safety or post-crash terminal recovery.
 
 ### Progress Tracking
 
@@ -939,14 +955,27 @@ Flow:
 3. Wait up to `abortTimeoutMs` for the engine adapter to quiesce.
 4. **On quiescence:** CAS-advance to `failed` with
    `failureReason = "TIMEOUT"`. Invoke `onFailed` with the final status.
-5. **On abort timeout (engine refuses to stop):** do NOT advance to
-   `failed`. Keep the snapshot `active`, keep heartbeats running so the
-   session is NOT reclaimable, and raise a loud escalation:
-   `status().durability = "unhealthy"`, `status().failureReason =
-   "TIMEOUT_NOT_QUIESCED"`, invoke `onDurabilityLost` with
-   `KoiError { code: "ABORT_TIMEOUT", retryable: false }`. The host MUST
-   escalate (SIGKILL the process, operator intervention) before the run
-   can be cleared. No reclaimer runs in parallel with the ignored run.
+5. **On abort timeout (engine refuses to stop):** apply the canonical
+   ABORT_TIMEOUT contract defined in the phase-machine "Abort
+   timeout" branch (see "Phase Machine — Abort timeout" above). In
+   summary, that contract specifies:
+   - Do NOT advance to `failed` yet. Snapshot stays `active`,
+     heartbeats keep running (harness is non-reclaimable).
+   - `status().durability = "unhealthy"`,
+     `markCleanupUnhealthy(sid, "ABORT_TIMEOUT")`,
+     `onDurabilityLost(ABORT_TIMEOUT)` invoked.
+   - **Supervisor mode:** harness invokes
+     `supervisor.killAndConfirm(sessionId)` automatically after
+     `abortKillGraceMs`; on success the private cleanup authority
+     CAS-advances to `failed` with `failureReason = "TIMEOUT"` and
+     stops heartbeats. Recovery is automatic.
+   - **`trustedSingleProcess=true` mode:** no supervisor available;
+     host MUST SIGKILL. No automatic recovery.
+   This is the SINGLE source of truth for ABORT_TIMEOUT across all
+   callers (pause/fail/timeout/dispose). The dispose section's
+   "background watcher" is the same private-cleanup-authority
+   mechanism described here, parameterized for the dispose target
+   phase (`suspended`) instead of `failed`.
 
 The TS `failed` phase remains a strong signal: "engine has stopped,
 scheduler may now act terminally." If the engine cannot be stopped, we
@@ -996,25 +1025,29 @@ Unambiguous algorithm:
        continues until the harness object is released. An operator
        who believes the store is permanently broken can edit the
        snapshot out of band via a separate administrative tool.
-   - **Timed out (engine ignored abort):** do NOT publish `suspended`.
-     Do NOT stop the heartbeat loop. The caller's lease has already been
-     revoked (step 4) and will not come back — after this point, the
-     harness holds a **private cleanup authority** (not a `SessionLease`)
-     that survives lease revocation. The cleanup authority is exercised
-     by a background watcher started at step 4: every
-     `heartbeatIntervalMs`, it polls the engine-adapter's running state.
-     When the engine finally reports quiescence (or after process exit),
-     the watcher uses the cleanup authority to CAS-advance to
-     `suspended` with `failureReason = "disposed after late quiesce"`,
-     then stops heartbeats. Subsequent `dispose()` calls on this same
-     harness object return `Err(ABORT_TIMEOUT)` immediately (the
-     watcher is authoritative) — no lease argument needed because the
-     phase check rejects any second attempt. Lease remains live from
-     the store's perspective until the watcher finalizes OR the
-     process exits. Flip `status().durability` to `"unhealthy"`, invoke
-     `onDurabilityLost(KoiError { code: "ABORT_TIMEOUT" })`, and return
-     `Err(ABORT_TIMEOUT)` from the original `dispose` call. The host
-     may SIGKILL if it doesn't want to wait for the watcher.
+   - **Timed out (engine ignored abort):** apply the canonical
+     ABORT_TIMEOUT contract (see phase-machine "Abort timeout"
+     branch — single source of truth). Specifically for `dispose()`:
+     - Do NOT publish `suspended` yet; heartbeats keep running.
+     - `status().durability = "unhealthy"`,
+       `markCleanupUnhealthy(sid, "ABORT_TIMEOUT")`,
+       `onDurabilityLost(ABORT_TIMEOUT)` invoked.
+     - **Supervisor mode:** harness invokes
+       `supervisor.killAndConfirm(sessionId)` after
+       `abortKillGraceMs`; on success a **private cleanup authority**
+       (not a `SessionLease`; survives lease revocation)
+       CAS-advances to `suspended` with
+       `failureReason = "disposed after kill"` and stops heartbeats.
+     - **`trustedSingleProcess=true` mode:** no supervisor; the same
+       private cleanup authority polls the engine adapter's running
+       state every `heartbeatIntervalMs` and CAS-advances to
+       `suspended` once the engine actually reports quiescence (e.g.,
+       host SIGKILL eventually clears the run, or the engine exits
+       on its own). Heartbeats continue until CAS success.
+     - Subsequent `dispose()` calls on this harness object return
+       `Err(ABORT_TIMEOUT)` immediately (cleanup authority is
+       authoritative; phase check rejects re-entry). The original
+       `dispose()` returns `Err(ABORT_TIMEOUT)`.
 
 Invariant checklist an implementer MUST verify:
 - No code path between `start/resume` and `dispose` quiesce success stops
@@ -1623,9 +1656,11 @@ Additive changes required (part of the coordinated migration):
    both stores are simultaneously unreachable, no breadcrumb exists
    — but at that point the entire system is degraded and operators
    should already be paging via supervisor/store monitoring.
-   Cleared to `"ok"` via `clearCleanupUnhealthy(sid)` on the next
-   successful `start()` / `resume()` activation against the same
-   session id (best-effort; clear failure does not fail activation).
+   Cleared via `clearCleanupUnhealthy(prev.lastSessionId)` (the
+   PRIOR session record — activation creates a fresh session, so the
+   marker lives on the previous one) on the next successful `start()`
+   / `resume()` activation. Best-effort; clear failure does not fail
+   activation, and the breadcrumb re-clears on the next resume.
    Hosts SHOULD page on
    `cleanupHealth === "unhealthy"` regardless of process state.
 
