@@ -279,6 +279,10 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         if (segment !== searchHex) continue;
         const wsId = parts[2];
         if (!wsId) continue;
+        // Require path basename to match wsId — closes a cross-agent DoS where an agent
+        // switches its worktree branch to workspace/<anotherHex>/<anyWsId> to appear as
+        // that agent's crash survivor (causing the provider to dispose the wrong workspace).
+        if (path.split(sep).pop() !== wsId) continue;
 
         // Derive recency from the wsId itself (format: ws-<timestamp>-<random>), which is
         // embedded in the git-owned branch name — not from the writable marker file.

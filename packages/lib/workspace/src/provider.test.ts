@@ -369,9 +369,10 @@ describe("createWorkspaceProvider", () => {
     expect(backendWithStuckDispose.created.length).toBe(0);
   });
 
-  it("attach proceeds on unsandboxed backend when crash-survivor disposal fails but workspace is gone (non-never policy)", async () => {
-    // Unsandboxed: disposal timeout is only treated as transient when isHealthy() confirms
-    // the workspace is actually gone. If gone, it is safe to create a fresh one.
+  it("attach proceeds on unsandboxed backend when crash-survivor disposal fails but exists() confirms workspace is gone (non-never policy)", async () => {
+    // Unsandboxed: disposal timeout is only treated as transient when exists() confirms
+    // the workspace is actually gone. isHealthy() is not a reliable liveness oracle (it
+    // returns false for branch-drifted workspaces that are still registered with git).
     const survivorId = workspaceId("ws-unsandboxed-stuck");
     const survivorInfo: WorkspaceInfo = {
       id: survivorId,
@@ -391,7 +392,10 @@ describe("createWorkspaceProvider", () => {
         };
       },
       isHealthy(_wsId: WorkspaceId): boolean {
-        return false; // workspace is gone — directory/branch no longer exists
+        return false; // unhealthy (e.g. branch-drifted) — not a reliable "gone" signal
+      },
+      exists(_wsId: WorkspaceId): boolean {
+        return false; // exists() is the authoritative gone-oracle: workspace is truly gone
       },
     });
     const provider = createWorkspaceProvider({
@@ -401,16 +405,17 @@ describe("createWorkspaceProvider", () => {
     });
     const agent = makeAgent();
 
-    // Must NOT throw — workspace is gone so the invariant is still safe
+    // Must NOT throw — exists() confirmed workspace is gone, invariant is safe
     const result = await provider.attach(agent);
     expect(result.components.size).toBe(1);
     expect(backendWithStuckDispose.created.length).toBe(1);
     await provider.detach?.(agent);
   });
 
-  it("attach throws on unsandboxed backend when crash-survivor disposal fails and workspace still alive (non-never policy)", async () => {
-    // Unsandboxed: when isHealthy() confirms the old workspace is still alive after a
+  it("attach throws on unsandboxed backend when crash-survivor disposal fails and exists() confirms workspace is still alive (non-never policy)", async () => {
+    // Unsandboxed: when exists() confirms the old workspace is still alive after a
     // disposal failure, attach must block — creating a second workspace would break the invariant.
+    // Backends without exists() also fail closed (isGone returns false).
     const survivorId = workspaceId("ws-still-alive");
     const survivorInfo: WorkspaceInfo = {
       id: survivorId,
@@ -431,6 +436,9 @@ describe("createWorkspaceProvider", () => {
       },
       isHealthy(_wsId: WorkspaceId): boolean {
         return true; // workspace confirmed still alive
+      },
+      exists(_wsId: WorkspaceId): boolean {
+        return true; // exists() authoritative: workspace is still present
       },
     });
     const provider = createWorkspaceProvider({

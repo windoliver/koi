@@ -99,7 +99,10 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     if (config.backend.exists !== undefined) {
       return !(await config.backend.exists(wsId));
     }
-    return !(await config.backend.isHealthy(wsId));
+    // No exists() on this unsandboxed backend — fail closed: treat workspace as still present.
+    // isHealthy() is not a reliable liveness oracle: it returns false for branch-drifted
+    // workspaces that are still registered with git, producing a false "gone" conclusion.
+    return false;
   }
 
   // Removes the setup attestation so a mid-repair crash leaves the workspace unattested.
