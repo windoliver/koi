@@ -359,6 +359,57 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched[0]?.session.routing?.account).toBe("my-tenant");
   });
 
+  test("dedup keys are scoped by provider+account — same Slack event_id from two tenants dispatches both", async () => {
+    // Two Slack tenants with different secrets should have independent dedup spaces.
+    // If keys were unscoped, the second delivery would be incorrectly blocked as duplicate.
+    const secretA = "secret-tenant-a";
+    const secretB = "secret-tenant-b";
+    const eventId = "Ev_shared_id"; // same event_id across both tenants
+    const body = JSON.stringify({ event_id: eventId, type: "event_callback" });
+
+    async function slackSig(secret: string, b: string): Promise<{ sig: string; ts: string }> {
+      const ts = Math.floor(Date.now() / 1000).toString();
+      const hex = await computeHmacHex(secret, `v0:${ts}:${b}`);
+      return { sig: `v0=${hex}`, ts };
+    }
+
+    const { sig: sigA, ts: tsA } = await slackSig(secretA, body);
+    const { sig: sigB, ts: tsB } = await slackSig(secretB, body);
+
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      dispatcher,
+      undefined,
+      { slack: { "tenant-a": secretA, "tenant-b": secretB } },
+    );
+    await server.start();
+
+    const resA = await fetch(`http://localhost:${server.port()}/webhook/slack/tenant-a`, {
+      method: "POST",
+      headers: {
+        "X-Slack-Signature": sigA,
+        "X-Slack-Request-Timestamp": tsA,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    expect(resA.status).toBe(200);
+
+    const resB = await fetch(`http://localhost:${server.port()}/webhook/slack/tenant-b`, {
+      method: "POST",
+      headers: {
+        "X-Slack-Signature": sigB,
+        "X-Slack-Request-Timestamp": tsB,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    expect(resB.status).toBe(200);
+    const bB = (await resB.json()) as { ok: boolean; duplicate?: boolean };
+    expect(bB.duplicate).toBeUndefined(); // not a duplicate — different tenant
+    expect(dispatched).toHaveLength(2); // both dispatched
+  });
+
   test("X-Webhook-Peer is ignored on provider-routed requests", async () => {
     const secret = "test-secret";
     const body = JSON.stringify({ id: "Ev1", type: "event_callback" });
@@ -471,6 +522,28 @@ describe("WebhookServer — authenticator", () => {
     expect(d?.session.routing?.channel).toBe("custom-channel");
     expect(d?.session.routing?.peer).toBe("custom-peer");
     expect(d?.session.metadata).toEqual({ source: "test" });
+  });
+
+  test("authenticator partial routing merges into verified baseline — does not erase channel", async () => {
+    // Authenticator only sets peer — channel from URL path must be preserved.
+    const authenticator: WebhookAuthenticator = async () => ({
+      ok: true,
+      value: { agentId: "merged-agent", routing: { peer: "auth-peer" } },
+    });
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", allowUnauthenticated: true },
+      dispatcher,
+      authenticator,
+    );
+    await server.start();
+    const res = await fetch(`http://localhost:${server.port()}/webhook/slack`, {
+      method: "POST",
+      body: JSON.stringify({ test: true }),
+    });
+    expect(res.status).toBe(200);
+    const d = dispatched[0];
+    expect(d?.session.routing?.channel).toBe("slack"); // preserved from URL
+    expect(d?.session.routing?.peer).toBe("auth-peer"); // set by authenticator
   });
 });
 

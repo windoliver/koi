@@ -296,6 +296,14 @@ export function createWebhookServer(
       if (dedupKey === undefined && config.keyExtractor !== undefined) {
         dedupKey = await config.keyExtractor(provider.kind, request, rawBody);
       }
+      // Scope the dedup key to the authenticated trust boundary — prevents
+      // cross-tenant key collisions when different accounts share a common
+      // provider-vended delivery ID (e.g. two tenants both send wh_abc123).
+      // keyExtractor-supplied keys are the caller's responsibility to scope.
+      if (dedupKey !== undefined && verifyResult.dedupKey !== undefined) {
+        const accountScope = accountAuthenticated && account !== undefined ? `:${account}` : "";
+        dedupKey = `${provider.kind}${accountScope}:${dedupKey}`;
+      }
       // Atomically reserve the dedup key — prevents concurrent duplicate dispatch.
       // tryBegin() is synchronous: no await between check and reservation, so
       // concurrent requests cannot both pass before either records.
@@ -375,7 +383,10 @@ export function createWebhookServer(
         return jsonResponse(status, { ok: false, error: authResult.error.message });
       }
       agentId = authResult.value.agentId;
-      routing = authResult.value.routing ?? routing;
+      // Merge authenticator routing into the verified baseline — do not replace
+      // wholesale. An authenticator that only wants to set peer or agentId must
+      // not accidentally clear the already-verified channel or authenticated account.
+      routing = { ...routing, ...(authResult.value.routing ?? {}) };
       metadata = authResult.value.metadata ?? metadata;
     }
 
@@ -418,11 +429,11 @@ export function createWebhookServer(
       if (config.maxDispatchMs !== undefined) {
         maxDispatchTimer = setTimeout(() => {
           dispatchTimedOut = true;
+          // Stop renewing — lease will expire after processingTtlMs, at which point
+          // provider retries are accepted. Do NOT abort here: aborting immediately
+          // would open a window where the original handler and a provider retry both
+          // run concurrently, producing duplicate side effects.
           clearInterval(renewalTimer);
-          // Abort reservation — retries are accepted; stale commit/abort will no-op.
-          idempotencyStore.abort(key, token);
-          pendingDedupKey = undefined;
-          pendingToken = undefined;
         }, config.maxDispatchMs);
       }
     }
@@ -442,13 +453,16 @@ export function createWebhookServer(
     clearTimeout(maxDispatchTimer);
     clearInterval(renewalTimer);
 
-    // If the dispatch timeout fired before the handler finished, replay protection
-    // was already aborted. Return 503 so the provider retries — we cannot commit
-    // because a concurrent retry may already be in-flight.
+    // Timeout fired: stop renewing so the lease will expire on its own — provider
+    // retries will be accepted once processingTtlMs elapses. Abort now that work
+    // is done (no concurrent retry risk) and return 503 so the provider retries.
     if (dispatchTimedOut) {
+      if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+        idempotencyStore.abort(pendingDedupKey, pendingToken);
+      }
       return jsonResponse(503, {
         ok: false,
-        error: "Dispatch exceeded maxDispatchMs — replay protection voided, retry",
+        error: "Dispatch exceeded maxDispatchMs — timed out, retry",
         frameId,
       });
     }
