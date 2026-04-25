@@ -16,6 +16,19 @@ interface IssueRootOptions {
   readonly now?: () => number;
 }
 
+async function signAndRegister(
+  unsigned: CapabilityToken,
+  signer: CapabilitySigner,
+  registry: CapabilityRevocationRegistry | undefined,
+): Promise<CapabilityToken> {
+  const proof = buildProof(unsigned, signer);
+  const signed: CapabilityToken = { ...unsigned, proof };
+  if (registry) {
+    await registry.register(signed);
+  }
+  return signed;
+}
+
 export async function issueRootCapability(opts: IssueRootOptions): Promise<CapabilityToken> {
   if (opts.ttlMs <= 0) throw new Error("issueRootCapability: ttlMs must be > 0");
   if (opts.maxChainDepth < 0) {
@@ -33,12 +46,7 @@ export async function issueRootCapability(opts: IssueRootOptions): Promise<Capab
     expiresAt: now + opts.ttlMs,
     proof: { kind: "hmac-sha256", digest: "" },
   };
-  const proof = buildProof(unsigned, opts.signer);
-  const signed: CapabilityToken = { ...unsigned, proof };
-  if (opts.registry) {
-    await opts.registry.register(signed);
-  }
-  return signed;
+  return signAndRegister(unsigned, opts.signer, opts.registry);
 }
 
 interface DelegateOptions {
@@ -101,10 +109,6 @@ export async function delegateCapability(
     expiresAt: childExpires,
     proof: { kind: "hmac-sha256", digest: "" },
   };
-  const proof = buildProof(unsigned, opts.signer);
-  const signed: CapabilityToken = { ...unsigned, proof };
-  if (opts.registry) {
-    await opts.registry.register(signed);
-  }
+  const signed = await signAndRegister(unsigned, opts.signer, opts.registry);
   return { ok: true, value: signed };
 }
