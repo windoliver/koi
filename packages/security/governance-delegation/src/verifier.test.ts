@@ -188,3 +188,185 @@ describe("createCapabilityVerifier", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe("authority binding (codex round-1: critical)", () => {
+  test("HMAC rootIssuer enforced — mismatch rejected", async () => {
+    const { signer, token } = await newHmacRoot();
+    if (signer.kind !== "hmac-sha256") throw new Error();
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret, rootIssuer: agentId("not-engine") },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(token, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("Ed25519 rootIssuers binding enforced — wrong AgentId rejected", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const pubDer = publicKey.export({ format: "der", type: "spki" });
+    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const fp = Buffer.from(pubDer).toString("base64");
+    const tok = await issueRootCapability({
+      signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
+      issuerId: agentId("attacker"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["*"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      ed25519: {
+        publicKeys: new Map([[fp, pubDer]]),
+        rootIssuers: new Map([[fp, agentId("engine")]]),
+      },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(tok, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("Ed25519 unbound fingerprint rejected when rootIssuers configured", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const pubDer = publicKey.export({ format: "der", type: "spki" });
+    const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+    const fp = Buffer.from(pubDer).toString("base64");
+    const tok = await issueRootCapability({
+      signer: { kind: "ed25519", privateKey: privDer, publicKeyFingerprint: fp },
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["*"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      ed25519: {
+        publicKeys: new Map([[fp, pubDer]]),
+        rootIssuers: new Map(), // empty — fingerprint not authorized
+      },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(tok, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+});
+
+describe("chain validation (codex round-1: critical)", () => {
+  test("chainDepth>0 token without tokenStore rejected as unknown_grant", async () => {
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const registry = createMemoryCapabilityRevocationRegistry();
+    const root = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      registry,
+      now: () => 1000,
+    });
+    const { delegateCapability } = await import("./issue.js");
+    const childResult = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 30_000,
+      registry,
+      now: () => 1000,
+    });
+    if (!childResult.ok) throw new Error("issuance failed");
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+      // no tokenStore configured
+    });
+    const result = await verifier.verify(childResult.value, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("unknown_grant");
+  });
+
+  test("forged child with non-existent parentId rejected", async () => {
+    const { signer, token: root } = await newHmacRoot();
+    if (signer.kind !== "hmac-sha256") throw new Error();
+    const registry = createMemoryCapabilityRevocationRegistry();
+    await registry.register(root);
+    // Build a forged "child" pointing at a parent the store doesn't know.
+    const forged = {
+      ...root,
+      id: root.id, // re-use id intentionally to make it a different token
+      issuerId: agentId("alice"),
+      delegateeId: agentId("eve"),
+      parentId: root.id, // dangling — but we'll use a non-existent parentId below
+      chainDepth: 1,
+    };
+    // Re-sign so signature is valid but parent lookup fails.
+    const { signHmac } = await import("./hmac.js");
+    const danglingId = "dangling-cap-id" as typeof root.id;
+    const tampered = { ...forged, parentId: danglingId };
+    const digest = signHmac(tampered, signer.secret);
+    const finalToken = { ...tampered, proof: { kind: "hmac-sha256" as const, digest } };
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+      tokenStore: registry,
+    });
+    const result = await verifier.verify(finalToken, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("unknown_grant");
+  });
+
+  test("forged child claiming wider scope than parent rejected at verify time", async () => {
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const registry = createMemoryCapabilityRevocationRegistry();
+    const root = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      registry,
+      now: () => 1000,
+    });
+    // Forge a child claiming chainDepth=1 with widened scope, sign it directly
+    // (bypassing delegateCapability's attenuation check). Verifier must reject.
+    const { signHmac } = await import("./hmac.js");
+    const { capabilityId } = await import("@koi/core");
+    const forgedUnsigned = {
+      id: capabilityId("forged-1"),
+      issuerId: agentId("alice"),
+      delegateeId: agentId("eve"),
+      scope: {
+        permissions: { allow: ["read_file", "write_file", "bash"] },
+        sessionId: sessionId("sess-1"),
+      },
+      parentId: root.id,
+      chainDepth: 1,
+      maxChainDepth: 3,
+      createdAt: 1000,
+      expiresAt: 30_000,
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    const digest = signHmac(forgedUnsigned, signer.secret);
+    const forged = { ...forgedUnsigned, proof: { kind: "hmac-sha256" as const, digest } };
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+      tokenStore: registry,
+    });
+    const result = await verifier.verify(forged, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("scope_exceeded");
+  });
+});

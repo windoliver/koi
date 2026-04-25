@@ -66,6 +66,24 @@ type DelegationFailureReason =
   | "session_mismatch"
   | "ttl_exceeds_parent";
 
+/**
+ * Resource attenuation. If parent has no resource restriction (undefined or empty),
+ * any child resources are accepted. Otherwise the child must declare resources and
+ * every entry must appear verbatim in the parent's set.
+ */
+function isResourceSubset(
+  child: readonly string[] | undefined,
+  parent: readonly string[] | undefined,
+): boolean {
+  if (parent === undefined || parent.length === 0) return true;
+  if (child === undefined || child.length === 0) return false;
+  const parentSet = new Set(parent);
+  for (const entry of child) {
+    if (!parentSet.has(entry)) return false;
+  }
+  return true;
+}
+
 function fail(reason: DelegationFailureReason): KoiError {
   if (reason === "expired") {
     return { ...validation("delegateCapability: parent expired"), context: { reason } };
@@ -90,6 +108,9 @@ export async function delegateCapability(
     return { ok: false, error: fail("session_mismatch") };
   }
   if (!isPermissionSubset(opts.scope.permissions, parent.scope.permissions)) {
+    return { ok: false, error: fail("scope_exceeded") };
+  }
+  if (!isResourceSubset(opts.scope.resources, parent.scope.resources)) {
     return { ok: false, error: fail("scope_exceeded") };
   }
   const childExpires = now + opts.ttlMs;

@@ -78,4 +78,16 @@ describe("createMemoryCapabilityRevocationRegistry", () => {
       expect(await reg.isRevoked(capabilityId(id))).toBe(true);
     }
   });
+
+  test("late-registered descendant inherits revoked state (codex round-1: high)", async () => {
+    const reg = createMemoryCapabilityRevocationRegistry();
+    await reg.register(mkToken("A"));
+    await reg.revoke(capabilityId("A"), true);
+    // Register B as a child of A *after* A is revoked — should be DOA.
+    await reg.register(mkToken("B", "A"));
+    expect(await reg.isRevoked(capabilityId("B"))).toBe(true);
+    // Grandchild registered later inherits transitively.
+    await reg.register(mkToken("C", "B"));
+    expect(await reg.isRevoked(capabilityId("C"))).toBe(true);
+  });
 });

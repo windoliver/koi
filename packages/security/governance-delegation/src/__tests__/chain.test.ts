@@ -70,9 +70,10 @@ describe("end-to-end chain A → B → C", () => {
     const { signer, A, B, C, registry } = await buildChain();
     if (signer.kind !== "hmac-sha256") throw new Error();
     const verifier = createCapabilityVerifier({
-      hmac: { secret: signer.secret },
+      hmac: { secret: signer.secret, rootIssuer: agentId("engine") },
       scopeChecker: createGlobScopeChecker(),
       revocations: registry,
+      tokenStore: registry,
     });
     const ctx = { toolId: "read_file", now: 1500, activeSessionIds: ACTIVE() };
     expect((await verifier.verify(A, ctx)).ok).toBe(true);
@@ -94,9 +95,10 @@ describe("end-to-end chain A → B → C", () => {
     if (signer.kind !== "hmac-sha256") throw new Error();
     await registry.revoke(A.id, true);
     const verifier = createCapabilityVerifier({
-      hmac: { secret: signer.secret },
+      hmac: { secret: signer.secret, rootIssuer: agentId("engine") },
       scopeChecker: createGlobScopeChecker(),
       revocations: registry,
+      tokenStore: registry,
     });
     const ctx = { toolId: "read_file", now: 1500, activeSessionIds: ACTIVE() };
     for (const tok of [A, B, C]) {
@@ -112,9 +114,10 @@ describe("end-to-end chain A → B → C", () => {
     if (signer.kind !== "hmac-sha256") throw new Error();
     await registry.revoke(B.id, true);
     const verifier = createCapabilityVerifier({
-      hmac: { secret: signer.secret },
+      hmac: { secret: signer.secret, rootIssuer: agentId("engine") },
       scopeChecker: createGlobScopeChecker(),
       revocations: registry,
+      tokenStore: registry,
     });
     const ctx = { toolId: "read_file", now: 1500, activeSessionIds: ACTIVE() };
     expect((await verifier.verify(A, ctx)).ok).toBe(true);

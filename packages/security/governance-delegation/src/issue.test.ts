@@ -274,4 +274,66 @@ describe("delegateCapability", () => {
     if (!result.ok) return;
     expect(registeredId).toBe(result.value.id);
   });
+
+  test("resource attenuation enforced (codex round-1: high)", async () => {
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const root = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        resources: ["read_file:/safe/**"],
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+
+    const widen = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        resources: ["read_file:/etc/**"],
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+      now: () => 1000,
+    });
+    expect(widen.ok).toBe(false);
+    if (widen.ok) return;
+    expect((widen.error.context as { reason: string }).reason).toBe("scope_exceeded");
+
+    const drop = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+      now: () => 1000,
+    });
+    expect(drop.ok).toBe(false);
+    if (drop.ok) return;
+    expect((drop.error.context as { reason: string }).reason).toBe("scope_exceeded");
+
+    const okResult = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        resources: ["read_file:/safe/**"],
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+      now: () => 1000,
+    });
+    expect(okResult.ok).toBe(true);
+  });
 });

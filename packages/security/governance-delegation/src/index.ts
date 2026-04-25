@@ -14,8 +14,11 @@ export type {
 } from "@koi/core";
 // Issuance
 export { delegateCapability, issueRootCapability } from "./issue.js";
-// New L2 contract
-export type { CapabilityRevocationRegistry } from "./revocation.js";
+// New L2 contracts
+export type {
+  CapabilityRevocationRegistry,
+  CapabilityTokenStore,
+} from "./revocation.js";
 export { createMemoryCapabilityRevocationRegistry } from "./revocation.js";
 // Default scope checker
 export { createGlobScopeChecker } from "./scope-checker.js";
