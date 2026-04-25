@@ -200,6 +200,20 @@ describe("createWorkspaceProvider", () => {
     await provider.detach?.(agent);
   });
 
+  it("reattach with cleanupPolicy=never does not dispose preserved workspace", async () => {
+    const provider = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
+    const agent = makeAgent();
+    await provider.attach(agent);
+    await provider.detach?.(agent); // never policy: workspace kept
+    expect(backend.disposed.length).toBe(0);
+
+    // Reattach — policy=never must not auto-dispose the preserved workspace
+    await provider.attach(agent);
+    expect(backend.disposed.length).toBe(0); // still not disposed
+    expect(backend.created.length).toBe(2); // new workspace created alongside the old one
+    await provider.detach?.(agent);
+  });
+
   it("postCreate + dispose both fail: tracks workspace for retry and throws combined error", async () => {
     const failDisposeBackend = makeBackend({
       async dispose(): Promise<Result<void, KoiError>> {

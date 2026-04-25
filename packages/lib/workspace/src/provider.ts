@@ -68,7 +68,9 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         if (staleWsId === undefined && config.backend.findByAgentId) {
           staleWsId = await config.backend.findByAgentId(agentId);
         }
-        if (staleWsId !== undefined) {
+        // Honour cleanupPolicy: "never" on reattach too — auto-disposing would silently
+        // destroy workspaces the operator explicitly chose to preserve for inspection.
+        if (staleWsId !== undefined && policy !== "never") {
           const disposed = await tryDispose(staleWsId);
           if (!disposed) {
             throw new Error(

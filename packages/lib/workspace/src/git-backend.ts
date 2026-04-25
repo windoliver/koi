@@ -52,11 +52,22 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const pathLine = lines.find((l) => l.startsWith("worktree "));
       if (!pathLine) continue;
       const path = pathLine.slice("worktree ".length).trim();
+      // Derive branch name from git-owned porcelain output — never trust the marker file
+      // for destructive operations (agent code running in the worktree could tamper it).
+      const branchRef =
+        lines
+          .find((l) => l.startsWith("branch "))
+          ?.slice("branch ".length)
+          .trim() ?? "";
+      const branchName = branchRef.startsWith("refs/heads/")
+        ? branchRef.slice("refs/heads/".length)
+        : branchRef;
+      if (!branchName) continue;
       try {
         const markerText = await Bun.file(join(path, ".koi-workspace")).text();
         const marker = JSON.parse(markerText) as WorkspaceMarker;
-        if (marker.id === wsId && typeof marker.branchName === "string") {
-          return { path, branchName: marker.branchName };
+        if (marker.id === wsId) {
+          return { path, branchName };
         }
       } catch {
         // Marker missing or unreadable — skip this worktree
