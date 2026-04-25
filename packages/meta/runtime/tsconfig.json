@@ -26,6 +26,7 @@
     { "path": "../../lib/ipc-local" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/hooks" },
+    { "path": "../../lib/long-running" },
     { "path": "../../lib/loop" },
     { "path": "../../lib/query-engine" },
     { "path": "../../lib/replay" },

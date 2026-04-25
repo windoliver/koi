@@ -13841,3 +13841,170 @@ describe("Golden: @koi/temporal", () => {
     expect(snap.capacity).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/long-running (#1386)
+//
+// Standalone golden queries that exercise the long-running harness lifecycle
+// against in-memory stubs. CI-safe — no LLM, no network.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/long-running — harness lifecycle", () => {
+  test("long-running-soft-checkpoint-cadence — boundary turns trigger only on multiples", async () => {
+    const { shouldSoftCheckpoint } = await import("@koi/long-running");
+    expect(shouldSoftCheckpoint(0, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(4, 5)).toBe(false);
+    expect(shouldSoftCheckpoint(5, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(10, 5)).toBe(true);
+    expect(shouldSoftCheckpoint(7, 0)).toBe(false);
+  });
+
+  test("long-running-start-pause-resume — phase transitions and lease revocation", async () => {
+    const { createLongRunningHarness, EMPTY_TASK_BOARD } = await import("@koi/long-running");
+    const { agentId, harnessId, nodeId } = await import("@koi/core");
+
+    const nodes: Array<{
+      readonly nodeId: ReturnType<typeof nodeId>;
+      readonly chainId: unknown;
+      readonly parentIds: readonly ReturnType<typeof nodeId>[];
+      readonly contentHash: string;
+      readonly data: { readonly phase: string };
+      readonly createdAt: number;
+      readonly metadata: Record<string, unknown>;
+    }> = [];
+    let counter = 0;
+
+    const harnessStore = {
+      put: (
+        chain: unknown,
+        data: unknown,
+        parentIds: readonly unknown[],
+        metadata?: Record<string, unknown>,
+      ) => {
+        counter += 1;
+        const node = {
+          nodeId: nodeId(`n-${counter}`),
+          chainId: chain,
+          parentIds: parentIds as readonly ReturnType<typeof nodeId>[],
+          contentHash: String(counter),
+          data: data as { readonly phase: string },
+          createdAt: Date.now(),
+          metadata: metadata ?? {},
+        };
+        nodes.push(node);
+        return { ok: true as const, value: node };
+      },
+      get: (id: unknown) => {
+        const found = nodes.find((n) => n.nodeId === id);
+        return found
+          ? { ok: true as const, value: found }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      head: () => ({
+        ok: true as const,
+        value: nodes.length > 0 ? nodes[nodes.length - 1] : undefined,
+      }),
+      list: () => ({ ok: true as const, value: [...nodes].reverse() }),
+      ancestors: () => ({ ok: true as const, value: [] }),
+      fork: (sourceNodeId: unknown, _newChainId: unknown, label: string) => ({
+        ok: true as const,
+        value: { parentNodeId: sourceNodeId, label },
+      }),
+      prune: () => ({ ok: true as const, value: 0 }),
+      close: () => undefined,
+    };
+
+    const sessions = new Map<string, { status: string }>();
+    const persistence = {
+      saveSession: (rec: { sessionId: string; status: string }) => {
+        sessions.set(rec.sessionId, { status: rec.status });
+        return { ok: true as const, value: undefined };
+      },
+      loadSession: (id: string) => {
+        const r = sessions.get(id);
+        return r
+          ? { ok: true as const, value: { ...r, sessionId: id } }
+          : {
+              ok: false as const,
+              error: { code: "NOT_FOUND" as const, message: "x", retryable: false },
+            };
+      },
+      removeSession: (id: string) => {
+        sessions.delete(id);
+        return { ok: true as const, value: undefined };
+      },
+      listSessions: () => ({ ok: true as const, value: [] }),
+      savePendingFrame: () => ({ ok: true as const, value: undefined }),
+      loadPendingFrames: () => ({ ok: true as const, value: [] }),
+      clearPendingFrames: () => ({ ok: true as const, value: undefined }),
+      removePendingFrame: () => ({ ok: true as const, value: undefined }),
+      setSessionStatus: (id: string, status: string) => {
+        const r = sessions.get(id);
+        if (r) sessions.set(id, { ...r, status });
+        return { ok: true as const, value: undefined };
+      },
+      saveContentReplacement: () => ({ ok: true as const, value: undefined }),
+      loadContentReplacements: () => ({ ok: true as const, value: [] }),
+      recover: () => ({
+        ok: true as const,
+        value: { sessions: [], pendingFrames: new Map(), skipped: [] },
+      }),
+      close: () => undefined,
+    };
+
+    const result = createLongRunningHarness({
+      harnessId: harnessId("g-h"),
+      agentId: agentId("g-a"),
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      harnessStore: harnessStore as any,
+      // biome-ignore lint/suspicious/noExplicitAny: see above
+      sessionPersistence: persistence as any,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const harness = result.value;
+
+    const started = await harness.start();
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    expect(harness.status().phase).toBe("active");
+
+    const paused = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(paused.ok).toBe(true);
+    expect(harness.status().phase).toBe("suspended");
+
+    // Stale lease rejected
+    const stale = await harness.pause(started.value.lease, {
+      summary: {
+        narrative: "",
+        sessionSeq: 1,
+        completedTaskIds: [],
+        estimatedTokens: 0,
+        generatedAt: Date.now(),
+      },
+      newKeyArtifacts: [],
+      metricsDelta: {},
+    });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.error.code).toBe("STALE_REF");
+
+    const resumed = await harness.resume();
+    expect(resumed.ok).toBe(true);
+    expect(harness.status().phase).toBe("active");
+
+    expect(EMPTY_TASK_BOARD.items).toHaveLength(0);
+  });
+});

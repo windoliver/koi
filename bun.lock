@@ -377,6 +377,15 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/long-running": {
+      "name": "@koi/long-running",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/lib/loop": {
       "name": "@koi/loop",
       "version": "0.0.0",
@@ -885,6 +894,7 @@
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
         "@koi/ipc-local": "workspace:*",
+        "@koi/long-running": "workspace:*",
         "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
@@ -1743,6 +1753,8 @@
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
 
     "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/lib/ipc-local"],
+
+    "@koi/long-running": ["@koi/long-running@workspace:packages/lib/long-running"],
 
     "@koi/loop": ["@koi/loop@workspace:packages/lib/loop"],
 

@@ -75,6 +75,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/cost-aggregator",
   "@koi/governance-approval-tiers",
   "@koi/governance-security",
+  "@koi/long-running",
   "@koi/loop",
   "@koi/mcp",
   "@koi/middleware-audit",
