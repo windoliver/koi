@@ -39,9 +39,12 @@ export function createFakeClock(initialTime = 0): FakeClock {
     setTimeout(fn: () => void, ms: number) {
       const id = nextId++;
       timers.push({ fireAt: current + ms, fn, id });
+      // FakeClock uses integer IDs internally; the platform handle type is opaque,
+      // so a double-cast is required to satisfy the Clock interface signature.
       return id as unknown as ReturnType<typeof globalThis.setTimeout>;
     },
     clearTimeout(id) {
+      // Reverse the double-cast from setTimeout above.
       const numId = id as unknown as number;
       const idx = timers.findIndex((t) => t.id === numId);
       if (idx !== -1) timers.splice(idx, 1);
