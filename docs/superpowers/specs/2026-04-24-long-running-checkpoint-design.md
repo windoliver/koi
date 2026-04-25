@@ -286,7 +286,14 @@ interface LongRunningHarness {
   ) => Promise<Result<void, KoiError>>;
   readonly status: () => HarnessStatus;
   readonly createMiddleware: (lease: SessionLease) => KoiMiddleware;
-  readonly dispose: () => Promise<Result<void, KoiError>>;
+  /**
+   * Shut down the harness. Requires the current SessionLease when the
+   * harness is `active` — enforces the same capability boundary as
+   * other mutating methods. When the harness is `idle` / `suspended` /
+   * `completed` / `failed`, the lease parameter is optional (pass
+   * `undefined`) because there is no active run to terminate.
+   */
+  readonly dispose: (lease?: SessionLease) => Promise<Result<void, KoiError>>;
 }
 ```
 
@@ -368,12 +375,35 @@ as `dispose`:
      tombstones or TTL reclaim because that would leave the harness
      resumable from a pre-completion snapshot — an exactly-once
      violation: a peer reclaiming later would replay already-emitted
-     side effects. If all retries fail, return
-     `Err(TERMINAL_WRITE_FAILED)`, flip `durability = "unhealthy"`,
-     and keep heartbeats running (the harness is stuck in an unhealthy
-     `active` state until the store recovers and the caller retries
-     the terminal transition — never resumable from a stale
-     pre-terminal snapshot by a peer).
+     side effects.
+
+     **Terminal CAS authority.** The CAS itself takes the harness's
+     internal head pointer + the next snapshot; it does not need a
+     lease argument. Lease validation gates whether the public API
+     accepts the call; once accepted, the harness performs CAS via its
+     own internal state. If the initial 4-retry burst exhausts, the
+     harness transitions `status().durability = "unhealthy"` and
+     schedules a background retry loop (exponential backoff starting
+     at 15s, capped at 5 min) that continues to attempt the terminal
+     CAS for as long as the harness object is alive. Heartbeats
+     continue throughout so the harness stays non-reclaimable.
+     `onDurabilityLost(TERMINAL_WRITE_FAILED)` is invoked on first
+     failure and on every backoff tick; the host sees the harness is
+     wedged and can decide to keep the process alive or SIGKILL.
+     `dispose()` called while in this state cancels the background
+     retry loop and returns `Err(TERMINAL_WRITE_FAILED)`. A fresh
+     process starting a new harness with the same `harnessId` sees
+     `phase === "active"` with stale heartbeat (after the terminating
+     process exits) and reclaims via standard supervisor-kill path —
+     but the peer sees the pre-terminal snapshot and may replay
+     work. That is an at-least-once outcome for side effects only
+     when the store is persistently unreachable across a process
+     lifetime; for durable harness state, the fresh process can
+     continue tasks that were already marked complete in the reclaimed
+     snapshot's task board (if the store caught up and the terminal
+     CAS happened before exit). If all retries genuinely fail and
+     process exits, tooling must reconcile task-board state against
+     external outcomes.
    - **Abort timeout:** do NOT publish the target phase. Keep
      heartbeats alive, flip `durability = "unhealthy"`, invoke
      `onDurabilityLost(ABORT_TIMEOUT)`, return `Err(ABORT_TIMEOUT)`.
@@ -693,10 +723,13 @@ the original run.
 
 Unambiguous algorithm:
 
-1. Stop ONLY the wall-clock timeout timer (`clearTimeout(timeoutHandle)`).
+1. Validate the lease argument if phase is `active`: identity check +
+   WeakSet membership. Missing or stale → `Err(STALE_SESSION)`. For
+   non-active phases, the lease is optional.
+2. Stop ONLY the wall-clock timeout timer (`clearTimeout(timeoutHandle)`).
    **Do NOT stop the heartbeat timer.** Heartbeats must continue.
-2. If phase is not `active`, return `Ok(undefined)` — nothing further.
-3. Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
+3. If phase is not `active`, return `Ok(undefined)` — nothing further.
+4. Revoke the lease (remove from `activeLeases`, fire `lease.abort`).
    In-process callers with the old reference now fail identity check.
 4. Signal the engine adapter to stop, then `await quiesce(abortTimeoutMs)`.
 5. Throughout step 4, the heartbeat loop continues unchanged. Config
@@ -704,12 +737,27 @@ Unambiguous algorithm:
    guarantees at least one heartbeat will succeed during the quiesce
    window even if one misses.
 6. Branch on the quiesce outcome:
-   - **Quiescent:** THIS is the first place the heartbeat loop is stopped.
-     Then CAS-advance to `suspended` with
-     `failureReason = "disposed before completion"`. Best-effort snapshot
-     write — if it fails, heartbeat-staleness will reclaim (safe now
-     because the engine is confirmed stopped). Release store references.
-     Return `Ok(undefined)`.
+   - **Quiescent:** CAS-advance to `suspended` with
+     `failureReason = "disposed before completion"`. Retry policy
+     depends on mode:
+     - **Supervisor mode (default):** 4-try backoff (100/500/2500/
+       12500ms). On success, stop heartbeats and release store
+       references; return `Ok(undefined)`. On failure, stop
+       heartbeats anyway — the engine is confirmed stopped and TTL
+       staleness + supervisor `killAndConfirm` (no-op on a dead
+       process) will safely reclaim.
+     - **`trustedSingleProcess=true` mode:** no supervisor, so TTL
+       reclaim is disabled. The dispose CAS MUST eventually succeed
+       to avoid a permanent `active` wedge. Heartbeats continue
+       until CAS success. Harness retries in the background with
+       exponential backoff (15s initial, capped at 5 min), logging
+       each failure via `onDurabilityLost`. `dispose()` returns
+       `Ok(undefined)` once CAS succeeds. Callers that want early
+       return can pass a deadline; if the deadline elapses, return
+       `Err(DISPOSE_STORE_UNREACHABLE)` but the background retry
+       continues until the harness object is released. An operator
+       who believes the store is permanently broken can edit the
+       snapshot out of band via a separate administrative tool.
    - **Timed out (engine ignored abort):** do NOT publish `suspended`.
      Do NOT stop the heartbeat loop. The heartbeat loop is detached from
      `dispose`'s lifetime and retained by the process until either (a)
@@ -1126,7 +1174,8 @@ All errors are `KoiError` from L0. Codes used:
 | `TERMINAL` | action on completed/failed harness | false |
 | `INVALID_STATE` | phase transition not allowed | false |
 | `TIMEOUT` | session exceeded `timeoutMs` | false |
-| `TERMINAL_WRITE_FAILED` | terminal CAS (`completed` / `failed`) failed after retries; harness stuck `active + unhealthy`; exactly-once preserved | true |
+| `TERMINAL_WRITE_FAILED` | terminal CAS (`completed` / `failed`) failed after retries; harness stuck `active + unhealthy`; background retry continues; exactly-once preserved | true |
+| `DISPOSE_STORE_UNREACHABLE` | `trustedSingleProcess` dispose CAS unreachable past caller deadline; background retry continues | true |
 | `ALREADY_ACTIVE` | `resume()` while another session holds an active lease | true |
 | `CONCURRENT_RESUME` | CAS failed: peer claimed the lease first | true |
 | `STALE_SESSION` | mutating call presented a revoked/superseded/tampered lease | false |
