@@ -164,22 +164,20 @@ export function createWebhookServer(
     );
   }
 
-  // Guard: GitHub and generic providers have no built-in replay protection
-  // (no provider-vended stable event ID in the signed payload). Without a
-  // keyExtractor, every valid redelivery is dispatched again — including
-  // provider auto-retries and manual replays of captured signed requests.
-  const replayableKinds = ["github", "generic"] as const;
-  const hasReplayableProvider =
+  // Guard: GitHub has no built-in replay protection (no stable event ID in the
+  // signed payload). The generic provider uses X-Webhook-ID which is part of
+  // its HMAC signing string and therefore provides built-in replay protection.
+  const hasGitHubProvider =
     config.providerRouting === true &&
     providerSecrets !== undefined &&
-    replayableKinds.some((k) => providerSecrets[k] !== undefined);
+    providerSecrets.github !== undefined;
   if (
-    hasReplayableProvider &&
+    hasGitHubProvider &&
     config.keyExtractor === undefined &&
     config.allowReplayableProviders !== true
   ) {
     throw new Error(
-      "createWebhookServer: GitHub and generic providers have no built-in replay " +
+      "createWebhookServer: GitHub provider has no built-in replay " +
         "protection. Provide a keyExtractor to supply a verified dedup key per " +
         "delivery (e.g. req.headers.get('X-GitHub-Delivery')), or set " +
         "allowReplayableProviders: true if your dispatcher is fully idempotent.",
@@ -245,12 +243,12 @@ export function createWebhookServer(
       account = seg1;
     }
 
-    // X-Webhook-Peer is unsigned — trust it only for internal/unauthenticated paths.
-    // On provider-routed requests the header is spoofable by any party that holds a
-    // valid signed payload. Authenticators may set routing.peer explicitly after
-    // validating the actual source.
+    // X-Webhook-Peer is unsigned — trust it only when all routing risks are
+    // explicitly accepted (allowUnauthenticated). On any authenticated path the
+    // header is spoofable by any caller with a valid signed body; authenticators
+    // may set routing.peer explicitly after validating the actual source.
     const peer =
-      config.allowUnauthenticated === true || provider === undefined
+      config.allowUnauthenticated === true
         ? (request.headers.get("X-Webhook-Peer") ?? undefined)
         : undefined;
 
@@ -405,9 +403,12 @@ export function createWebhookServer(
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
     // maxDispatchMs caps total renewal time: after that, the reservation is aborted
-    // so stuck handlers cannot permanently block their delivery key.
+    // so stuck handlers cannot permanently block their delivery key. If the
+    // dispatcher eventually completes after the timeout, we return 503 so the
+    // provider retries — replay protection was already voided when the abort fired.
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
     let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
+    let dispatchTimedOut = false;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       const key = pendingDedupKey;
       const token = pendingToken;
@@ -416,6 +417,7 @@ export function createWebhookServer(
       }, leaseRenewalMs);
       if (config.maxDispatchMs !== undefined) {
         maxDispatchTimer = setTimeout(() => {
+          dispatchTimedOut = true;
           clearInterval(renewalTimer);
           // Abort reservation — retries are accepted; stale commit/abort will no-op.
           idempotencyStore.abort(key, token);
@@ -439,6 +441,17 @@ export function createWebhookServer(
     }
     clearTimeout(maxDispatchTimer);
     clearInterval(renewalTimer);
+
+    // If the dispatch timeout fired before the handler finished, replay protection
+    // was already aborted. Return 503 so the provider retries — we cannot commit
+    // because a concurrent retry may already be in-flight.
+    if (dispatchTimedOut) {
+      return jsonResponse(503, {
+        ok: false,
+        error: "Dispatch exceeded maxDispatchMs — replay protection voided, retry",
+        frameId,
+      });
+    }
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
     // Provider retries after transient failures will not be silently dropped.

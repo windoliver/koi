@@ -114,11 +114,10 @@ const genericProvider: WebhookProvider = {
   async verify(secret, rawBody, request): Promise<ProviderVerifyResult> {
     const ok = await verifyGenericSignature(secret, rawBody, request);
     if (!ok) return { ok: false };
-    // X-Webhook-ID is not covered by the Standard Webhooks HMAC signature and
-    // cannot be trusted. Content-based keys conflate distinct events with identical
-    // payloads. No dedup key is provided — callers should inject a store keyed
-    // on a verified delivery identifier for dedup.
-    return { ok };
+    // X-Webhook-ID is part of the signing string ("${id}.${ts}.${body}") and is
+    // therefore verified by the HMAC. Use it directly as the dedup key.
+    const dedupKey = request.headers.get("x-webhook-id") ?? undefined;
+    return { ok, dedupKey };
   },
 };
 

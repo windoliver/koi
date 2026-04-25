@@ -1051,6 +1051,163 @@ describe("WebhookServer — keyExtractor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Generic provider — built-in dedup via verified X-Webhook-ID
+// ---------------------------------------------------------------------------
+
+describe("WebhookServer — generic provider dedup", () => {
+  let server: WebhookServer;
+  const dispatched: Array<{ session: Session; frame: GatewayFrame }> = [];
+
+  function dispatcher(session: Session, frame: GatewayFrame): void {
+    dispatched.push({ session, frame });
+  }
+
+  beforeEach(() => {
+    dispatched.length = 0;
+  });
+
+  afterEach(() => {
+    server?.stop();
+  });
+
+  async function computeGenericSig(
+    secret: string,
+    webhookId: string,
+    timestamp: string,
+    body: string,
+  ): Promise<string> {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const signingString = `${webhookId}.${timestamp}.${body}`;
+    const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingString));
+    return `v1,${Buffer.from(sig).toString("base64")}`;
+  }
+
+  test("generic provider deduplicates via verified X-Webhook-ID without keyExtractor", async () => {
+    const secret = "test-secret";
+    const webhookId = "wh_abc123";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({ event: "created" });
+    const sig = await computeGenericSig(secret, webhookId, timestamp, body);
+
+    server = createWebhookServer(
+      { port: 0, pathPrefix: "/webhook", providerRouting: true },
+      dispatcher,
+      undefined,
+      { generic: secret },
+    );
+    await server.start();
+
+    const headers = {
+      "X-Webhook-Signature": sig,
+      "X-Webhook-ID": webhookId,
+      "X-Webhook-Timestamp": timestamp,
+      "Content-Type": "application/json",
+    };
+
+    const res1 = await fetch(`http://localhost:${server.port()}/webhook/generic`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res1.status).toBe(200);
+    expect(dispatched).toHaveLength(1);
+
+    // Duplicate — same webhook ID — must be deduplicated
+    const res2 = await fetch(`http://localhost:${server.port()}/webhook/generic`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(res2.status).toBe(200);
+    const b2 = (await res2.json()) as { ok: boolean; duplicate?: boolean };
+    expect(b2.duplicate).toBe(true);
+    expect(dispatched).toHaveLength(1); // not dispatched again
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maxDispatchMs — timeout aborts lease and voids replay protection
+// ---------------------------------------------------------------------------
+
+describe("WebhookServer — maxDispatchMs", () => {
+  afterEach(() => {});
+
+  test("maxDispatchMs timeout returns 503 even if dispatch eventually succeeds", async () => {
+    // Dispatcher takes longer than maxDispatchMs — simulates a slow handler.
+    // Server should return 503 (not 200) so the provider retries, since replay
+    // protection was already aborted when the timeout fired.
+    // Uses generic provider which provides a built-in dedupKey via X-Webhook-ID.
+    const secret = "test-secret";
+    const webhookId = "wh_timeout_test";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({ action: "test" });
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const rawSig = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      enc.encode(`${webhookId}.${timestamp}.${body}`),
+    );
+    const sig = `v1,${Buffer.from(rawSig).toString("base64")}`;
+
+    let resolveDispatch!: () => void;
+    const dispatchGate = new Promise<void>((res) => {
+      resolveDispatch = res;
+    });
+
+    const srv = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        maxDispatchMs: 20,
+      },
+      async () => {
+        await dispatchGate; // blocks until we resolve it after timeout
+      },
+      undefined,
+      { generic: secret },
+    );
+    await srv.start();
+
+    const fetchPromise = fetch(`http://localhost:${srv.port()}/webhook/generic`, {
+      method: "POST",
+      headers: {
+        "X-Webhook-Signature": sig,
+        "X-Webhook-ID": webhookId,
+        "X-Webhook-Timestamp": timestamp,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+
+    // Wait for timeout to fire (maxDispatchMs=20ms), then unblock dispatcher
+    await new Promise<void>((res) => setTimeout(res, 50));
+    resolveDispatch();
+
+    const res = await fetchPromise;
+    expect(res.status).toBe(503);
+    const b = (await res.json()) as { ok: boolean; error: string };
+    expect(b.ok).toBe(false);
+    expect(b.error).toContain("maxDispatchMs");
+    srv.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test helper — compute GitHub HMAC sig
 // ---------------------------------------------------------------------------
 
