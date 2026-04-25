@@ -735,6 +735,8 @@
         "@koi/rules-loader": "workspace:*",
         "@koi/runtime": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
+        "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-provider": "workspace:*",
         "@koi/secure-storage": "workspace:*",
         "@koi/session": "workspace:*",
         "@koi/settings": "workspace:*",
