@@ -286,9 +286,11 @@ trigger for kill-on-takeover.
 gated on its presence:
 
 - If `config.supervisor` is defined: reclaim resolves
-  `handle = loadSession(prev.lastSessionId).workerHandle` and invokes
+  `handle = prev.workerHandle ?? loadSession(prev.lastSessionId).workerHandle`
+  (snapshot-carried handle is the primary source; session row is
+  the secondary fallback) and invokes
   `supervisor.killAndConfirm(handle)` BEFORE the CAS advance to
-  `suspended`. If `workerHandle` is undefined (legacy data,
+  `suspended`. If both sources lack the handle (legacy data,
   pre-prereq session, or activation crash before handle was
   persisted), the harness MUST NOT silently fall back to a sessionId
   kill — it returns `Err(WORKER_HANDLE_MISSING, retryable: false)`
@@ -544,8 +546,12 @@ Behavior:
    protocol against the supplied handle. Live owner →
    `Err(RECLAIM_LIVE_OWNER)`; kill failure → `Err(KILL_FAILED)`.
 3. For `hostConfirmedDead` evidence: write a durable
-   host-confirmed-dead marker on the session record
-   (`SessionPersistence.markHostConfirmedDead(sid)` — idempotent;
+   host-confirmed-dead marker keyed by `(harnessId, sessionId)`
+   to a harness-scoped store, NOT to the session row. The
+   marker store is independent of session-persistence so the
+   missing-session recovery path works:
+   `HarnessSnapshotStore.markHostConfirmedDead(harnessId, sessionId)`
+   — idempotent;
    re-marking is a no-op). The marker is the durable resumption
    point: even if the admin process crashes after this write but
    before step 4, a later `forceReclaim(harnessId, sid,
@@ -855,33 +861,40 @@ as `dispose`:
 
         interface RecoveryOutcome {
           readonly kind: RecoveryOutcomeKind;
-          readonly seq: number;                          // monotonic per session
           readonly committedAt: number;
           readonly expectedHead: ChainHead | undefined;  // CAS authority for replay
           readonly snapshotDelta: HarnessSnapshot;       // full next snapshot
           readonly resultGeneration: number;             // snapshotDelta.generation
         }
         ```
-        Keyed by `(sessionId, seq)`. `expectedHead` is the chain
-        head this delta was built against; `resultGeneration` is the
-        delta's own generation (monotonic per harness, valid for
-        ordering because generation IS a number, unlike opaque
-        `ChainHead`).
+        **Single record per session — no log.** RecoveryOutcome is
+        keyed by `sessionId` ALONE; there is at most one record per
+        session. A session reaches a post-quiesce intent at most
+        once (it transitions to `suspended`/`completed`/`failed`
+        once and then a fresh session is required for further
+        work), so a write-once-per-session contract matches the
+        semantics. `recordRecoveryOutcome(sid, outcome)` rejects
+        with `Err(CONFLICT, "OUTCOME_ALREADY_RECORDED")` if a
+        record already exists for the session AND its
+        `resultGeneration !== outcome.resultGeneration`. Identical
+        re-writes (same generation) are idempotent. There is no
+        sequence counter and no append log.
 
         On replay, the reclaimer:
         - Reads the current chain head H and current snapshot's
           `generation` G.
-        - For each outcome in seq order:
+        - Calls `listRecoveryOutcomes(sid)` which returns either
+          `[]` or a single record `outcome`:
           - **Subsumption check (generation, not head):** if
             `outcome.resultGeneration <= G`, this outcome was
-            already applied — skip. (`generation` is a typed monotonic
-            counter; this comparison is valid.)
+            already applied — done. (`generation` is a typed
+            monotonic counter; this comparison is valid.)
           - **Identity match on predecessor:** else if
             `outcome.expectedHead === H` (object/string equality on
             the opaque token), perform
-            `compareAndPut(harnessId, H, outcome.snapshotDelta)`; on success,
-            advance H to the returned new head and update G to
-            `outcome.resultGeneration`.
+            `compareAndPut(harnessId, H, outcome.snapshotDelta)`; on
+            success, advance H to the returned new head and update
+            G to `outcome.resultGeneration`. Done.
           - **Mismatch:** else (`expectedHead` does not equal H AND
             `resultGeneration > G`), return
             `Err(REPLAY_AUTHORITY_MISMATCH)`. The chain advanced
@@ -890,9 +903,7 @@ as `dispose`:
 
         Replay never compares `ChainHead` values for ordering — only
         equality. Subsumption uses the typed `generation` counter,
-        which has well-defined ordering. The reclaimer threads H
-        forward CAS-by-CAS using the head returned from each
-        successful `compareAndPut`.
+        which has well-defined ordering.
         Carrying the full snapshot delta makes exactly-once
         non-lossy: a reclaimer replays the snapshot from the record,
         not a reconstructed-from-outcomes partial view.
@@ -1267,7 +1278,8 @@ activation-latency race and the cross-store-lag race.
    advance the chain while the original process is still capable of
    emitting side effects.
    1. Run the supervisor probe-then-kill protocol against
-      `loadSession(prev.lastSessionId).workerHandle`. Reclaim
+      `prev.workerHandle ?? loadSession(prev.lastSessionId).workerHandle`
+      (snapshot-carried handle is primary; session row is fallback). Reclaim
       proceeds ONLY after `killAndConfirm` returns `Ok` (or the
       probe path positively determines the worker is dead). Missing
       handle → `WORKER_HANDLE_MISSING` (per single missing-handle
@@ -2176,12 +2188,16 @@ Additive changes required (part of the coordinated migration):
    Hosts SHOULD page on
    `cleanupHealth === "unhealthy"` regardless of process state.
 
-9. `SessionPersistence.markHostConfirmedDead(sid)` — DURABLE
-   one-shot marker written by the `forceReclaim(harnessId, sid,
-   { kind: "hostConfirmedDead" })` admin path. The marker is
-   idempotent (re-marking is a no-op) and intentionally one-way
-   (cleared only when the session record is removed). The marker
-   is consumed ONLY by `forceReclaim` (advisory to `resume()`).
+9. `HarnessSnapshotStore.markHostConfirmedDead(harnessId,
+   sessionId)` and `isHostConfirmedDead(harnessId, sessionId)` —
+   DURABLE one-shot marker keyed by `(harnessId, sessionId)`,
+   stored in the harness-snapshot store (NOT the session row).
+   Storing it harness-scoped is critical: the missing-session
+   recovery path needs to write this attestation even when the
+   session row is gone. The marker is idempotent (re-marking is a
+   no-op) and intentionally one-way (cleared only when the
+   harness chain is removed). The marker is consumed ONLY by
+   `forceReclaim` (advisory to `resume()`).
    `resume()` MUST NOT advance the chain based on the marker
    alone — it returns `ALREADY_ACTIVE` even when the marker is
    present, and includes a `recoveryAvailable:
