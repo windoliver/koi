@@ -440,15 +440,25 @@ interface ForceReclaimInput {
    * package invokes BEFORE any kill, marker write, or CAS. The
    * package does NOT trust bare token strings — verification
    * logic (signature check, admin-service callout, scoped
-   * capability validation) lives in the host. Returning
+   * capability validation) lives in the host. The verifier sees
+   * the FULL request shape — harnessId, sessionId, evidence
+   * kind, override flag, hostConfirmedDead flag, and (when
+   * present) the supplied workerHandle — so hosts can scope
+   * permissions to the actual destructive action: a credential
+   * narrowed to trusted-mode recovery cannot be replayed against
+   * the more dangerous manualHandle+override path. Returning
    * Err(PERMISSION) aborts forceReclaim immediately with no
-   * destructive side effects. Hosts SHOULD make verification
-   * scoped per (harnessId, sessionId) so a leaked credential
-   * from one harness cannot reclaim another.
+   * destructive side effects.
    */
   readonly adminVerifier: (ctx: {
     readonly harnessId: HarnessId;
     readonly sessionId: SessionId;
+    readonly request: {
+      readonly evidenceKind: "manualHandle" | "hostConfirmedDead";
+      readonly override?: boolean;
+      readonly hostConfirmedDead?: boolean;
+      readonly handle?: WorkerHandle;
+    };
   }) => Promise<Result<void, KoiError>>;
   /**
    * One of:
@@ -481,6 +491,12 @@ interface ForceReclaimInput {
 type AdminVerifier = (ctx: {
   readonly harnessId: HarnessId;
   readonly sessionId: SessionId;
+  readonly request: {
+    readonly evidenceKind: "manualHandle" | "hostConfirmedDead";
+    readonly override?: boolean;
+    readonly hostConfirmedDead?: boolean;
+    readonly handle?: WorkerHandle;
+  };
 }) => Promise<Result<void, KoiError>>;
 ```
 
@@ -1267,21 +1283,27 @@ Given `prev.phase === "active"` and `prev.lastSessionId = sid`:
      ```
 
      If the loop exits with NOT_FOUND sustained across the entire
-     `orphanWindow`, the session record is genuinely missing —
-     which means there is no `workerHandle` to address the prior
-     worker. Per the single missing-handle rule above, this branch
-     CANNOT proceed to automatic kill: return
-     `Err(WORKER_HANDLE_MISSING, retryable: false)` and surface
-     `prev.lastSessionId` so the operator can drive
-     `forceReclaim(sid, manualHandle)` out of band. We never publish
-     `failed` from NOT_FOUND evidence alone, and we never call
-     `probeAlive` / `killAndConfirm` without a durable
-     supervisor-minted handle. This is intentional: a no-handle
-     orphan path that picked any synthetic identifier could fence
-     the wrong worker.
-     - Bounded recovery time for the supervised case where the
-       handle is recoverable later: ≤ `orphanWindow` (after which
-       the operator-driven path takes over).
+     `orphanWindow`, the session record is genuinely missing.
+     **Use `prev.workerHandle` from the active snapshot if
+     present** — the snapshot-carried handle is the authoritative
+     supervisor binding even when the session row is gone. With
+     `prev.workerHandle` present, run the standard probe-then-kill
+     protocol against it (treating sustained NOT_FOUND as the
+     dead-owner signal that paired with `probeAlive === "dead"`
+     authorizes `killAndConfirm`); on success, CAS-advance to
+     `suspended`. Only when BOTH the session row is missing AND
+     `prev.workerHandle` is undefined (legacy snapshot pre-prereq
+     #11) does this branch return
+     `Err(WORKER_HANDLE_MISSING, retryable: false)` and require
+     operator-driven `forceReclaim(harnessId, sid, manualHandle,
+     override:true, hostConfirmedDead:true)`.
+     - Bounded recovery time for the snapshot-carried-handle case:
+       ≤ `orphanWindow + supervisor kill latency`.
+     - We never publish `failed` from NOT_FOUND evidence alone,
+       and we never call `probeAlive` / `killAndConfirm` without
+       a durable supervisor-minted handle. A no-handle orphan
+       path that picked any synthetic identifier could fence the
+       wrong worker.
 
    Read I/O errors (not NOT_FOUND) remain `RECLAIM_READ_FAILED`
    (retryable) — we do NOT treat a transient read error as a missing
