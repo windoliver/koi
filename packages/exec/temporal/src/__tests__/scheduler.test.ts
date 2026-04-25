@@ -573,6 +573,8 @@ describe("createTemporalScheduler", () => {
           memo: {
             agentId: A1,
             mode: "dispatch",
+            workflowType: "agentWorkflow",
+            taskQueue: "test",
             expression: "0 * * * *",
             inputFingerprint,
             // timezone absent in both sides — both undefined → match
@@ -608,6 +610,8 @@ describe("createTemporalScheduler", () => {
           memo: {
             agentId: A1,
             mode: "dispatch",
+            workflowType: "agentWorkflow",
+            taskQueue: "test",
             expression: "0 * * * *",
             timezone: "America/New_York", // different timezone
             inputFingerprint,
@@ -670,7 +674,14 @@ describe("createTemporalScheduler", () => {
         pause: mock(async () => {}),
         unpause: mock(async () => {}),
         get: mock(async () => ({
-          memo: { agentId: A1, mode: "dispatch", expression: "0 0 * * *" }, // different expression
+          memo: {
+            agentId: A1,
+            mode: "dispatch",
+            workflowType: "agentWorkflow",
+            taskQueue: "test",
+            expression: "0 0 * * *", // different expression
+            inputFingerprint: JSON.stringify({ kind: "text", text: "tick" }),
+          },
         })),
       },
     };
@@ -782,6 +793,7 @@ describe("createTemporalScheduler", () => {
 
   test("submit() throws on stable-ID collision when describe reveals different agentId or mode", async () => {
     const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const inputFingerprint = JSON.stringify({ kind: "text", text: "hi" });
     const client: TemporalClientLike = {
       workflow: {
         start: mock(async () => {
@@ -791,7 +803,13 @@ describe("createTemporalScheduler", () => {
         describe: mock(
           async (): Promise<WorkflowExecutionStatus> => ({
             status: "RUNNING",
-            memo: { agentId: "other-agent", mode: "spawn" }, // different agent + mode
+            memo: {
+              agentId: "other-agent",
+              mode: "spawn", // different agent + mode
+              workflowType: "agentWorkflow",
+              taskQueue: "test",
+              inputFingerprint,
+            },
           }),
         ),
       },
@@ -825,7 +843,13 @@ describe("createTemporalScheduler", () => {
         describe: mock(
           async (): Promise<WorkflowExecutionStatus> => ({
             status: "RUNNING",
-            memo: { agentId: A1, mode: "dispatch", inputFingerprint },
+            memo: {
+              agentId: A1,
+              mode: "dispatch",
+              workflowType: "agentWorkflow",
+              taskQueue: "test",
+              inputFingerprint,
+            },
           }),
         ),
       },
@@ -845,6 +869,45 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
+  test("submit() rejects replay when workflowType or taskQueue differs (cross-deploy collision)", async () => {
+    const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
+    const inputFingerprint = JSON.stringify({ kind: "text", text: "hi" });
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => {
+          throw alreadyStarted;
+        }),
+        cancel: mock(async () => {}),
+        describe: mock(
+          async (): Promise<WorkflowExecutionStatus> => ({
+            status: "RUNNING",
+            memo: {
+              agentId: A1,
+              mode: "dispatch",
+              workflowType: "agentWorkflow",
+              taskQueue: "old-queue", // different queue from old deploy
+              inputFingerprint,
+            },
+          }),
+        ),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(
+      sched.submit(A1, { kind: "text", text: "hi" }, "dispatch", {
+        metadata: { workflowId: "stable-id" },
+      }),
+    ).rejects.toThrow("collision");
+    expect(sched.stats().pending).toBe(0);
+    await sched[Symbol.asyncDispose]();
+  });
+
   test("submit() does not register phantom pending task when replayed workflow already completed", async () => {
     const alreadyStarted = { name: "WorkflowExecutionAlreadyStartedError", message: "started" };
     const inputFingerprint = JSON.stringify({ kind: "text", text: "hi" });
@@ -857,7 +920,13 @@ describe("createTemporalScheduler", () => {
         describe: mock(
           async (): Promise<WorkflowExecutionStatus> => ({
             status: "COMPLETED", // already finished
-            memo: { agentId: A1, mode: "dispatch", inputFingerprint },
+            memo: {
+              agentId: A1,
+              mode: "dispatch",
+              workflowType: "agentWorkflow",
+              taskQueue: "test",
+              inputFingerprint,
+            },
           }),
         ),
       },
@@ -923,7 +992,13 @@ describe("createTemporalScheduler", () => {
         describe: mock(
           async (): Promise<WorkflowExecutionStatus> => ({
             status: "RUNNING",
-            memo: { agentId: A1, mode: "dispatch", inputFingerprint: otherFingerprint },
+            memo: {
+              agentId: A1,
+              mode: "dispatch",
+              workflowType: "agentWorkflow",
+              taskQueue: "test",
+              inputFingerprint: otherFingerprint,
+            },
           }),
         ),
       },

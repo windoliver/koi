@@ -181,6 +181,8 @@ async function verifyWorkflowOwnership(
   claim: {
     readonly agentId: AgentId;
     readonly mode: "spawn" | "dispatch";
+    readonly workflowType: string;
+    readonly taskQueue: string;
     readonly inputFingerprint: string;
     readonly timeoutMs: number | undefined;
     readonly maxRetries: number | undefined;
@@ -197,6 +199,8 @@ async function verifyWorkflowOwnership(
     m === undefined ||
     m.agentId !== claim.agentId ||
     m.mode !== claim.mode ||
+    m.workflowType !== claim.workflowType ||
+    m.taskQueue !== claim.taskQueue ||
     m.inputFingerprint !== claim.inputFingerprint ||
     m.timeoutMs !== claim.timeoutMs ||
     m.maxRetries !== claim.maxRetries
@@ -218,6 +222,8 @@ async function verifyScheduleOwnership(
   claim: {
     readonly agentId: AgentId;
     readonly mode: "spawn" | "dispatch";
+    readonly workflowType: string;
+    readonly taskQueue: string;
     readonly expression: string;
     readonly timezone: string | undefined;
     readonly inputFingerprint: string;
@@ -236,6 +242,8 @@ async function verifyScheduleOwnership(
     m === undefined ||
     m.agentId !== claim.agentId ||
     m.mode !== claim.mode ||
+    m.workflowType !== claim.workflowType ||
+    m.taskQueue !== claim.taskQueue ||
     m.expression !== claim.expression ||
     m.timezone !== claim.timezone ||
     m.inputFingerprint !== claim.inputFingerprint ||
@@ -424,6 +432,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           memo: {
             agentId,
             mode,
+            workflowType,
+            taskQueue: config.taskQueue,
             inputFingerprint,
             ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
             ...(options?.maxRetries !== undefined && { maxRetries: options.maxRetries }),
@@ -449,6 +459,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         replayStatus = await verifyWorkflowOwnership(describeFn, rawId, {
           agentId,
           mode,
+          workflowType,
+          taskQueue: config.taskQueue,
           inputFingerprint,
           timeoutMs: options?.timeoutMs,
           maxRetries: options?.maxRetries,
@@ -533,6 +545,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           memo: {
             agentId,
             mode,
+            workflowType,
+            taskQueue: config.taskQueue,
             expression,
             inputFingerprint,
             ...(options?.timezone !== undefined && { timezone: options.timezone }),
@@ -554,6 +568,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         await verifyScheduleOwnership(getFn, rawId, {
           agentId,
           mode,
+          workflowType,
+          taskQueue: config.taskQueue,
           expression,
           timezone: options?.timezone,
           inputFingerprint,
