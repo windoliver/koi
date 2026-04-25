@@ -412,12 +412,11 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     },
 
     // Distinct from isHealthy: answers "does the worktree exist on disk?" regardless of branch
-    // state. Used as a post-disposal liveness oracle — isHealthy returns false for branch-drifted
-    // workspaces even when the worktree directory is still registered with git, which would cause
-    // the provider to incorrectly conclude the workspace is gone after a failed disposal.
+    // state or path. Used as a post-disposal liveness oracle — isHealthy returns false for
+    // branch-drifted workspaces even when the worktree is still registered with git.
+    // Matches by wsId in the path basename rather than by a fixed expected path, so it
+    // correctly returns true even after `git worktree move` relocates the worktree.
     async exists(wsId: WorkspaceId): Promise<boolean> {
-      // Derive the expected path from wsId — wsId is always the basename of the worktree directory.
-      const expectedPath = join(basePath, wsId as string);
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       // Fail closed: if we cannot query git, assume the worktree still exists.
       if (!listResult.ok) return true;
@@ -425,7 +424,10 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const lines = block.trim().split("\n");
         const pathLine = lines.find((l) => l.startsWith("worktree "));
         if (!pathLine) continue;
-        if (pathLine.slice("worktree ".length).trim() === expectedPath) return true;
+        const worktreePath = pathLine.slice("worktree ".length).trim();
+        // Match by basename — wsId (ws-<timestamp>-<random>) is unique and is always the
+        // directory name. Basename matching survives git worktree move or filesystem relocation.
+        if (worktreePath.split(sep).pop() === (wsId as string)) return true;
       }
       return false;
     },

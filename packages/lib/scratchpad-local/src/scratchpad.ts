@@ -177,15 +177,11 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
         groupRegistry.delete(groupId as string);
         sharedStore = undefined;
       }
-    } else if (
-      sharedStore.reuseToken !== null &&
-      callerToken !== null &&
-      callerToken !== sharedStore.reuseToken
-    ) {
-      // Active store with a reuseToken fence: a caller that asserts a different non-null token
-      // is claiming a different lifecycle identity — reject to prevent cross-lifecycle joining.
-      // (Callers with no token may still join an active store; that is intentional for
-      // multi-agent sharing where not all handles know the lifecycle token.)
+    } else if (sharedStore.reuseToken !== null && callerToken !== sharedStore.reuseToken) {
+      // Active store with a reuseToken fence: ALL new handles must present the exact token,
+      // including handles with no token (null). A recycled lifecycle that lost or never had
+      // the token must not inherit the live store's state — the reuseToken IS the credential
+      // for joining a tokenized group.
       throw new Error(`Scratchpad group "${groupId}" is already open with a different reuseToken`);
     }
   }

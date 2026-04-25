@@ -440,12 +440,13 @@ describe("createLocalScratchpad", () => {
         reuseToken: ttlToken,
       });
       first.write({ path: scratchpadPath("state"), content: "hello" });
-      // Second handle opens with TTL=0 (immediate eviction) — should NOT override first.
-      // No reuseToken needed: store is active when second joins (dormantTimer is null).
+      // Second handle joins the active store with TTL=0 — should NOT override first-handle TTL.
+      // Must present the reuseToken to be admitted to the tokenized store.
       const second = createLocalScratchpad({
         groupId: ttlGid,
         authorId: agentId("agent-2"),
         dormantTtlMs: 0,
+        reuseToken: ttlToken,
       });
       first.close(); // refCount still 1 (second open), no dormant eviction triggered
       // Third handle closes last — should use store-level TTL (60_000), not 0
@@ -528,9 +529,10 @@ describe("createLocalScratchpad", () => {
       sp1.close();
     });
 
-    it("active store with reuseToken allows a caller with no token (multi-agent sharing)", () => {
-      // A handle with no reuseToken can still join an active store — this is the intended
-      // multi-agent sharing pattern where not all participants know the lifecycle token.
+    it("active store with reuseToken rejects a tokenless caller (token is the admission credential)", () => {
+      // A reuseToken is the credential for the group — all handles must present it.
+      // A tokenless joiner on an active tokenized store is rejected, preventing a recycled
+      // lifecycle that lost the token from inheriting live state.
       const sharedGid = agentGroupId(`group-shared-${++gidCounter}`);
       const sp1 = createLocalScratchpad({
         groupId: sharedGid,
@@ -539,10 +541,28 @@ describe("createLocalScratchpad", () => {
       });
       sp1.write({ path: scratchpadPath("shared"), content: "data" });
 
-      // No reuseToken → allowed to join active store
+      // No reuseToken → rejected even though store is active
+      expect(() =>
+        createLocalScratchpad({
+          groupId: sharedGid,
+          authorId: agentId("agent-2"),
+        }),
+      ).toThrow("already open with a different reuseToken");
+
+      sp1.close();
+    });
+
+    it("active tokenized store admits a second handle that presents the matching token", () => {
+      // Multi-agent sharing within a lifecycle: all handles know and present the reuseToken.
+      const sharedGid = agentGroupId(`group-shared2-${++gidCounter}`);
+      const token = "shared-lifecycle";
+      const sp1 = createLocalScratchpad({ groupId: sharedGid, authorId: aid, reuseToken: token });
+      sp1.write({ path: scratchpadPath("shared"), content: "data" });
+
       const sp2 = createLocalScratchpad({
         groupId: sharedGid,
         authorId: agentId("agent-2"),
+        reuseToken: token,
       });
       const r = sp2.read(scratchpadPath("shared"));
       expect(r.ok).toBe(true);
