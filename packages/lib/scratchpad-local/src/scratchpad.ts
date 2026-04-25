@@ -25,6 +25,14 @@ export interface LocalScratchpadConfig {
    * is intentional and the groupId is guaranteed to be unique per agent lifecycle.
    */
   readonly dormantTtlMs?: number;
+  /**
+   * Opaque token that authorizes reuse of a dormant store (dormantTtlMs > 0).
+   * A new handle that presents the same token as the store was created with may
+   * reuse the existing entries. A handle without a matching token evicts the dormant
+   * store and starts fresh, preventing a recycled groupId from inheriting prior
+   * lifecycle state. Leave undefined when dormantTtlMs is 0 (the default).
+   */
+  readonly reuseToken?: string;
 }
 
 interface MutableEntry {
@@ -65,6 +73,11 @@ interface GroupStore {
   dormantTimer: ReturnType<typeof setTimeout> | null;
   /** Fixed at store creation (first-handle-wins). All handles in the group share this TTL. */
   readonly dormantTtlMs: number;
+  /**
+   * Token set at store creation. Only a handle that presents this exact token may
+   * reuse a dormant store; any other opener causes the dormant store to be evicted.
+   */
+  readonly reuseToken: string | null;
 }
 
 const groupRegistry = new Map<string, GroupStore>();
@@ -151,6 +164,20 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
   const sweepIntervalMs = config.sweepIntervalMs ?? 60_000;
 
   let sharedStore = groupRegistry.get(groupId as string);
+
+  // If a dormant store exists, only reuse it when the caller proves continuity via
+  // a matching reuseToken. Without a match, evict the dormant store so a recycled
+  // groupId does not inherit prior-lifecycle entries or generation counters.
+  if (sharedStore !== undefined && sharedStore.dormantTimer !== null) {
+    const callerToken = config.reuseToken ?? null;
+    if (callerToken === null || callerToken !== sharedStore.reuseToken) {
+      clearTimeout(sharedStore.dormantTimer);
+      if (sharedStore.timer !== null) clearInterval(sharedStore.timer);
+      groupRegistry.delete(groupId as string);
+      sharedStore = undefined;
+    }
+  }
+
   if (sharedStore === undefined) {
     sharedStore = {
       entries: new Map(),
@@ -162,6 +189,7 @@ export function createLocalScratchpad(config: LocalScratchpadConfig): LocalScrat
       // Non-zero values allow cross-turn state sharing but risk leaking into a later
       // group that reuses the same groupId — callers must use stable, unique groupIds.
       dormantTtlMs: config.dormantTtlMs ?? 0,
+      reuseToken: config.reuseToken ?? null,
     };
     groupRegistry.set(groupId as string, sharedStore);
   }

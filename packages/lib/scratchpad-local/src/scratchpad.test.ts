@@ -404,19 +404,22 @@ describe("createLocalScratchpad", () => {
       }
     });
 
-    it("entries survive last handle close and are visible to a new handle", () => {
-      // Use a long dormantTtlMs so the entry persists for the synchronous re-open below
+    it("entries survive last handle close and are visible to a new handle with matching reuseToken", () => {
+      // Use a long dormantTtlMs so the entry persists for the synchronous re-open below.
+      // reuseToken proves the reopener is the same lifecycle; without it the dormant store is evicted.
       const reopenGid = agentGroupId(`group-reopen-${++gidCounter}`);
+      const token = "lifecycle-abc";
       const sp1 = createLocalScratchpad({
         groupId: reopenGid,
         authorId: aid,
         dormantTtlMs: 60_000,
+        reuseToken: token,
       });
       sp1.write({ path: scratchpadPath("checkpoint"), content: "state-v1" });
       sp1.close(); // refCount → 0; timer stopped, dormant eviction scheduled
 
-      // New handle for same groupId cancels the dormant timer and sees the surviving entries
-      const sp2 = createLocalScratchpad({ groupId: reopenGid, authorId: aid });
+      // New handle for same groupId with matching token cancels the dormant timer and sees the surviving entries
+      const sp2 = createLocalScratchpad({ groupId: reopenGid, authorId: aid, reuseToken: token });
       try {
         const r = sp2.read(scratchpadPath("checkpoint"));
         expect(r.ok).toBe(true); // entries persist across handle gap
@@ -427,15 +430,18 @@ describe("createLocalScratchpad", () => {
     });
 
     it("dormantTtlMs is fixed by first handle; later handles with different config do not override it", () => {
-      // First handle sets a long TTL
+      // First handle sets a long TTL and a reuse token so the third can rejoin.
       const ttlGid = agentGroupId(`group-ttl-${++gidCounter}`);
+      const ttlToken = "ttl-reuse";
       const first = createLocalScratchpad({
         groupId: ttlGid,
         authorId: aid,
         dormantTtlMs: 60_000,
+        reuseToken: ttlToken,
       });
       first.write({ path: scratchpadPath("state"), content: "hello" });
-      // Second handle opens with TTL=0 (immediate eviction) — should NOT override first
+      // Second handle opens with TTL=0 (immediate eviction) — should NOT override first.
+      // No reuseToken needed: store is active when second joins (dormantTimer is null).
       const second = createLocalScratchpad({
         groupId: ttlGid,
         authorId: agentId("agent-2"),
@@ -445,14 +451,35 @@ describe("createLocalScratchpad", () => {
       // Third handle closes last — should use store-level TTL (60_000), not 0
       second.close(); // refCount → 0; dormant eviction scheduled with 60_000 ms
 
-      // Immediately re-open (within ms): state should still be present
-      const third = createLocalScratchpad({ groupId: ttlGid, authorId: aid });
+      // Immediately re-open (within ms) with matching token: state should still be present
+      const third = createLocalScratchpad({ groupId: ttlGid, authorId: aid, reuseToken: ttlToken });
       try {
         const r = third.read(scratchpadPath("state"));
         expect(r.ok).toBe(true);
         if (r.ok) expect(r.value.content).toBe("hello");
       } finally {
         third.close();
+      }
+    });
+
+    it("dormant store is evicted when new handle opens without a matching reuseToken", () => {
+      const evictGid = agentGroupId(`group-evict-${++gidCounter}`);
+      const sp1 = createLocalScratchpad({
+        groupId: evictGid,
+        authorId: aid,
+        dormantTtlMs: 60_000,
+        reuseToken: "original-token",
+      });
+      sp1.write({ path: scratchpadPath("data"), content: "should-be-evicted" });
+      sp1.close(); // refCount → 0; dormant window starts
+
+      // New handle — no token (or wrong token) — should NOT inherit prior entries
+      const sp2 = createLocalScratchpad({ groupId: evictGid, authorId: aid });
+      try {
+        const r = sp2.read(scratchpadPath("data"));
+        expect(r.ok).toBe(false); // store was evicted; entry not found
+      } finally {
+        sp2.close();
       }
     });
 
