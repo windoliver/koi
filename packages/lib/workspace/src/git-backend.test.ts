@@ -103,14 +103,14 @@ describe("createGitWorktreeBackend", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(backend.isHealthy(result.value.id)).toBe(true);
+    expect(await backend.isHealthy(result.value.id)).toBe(true);
     await backend.dispose(result.value.id);
   });
 
   it("isHealthy returns false for unknown workspace", async () => {
     const { workspaceId } = await import("@koi/core");
     const backend = createGitWorktreeBackend({ repoPath });
-    expect(backend.isHealthy(workspaceId("ghost"))).toBe(false);
+    expect(await backend.isHealthy(workspaceId("ghost"))).toBe(false);
   });
 
   it("metadata contains branchName", async () => {
@@ -120,7 +120,7 @@ describe("createGitWorktreeBackend", () => {
     if (!result.ok) return;
 
     expect(result.value.metadata.branchName).toBeTruthy();
-    expect(result.value.metadata.branchName).toContain("test-agent");
+    expect(result.value.metadata.branchName).toMatch(/^workspace\/[0-9a-f]+\//);
     await backend.dispose(result.value.id);
   });
 
