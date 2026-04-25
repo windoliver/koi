@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { GatewayFrame, Session } from "@koi/gateway-types";
-import { createIdempotencyStore } from "./idempotency.js";
+import { createIdempotencyStore, type IdempotencyStore } from "./idempotency.js";
 import type { WebhookAuthenticator, WebhookServer } from "./webhook.js";
 import { createWebhookServer } from "./webhook.js";
 
@@ -1659,6 +1659,75 @@ describe("WebhookServer — maxDispatchMs", () => {
     expect(res2.status).toBe(200);
     srv.stop();
     srv2.stop();
+  });
+
+  test("lease lost during dispatch returns 503 — does not return 200 without committed dedup record", async () => {
+    // Simulate lease loss by injecting a store whose renew() always returns false.
+    // This covers the failure mode where the processing TTL expires on a remote store
+    // (e.g. Redis) before dispatch completes — renewal failure signals lost ownership.
+    const secret = "test-secret";
+    const webhookId = "wh_lease_lost";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({ action: "test" });
+    const enc = new TextEncoder();
+    const cryptoKey = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const rawSig = await crypto.subtle.sign(
+      "HMAC",
+      cryptoKey,
+      enc.encode(`${webhookId}.${timestamp}.${body}`),
+    );
+    const sig = `v1,${Buffer.from(rawSig).toString("base64")}`;
+
+    const baseStore = createIdempotencyStore();
+    // Custom store that always fails renewal — simulates lost lease on remote store
+    const failRenewStore: IdempotencyStore = {
+      tryBegin: (key) => baseStore.tryBegin(key),
+      renew: () => false,
+      commit: (key, token) => baseStore.commit(key, token),
+      abort: (key, token) => baseStore.abort(key, token),
+      prune: () => baseStore.prune(),
+    };
+
+    let dispatchCount = 0;
+    const srv = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        idempotencyStore: failRenewStore,
+        leaseRenewalMs: 10,
+        maxDispatchMs: 500,
+      },
+      async () => {
+        dispatchCount++;
+        // Dispatch takes longer than the first renewal interval
+        await new Promise<void>((res) => setTimeout(res, 30));
+      },
+      undefined,
+      { generic: secret },
+    );
+    await srv.start();
+
+    const res = await fetch(`http://localhost:${srv.port()}/webhook/generic`, {
+      method: "POST",
+      headers: {
+        "X-Webhook-Signature": sig,
+        "X-Webhook-ID": webhookId,
+        "X-Webhook-Timestamp": timestamp,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    // Lease lost during dispatch — must not return 200 without a committed dedup record
+    expect(res.status).toBe(503);
+    expect(dispatchCount).toBe(1);
+    srv.stop();
   });
 });
 

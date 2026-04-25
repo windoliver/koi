@@ -550,13 +550,26 @@ export function createWebhookServer(
     // and return 503 so the provider retries with a fresh reservation. This prevents
     // the lease from quietly expiring while the handler is still running, which would
     // reopen the key for concurrent duplicate execution.
+    let leaseLost = false;
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       const key = pendingDedupKey;
       const token = pendingToken;
-      renewalTimer = setInterval(() => {
-        idempotencyStore.renew(key, token);
+      // Capture the timer ref directly so the callback can clear itself without
+      // risking a race on the outer `renewalTimer` variable (which is assigned
+      // after setInterval returns — the callback cannot fire before that point,
+      // but capturing directly is cleaner and avoids the undefined window).
+      const timer = setInterval(() => {
+        if (!idempotencyStore.renew(key, token)) {
+          // Lease was lost — TTL expired or another replica took over.
+          // Stop renewal and flag so the post-dispatch path returns 503 instead
+          // of 200: a stale commit is a no-op, so returning 200 here would mean
+          // the provider believes the delivery was committed when it was not.
+          clearInterval(timer);
+          leaseLost = true;
+        }
       }, leaseRenewalMs);
+      renewalTimer = timer;
     }
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -597,6 +610,20 @@ export function createWebhookServer(
       const message =
         dispatchError instanceof Error ? dispatchError.message : String(dispatchError);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
+    }
+
+    if (leaseLost) {
+      // Lease expired during dispatch — commit is a stale no-op, so returning 200
+      // would leave the provider without a committed dedup record. Return 503 so
+      // it retries; the next delivery wins a fresh reservation.
+      if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+        idempotencyStore.abort(pendingDedupKey, pendingToken);
+      }
+      return jsonResponse(503, {
+        ok: false,
+        error: "Dispatch lease expired — retry shortly",
+        frameId,
+      });
     }
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
