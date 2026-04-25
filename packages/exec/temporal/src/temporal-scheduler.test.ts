@@ -913,3 +913,55 @@ describe("unschedule / pause / resume — durability failures propagate", () => 
     await scheduler[Symbol.asyncDispose]();
   });
 });
+
+describe("fail-closed durability guard (assertDurabilityOk)", () => {
+  test("subsequent submit throws after background persist failure", async () => {
+    let callCount = 0;
+    let resolveFirst!: (value: unknown) => void;
+    const firstResult = new Promise<unknown>((r) => {
+      resolveFirst = r;
+    });
+    const client = makeMockClient({
+      getResult: mock(async () => {
+        callCount++;
+        if (callCount === 1) return firstResult;
+        return new Promise<unknown>(() => {});
+      }),
+    });
+
+    const _dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const { writeFileSync } = await import("node:fs");
+    // Pre-create a valid state file, then make it unwritable after scheduler starts.
+    // We'll block writes after the first submit so the second persist (on completion) fails.
+    const { mkdirSync, chmodSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath2 = `${dir}/state.json`;
+    writeFileSync(
+      dbPath2,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+      }),
+    );
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath: dbPath2 });
+    // First submit succeeds (writes initial running state while dir is writable)
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+
+    // Block writes so the background completion persist fails
+    chmodSync(dir, 0o555);
+
+    // Complete the workflow — background persist will fail and set durabilityFailed
+    resolveFirst({ ok: true });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Now subsequent mutations should throw fail-closed
+    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(/fail-closed/);
+
+    chmodSync(dir, 0o755);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});

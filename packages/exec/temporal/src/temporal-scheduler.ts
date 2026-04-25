@@ -302,6 +302,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const taskWorkflowIds = new Map<string, string>();
   // Set on disposal so stale getResult callbacks cannot mutate or persist after shutdown.
   let disposed = false;
+  // Set when a background persist fails so subsequent mutations throw rather than silently
+  // diverging. Once tripped, the scheduler is fail-closed — no further state mutations.
+  let durabilityFailed = false;
 
   // Restore state from disk if dbPath is configured and a prior snapshot exists.
   if (config.dbPath !== undefined) {
@@ -374,6 +377,15 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     }
   }
 
+  function assertDurabilityOk(): void {
+    if (durabilityFailed) {
+      throw new Error(
+        "[temporal-scheduler] scheduler is fail-closed due to a previous persistence failure — " +
+          "restart the process after fixing the underlying storage issue before issuing new mutations.",
+      );
+    }
+  }
+
   function computeStats(): SchedulerStats {
     let pending = 0;
     let running = 0;
@@ -438,7 +450,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         try {
           persist();
         } catch (e) {
-          console.error("[temporal-scheduler] background persist failed:", e);
+          durabilityFailed = true;
+          console.error(
+            "[temporal-scheduler] background persist failed — scheduler is now fail-closed:",
+            e,
+          );
         }
       },
       (error: unknown) => {
@@ -465,7 +481,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         try {
           persist();
         } catch (e) {
-          console.error("[temporal-scheduler] background persist failed:", e);
+          durabilityFailed = true;
+          console.error(
+            "[temporal-scheduler] background persist failed — scheduler is now fail-closed:",
+            e,
+          );
         }
       },
     );
@@ -478,6 +498,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       mode: "spawn" | "dispatch",
       options?: TaskOptions,
     ): Promise<TaskId> {
+      assertDurabilityOk();
       if (mode === "dispatch" && options?.delayMs !== undefined) {
         throw new Error(
           "delayMs is not supported for dispatch mode — dispatch targets a running workflow and cannot defer signal delivery",
@@ -620,7 +641,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             try {
               persist();
             } catch (e) {
-              console.error("[temporal-scheduler] background persist failed:", e);
+              durabilityFailed = true;
+              console.error(
+                "[temporal-scheduler] background persist failed — scheduler is now fail-closed:",
+                e,
+              );
             }
           },
           (error: unknown) => {
@@ -647,7 +672,11 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             try {
               persist();
             } catch (e) {
-              console.error("[temporal-scheduler] background persist failed:", e);
+              durabilityFailed = true;
+              console.error(
+                "[temporal-scheduler] background persist failed — scheduler is now fail-closed:",
+                e,
+              );
             }
           },
         );
@@ -656,10 +685,22 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         try {
           persist();
         } catch (persistErr: unknown) {
+          let cancelOk = true;
           try {
             await config.client.workflow.cancel(targetWorkflowId);
           } catch {
-            // Best-effort — workflow may not be cancellable, but we still surface persist error
+            cancelOk = false;
+          }
+          if (!cancelOk) {
+            // Both persist and rollback-cancel failed: surface the workflow ID so operators
+            // can manually cancel the orphaned execution.
+            throw new Error(
+              `[temporal-scheduler] durability write failed AND rollback cancel failed — ` +
+                `workflowId "${targetWorkflowId}" may still be running. ` +
+                "Manually cancel it before retrying. " +
+                `Persist cause: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+              { cause: persistErr },
+            );
           }
           throw persistErr;
         }
@@ -669,6 +710,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async cancel(id: TaskId): Promise<boolean> {
+      assertDurabilityOk();
       const task = tasks.get(id);
       if (task === undefined) return false;
       // Dispatch signals are delivered immediately; there is no workflow-level cancel
@@ -703,6 +745,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       mode: "spawn" | "dispatch",
       options?: TaskOptions & { readonly timezone?: string | undefined },
     ): Promise<ScheduleId> {
+      assertDurabilityOk();
       // timeoutMs, maxRetries, delayMs, priority, and metadata cannot be plumbed into Temporal
       // schedule policies — accepting them silently would give callers a false guarantee that
       // these options survive persistence and affect fired executions.
@@ -794,10 +837,22 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         // live schedule with a different id. The schedule id is random so retries are not
         // idempotent without this rollback.
         schedules.delete(id);
+        let deleteOk = true;
         try {
           await config.client.schedule.delete(id);
         } catch {
-          // Best-effort — surface the original persist error regardless
+          deleteOk = false;
+        }
+        if (!deleteOk) {
+          // Both persist and rollback-delete failed: surface the schedule ID so operators
+          // can manually delete the orphaned recurring schedule.
+          throw new Error(
+            `[temporal-scheduler] durability write failed AND rollback delete failed — ` +
+              `scheduleId "${id}" may still be running. ` +
+              "Manually delete it before retrying to avoid duplicate executions. " +
+              `Persist cause: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+            { cause: persistErr },
+          );
         }
         throw persistErr;
       }
@@ -805,6 +860,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async unschedule(id: ScheduleId): Promise<boolean> {
+      assertDurabilityOk();
       if (!schedules.has(id)) return false;
       try {
         await config.client.schedule.delete(id);
@@ -821,6 +877,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async pause(id: ScheduleId): Promise<boolean> {
+      assertDurabilityOk();
       const schedule = schedules.get(id);
       if (schedule === undefined) return false;
       try {
@@ -835,6 +892,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async resume(id: ScheduleId): Promise<boolean> {
+      assertDurabilityOk();
       const schedule = schedules.get(id);
       if (schedule === undefined) return false;
       try {
