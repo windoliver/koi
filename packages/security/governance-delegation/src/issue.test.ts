@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import type { CapabilityScope } from "@koi/core";
 import { agentId, sessionId } from "@koi/core";
 import { verifyHmac } from "./hmac.js";
-import { issueRootCapability } from "./issue.js";
+import { delegateCapability, issueRootCapability } from "./issue.js";
 import type { CapabilitySigner as Signer } from "./signer.js";
 
 const baseScope = (): CapabilityScope => ({
@@ -118,5 +118,160 @@ describe("issueRootCapability", () => {
         maxChainDepth: -1,
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe("delegateCapability", () => {
+  const newRoot = async (
+    overrides: Partial<{
+      ttlMs: number;
+      maxChainDepth: number;
+      allow: readonly string[];
+      now: () => number;
+    }> = {},
+  ): Promise<{ signer: Signer; root: import("@koi/core").CapabilityToken }> => {
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const root = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: overrides.allow ?? ["read_file", "write_file"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: overrides.ttlMs ?? 60_000,
+      maxChainDepth: overrides.maxChainDepth ?? 3,
+      ...(overrides.now ? { now: overrides.now } : {}),
+    });
+    return { signer, root };
+  };
+
+  test("narrows allow list successfully", async () => {
+    const { signer, root } = await newRoot();
+    const result = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.parentId).toBe(root.id);
+    expect(result.value.chainDepth).toBe(1);
+    expect(result.value.maxChainDepth).toBe(3);
+    expect(result.value.scope.permissions.allow).toEqual(["read_file"]);
+  });
+
+  test("rejects widening (child has tool not in parent)", async () => {
+    const { signer, root } = await newRoot({ allow: ["read_file"] });
+    const result = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["read_file", "write_file"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("PERMISSION");
+    expect((result.error.context as { reason: string }).reason).toBe("scope_exceeded");
+  });
+
+  test("rejects when chain depth would exceed maxChainDepth", async () => {
+    const { signer, root } = await newRoot({ maxChainDepth: 0 });
+    const result = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 30_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect((result.error.context as { reason: string }).reason).toBe("chain_depth_exceeded");
+  });
+
+  test("rejects when parent is already expired", async () => {
+    const { signer, root } = await newRoot({ ttlMs: 1, now: () => 1000 });
+    const result = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: root.scope,
+      ttlMs: 100,
+      now: () => 5000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect((result.error.context as { reason: string }).reason).toBe("expired");
+  });
+
+  test("rejects sessionId mismatch", async () => {
+    const { signer, root } = await newRoot();
+    const result = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        sessionId: sessionId("DIFFERENT"),
+      },
+      ttlMs: 30_000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect((result.error.context as { reason: string }).reason).toBe("session_mismatch");
+  });
+
+  test("rejects when child TTL would exceed parent expiry", async () => {
+    const { signer, root } = await newRoot({ ttlMs: 1000, now: () => 1000 });
+    const result = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: root.scope,
+      ttlMs: 5000, // parent.expiresAt = 2000, now+ttl = 6000 → exceeds
+      now: () => 1000,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect((result.error.context as { reason: string }).reason).toBe("ttl_exceeds_parent");
+  });
+
+  test("registers the child if a registry is given", async () => {
+    const { signer, root } = await newRoot();
+    let registeredId: string | undefined;
+    const registry = {
+      register(t: { id: string }): void {
+        registeredId = t.id;
+      },
+      isRevoked(): boolean {
+        return false;
+      },
+      revoke(): void {},
+    };
+    const result = await delegateCapability({
+      signer,
+      parent: root,
+      delegateeId: agentId("bob"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 30_000,
+      // biome-ignore lint/suspicious/noExplicitAny: cross-package mock
+      registry: registry as any,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(registeredId).toBe(result.value.id);
   });
 });
