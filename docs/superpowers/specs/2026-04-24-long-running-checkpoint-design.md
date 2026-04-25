@@ -415,9 +415,13 @@ as `dispose`:
      process exits, tooling must reconcile task-board state against
      external outcomes.
    - **Abort timeout:** do NOT publish the target phase. Keep
-     heartbeats alive, flip `durability = "unhealthy"`, invoke
+     heartbeats alive. Start the same background cleanup watcher
+     described in the dispose path: it polls the engine adapter's
+     running state and, on late quiescence, uses the harness's
+     private cleanup authority to CAS the target phase without
+     requiring a lease. Flip `durability = "unhealthy"`, invoke
      `onDurabilityLost(ABORT_TIMEOUT)`, return `Err(ABORT_TIMEOUT)`.
-     Host must SIGKILL.
+     Host may SIGKILL to skip the watcher.
 6. Return the typed `Result<void, KoiError>`.
 
 This means a late in-flight `completeTask(oldLease, …)` invoked by an
@@ -769,14 +773,24 @@ Unambiguous algorithm:
        who believes the store is permanently broken can edit the
        snapshot out of band via a separate administrative tool.
    - **Timed out (engine ignored abort):** do NOT publish `suspended`.
-     Do NOT stop the heartbeat loop. The heartbeat loop is detached from
-     `dispose`'s lifetime and retained by the process until either (a)
-     the engine eventually stops and a separate `dispose` round finishes
-     cleanup, or (b) process exit releases all resources. Lease remains
-     live from the store's perspective (session status unchanged,
-     heartbeat fresh). Flip `status().durability` to `"unhealthy"`,
-     invoke `onDurabilityLost(KoiError { code: "ABORT_TIMEOUT" })`, and
-     return `Err(ABORT_TIMEOUT)`. The host is expected to SIGKILL.
+     Do NOT stop the heartbeat loop. The caller's lease has already been
+     revoked (step 4) and will not come back — after this point, the
+     harness holds a **private cleanup authority** (not a `SessionLease`)
+     that survives lease revocation. The cleanup authority is exercised
+     by a background watcher started at step 4: every
+     `heartbeatIntervalMs`, it polls the engine-adapter's running state.
+     When the engine finally reports quiescence (or after process exit),
+     the watcher uses the cleanup authority to CAS-advance to
+     `suspended` with `failureReason = "disposed after late quiesce"`,
+     then stops heartbeats. Subsequent `dispose()` calls on this same
+     harness object return `Err(ABORT_TIMEOUT)` immediately (the
+     watcher is authoritative) — no lease argument needed because the
+     phase check rejects any second attempt. Lease remains live from
+     the store's perspective until the watcher finalizes OR the
+     process exits. Flip `status().durability` to `"unhealthy"`, invoke
+     `onDurabilityLost(KoiError { code: "ABORT_TIMEOUT" })`, and return
+     `Err(ABORT_TIMEOUT)` from the original `dispose` call. The host
+     may SIGKILL if it doesn't want to wait for the watcher.
 
 Invariant checklist an implementer MUST verify:
 - No code path between `start/resume` and `dispose` quiesce success stops
@@ -849,6 +863,19 @@ Therefore the default path is:
    `abortActive(lease, reason)` remains the public, lease-revoking
    variant — it is used for callers that only need to stop execution
    and don't need the recovery CAS window.
+
+   **Lease poisoning invariant.** `_abortActiveAndRecover` ALWAYS
+   removes the caller's lease from `activeLeases` before returning,
+   regardless of whether the recovery CAS succeeds, fails, or the
+   fallback path runs. Additionally, any late in-process caller
+   holding the old lease reference must fail identity check on every
+   mutating API — the WeakSet is authoritative, so removal is
+   sufficient. The harness also retains an in-memory
+   `revokedLeases` WeakSet (weak references only, cleaned on GC)
+   used to distinguish "forged lease" from "revoked lease" in error
+   messages but otherwise behaves identically for authorization.
+   This guarantees: after any recovery branch, the old lease is
+   dead even if the fencing CAS failed and TTL reclaim is pending.
 4. Once quiesced, **attempt immediate fencing so recovery does not wait for
    TTL**. This is critical: merely stopping heartbeats and marking the
    session `idle` leaves the authoritative snapshot as `active`, and
