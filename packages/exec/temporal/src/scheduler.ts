@@ -86,6 +86,9 @@ export interface TemporalSchedulerConfig {
   readonly workflowType?: string | undefined;
 }
 
+/** Default retry budget forwarded to Temporal when the caller omits maxRetries. */
+export const DEFAULT_MAX_RETRIES = 3;
+
 // ---------------------------------------------------------------------------
 // Internal message format (workflow input)
 // ---------------------------------------------------------------------------
@@ -291,7 +294,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       createdAt: Date.now(),
       scheduledAt: options?.delayMs !== undefined ? Date.now() + options.delayMs : undefined,
       retries: 0,
-      maxRetries: options?.maxRetries ?? 3,
+      maxRetries: options?.maxRetries ?? DEFAULT_MAX_RETRIES,
       timeoutMs: options?.timeoutMs,
       metadata: options?.metadata,
     };
@@ -420,6 +423,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       const task = buildTask(id, agentId, input, mode, options);
 
       const messages = mapEngineInputToMessages(input, rawId);
+      // Resolve effective options upfront so Temporal always receives the same
+      // retry budget that the L0 contract advertises (callers omitting maxRetries
+      // must not silently inherit a different Temporal-side default).
+      const effectiveMaxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
       // Fingerprint the full request so idempotent replay can detect partial collisions
       // (same stable ID but different input/timeout/retries).
       const inputFingerprint = JSON.stringify(serializeEngineInput(input));
@@ -435,15 +442,13 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             workflowType,
             taskQueue: config.taskQueue,
             inputFingerprint,
+            maxRetries: effectiveMaxRetries,
             ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
-            ...(options?.maxRetries !== undefined && { maxRetries: options.maxRetries }),
           },
           args: [{ agentId, sessionId: rawId, messages, mode }],
           ...(options?.delayMs !== undefined && { startDelay: options.delayMs }),
           ...(options?.timeoutMs !== undefined && { workflowExecutionTimeout: options.timeoutMs }),
-          ...(options?.maxRetries !== undefined && {
-            retryPolicy: { maximumAttempts: options.maxRetries },
-          }),
+          retryPolicy: { maximumAttempts: effectiveMaxRetries },
         });
       } catch (e: unknown) {
         // Stable ID provided and Temporal already has that workflow →
@@ -463,7 +468,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           taskQueue: config.taskQueue,
           inputFingerprint,
           timeoutMs: options?.timeoutMs,
-          maxRetries: options?.maxRetries,
+          maxRetries: effectiveMaxRetries,
         });
       }
 
@@ -516,6 +521,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         idempotencyKey ?? `sched-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const id = scheduleId(rawId);
 
+      // Resolve effective options upfront so Temporal always receives the same
+      // retry budget that the L0 contract advertises.
+      const effectiveMaxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
       // Fingerprint the full request so idempotent replay can detect partial collisions.
       const inputFingerprint = JSON.stringify(serializeEngineInput(input));
       try {
@@ -537,9 +545,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             ...(options?.timeoutMs !== undefined && {
               workflowExecutionTimeout: options.timeoutMs,
             }),
-            ...(options?.maxRetries !== undefined && {
-              retryPolicy: { maximumAttempts: options.maxRetries },
-            }),
+            retryPolicy: { maximumAttempts: effectiveMaxRetries },
           },
           // Full request fingerprint in memo — used to reject collisions on replay.
           memo: {
@@ -549,9 +555,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             taskQueue: config.taskQueue,
             expression,
             inputFingerprint,
+            maxRetries: effectiveMaxRetries,
             ...(options?.timezone !== undefined && { timezone: options.timezone }),
             ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
-            ...(options?.maxRetries !== undefined && { maxRetries: options.maxRetries }),
           },
         });
       } catch (e: unknown) {
@@ -574,7 +580,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           timezone: options?.timezone,
           inputFingerprint,
           timeoutMs: options?.timeoutMs,
-          maxRetries: options?.maxRetries,
+          maxRetries: effectiveMaxRetries,
         });
       }
 

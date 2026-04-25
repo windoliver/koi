@@ -577,6 +577,7 @@ describe("createTemporalScheduler", () => {
             taskQueue: "test",
             expression: "0 * * * *",
             inputFingerprint,
+            maxRetries: 3,
             // timezone absent in both sides — both undefined → match
           },
         })),
@@ -615,6 +616,7 @@ describe("createTemporalScheduler", () => {
             expression: "0 * * * *",
             timezone: "America/New_York", // different timezone
             inputFingerprint,
+            maxRetries: 3,
           },
         })),
       },
@@ -681,6 +683,7 @@ describe("createTemporalScheduler", () => {
             taskQueue: "test",
             expression: "0 0 * * *", // different expression
             inputFingerprint: JSON.stringify({ kind: "text", text: "tick" }),
+            maxRetries: 3,
           },
         })),
       },
@@ -759,6 +762,8 @@ describe("createTemporalScheduler", () => {
     expect(typeof memo.inputFingerprint).toBe("string");
     // inputFingerprint must be the serialized engine input
     expect(memo.inputFingerprint).toBe(JSON.stringify({ kind: "text", text: "hi" }));
+    // effective maxRetries must always be present — callers omitting it get the default
+    expect(memo.maxRetries).toBe(3);
     await sched[Symbol.asyncDispose]();
   });
 
@@ -809,6 +814,7 @@ describe("createTemporalScheduler", () => {
               workflowType: "agentWorkflow",
               taskQueue: "test",
               inputFingerprint,
+              maxRetries: 3,
             },
           }),
         ),
@@ -849,6 +855,7 @@ describe("createTemporalScheduler", () => {
               workflowType: "agentWorkflow",
               taskQueue: "test",
               inputFingerprint,
+              maxRetries: 3,
             },
           }),
         ),
@@ -887,6 +894,7 @@ describe("createTemporalScheduler", () => {
               workflowType: "agentWorkflow",
               taskQueue: "old-queue", // different queue from old deploy
               inputFingerprint,
+              maxRetries: 3,
             },
           }),
         ),
@@ -926,6 +934,7 @@ describe("createTemporalScheduler", () => {
               workflowType: "agentWorkflow",
               taskQueue: "test",
               inputFingerprint,
+              maxRetries: 3,
             },
           }),
         ),
@@ -998,6 +1007,7 @@ describe("createTemporalScheduler", () => {
               workflowType: "agentWorkflow",
               taskQueue: "test",
               inputFingerprint: otherFingerprint,
+              maxRetries: 3,
             },
           }),
         ),
