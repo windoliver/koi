@@ -89,6 +89,13 @@ export interface WorkspaceBackend {
    * Pair with attestSetupComplete — if one is absent, both are absent.
    */
   readonly verifySetupComplete?: (wsId: WorkspaceId) => Promise<boolean>;
+  /**
+   * Optional: remove any existing setup attestation for this workspace.
+   * Must be implemented alongside attestSetupComplete/verifySetupComplete.
+   * Called before re-running postCreate on a crash survivor so that a mid-repair crash
+   * leaves the workspace unattested (preventing stale "setup complete" resurrection).
+   */
+  readonly invalidateSetupComplete?: (wsId: WorkspaceId) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

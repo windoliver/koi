@@ -165,6 +165,33 @@ describe("createGitWorktreeBackend", () => {
     expect(survivors).toHaveLength(0);
   });
 
+  it("findByAgentId does NOT find workspace when agent switched branches (accepted limitation)", async () => {
+    // An unsandboxed agent can switch branches, breaking git-owned branch-name discovery.
+    // This is a known limitation of isSandboxed=false: the agent can escape tracking by
+    // renaming its branch, turning the workspace into an orphan. We deliberately do NOT
+    // fall back to any file-based discovery (e.g. .koi-workspace marker) because on an
+    // unsandboxed backend, any such file is writable by workspace processes — enabling
+    // cross-agent disposal attacks where a tampered file causes another agent's workspace
+    // to be cleaned up. The orphan scenario is a lesser harm than the trust regression.
+    const backend = createGitWorktreeBackend({ repoPath });
+    const result = await backend.create(aid, defaultConfig);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const ws = result.value;
+    const { execSync } = await import("node:child_process");
+    execSync(`git -C "${ws.path}" checkout -b "some-other-branch"`, { stdio: "ignore" });
+
+    // Branch-name discovery no longer finds it after the branch switch
+    const survivors = await backend.findByAgentId?.(aid);
+    expect(survivors).toHaveLength(0);
+
+    // Restore so dispose (via registry) can clean up
+    const branchInfo = ws.metadata["branchName"] as string;
+    execSync(`git -C "${ws.path}" checkout "${branchInfo}"`, { stdio: "ignore" });
+    await backend.dispose(ws.id);
+  });
+
   it("findByAgentId ignores worktrees outside this backend's base path", async () => {
     const basePath1 = join(repoPath, "..", `wt-base1-${Date.now()}`);
     const basePath2 = join(repoPath, "..", `wt-base2-${Date.now()}`);

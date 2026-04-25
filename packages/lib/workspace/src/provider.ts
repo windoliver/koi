@@ -31,16 +31,23 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
   const setupFailed = new Set<WorkspaceId>();
 
   async function tryDispose(wsId: WorkspaceId): Promise<boolean> {
-    const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs));
-    const disposeResult = await Promise.race([
-      config.backend.dispose(wsId).then((r) => {
-        // NOT_FOUND means workspace already gone — treat as idempotent success
-        if (!r.ok && r.error.code === "NOT_FOUND") return true;
-        return r.ok;
-      }),
-      timeout,
-    ]);
-    return disposeResult;
+    // let: captured for clearTimeout in finally; assigned synchronously in the executor
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<false>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve(false), timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        config.backend.dispose(wsId).then((r) => {
+          // NOT_FOUND means workspace already gone — treat as idempotent success
+          if (!r.ok && r.error.code === "NOT_FOUND") return true;
+          return r.ok;
+        }),
+        timeoutPromise,
+      ]);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   }
 
   function shouldDispose(agent: Agent): boolean {
@@ -73,6 +80,19 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     // Unsandboxed backends without attestation: skip silently.
     // isSetupComplete returns false for such backends, so crash-survivor reuse will
     // always fall through to dispose+recreate — attestation is not needed.
+  }
+
+  // Removes the setup attestation so a mid-repair crash leaves the workspace unattested.
+  // Only meaningful for sandboxed backends where attestation is checked on recovery.
+  async function clearSetupComplete(ws: WorkspaceInfo): Promise<void> {
+    if (config.backend.invalidateSetupComplete) {
+      await config.backend.invalidateSetupComplete(ws.id);
+    } else if (config.backend.isSandboxed && !config.backend.verifySetupComplete) {
+      // Filesystem marker case — force: true is safe when the file doesn't exist yet
+      await rm(setupCompletePath(ws), { force: true });
+    }
+    // Backend with verifySetupComplete but no invalidateSetupComplete: cannot clear.
+    // Such backends must implement invalidateSetupComplete to close this gap.
   }
 
   async function isSetupComplete(ws: WorkspaceInfo): Promise<boolean> {
@@ -120,9 +140,12 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       setupFailed.delete(wsId);
       return false;
     }
-    // Found a valid survivor — re-run postCreate to repair any setup drift
-    // (e.g. files deleted after setup). Callers using cleanupPolicy="never" must ensure
-    // postCreate is idempotent.
+    // Invalidate the existing attestation before repairing. If the process crashes
+    // during postCreate, the missing attestation prevents the next restart from trusting
+    // a partially-repaired workspace.
+    await clearSetupComplete(candidate);
+    // Re-run postCreate to repair any setup drift (e.g. files deleted after setup).
+    // Callers using cleanupPolicy="never" must ensure postCreate is idempotent.
     if (config.postCreate) {
       try {
         await config.postCreate(candidate);
@@ -139,6 +162,21 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         setupFailed.delete(wsId);
         return false; // postCreate failed but disposed — try next candidate
       }
+    }
+    // Re-attest after successful repair so the next restart can trust this workspace again.
+    try {
+      await markSetupComplete(candidate);
+    } catch (e: unknown) {
+      const didDispose = await tryDispose(wsId);
+      if (!didDispose) {
+        setupFailed.add(wsId);
+        attached.set(agentId, candidate);
+        throw new Error(
+          `Crash-survivor re-attestation failed; cleanup also timed out: workspace ${wsId} is still alive`,
+          { cause: e },
+        );
+      }
+      throw e; // re-attestation failed but disposed cleanly — bubble up
     }
     attached.set(agentId, candidate);
     return makeResult(candidate);
@@ -167,25 +205,61 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
             : [];
 
         if (policy === "never") {
-          // In-process reuse: workspace was preserved from last detach — always trusted.
+          // In-process reuse: workspace was preserved from last detach — in-memory tracking
+          // is the attestation. Do NOT check isSetupComplete() here: that check is for
+          // crash-survivor discovery where we can't trust unverified on-disk state. A workspace
+          // already in `attached` (and not in `setupFailed`) is known to have completed setup.
           // postCreate is re-run to repair any drift (files deleted between turns). Callers
           // using cleanupPolicy="never" must ensure postCreate is idempotent.
           if (staleInfo !== undefined) {
             const wsId = staleInfo.id;
-            if (!setupFailed.has(wsId)) {
-              const [healthy, setupComplete] = await Promise.all([
-                config.backend.isHealthy(wsId),
-                isSetupComplete(staleInfo),
-              ]);
-              if (healthy && setupComplete) {
-                const reused = await tryReuseCrashSurvivor(agentId, staleInfo);
-                if (reused !== false) return reused;
-                // postCreate failed — fall through to dispose+recreate
+            if (!setupFailed.has(wsId) && (await config.backend.isHealthy(wsId))) {
+              // Invalidate attestation before repair — mirrors tryReuseCrashSurvivor.
+              // If the process crashes during postCreate, a missing attestation prevents the
+              // crash-survivor path from trusting a partially-repaired workspace on the next restart.
+              await clearSetupComplete(staleInfo);
+              // let: tracks postCreate success to gate re-attestation after the try/catch
+              let repairOk = true;
+              if (config.postCreate) {
+                try {
+                  await config.postCreate(staleInfo);
+                } catch (e: unknown) {
+                  repairOk = false;
+                  const didDispose = await tryDispose(wsId);
+                  if (!didDispose) {
+                    setupFailed.add(wsId);
+                    throw new Error(
+                      `In-process reattach postCreate failed; cleanup also timed out: workspace ${wsId} is still alive`,
+                      { cause: e },
+                    );
+                  }
+                  setupFailed.delete(wsId);
+                  attached.delete(agentId);
+                  // postCreate failed but disposed — fall through to recreate
+                }
+              }
+              if (repairOk) {
+                // Re-attest after successful repair so the next restart can trust this workspace
+                try {
+                  await markSetupComplete(staleInfo);
+                } catch (e: unknown) {
+                  const didDispose = await tryDispose(wsId);
+                  if (!didDispose) {
+                    setupFailed.add(wsId);
+                    throw new Error(
+                      `In-process reattach re-attestation failed; cleanup also timed out: workspace ${wsId} is still alive`,
+                      { cause: e },
+                    );
+                  }
+                  throw e;
+                }
+                attached.set(agentId, staleInfo);
+                return makeResult(staleInfo);
               }
             }
+            // Unhealthy, in setupFailed, or postCreate failed — dispose and recreate
             setupFailed.delete(wsId);
             attached.delete(agentId);
-            // Unhealthy/incomplete/postCreate failed — dispose and fall through to create
             const disposed = await tryDispose(wsId);
             if (!disposed) {
               throw new Error(
@@ -201,18 +275,36 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
             for (const candidate of crashSurvivors) {
               const reused = await tryReuseCrashSurvivor(agentId, candidate);
               if (reused !== false) {
-                // Dispose any remaining older survivors before returning
+                // Sandboxed backend: require confirmed disposal of all other survivors.
+                // Running with any alternate survivor still alive would break the invariant.
                 for (const other of crashSurvivors) {
-                  if (other.id !== candidate.id) await tryDispose(other.id);
+                  if (other.id === candidate.id) continue;
+                  const disposed = await tryDispose(other.id);
+                  if (!disposed) {
+                    throw new Error(
+                      `Crash-survivor ${other.id} could not be disposed after reusing ${candidate.id}; attach blocked to prevent multiple live workspaces for agent ${agentId}`,
+                    );
+                  }
                 }
                 return reused;
               }
             }
             // All candidates exhausted — fall through to create
           } else {
-            // Unsandboxed or no survivors: dispose all crash survivors (not trusted / not present)
+            // Unsandboxed or no survivors: dispose all crash survivors. Apply the same
+            // liveness check as the non-"never" path — block only when the workspace is
+            // confirmed still alive, not on every transient cleanup failure.
             for (const survivor of crashSurvivors) {
-              await tryDispose(survivor.id);
+              const disposed = await tryDispose(survivor.id);
+              if (!disposed) {
+                const stillAlive =
+                  config.backend.isSandboxed || (await config.backend.isHealthy(survivor.id));
+                if (stillAlive) {
+                  throw new Error(
+                    `Cannot create workspace for agent ${agentId}: crash-survivor ${survivor.id} could not be disposed`,
+                  );
+                }
+              }
             }
           }
         } else {
@@ -227,9 +319,22 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
             }
             attached.delete(agentId);
           }
-          // Crash survivors under non-"never" policy are not reused — best-effort dispose.
+          // Crash survivors under non-"never" policy are not reused — dispose each to uphold the
+          // single-workspace-per-agent invariant. When disposal is unconfirmed, check liveness:
+          // sandboxed backends block unconditionally (OS isolation makes the check authoritative);
+          // unsandboxed backends block only if isHealthy confirms the workspace is still alive,
+          // distinguishing a transient cleanup race on a dead workspace from a live one.
           for (const survivor of crashSurvivors) {
-            await tryDispose(survivor.id);
+            const disposed = await tryDispose(survivor.id);
+            if (!disposed) {
+              const stillAlive =
+                config.backend.isSandboxed || (await config.backend.isHealthy(survivor.id));
+              if (stillAlive) {
+                throw new Error(
+                  `Cannot create workspace for agent ${agentId}: crash-survivor ${survivor.id} could not be disposed`,
+                );
+              }
+            }
           }
         }
 

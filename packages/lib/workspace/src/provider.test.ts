@@ -333,6 +333,119 @@ describe("createWorkspaceProvider", () => {
     await provider.detach?.(agent);
   });
 
+  it("attach throws instead of creating when crash-survivor disposal times out on sandboxed backend (non-never policy)", async () => {
+    // Sandboxed backends enforce the single-workspace-per-agent invariant strictly:
+    // disposal timeout blocks creation because we cannot prove the old workspace is gone.
+    const survivorId = workspaceId("ws-stuck-survivor");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-stuck",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendWithStuckDispose = makeBackend({
+      isSandboxed: true,
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
+      },
+      async dispose(_wsId: WorkspaceId): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: "removal timed out", retryable: false },
+        };
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendWithStuckDispose,
+      cleanupPolicy: "always",
+      cleanupTimeoutMs: 1,
+    });
+    const agent = makeAgent();
+
+    await expect(provider.attach(agent)).rejects.toThrow(
+      "crash-survivor ws-stuck-survivor could not be disposed",
+    );
+    // No new workspace must have been created
+    expect(backendWithStuckDispose.created.length).toBe(0);
+  });
+
+  it("attach proceeds on unsandboxed backend when crash-survivor disposal fails but workspace is gone (non-never policy)", async () => {
+    // Unsandboxed: disposal timeout is only treated as transient when isHealthy() confirms
+    // the workspace is actually gone. If gone, it is safe to create a fresh one.
+    const survivorId = workspaceId("ws-unsandboxed-stuck");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-stuck-unsandboxed",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendWithStuckDispose = makeBackend({
+      isSandboxed: false,
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
+      },
+      async dispose(_wsId: WorkspaceId): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: "removal timed out", retryable: false },
+        };
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return false; // workspace is gone — directory/branch no longer exists
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendWithStuckDispose,
+      cleanupPolicy: "always",
+      cleanupTimeoutMs: 1,
+    });
+    const agent = makeAgent();
+
+    // Must NOT throw — workspace is gone so the invariant is still safe
+    const result = await provider.attach(agent);
+    expect(result.components.size).toBe(1);
+    expect(backendWithStuckDispose.created.length).toBe(1);
+    await provider.detach?.(agent);
+  });
+
+  it("attach throws on unsandboxed backend when crash-survivor disposal fails and workspace still alive (non-never policy)", async () => {
+    // Unsandboxed: when isHealthy() confirms the old workspace is still alive after a
+    // disposal failure, attach must block — creating a second workspace would break the invariant.
+    const survivorId = workspaceId("ws-still-alive");
+    const survivorInfo: WorkspaceInfo = {
+      id: survivorId,
+      path: "/tmp/ws-still-alive",
+      createdAt: Date.now(),
+      metadata: {},
+    };
+    const backendStillAlive = makeBackend({
+      isSandboxed: false,
+      async findByAgentId(_aid: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
+        return [survivorInfo];
+      },
+      async dispose(_wsId: WorkspaceId): Promise<Result<void, KoiError>> {
+        return {
+          ok: false,
+          error: { code: "EXTERNAL", message: "still running", retryable: false },
+        };
+      },
+      isHealthy(_wsId: WorkspaceId): boolean {
+        return true; // workspace confirmed still alive
+      },
+    });
+    const provider = createWorkspaceProvider({
+      backend: backendStillAlive,
+      cleanupPolicy: "always",
+      cleanupTimeoutMs: 1,
+    });
+    const agent = makeAgent();
+
+    await expect(provider.attach(agent)).rejects.toThrow(
+      "crash-survivor ws-still-alive could not be disposed",
+    );
+    expect(backendStillAlive.created.length).toBe(0);
+  });
+
   it("cleanupPolicy=never reruns postCreate on in-process preserved workspace to repair drift", async () => {
     // Workspace preserved via "never" policy (staleInfo in attached map) must also rerun
     // postCreate on subsequent attach to repair any setup drift between turns.
@@ -360,6 +473,38 @@ describe("createWorkspaceProvider", () => {
     expect(postCreateCallCount).toBe(2);
     expect(backend.created.length).toBe(1); // no new workspace created
 
+    await provider.detach?.(agent);
+  });
+
+  it("cleanupPolicy=never reuses in-process workspace on unsandboxed backend without attestation", async () => {
+    // Regression: isSetupComplete() always returns false for unsandboxed backends (by design,
+    // to prevent forged crash-survivor attestation). But in-process preserved workspaces are
+    // tracked in-memory and must not require attestation — only health.
+    let postCreateCalls = 0;
+    const unsandboxedBackend = makeBackend({
+      isSandboxed: false,
+      // no attestSetupComplete / verifySetupComplete — isSetupComplete() returns false
+    });
+    const provider = createWorkspaceProvider({
+      backend: unsandboxedBackend,
+      cleanupPolicy: "never",
+      postCreate: async (_ws) => {
+        postCreateCalls++;
+      },
+    });
+    const agent = makeAgent();
+
+    await provider.attach(agent);
+    expect(unsandboxedBackend.created.length).toBe(1);
+    expect(postCreateCalls).toBe(1);
+
+    await provider.detach?.(agent);
+    expect(unsandboxedBackend.disposed).toHaveLength(0);
+
+    // Second attach — must reuse, not create a new workspace
+    await provider.attach(agent);
+    expect(unsandboxedBackend.created.length).toBe(1); // still 1
+    expect(postCreateCalls).toBe(2); // postCreate reruns for drift repair
     await provider.detach?.(agent);
   });
 

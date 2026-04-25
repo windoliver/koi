@@ -205,17 +205,29 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
     },
 
     async findByAgentId(searchAgentId: AgentId): Promise<ReadonlyArray<WorkspaceInfo>> {
-      // Derive ownership from the git-owned branch name.
-      // New format: workspace/<hex(agentId)>/<wsId>  (current, reversible, collision-free)
-      // Legacy format: workspace/<agentId>/<wsId>    (prior deployments where agentId was URL-safe)
+      // Derive ownership exclusively from the git-owned branch name — tamper-resistant for
+      // the naming scheme (agents cannot claim another agent's branch without knowing their hex).
+      // Branch format: workspace/<hex(agentId)>/<wsId>
+      // Ownership is matched on hex encoding only — no raw-agentId fallback, which would create
+      // a collision if one agent's literal id equals another agent's hex-encoded id.
+      //
+      // ACCEPTED LIMITATION (isSandboxed=false): if the agent switches to a different branch
+      // after setup, that workspace becomes an orphan — not found here, not cleaned up before
+      // creating a new one. An orphaned worktree does NOT violate the single-workspace-per-agent
+      // invariant in terms of active concurrent use; the agent has no live handle to it.
+      // On-disk cleanup of orphans requires manual intervention or a separate sweep job.
+      //
+      // We deliberately avoid any file-content fallback (e.g. reading .koi-workspace or a
+      // sibling ownership directory): on an unsandboxed backend, any such file is writable by
+      // workspace processes, enabling cross-agent disposal attacks where a tampered file causes
+      // another agent's workspace to be deleted. The branch-name encoding is the least writable
+      // ownership signal available in this trust model.
       const searchHex = Buffer.from(searchAgentId as string).toString("hex");
-      const searchRaw = searchAgentId as string;
 
       const listResult = await runGit(["worktree", "list", "--porcelain"], config.repoPath);
       if (!listResult.ok) return [];
 
       // Collect all matching survivors — multiple can exist when a prior dispose timed out.
-      // We return the newest (by createdAt) so the caller operates on the most recent state.
       const matches: WorkspaceInfo[] = [];
 
       const blocks = listResult.value.split(/\n\n+/);
@@ -239,11 +251,7 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
         const parts = branchName.split("/");
         if (parts.length !== 3 || parts[0] !== "workspace") continue;
         const segment = parts[1] ?? "";
-        // Match new hex format or legacy direct-agentId format (migration window).
-        // No hex-only guard — "deadbeef"-style legacy agentIds must also be found.
-        const isHexMatch = segment === searchHex;
-        const isLegacyMatch = !isHexMatch && segment === searchRaw;
-        if (!isHexMatch && !isLegacyMatch) continue;
+        if (segment !== searchHex) continue;
         const wsId = parts[2];
         if (!wsId) continue;
 
@@ -284,6 +292,31 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
           cause: result.error,
         });
       }
+    },
+
+    async invalidateSetupComplete(wsId: WorkspaceId): Promise<void> {
+      // Delete the attestation ref so a mid-repair crash leaves this workspace unattested.
+      // Fail closed: if deletion is unconfirmed, verify the ref is actually gone.
+      // If the ref is still present, throw so callers block repair rather than proceeding
+      // with a stale "setup complete" marker still in place.
+      const result = await runGit(
+        ["update-ref", "-d", `refs/koi-setup-ok/${wsId}`],
+        config.repoPath,
+      );
+      if (result.ok) return;
+      // Deletion returned non-zero — could be "ref already absent" (idempotent) or a real error.
+      // Check presence to distinguish the two cases.
+      const checkResult = await runGit(
+        ["rev-parse", "--verify", `refs/koi-setup-ok/${wsId}`],
+        config.repoPath,
+      );
+      if (checkResult.ok) {
+        // Ref is still present — the deletion genuinely failed
+        throw new Error(`Failed to invalidate setup attestation for workspace ${wsId}`, {
+          cause: result.error,
+        });
+      }
+      // Ref is already gone — idempotent success
     },
 
     async verifySetupComplete(wsId: WorkspaceId): Promise<boolean> {
