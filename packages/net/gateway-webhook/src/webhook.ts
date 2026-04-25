@@ -71,13 +71,16 @@ export interface WebhookConfig {
    */
   readonly leaseRenewalMs?: number | undefined;
   /**
-   * Hard cap on how long dispatch may hold a dedup reservation. After this many
-   * milliseconds, the renewal loop stops and the reservation is aborted so
-   * provider retries can be accepted. The dispatcher continues running but its
-   * eventual `commit`/`abort` will be a token-mismatch no-op.
+   * After this many milliseconds, the renewal loop stops. The dispatcher
+   * continues running; if it eventually succeeds the key is committed and
+   * 200 is returned — slow-but-healthy handlers are not penalised. If the
+   * dispatcher never returns (hung), the key expires after `processingTtlMs`
+   * (default 5 min), at which point provider retries are accepted.
    *
-   * Without this, a permanently-stuck dispatcher renews forever and permanently
-   * blocks its delivery key. Recommended: set to 2-3× your p99 dispatch latency.
+   * **Note:** this option does not provide a hard HTTP-response deadline or
+   * true cancellation. For real cancellation, pass an `AbortSignal` from your
+   * dispatcher and abort on a separate timer. Recommended: set to 2-3× your
+   * p99 dispatch latency to cover slow-but-healthy dispatches without renewal.
    */
   readonly maxDispatchMs?: number | undefined;
   /**
@@ -296,13 +299,15 @@ export function createWebhookServer(
       if (dedupKey === undefined && config.keyExtractor !== undefined) {
         dedupKey = await config.keyExtractor(provider.kind, request, rawBody);
       }
-      // Scope the dedup key to the authenticated trust boundary — prevents
-      // cross-tenant key collisions when different accounts share a common
-      // provider-vended delivery ID (e.g. two tenants both send wh_abc123).
+      // Scope the dedup key with provider + URL account. Always include the URL
+      // account (even when not signature-verified) to prevent cross-tenant dedup
+      // collisions for deployments using shared secrets + authenticators. The
+      // account-binding check later ensures requests without a verified account
+      // are rejected before dispatch; the scope just keeps namespaces isolated.
       // keyExtractor-supplied keys are the caller's responsibility to scope.
       if (dedupKey !== undefined && verifyResult.dedupKey !== undefined) {
-        const accountScope = accountAuthenticated && account !== undefined ? `:${account}` : "";
-        dedupKey = `${provider.kind}${accountScope}:${dedupKey}`;
+        const accountPart = account !== undefined ? `:${account}` : "";
+        dedupKey = `${provider.kind}${accountPart}:${dedupKey}`;
       }
       // Atomically reserve the dedup key — prevents concurrent duplicate dispatch.
       // tryBegin() is synchronous: no await between check and reservation, so
