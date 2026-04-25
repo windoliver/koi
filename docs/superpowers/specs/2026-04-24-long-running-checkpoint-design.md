@@ -384,6 +384,25 @@ Behavior:
    prompted recovery (`HarnessStatus`, the original `start()` /
    `resume()` result, or operator records). If `prev.phase` is not
    `active`, return `Ok({ kind: "noop", currentPhase: prev.phase })`.
+1a. **Session-id fencing (mandatory).** Reject the call with
+   `Err(STALE_SESSION, retryable: false)` if `prev.lastSessionId !==
+   input.sessionId`. forceReclaim is bound to the CURRENT active
+   session; a mistyped or stale (harnessId, sessionId) pair must
+   not be allowed to kill an unrelated worker or replay outcomes
+   from a different session. For `manualHandle` evidence, also
+   require `loadSession(prev.lastSessionId).workerHandle ===
+   input.evidence.handle` (durable binding check) — refuse with
+   `Err(STALE_SESSION)` on mismatch. The handle must match the one
+   the active snapshot recorded; the operator cannot supply an
+   arbitrary unrelated handle.
+1b. **Mode fencing.** `hostConfirmedDead` evidence is ONLY accepted
+   for harnesses configured with `trustedSingleProcess === true`.
+   `manualHandle` evidence is ONLY accepted for harnesses with a
+   `Supervisor`. The harness mode is recorded on the
+   `HarnessSnapshot` (new `mode: "supervised" | "trustedSingleProcess"`
+   field — added to the L0 prereqs) so forceReclaim can read it
+   alongside `prev`. Wrong-mode evidence returns
+   `Err(INVALID_CONFIG, retryable: false)`.
 2. For `manualHandle` evidence: run the supervisor probe-then-kill
    protocol against the supplied handle. Live owner →
    `Err(RECLAIM_LIVE_OWNER)`; kill failure → `Err(KILL_FAILED)`.
@@ -1983,15 +2002,26 @@ Additive changes required (part of the coordinated migration):
    `cleanupHealth === "unhealthy"` regardless of process state.
 
 9. `SessionPersistence.markHostConfirmedDead(sid)` — DURABLE
-   one-shot marker written by the `forceReclaim(sid,
-   { kind: "hostConfirmedDead" })` admin path before any chain
-   advance. The marker is idempotent (re-marking is a no-op) and
-   intentionally one-way (cleared only when the session record is
-   removed). On `resume()` reading an `active` snapshot in
-   `trustedSingleProcess` mode, the harness consults this marker;
-   if absent, resume returns `ALREADY_ACTIVE`. This is the
-   unforgeable post-host-SIGKILL evidence trusted-mode recovery
-   relies on.
+   one-shot marker written by the `forceReclaim(harnessId, sid,
+   { kind: "hostConfirmedDead" })` admin path. The marker is
+   idempotent (re-marking is a no-op) and intentionally one-way
+   (cleared only when the session record is removed). The marker
+   is consumed ONLY by `forceReclaim` (advisory to `resume()`).
+   `resume()` MUST NOT advance the chain based on the marker
+   alone — it returns `ALREADY_ACTIVE` even when the marker is
+   present, and includes a `recoveryAvailable:
+   "forceReclaim-hostConfirmedDead"` hint in the error context so
+   operators are directed to the admin path. This is the canonical
+   semantics: the only path that uses the marker to advance state
+   is `forceReclaim`. The marker exists so that a crashed/retried
+   `forceReclaim` is idempotent and converges on retry.
+
+10. `HarnessSnapshot.mode: "supervised" | "trustedSingleProcess"`
+   — recorded at activation so `forceReclaim` can mode-fence
+   evidence (`hostConfirmedDead` only for trusted mode;
+   `manualHandle` only for supervised). Mode is immutable per
+   harness; it is set from `LongRunningConfig` at the first
+   `start()` and preserved across resumes.
 
 These land across the migration PRs listed above, not a single "prereq PR".
 Implementation of `@koi/long-running` is blocked on ALL of the above.
