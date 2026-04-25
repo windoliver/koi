@@ -57,6 +57,11 @@ function generateScheduleId(): ScheduleId {
 // ---------------------------------------------------------------------------
 
 function taskComparator(a: ScheduledTask, b: ScheduledTask): number {
+  // Sort by effective dispatch time first so future tasks never block ready ones.
+  // Immediate tasks (no scheduledAt) get dispatch time 0 and always sort before delayed tasks.
+  const aTime = a.scheduledAt ?? 0;
+  const bTime = b.scheduledAt ?? 0;
+  if (aTime !== bTime) return aTime - bTime;
   if (a.priority !== b.priority) return a.priority - b.priority;
   return a.createdAt - b.createdAt;
 }
