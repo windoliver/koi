@@ -20,14 +20,16 @@ export interface CapabilityVerifierOptions {
    */
   readonly hmac?: { readonly secret: Uint8Array; readonly rootIssuer?: AgentId };
   /**
-   * Ed25519 verifier configuration. `rootIssuers` (when set) binds each
-   * public-key fingerprint to the AgentId it is authorized to sign root
-   * tokens for. chainDepth=0 tokens whose proof.publicKey is not in the
-   * map, or whose issuerId disagrees with the bound AgentId, are rejected.
+   * Ed25519 verifier configuration. `issuerKeys` (when set) binds each
+   * public-key fingerprint to the AgentId it is authorized to sign tokens
+   * for, at any chain depth. Every Ed25519 token whose proof.publicKey is
+   * not in the map, or whose issuerId disagrees with the bound AgentId, is
+   * rejected — this prevents cross-issuer forgery where a key configured
+   * for issuer A signs a token claiming issuerId=B.
    */
   readonly ed25519?: {
     readonly publicKeys: ReadonlyMap<string, Uint8Array>;
-    readonly rootIssuers?: ReadonlyMap<string, AgentId>;
+    readonly issuerKeys?: ReadonlyMap<string, AgentId>;
   };
   readonly scopeChecker: ScopeChecker;
   readonly revocations?: CapabilityRevocationRegistry;
@@ -72,6 +74,17 @@ async function verifySignature(
     if (!verifyEd25519(token, opts.ed25519.publicKeys)) {
       return deny({ ok: false, reason: "invalid_signature" });
     }
+    // Issuer-key binding applies at every chain depth, not just root.
+    // Without this, a configured Ed25519 key for issuer A could sign a
+    // child token claiming issuerId=B (matching some parent.delegateeId
+    // in the chain), and the chain walk's continuity check would pass.
+    const map = opts.ed25519.issuerKeys;
+    if (map !== undefined) {
+      const bound = map.get(token.proof.publicKey);
+      if (bound === undefined || bound !== token.issuerId) {
+        return deny({ ok: false, reason: "invalid_signature" });
+      }
+    }
     return undefined;
   }
   return deny({ ok: false, reason: "proof_type_unsupported" });
@@ -81,23 +94,12 @@ function verifyRootAuthority(
   token: CapabilityToken,
   opts: CapabilityVerifierOptions,
 ): CapabilityVerifyResult | undefined {
-  // Only enforced for chainDepth=0 tokens (root issuance).
+  // HMAC root binding only — Ed25519 binding is per-token (in verifySignature).
   if (token.proof.kind === "hmac-sha256") {
     const expected = opts.hmac?.rootIssuer;
     if (expected !== undefined && token.issuerId !== expected) {
       return deny({ ok: false, reason: "invalid_signature" });
     }
-    return undefined;
-  }
-  if (token.proof.kind === "ed25519") {
-    const map = opts.ed25519?.rootIssuers;
-    if (map !== undefined) {
-      const bound = map.get(token.proof.publicKey);
-      if (bound === undefined || bound !== token.issuerId) {
-        return deny({ ok: false, reason: "invalid_signature" });
-      }
-    }
-    return undefined;
   }
   return undefined;
 }
@@ -182,6 +184,15 @@ async function verifyChain(
   }
   // Continuity: chainDepth must increment by exactly one.
   if (parent.chainDepth + 1 !== child.chainDepth) {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  // Chain-depth bound: child depth must not exceed parent's maxChainDepth.
+  // Without this check, a forged token could claim chainDepth=999 and pass.
+  if (child.chainDepth > parent.maxChainDepth) {
+    return deny({ ok: false, reason: "invalid_signature" });
+  }
+  // Attenuation: child must not widen its own delegation budget.
+  if (child.maxChainDepth > parent.maxChainDepth) {
     return deny({ ok: false, reason: "invalid_signature" });
   }
   // Continuity: child must not outlive parent.

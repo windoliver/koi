@@ -19,10 +19,12 @@ L2 library that implements the L0 capability + delegation contracts in
   - `hmac?: { secret, rootIssuer? }` — HMAC-SHA256 key plus an optional
     AgentId binding. When `rootIssuer` is set, chainDepth=0 tokens whose
     `issuerId` does not match are rejected as `invalid_signature`.
-  - `ed25519?: { publicKeys, rootIssuers? }` — fingerprint→key map plus
-    an optional fingerprint→AgentId binding for root authority. When
-    `rootIssuers` is set, chainDepth=0 tokens are rejected unless
-    `rootIssuers.get(proof.publicKey) === token.issuerId`.
+  - `ed25519?: { publicKeys, issuerKeys? }` — fingerprint→key map plus
+    an optional fingerprint→AgentId binding applied at every chain depth.
+    When `issuerKeys` is set, EVERY Ed25519 token is rejected unless
+    `issuerKeys.get(proof.publicKey) === token.issuerId`. This prevents
+    cross-issuer forgery where a configured key for issuer A signs a
+    token claiming issuerId=B (matching some parent's delegateeId).
   - `scopeChecker` (required) — see `createGlobScopeChecker()`.
   - `revocations?: CapabilityRevocationRegistry` — when provided,
     every token id is checked against the registry.
@@ -31,7 +33,11 @@ L2 library that implements the L0 capability + delegation contracts in
     `tokenStore.get(parentId)` and validates signature, expiry,
     session, attenuation, and continuity at each level.
 - `createGlobScopeChecker()` — default `ScopeChecker` matching
-  `permissions.allow`/`deny` with `*` wildcard support.
+  `permissions.allow`/`deny` with `*` wildcard support. **Fails closed on
+  resource-scoped tokens**: `VerifyContext` carries no requested resource,
+  so this checker cannot enforce `scope.resources` and rejects any token
+  with non-empty resources. Production deployments that issue
+  resource-scoped tokens MUST inject a resource-aware scope checker.
 - `issueRootCapability(opts)` — produces a signed root `CapabilityToken`.
 - `delegateCapability(opts)` — produces a signed child `CapabilityToken`
   after verifying attenuation, chain depth, parent expiry, session match,
@@ -53,9 +59,11 @@ For every token (leaf and ancestors):
 3. `now >= expiresAt` → `expired`.
 4. `!activeSessionIds.has(scope.sessionId)` → `session_invalid`.
 5. `revocations?.isRevoked(token.id)` → `revoked`.
-6. **chainDepth=0 root binding** — when `hmac.rootIssuer` (HMAC) or
-   `ed25519.rootIssuers` (Ed25519) is configured, the root token's
-   `issuerId` must match. Otherwise `invalid_signature`.
+6. **Issuer-key binding** — for HMAC, `hmac.rootIssuer` (when configured)
+   restricts chainDepth=0 tokens to a single issuer. For Ed25519,
+   `ed25519.issuerKeys` (when configured) is enforced at EVERY chain
+   depth: each token's `proof.publicKey` must map to its `issuerId`.
+   Otherwise `invalid_signature`.
 
 For the leaf token only:
 
@@ -64,6 +72,8 @@ For the leaf token only:
    tokens are rejected as `unknown_grant`. The walk enforces:
    - parent.delegateeId === child.issuerId (continuity)
    - parent.chainDepth + 1 === child.chainDepth
+   - child.chainDepth ≤ parent.maxChainDepth (forged-depth defense)
+   - child.maxChainDepth ≤ parent.maxChainDepth (no budget widening)
    - child.expiresAt ≤ parent.expiresAt
    - child.scope.sessionId === parent.scope.sessionId
    - `isPermissionSubset(child.permissions, parent.permissions)`
@@ -96,9 +106,10 @@ For the leaf token only:
 - **HMAC**: any holder of the secret is a trusted issuer. Configure
   `rootIssuer` to bind chainDepth=0 tokens to a specific AgentId.
 - **Ed25519**: each public-key fingerprint binds to one AgentId via
-  `rootIssuers`. Without that binding configured, root tokens accept any
-  `issuerId` (deprecated; prefer always configuring `rootIssuers` in
-  production).
+  `issuerKeys`, applied at every chain depth. Without that binding
+  configured, signatures are merely "from some configured key" — a
+  malicious holder of any configured private key could mint tokens
+  claiming any `issuerId`. Always configure `issuerKeys` in production.
 - **Chain validation**: chainDepth>0 tokens MUST be verified through a
   `tokenStore` that returns the parent. Without it, leaf signature
   alone does not prove valid attenuation; the verifier fails closed

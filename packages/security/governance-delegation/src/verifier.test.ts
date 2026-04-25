@@ -203,7 +203,7 @@ describe("authority binding (codex round-1: critical)", () => {
     expect(result.reason).toBe("invalid_signature");
   });
 
-  test("Ed25519 rootIssuers binding enforced — wrong AgentId rejected", async () => {
+  test("Ed25519 issuerKeys binding enforced — wrong AgentId rejected", async () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const pubDer = publicKey.export({ format: "der", type: "spki" });
     const privDer = privateKey.export({ format: "der", type: "pkcs8" });
@@ -220,7 +220,7 @@ describe("authority binding (codex round-1: critical)", () => {
     const verifier = createCapabilityVerifier({
       ed25519: {
         publicKeys: new Map([[fp, pubDer]]),
-        rootIssuers: new Map([[fp, agentId("engine")]]),
+        issuerKeys: new Map([[fp, agentId("engine")]]),
       },
       scopeChecker: createGlobScopeChecker(),
     });
@@ -230,7 +230,7 @@ describe("authority binding (codex round-1: critical)", () => {
     expect(result.reason).toBe("invalid_signature");
   });
 
-  test("Ed25519 unbound fingerprint rejected when rootIssuers configured", async () => {
+  test("Ed25519 unbound fingerprint rejected when issuerKeys configured", async () => {
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
     const pubDer = publicKey.export({ format: "der", type: "spki" });
     const privDer = privateKey.export({ format: "der", type: "pkcs8" });
@@ -247,7 +247,7 @@ describe("authority binding (codex round-1: critical)", () => {
     const verifier = createCapabilityVerifier({
       ed25519: {
         publicKeys: new Map([[fp, pubDer]]),
-        rootIssuers: new Map(), // empty — fingerprint not authorized
+        issuerKeys: new Map(), // empty — fingerprint not authorized
       },
       scopeChecker: createGlobScopeChecker(),
     });
@@ -365,6 +365,123 @@ describe("chain validation (codex round-1: critical)", () => {
       tokenStore: registry,
     });
     const result = await verifier.verify(forged, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("scope_exceeded");
+  });
+});
+
+describe("round-2 hardening", () => {
+  test("Ed25519 cross-issuer forgery rejected (codex round-2: critical)", async () => {
+    // Two distinct configured Ed25519 keys, bound to two distinct AgentIds.
+    // Attacker uses key-A's secret to sign a token claiming issuerId=B.
+    // Verifier must reject — without per-token issuer-key binding, the
+    // signature would verify (key-A is configured) and the chain-walk
+    // continuity check (parent.delegateeId === child.issuerId) would pass.
+    const kpA = generateKeyPairSync("ed25519");
+    const kpB = generateKeyPairSync("ed25519");
+    const pubA = kpA.publicKey.export({ format: "der", type: "spki" });
+    const pubB = kpB.publicKey.export({ format: "der", type: "spki" });
+    const privA = kpA.privateKey.export({ format: "der", type: "pkcs8" });
+    const fpA = Buffer.from(pubA).toString("base64");
+    const fpB = Buffer.from(pubB).toString("base64");
+
+    // Sign with key-A but claim issuerId="agent-b" (the AgentId bound to key-B).
+    const tok = await issueRootCapability({
+      signer: { kind: "ed25519", privateKey: privA, publicKeyFingerprint: fpA },
+      issuerId: agentId("agent-b"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      ed25519: {
+        publicKeys: new Map([
+          [fpA, pubA],
+          [fpB, pubB],
+        ]),
+        issuerKeys: new Map([
+          [fpA, agentId("agent-a")],
+          [fpB, agentId("agent-b")],
+        ]),
+      },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(tok, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("forged child exceeding parent.maxChainDepth rejected (codex round-2: high)", async () => {
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const registry = createMemoryCapabilityRevocationRegistry();
+    const root = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      ttlMs: 60_000,
+      maxChainDepth: 1, // root permits only one level of delegation
+      registry,
+      now: () => 1000,
+    });
+    const { signHmac } = await import("./hmac.js");
+    const { capabilityId } = await import("@koi/core");
+    // Forge a depth-2 child claiming chainDepth=2 from a chainDepth=0 root —
+    // delegateCapability would refuse, but a malicious holder with the secret
+    // can mint it directly. Verifier must catch it.
+    const forgedUnsigned = {
+      id: capabilityId("forged-depth"),
+      issuerId: agentId("alice"),
+      delegateeId: agentId("eve"),
+      scope: { permissions: { allow: ["read_file"] }, sessionId: sessionId("sess-1") },
+      parentId: root.id,
+      chainDepth: 2, // root.chainDepth + 1 should be 1, not 2
+      maxChainDepth: 5, // also widening the budget
+      createdAt: 1000,
+      expiresAt: 30_000,
+      proof: { kind: "hmac-sha256" as const, digest: "" },
+    };
+    const digest = signHmac(forgedUnsigned, signer.secret);
+    const forged = { ...forgedUnsigned, proof: { kind: "hmac-sha256" as const, digest } };
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+      tokenStore: registry,
+    });
+    const result = await verifier.verify(forged, ctx());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid_signature");
+  });
+
+  test("default scope checker rejects resource-scoped tokens (codex round-2: high)", async () => {
+    // Resource-scoped tokens require a resource-aware ScopeChecker — the
+    // default glob checker has no requested-resource projection from
+    // VerifyContext, so it must fail closed rather than silently allowing
+    // a tool match while ignoring the resource constraint.
+    const signer: Signer = { kind: "hmac-sha256", secret: randomBytes(32) };
+    const tok = await issueRootCapability({
+      signer,
+      issuerId: agentId("engine"),
+      delegateeId: agentId("alice"),
+      scope: {
+        permissions: { allow: ["read_file"] },
+        resources: ["read_file:/safe/**"],
+        sessionId: sessionId("sess-1"),
+      },
+      ttlMs: 60_000,
+      maxChainDepth: 3,
+      now: () => 1000,
+    });
+    const verifier = createCapabilityVerifier({
+      hmac: { secret: signer.secret },
+      scopeChecker: createGlobScopeChecker(),
+    });
+    const result = await verifier.verify(tok, ctx());
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("scope_exceeded");
