@@ -234,12 +234,11 @@ gated on its presence:
   tradeoff for trusted mode: the gain is an unforgeable "dead
   worker" assertion; the cost is one operator step.
 
-The same supervisor contract gates orphan-record recovery: CAS-advancing
-to `suspended` (NOT terminal) with `ORPHAN_RECOVERED` also requires a
-successful `killAndConfirm` first. If the supervisor reports the
-session's worker is alive, the harness returns `RECLAIM_LIVE_OWNER`
-(retryable) and the caller investigates. See Reclamation check for the
-full protocol.
+There is no automatic orphan-record recovery path. Sustained
+`NOT_FOUND` on `loadSession(prev.lastSessionId)` means no durable
+`workerHandle` is recoverable, and the package never falls back to
+sessionId-based kills. Recovery for that case requires the operator
+`forceReclaim(sid, manualHandle)` admin path described above.
 
 **Tool-layer epoch check (optional, recommended for non-idempotent
 tools):** long-running tools that perform external side effects (HTTP
@@ -1131,16 +1130,26 @@ Flow:
    - `status().durability = "unhealthy"`,
      `markCleanupUnhealthy(sid, "ABORT_TIMEOUT")`,
      `onDurabilityLost(ABORT_TIMEOUT)` invoked.
-   - **Supervisor mode:** harness invokes
-     `supervisor.killAndConfirm(workerHandle)` automatically after
-     `abortKillGraceMs`; on success the private cleanup authority
-     CAS-advances to `failed` with `failureReason = "TIMEOUT"` and
-     stops heartbeats. Recovery is automatic.
+   - **Supervisor mode:** harness writes the durable
+     `RecoveryOutcome` (kind=`harness-failed`,
+     reason=`"TIMEOUT"`) BEFORE invoking
+     `supervisor.killAndConfirm(workerHandle)`. Per the canonical
+     ownership rule (see phase-machine "Abort timeout" branch),
+     for typical supervisor implementations that kill the harness's
+     own process, the post-kill CAS is performed by a later
+     reclaimer (peer process or restart `resume()` consuming the
+     outcome) — NOT by the dying harness. Recovery is durable but
+     reclaimer-driven. Only for the narrow case of supervisors that
+     kill an engine subprocess while leaving the harness alive does
+     the in-process private cleanup authority drive the CAS.
    - **`trustedSingleProcess=true` mode:** no supervisor available;
-     host MUST SIGKILL. No automatic recovery.
+     host MUST SIGKILL. After SIGKILL, recovery requires the
+     operator `forceReclaim(sid, hostConfirmedDead: true)` admin
+     path — there is no automatic recovery from `resume()` in this
+     mode.
    This is the SINGLE source of truth for ABORT_TIMEOUT across all
    callers (pause/fail/timeout/dispose). The dispose section's
-   "background watcher" is the same private-cleanup-authority
+   "background watcher" is the same reclaimer-driven outcome-replay
    mechanism described here, parameterized for the dispose target
    phase (`suspended`) instead of `failed`.
 
@@ -1199,18 +1208,19 @@ Unambiguous algorithm:
      - `status().durability = "unhealthy"`,
        `markCleanupUnhealthy(sid, "ABORT_TIMEOUT")`,
        `onDurabilityLost(ABORT_TIMEOUT)` invoked.
-     - **Supervisor mode:** harness invokes
-       `supervisor.killAndConfirm(workerHandle)` after
-       `abortKillGraceMs`; on success a **private cleanup authority**
-       (not a `SessionLease`; survives lease revocation)
-       CAS-advances to `suspended` with
-       `failureReason = "disposed after kill"` and stops heartbeats.
-     - **`trustedSingleProcess=true` mode:** no supervisor; the same
-       private cleanup authority polls the engine adapter's running
-       state every `heartbeatIntervalMs` and CAS-advances to
-       `suspended` once the engine actually reports quiescence (e.g.,
-       host SIGKILL eventually clears the run, or the engine exits
-       on its own). Heartbeats continue until CAS success.
+     - **Supervisor mode:** harness writes a durable
+       `RecoveryOutcome` (kind=`harness-suspended`,
+       reason=`"disposed after kill"`) BEFORE invoking
+       `supervisor.killAndConfirm(workerHandle)`. Per the canonical
+       ABORT_TIMEOUT ownership rule, the post-kill CAS is
+       reclaimer-driven (peer or next `resume()`) when the
+       supervisor kills the harness's own process; only for
+       narrowly-scoped engine-subprocess kills does the in-process
+       private cleanup authority drive the CAS in-process.
+     - **`trustedSingleProcess=true` mode:** no supervisor; no
+       automatic recovery. Operator must SIGKILL the host externally
+       and then invoke `forceReclaim(sid, hostConfirmedDead: true)`
+       to advance the chain to `suspended`.
      - Subsequent `dispose()` calls on this harness object return
        `Err(ABORT_TIMEOUT)` immediately (cleanup authority is
        authoritative; phase check rejects re-entry). The original
@@ -1605,18 +1615,21 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `lastHeartbeatAt > leaseTtlMs` but a `heartbeatIntervalMs * 2` wait
   then shows a fresh heartbeat → `ALREADY_ACTIVE`, no reclaim.
   Regression against stale-replica misclassification of live owners.
-- **`trustedSingleProcess=true`, no RecoveryOutcome present:**
-  `resume()` on any `active` snapshot returns `ALREADY_ACTIVE`
-  unconditionally — no generic TTL reclaim is attempted even with
-  stale heartbeats. Required for hosts without kill-on-takeover
-  supervisor.
-- **`trustedSingleProcess=true`, RecoveryOutcome present:**
-  `resume()` on `active` finds a durable `RecoveryOutcome` for
-  `prev.lastSessionId` and CAS-replays it (terminal → returns
-  `TERMINAL`; `harness-suspended` → starts a fresh session). This is
-  the documented automatic-recovery path for ABORT_TIMEOUT after
-  host SIGKILL in trusted mode. Verified by test that asserts
-  outcome replay happens but generic TTL reclaim does not.
+- **`trustedSingleProcess=true`, plain `resume()`:** on any
+  `active` snapshot returns `ALREADY_ACTIVE` unconditionally — no
+  generic TTL reclaim, no automatic outcome replay, regardless of
+  whether a `RecoveryOutcome` exists. Verified by test that asserts
+  reclaim is never invoked from `resume()` in this mode.
+- **`trustedSingleProcess=true`, operator-confirmed recovery:**
+  operator calls `forceReclaim(sid, hostConfirmedDead: true)` after
+  external SIGKILL of the prior process. The admin call writes a
+  durable host-confirmed-dead marker, then CAS-replays any
+  `RecoveryOutcome` (terminal → chain ends in `completed`/`failed`;
+  `harness-suspended` → chain advanced to `suspended` and a fresh
+  `resume()` can start a new session) or, if no outcome exists,
+  CAS-advances to `suspended` with `OPERATOR_FORCED`. Verified by
+  test that asserts the marker is required and resume() with no
+  marker still returns `ALREADY_ACTIVE`.
 - **`createLongRunningHarness` rejects missing supervisor:** config
   without `supervisor` AND without `trustedSingleProcess=true` returns
   `INVALID_CONFIG` at construction time.
@@ -1624,12 +1637,13 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   heartbeat → harness calls `supervisor.killAndConfirm(workerHandle)`
   BEFORE CAS → kill succeeds → CAS advances. Mock supervisor asserts
   ordering.
-- **Supervisor kill before orphan recovery:** orphan-window elapses
-  with NOT_FOUND → harness calls `killAndConfirm` → kill succeeds →
-  CAS to `suspended` with `ORPHAN_RECOVERED` (recoverable, NOT
-  terminal). If kill returns `RECLAIM_LIVE_OWNER` (worker still alive
-  despite missing record), harness does NOT CAS and returns the error
-  retryable.
+- **Sustained NOT_FOUND orphan (no handle):** orphan-window elapses
+  with NOT_FOUND → harness returns
+  `Err(WORKER_HANDLE_MISSING, retryable: false)` and does NOT call
+  `killAndConfirm` or CAS. Recovery requires
+  `forceReclaim(sid, manualHandle)` operator path. Regression
+  against unsafe sessionId-based fences and against the deleted
+  ORPHAN_RECOVERED auto-path.
 - **Supervisor kill failure aborts reclaim:** mock supervisor returns
   `Err(KILL_FAILED)` → reclaim does NOT CAS, harness state unchanged,
   error propagates to caller. (Regression against split-brain-on-
@@ -1700,7 +1714,8 @@ All errors are `KoiError` from L0. Codes used:
 | `INVALID_CONFIG` | `abortTimeoutMs >= leaseTtlMs - 2*heartbeatIntervalMs` | false |
 | `ACTIVATION_STATUS_WRITE_FAILED` | step-5 `setSessionStatus("running")` write failed; returned via `StartResult.activationWarning`, NOT via `Err`; lease is still valid | true |
 | `RECLAIM_READ_FAILED` | `sessionPersistence.loadSession` I/O error during reclaim after 3 retries; caller must retry after backoff | true |
-| `ORPHAN_RECOVERED` | session record consistently `NOT_FOUND` across TTL window AND supervisor confirmed kill; harness CAS-advanced to `suspended` (recoverable, not terminal) | true |
+| `WORKER_HANDLE_MISSING` | session record missing the durable `workerHandle` (or session record itself missing across the orphan window); reclaim hard-stops, no automatic kill or CAS — operator must use `forceReclaim(sid, manualHandle)` | false |
+| `OPERATOR_FORCED` | `forceReclaim` admin path used to advance an `active` snapshot to `suspended` after operator-confirmed dead worker (trustedSingleProcess or no-handle paths) | true |
 | `KILL_FAILED` | `supervisor.killAndConfirm` could not terminate the owner worker | true |
 | `RECLAIM_LIVE_OWNER` | supervisor reports owner is still alive despite TTL-stale heartbeat or NOT_FOUND; caller investigates | true |
 | `SUPERVISOR_UNHEALTHY` | `supervisor.probeAlive` returned IO_ERROR; reclaim aborted to avoid killing on a failed probe | true |
