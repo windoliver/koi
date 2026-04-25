@@ -126,6 +126,14 @@ export interface TaskOptions {
   /** Per-execution timeout in milliseconds. */
   readonly timeoutMs?: number | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Caller-supplied stable key used as the task ID. When provided, message IDs
+   * derived from this key are deterministic across retries, allowing workflow-side
+   * deduplication after an ambiguous signal failure (e.g., ACK lost on timeout).
+   * Must be unique per logical submission; reusing the same key for distinct work
+   * will silently skip creation if the task already exists.
+   */
+  readonly idempotencyKey?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

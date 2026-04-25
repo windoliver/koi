@@ -101,6 +101,12 @@ export interface TemporalHealthConfig {
   readonly cooldownMs: number;
   readonly timeoutMs: number;
   readonly clock?: (() => number) | undefined;
+  /**
+   * When true, HTTP 401/403 responses count as "reachable" — useful for auth-protected
+   * Temporal frontends where the health endpoint requires credentials. Defaults to false
+   * so misconfigured proxies or wrong endpoints do not produce false-positive readiness.
+   */
+  readonly allowAuthErrors?: boolean | undefined;
 }
 
 export const DEFAULT_TEMPORAL_HEALTH_CONFIG: Omit<TemporalHealthConfig, "url"> = Object.freeze({
@@ -123,7 +129,10 @@ export function createTemporalHealthMonitor(
   healthCheckFn?: (url: string, timeoutMs: number) => Promise<boolean>,
 ): TemporalHealthMonitor {
   const clock = config.clock ?? Date.now;
-  const checkHealth = healthCheckFn ?? defaultHealthCheck;
+  const checkHealth =
+    healthCheckFn ??
+    ((url: string, timeoutMs: number) =>
+      defaultHealthCheck(url, timeoutMs, config.allowAuthErrors ?? false));
 
   const circuit = createCircuitBreaker(config.failureThreshold, config.cooldownMs, clock);
 
@@ -234,7 +243,11 @@ export function createTemporalHealthMonitor(
 
 const TEMPORAL_HTTP_PORT_OFFSET = 1000;
 
-async function defaultHealthCheck(url: string, timeoutMs: number): Promise<boolean> {
+async function defaultHealthCheck(
+  url: string,
+  timeoutMs: number,
+  allowAuthErrors: boolean,
+): Promise<boolean> {
   try {
     // If a full HTTP(S) URL is provided (via healthUrl), use it directly to support
     // Temporal Cloud, TLS, and reverse-proxied setups where grpcPort + 1000 is wrong.
@@ -252,7 +265,10 @@ async function defaultHealthCheck(url: string, timeoutMs: number): Promise<boole
     const response = await fetch(endpoint, {
       signal: AbortSignal.timeout(timeoutMs),
     });
-    return response.ok;
+    // 2xx = healthy. 401/403 = healthy only when allowAuthErrors opt-in is set
+    // (auth-protected Temporal frontends that require credentials on the health endpoint).
+    // 3xx, 404, other 4xx, and 5xx all indicate wrong endpoint or server failure.
+    return response.ok || (allowAuthErrors && (response.status === 401 || response.status === 403));
   } catch {
     return false;
   }

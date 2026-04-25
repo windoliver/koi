@@ -96,3 +96,37 @@ describe("default config", () => {
     expect(ledger.capacity()).toBe(10);
   });
 });
+
+describe("input validation", () => {
+  test("throws on negative maxCapacity", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: -1 })).toThrow(/maxCapacity/);
+  });
+
+  test("throws on fractional maxCapacity", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: 2.5 })).toThrow(/maxCapacity/);
+  });
+
+  test("accepts zero maxCapacity (valid — no agents allowed)", () => {
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 0 });
+    expect(ledger.capacity()).toBe(0);
+    expect(ledger.acquire()).toBe(false);
+  });
+
+  test("throws when initialActiveCount exceeds maxCapacity", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: 5 }, 6)).toThrow(/initialActiveCount/);
+  });
+
+  test("throws on negative initialActiveCount", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: 5 }, -1)).toThrow(/initialActiveCount/);
+  });
+
+  test("throws on fractional initialActiveCount", () => {
+    expect(() => createTemporalSpawnLedger({ maxCapacity: 5 }, 1.5)).toThrow(/initialActiveCount/);
+  });
+
+  test("accepts initialActiveCount equal to maxCapacity", () => {
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 3 }, 3);
+    expect(ledger.activeCount()).toBe(3);
+    expect(ledger.acquire()).toBe(false);
+  });
+});

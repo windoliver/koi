@@ -6,6 +6,7 @@ import {
   renameSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import type {
@@ -65,6 +66,82 @@ interface PersistedState {
   readonly cancelledTaskIds: readonly string[];
   readonly schedules: readonly [string, PersistedSchedule][];
   readonly history: readonly TaskRunRecord[];
+  // Schedule IDs that were persisted as a pre-commit intent before remote create.
+  // On restart, these are deleted (cleaning any Temporal orphan) and removed from local state.
+  readonly pendingScheduleIds: readonly string[];
+  // Task IDs for which a dispatch signal was durably confirmed as sent, even if the
+  // full post-signal persist failed. On restart, "pending" dispatch tasks in this set
+  // are treated as "completed" (not retried), preventing duplicate signal delivery.
+  readonly deliveredDispatchIds: readonly string[];
+}
+
+const VALID_TASK_STATUSES = new Set<string>([
+  "pending",
+  "running",
+  "completed",
+  "failed",
+  "dead_letter",
+]);
+const VALID_HISTORY_STATUSES = new Set<string>(["completed", "failed"]);
+
+function isValidMode(v: unknown): v is "spawn" | "dispatch" {
+  return v === "spawn" || v === "dispatch";
+}
+
+function isValidInputPayload(v: unknown): boolean {
+  if (typeof v !== "object" || v === null) return false;
+  const kind = (v as Record<string, unknown>).kind;
+  return kind === "text" || kind === "messages" || kind === "resume";
+}
+
+function validatePersistedTask(v: unknown, dbPath: string): PersistedTask {
+  if (typeof v !== "object" || v === null) {
+    throw new Error(
+      `[temporal-scheduler] malformed task record in "${dbPath}" — expected an object`,
+    );
+  }
+  const r = v as Record<string, unknown>;
+  if (
+    typeof r.id !== "string" ||
+    typeof r.agentId !== "string" ||
+    !isValidMode(r.mode) ||
+    !isValidInputPayload(r.input) ||
+    typeof r.priority !== "number" ||
+    typeof r.status !== "string" ||
+    !VALID_TASK_STATUSES.has(r.status) ||
+    typeof r.createdAt !== "number" ||
+    typeof r.retries !== "number" ||
+    typeof r.maxRetries !== "number"
+  ) {
+    throw new Error(
+      `[temporal-scheduler] task record "${String(r.id ?? "?")} " in "${dbPath}" is missing required fields or has wrong types. ` +
+        "Remove or migrate the file before restarting.",
+    );
+  }
+  return v as PersistedTask;
+}
+
+function validatePersistedSchedule(v: unknown, dbPath: string): PersistedSchedule {
+  if (typeof v !== "object" || v === null) {
+    throw new Error(
+      `[temporal-scheduler] malformed schedule record in "${dbPath}" — expected an object`,
+    );
+  }
+  const r = v as Record<string, unknown>;
+  if (
+    typeof r.id !== "string" ||
+    typeof r.expression !== "string" ||
+    typeof r.agentId !== "string" ||
+    !isValidInputPayload(r.input) ||
+    !isValidMode(r.mode) ||
+    typeof r.paused !== "boolean"
+  ) {
+    throw new Error(
+      `[temporal-scheduler] schedule record "${String(r.id ?? "?")} " in "${dbPath}" is missing required fields or has wrong types. ` +
+        "Remove or migrate the file before restarting.",
+    );
+  }
+  return v as PersistedSchedule;
 }
 
 function validatePersistedState(raw: unknown, dbPath: string): PersistedState {
@@ -82,6 +159,72 @@ function validatePersistedState(raw: unknown, dbPath: string): PersistedState {
         "expected {tasks, schedules, taskWorkflowIds, cancelledTaskIds, history} arrays. " +
         "Remove or migrate the file before restarting.",
     );
+  }
+  const r = raw as Record<string, unknown>;
+  // pendingScheduleIds and deliveredDispatchIds are optional — older snapshots won't have them.
+  if (r.pendingScheduleIds !== undefined && !Array.isArray(r.pendingScheduleIds)) {
+    throw new Error(
+      `[temporal-scheduler] pendingScheduleIds in "${dbPath}" is present but not an array.`,
+    );
+  }
+  if (r.deliveredDispatchIds !== undefined && !Array.isArray(r.deliveredDispatchIds)) {
+    throw new Error(
+      `[temporal-scheduler] deliveredDispatchIds in "${dbPath}" is present but not an array.`,
+    );
+  }
+  for (const entry of r.tasks as unknown[]) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") {
+      throw new Error(
+        `[temporal-scheduler] tasks array in "${dbPath}" has a malformed entry — expected [string, PersistedTask] tuples.`,
+      );
+    }
+    validatePersistedTask(entry[1], dbPath);
+  }
+  for (const entry of r.schedules as unknown[]) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") {
+      throw new Error(
+        `[temporal-scheduler] schedules array in "${dbPath}" has a malformed entry — expected [string, PersistedSchedule] tuples.`,
+      );
+    }
+    validatePersistedSchedule(entry[1], dbPath);
+  }
+  for (const entry of r.taskWorkflowIds as unknown[]) {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 2 ||
+      typeof entry[0] !== "string" ||
+      typeof entry[1] !== "string"
+    ) {
+      throw new Error(
+        `[temporal-scheduler] taskWorkflowIds in "${dbPath}" has a malformed entry — expected [string, string] tuples.`,
+      );
+    }
+  }
+  for (const entry of r.cancelledTaskIds as unknown[]) {
+    if (typeof entry !== "string") {
+      throw new Error(
+        `[temporal-scheduler] cancelledTaskIds in "${dbPath}" has a non-string entry.`,
+      );
+    }
+  }
+  for (const entry of (r.history ?? []) as unknown[]) {
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error(`[temporal-scheduler] history in "${dbPath}" has a non-object entry.`);
+    }
+    const h = entry as Record<string, unknown>;
+    if (
+      typeof h.taskId !== "string" ||
+      typeof h.agentId !== "string" ||
+      typeof h.status !== "string" ||
+      !VALID_HISTORY_STATUSES.has(h.status) ||
+      typeof h.startedAt !== "number" ||
+      typeof h.completedAt !== "number"
+    ) {
+      throw new Error(
+        `[temporal-scheduler] history record in "${dbPath}" is missing required fields or has invalid status "${String(h.status)}". ` +
+          "Remove or migrate the file before restarting.",
+      );
+    }
   }
   return raw as PersistedState;
 }
@@ -161,6 +304,88 @@ function saveStateSync(dbPath: string, state: PersistedState): void {
       // best-effort cleanup of orphaned temp file
     }
     throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PID-based advisory lock for dbPath (single-writer invariant)
+// ---------------------------------------------------------------------------
+
+// Returns true when a process with the given PID is alive in this OS session.
+// Uses signal 0 — sends no signal but checks process existence via the kernel.
+// On POSIX: throws ESRCH if pid is not found, EPERM if found but not owned.
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function acquireDbLock(dbPath: string): void {
+  const lockPath = `${dbPath}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd: number | undefined;
+    try {
+      // 'wx' = O_WRONLY | O_CREAT | O_EXCL — atomic on POSIX; fails EEXIST if another holder created the file.
+      fd = openSync(lockPath, "wx");
+      // Write PID through the same fd before closing so the file is never empty.
+      // An empty lock file would be misread as stale by competing processes.
+      writeSync(fd, String(process.pid));
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      return;
+    } catch (err: unknown) {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* ignore */
+        }
+      }
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    // EEXIST: lock file exists — check whether the holder is alive.
+    let existingPid: number | undefined;
+    try {
+      existingPid = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+    } catch {
+      // Lock file vanished between the open and the read — retry the atomic create.
+      continue;
+    }
+    if (!Number.isNaN(existingPid) && isProcessAlive(existingPid)) {
+      throw new Error(
+        `[temporal-scheduler] dbPath "${dbPath}" is already held by PID ${existingPid}. ` +
+          "Only one scheduler instance may write to a given dbPath at a time. " +
+          "Stop the other process or remove the stale lock file to continue.",
+      );
+    }
+    // Stale lock — unlink and retry the atomic O_EXCL create.
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* ignore — another process may have won the race */
+    }
+  }
+  throw new Error(
+    `[temporal-scheduler] Failed to acquire lock for "${dbPath}" after 2 attempts. ` +
+      "Another process may be starting concurrently. Try again.",
+  );
+}
+
+function releaseDbLock(dbPath: string): void {
+  const lockPath = `${dbPath}.lock`;
+  // Only remove the lock file if it still contains our PID (guard against a race
+  // where a stale-lock cleanup overwrote our entry and another process already holds it).
+  try {
+    const held = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+    if (held === process.pid) {
+      unlinkSync(lockPath);
+    }
+  } catch {
+    // Ignore — lock file may have already been removed.
   }
 }
 
@@ -348,26 +573,51 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const cancelledTaskIds = new Set<string>();
   // Maps taskId → the actual Temporal workflowId used (spawn = task id, dispatch = agentId)
   const taskWorkflowIds = new Map<string, string>();
+  // Schedule IDs that were persisted as a pre-commit intent before remote create.
+  // On restart these are cleaned up (remote delete + local removal) to handle orphans.
+  const pendingScheduleIds = new Set<string>();
+  // Dispatch task IDs for which the signal was durably confirmed as sent (written to disk
+  // immediately after workflow.signal() succeeds). Prevents dispatch retry after restart
+  // for tasks whose signal was delivered even if the post-signal full-state persist failed.
+  const deliveredDispatchIds = new Set<string>();
   // Set on disposal so stale getResult callbacks cannot mutate or persist after shutdown.
   let disposed = false;
   // Set when a background persist fails so subsequent mutations throw rather than silently
   // diverging. Once tripped, the scheduler is fail-closed — no further state mutations.
   let durabilityFailed = false;
+  // Tracks the startup orphan-schedule cleanup task so asyncDispose can await its completion
+  // before releasing the dbPath lock. Prevents a stale background writer from clobbering
+  // a new owner's recovered state after a fast restart/replace cycle.
+  let startupCleanupPromise: Promise<void> | undefined;
 
   // Restore state from disk if dbPath is configured and a prior snapshot exists.
+  // Acquire the advisory lock before reading so only one writer can own this dbPath.
+  // Release the lock on any startup failure so the process can retry without needing
+  // manual intervention to remove a stale lock file.
   if (config.dbPath !== undefined) {
-    const saved = loadStateSync(config.dbPath);
-    if (saved !== undefined) {
-      for (const [k, v] of saved.tasks) tasks.set(k, reconstructTask(v));
-      for (const [k, v] of saved.taskWorkflowIds) taskWorkflowIds.set(k, v);
-      for (const id of saved.cancelledTaskIds) cancelledTaskIds.add(id);
-      for (const [k, v] of saved.schedules) schedules.set(k, reconstructSchedule(v));
-      for (const record of saved.history) history.push(record);
+    acquireDbLock(config.dbPath);
+    try {
+      const saved = loadStateSync(config.dbPath);
+      if (saved !== undefined) {
+        for (const [k, v] of saved.tasks) tasks.set(k, reconstructTask(v));
+        for (const [k, v] of saved.taskWorkflowIds) taskWorkflowIds.set(k, v);
+        for (const id of saved.cancelledTaskIds) cancelledTaskIds.add(id);
+        for (const [k, v] of saved.schedules) schedules.set(k, reconstructSchedule(v));
+        for (const record of saved.history) history.push(record);
+        for (const id of saved.pendingScheduleIds ?? []) pendingScheduleIds.add(id);
+        for (const id of saved.deliveredDispatchIds ?? []) deliveredDispatchIds.add(id);
+      }
+    } catch (startupErr: unknown) {
+      releaseDbLock(config.dbPath);
+      throw startupErr;
     }
   }
 
   function persist(): void {
     if (config.dbPath === undefined) return;
+    // Skip persist after disposal — the lock has been or is about to be released, and writing
+    // now would clobber a new owner's recovered state.
+    if (disposed) return;
     try {
       saveStateSync(config.dbPath, {
         tasks: [...tasks.entries()].map(([k, v]) => [
@@ -405,6 +655,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           } satisfies PersistedSchedule,
         ]),
         history,
+        pendingScheduleIds: [...pendingScheduleIds],
+        deliveredDispatchIds: [...deliveredDispatchIds],
       });
     } catch (err: unknown) {
       // Trip the fail-closed guard regardless of whether this is a foreground or background
@@ -474,10 +726,84 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     return { pending, running, completed, failed, deadLettered, activeSchedules, pausedSchedules };
   }
 
-  // Reattach getResult watchers for spawn tasks that were running at the time of
-  // a previous shutdown, so completion/failure events are recorded after restart.
+  // On restart, clean up pending schedule IDs: try to delete any orphaned Temporal schedule
+  // that was created before a crash (between remote create and local persist). Only remove the
+  // pending marker after a CONFIRMED delete so a transient Temporal failure does not permanently
+  // lose track of a live recurring schedule. Failed IDs stay in pendingScheduleIds and are
+  // retried on the next restart.
+  if (pendingScheduleIds.size > 0) {
+    startupCleanupPromise = (async () => {
+      let anyCleared = false;
+      for (const id of [...pendingScheduleIds]) {
+        try {
+          await config.client.schedule.delete(id);
+          schedules.delete(id);
+          pendingScheduleIds.delete(id);
+          anyCleared = true;
+        } catch {
+          // Delete failed (transient error or schedule already gone) — retain the ID so
+          // the next restart retries. The cost is one extra no-op delete per restart if the
+          // schedule never existed, which is acceptable compared to permanently forgetting a
+          // live schedule.
+        }
+      }
+      if (anyCleared && config.dbPath !== undefined) {
+        try {
+          persist();
+        } catch (e) {
+          durabilityFailed = true;
+          console.error(
+            "[temporal-scheduler] background persist after pending-schedule cleanup failed:",
+            e,
+          );
+        }
+      }
+    })();
+  }
+
+  // Mark "pending" dispatch tasks on restart. Two cases:
+  // 1. deliveredDispatchIds contains the task ID → signal was durably confirmed as sent
+  //    (intermediate persist succeeded before the full post-signal persist failed).
+  //    Record as "completed" to suppress retry — the signal was already delivered.
+  // 2. Not in deliveredDispatchIds → crash occurred before or during signal send.
+  //    Record as "failed" (retryable) — the signal may not have been sent.
   for (const [taskId, task] of tasks) {
-    if (task.mode !== "spawn" || task.status !== "running") continue;
+    if (task.mode !== "dispatch" || task.status !== "pending") continue;
+    const completedAt = Date.now();
+    const signalWasDelivered = deliveredDispatchIds.has(taskId);
+    if (signalWasDelivered) {
+      tasks.set(taskId, { ...task, status: "completed", completedAt });
+      history.push({
+        taskId: taskId as TaskId,
+        agentId: task.agentId,
+        status: "completed",
+        startedAt: task.startedAt ?? task.createdAt,
+        completedAt,
+        durationMs: completedAt - (task.startedAt ?? task.createdAt),
+        retryAttempt: 0,
+      });
+      deliveredDispatchIds.delete(taskId); // history now records completion
+    } else {
+      tasks.set(taskId, { ...task, status: "failed", completedAt });
+      history.push({
+        taskId: taskId as TaskId,
+        agentId: task.agentId,
+        status: "failed",
+        startedAt: task.startedAt ?? task.createdAt,
+        completedAt,
+        durationMs: completedAt - (task.startedAt ?? task.createdAt),
+        error: "signal delivery status unknown after process restart",
+        retryAttempt: 0,
+      });
+    }
+  }
+
+  // Reattach getResult watchers for spawn tasks that were running or pending at the time of
+  // a previous shutdown, so completion/failure events are recorded after restart.
+  // "pending" tasks had their workflow started but the process crashed before persisting "running".
+  // getResult on a non-existent workflow rejects → task is marked failed (no orphan).
+  for (const [taskId, task] of tasks) {
+    if (task.mode !== "spawn" || (task.status !== "running" && task.status !== "pending")) continue;
     const workflowId = taskWorkflowIds.get(taskId) ?? taskId;
     const startedAt = task.startedAt ?? task.createdAt;
     const agentId = task.agentId;
@@ -566,14 +892,54 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         assertJsonSafeValue(options.metadata, "options.metadata");
         assertJsonSerializable(options.metadata);
       }
+      // Validate the input payload before the remote call — matches the schedule() path.
+      // A non-serializable resume.state (or message content) must be rejected up front
+      // rather than discovered during persist() after the workflow has already been accepted.
+      assertJsonSerializable(mapEngineInputToScheduledPayload(input));
 
-      const id = toTaskId(`task:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`);
+      // Use caller-supplied idempotency key as the task ID so message IDs derived from it
+      // are stable across retries, enabling workflow-side deduplication after ACK-lost failures.
+      // Namespace by agentId + mode so keys from different agents or modes never collide.
+      const id = toTaskId(
+        options?.idempotencyKey !== undefined
+          ? `${agentId}:${mode}:${options.idempotencyKey}`
+          : `task:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`,
+      );
       const now = Date.now();
+
+      // Idempotency guard: short-circuit only for in-flight or successfully completed tasks.
+      // Failed tasks are allowed to be retried with the same key — the prior attempt did not
+      // produce durable remote work so the caller's retry is legitimate, not a duplicate.
+      if (options?.idempotencyKey !== undefined) {
+        const existing = tasks.get(id);
+        if (existing !== undefined && existing.status !== "failed") {
+          return id; // in-flight (pending/running) or completed — no-op
+        }
+        const priorSuccess = history.some((r) => r.taskId === id && r.status === "completed");
+        if (priorSuccess) {
+          return id; // already succeeded — no-op
+        }
+        // If existing is "failed" or only in history as "failed": fall through and retry.
+        // Before retrying, clear the cancellation guard so that a prior cancel() call does
+        // not permanently block the retried getResult() callback from recording completion.
+        cancelledTaskIds.delete(id);
+      }
+
+      // Snapshot: deep-clone via JSON round-trip to prevent caller mutations from poisoning
+      // future persist() calls after the remote operation already succeeded. Already validated
+      // as JSON-serializable above so the round-trip cannot throw.
+      const snapshotInput = JSON.parse(
+        JSON.stringify(mapEngineInputToScheduledPayload(input)),
+      ) as EngineInput;
+      const snapshotMetadata =
+        options?.metadata !== undefined
+          ? (JSON.parse(JSON.stringify(options.metadata)) as Record<string, unknown>)
+          : undefined;
 
       const task: ScheduledTask = {
         id,
         agentId,
-        input,
+        input: snapshotInput,
         mode,
         priority: options?.priority ?? 5,
         status: "pending",
@@ -582,14 +948,30 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         retries: 0,
         maxRetries: options?.maxRetries ?? 3,
         timeoutMs: options?.timeoutMs,
-        metadata: options?.metadata,
+        metadata: snapshotMetadata,
       };
 
-      const messages = mapEngineInputToMessages(input, id);
+      const messages = mapEngineInputToMessages(snapshotInput, id);
 
-      // Only record locally after the remote call succeeds to keep state consistent.
-      // For spawn: start a new workflow then signal it with each message.
-      // For dispatch: signal an existing workflow identified by agentId — no new workflow.
+      // Two-phase pre-commit: durably record the "pending" intent before making the remote call.
+      // For spawn: if the process crashes between workflow.start() and the post-start persist(),
+      //   the "pending" task on disk lets startup reconciliation reattach getResult and recover.
+      // For dispatch: if persist() fails AFTER the signal is delivered, NOT rethrowing means
+      //   the caller sees success and does NOT retry — preventing a duplicate signal that would
+      //   have worse consequences than a missing audit record. durabilityFailed is still tripped
+      //   by persist(), so the next mutation fails-closed. On restart, "pending" dispatch tasks
+      //   are marked failed (signal delivery unknown) so they don't silently hide past state.
+      const preCommitWorkflowId = mode === "spawn" ? id : String(agentId);
+      tasks.set(id, task);
+      taskWorkflowIds.set(id, preCommitWorkflowId);
+      try {
+        persist();
+      } catch (preCommitErr: unknown) {
+        tasks.delete(id);
+        taskWorkflowIds.delete(id);
+        throw preCommitErr; // durabilityFailed already set by persist(); no remote call made
+      }
+
       // Initialize to id so the rollback cancel uses the requested workflowId even if start() throws
       // before handle.workflowId is assigned.
       let targetWorkflowId: string = id;
@@ -599,27 +981,34 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             taskQueue: config.taskQueue,
             workflowId: id,
             args: [
-              { agentId, sessionId: id, stateRefs: { lastTurnId: undefined, turnsProcessed: 0 } },
+              {
+                agentId,
+                sessionId: id,
+                stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
+                initialMessages: messages,
+              },
             ],
             ...(options?.delayMs !== undefined ? { startDelay: `${options.delayMs}ms` } : {}),
           });
           targetWorkflowId = handle.workflowId;
         } else {
-          // dispatch: target the long-running workflow for this agent
+          // dispatch: target the long-running workflow for this agent.
+          // Send the whole batch in one signal so delivery is atomic — a partial message
+          // set cannot be observed and retries produce no duplicates.
           targetWorkflowId = String(agentId);
-        }
-
-        for (const msg of messages) {
-          await config.client.workflow.signal(targetWorkflowId, "message", msg);
+          await config.client.workflow.signal(targetWorkflowId, "messages", messages);
         }
       } catch (err: unknown) {
-        // Compensate: if spawn started but signal failed, cancel the orphaned workflow.
+        // For idempotent spawn (idempotencyKey present), skip the cancel rollback entirely.
+        // The failure may be an ACK-lost transient — Temporal may have created the workflow.
+        // Cancelling would kill a live execution. Instead, mark as failed (retryable) so the
+        // caller can retry; the retry will hit "already running" and take the idempotent attach path.
+        const skipCancel = mode === "spawn" && options?.idempotencyKey !== undefined;
         let rollbackOk = true;
-        if (mode === "spawn") {
+        if (mode === "spawn" && !skipCancel) {
           try {
             await config.client.workflow.cancel(targetWorkflowId);
           } catch {
-            // Rollback cancel failed — the workflow may still be running.
             rollbackOk = false;
           }
         }
@@ -632,7 +1021,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         };
         const failedTask: ScheduledTask = { ...task, status: "failed" };
         tasks.set(id, failedTask);
-        emit({ kind: "task:submitted", task: failedTask });
+        emit({ kind: "task:submitted", task: Object.freeze({ ...failedTask }) });
         history.push({
           taskId: id,
           agentId,
@@ -666,13 +1055,26 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       // Remote calls succeeded — emit submitted then handle mode-specific lifecycle.
       taskWorkflowIds.set(id, targetWorkflowId);
       tasks.set(id, task);
-      emit({ kind: "task:submitted", task });
+      emit({ kind: "task:submitted", task: Object.freeze({ ...task }) });
 
       if (mode === "dispatch") {
-        // Signal delivery is the entire task — mark completed immediately so
-        // query()/stats() don't accumulate stale running dispatch tasks.
+        // Dispatch: signal delivered to Temporal is the extent of scheduler responsibility.
+        // We cannot know when the target workflow completes, so we do not publish a terminal
+        // `task:completed` event and do not hold the task in `tasks` map — that would
+        // misrepresent outcome to query()/stats(). The history record preserves the audit trail.
+
+        // Write a durable "signal delivered" marker BEFORE updating history. Even if the full
+        // post-signal persist fails, this intermediate write ensures that on restart the task
+        // is treated as "completed" (not retried), preventing duplicate signal delivery.
+        deliveredDispatchIds.add(id);
+        try {
+          persist();
+        } catch {
+          // Delivery marker failed to persist — fall through; the next persist attempt
+          // (post-history update) or the task:failed event will still inform observers.
+        }
+
         const completedAt = Date.now();
-        tasks.set(id, { ...task, status: "completed" });
         history.push({
           taskId: id,
           agentId,
@@ -682,8 +1084,29 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           durationMs: completedAt - now,
           retryAttempt: 0,
         });
-        emit({ kind: "task:completed", taskId: id, result: undefined });
-        persist();
+        tasks.delete(id);
+        taskWorkflowIds.delete(id);
+        deliveredDispatchIds.delete(id); // history now records completion; marker no longer needed
+        // Do NOT rethrow on persist failure here: the signal was already accepted by Temporal.
+        // Rethrowing would cause the caller to retry with a new task ID, producing a duplicate
+        // signal which is strictly worse than a missing audit record. durabilityFailed is still
+        // set by persist() so the next mutation will fail-closed.
+        // Instead, emit task:failed via watch() so observers can alert without retrying.
+        try {
+          persist();
+        } catch (persistErr: unknown) {
+          const durabilityMsg =
+            `[temporal-scheduler] post-dispatch persist failed — signal for task "${id}" was ` +
+            "accepted by Temporal but local history is not durable. Scheduler is now fail-closed.";
+          console.error(durabilityMsg, persistErr);
+          const koiErr: KoiError = {
+            code: "INTERNAL",
+            message: durabilityMsg,
+            retryable: false,
+            context: { taskId: id, agentId: String(agentId), signalDelivered: true },
+          };
+          emit({ kind: "task:failed", taskId: id, error: koiErr });
+        }
       } else {
         // Spawn: track actual workflow completion via getResult.
         // Gate on cancelledTaskIds so a raced cancel wins and prevents double terminal events.
@@ -774,6 +1197,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
               { cause: persistErr },
             );
           }
+          // Rollback-cancel succeeded — remove the phantom task so query()/stats()
+          // do not show a running task for a submission that was already rolled back.
+          tasks.delete(id);
+          taskWorkflowIds.delete(id);
           throw persistErr;
         }
       }
@@ -837,21 +1264,24 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
 
       const id = toScheduleId(`sched:${Date.now()}:${crypto.randomUUID().slice(0, 8)}`);
 
+      // Strip non-serializable EngineInput fields and deep-validate JSON safety.
+      // Done before building the schedule object so the snapshot is validated.
+      const scheduledPayload = mapEngineInputToScheduledPayload(input);
+      assertJsonSerializable(scheduledPayload);
+      // Deep-clone via JSON round-trip to prevent caller mutations from poisoning future
+      // persist() calls. Already validated as JSON-serializable above.
+      const snapshotPayload = JSON.parse(JSON.stringify(scheduledPayload)) as EngineInput;
+
       const schedule: CronSchedule = {
         id,
         expression,
         agentId,
-        input,
+        input: snapshotPayload,
         mode,
         taskOptions: options,
         timezone: options?.timezone,
         paused: false,
       };
-
-      // Strip non-serializable EngineInput fields (callHandlers, AbortSignal) then
-      // deep-validate JSON safety before passing to Temporal's durable schedule store.
-      const scheduledPayload = mapEngineInputToScheduledPayload(input);
-      assertJsonSerializable(scheduledPayload);
 
       // spawn: startWorkflow on each cron firing. ScheduledSpawnArgs carries the
       //   serialized payload; the workflow generates fresh IncomingMessage IDs and
@@ -888,23 +1318,64 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         };
       }
 
-      // Only insert locally after the remote create succeeds — no phantom schedule on failure.
-      await config.client.schedule.create(id, {
-        spec: {
-          cronExpressions: [expression],
-          ...(options?.timezone !== undefined ? { timezone: options.timezone } : {}),
-        },
-        action: scheduleAction,
-        // SKIP prevents concurrent firings from piling up if a run overruns its interval.
-        // Safe for both spawn (each firing = distinct workflow) and dispatch (signal is idempotent).
-        policies: { overlapPolicy: "SKIP" },
-      });
+      // Two-phase pre-commit: durably record the schedule ID as "pending" before calling
+      // schedule.create() so a crash between create() and the post-create persist() is
+      // recoverable. On restart, pendingScheduleIds cleanup deletes the orphaned schedule
+      // (a no-op if create() never completed), preventing duplicate recurring executions.
+      pendingScheduleIds.add(id);
+      try {
+        persist();
+      } catch (preCommitErr: unknown) {
+        pendingScheduleIds.delete(id);
+        throw preCommitErr; // durabilityFailed already set
+      }
+
+      try {
+        await config.client.schedule.create(id, {
+          spec: {
+            cronExpressions: [expression],
+            ...(options?.timezone !== undefined ? { timezone: options.timezone } : {}),
+          },
+          action: scheduleAction,
+          // SKIP prevents concurrent firings from piling up if a run overruns its interval.
+          // Safe for both spawn (each firing = distinct workflow) and dispatch (signal is idempotent).
+          policies: { overlapPolicy: "SKIP" },
+        });
+      } catch (createErr: unknown) {
+        // create() may have succeeded even if the client saw an error (ACK lost on timeout/reset).
+        // Attempt a best-effort compensating delete. Only clear pendingScheduleIds if the delete
+        // succeeds — if it fails (transient or schedule genuinely absent), retain the marker so
+        // startup reconciliation can retry the delete rather than permanently forgetting a live cron.
+        let deleteConfirmed = false;
+        try {
+          await config.client.schedule.delete(id);
+          deleteConfirmed = true;
+        } catch {
+          // Inconclusive: may be "not found" (create never completed) or transient failure.
+          // Keep pendingScheduleIds so the next restart retries.
+        }
+        if (deleteConfirmed) {
+          pendingScheduleIds.delete(id);
+          try {
+            persist(); // clear the pre-commit intent from disk
+          } catch {
+            // durabilityFailed already set; swallow so the original createErr surfaces
+          }
+        }
+        // If deleteConfirmed is false: pendingScheduleIds still has id; next restart will retry.
+        throw createErr;
+      }
 
       schedules.set(id, schedule);
-      emit({ kind: "schedule:created", schedule });
+      // Remove from pendingScheduleIds: the schedule is now durably tracked in schedules.
+      // If persist() below fails, we restore it so the rollback path and startup cleanup
+      // can still remove the orphaned Temporal schedule.
+      pendingScheduleIds.delete(id);
       try {
         persist();
       } catch (persistErr: unknown) {
+        // Restore so startup cleanup can delete the orphan if the process restarts.
+        pendingScheduleIds.add(id);
         // Compensate: delete the remote schedule so a caller retry does not create a second
         // live schedule with a different id. The schedule id is random so retries are not
         // idempotent without this rollback.
@@ -928,6 +1399,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         }
         throw persistErr;
       }
+      // Emit only after persistence is durable — rolled-back schedules never fire this event.
+      emit({ kind: "schedule:created", schedule: Object.freeze({ ...schedule }) });
       return id;
     },
 
@@ -958,8 +1431,29 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         return false;
       }
       schedules.set(id, { ...schedule, paused: true });
+      try {
+        persist();
+      } catch (persistErr: unknown) {
+        let compensated = false;
+        try {
+          await config.client.schedule.unpause(id);
+          compensated = true;
+        } catch {
+          // compensation failed — remote and on-disk states are now diverged
+        }
+        schedules.set(id, schedule);
+        if (!compensated) {
+          throw new Error(
+            `[temporal-scheduler] persist failed AND rollback unpause failed for schedule "${id}" — ` +
+              "actual remote pause state is unknown. Operator reconciliation required. " +
+              `Persist cause: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+            { cause: persistErr },
+          );
+        }
+        throw persistErr;
+      }
+      // Emit only after persistence is durable so observers see consistent state.
       emit({ kind: "schedule:paused", scheduleId: id });
-      persist();
       return true;
     },
 
@@ -973,8 +1467,29 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         return false;
       }
       schedules.set(id, { ...schedule, paused: false });
+      try {
+        persist();
+      } catch (persistErr: unknown) {
+        let compensated = false;
+        try {
+          await config.client.schedule.pause(id);
+          compensated = true;
+        } catch {
+          // compensation failed — remote and on-disk states are now diverged
+        }
+        schedules.set(id, schedule);
+        if (!compensated) {
+          throw new Error(
+            `[temporal-scheduler] persist failed AND rollback pause failed for schedule "${id}" — ` +
+              "actual remote resume state is unknown. Operator reconciliation required. " +
+              `Persist cause: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+            { cause: persistErr },
+          );
+        }
+        throw persistErr;
+      }
+      // Emit only after persistence is durable so observers see consistent state.
       emit({ kind: "schedule:resumed", scheduleId: id });
-      persist();
       return true;
     },
 
@@ -992,7 +1507,10 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (filter.limit !== undefined) {
         result = result.slice(0, filter.limit);
       }
-      return result;
+      // Return frozen copies so callers cannot mutate internal scheduler state.
+      // Without this, external code could change task.status in place and corrupt a
+      // later persist() or stats() computation.
+      return result.map((t) => Object.freeze({ ...t }));
     },
 
     stats: computeStats,
@@ -1011,7 +1529,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       if (filter.limit !== undefined) {
         result = result.slice(0, filter.limit);
       }
-      return result;
+      return result.map((r) => Object.freeze({ ...r }));
     },
 
     watch(listener: (event: SchedulerEvent) => void): () => void {
@@ -1024,10 +1542,20 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     async [Symbol.asyncDispose](): Promise<void> {
       disposed = true;
       eventListeners.clear();
+      // Await startup cleanup before releasing the lock. The cleanup task may still be running
+      // Temporal schedule deletes; we must let it finish (and its persist() will be a no-op
+      // because disposed is now true) before a new owner can safely acquire the dbPath lock.
+      if (startupCleanupPromise !== undefined) {
+        await startupCleanupPromise.catch(() => {});
+      }
       tasks.clear();
       taskWorkflowIds.clear();
       cancelledTaskIds.clear();
       schedules.clear();
+      deliveredDispatchIds.clear();
+      if (config.dbPath !== undefined) {
+        releaseDbLock(config.dbPath);
+      }
     },
   };
 }

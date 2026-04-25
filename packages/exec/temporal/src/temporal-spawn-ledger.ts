@@ -17,6 +17,20 @@ export function createTemporalSpawnLedger(
   config: TemporalSpawnLedgerConfig = DEFAULT_SPAWN_LEDGER_CONFIG,
   initialActiveCount = 0,
 ): SpawnLedger & { readonly snapshot: () => SpawnLedgerSnapshot } {
+  if (!Number.isInteger(config.maxCapacity) || config.maxCapacity < 0) {
+    throw new Error(
+      `createTemporalSpawnLedger: maxCapacity must be a non-negative integer, got ${config.maxCapacity}`,
+    );
+  }
+  if (
+    !Number.isInteger(initialActiveCount) ||
+    initialActiveCount < 0 ||
+    initialActiveCount > config.maxCapacity
+  ) {
+    throw new Error(
+      `createTemporalSpawnLedger: initialActiveCount must be an integer in [0, maxCapacity=${config.maxCapacity}], got ${initialActiveCount}`,
+    );
+  }
   let active = initialActiveCount;
 
   return {

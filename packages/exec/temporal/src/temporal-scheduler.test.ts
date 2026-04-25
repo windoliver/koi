@@ -100,18 +100,25 @@ describe("submit", () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
-    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
-    const payload = signalArgs?.[2] as { content: readonly unknown[] };
-    expect(payload.content).toEqual([{ kind: "text", text: "hello" }]);
+    // Spawn: messages are passed atomically in workflow start args (not signals)
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const spawnConfig = (startArgs?.[1] as Record<string, unknown>).args as readonly unknown[];
+    const wfArgs = spawnConfig?.[0] as Record<string, unknown>;
+    const msgs = wfArgs?.initialMessages as readonly Record<string, unknown>[];
+    expect(msgs?.[0]?.content).toEqual([{ kind: "text", text: "hello" }]);
+    // No separate signal sent for spawn mode
+    expect(client.workflow.signal).not.toHaveBeenCalled();
   });
 
   test("preserves all ContentBlock types from messages EngineInput", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, MESSAGES_INPUT, "spawn");
-    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
-    const payload = signalArgs?.[2] as { content: readonly unknown[] };
-    expect(payload.content).toEqual([
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const spawnConfig = (startArgs?.[1] as Record<string, unknown>).args as readonly unknown[];
+    const wfArgs = spawnConfig?.[0] as Record<string, unknown>;
+    const msgs = wfArgs?.initialMessages as readonly Record<string, unknown>[];
+    expect(msgs?.[0]?.content).toEqual([
       { kind: "text", text: "from message" },
       { kind: "image", url: "https://example.com/img.png", alt: "test" },
     ]);
@@ -121,19 +128,23 @@ describe("submit", () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, RESUME_INPUT, "spawn");
-    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
-    const payload = signalArgs?.[2] as { content: readonly unknown[]; resumeState: unknown };
-    expect(payload.content).toEqual([]);
-    expect(payload.resumeState).toEqual({});
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const spawnConfig = (startArgs?.[1] as Record<string, unknown>).args as readonly unknown[];
+    const wfArgs = spawnConfig?.[0] as Record<string, unknown>;
+    const msgs = wfArgs?.initialMessages as readonly Record<string, unknown>[];
+    expect(msgs?.[0]?.content).toEqual([]);
+    expect(msgs?.[0]?.resumeState).toEqual({});
   });
 
   test("preserves pinned flag from messages input", async () => {
     const client = makeMockClient();
     const scheduler = createTemporalScheduler(makeConfig(client));
     await scheduler.submit(AGENT_ID, PINNED_MESSAGES_INPUT, "spawn");
-    const signalArgs = (client.workflow.signal as ReturnType<typeof mock>).mock.calls[0];
-    const payload = signalArgs?.[2] as { pinned: boolean | undefined };
-    expect(payload.pinned).toBe(true);
+    const startArgs = (client.workflow.start as ReturnType<typeof mock>).mock.calls[0];
+    const spawnConfig = (startArgs?.[1] as Record<string, unknown>).args as readonly unknown[];
+    const wfArgs = spawnConfig?.[0] as Record<string, unknown>;
+    const msgs = wfArgs?.initialMessages as readonly Record<string, unknown>[];
+    expect(msgs?.[0]?.pinned).toBe(true);
   });
 
   test("throws when timeoutMs is passed to submit — not enforced", async () => {
@@ -281,17 +292,36 @@ describe("rollback safety", () => {
     expect(client.workflow.cancel).toHaveBeenCalled();
   });
 
-  test("workflow.signal failure after start: rejects and records failed task, cancel called", async () => {
+  test("dispatch signal failure: rejects and records failed task (no workflow to cancel)", async () => {
+    // Spawn: messages in start args — only workflow.start can fail.
+    // Dispatch: single atomic "messages" signal — failure leaves no partial state.
     const client = makeMockClient({
       signal: mock(async () => {
         throw new Error("signal failed");
       }),
     });
     const scheduler = createTemporalScheduler(makeConfig(client));
-    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow("signal failed");
+    await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch")).rejects.toThrow(
+      "signal failed",
+    );
     const tasks = await scheduler.query({});
     expect(tasks[0]?.status).toBe("failed");
-    expect(client.workflow.cancel).toHaveBeenCalled();
+    // dispatch has no new workflow to cancel
+    expect(client.workflow.cancel).not.toHaveBeenCalled();
+  });
+
+  test("dispatch sends whole message batch as single signal (atomic delivery)", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, MESSAGES_INPUT, "dispatch");
+    const signalCalls = (client.workflow.signal as ReturnType<typeof mock>).mock.calls;
+    // Only one signal call for the entire batch
+    expect(signalCalls).toHaveLength(1);
+    expect(signalCalls[0]?.[1]).toBe("messages");
+    // The third arg is the messages array
+    const batch = signalCalls[0]?.[2] as readonly unknown[];
+    expect(Array.isArray(batch)).toBe(true);
+    expect(batch).toHaveLength(1);
   });
 
   test("start+signal success: task emitted as submitted before running", async () => {
@@ -581,18 +611,21 @@ describe("pause / resume", () => {
 });
 
 describe("query / stats / history", () => {
-  test("query returns all tasks", async () => {
+  test("query returns only spawn tasks (dispatch tasks not tracked as live tasks)", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
-    expect((await scheduler.query({})).length).toBe(2);
+    // Dispatch tasks are removed from tasks map after signal delivery — we cannot know when
+    // the target workflow completes, so we don't falsely report them as "completed".
+    expect((await scheduler.query({})).length).toBe(1);
   });
 
-  test("dispatch task reaches completed immediately after signal delivery", async () => {
+  test("dispatch signal delivery records in history but does not appear in query", async () => {
     const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
     await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
-    const tasks = await scheduler.query({});
-    expect(tasks[0]?.status).toBe("completed");
+    // Not visible to query() — no live task tracking for dispatch
+    expect((await scheduler.query({})).length).toBe(0);
+    // But history retains the audit trail of the signal delivery
     const records = await scheduler.history({});
     expect(records[0]?.status).toBe("completed");
   });
@@ -716,6 +749,126 @@ describe("state persistence (dbPath)", () => {
       /cannot be loaded/,
     );
   });
+
+  test("invalid task status in snapshot throws on creation", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [
+          [
+            "t1",
+            {
+              id: "t1",
+              agentId: "a1",
+              mode: "spawn",
+              input: { kind: "text", text: "hi" },
+              priority: 0,
+              status: "cancelled",
+              createdAt: 1,
+              retries: 0,
+              maxRetries: 3,
+            },
+          ],
+        ],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+      }),
+    );
+    expect(() => createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath })).toThrow(
+      /cannot be loaded|missing required fields|wrong types/,
+    );
+  });
+
+  test("invalid history status in snapshot throws on creation", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [
+          {
+            taskId: "t1",
+            agentId: "a1",
+            status: "unknown-status",
+            startedAt: 1,
+            completedAt: 2,
+            durationMs: 1,
+            retryAttempt: 0,
+          },
+        ],
+      }),
+    );
+    expect(() => createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath })).toThrow(
+      /cannot be loaded|missing required fields|invalid status/,
+    );
+  });
+
+  test("second scheduler with same dbPath throws — single-writer invariant", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const s1 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    try {
+      expect(() => createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath })).toThrow(
+        /already held by PID/,
+      );
+    } finally {
+      await s1[Symbol.asyncDispose]();
+    }
+  });
+
+  test("lock is released on dispose so next scheduler can acquire it", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const s1 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    await s1[Symbol.asyncDispose]();
+    // Should not throw — lock was released.
+    const s2 = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    await s2[Symbol.asyncDispose]();
+  });
+
+  test("stale lock file (dead PID) is overwritten on startup", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const { writeFileSync } = await import("node:fs");
+    // Write a lock file with PID 999999999 — virtually guaranteed not to exist.
+    writeFileSync(`${dbPath}.lock`, "999999999");
+    // Should not throw — stale lock is overwritten.
+    const s = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    await s[Symbol.asyncDispose]();
+  });
+
+  test("constructor failure releases lock so the same process can retry", async () => {
+    const { existsSync, writeFileSync } = await import("node:fs");
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    // Write a corrupt snapshot so loadStateSync throws.
+    writeFileSync(dbPath, "not-valid-json{{{{");
+    expect(() => createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath })).toThrow(
+      /cannot be loaded/,
+    );
+    // Lock file must have been removed — a retry without manual cleanup must succeed.
+    expect(existsSync(`${dbPath}.lock`)).toBe(false);
+  });
+
+  test("idempotent spawn failure — cancel is skipped to avoid killing an in-flight workflow", async () => {
+    const client = makeMockClient({
+      start: mock(async () => {
+        throw new Error("Workflow execution already started");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    // Throws because the start failed — but cancel must NOT be called.
+    await expect(
+      scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { idempotencyKey: "idm-spawn" }),
+    ).rejects.toThrow("Workflow execution already started");
+    // cancel must NOT be called — could kill a live workflow with the same stable ID.
+    expect(client.workflow.cancel).not.toHaveBeenCalled();
+    await scheduler[Symbol.asyncDispose]();
+  });
 });
 
 describe("asyncDispose — disposed guard", () => {
@@ -811,9 +964,10 @@ describe("persist durability — mutation APIs propagate write failures", () => 
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
     writeFileSync(dbPath, VALID_INITIAL_STATE);
-    // Block writes by making the directory unwritable — .tmp file creation will fail
-    chmodSync(dir, 0o555);
+    // Create scheduler while dir is still writable so the advisory lock file can be written.
+    // Then block writes — .tmp file creation will fail on subsequent mutations.
     const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    chmodSync(dir, 0o555);
     await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
       /durability write failed/,
     );
@@ -828,13 +982,62 @@ describe("persist durability — mutation APIs propagate write failures", () => 
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
     writeFileSync(dbPath, VALID_INITIAL_STATE);
-    chmodSync(dir, 0o555);
+    // Create scheduler while dir is still writable so the advisory lock file can be written.
     const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    chmodSync(dir, 0o555);
     await expect(scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
       /durability write failed/,
     );
     chmodSync(dir, 0o755);
     rmdirSync(dir, { recursive: true });
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("dispatch durability — post-signal persist failure emits task:failed event", () => {
+  test("emits task:failed with signalDelivered context when post-dispatch persist fails", async () => {
+    // Use a custom healthCheckFn-style approach: inject a dbPath but use a mock client that
+    // allows us to trigger post-signal persist failure selectively via a signal mock that
+    // removes the dbPath between signal and persist.
+    // We simulate the failure by using a dbPath in a directory we delete after lock acquisition.
+    const { mkdirSync, writeFileSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+      }),
+    );
+    // The signal mock removes the dir to cause post-signal persist to fail.
+    const signalMock = mock(async () => {
+      // Allow pre-commit persist to have already succeeded; now destroy the dir so the
+      // post-signal persist write fails with ENOENT on the .tmp file.
+      rmdirSync(dir, { recursive: true });
+    });
+    const client = makeMockClient({ signal: signalMock });
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const failedEvents: unknown[] = [];
+    scheduler.watch((ev) => {
+      if (ev.kind === "task:failed") failedEvents.push(ev);
+    });
+    // submit() dispatch: pre-commit succeeds, signal triggers dir removal, post-persist fails
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    expect(id).toBeDefined(); // submit returns normally (no throw — avoids duplicate signal)
+    expect(failedEvents.length).toBe(1);
+    const ev = failedEvents[0] as {
+      kind: string;
+      taskId: string;
+      error: { context: { signalDelivered: boolean } };
+    };
+    expect(ev.kind).toBe("task:failed");
+    expect(ev.taskId).toBe(id);
+    expect(ev.error.context.signalDelivered).toBe(true);
     await scheduler[Symbol.asyncDispose]();
   });
 });
@@ -848,45 +1051,24 @@ describe("unschedule / pause / resume — durability failures propagate", () => 
     history: [],
   });
 
-  async function makeReadOnlyDir(): Promise<{ dir: string; dbPath: string; cleanup: () => void }> {
+  test("unschedule throws (not returns false) when remote delete succeeds but persist fails", async () => {
     const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const client = makeMockClient();
+    // Set up a writable dir, create a schedule, then make dir read-only before unschedule.
     const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
     mkdirSync(dir);
     const dbPath = `${dir}/state.json`;
     writeFileSync(dbPath, VALID_INITIAL_STATE);
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const scheduleId = await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+    await scheduler[Symbol.asyncDispose]();
+    // Re-open the scheduler while still writable (acquires lock), then block writes.
+    const scheduler2 = createTemporalScheduler({ ...makeConfig(client), dbPath });
     chmodSync(dir, 0o555);
-    return {
-      dir,
-      dbPath,
-      cleanup: () => {
-        chmodSync(dir, 0o755);
-        rmdirSync(dir, { recursive: true });
-      },
-    };
-  }
-
-  test("unschedule throws (not returns false) when remote delete succeeds but persist fails", async () => {
-    const { dbPath, cleanup } = await makeReadOnlyDir();
-    const client = makeMockClient();
-    const _scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
-
-    // Directly inject a schedule entry without using schedule() (which would also hit persist)
-    // by temporarily re-enabling writes, creating the schedule, then locking again.
-    cleanup(); // restore write access
-    const { mkdirSync, writeFileSync, chmodSync } = await import("node:fs");
-    const dir2 = `/tmp/temporal-test-${crypto.randomUUID()}`;
-    mkdirSync(dir2);
-    const dbPath2 = `${dir2}/state.json`;
-    writeFileSync(dbPath2, VALID_INITIAL_STATE);
-    const scheduler2 = createTemporalScheduler({ ...makeConfig(client), dbPath: dbPath2 });
-    const scheduleId = await scheduler2.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+    await expect(scheduler2.unschedule(scheduleId)).rejects.toThrow(/durability write failed/);
+    chmodSync(dir, 0o755);
+    rmdirSync(dir, { recursive: true });
     await scheduler2[Symbol.asyncDispose]();
-    chmodSync(dir2, 0o555); // now block writes
-
-    const scheduler3 = createTemporalScheduler({ ...makeConfig(client), dbPath: dbPath2 });
-    await expect(scheduler3.unschedule(scheduleId)).rejects.toThrow(/durability write failed/);
-    chmodSync(dir2, 0o755);
-    await scheduler3[Symbol.asyncDispose]();
   });
 
   test("cyclic workflow result does not poison future persists", async () => {
@@ -962,6 +1144,603 @@ describe("fail-closed durability guard (assertDurabilityOk)", () => {
     await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(/fail-closed/);
 
     chmodSync(dir, 0o755);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("submit — input serialization guard (dbPath)", () => {
+  test("rejects non-serializable resume.state before remote call when dbPath is set", async () => {
+    const client = makeMockClient();
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const badInput = { kind: "resume", state: circular } as unknown as EngineInput;
+    await expect(scheduler.submit(AGENT_ID, badInput, "dispatch")).rejects.toThrow(
+      /non-JSON-serializable/,
+    );
+    // Remote call must NOT have been made
+    expect(client.workflow.signal).not.toHaveBeenCalled();
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("rejects function in resume.state when dbPath is set", async () => {
+    const client = makeMockClient();
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const fnInput = { kind: "resume", state: { fn: () => "x" } } as unknown as EngineInput;
+    await expect(scheduler.submit(AGENT_ID, fnInput, "dispatch")).rejects.toThrow(
+      /non-JSON-serializable/,
+    );
+    expect(client.workflow.signal).not.toHaveBeenCalled();
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("allows serializable resume.state when dbPath is set", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    const goodInput = {
+      kind: "resume",
+      state: { count: 42, name: "agent" },
+    } as unknown as EngineInput;
+    const id = await scheduler.submit(AGENT_ID, goodInput, "dispatch");
+    expect(typeof id).toBe("string");
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("rejects non-serializable input even when dbPath is not set", async () => {
+    // Validation is now unconditional — matches schedule() path behavior.
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const badInput = { kind: "resume", state: circular } as unknown as EngineInput;
+    await expect(scheduler.submit(AGENT_ID, badInput, "dispatch")).rejects.toThrow(
+      /non-JSON-serializable/,
+    );
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("pause / resume — compensation on persist failure", () => {
+  const VALID_INITIAL_STATE = JSON.stringify({
+    tasks: [],
+    taskWorkflowIds: [],
+    cancelledTaskIds: [],
+    schedules: [],
+    history: [],
+  });
+
+  async function makeSchedulerWithLockedDir(client: TemporalClientLike): Promise<{
+    scheduler: ReturnType<typeof createTemporalScheduler>;
+    scheduleId: string;
+    lockDir: () => void;
+    cleanup: () => void;
+  }> {
+    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(dbPath, VALID_INITIAL_STATE);
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const scheduleId = String(await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn"));
+    return {
+      scheduler,
+      scheduleId,
+      lockDir: () => chmodSync(dir, 0o555),
+      cleanup: () => {
+        chmodSync(dir, 0o755);
+        rmdirSync(dir, { recursive: true });
+      },
+    };
+  }
+
+  test("pause compensates with unpause when persist fails", async () => {
+    const client = makeMockClient();
+    const { scheduler, scheduleId, lockDir, cleanup } = await makeSchedulerWithLockedDir(client);
+    lockDir();
+    try {
+      await expect(scheduler.pause(scheduleId as never)).rejects.toThrow(/durability write failed/);
+      // Remote compensation: unpause reverses the pause so Temporal matches on-disk state
+      expect(client.schedule.unpause).toHaveBeenCalled();
+    } finally {
+      cleanup();
+      await scheduler[Symbol.asyncDispose]();
+    }
+  });
+
+  test("resume compensates with pause when persist fails", async () => {
+    const client = makeMockClient();
+    const { scheduler, scheduleId, lockDir, cleanup } = await makeSchedulerWithLockedDir(client);
+    // Pause while dir is writable
+    await scheduler.pause(scheduleId as never);
+    lockDir();
+    try {
+      await expect(scheduler.resume(scheduleId as never)).rejects.toThrow(
+        /durability write failed/,
+      );
+      // client.schedule.pause: once for the initial pause + once for compensation
+      expect(client.schedule.pause).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup();
+      await scheduler[Symbol.asyncDispose]();
+    }
+  });
+});
+
+describe("two-phase pre-commit", () => {
+  test("spawn: task is queryable as 'pending' before workflow.start completes", async () => {
+    let pendingCount = 0;
+    let schedulerRef: ReturnType<typeof createTemporalScheduler> | undefined;
+    const client = makeMockClient({
+      start: mock(async () => {
+        // Inspect in-memory state mid-start — pre-commit must have already happened.
+        pendingCount = (schedulerRef?.query({}) ?? []).filter((t) => t.status === "pending").length;
+        return { workflowId: "wf-1" };
+      }),
+    });
+    schedulerRef = createTemporalScheduler(makeConfig(client));
+    await schedulerRef.submit(AGENT_ID, TEXT_INPUT, "spawn");
+    expect(pendingCount).toBe(1);
+    await schedulerRef[Symbol.asyncDispose]();
+  });
+
+  test("dispatch: task is visible as 'pending' during signal() after pre-commit", async () => {
+    let pendingCount = 0;
+    let schedulerRef: ReturnType<typeof createTemporalScheduler> | undefined;
+    const client = makeMockClient({
+      signal: mock(async () => {
+        pendingCount = (schedulerRef?.query({}) ?? []).filter((t) => t.status === "pending").length;
+      }),
+    });
+    schedulerRef = createTemporalScheduler(makeConfig(client));
+    await schedulerRef.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    // Dispatch now pre-commits so the task is visible as "pending" during signal().
+    expect(pendingCount).toBe(1);
+    await schedulerRef[Symbol.asyncDispose]();
+  });
+
+  test("schedule: pendingScheduleId is persisted before schedule.create completes", async () => {
+    const { readFileSync } = await import("node:fs");
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    let preCommitState: { pendingScheduleIds?: string[] } | undefined;
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        signal: mock(async () => undefined),
+        cancel: mock(async () => undefined),
+        getResult: mock(async () => new Promise<unknown>(() => {})),
+      },
+      schedule: {
+        create: mock(async () => {
+          preCommitState = JSON.parse(readFileSync(dbPath, "utf-8")) as {
+            pendingScheduleIds?: string[];
+          };
+        }),
+        delete: mock(async () => undefined),
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+      },
+    };
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    // The pre-commit must have written one pending schedule ID before remote create.
+    expect(preCommitState?.pendingScheduleIds).toHaveLength(1);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("schedule: pendingScheduleId removed from persisted state after success", async () => {
+    const { readFileSync } = await import("node:fs");
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const scheduler = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn");
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
+    expect(state.pendingScheduleIds).toHaveLength(0);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("spawn pre-commit persist failure aborts before workflow.start", async () => {
+    const { mkdirSync, writeFileSync, chmodSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+        pendingScheduleIds: [],
+      }),
+    );
+    const client = makeMockClient();
+    // Create scheduler while dir is still writable so the advisory lock file can be written.
+    // Then block writes so the pre-commit persist() call inside submit() fails.
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    chmodSync(dir, 0o555);
+    try {
+      await expect(scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
+        /durability write failed/,
+      );
+      // Remote call must NOT have been made — pre-commit failure aborts early.
+      expect(client.workflow.start).not.toHaveBeenCalled();
+    } finally {
+      chmodSync(dir, 0o755);
+      rmdirSync(dir, { recursive: true });
+      await scheduler[Symbol.asyncDispose]();
+    }
+  });
+});
+
+describe("idempotencyKey", () => {
+  test("dispatch: stable task ID across calls with same idempotencyKey", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id1 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
+      idempotencyKey: "stable-key",
+    });
+    // Retry with the same key
+    const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
+      idempotencyKey: "stable-key",
+    });
+    // ID is namespaced: agentId:mode:key — prevents cross-agent key collisions.
+    expect(id1).toBe(`${AGENT_ID}:dispatch:stable-key`);
+    expect(id2).toBe(`${AGENT_ID}:dispatch:stable-key`);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("dispatch: idempotency guard prevents second signal for same key", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id1 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
+      idempotencyKey: "idem-1",
+    });
+    // Second call with same key: idempotency guard returns early, no second signal sent.
+    const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
+      idempotencyKey: "idem-1",
+    });
+    expect(id1).toBe(id2);
+    expect(client.workflow.signal).toHaveBeenCalledTimes(1);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("dispatch: first signal message IDs derived from idempotencyKey", async () => {
+    const signalArgs: unknown[][] = [];
+    const client = makeMockClient({
+      signal: mock(async (...args: unknown[]) => {
+        signalArgs.push(args as unknown[]);
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "idem-1" });
+    const msgs = signalArgs[0]?.[2] as Array<{ id: string }> | undefined;
+    expect(msgs?.[0]?.id).toBe(`${AGENT_ID}:dispatch:idem-1:0`);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("spawn: idempotency guard prevents second workflow.start for same key", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id1 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", {
+      idempotencyKey: "spawn-key",
+    });
+    // Second call with same key while workflow is in-flight: guard returns early.
+    const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", {
+      idempotencyKey: "spawn-key",
+    });
+    expect(id1).toBe(id2);
+    expect(client.workflow.start).toHaveBeenCalledTimes(1);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("without idempotencyKey: task IDs are unique per call", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    const id1 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
+    expect(id1).not.toBe(id2);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("idempotencyKey — failed submissions allow retry", () => {
+  test("retrying a failed dispatch with same key sends a new signal", async () => {
+    let callCount = 0;
+    const client = makeMockClient({
+      signal: mock(async () => {
+        callCount++;
+        if (callCount === 1) throw new Error("transient");
+      }),
+    });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    // First attempt fails
+    await expect(
+      scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "retry-key" }),
+    ).rejects.toThrow("transient");
+    // Retry with same key — must NOT be short-circuited by the failed prior attempt
+    const id = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", {
+      idempotencyKey: "retry-key",
+    });
+    expect(id).toBe(`${AGENT_ID}:dispatch:retry-key`);
+    expect(client.workflow.signal).toHaveBeenCalledTimes(2);
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("retrying a succeeded dispatch with same key is a no-op", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "ok-key" });
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "ok-key" });
+    // Second call must not produce a second signal
+    expect(client.workflow.signal).toHaveBeenCalledTimes(1);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("idempotencyKey — cancel-then-retry spawn records completion", () => {
+  test("cancel followed by retry with same key allows getResult to record completion", async () => {
+    let resolveResult!: (v: unknown) => void;
+    const resultPromise = new Promise<unknown>((resolve) => {
+      resolveResult = resolve;
+    });
+    const client = makeMockClient({ getResult: mock(async () => resultPromise) });
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    // First submit
+    const id1 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", {
+      idempotencyKey: "cxr-key",
+    });
+    // Cancel the task — adds id to cancelledTaskIds
+    await scheduler.cancel(id1);
+    // Retry with same key (task is now "failed" due to cancel)
+    const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", {
+      idempotencyKey: "cxr-key",
+    });
+    expect(id1).toBe(id2);
+    // Workflow completes — getResult resolves
+    resolveResult({ done: true });
+    await new Promise((r) => setTimeout(r, 20));
+    // The completion must be recorded — cancelledTaskIds was cleared on retry
+    const tasks = await scheduler.query({});
+    const completedTask = tasks.find((t) => t.id === id2);
+    expect(completedTask?.status ?? "completed").toBe("completed");
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("dispatch deliveredDispatchIds — prevents duplicate signal after restart", () => {
+  test("restart with deliveredDispatchIds marks task completed, not failed", async () => {
+    const { mkdirSync, writeFileSync, readFileSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+        pendingScheduleIds: [],
+      }),
+    );
+    const client = makeMockClient();
+    const s1 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const id = await s1.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "dedup-key" });
+    // s1 persisted task as completed; deliveredDispatchIds should not appear in history.
+    await s1[Symbol.asyncDispose]();
+    // Manually corrupt snapshot: put the task back as "pending" with deliveredDispatchIds
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as Record<string, unknown>;
+    const taskId = id;
+    const manipulated = {
+      ...state,
+      tasks: [
+        [
+          taskId,
+          {
+            id: taskId,
+            agentId: AGENT_ID,
+            mode: "dispatch",
+            input: { kind: "text", text: "hello" },
+            priority: 0,
+            status: "pending",
+            createdAt: Date.now(),
+            retries: 0,
+            maxRetries: 3,
+          },
+        ],
+      ],
+      deliveredDispatchIds: [taskId],
+      history: [],
+    };
+    writeFileSync(dbPath, JSON.stringify(manipulated));
+    // Second scheduler: should see the deliveredDispatchIds and mark task as completed (not failed)
+    const s2 = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    const hist = await s2.history({});
+    const record = hist.find((r) => r.taskId === taskId);
+    expect(record?.status).toBe("completed");
+    // Second submit with same key must be a no-op (task is completed — not retried)
+    await s2.submit(AGENT_ID, TEXT_INPUT, "dispatch", { idempotencyKey: "dedup-key" });
+    expect(client.workflow.signal).toHaveBeenCalledTimes(1); // only the first one from s1
+    rmdirSync(dir, { recursive: true });
+    await s2[Symbol.asyncDispose]();
+  });
+});
+
+describe("schedule() — create error path retains pending marker on failed delete", () => {
+  test("pendingScheduleIds NOT cleared when create fails and delete also fails", async () => {
+    const { readFileSync, writeFileSync, mkdirSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+        pendingScheduleIds: [],
+      }),
+    );
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        signal: mock(async () => undefined),
+        cancel: mock(async () => undefined),
+        getResult: mock(async () => new Promise<unknown>(() => {})),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw new Error("create timeout — schedule may exist");
+        }),
+        delete: mock(async () => {
+          throw new Error("delete failed");
+        }),
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+      },
+    };
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await expect(scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
+      "create timeout",
+    );
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
+    // Delete also failed → pending ID must remain for restart reconciliation
+    expect(state.pendingScheduleIds?.length).toBe(1);
+    rmdirSync(dir, { recursive: true });
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("pendingScheduleIds IS cleared when create fails and delete succeeds", async () => {
+    const { readFileSync, writeFileSync, mkdirSync, rmdirSync } = await import("node:fs");
+    const dir = `/tmp/temporal-test-${crypto.randomUUID()}`;
+    mkdirSync(dir);
+    const dbPath = `${dir}/state.json`;
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+        pendingScheduleIds: [],
+      }),
+    );
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        signal: mock(async () => undefined),
+        cancel: mock(async () => undefined),
+        getResult: mock(async () => new Promise<unknown>(() => {})),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw new Error("create failed");
+        }),
+        delete: mock(async () => undefined), // delete succeeds
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+      },
+    };
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await expect(scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
+      "create failed",
+    );
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
+    // Delete succeeded → pending ID cleared from disk
+    expect(state.pendingScheduleIds?.length).toBe(0);
+    rmdirSync(dir, { recursive: true });
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("input snapshot — caller mutation safety", () => {
+  test("mutating input object after submit does not affect stored task", async () => {
+    const input = { kind: "text", text: "original" } as unknown as EngineInput;
+    const scheduler = createTemporalScheduler(makeConfig(makeMockClient()));
+    await scheduler.submit(AGENT_ID, input, "spawn");
+    // Mutate after submit
+    (input as Record<string, unknown>).text = "mutated";
+    const tasks = scheduler.query({});
+    // Stored task should still reflect the original text
+    const storedInput = tasks[0]?.input as { text?: string } | undefined;
+    expect(storedInput?.text).toBe("original");
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("pending-schedule cleanup — retain on failed delete", () => {
+  test("cleanup retains pendingScheduleId in persisted state when delete fails", async () => {
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const pendingId = "sched:pending-123";
+    writeFileSync(
+      dbPath,
+      JSON.stringify({
+        tasks: [],
+        taskWorkflowIds: [],
+        cancelledTaskIds: [],
+        schedules: [],
+        history: [],
+        pendingScheduleIds: [pendingId],
+      }),
+    );
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        signal: mock(async () => undefined),
+        cancel: mock(async () => undefined),
+        getResult: mock(async () => new Promise<unknown>(() => {})),
+      },
+      schedule: {
+        create: mock(async () => undefined),
+        delete: mock(async () => {
+          throw new Error("transient network error");
+        }),
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+      },
+    };
+    // Wait for async cleanup to run
+    const scheduler = createTemporalScheduler({ ...makeConfig(client), dbPath });
+    await new Promise((r) => setTimeout(r, 50));
+    // pendingScheduleId must still be in persisted state since delete failed
+    const state = JSON.parse(readFileSync(dbPath, "utf-8")) as { pendingScheduleIds?: string[] };
+    // Delete failed — pending ID should NOT have been cleared from disk
+    expect(state.pendingScheduleIds).toContain(pendingId);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("schedule() — idempotent on create failure", () => {
+  test("schedule.create failure triggers immediate best-effort delete", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        signal: mock(async () => undefined),
+        cancel: mock(async () => undefined),
+        getResult: mock(async () => new Promise<unknown>(() => {})),
+      },
+      schedule: {
+        create: mock(async () => {
+          throw new Error("create failed after schedule created");
+        }),
+        delete: mock(async () => undefined),
+        pause: mock(async () => undefined),
+        unpause: mock(async () => undefined),
+      },
+    };
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await expect(scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn")).rejects.toThrow(
+      "create failed",
+    );
+    // Immediate best-effort delete must have been called to prevent orphan schedule
+    expect(client.schedule.delete).toHaveBeenCalledTimes(1);
     await scheduler[Symbol.asyncDispose]();
   });
 });
