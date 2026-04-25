@@ -688,8 +688,13 @@ session-first, then snapshot. On `start()` / successful `resume()`:
    Regardless of outcome, the harness snapshot is already `active`, the
    heartbeat is running, and the lease is minted. We MUST always return
    the lease so the caller can eventually relinquish.
-   - **On success:** return `Ok(StartResult { lease, engineInput,
-     sessionId, activationWarning: undefined })`.
+   - **On success:** if the prior `prev.lastSessionId` had
+     `cleanupHealth === "unhealthy"`, best-effort
+     `sessionPersistence.clearCleanupUnhealthy(prev.lastSessionId)`
+     (idempotent; failure is logged but does not fail activation —
+     the breadcrumb is allowed to linger and re-clear on next resume).
+     Return `Ok(StartResult { lease, engineInput, sessionId,
+     activationWarning: undefined })`.
    - **On failure:** return
      `Ok(StartResult { lease, engineInput, sessionId, activationWarning:
      KoiError { code: "ACTIVATION_STATUS_WRITE_FAILED", retryable: true } })`.
@@ -1604,7 +1609,8 @@ Additive changes required (part of the coordinated migration):
 
 **`@koi/core` — `SessionRecord` + `SessionPersistence` (session.ts):**
 8. `SessionRecord.cleanupHealth: "ok" | "unhealthy"` plus
-   `SessionPersistence.markCleanupUnhealthy(sid, reason)` — DURABLE
+   `SessionPersistence.markCleanupUnhealthy(sid, reason)` and
+   `SessionPersistence.clearCleanupUnhealthy(sid)` — DURABLE
    degraded-state marker on the session record (NOT the snapshot
    chain). The harness writes via `markCleanupUnhealthy` whenever
    the in-memory `durability` flips, regardless of snapshot-CAS
@@ -1617,8 +1623,10 @@ Additive changes required (part of the coordinated migration):
    both stores are simultaneously unreachable, no breadcrumb exists
    — but at that point the entire system is degraded and operators
    should already be paging via supervisor/store monitoring.
-   Cleared to `"ok"` on the next successful `resume()` that
-   completes reclamation cleanly. Hosts SHOULD page on
+   Cleared to `"ok"` via `clearCleanupUnhealthy(sid)` on the next
+   successful `start()` / `resume()` activation against the same
+   session id (best-effort; clear failure does not fail activation).
+   Hosts SHOULD page on
    `cleanupHealth === "unhealthy"` regardless of process state.
 
 These land across the migration PRs listed above, not a single "prereq PR".
