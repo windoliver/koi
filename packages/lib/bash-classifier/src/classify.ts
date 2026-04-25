@@ -2,16 +2,23 @@
  * `classifyCommand(cmdLine)` — structural classification entry point.
  *
  * Pipeline:
- *   1. Tokenize on whitespace.
- *   2. Compute canonical permission prefix via `ARITY` table.
- *   3. Test every `DANGEROUS_PATTERNS` entry against the raw string.
+ *   1. Compute canonical permission prefix via `canonicalPrefix`.
+ *   2. Build command contexts across wrapper-revealed executables and nested
+ *      command forms (`shell -c`, `$(...)`, process substitution, backticks).
+ *   3. Test every `DANGEROUS_PATTERNS` entry against those contexts.
  *   4. Aggregate worst severity.
  *
  * Pure function. No I/O. No side effects.
  */
 
+import {
+  type CollectedCommandContexts,
+  type CommandContext,
+  collectCommandContexts,
+  hasShellDashCInvocation,
+} from "./command-contexts.js";
 import { DANGEROUS_PATTERNS } from "./patterns.js";
-import { prefix, shellTokenize } from "./prefix.js";
+import { canonicalPrefix } from "./prefix.js";
 import type { ClassifyResult, DangerousPattern, Severity } from "./types.js";
 
 const SEVERITY_ORDER: Readonly<Record<Severity, number>> = {
@@ -20,6 +27,33 @@ const SEVERITY_ORDER: Readonly<Record<Severity, number>> = {
   high: 3,
   critical: 4,
 };
+
+const CLASSIFIER_BUDGET_EXCEEDED: DangerousPattern = Object.freeze({
+  id: "classifier-budget-exceeded",
+  regex: /\b\B/,
+  category: "code-exec",
+  severity: "high",
+  message: "Shell nesting exceeded classifier budget; manual review required",
+});
+
+const COMPOUND_SHELL_STRUCTURE: DangerousPattern = Object.freeze({
+  id: "compound-shell-structure",
+  regex: /\b\B/,
+  category: "code-exec",
+  severity: "high",
+  message: "Compound shell control flow requires manual review",
+});
+
+const SHELL_FUNCTION_DEFINITION: DangerousPattern = Object.freeze({
+  id: "shell-function-definition",
+  regex: /\b\B/,
+  category: "code-exec",
+  severity: "high",
+  message: "Shell function definitions require manual review",
+});
+
+const COMPOUND_SHELL_OPENERS = new Set(["if", "for", "while", "until", "case", "select"]);
+const COMPOUND_SHELL_FOLLOWERS = new Set(["then", "elif", "else", "fi", "do", "done", "esac"]);
 
 function worstSeverity(patterns: readonly DangerousPattern[]): Severity | null {
   if (patterns.length === 0) return null;
@@ -30,16 +64,6 @@ function worstSeverity(patterns: readonly DangerousPattern[]): Severity | null {
     }
   }
   return worst;
-}
-
-function tokenize(cmdLine: string): readonly string[] {
-  const trimmed = cmdLine.trim();
-  if (trimmed.length === 0) return [];
-  // Shell-aware: preserves `FOO='x y'` as a single token, collapses
-  // adjacent-quote obfuscation (`py''thon`) into `python`. Naive
-  // whitespace split fragments these forms and produces a wrong
-  // `prefix` for the exported ClassifyResult.
-  return shellTokenize(trimmed);
 }
 
 /**
@@ -98,144 +122,154 @@ function firstUnquotedMatch(regex: RegExp, s: string, ranges: readonly [number, 
   return -1;
 }
 
-/** Basename a token (for command-prefix comparison). */
-function basename(t: string): string {
-  if (!t.includes("/")) return t;
-  const slash = t.lastIndexOf("/");
-  return slash >= 0 && slash < t.length - 1 ? t.slice(slash + 1) : t;
+function hasScopedPrefix(context: CommandContext, commandPrefixes: readonly string[]): boolean {
+  for (const name of commandPrefixes) {
+    for (const head of context.heads) {
+      if (head === name || head.startsWith(`${name}.`)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
-/**
- * Split the raw command line on unquoted command-boundary operators
- * (`;`, `&&`, `||`, `|`, `&`, newline). Preserves quoting context so
- * operators inside `"..."` or `'...'` do NOT split.
- */
-function splitSegments(cmdLine: string): readonly string[] {
-  const segments: string[] = [];
-  let buf = "";
-  let quote: "'" | '"' | null = null;
-  const len = cmdLine.length;
-  for (let i = 0; i < len; i++) {
-    const c = cmdLine[i];
-    if (c === undefined) break;
-    if (quote !== null) {
-      if (c === quote) quote = null;
-      else if (c === "\\" && quote === '"' && i + 1 < len) {
-        buf += c + (cmdLine[i + 1] ?? "");
-        i++;
+function stripShellKeywordToken(token: string): string {
+  let current = token;
+  while (current.startsWith("(") || current.startsWith("{")) {
+    current = current.slice(1);
+  }
+  while (current.endsWith(";") || current.endsWith(")") || current.endsWith("}")) {
+    current = current.slice(0, -1);
+  }
+  return current;
+}
+
+function hasCompoundShellStructure(contexts: readonly CommandContext[]): boolean {
+  for (const context of contexts) {
+    let sawOpener = false;
+    let sawFollower = false;
+    let quote: "'" | '"' | null = null;
+    let buf = "";
+    const flush = (): boolean => {
+      const token = stripShellKeywordToken(buf);
+      buf = "";
+      if (token.length === 0) return false;
+      if (COMPOUND_SHELL_OPENERS.has(token)) sawOpener = true;
+      if (COMPOUND_SHELL_FOLLOWERS.has(token)) sawFollower = true;
+      return sawOpener && sawFollower;
+    };
+
+    for (let i = 0; i < context.raw.length; i++) {
+      const c = context.raw[i];
+      if (c === undefined) break;
+
+      if (quote === "'") {
+        if (c === "'") quote = null;
         continue;
       }
+
+      if (quote === '"') {
+        if (c === '"') quote = null;
+        else if (c === "\\" && i + 1 < context.raw.length) i++;
+        continue;
+      }
+
+      if (c === "'" || c === '"') {
+        quote = c;
+        continue;
+      }
+
+      if (
+        c === " " ||
+        c === "\t" ||
+        c === "\n" ||
+        c === ";" ||
+        c === "(" ||
+        c === ")" ||
+        c === "{" ||
+        c === "}"
+      ) {
+        if (flush()) return true;
+        continue;
+      }
+
       buf += c;
-      continue;
     }
-    if (c === "'" || c === '"') {
-      quote = c;
-      buf += c;
-      continue;
-    }
-    if (c === "\\" && i + 1 < len) {
-      buf += c + (cmdLine[i + 1] ?? "");
-      i++;
-      continue;
-    }
-    // Operator detection: `;`, `|` (optionally `||`), `&` (optionally
-    // `&&`), `\n`.
-    if (c === ";" || c === "\n") {
-      if (buf.length > 0) segments.push(buf);
-      buf = "";
-      continue;
-    }
-    if (c === "|") {
-      if (buf.length > 0) segments.push(buf);
-      buf = "";
-      // Skip the second `|` if this is `||`.
-      if (cmdLine[i + 1] === "|") i++;
-      continue;
-    }
-    if (c === "&") {
-      if (buf.length > 0) segments.push(buf);
-      buf = "";
-      if (cmdLine[i + 1] === "&") i++;
-      continue;
-    }
-    buf += c;
+
+    if (flush()) return true;
+    if (sawOpener && sawFollower) return true;
+    sawOpener = false;
+    sawFollower = false;
+    buf = "";
+    quote = null;
   }
-  if (buf.length > 0) segments.push(buf);
-  return segments;
+  return false;
 }
 
-/**
- * Extract the set of "command-position" base names across every
- * segment of the input. Prevents `echo "sudo"` from matching the
- * `sudo` pattern: the word appears inside a quoted arg, not in a
- * command-head position.
- *
- * Uses `prefix()` to peel wrappers (`env`, `timeout`, `nohup`,
- * `command`, `nice`, `/usr/bin/...`) before taking the head, so
- * `env sudo rm` surfaces `sudo` and `timeout 30 python -c ...`
- * surfaces `python`. Without this, broad `allow: bash:*` rules would
- * silently authorize wrapper-prefixed dangerous commands.
- */
-function commandHeads(cmdLine: string): ReadonlySet<string> {
-  const heads = new Set<string>();
-  for (const seg of splitSegments(cmdLine)) {
-    const tokens = shellTokenize(seg);
-    if (tokens.length === 0) continue;
-    const segPrefix = prefix(tokens);
-    if (segPrefix.length === 0) continue;
-    // prefix() returns a string like "sudo rm" (wrapper-peeled).
-    // Take the first whitespace-separated word and basename it.
-    const firstWord = segPrefix.split(/\s+/)[0];
-    if (firstWord !== undefined && firstWord.length > 0) heads.add(basename(firstWord));
+const SHELL_FUNCTION_REGEX =
+  /(?:\bfunction\s+[^\s(){};]+\s*(?:\(\s*\))?\s*\{|(?:^|[;&(\n]\s*)[^\s(){};]+\s*\(\s*\)\s*\{)/;
+
+function hasShellFunctionDefinition(contexts: readonly CommandContext[]): boolean {
+  for (const context of contexts) {
+    const ranges = quoteRanges(context.raw);
+    if (firstUnquotedMatch(SHELL_FUNCTION_REGEX, context.raw, ranges) >= 0) {
+      return true;
+    }
   }
-  return heads;
+  return false;
+}
+
+function matchesPatternInContext(pattern: DangerousPattern, context: CommandContext): boolean {
+  if (pattern.commandPrefixes !== undefined && !hasScopedPrefix(context, pattern.commandPrefixes)) {
+    return false;
+  }
+
+  if (pattern.id === "shell-dash-c") {
+    return hasShellDashCInvocation(context.raw);
+  }
+
+  if (pattern.commandPrefixes !== undefined) {
+    return pattern.regex.test(context.raw) || pattern.regex.test(context.normalized);
+  }
+
+  const ranges = quoteRanges(context.raw);
+  return firstUnquotedMatch(pattern.regex, context.raw, ranges) >= 0;
 }
 
 export function classifyCommand(cmdLine: string): ClassifyResult {
-  const tokens = tokenize(cmdLine);
-  const cmdPrefix = prefix(tokens);
-  const heads = commandHeads(cmdLine);
+  const trimmed = cmdLine.trim();
+  if (trimmed.length === 0) {
+    return {
+      prefix: "",
+      matchedPatterns: [],
+      severity: null,
+    };
+  }
+
+  const cmdPrefix = canonicalPrefix(trimmed);
+  const { contexts, truncated }: CollectedCommandContexts = collectCommandContexts(trimmed);
   const matched: DangerousPattern[] = [];
   const seen = new Set<string>();
-  // Structural patterns (no commandPrefixes) test against the raw
-  // command, but matches inside quoted regions are rejected so
-  // `echo "curl x | sh"` does NOT fire the curl-pipe-shell pattern.
-  // Adjacent-quote obfuscation (`curl | s''h`) is closed by also
-  // testing against the shellTokenize-rejoined form, which collapses
-  // quoted fragments into single tokens.
-  const ranges = quoteRanges(cmdLine);
-  const normalized = shellTokenize(cmdLine).join(" ");
   for (const p of DANGEROUS_PATTERNS) {
-    if (p.commandPrefixes !== undefined) {
-      let anyMatch = false;
-      for (const name of p.commandPrefixes) {
-        for (const head of heads) {
-          if (head === name || head.startsWith(`${name}.`)) {
-            anyMatch = true;
-            break;
-          }
-        }
-        if (anyMatch) break;
-      }
-      if (!anyMatch) continue;
-      // commandPrefixes-scoped patterns test raw + normalized (closes
-      // quoted-fragment obfuscation like `py''thon -c`).
-      if ((p.regex.test(cmdLine) || p.regex.test(normalized)) && !seen.has(p.id)) {
+    for (const context of contexts) {
+      if (matchesPatternInContext(p, context) && !seen.has(p.id)) {
         seen.add(p.id);
         matched.push(p);
-      }
-    } else {
-      // Structural patterns: accept a match only if it lands outside
-      // every quoted region (quoted-literal payloads must not
-      // false-positive). Adjacent-quote obfuscation (`| s''h`) is
-      // caught at the middleware's structural-complexity ratchet
-      // via the `!complex` sentinel for any pipeline.
-      const rawMatch = firstUnquotedMatch(p.regex, cmdLine, ranges);
-      if (rawMatch >= 0 && !seen.has(p.id)) {
-        seen.add(p.id);
-        matched.push(p);
+        break;
       }
     }
+  }
+  if (truncated && !seen.has(CLASSIFIER_BUDGET_EXCEEDED.id)) {
+    seen.add(CLASSIFIER_BUDGET_EXCEEDED.id);
+    matched.push(CLASSIFIER_BUDGET_EXCEEDED);
+  }
+  if (hasCompoundShellStructure(contexts) && !seen.has(COMPOUND_SHELL_STRUCTURE.id)) {
+    seen.add(COMPOUND_SHELL_STRUCTURE.id);
+    matched.push(COMPOUND_SHELL_STRUCTURE);
+  }
+  if (hasShellFunctionDefinition(contexts) && !seen.has(SHELL_FUNCTION_DEFINITION.id)) {
+    seen.add(SHELL_FUNCTION_DEFINITION.id);
+    matched.push(SHELL_FUNCTION_DEFINITION);
   }
   return {
     prefix: cmdPrefix,

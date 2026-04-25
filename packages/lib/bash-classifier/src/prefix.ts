@@ -45,7 +45,7 @@ const WRAPPER_SPECS: Readonly<Record<string, WrapperSpec>> = {
     // whole payload and let canonicalPrefix fall back to a too-coarse
     // prefix. Instead we detect it separately and route to
     // `!complex` so the middleware prompts per-command.
-    argFlags: new Set(["-u", "--unset", "-C", "--chdir"]),
+    argFlags: new Set(["-u", "--unset", "-C", "--chdir", "-P", "--path"]),
     boolFlags: new Set(["-i", "--ignore-environment", "-0", "--null", "--help", "--version"]),
   },
   nice: {
@@ -371,6 +371,20 @@ function normalize(tokens: readonly string[]): readonly string[] {
   return current;
 }
 
+/**
+ * Internal helper for sibling modules that need the same wrapper-peeling
+ * view as `prefix()` without reimplementing the normalization grammar.
+ * Maps the private fail-closed sentinel to the public `UNSAFE_PREFIX`.
+ */
+export function normalizeForHeadScan(tokens: readonly string[]): readonly string[] {
+  const normalized = normalize(tokens);
+  const first = normalized[0];
+  if (first === UNSAFE_SENTINEL_TOKEN) {
+    return [UNSAFE_PREFIX, ...normalized.slice(1)];
+  }
+  return normalized;
+}
+
 /** Shell interpreter binaries whose `-c <arg>` form wraps a nested command. */
 const SHELL_INTERP = /^(?:ba|z|da|a)?sh$/;
 
@@ -387,6 +401,12 @@ export function shellTokenize(s: string): readonly string[] {
   let buf = "";
   let inBuf = false;
   let quote: "'" | '"' | null = null;
+  const flushBuf = (): void => {
+    if (!inBuf) return;
+    tokens.push(buf);
+    buf = "";
+    inBuf = false;
+  };
   const len = s.length;
   for (let i = 0; i < len; i++) {
     const c = s[i];
@@ -427,18 +447,48 @@ export function shellTokenize(s: string): readonly string[] {
       inBuf = true;
       continue;
     }
-    if (c === " " || c === "\t" || c === "\n") {
-      if (inBuf) {
-        tokens.push(buf);
+    if (c === ">" || c === "<") {
+      const fdPrefix = /^\d+$/.test(buf) ? buf : "";
+      if (fdPrefix.length > 0) {
         buf = "";
         inBuf = false;
+      } else {
+        flushBuf();
       }
+
+      let op = c;
+      const next = s[i + 1] ?? "";
+      const next2 = s[i + 2] ?? "";
+      if (c === "<" && next === "<" && next2 === "<") {
+        op = "<<<";
+        i += 2;
+      } else if (c === "<" && next === "<" && next2 === "-") {
+        op = "<<-";
+        i += 2;
+      } else if ((c === ">" || c === "<") && next === c) {
+        op = `${c}${c}`;
+        i++;
+      } else if ((c === ">" || c === "<") && next === "&") {
+        op = `${c}&`;
+        i++;
+      } else if (c === "<" && next === ">") {
+        op = "<>";
+        i++;
+      } else if (c === ">" && next === "|") {
+        op = ">|";
+        i++;
+      }
+      tokens.push(`${fdPrefix}${op}`);
+      continue;
+    }
+    if (c === " " || c === "\t" || c === "\n") {
+      flushBuf();
       continue;
     }
     buf += c;
     inBuf = true;
   }
-  if (inBuf) tokens.push(buf);
+  flushBuf();
   return tokens;
 }
 
@@ -455,6 +505,30 @@ const BASH_LONG_FLAGS_WITH_ARG: ReadonlySet<string> = new Set([
   "--file",
 ]);
 
+const SHELL_REDIRECTION_OPERATOR = /^\d*(?:>>?|<<-?|<<<|<>|>&|<&|>\||<)$/;
+const SHELL_REDIRECTION_ATTACHED = /^\d*(?:>>?|<<-?|<<<|<>|>&|<&|>\||<).+$/;
+
+export function skipShellSyntaxTokens(tokens: readonly string[], from: number): number {
+  let i = from;
+  while (i < tokens.length) {
+    const token = tokens[i] ?? "";
+    if (token === "!") {
+      i++;
+      continue;
+    }
+    if (SHELL_REDIRECTION_OPERATOR.test(token)) {
+      i += 2;
+      continue;
+    }
+    if (SHELL_REDIRECTION_ATTACHED.test(token)) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
 /**
  * When `cmdLine` is a shell-interpreter invocation that uses `-c <arg>`,
  * returns the inner script string. Scans the full token list for a
@@ -469,7 +543,7 @@ const BASH_LONG_FLAGS_WITH_ARG: ReadonlySet<string> = new Set([
  *
  * Returns `null` when `-c` is not found before script argv starts.
  */
-function extractShellDashCArgFromTokens(tokens: readonly string[]): string | null {
+export function extractShellDashCArgFromTokens(tokens: readonly string[]): string | null {
   if (tokens.length < 2) return null;
 
   const first = tokens[0];
@@ -483,6 +557,7 @@ function extractShellDashCArgFromTokens(tokens: readonly string[]): string | nul
 
   let i = 1;
   while (i < tokens.length) {
+    i = skipShellSyntaxTokens(tokens, i);
     const t = tokens[i];
     if (t === undefined) return null;
 
@@ -490,14 +565,22 @@ function extractShellDashCArgFromTokens(tokens: readonly string[]): string | nul
     if (t === "--") return null;
 
     // -c / composite short flag with c (-lc, -ic, -eic, …)
-    if (/^-[a-zA-Z]*c$/.test(t)) {
-      const arg = tokens[i + 1];
-      return arg !== undefined && arg.length > 0 ? arg : null;
+    if (/^-[a-zA-Z]+$/.test(t) && t.slice(1).includes("c")) {
+      const cluster = t.slice(1);
+      for (const ch of cluster) {
+        if (ch === "c") {
+          const arg = tokens[skipShellSyntaxTokens(tokens, i + 1)];
+          return arg !== undefined && arg.length > 0 ? arg : null;
+        }
+        if (ch === "o" || ch === "O") {
+          return null;
+        }
+      }
     }
 
     // Flag with a separate-token argument: consume flag + arg.
     if (BASH_SHORT_FLAGS_WITH_ARG.has(t) || BASH_LONG_FLAGS_WITH_ARG.has(t)) {
-      i += 2;
+      i = skipShellSyntaxTokens(tokens, i + 1) + 1;
       continue;
     }
 
@@ -638,6 +721,8 @@ function isEnvDashS(tokens: readonly string[]): boolean {
   // run out. Any `-S`/`--split-string` form at any position triggers
   // fail-closed.
   while (i < tokens.length) {
+    i = skipShellSyntaxTokens(tokens, i);
+    if (i >= tokens.length) return false;
     const t = tokens[i] ?? "";
     if (ENV_ASSIGN.test(t)) {
       i++;
@@ -648,11 +733,19 @@ function isEnvDashS(tokens: readonly string[]): boolean {
     if (t === "-S" || t === "--split-string" || t.startsWith("--split-string=")) {
       return true;
     }
+    if (t.startsWith("-S") && t.length > 2) return true;
     // Bundled short form that includes `S`: -iS, -uSx, etc.
     if (t.length > 1 && !t.startsWith("--") && t.includes("S")) return true;
     // Known arg-taking env flags consume their arg.
-    if (t === "-u" || t === "--unset" || t === "-C" || t === "--chdir") {
-      i += 2;
+    if (
+      t === "-u" ||
+      t === "--unset" ||
+      t === "-C" ||
+      t === "--chdir" ||
+      t === "-P" ||
+      t === "--path"
+    ) {
+      i = skipShellSyntaxTokens(tokens, i + 1) + 1;
       continue;
     }
     // --long=value is single-token.

@@ -207,6 +207,9 @@ describe("canonicalPrefix", () => {
   test("unwraps composite `-lc` / `-ic` flags", () => {
     expect(canonicalPrefix(`bash -lc "sudo rm"`)).toBe("sudo");
     expect(canonicalPrefix(`bash -ic "git log"`)).toBe("git log");
+    expect(canonicalPrefix(`bash -ce "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`bash -cl "git log"`)).toBe("git log");
+    expect(canonicalPrefix(`sh -ce "rm -rf /"`)).toBe("rm");
   });
 
   test("unwraps absolute-path interpreters", () => {
@@ -534,12 +537,12 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
 
   // ------- loop-2 round 4: smarter brace handling -------
 
-  test("parameter expansion ${VAR} does NOT trigger !complex", () => {
-    expect(canonicalPrefix("echo ${HOME}")).toBe("echo");
+  test(`parameter expansion \${VAR} does NOT trigger !complex`, () => {
+    expect(canonicalPrefix(`echo \${HOME}`)).toBe("echo");
     // `-C` on git is a security-relevant flag (changes working dir),
     // so the combination fails closed — but ${VAR} alone doesn't.
-    expect(canonicalPrefix("bash ${HOME}/script.sh")).toBe("bash");
-    expect(canonicalPrefix("sudo ${MY_CMD}")).toBe("sudo");
+    expect(canonicalPrefix(`bash \${HOME}/script.sh`)).toBe("bash");
+    expect(canonicalPrefix(`sudo \${MY_CMD}`)).toBe("sudo");
   });
 
   test("brace expansion file{1,2} does NOT trigger !complex", () => {
@@ -548,8 +551,8 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix("touch file{1..5}.log")).toBe("touch");
   });
 
-  test("parameter expansion with default ${var:-default} is still prefix-extractable", () => {
-    expect(canonicalPrefix("echo ${USER:-anonymous}")).toBe("echo");
+  test(`parameter expansion with default \${var:-default} is still prefix-extractable`, () => {
+    expect(canonicalPrefix(`echo \${USER:-anonymous}`)).toBe("echo");
   });
 
   test("group command `{ cmd; }` (with whitespace) still triggers !complex", () => {
@@ -574,11 +577,15 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     // detector must walk all leading flags, not stop at the first.
     expect(canonicalPrefix(`env -i -S 'sudo rm'`)).toBe("!complex");
     expect(canonicalPrefix(`env -u PATH -S 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env -P /usr/bin -S 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env -S >/tmp/x 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env >/tmp/x -S 'sudo rm'`)).toBe("!complex");
     expect(canonicalPrefix(`env -u A -u B --split-string='sudo rm'`)).toBe("!complex");
     expect(canonicalPrefix(`env --chdir /tmp --split-string='rm -rf /'`)).toBe("!complex");
     expect(canonicalPrefix(`env -0 -i -u VAR -S 'sudo'`)).toBe("!complex");
     // Bundled short flag form with S — fail closed.
     expect(canonicalPrefix(`env -iS 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env -S"sudo rm"`)).toBe("!complex");
   });
 
   test("ANSI-C quoting `$'…'` in -c arg is recognized (loop-3)", () => {

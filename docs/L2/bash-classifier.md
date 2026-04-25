@@ -109,7 +109,14 @@ interface DangerousPattern {
 
 ### `classifyCommand(cmdLine: string): ClassifyResult`
 
-Tokenizes on whitespace, computes `prefix`, tests every `DANGEROUS_PATTERNS` entry against the raw command string, and returns the aggregated worst severity.
+Shell-aware structural classifier for raw command strings.
+
+- Computes `prefix` via `canonicalPrefix(cmdLine)` so interpreter hops and complex-shell sentinel behavior match permission-policy resolution.
+- Tests every `DANGEROUS_PATTERNS` entry against the raw command string.
+- Scopes command-name patterns to executable positions only: top-level command heads, wrapper-revealed inner executables (`sudo python -c`, `env sudo bash -c`), and nested command forms such as `$(...)`, backticks, and process substitution.
+- Fails closed with a synthetic high-severity `classifier-budget-exceeded` match if nested-shell traversal exceeds the classifier's safe work budget.
+- Fails closed with a synthetic high-severity `compound-shell-structure` match when shell control-flow constructs (`if`, `for`, `while`, `case`, `do`, `then`, etc.) appear in a complex command the classifier does not fully parse.
+- Still ignores quoted string literals (`echo "sudo"`, `git commit -m "bash -c"` must not match).
 
 ```typescript
 interface ClassifyResult {
