@@ -553,6 +553,39 @@ describe("WebhookServer — core dispatch", () => {
     expect(dispatched).toHaveLength(0);
   });
 
+  test("allowUnauthenticated does not bypass account binding on provider routes with shared secret", async () => {
+    // On provider routes, allowUnauthenticated must not weaken the account-binding check.
+    // A shared provider secret proves body integrity but NOT the URL account segment.
+    // Accepting the unverified account would allow any caller with the shared secret
+    // to route to arbitrary tenants by choosing the URL account path.
+    const secret = "test-secret";
+    const body = JSON.stringify({ action: "push" });
+    const sig = await computeGitHubSig(secret, body);
+    const srv = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        allowReplayableProviders: true,
+        allowUnauthenticated: true, // must NOT bypass account binding on provider routes
+      },
+      dispatcher,
+      undefined,
+      { github: secret },
+    );
+    await srv.start();
+    const res = await fetch(`http://localhost:${srv.port()}/webhook/github/some-tenant`, {
+      method: "POST",
+      headers: { "X-Hub-Signature-256": sig, "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(401);
+    const b = (await res.json()) as { ok: boolean; error: string };
+    expect(b.error).toContain("per-account secret");
+    expect(dispatched).toHaveLength(0);
+    srv.stop();
+  });
+
   test("allowUnauthenticated does not bypass account binding when authenticator is present", async () => {
     // Trust boundary: allowUnauthenticated must not weaken authenticated routes.
     // An authenticator that echoes the URL account without accountVerified: true
@@ -1727,6 +1760,70 @@ describe("WebhookServer — maxDispatchMs", () => {
     // Lease lost during dispatch — must not return 200 without a committed dedup record
     expect(res.status).toBe(503);
     expect(dispatchCount).toBe(1);
+    srv.stop();
+  });
+
+  test("AbortSignal passed to dispatcher is aborted when maxDispatchMs fires", async () => {
+    // Verify that the AbortController is aborted on timeout so dispatchers that
+    // support cooperative cancellation can stop work early and reduce the
+    // duplicate-execution window for hung deliveries.
+    const secret = "test-secret";
+    const webhookId = "wh_abort_signal_test";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({ action: "test" });
+    const enc = new TextEncoder();
+    const cryptoKey = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const rawSig = await crypto.subtle.sign(
+      "HMAC",
+      cryptoKey,
+      enc.encode(`${webhookId}.${timestamp}.${body}`),
+    );
+    const sig = `v1,${Buffer.from(rawSig).toString("base64")}`;
+
+    let capturedSignal: AbortSignal | undefined;
+    let abortFired = false;
+
+    const srv = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        maxDispatchMs: 20,
+      },
+      async (_session, _frame, signal) => {
+        capturedSignal = signal;
+        signal?.addEventListener("abort", () => {
+          abortFired = true;
+        });
+        // Hang longer than maxDispatchMs — timeout wins the race
+        await new Promise<void>(() => {}); // never resolves
+      },
+      undefined,
+      { generic: secret },
+    );
+    await srv.start();
+
+    const res = await fetch(`http://localhost:${srv.port()}/webhook/generic`, {
+      method: "POST",
+      headers: {
+        "X-Webhook-Signature": sig,
+        "X-Webhook-ID": webhookId,
+        "X-Webhook-Timestamp": timestamp,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    expect(res.status).toBe(503);
+    expect(capturedSignal).toBeDefined();
+    // Give the event loop a tick to fire the abort listener
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(abortFired).toBe(true);
     srv.stop();
   });
 });

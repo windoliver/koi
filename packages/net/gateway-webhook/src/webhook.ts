@@ -119,7 +119,18 @@ export interface WebhookServer {
   readonly port: () => number;
 }
 
-export type WebhookDispatcher = (session: Session, frame: GatewayFrame) => Promise<void> | void;
+/**
+ * Dispatcher receives an optional AbortSignal that is aborted when `maxDispatchMs`
+ * expires. Dispatchers that support cancellation should check `signal.aborted` or
+ * add an `"abort"` listener to clean up and stop work early. This reduces the
+ * duplicate-execution window when a timed-out dispatch is still running while a
+ * provider retry has already won a fresh reservation.
+ */
+export type WebhookDispatcher = (
+  session: Session,
+  frame: GatewayFrame,
+  signal?: AbortSignal,
+) => Promise<void> | void;
 
 /**
  * Authenticates an inbound webhook request after signature verification.
@@ -411,12 +422,15 @@ export function createWebhookServer(
     // not which tenant the URL account segment belongs to. Without a per-account
     // secret map (accountAuthenticated) or an authenticator that can bind the account,
     // accepting the request would silently misroute events in multi-tenant deployments.
+    // allowUnauthenticated does NOT bypass this check for provider routes — the flag
+    // is for non-provider endpoints where the caller has accepted all routing risks.
+    // Provider routes with a signed payload require per-account secrets or an
+    // authenticator to bind the URL account to the verified identity.
     if (
       provider !== undefined &&
       account !== undefined &&
       !accountAuthenticated &&
-      authenticator === undefined &&
-      config.allowUnauthenticated !== true
+      authenticator === undefined
     ) {
       if (pendingDedupKey !== undefined && pendingToken !== undefined) {
         idempotencyStore.abort(pendingDedupKey, pendingToken);
@@ -431,10 +445,12 @@ export function createWebhookServer(
     let routing: RoutingContext = {
       ...(channel !== undefined ? { channel } : {}),
       // Only include the URL account segment when it was authenticated. A shared
-      // provider secret proves the body integrity but NOT the URL account path.
-      // An authenticator can still set routing.account explicitly in its return value.
-      // allowUnauthenticated signals the caller accepted all routing risks.
-      ...(account !== undefined && (accountAuthenticated || config.allowUnauthenticated === true)
+      // provider secret proves body integrity but NOT the URL account path.
+      // For non-provider routes, allowUnauthenticated accepts all routing risks including
+      // unverified account segments. For provider routes, the account-scope rejection
+      // above already blocked unverified accounts (only accountAuthenticated reaches here).
+      ...(account !== undefined &&
+      (accountAuthenticated || (config.allowUnauthenticated === true && provider === undefined))
         ? { account }
         : {}),
       ...(peer !== undefined ? { peer } : {}),
@@ -572,6 +588,10 @@ export function createWebhookServer(
       renewalTimer = timer;
     }
 
+    // AbortController lets dispatchers that support cooperative cancellation clean
+    // up early when maxDispatchMs fires, reducing the duplicate-execution window.
+    const controller = new AbortController();
+
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<"timeout">((resolve) => {
       timeoutHandle = setTimeout(() => resolve("timeout"), effectiveMaxDispatchMs);
@@ -580,7 +600,7 @@ export function createWebhookServer(
     let dispatchError: unknown;
     const dispatchPromise = (async (): Promise<"ok" | "error"> => {
       try {
-        await Promise.resolve(dispatcher(session, frame));
+        await Promise.resolve(dispatcher(session, frame, controller.signal));
         return "ok";
       } catch (err: unknown) {
         dispatchError = err;
@@ -593,6 +613,8 @@ export function createWebhookServer(
     clearInterval(renewalTimer);
 
     if (result === "timeout") {
+      // Signal dispatcher to cancel (cooperative — no force-stop in JS).
+      controller.abort();
       // Abort the reservation so provider retries are immediately accepted.
       // The original dispatcher may still be running in the background, but its
       // eventual commit will be a no-op (token mismatch after abort).
