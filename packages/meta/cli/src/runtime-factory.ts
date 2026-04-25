@@ -130,6 +130,7 @@ import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
+  loadUserMcpSetup,
   loadUserRegisteredHooks,
   mergeUserAndPluginHooks,
 } from "./shared-wiring.js";
@@ -686,6 +687,19 @@ export interface KoiRuntimeConfig {
    */
   readonly skillsRuntime?: SkillsRuntime | undefined;
   /**
+   * When true, the Skill meta-tool description omits the static skill listing
+   * and defers to the per-turn `<available_skills>` XML block injected by the
+   * progressive middleware. Must be forwarded into `earlyContextHost` so the
+   * `skillsStack` preset picks it up via `ctx.host.skillsProgressive`.
+   */
+  readonly skillsProgressive?: boolean | undefined;
+  /**
+   * Optional OAuthChannel for MCP server OAuth flows.
+   * When provided, wired into every MCP connection so auth_required /
+   * auth_complete events render inline as chat messages.
+   */
+  readonly mcpOAuthChannel?: import("@koi/core").OAuthChannel | undefined;
+  /**
    * Persistent approval store for cross-session "always" grants.
    * When provided, durable approvals survive process restart.
    */
@@ -765,6 +779,24 @@ export interface KoiRuntimeConfig {
    *    surfaced in-memory via the governance bridge for the current session). */
   readonly violationSqlitePath?: string | undefined;
   /**
+   * Per-sink manifest provenance — set to the manifest file path when the
+   * corresponding audit path was derived from `manifest.audit.*` (not from an
+   * operator env var). `createKoiRuntime` calls `revalidateAuditPathContainment`
+   * immediately before opening each manifest-derived sink to narrow the TOCTOU
+   * window between the pre-runtime check in `tui-command.ts` and the actual
+   * filesystem open syscall.
+   *
+   * A residual race remains because Bun/Node do not expose `openat` /
+   * `O_NOFOLLOW` for intermediate path components — full atomicity would require
+   * L2 sink API changes. The narrowed window is the best-effort mitigation.
+   *
+   * Leave each field `undefined` for env-var-sourced paths: those are operator-
+   * trusted and are NOT subject to manifest containment revalidation.
+   */
+  readonly manifestNdjsonSourcePath?: string | undefined;
+  readonly manifestSqliteSourcePath?: string | undefined;
+  readonly manifestViolationsSourcePath?: string | undefined;
+  /**
    * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
    * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
    */
@@ -818,6 +850,26 @@ export interface KoiRuntimeConfig {
    * tools backed by a host-owned ArtifactStore). Order preserved.
    */
   readonly extraProviders?: readonly ComponentProvider[] | undefined;
+  /**
+   * Host-provided middleware appended to the `presetExtras` slot (phase
+   * "resolve", after stack middleware). Used to wire host-owned middleware
+   * that doesn't fit a preset stack. Order preserved.
+   */
+  readonly extraMiddleware?: readonly KoiMiddleware[] | undefined;
+  /**
+   * Progressive skill injector middleware for the root agent.
+   * Placed in the post-permissions slot (zone C-bottom, after planPersist and
+   * before systemPrompt) so `request.tools` is permissions-filtered when the
+   * injector checks whether the Skill tool is active.
+   */
+  readonly skillInjector?: KoiMiddleware | undefined;
+  /**
+   * Skill injector middleware to propagate into spawned child agents.
+   * When set, child model calls receive the same `<available_skills>` injection
+   * as the root agent. The middleware reads from its original agent reference
+   * (typically the root agent's ECS), which reflects the global skill set.
+   */
+  readonly childSkillInjector?: KoiMiddleware | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -934,6 +986,22 @@ export interface KoiRuntimeHandle {
    * no MCP servers are configured.
    */
   readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
+  /**
+   * Trigger interactive OAuth for an MCP server using the live auth provider
+   * wired into the existing connection. This is the correct path for nav:mcp-auth
+   * — it reuses the same provider instance so in-memory token caches are cleared
+   * before startAuthFlow(), rather than creating a parallel provider that only
+   * updates storage.
+   *
+   * "success-live" — auth succeeded and the live session can use the server now.
+   * "success-reload-required" — auth succeeded in storage but the server was not
+   *   wired into this session's resolver; the user must reload to connect.
+   * "failed" — auth did not complete.
+   */
+  readonly triggerMcpServerAuth: (
+    serverName: string,
+    channel: import("@koi/core").OAuthChannel,
+  ) => Promise<"success-live" | "success-reload-required" | "failed">;
   /**
    * Plugin discovery summary — loaded plugins + any errors.
    * Static for the lifetime of the runtime. Used by the TUI to populate
@@ -1404,6 +1472,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+    ...(config.skillsProgressive === true ? { skillsProgressive: true } : {}),
+    ...(config.mcpOAuthChannel !== undefined ? { mcpOAuthChannel: config.mcpOAuthChannel } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
     approvalHandler,
     agentId: precomputedAgentId,
@@ -1718,7 +1788,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | import("@koi/tools-bash").BashToolHandle
     | undefined;
   const sandboxActive = (earlyContribution.exports.sandboxActive as boolean | undefined) ?? false;
-  const _tuiAgentId = precomputedAgentId;
 
   // --- Core providers (search + fs + web + bash) via shared-wiring ---
   // The shared `buildCoreProviders` helper wires the exact same base set
@@ -2042,6 +2111,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
       ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
+      // Thread skill injector into children so spawned agents also receive
+      // the <available_skills> XML block in progressive mode. The middleware
+      // reads from its original agent reference (root), whose skill set
+      // is global — the same skills apply to all children.
+      ...(config.childSkillInjector !== undefined
+        ? { skillInjector: config.childSkillInjector }
+        : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -2259,6 +2335,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
+    const mcpAuthProviders = stackContribution.exports.mcpAuthProviders as
+      | ReadonlyMap<string, import("@koi/mcp").OAuthAuthProvider>
+      | undefined;
+    const mcpConnections = stackContribution.exports.mcpConnections as
+      | ReadonlyMap<string, import("@koi/mcp").McpConnection>
+      | undefined;
+    const mcpPluginRejectedServers = stackContribution.exports.mcpPluginRejectedServers as
+      | ReadonlyMap<string, string>
+      | undefined;
 
     // Hoisted above the audit/governance blocks: compliance recorders
     // and the onViolation callback need a LIVE session id (rotates on
@@ -2324,6 +2409,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             );
           }
         }
+      }
+      // manifest.audit.ndjson is rejected at tui-command.ts before this point —
+      // ancestor-symlink swaps between revalidation and open cannot be blocked
+      // without openat-style APIs unavailable in Node.js/Bun. All manifest-derived
+      // audit paths require env var overrides; manifestNdjsonSourcePath is therefore
+      // always undefined here. The guard below is defensive only.
+      if (config.manifestNdjsonSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.ndjson: manifest-derived paths are not supported. " +
+            "Set KOI_AUDIT_NDJSON instead.",
+        );
       }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
@@ -2392,6 +2488,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }
           }
         }
+      }
+      // manifest.audit.sqlite is rejected at tui-command.ts before this point
+      // (manifest-derived SQLite paths are not supported — SQLite must open by
+      // pathname for WAL/SHM sidecars, making atomic containment impossible).
+      // manifestSqliteSourcePath is therefore always undefined here; the check
+      // below is a defensive belt-and-suspenders guard only.
+      if (config.manifestSqliteSourcePath !== undefined) {
+        throw new Error(
+          "manifest.audit.sqlite: manifest-derived SQLite paths are not supported. " +
+            "Set KOI_AUDIT_SQLITE instead.",
+        );
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
       const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
@@ -2549,8 +2656,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     if (resolvedViolationPath !== undefined) {
       try {
         const parent = dirname(resolvedViolationPath);
+        const manifestDerived = config.manifestViolationsSourcePath !== undefined;
         if (!existsSync(parent)) {
+          // Manifest-derived paths must already have their parent present —
+          // auto-creating directories for repo-authored paths expands the
+          // write-capability trust boundary. Operator-supplied explicit paths
+          // (--violation-sqlite flag) and the implicit default (~/.koi/)
+          // retain the previous auto-create behavior.
+          if (manifestDerived) {
+            throw new Error(
+              `manifest.audit.violations: parent directory "${parent}" does not exist. ` +
+                "Create it before starting koi tui, or remove the violations: key from manifest.audit.",
+            );
+          }
           mkdirSync(parent, { recursive: true });
+        }
+        // manifest.audit.violations is rejected at tui-command.ts before this
+        // point (same WAL/SHM atomic-open limitation as manifest.audit.sqlite).
+        // manifestDerived is therefore always false here; the guard below is
+        // defensive only.
+        if (manifestDerived) {
+          throw new Error(
+            "manifest.audit.violations: manifest-derived SQLite paths are not supported. " +
+              "Set KOI_AUDIT_VIOLATIONS instead.",
+          );
         }
         violationStore = createSqliteViolationStore({ dbPath: resolvedViolationPath });
         // Register close on manifest shutdown so `runtime.dispose()`
@@ -2786,8 +2915,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...stackContribution.middleware,
         ...auditPresetExtras,
         ...(governanceMw !== undefined ? [governanceMw] : []),
+        ...(config.extraMiddleware ?? []),
       ],
       manifestMiddleware: zoneBMiddleware,
+      ...(config.skillInjector !== undefined ? { skillInjector: config.skillInjector } : {}),
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
     });
@@ -3127,10 +3258,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
-            // Plugin servers authenticate via their own auth pseudo-tools, not
-            // via nav:mcp-auth (which only handles .mcp.json entries). Force
-            // hasOAuth false so AUTH_REQUIRED plugin servers render as error
-            // rather than needs-auth, preventing a misleading recovery prompt.
+            // Plugin servers do not surface as OAuth-capable via nav:mcp-auth —
+            // they authenticate through their own pseudo-tools, not through the
+            // same first-party browser flow as user-configured .mcp.json entries.
+            // Routing plugins through triggerMcpServerAuth would widen the trust
+            // boundary to plugin-supplied OAuth endpoints without a consent gate.
             oauthNames: undefined,
           });
         if (sources.length === 0) return [];
@@ -3176,7 +3308,99 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             });
           }
         }
+        // Append plugin servers rejected at setup time (e.g. OAuth without consent gate)
+        // as explicit error entries so /mcp shows them as blocked instead of invisible.
+        if (mcpPluginRejectedServers !== undefined) {
+          for (const [name, reason] of mcpPluginRejectedServers) {
+            const key = `plugin:${name}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: `plugin:${name}`,
+              toolCount: 0,
+              failureCode: "PLUGIN_OAUTH_BLOCKED",
+              failureMessage: reason,
+              transport: undefined,
+              hasOAuth: false,
+            });
+          }
+        }
         return entries;
+      },
+      triggerMcpServerAuth: async (
+        qualifiedName: string,
+        channel: import("@koi/core").OAuthChannel,
+      ): Promise<"success-live" | "success-reload-required" | "failed"> => {
+        // Plugin-provided servers are not eligible for user-triggered auth via
+        // this path — they are blocked at load time (no host consent gate).
+        if (qualifiedName.startsWith("plugin:")) return "failed";
+
+        // Strip user: prefix if present for consistent map lookups.
+        const serverName = qualifiedName.startsWith("user:")
+          ? qualifiedName.slice(5)
+          : qualifiedName;
+        const provider = mcpAuthProviders?.get(serverName);
+        if (provider === undefined) {
+          // Server missing from startup map — likely added to .mcp.json after
+          // this session started. Re-read the current config to find it and
+          // attempt a live one-shot auth without requiring a full restart.
+          const freshSetup = await loadUserMcpSetup(cwd, undefined, channel).catch(() => undefined);
+          const freshProvider = freshSetup?.authProviders.get(serverName);
+          const freshConnection = freshSetup?.connections.get(serverName);
+          if (freshProvider === undefined || freshConnection === undefined) {
+            // Server genuinely not found or has no OAuth config — guide user to CLI.
+            void Promise.resolve(
+              channel.onAuthRequired({
+                provider: serverName,
+                message: `"${serverName}" was not found in the current MCP config. Run \`koi mcp auth ${serverName}\` in a terminal to authorize it, then reload the session.`,
+                mode: "local",
+                instructions: `On a remote or headless machine, run: \`koi mcp auth ${serverName}\``,
+              }),
+            ).catch(() => {});
+            freshSetup?.dispose();
+            return "failed";
+          }
+          // Auth through a temporary connection. The live resolver does not know
+          // about this server — return success-reload-required so the TUI can
+          // guide the user to reload rather than showing a failure message.
+          const authResult = await freshConnection.triggerAuth?.();
+          freshSetup?.dispose();
+          if (authResult?.ok) {
+            return "success-reload-required";
+          }
+          void Promise.resolve(
+            channel.onAuthFailure?.({
+              provider: serverName,
+              reason: authResult?.error.message ?? "Authorization did not complete.",
+            }),
+          ).catch(() => {});
+          return "failed";
+        }
+        const connection = mcpConnections?.get(serverName);
+        const resolver = mcpResolver;
+
+        // Route everything through connection.triggerAuth() so the singleflight
+        // serializes concurrent automatic 401-recovery and explicit user auth.
+        // triggerAuth tries silent token refresh first, then falls through to
+        // browser auth if tokens are stale — no separate handleUnauthorized call
+        // needed here. onAuthComplete fires internally after reconnect.
+        if (connection?.triggerAuth !== undefined) {
+          const result = await connection.triggerAuth();
+          if (!result.ok) {
+            void Promise.resolve(
+              channel.onAuthFailure?.({
+                provider: serverName,
+                reason: result.error.message,
+              }),
+            ).catch(() => {});
+            return "failed";
+          }
+          // Trigger resolver rediscovery so real tools replace pseudo-tools immediately.
+          await resolver?.discover().catch(() => {});
+          return "success-live";
+        }
+        // Fallback for connections without triggerAuth (non-OAuth connections).
+        return "failed";
       },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];

@@ -98,11 +98,10 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
   const sessionAborts = new Map<string, AbortController>();
 
   function ensureSessionAbort(sId: string): AbortController {
-    let ctrl = sessionAborts.get(sId);
-    if (ctrl === undefined) {
-      ctrl = new AbortController();
-      sessionAborts.set(sId, ctrl);
-    }
+    const existing = sessionAborts.get(sId);
+    if (existing !== undefined) return existing;
+    const ctrl = new AbortController();
+    sessionAborts.set(sId, ctrl);
     return ctrl;
   }
 

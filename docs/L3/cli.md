@@ -6,6 +6,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`koi tui` progressive skill injection (#1986)**: `koi tui` now uses `createSkillProvider(runtime, { progressive: true })` and `createSkillInjectorMiddleware({ agent: thunk, progressive: true })` instead of eagerly loading all skill bodies into the system prompt at startup. Phase 1 injects a compact `<available_skills>` XML block (~100 tokens) listing available skills before each model call; Phase 2 loads the full skill body on-demand when the model invokes the `Skill` tool. A lazy agent-ref thunk (`skillAgentRef.current`) is wired in the post-`createKoiRuntime` `.then()` callback so the middleware can be constructed before the ECS entity is assembled. `skillProvider` is now always included in `extraProviders` (previously it was conditional on the artifact-extras block). The `skillsRuntime` field is still passed to `createKoiRuntime` for Skill tool / MCP bridge wiring. `extraMiddleware` on `KoiRuntimeConfig` now accepts host-provided middleware that is appended to `presetExtras` inside `composeRuntimeMiddleware`.
+
 - **`@koi/settings` wired into CLI (#1958)**: `@koi/settings` added as a direct CLI dependency. `runtime-factory.ts` calls `loadSettings()` at startup (resolving user, project, local, flag, and policy layers from `cwd` + `homeDir`) and passes the merged `KoiSettings` into `mapSettingsToSourcedRules` to populate the permission backend's rule set. The `koi start --settings <path>` flag maps to the `flag` layer. Policy layer failures (missing or malformed policy file) throw a `PolicyLoadError` and exit with code 2 — fail-closed. `koi start --settings` now also accepts settings via the `flagPath` field for the flag layer. No new TUI surface changes — settings are applied transparently at runtime startup.
 
 - **`@koi/tasks` local_agent lifecycle wired into spawn stack (#1657)**: `spawn.ts` now creates a `TaskRunner` backed by `createLocalAgentLifecycle` whenever the execution stack's `getTaskBoard`/`getStore` getters are present. A `store.watch()` watcher auto-starts any `pending` task with `metadata.kind === "local_agent"` by calling `capturedSpawnFn` (the same `SpawnFn` used by the Spawn tool) with the task's `agentType` and `inputs`. An idempotency guard (`claimedTaskIds: Set<string>`) prevents duplicate starts from re-entrant store writes. On session reset (`onResetSession`), the runner and watcher are torn down and recreated against the fresh board/store pair. On shutdown (`onShutdown`), both are disposed before returning. The runner is only created when all three host keys are present (`getTaskBoard`, `getStore`, `agentId`) — hosts without the execution stack continue to receive only the Spawn tool, unchanged.
@@ -245,6 +247,37 @@ koi tui
 | `KOI_PLANNING_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-planning` AND `@koi/middleware-plan-persist`. Installs the `koi_plan_write` tool + auto-allow policy rules so the model can maintain a structured multi-step plan across turns (CC-parity). Plan-persist auto-wires its `onPlanUpdate` hook into planning so every successful `koi_plan_write` is mirrored to `<cwd>/.koi/plans/_active/<sha256(sessionId)>.md`. The `koi_plan_save` and `koi_plan_load` tools also become available for git-diffable named checkpoints under `.koi/plans/<ts>-<slug>.md`. Plan-persist's `restoreFromJournal` API is exposed on the runtime handle for hosts that want to recover a prior incarnation's plan after restart. (#1836, #1842) |
 | `KOI_FEEDBACK_LOOP_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-feedback-loop` in observe-only mode (`feedbackLoop: {}`). The middleware intercepts every model response and tool call: validators run against each response chunk sequence (pass-through by default), transport errors are classified and counted against per-category retry budgets, and tool health is tracked via a ring-buffer quarantine tracker. No validators are registered by default so the middleware is a no-op fence until validators or a custom `FeedbackLoopConfig` are supplied at the programmatic API level. |
 | `KOI_WEB_CACHE_TTL_MS` | no | `60000` | Response-cache TTL (milliseconds) for `web_fetch` GET/HEAD without custom headers and without a request body. `@koi/tools-web` ships disabled (TTL `0`) as an L2 opt-in contract; the CLI opts in with a 60 s default so back-to-back identical fetches within a session return `cached: true` instead of re-issuing live network calls. Only `200` responses without revalidation directives (`no-store`, `no-cache`, `private`, `must-revalidate`, `max-age=0`, `Pragma: no-cache`, past `Expires`, or any `Vary`) are stored; each entry's lifetime is capped to origin's remaining freshness (`max-age − Age`). `web_fetch` also accepts a per-call `noCache: true` that forces a live fetch with no stale fallback (evicts the entry; failures leave the key empty). Accepts any non-negative integer; `0` disables the cache for a run. **Malformed values (non-integer, negative, non-numeric) fail startup loudly** — an operator fixing staleness during an incident deserves an obvious error, not a silent 60 s stale-read window. (#1903) |
+
+**Manifest `audit:` block (#1994):** Audit sinks can be configured in `koi.yaml` so projects enable
+audit logging without shell/init plumbing. All paths anchor to the manifest directory (not the shell
+cwd). Parent directories must exist — audit sinks never silently create them.
+
+`koi tui` only: manifest audit paths are gated behind `KOI_ALLOW_MANIFEST_FILE_SINKS=1` (same gate
+as zone-B `manifest.middleware` file sinks) because `koi.yaml` is repo-authored content that can
+open files at arbitrary host paths. Without the gate, `koi tui` refuses to start if `audit:` is
+present and any manifest-configured sink is not covered by its `KOI_AUDIT_*` env var — this
+prevents silently disabling audit logging when the operator clearly expressed audit intent in the
+manifest. To opt out of manifest-driven sinks without setting the gate, either remove the `audit:`
+block or set the corresponding `KOI_AUDIT_*` env vars. `koi start` rejects manifests that contain `audit:`.
+
+```yaml
+audit:
+  ndjson: ./logs/session.audit.ndjson      # fallback for KOI_AUDIT_NDJSON; relative to manifest dir
+  sqlite: ./logs/session.audit.db          # field accepted but NOT usable as manifest path (see below)
+  violations: ./logs/session.violations.db # field accepted but NOT usable as manifest path (see below)
+```
+
+**`manifest.audit` is a declarative intent marker, not a path provider.** The paths listed under `audit:` are validated for correct format but are NOT used as actual sink paths — atomic containment against ancestor-symlink swaps requires `openat`-style APIs not available in Node.js/Bun. All actual sink paths must come from `KOI_AUDIT_*` env vars. The value of `manifest.audit` is fail-closed enforcement: if any sink is declared in the manifest but its corresponding env var is absent (and the gate is off), `koi tui` refuses to start rather than silently dropping audit records.
+
+Paths must use audit-only filename suffixes (`.audit.ndjson`, `.audit.db`, `.violations.db`) and
+must be relative — no `..` traversal, no symlinks. Paths are validated at load time so typos are caught early, even though the values are not used as open targets.
+
+Precedence and override rules:
+- `KOI_AUDIT_NDJSON` set (even to `""`) → authoritative; `""` explicitly disables (does not fall back to manifest)
+- `KOI_AUDIT_NDJSON` absent + `manifest.audit.ndjson` present → startup refuses (gate off) or refuses (gate on, path not usable)
+- Same for `KOI_AUDIT_SQLITE` / `audit.sqlite`
+- `KOI_AUDIT_VIOLATIONS` set (even to `""`) → authoritative; `""` falls through to `~/.koi/violations.db` default
+- `KOI_AUDIT_VIOLATIONS` absent + `manifest.audit.violations` present → startup refuses unless governance disabled
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
@@ -744,6 +777,10 @@ The resolver matches tool ids case-insensitively (`"Bash"` or `"bash"`). Non-bas
 
 `tui-command.ts` holds the `createAuthNotificationHandler` result in a `tuiAuthNotificationHandler` local and wires it into `resolveFileSystemAsync`. Both teardown paths (interim reconfigure and final shutdown) call `tuiAuthNotificationHandler?.dispose()` **synchronously before** awaiting `resolvedFilesystemBackend?.dispose?.()`. The filesystem `dispose()` unsubscribes then awaits, and that yield can still run a pre-queued notification microtask; disposing the handler first gates late `channel.send()` callbacks and cancels watchdog timers so stale heartbeats can't hit the channel after shutdown. See `docs/L2/fs-nexus.md` for the per-provider state machine, epoch/attempt tokens, and 45 s watchdog.
 
+## OAuthChannel unification (issue #1982)
+
+`createAuthNotificationHandler` now takes `(oauthChannel: OAuthChannel, channel: ChannelAdapter)` — structured `auth_required`/`auth_complete` events route to the `OAuthChannel` while `auth_progress` keepalives go to the text `channel`. The `nav:mcp-auth` handler in `tui-command.ts` now receives a structured `TriggerMcpServerAuthResult` (`"success-live" | "success-reload-required" | "failed"`) from `triggerMcpServerAuth` instead of a plain boolean, and renders server-specific outcome messages accordingly. Plugin OAuth server loading is blocked at plugin load time with `PLUGIN_OAUTH_BLOCKED` error when Koi is not running as localhost, preventing uncontrolled redirect URI registration from remote plugins.
+
 ## #1638 — Activity-based stream timeouts (dev-only env hook)
 
 Integrates `@koi/checkpoint` (stopBlocked fail-closed rollback + quarantine on rollback/persist double-failure) and `@koi/loop` (budget treats synthesized metrics as unmetered) with the runtime-level activity-timeout wrapper.
@@ -771,3 +808,9 @@ See `docs/L3/runtime.md` for the `activityTimeout` config, telemetry events (`ac
 `@koi/tasks` received correctness fixes for the `remote_agent` lifecycle. No CLI
 surface changes. See `docs/L2/tasks.md` for the detailed change log and
 `docs/L3/runtime.md` for the runtime-boundary impact summary.
+
+---
+
+## @koi/mcp `triggerAuth` lint fix (PR #2046)
+
+Replaced `conn.triggerAuth!()` non-null assertions in `connection.test.ts` with explicit `if (conn.triggerAuth === undefined) throw` guards to satisfy `noNonNullAssertion`. No CLI surface change; `triggerAuth?()` remains an optional method on `McpConnection` callable via `koi mcp auth`.

@@ -29,6 +29,7 @@ import type {
   HookConfig,
   InboundMessage,
   KoiMiddleware,
+  OAuthChannel,
   SessionId,
   SessionTranscript,
   Tool,
@@ -76,6 +77,26 @@ export interface McpSetup {
   readonly transportByName: ReadonlyMap<string, "http" | "stdio" | "sse">;
   /** Server names with a usable OAuth config — `needs-auth` is only valid for these. */
   readonly oauthCapableNames: ReadonlySet<string>;
+  /**
+   * Live OAuth provider instances keyed by server name. Only populated for
+   * HTTP servers with an `oauth` field. Used by nav:mcp-auth to re-auth
+   * through the same provider instance wired into the live MCP connection,
+   * so token refreshes are reflected without restarting the connection.
+   */
+  readonly authProviders: ReadonlyMap<string, OAuthAuthProvider>;
+  /**
+   * Live MCP connection objects keyed by server name. Used by
+   * triggerMcpServerAuth to force-reconnect the specific connection after
+   * a successful nav:mcp-auth flow, ensuring the connection transitions
+   * out of auth-needed without requiring a full restart.
+   */
+  readonly connections: ReadonlyMap<string, import("@koi/mcp").McpConnection>;
+  /**
+   * Plugin-declared servers that were rejected at setup time (e.g. OAuth without
+   * a host consent gate), keyed by server name with the rejection reason.
+   * Callers should surface these as permanent error entries in status views.
+   */
+  readonly rejectedServers?: ReadonlyMap<string, string> | undefined;
 }
 
 /** Absolute path of `~/.koi/hooks.json` — the single user-tier hook source. */
@@ -150,6 +171,7 @@ function resolveUserHooksConfigPath(): string {
 export async function loadUserMcpSetup(
   cwd: string,
   skillsRuntime: SkillsRuntime | undefined,
+  oauthChannel?: OAuthChannel | undefined,
 ): Promise<McpSetup | undefined> {
   // Project-local .mcp.json takes priority. Only fall back to
   // ~/.koi/.mcp.json when the project file is truly absent (NOT_FOUND),
@@ -194,7 +216,7 @@ export async function loadUserMcpSetup(
   const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
 
   const connections = result.value.servers.map((server) => {
-    const conn = createOAuthAwareMcpConnection(server, authProviders);
+    const conn = createOAuthAwareMcpConnection(server, authProviders, oauthChannel);
     connectionsByName.set(server.name, conn);
     return conn;
   });
@@ -210,7 +232,11 @@ export async function loadUserMcpSetup(
 
   const resolver = createMcpResolver(connections);
 
-  // Wire auth tool factory when OAuth servers are present
+  // Wire auth pseudo-tools whenever OAuth servers are present. Even when an
+  // OAuthChannel is available, listTools() is passive (returns AUTH_REQUIRED
+  // without calling onAuthNeeded), so an unauthenticated server contributes
+  // zero tools. The pseudo-tools are the discoverable entry point that lets
+  // the model (or user) trigger auth before the first real tool call.
   const createAuthTools =
     authServers.size > 0
       ? createCliAuthToolFactory({
@@ -246,6 +272,8 @@ export async function loadUserMcpSetup(
         .filter((s) => s.kind === "http" && s.oauth !== undefined)
         .map((s) => s.name),
     ),
+    authProviders,
+    connections: connectionsByName,
   };
 }
 
@@ -260,35 +288,41 @@ export function buildPluginMcpSetup(
 ): McpSetup | undefined {
   if (pluginMcpServers.length === 0) return undefined;
 
-  const authProviders = new Map<string, OAuthAuthProvider>();
-  const authServers = new Map<string, AuthServerEntry>();
-  const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
+  // Block plugin-declared OAuth servers at load time. Auth pseudo-tools call
+  // startAuthFlow() which drives the host browser — allowing plugin-supplied
+  // OAuth endpoints to do this without a host consent gate is a trust-boundary
+  // violation. Blocked servers are surfaced as PLUGIN_OAUTH_BLOCKED status
+  // entries; other plugin servers (no OAuth) proceed normally.
+  const oauthServers = pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined);
+  const rejectedServers =
+    oauthServers.length > 0
+      ? new Map<string, string>(
+          oauthServers.map((s) => [
+            s.name,
+            "Plugin MCP servers with OAuth require a host consent gate and cannot be loaded",
+          ]),
+        )
+      : undefined;
+  if (oauthServers.length > 0) {
+    console.error(
+      `[koi] Plugin MCP servers with OAuth are blocked (no host consent gate). ` +
+        `Remove the oauth config or declare these servers in your user .mcp.json: ` +
+        oauthServers.map((s) => s.name).join(", "),
+    );
+  }
+  const eligibleServers = pluginMcpServers.filter(
+    (s) => !(s.kind === "http" && s.oauth !== undefined),
+  );
 
-  const connections = pluginMcpServers.map((server) => {
-    const conn = createOAuthAwareMcpConnection(server, authProviders);
+  const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
+  const connections = eligibleServers.map((server) => {
+    const conn = createOAuthAwareMcpConnection(server);
     connectionsByName.set(server.name, conn);
     return conn;
   });
 
-  for (const server of pluginMcpServers) {
-    const provider = authProviders.get(server.name);
-    const connection = connectionsByName.get(server.name);
-    if (provider !== undefined && connection !== undefined && server.kind === "http") {
-      authServers.set(server.name, { provider, connection, url: server.url });
-    }
-  }
-
   const resolver = createMcpResolver(connections);
-
-  const createAuthTools =
-    authServers.size > 0
-      ? createCliAuthToolFactory({
-          servers: authServers,
-          rediscover: () => resolver.discover(),
-        })
-      : undefined;
-
-  const provider = createMcpComponentProvider({ resolver, createAuthTools });
+  const provider = createMcpComponentProvider({ resolver });
   return {
     resolver,
     provider,
@@ -296,10 +330,11 @@ export function buildPluginMcpSetup(
     dispose: () => {
       resolver.dispose();
     },
-    transportByName: new Map(pluginMcpServers.map((s) => [s.name, s.kind])),
-    oauthCapableNames: new Set(
-      pluginMcpServers.filter((s) => s.kind === "http" && s.oauth !== undefined).map((s) => s.name),
-    ),
+    transportByName: new Map(eligibleServers.map((s) => [s.name, s.kind])),
+    oauthCapableNames: new Set<string>(),
+    authProviders: new Map(),
+    connections: connectionsByName,
+    rejectedServers,
   };
 }
 
@@ -700,6 +735,57 @@ export async function resumeSessionFromJsonl(
       issueCount: result.value.issues.length,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Session provenance metadata
+//
+// A small JSON sidecar stored next to each JSONL transcript allows resume-time
+// audit intent checks to use the ORIGINAL session's manifest rather than a
+// cwd-based re-discovery (which is ambiguous when launched from a different dir).
+// ---------------------------------------------------------------------------
+
+const SESSION_META_VERSION = 1 as const;
+
+/**
+ * Write session provenance metadata to a sidecar file alongside the JSONL
+ * transcript. Non-fatal if the sessions directory does not exist yet — the
+ * transcript's first append creates it; a missing sidecar means "no provenance
+ * recorded" and the resume audit check silently skips.
+ */
+export async function writeSessionMeta(
+  sessionsDir: string,
+  sid: string,
+  meta: { readonly manifestPath?: string },
+): Promise<void> {
+  try {
+    const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+    await Bun.write(path, JSON.stringify({ version: SESSION_META_VERSION, ...meta }));
+  } catch {
+    // Non-fatal: directory may not exist yet on the very first run.
+  }
+}
+
+/**
+ * Read session provenance metadata; returns an empty object if the sidecar is
+ * absent, unreadable, or malformed — callers treat this as "no manifest recorded."
+ */
+export async function readSessionMeta(
+  sessionsDir: string,
+  sid: string,
+): Promise<{ readonly manifestPath?: string }> {
+  const path = `${sessionsDir}/${encodeURIComponent(sid)}.koi-meta.json`;
+  try {
+    const raw = await Bun.file(path).text();
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed !== null && typeof parsed === "object") {
+      const meta = parsed as Record<string, unknown>;
+      if (typeof meta.manifestPath === "string") return { manifestPath: meta.manifestPath };
+    }
+  } catch {
+    // ENOENT or malformed — treat as no provenance
+  }
+  return {};
 }
 
 // ---------------------------------------------------------------------------

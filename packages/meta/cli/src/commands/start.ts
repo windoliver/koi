@@ -50,7 +50,7 @@ import { loadPolicyFile } from "../policy-file.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { resolveManifestPath } from "../resolve-manifest-path.js";
 import { createKoiRuntime, PolicyLoadError } from "../runtime-factory.js";
-import { resumeSessionFromJsonl } from "../shared-wiring.js";
+import { readSessionMeta, resumeSessionFromJsonl, writeSessionMeta } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -431,7 +431,12 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   }
   const resolvedManifestPath = resolvedManifestResult.path;
   if (resolvedManifestPath !== undefined) {
-    const manifestResult = await loadManifestConfig(resolvedManifestPath);
+    // Skip strict audit path validation — koi start never opens audit sinks,
+    // so host-local filesystem state (missing ./logs, stale symlinks, etc.)
+    // must not block startup. Presence of the audit: block is checked below.
+    const manifestResult = await loadManifestConfig(resolvedManifestPath, {
+      skipAuditValidation: true,
+    });
     if (!manifestResult.ok) {
       // Manifest error can include filesystem paths, user-provided values,
       // or schema diagnostics. Safe to classify but don't forward raw text
@@ -466,6 +471,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "long-running background subprocesses (3-in-8 threshold). Remove " +
           "`backgroundSubprocesses: true` from the manifest to run under koi start, or use " +
           "`koi tui`.",
+      );
+    }
+
+    if (manifestResult.value.audit !== undefined) {
+      return bail(
+        "manifest.audit is not supported on this host. " +
+          "koi start does not wire audit sinks — remove the audit: block from the manifest " +
+          "to run under koi start, or use koi tui (which honors manifest.audit when " +
+          "KOI_ALLOW_MANIFEST_FILE_SINKS=1 is set).",
       );
     }
 
@@ -662,6 +676,37 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       process.stdout.write(`${label}: ${text}\n\n`);
     }
     process.stdout.write("── End of history ──\n\n");
+  }
+
+  // Persist manifest provenance so future resumes can enforce audit intent
+  // against the original session's manifest, not the cwd at resume time.
+  if (flags.resume === undefined && resolvedManifestPath !== undefined) {
+    await writeSessionMeta(SESSIONS_DIR, String(sid), { manifestPath: resolvedManifestPath });
+  }
+
+  // Resume-path audit check using stored session provenance.
+  // koi start hard-rejects manifest.audit — check the original session's manifest.
+  if (flags.resume !== undefined) {
+    const resumeMeta = await readSessionMeta(SESSIONS_DIR, String(sid));
+    if (resumeMeta.manifestPath !== undefined) {
+      const resumeAuditResult = await loadManifestConfig(resumeMeta.manifestPath, {
+        skipAuditValidation: true,
+      });
+      if (!resumeAuditResult.ok) {
+        return bail(
+          "original session manifest cannot be parsed during resume — " +
+            "refusing to start because manifest.audit presence cannot be verified. " +
+            "Fix the manifest to run under koi start, or use koi tui.",
+        );
+      }
+      if (resumeAuditResult.value.audit !== undefined) {
+        return bail(
+          "original session manifest.audit is not supported on this host. " +
+            "koi start does not wire audit sinks — use koi tui to resume this session, " +
+            "or remove the audit: block from the manifest.",
+        );
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -1,0 +1,119 @@
+/**
+ * Transport abstraction over Bun.serve() WebSocket.
+ */
+
+export type TransportSendResult = -1 | 0 | number;
+
+export interface TransportConnection {
+  readonly id: string;
+  readonly send: (data: string) => TransportSendResult;
+  readonly close: (code?: number, reason?: string) => void;
+  readonly remoteAddress: string;
+}
+
+export interface TransportHandler {
+  readonly onOpen: (conn: TransportConnection) => void;
+  readonly onMessage: (conn: TransportConnection, data: string) => void | Promise<void>;
+  readonly onClose: (conn: TransportConnection, code: number, reason: string) => void;
+  readonly onDrain: (conn: TransportConnection) => void;
+}
+
+export interface Transport {
+  readonly listen: (port: number, handler: TransportHandler) => Promise<void>;
+  readonly close: () => void;
+  readonly connections: () => number;
+}
+
+export interface BunTransport extends Transport {
+  readonly port: () => number;
+}
+
+interface WsData {
+  readonly id: string;
+}
+
+function isWsData(data: unknown): data is WsData {
+  if (typeof data !== "object" || data === null) return false;
+  const record = data as Record<string, unknown>;
+  return typeof record.id === "string";
+}
+
+export function createBunTransport(): BunTransport {
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  let connectionCount = 0;
+
+  return {
+    port(): number {
+      if (server === undefined) throw new Error("Transport not started");
+      const p = server.port;
+      if (p === undefined) throw new Error("Server port not available");
+      return p;
+    },
+
+    listen(port: number, handler: TransportHandler): Promise<void> {
+      const connMap = new Map<string, TransportConnection>();
+      const decoder = new TextDecoder();
+
+      server = Bun.serve({
+        port,
+        fetch(req, srv) {
+          const upgraded = srv.upgrade(req, {
+            data: { id: crypto.randomUUID() } satisfies WsData,
+          });
+          if (!upgraded) {
+            return new Response("WebSocket upgrade required", { status: 426 });
+          }
+          return undefined;
+        },
+        websocket: {
+          open(ws) {
+            if (!isWsData(ws.data)) return;
+            const { id } = ws.data;
+            const conn: TransportConnection = {
+              id,
+              send: (data: string) => ws.send(data) as TransportSendResult,
+              close: (code?: number, reason?: string) => ws.close(code, reason),
+              remoteAddress: ws.remoteAddress,
+            };
+            connMap.set(id, conn);
+            connectionCount++;
+            handler.onOpen(conn);
+          },
+          message(ws, message) {
+            if (!isWsData(ws.data)) return;
+            const conn = connMap.get(ws.data.id);
+            if (conn === undefined) return;
+            const data = typeof message === "string" ? message : decoder.decode(message);
+            handler.onMessage(conn, data);
+          },
+          close(ws, code, reason) {
+            if (!isWsData(ws.data)) return;
+            const conn = connMap.get(ws.data.id);
+            if (conn === undefined) return;
+            connMap.delete(ws.data.id);
+            connectionCount--;
+            handler.onClose(conn, code, reason);
+          },
+          drain(ws) {
+            if (!isWsData(ws.data)) return;
+            const conn = connMap.get(ws.data.id);
+            if (conn === undefined) return;
+            handler.onDrain(conn);
+          },
+        },
+      });
+
+      return Promise.resolve();
+    },
+
+    close(): void {
+      server?.stop(true);
+      server = undefined;
+      connectionCount = 0;
+    },
+
+    connections(): number {
+      return connectionCount;
+    },
+  };
+}

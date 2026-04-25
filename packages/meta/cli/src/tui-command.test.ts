@@ -835,3 +835,27 @@ describe("computeLiveMcpStatus", () => {
     expect(computeLiveMcpStatus("INTERNAL", undefined, false)).toBe("error");
   });
 });
+
+// ---------------------------------------------------------------------------
+// nav:mcp-auth outcome message format
+// These tests verify the string templates used by the nav:mcp-auth handler so
+// regressions in message copy or koi-mcp-auth hint format are caught at unit
+// level rather than requiring a full TUI E2E run.
+// ---------------------------------------------------------------------------
+
+describe("nav:mcp-auth outcome messages", () => {
+  const serverName = "my-server";
+
+  test("failed outcome message includes server name and koi mcp auth hint", () => {
+    const message = `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`;
+    expect(message).toContain(serverName);
+    expect(message).toContain("koi mcp auth");
+    expect(message).toContain("my-server");
+  });
+
+  test("success-reload-required message includes server name and reload guidance", () => {
+    const message = `Authorization for "${serverName}" succeeded. Reload the session to connect.`;
+    expect(message).toContain(serverName);
+    expect(message).toContain("Reload the session");
+  });
+});

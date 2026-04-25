@@ -238,7 +238,16 @@ All support `--json` for machine-readable output.
 
 ### Mid-Session 401 Handling
 
-When `listTools()` or `callTool()` receives a 401/403, the connection transitions to `auth-needed` state (not `error`). This allows the host to trigger re-authentication without losing the connection context.
+When `listTools()` or `callTool()` receives a 401/403, the connection attempts a silent token refresh first via the `onUnauthorized` dep. The dep returns an `UnauthorizedOutcome` tri-state:
+
+- `"refreshed"` — new access token obtained; connection silently reconnects and retries
+- `"needs-auth"` — refresh token gone; connection transitions to `auth-needed` state and `onAuthNeeded` is called for interactive OAuth
+- `"transient-failure"` — tokens preserved but temporarily unavailable; connection transitions to `error` state (not `auth-needed`) to avoid prematurely expiring valid tokens
+
+`McpConnection` exposes two additional methods for the host layer:
+
+- `reconnect()` — force a transport rebuild without terminating the connection; transitions through `reconnecting` state so the token manager is re-consulted; used after a token refresh to pick up fresh credentials even when currently `connected`
+- `triggerAuth?()` — user-initiated auth entry point that shares the same singleflight as automatic 401-recovery; at most one browser window opens per server at a time; skips the silent-refresh attempt and goes directly to interactive OAuth
 
 ## Tool Origin
 
@@ -256,6 +265,11 @@ All MCP tools have `origin: "operator"` — they are operator-configured, not bu
 8. **Lazy connect on first discover** — Agent startup is not blocked by MCP server availability. Servers that are down at startup can connect later via `ensureConnected()`.
 9. **Async-ready auth** — `token()` returns `string | Promise<string> | undefined` so the interface never needs a breaking change when OAuth 2.1 support is added.
 
+> **OAuthChannel unification (issue #1982):** `handleUnauthorized` on `OAuthProvider` now returns `UnauthorizedOutcome` (`"refreshed" | "needs-auth" | "transient-failure"`) instead of `void`. `McpConnection.onUnauthorized` dep updated to match. `reconnect()` and `triggerAuth?()` added to the `McpConnection` interface. `OAuthProvider.startAuthFlow` gains a singleflight gate so concurrent calls coalesce. The `auth-needed` state is now reserved for cases where the refresh token is confirmed gone; transient refresh failures produce `error` state instead.
+
 > **Maintenance note (PR #1506):** Fixed Biome lint warnings in test files (`noTemplateCurlyInString` in env-var expansion tests, `noNonNullAssertion` in e2e test). No functional changes.
 
 <!-- biome lint suppression pass: noNonNullAssertion / noTemplateCurlyInString (pre-existing patterns; no behavioral change) -->
+
+
+> **Maintenance note (PR #2046):** Replaced `conn.triggerAuth!()` with explicit `if (conn.triggerAuth === undefined) throw` + direct call pattern in `connection.test.ts` tests for `triggerAuth` and singleflight coalescing. No functional change. Biome's unsafe auto-fix (`?.()`) was reverted because it widened the return type to `undefined | Result`, causing TS18048 errors.
