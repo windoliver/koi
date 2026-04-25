@@ -160,6 +160,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
 
         if (policy === "never") {
           // In-process reuse: workspace was preserved from last detach — always trusted.
+          // postCreate is re-run to repair any drift (files deleted between turns). Callers
+          // using cleanupPolicy="never" must ensure postCreate is idempotent.
           if (staleInfo !== undefined) {
             const wsId = staleInfo.id;
             if (!setupFailed.has(wsId)) {
@@ -168,13 +170,14 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
                 isSetupComplete(staleInfo),
               ]);
               if (healthy && setupComplete) {
-                attached.set(agentId, staleInfo);
-                return makeResult(staleInfo);
+                const reused = await tryReuseCrashSurvivor(agentId, staleInfo);
+                if (reused !== false) return reused;
+                // postCreate failed — fall through to dispose+recreate
               }
             }
             setupFailed.delete(wsId);
             attached.delete(agentId);
-            // Unhealthy/incomplete — dispose and fall through to create
+            // Unhealthy/incomplete/postCreate failed — dispose and fall through to create
             const disposed = await tryDispose(wsId);
             if (!disposed) {
               throw new Error(

@@ -333,6 +333,36 @@ describe("createWorkspaceProvider", () => {
     await provider.detach?.(agent);
   });
 
+  it("cleanupPolicy=never reruns postCreate on in-process preserved workspace to repair drift", async () => {
+    // Workspace preserved via "never" policy (staleInfo in attached map) must also rerun
+    // postCreate on subsequent attach to repair any setup drift between turns.
+    let postCreateCallCount = 0;
+    const provider = createWorkspaceProvider({
+      backend,
+      cleanupPolicy: "never",
+      postCreate: async (_ws) => {
+        postCreateCallCount++;
+      },
+    });
+    const agent = makeAgent();
+
+    // First attach — creates workspace, runs postCreate
+    await provider.attach(agent);
+    expect(postCreateCallCount).toBe(1);
+    expect(backend.created.length).toBe(1);
+
+    // Detach with "never" — workspace preserved in attached map
+    await provider.detach?.(agent);
+    expect(backend.disposed).toHaveLength(0);
+
+    // Second attach — workspace reused, postCreate reruns for drift repair
+    await provider.attach(agent);
+    expect(postCreateCallCount).toBe(2);
+    expect(backend.created.length).toBe(1); // no new workspace created
+
+    await provider.detach?.(agent);
+  });
+
   it("cleanupPolicy=never reuses crash-surviving workspace found via findByAgentId", async () => {
     // After restart, `attached` map is empty but findByAgentId finds survivor.
     // With never policy, it should be reused if healthy and setup was proven complete.
