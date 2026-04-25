@@ -86,6 +86,7 @@
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",
+    "@koi/temporal": "workspace:*",
     "@koi/toolsets": "workspace:*",
     "@koi/tools-builtin": "workspace:*",
     "@koi/tools-core": "workspace:*",

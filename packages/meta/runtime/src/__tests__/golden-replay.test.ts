@@ -12706,3 +12706,132 @@ describe("Golden: @koi/toolsets", () => {
     if (!sneakyResult.ok) expect(sneakyResult.error.code).toBe("VALIDATION");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/temporal
+// Infrastructure L2 — Temporal-backed scheduler + spawn-ledger + worker factory.
+// No LLM required: tests exercise the contract shape via mocked Temporal clients.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/temporal", () => {
+  test("createTemporalSpawnLedger — acquire/release/capacity contract", async () => {
+    const { createTemporalSpawnLedger, DEFAULT_SPAWN_LEDGER_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 3 });
+
+    expect(ledger.capacity()).toBe(3);
+    expect(ledger.activeCount()).toBe(0);
+
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    // At capacity — next acquire must fail
+    expect(ledger.acquire()).toBe(false);
+    expect(ledger.activeCount()).toBe(3);
+
+    ledger.release();
+    expect(ledger.activeCount()).toBe(2);
+    // After release a slot is free
+    expect(ledger.acquire()).toBe(true);
+
+    // Default config constant is correctly shaped
+    expect(DEFAULT_SPAWN_LEDGER_CONFIG.maxCapacity).toBeGreaterThan(0);
+  });
+
+  test("createTemporalScheduler — submit + cancel + query + stats via mocked client", async () => {
+    const { createTemporalScheduler } = await import("@koi/temporal");
+    const { mock } = await import("bun:test");
+    const { agentId } = await import("@koi/core");
+
+    // Minimal mock Temporal client — only workflow.start/describe/cancel/list
+    const workflowId = "wf-golden-1";
+    const agent = agentId("golden-agent");
+
+    const describeMock = mock(async (_id: string) => ({
+      status: "RUNNING" as const,
+      memo: {
+        agentId: agent,
+        workflowType: "temporal-task",
+        taskQueue: "golden-queue",
+        mode: "dispatch",
+        inputFingerprint: JSON.stringify({ kind: "text", text: "test" }),
+      },
+    }));
+    const cancelMock = mock(async () => {});
+    const client = {
+      workflow: {
+        start: mock(async () => ({ workflowId })),
+        describe: describeMock,
+        cancel: cancelMock,
+        list: mock(async () => []),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        delete: mock(async () => {}),
+      },
+    };
+
+    const scheduler = createTemporalScheduler({
+      client,
+      taskQueue: "golden-queue",
+      workflowType: "temporal-task",
+    });
+
+    // submit a task
+    const id = await scheduler.submit(agent, { kind: "text", text: "test" }, "dispatch");
+    expect(typeof id).toBe("string");
+    expect(client.workflow.start).toHaveBeenCalledTimes(1);
+
+    // stats reflects submitted task
+    const s = scheduler.stats();
+    expect(s.pending + s.running).toBeGreaterThanOrEqual(1);
+
+    // query returns all tasks matching the filter
+    const tasks = await scheduler.query({});
+    expect(Array.isArray(tasks)).toBe(true);
+    const task = tasks.find((t) => t.id === id);
+    expect(task).toBeDefined();
+    if (task !== undefined) {
+      expect(["pending", "running", "completed", "failed", "dead_letter"]).toContain(task.status);
+    }
+
+    // cancel — should call describe then cancel
+    const cancelled = await scheduler.cancel(id);
+    expect(cancelled).toBe(true);
+    expect(cancelMock).toHaveBeenCalledTimes(1);
+
+    // asyncDispose does not throw
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// @koi/temporal trajectory fixture (golden file — produced by recording script)
+// ---------------------------------------------------------------------------
+
+describe("temporal ATIF trajectory (golden file)", () => {
+  test("schema_version is ATIF-v1.6 (skip if not recorded)", async () => {
+    const file = Bun.file(`${FIXTURES}/temporal.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("temporal.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as { schema_version?: string };
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+  });
+
+  test("trajectory steps are non-empty (skip if not recorded)", async () => {
+    const file = Bun.file(`${FIXTURES}/temporal.trajectory.json`);
+    if (!(await file.exists())) {
+      console.warn("temporal.trajectory.json not recorded yet — skipping");
+      return;
+    }
+    const traj = (await file.json()) as { steps?: unknown[] };
+    expect(Array.isArray(traj.steps)).toBe(true);
+    expect((traj.steps ?? []).length).toBeGreaterThan(0);
+  });
+});
