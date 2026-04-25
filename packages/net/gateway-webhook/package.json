@@ -1,6 +1,6 @@
 {
   "name": "@koi/gateway-webhook",
-  "description": "Webhook HTTP ingestion — converts inbound POST requests into GatewayFrames with signature verification and idempotency protection.",
+  "description": "Webhook HTTP ingestion — POST requests to GatewayFrames with signature verification and idempotency.",
   "version": "0.0.0",
   "private": true,
   "type": "module",
