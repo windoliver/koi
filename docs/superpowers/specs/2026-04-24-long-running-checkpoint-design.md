@@ -277,21 +277,22 @@ trigger for kill-on-takeover.
   caller's clock; if the supervisor recovers, the next retry sees
   a positive `"alive"` or `"dead"` answer.
 
-  **Supervisor-independent escalation.** During a sustained
-  supervisor outage, supervised harnesses can recover via
-  `forceReclaim` with `evidence = { kind: "manualHandle", handle,
-  supervisor, override: true, hostConfirmedDead: true,
-  skipSupervisorProbe: true }`. The `skipSupervisorProbe` flag
-  (only honored when both `override` AND `hostConfirmedDead` are
-  set) allows the admin path to advance state WITHOUT invoking
-  `probeAlive` / `killAndConfirm`. The trust model: the operator
-  has out-of-band evidence the worker is dead (the supervisor
-  itself is dead, the host has been rebooted, the pod is in
-  `Terminated` per a separate cluster query, etc.). The
-  durable host-confirmed-dead marker provides the audit trail.
-  This is the ONLY genuine supervisor-independent recovery path
-  for supervised mode; without `skipSupervisorProbe`,
-  forceReclaim still depends on the supervisor.
+  **Supervisor-outage policy.** During a sustained supervisor
+  outage in supervised mode, automatic reclaim and admin
+  forceReclaim BOTH block (no supervisor → no machine-verifiable
+  death proof → no safe takeover). This is a documented
+  availability tradeoff for the supervised contract: correctness
+  is preferred to liveness when supervisor health is the
+  load-bearing fence. Operators have two options: (1) restore
+  supervisor health (the normal path; reclaim resumes
+  automatically), or (2) explicitly migrate the harness to
+  `trustedSingleProcess` mode and use the
+  `forceReclaim(hostConfirmedDead)` operator path (this requires
+  external SIGKILL of the worker first; see trusted-mode
+  recovery). The package does NOT offer a third
+  "supervisor-bypass" path because operator attestation alone
+  cannot fence a still-running worker — split-brain risk
+  outweighs the availability gain.
 - `probeAlive` returns `Err(IO_ERROR)` → return
   `Err(SUPERVISOR_UNHEALTHY, retryable: true)`. Never kill on a
   failed probe.
@@ -435,17 +436,20 @@ interface ForceReclaimInput {
   readonly harnessId: HarnessId;     // identifies the snapshot chain
   readonly sessionId: SessionId;     // the session being reclaimed
   /**
-   * Admin capability — REQUIRED. Production hosts MUST supply a
-   * non-empty AdminCapability minted via createAdminCapability(secret)
-   * (or platform equivalent). The capability is verified out of
-   * band by the host; this package only checks it is present and
-   * non-empty. forceReclaim is destructive (kills workers, advances
-   * durable state) and MUST NOT be exposed to in-process callers
-   * that lack the privileged token. Hosts SHOULD scope tokens per
-   * harnessId so a token leaked from one harness cannot reclaim
-   * another.
+   * Admin verifier — REQUIRED. A host-supplied callback the
+   * package invokes BEFORE any kill, marker write, or CAS. The
+   * package does NOT trust bare token strings — verification
+   * logic (signature check, admin-service callout, scoped
+   * capability validation) lives in the host. Returning
+   * Err(PERMISSION) aborts forceReclaim immediately with no
+   * destructive side effects. Hosts SHOULD make verification
+   * scoped per (harnessId, sessionId) so a leaked credential
+   * from one harness cannot reclaim another.
    */
-  readonly adminCapability: AdminCapability;
+  readonly adminVerifier: (ctx: {
+    readonly harnessId: HarnessId;
+    readonly sessionId: SessionId;
+  }) => Promise<Result<void, KoiError>>;
   /**
    * One of:
    *  - { kind: "manualHandle", handle: WorkerHandle, supervisor: Supervisor }
@@ -471,21 +475,22 @@ interface ForceReclaimInput {
         // host-confirmed-dead marker before any CAS. The marker
         // makes the override path retry-safe.
         readonly hostConfirmedDead?: boolean;
-        // Supervisor-independent emergency recovery. Honored ONLY
-        // when override=true AND hostConfirmedDead=true. Skips
-        // probe/kill of the supplied handle. Trust model: operator
-        // has out-of-band evidence the worker is dead during a
-        // supervisor outage.
-        readonly skipSupervisorProbe?: boolean;
       }
     | { readonly kind: "hostConfirmedDead" };
 
-// Opaque admin capability — host mints these out of band; the
-// package only checks presence and non-emptiness. Forge / leak
-// resistance is the host's responsibility.
-type AdminCapability = string & { readonly __admin: unique symbol };
-function createAdminCapability(secret: string): AdminCapability;
-}
+type AdminVerifier = (ctx: {
+  readonly harnessId: HarnessId;
+  readonly sessionId: SessionId;
+}) => Promise<Result<void, KoiError>>;
+```
+
+Behavior step 0: invoke `adminVerifier({ harnessId, sessionId })`
+as the very first action. On `Err(PERMISSION)` or any other
+non-Ok result, return that error immediately — no kill, no
+marker write, no CAS. This is the package-enforced trust
+boundary.
+
+```ts
 
 type ForceReclaimResult = Result<
   | { readonly kind: "replayed"; readonly outcome: RecoveryOutcomeKind }
@@ -582,9 +587,9 @@ Behavior:
    for a trusted harness) returns
    `Err(INVALID_CONFIG, retryable: false)`.
 2. For `manualHandle` evidence: run the supervisor probe-then-kill
-   protocol against the supplied handle (skipped when
-   `skipSupervisorProbe: true` is also set; see supervisor-
-   independent escalation in the reclaim section). Live owner →
+   protocol against the supplied handle. There is no supervisor
+   bypass — supervisor outage blocks supervised recovery (see
+   supervisor-outage policy). Live owner →
    `Err(RECLAIM_LIVE_OWNER)`; kill failure → `Err(KILL_FAILED)`.
    When `evidence.hostConfirmedDead === true` is also set
    (override path), write the same harness-scoped
@@ -643,8 +648,14 @@ interface LongRunningConfig {
   readonly leaseTtlMs?: number;               // heartbeat staleness threshold; default 90_000
   readonly heartbeatIntervalMs?: number;      // how often the timer-driven loop bumps heartbeat; default 30_000
   readonly abortTimeoutMs?: number;           // max wait for engine to quiesce on durability loss; default 10_000
-  // INVARIANT: abortTimeoutMs < leaseTtlMs - 2 * heartbeatIntervalMs
-  // createLongRunningHarness throws INVALID_CONFIG if violated.
+  // INVARIANTS (createLongRunningHarness throws INVALID_CONFIG if any are violated):
+  //   1. abortTimeoutMs < leaseTtlMs - 2 * heartbeatIntervalMs
+  //      (so at least one heartbeat lands during quiesce)
+  //   2. leaseTtlMs >= 3 * heartbeatIntervalMs
+  //      (so the heartbeat-stale double-confirmation window of
+  //       2 * heartbeatIntervalMs cannot misclassify a healthy
+  //       owner that briefly missed one beat)
+  //   3. heartbeatIntervalMs > 0 and leaseTtlMs > 0
 
   /**
    * Supervisor with killAndConfirm. Required unless trustedSingleProcess
