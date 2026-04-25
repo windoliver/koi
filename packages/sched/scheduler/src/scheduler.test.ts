@@ -63,7 +63,7 @@ describe("createScheduler", () => {
       createSqliteTaskStore(makeDb()),
       async () => {},
     );
-    await expect(scheduler.schedule("not-a-cron", aid, input, "spawn")).rejects.toThrow();
+    void expect(scheduler.schedule("not-a-cron", aid, input, "spawn")).rejects.toThrow();
     await scheduler[Symbol.asyncDispose]();
   });
 
@@ -128,7 +128,7 @@ describe("createScheduler", () => {
       dispatcher,
       clock,
     );
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.submit(aid, input, "spawn", { maxRetries: 1 });
     for (let i = 0; i < 20; i++) {
       clock.tick(10);
@@ -146,7 +146,7 @@ describe("createScheduler", () => {
       createSqliteTaskStore(makeDb()),
       async () => {},
     );
-    scheduler.watch((e) => events.push(e));
+    scheduler.watch((e: SchedulerEvent) => events.push(e));
     await scheduler.submit(aid, input, "spawn");
     expect(events.some((e) => e.kind === "task:submitted")).toBe(true);
     await scheduler[Symbol.asyncDispose]();
