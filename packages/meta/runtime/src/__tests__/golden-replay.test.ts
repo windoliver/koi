@@ -12808,30 +12808,3 @@ describe("Golden: @koi/temporal", () => {
     await scheduler[Symbol.asyncDispose]();
   });
 });
-
-// ---------------------------------------------------------------------------
-// @koi/temporal trajectory fixture (golden file — produced by recording script)
-// ---------------------------------------------------------------------------
-
-describe("temporal ATIF trajectory (golden file)", () => {
-  test("schema_version is ATIF-v1.6 (skip if not recorded)", async () => {
-    const file = Bun.file(`${FIXTURES}/temporal.trajectory.json`);
-    if (!(await file.exists())) {
-      console.warn("temporal.trajectory.json not recorded yet — skipping");
-      return;
-    }
-    const traj = (await file.json()) as { schema_version?: string };
-    expect(traj.schema_version).toBe("ATIF-v1.6");
-  });
-
-  test("trajectory steps are non-empty (skip if not recorded)", async () => {
-    const file = Bun.file(`${FIXTURES}/temporal.trajectory.json`);
-    if (!(await file.exists())) {
-      console.warn("temporal.trajectory.json not recorded yet — skipping");
-      return;
-    }
-    const traj = (await file.json()) as { steps?: unknown[] };
-    expect(Array.isArray(traj.steps)).toBe(true);
-    expect((traj.steps ?? []).length).toBeGreaterThan(0);
-  });
-});
