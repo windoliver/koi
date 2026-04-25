@@ -61,8 +61,17 @@ interface PersistedState {
 function loadStateSync(dbPath: string): PersistedState | undefined {
   try {
     return JSON.parse(readFileSync(dbPath, "utf8")) as PersistedState;
-  } catch {
-    return undefined;
+  } catch (err: unknown) {
+    // File not found is normal on first run — return empty state.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    // File exists but cannot be read or parsed — fail loudly so the operator
+    // is alerted rather than silently booting with empty/stale state.
+    throw new Error(
+      `[temporal-scheduler] dbPath "${dbPath}" cannot be loaded — ` +
+        "fix or remove the file before restarting. " +
+        `Cause: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
 }
 
@@ -280,6 +289,8 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
   const cancelledTaskIds = new Set<string>();
   // Maps taskId → the actual Temporal workflowId used (spawn = task id, dispatch = agentId)
   const taskWorkflowIds = new Map<string, string>();
+  // Set on disposal so stale getResult callbacks cannot mutate or persist after shutdown.
+  let disposed = false;
 
   // Restore state from disk if dbPath is configured and a prior snapshot exists.
   if (config.dbPath !== undefined) {
@@ -391,7 +402,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     const agentId = task.agentId;
     void config.client.workflow.getResult(workflowId).then(
       (result: unknown) => {
-        if (cancelledTaskIds.has(taskId)) return;
+        if (disposed || cancelledTaskIds.has(taskId)) return;
         const completedAt = Date.now();
         tasks.set(taskId, { ...task, status: "completed" });
         history.push({
@@ -408,7 +419,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         persist();
       },
       (error: unknown) => {
-        if (cancelledTaskIds.has(taskId)) return;
+        if (disposed || cancelledTaskIds.has(taskId)) return;
         const completedAt = Date.now();
         const koiError: KoiError = {
           code: "EXTERNAL",
@@ -562,7 +573,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
         const startedAt = now;
         void config.client.workflow.getResult(targetWorkflowId).then(
           (result: unknown) => {
-            if (cancelledTaskIds.has(id)) return;
+            if (disposed || cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
             tasks.set(id, { ...runningTask, status: "completed" });
             history.push({
@@ -579,7 +590,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
             persist();
           },
           (error: unknown) => {
-            if (cancelledTaskIds.has(id)) return;
+            if (disposed || cancelledTaskIds.has(id)) return;
             const completedAt = Date.now();
             tasks.set(id, { ...runningTask, status: "failed" });
             const koiError: KoiError = {
@@ -689,6 +700,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           // Explicit workflowId so Temporal can apply overlap/reuse policies deterministically.
           // The schedule ID is the stable base; Temporal's overlap policy governs concurrent firings.
           workflowId: id,
+          // ALLOW_DUPLICATE lets each cron firing start a fresh workflow even if one with
+          // the same ID completed previously (unlike the default REJECT_DUPLICATE).
+          workflowIdReusePolicy: "ALLOW_DUPLICATE",
           args: [spawnArgs],
         };
       } else {
@@ -707,6 +721,9 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           ...(options?.timezone !== undefined ? { timezone: options.timezone } : {}),
         },
         action: scheduleAction,
+        // SKIP prevents concurrent firings from piling up if a run overruns its interval.
+        // Safe for both spawn (each firing = distinct workflow) and dispatch (signal is idempotent).
+        policies: { overlapPolicy: "SKIP" },
       });
 
       schedules.set(id, schedule);
@@ -800,6 +817,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
     },
 
     async [Symbol.asyncDispose](): Promise<void> {
+      disposed = true;
       eventListeners.clear();
       tasks.clear();
       taskWorkflowIds.clear();

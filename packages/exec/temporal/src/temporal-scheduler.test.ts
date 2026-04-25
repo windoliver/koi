@@ -707,4 +707,73 @@ describe("state persistence (dbPath)", () => {
     expect(tasks.length).toBe(1);
     await scheduler[Symbol.asyncDispose]();
   });
+
+  test("corrupt dbPath throws on creation", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(dbPath, "not-valid-json{{{{");
+    expect(() => createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath })).toThrow(
+      /cannot be loaded/,
+    );
+  });
+});
+
+describe("asyncDispose — disposed guard", () => {
+  test("getResult callback is no-op after dispose", async () => {
+    let resolveResult!: (value: unknown) => void;
+    const resultPromise = new Promise<unknown>((resolve) => {
+      resolveResult = resolve;
+    });
+    const client = makeMockClient({ getResult: mock(async () => resultPromise) });
+    const events: string[] = [];
+
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    scheduler.watch((e) => events.push(e.kind));
+    await scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn");
+
+    // Dispose clears listeners and sets the disposed flag.
+    await scheduler[Symbol.asyncDispose]();
+
+    // Resolve the workflow result after dispose — the callback must be a no-op.
+    resolveResult({ done: true });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // "task:completed" must NOT have been emitted post-dispose (listeners were cleared,
+    // and the disposed guard prevents any further emit/persist calls).
+    expect(events.filter((k) => k === "task:completed")).toHaveLength(0);
+  });
+});
+
+describe("schedule — overlap and reuse policy", () => {
+  test("spawn schedule passes workflowIdReusePolicy and overlapPolicy to client", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "spawn");
+
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as Record<string, unknown>;
+    const action = opts?.action as Record<string, unknown> | undefined;
+    const policies = opts?.policies as Record<string, unknown> | undefined;
+
+    expect(action?.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
+    expect(policies?.overlapPolicy).toBe("SKIP");
+
+    await scheduler[Symbol.asyncDispose]();
+  });
+
+  test("dispatch schedule does not set workflowIdReusePolicy", async () => {
+    const client = makeMockClient();
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    await scheduler.schedule("0 * * * *", AGENT_ID, TEXT_INPUT, "dispatch");
+
+    const createArgs = (client.schedule.create as ReturnType<typeof mock>).mock.calls[0];
+    const opts = createArgs?.[1] as Record<string, unknown>;
+    const action = opts?.action as Record<string, unknown> | undefined;
+    const policies = opts?.policies as Record<string, unknown> | undefined;
+
+    expect(action?.workflowIdReusePolicy).toBeUndefined();
+    expect(policies?.overlapPolicy).toBe("SKIP");
+
+    await scheduler[Symbol.asyncDispose]();
+  });
 });
