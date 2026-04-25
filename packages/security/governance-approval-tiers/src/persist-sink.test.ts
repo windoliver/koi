@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { agentId, type JsonObject, type PersistentGrant, sessionId } from "@koi/core";
 import { createPersistSink } from "./persist-sink.js";
 import type { ApprovalStore, PersistedApproval } from "./types.js";
@@ -34,17 +34,45 @@ describe("createPersistSink", () => {
     expect(appended.length).toBe(1);
     expect(appended[0]).toEqual({
       kind: grant.kind,
+      agentId: grant.agentId,
       payload: grant.payload,
       grantKey: grant.grantKey,
       grantedAt: grant.grantedAt,
     });
   });
 
-  it("drops agentId and sessionId — they are session-scoped, not content-scoped", async () => {
+  it("preserves agentId on the persisted record (actor scope guard)", async () => {
     const { store, appended } = makeStore();
     const sink = createPersistSink(store);
     await sink(grant);
-    expect(appended[0]).not.toHaveProperty("agentId");
+    expect(appended[0]?.agentId).toBe(grant.agentId);
+    // sessionId is intentionally dropped — sessions are not durable.
     expect(appended[0]).not.toHaveProperty("sessionId");
+  });
+
+  it("uses resolveAgentId when provided so hosts can pin a stable scope", async () => {
+    const { store, appended } = makeStore();
+    const stable = agentId("koi-tui");
+    const sink = createPersistSink(store, { resolveAgentId: () => stable });
+    await sink(grant);
+    expect(appended[0]?.agentId).toBe(stable);
+  });
+
+  // Codex round-1 finding: onApprovalPersist is fire-and-forget. Sink
+  // failures must not surface as unhandled rejections.
+  it("absorbs append errors and never returns a rejected promise", async () => {
+    const failingStore: ApprovalStore = {
+      append: async () => {
+        throw new Error("ENOSPC");
+      },
+      match: async () => undefined,
+      load: async () => [],
+    };
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const sink = createPersistSink(failingStore);
+    // Must NOT throw / reject.
+    await sink(grant);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

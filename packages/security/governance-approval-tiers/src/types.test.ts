@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { JsonObject } from "@koi/core";
+import { agentId, type JsonObject } from "@koi/core";
 import type {
   AliasSpec,
   ApprovalQuery,
@@ -14,18 +14,24 @@ describe("types.ts", () => {
     expect(values).toEqual(["once", "session", "always"]);
   });
 
-  it("PersistedApproval has all required fields", () => {
+  it("PersistedApproval has all required fields including agentId scope", () => {
     const g: PersistedApproval = {
       kind: "tool_call",
+      agentId: agentId("a"),
       payload: {} satisfies JsonObject,
       grantKey: "x",
       grantedAt: 0,
     };
     expect(g.kind).toBe("tool_call");
+    expect(g.agentId).toBe(agentId("a"));
   });
 
-  it("ApprovalQuery matches the (kind, payload) shape", () => {
-    const q: ApprovalQuery = { kind: "tool_call", payload: {} satisfies JsonObject };
+  it("ApprovalQuery requires agentId for actor-scope match", () => {
+    const q: ApprovalQuery = {
+      kind: "tool_call",
+      agentId: agentId("a"),
+      payload: {} satisfies JsonObject,
+    };
     expect(q.kind).toBe("tool_call");
   });
 

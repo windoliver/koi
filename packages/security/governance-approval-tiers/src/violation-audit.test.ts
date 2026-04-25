@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { agentId, type JsonObject, type PersistentGrant, sessionId } from "@koi/core";
 import type { GovernanceVerdict, PolicyRequest, Violation } from "@koi/core/governance-backend";
 import { createViolationAuditAdapter } from "./violation-audit.js";
@@ -65,5 +65,60 @@ describe("createViolationAuditAdapter", () => {
     const auditedSink = createViolationAuditAdapter({ sink: innerSink, onViolation });
     await auditedSink(grant);
     expect(order).toEqual(["inner", "audit"]);
+  });
+
+  // Codex round-1 finding: onApprovalPersist is fire-and-forget; the
+  // adapter must absorb sink failures without rejecting.
+  it("absorbs inner sink failures and skips emitting the audit verdict", async () => {
+    let auditCalls = 0;
+    const failingSink = async (): Promise<void> => {
+      throw new Error("ENOSPC");
+    };
+    const onViolation = (): void => {
+      auditCalls += 1;
+    };
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const auditedSink = createViolationAuditAdapter({ sink: failingSink, onViolation });
+    // Must not reject.
+    await auditedSink(grant);
+    expect(auditCalls).toBe(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("uses resolveAgentId to pin the audit request scope to the persisted scope", async () => {
+    const recorded: Recorded[] = [];
+    const onViolation = (verdict: GovernanceVerdict, request: PolicyRequest): void => {
+      recorded.push({ verdict, request });
+    };
+    const stable = agentId("koi-tui");
+    const auditedSink = createViolationAuditAdapter({
+      sink: async () => undefined,
+      onViolation,
+      resolveAgentId: () => stable,
+    });
+    await auditedSink(grant); // grant.agentId is "a1"
+    expect(recorded[0]?.request.agentId).toBe(stable);
+  });
+
+  // Codex round-1 finding: a buggy onViolation host must not crash the
+  // sink callback.
+  it("absorbs onViolation failures", async () => {
+    let innerCalls = 0;
+    const innerSink = async (): Promise<void> => {
+      innerCalls += 1;
+    };
+    const failingViolation = (): void => {
+      throw new Error("subscriber blew up");
+    };
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const auditedSink = createViolationAuditAdapter({
+      sink: innerSink,
+      onViolation: failingViolation,
+    });
+    await auditedSink(grant);
+    expect(innerCalls).toBe(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

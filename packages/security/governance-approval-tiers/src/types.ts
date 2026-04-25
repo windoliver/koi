@@ -1,12 +1,22 @@
-import type { JsonObject } from "@koi/core";
+import type { AgentId, JsonObject } from "@koi/core";
 import type { PolicyRequestKind } from "@koi/core/governance-backend";
 
 /** Narrow union of the three user-facing approval tiers. */
 export type ApprovalScope = "once" | "session" | "always";
 
-/** A single persisted approval record. Append-only. */
+/**
+ * A single persisted approval record. Append-only.
+ *
+ * `agentId` is the actor scope: a grant recorded for one agent must
+ * never satisfy a query from a different agent, even when (kind, payload)
+ * are identical. This is the actor-scope guard; without it, a backend
+ * whose ask decision depends on the requesting agent could replay a
+ * lower-trust agent's approval as `GOVERNANCE_ALLOW` for a higher-trust
+ * one.
+ */
 export interface PersistedApproval {
   readonly kind: PolicyRequestKind;
+  readonly agentId: AgentId;
   readonly payload: JsonObject;
   /** Stable SHA-256 hex of (kind, payload) via @koi/hash.computeGrantKey. */
   readonly grantKey: string;
@@ -20,9 +30,15 @@ export interface PersistedApproval {
   readonly aliasOf?: string;
 }
 
-/** Query shape for ApprovalStore.match(). */
+/**
+ * Query shape for ApprovalStore.match().
+ *
+ * `agentId` is required — the store must enforce actor-scope equality,
+ * not just (kind, payload) match.
+ */
 export interface ApprovalQuery {
   readonly kind: PolicyRequestKind;
+  readonly agentId: AgentId;
   readonly payload: JsonObject;
 }
 

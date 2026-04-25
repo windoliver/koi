@@ -2639,15 +2639,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // grant, and install a persistence sink that appends scope:"always"
     // approvals to the store. Path defaults to ~/.koi/approvals.json; override
     // with KOI_APPROVALS_PATH for tests and sandboxed invocations.
+    //
+    // Scope key for both writes and reads is the manifest-derived hostId
+    // (`precomputedAgentId`), so:
+    //   1. Different logical agents cannot replay each other's approvals
+    //      even when (kind, payload) collide (codex round-1 finding).
+    //   2. The same logical agent matches across process restarts —
+    //      `ctx.session.agentId` is already pre-computed from hostId in
+    //      this factory, so the live agentId is identical to the scope.
     const approvalStore =
       governanceBackend !== undefined
         ? createJsonlApprovalStore({
             path: process.env.KOI_APPROVALS_PATH ?? join(homedir(), ".koi", "approvals.json"),
           })
         : undefined;
+    const resolveStableAgentId = (): typeof precomputedAgentId => precomputedAgentId;
     const wrappedGovernanceBackend =
       governanceBackend !== undefined && approvalStore !== undefined
-        ? wrapBackendWithPersistedAllowlist(governanceBackend, approvalStore)
+        ? wrapBackendWithPersistedAllowlist(governanceBackend, approvalStore, {
+            resolveAgentId: resolveStableAgentId,
+          })
         : governanceBackend;
 
     const governanceRules: readonly RuleDescriptor[] =
@@ -2688,11 +2699,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const auditedPersistSink =
       approvalStore !== undefined && onGovernanceViolation !== undefined
         ? createViolationAuditAdapter({
-            sink: createPersistSink(approvalStore),
+            sink: createPersistSink(approvalStore, { resolveAgentId: resolveStableAgentId }),
             onViolation: onGovernanceViolation,
+            resolveAgentId: resolveStableAgentId,
           })
         : approvalStore !== undefined
-          ? createPersistSink(approvalStore)
+          ? createPersistSink(approvalStore, { resolveAgentId: resolveStableAgentId })
           : undefined;
 
     const governanceMw =
