@@ -71,19 +71,19 @@ export interface WebhookConfig {
    */
   readonly leaseRenewalMs?: number | undefined;
   /**
-   * After this many milliseconds, the renewal loop stops. The dispatcher
-   * continues running; if it eventually succeeds the key is committed and
-   * 200 is returned — slow-but-healthy handlers are not penalised. If the
-   * dispatcher never returns (hung), the key expires after `processingTtlMs`
-   * (default 5 min), at which point provider retries are accepted.
+   * Maximum time in milliseconds to wait for the dispatcher to settle. If the
+   * dispatcher does not complete within this window, the dedup reservation is
+   * aborted and 503 is returned so the provider can retry with a fresh
+   * reservation. The original dispatcher continues running in the background,
+   * but its eventual commit is a no-op (token mismatch after abort).
    *
-   * Default: `processingTtlMs` (5 min). Set lower (e.g. 2-3× p99 dispatch
-   * latency) to recover faster from hung dispatchers, or higher if your
-   * dispatchers are reliably slow-but-healthy and you prefer fewer retries.
+   * Set to 2-3× your p99 dispatch latency to cover slow-but-healthy dispatches
+   * while bounding the duplicate execution window for hung dispatchers.
    *
-   * **Note:** this option does not provide a hard HTTP-response deadline or
-   * true cancellation. For real cancellation, pass an `AbortSignal` from your
-   * dispatcher and abort on a separate timer.
+   * Default: `processingTtlMs` (5 min). For custom `idempotencyStore`: `leaseRenewalMs × 2`.
+   *
+   * **Note:** this does not cancel the dispatcher. For true cancellation, wire an
+   * `AbortSignal` into your dispatcher and abort it from a separate timer.
    */
   readonly maxDispatchMs?: number | undefined;
   /**
@@ -349,9 +349,10 @@ export function createWebhookServer(
     const rawBody = bodyResult.raw;
 
     // Provider-level signature verification (when providerRouting is enabled).
-    // Dedup key is extracted here but NOT committed until after dispatch succeeds.
-    // pendingToken is the reservation token returned by tryBegin(); required for
-    // commit/abort so that stale requests cannot corrupt a newer reservation.
+    // rawDedupKey is extracted here but reservation is deferred until the
+    // authenticated account is known, so the scoped key reflects the verified tenant.
+    // pendingToken is the reservation token returned by tryBegin() after auth.
+    let rawDedupKey: string | undefined;
     let pendingDedupKey: string | undefined;
     let pendingToken: string | undefined;
 
@@ -382,16 +383,16 @@ export function createWebhookServer(
       }
       // Resolve dedup key: prefer provider-native ID (verified payload), fall back
       // to caller-supplied keyExtractor (enables GitHub/generic replay protection).
-      let dedupKey = verifyResult.dedupKey;
-      if (dedupKey === undefined && config.keyExtractor !== undefined) {
-        dedupKey = await config.keyExtractor(provider.kind, request, rawBody);
+      rawDedupKey = verifyResult.dedupKey;
+      if (rawDedupKey === undefined && config.keyExtractor !== undefined) {
+        rawDedupKey = await config.keyExtractor(provider.kind, request, rawBody);
       }
       // Fail-closed: if the provider verified the request but cannot produce a
       // replay-safe key — including when keyExtractor is configured but returns
       // undefined for a specific request (e.g. missing X-GitHub-Delivery) — reject
       // unless the caller has opted in. A configured keyExtractor that returns
       // undefined is not a pass; it means this delivery has no provable identity.
-      if (dedupKey === undefined && !config.allowReplayableProviders) {
+      if (rawDedupKey === undefined && !config.allowReplayableProviders) {
         return jsonResponse(400, {
           ok: false,
           error:
@@ -400,34 +401,10 @@ export function createWebhookServer(
             "or provide a keyExtractor to derive a stable key for this request shape.",
         });
       }
-      // Scope all dedup keys with provider + URL account — both provider-native IDs
-      // and keyExtractor-supplied keys. Always include the URL account (even when
-      // not signature-verified) to prevent cross-tenant collisions for deployments
-      // using shared secrets + authenticators. The account-binding check later
-      // ensures requests without a verified account are rejected before dispatch.
-      if (dedupKey !== undefined) {
-        const accountPart = account !== undefined ? `:${account}` : "";
-        dedupKey = `${provider.kind}${accountPart}:${dedupKey}`;
-      }
-      // Atomically reserve the dedup key — prevents concurrent duplicate dispatch.
-      // tryBegin() is synchronous: no await between check and reservation, so
-      // concurrent requests cannot both pass before either records.
-      if (dedupKey !== undefined) {
-        const beginResult = idempotencyStore.tryBegin(dedupKey);
-        if (beginResult.state !== "ok") {
-          if (beginResult.state === "duplicate") {
-            return jsonResponse(200, { ok: true, duplicate: true });
-          }
-          // in-flight or capacity-exceeded — retryable
-          const error =
-            beginResult.state === "in-flight"
-              ? "Delivery already in-flight, retry shortly"
-              : "Idempotency store at capacity, retry shortly";
-          return jsonResponse(503, { ok: false, error });
-        }
-        pendingDedupKey = dedupKey;
-        pendingToken = beginResult.token;
-      }
+      // Reservation is deferred to after auth so the scoped key uses the verified
+      // routing.account instead of the unsigned URL account. This prevents two
+      // different tenants sharing the same provider-native event ID from colliding
+      // in the dedup namespace and silently dropping each other's events.
     }
 
     // Account-scope rejection: a shared provider secret proves body integrity but
@@ -467,23 +444,17 @@ export function createWebhookServer(
     // Pluggable authenticator (receives raw body for HMAC verification).
     // Runs AFTER provider signature check — can additionally authorize the
     // (provider, account) tuple to prevent cross-tenant injection.
+    // No dedup reservation exists yet — it is deferred until after auth so the
+    // final authenticated routing.account is used for scoping (see below).
     if (authenticator !== undefined) {
       let authResult: Awaited<ReturnType<WebhookAuthenticator>>;
       try {
         authResult = await authenticator(request, rawBody);
       } catch (err: unknown) {
-        if (pendingDedupKey !== undefined && pendingToken !== undefined) {
-          idempotencyStore.abort(pendingDedupKey, pendingToken);
-          pendingDedupKey = undefined;
-          pendingToken = undefined;
-        }
         const message = err instanceof Error ? err.message : String(err);
         return jsonResponse(503, { ok: false, error: `Auth failed: ${message}` });
       }
       if (!authResult.ok) {
-        if (pendingDedupKey !== undefined && pendingToken !== undefined) {
-          idempotencyStore.abort(pendingDedupKey, pendingToken);
-        }
         const status = authResult.error.retryable ? 503 : 401;
         return jsonResponse(status, { ok: false, error: authResult.error.message });
       }
@@ -518,15 +489,37 @@ export function createWebhookServer(
         const accountMismatch = routing.account !== account;
         const accountUnverified = authResult.value.accountVerified !== true;
         if (accountMismatch || accountUnverified) {
-          if (pendingDedupKey !== undefined && pendingToken !== undefined) {
-            idempotencyStore.abort(pendingDedupKey, pendingToken);
-          }
           const reason = accountMismatch
             ? "Authenticator did not bind the URL account"
             : "Authenticator must set accountVerified: true for shared-secret account routes";
           return jsonResponse(401, { ok: false, error: `${reason} — route rejected` });
         }
       }
+    }
+
+    // Dedup reservation: scope the key with the final authenticated routing.account
+    // (set by per-account secret map or authenticator) rather than the unsigned URL
+    // account. This prevents two different tenants sharing the same provider-native
+    // event ID from colliding in the dedup namespace and silently dropping events.
+    // tryBegin() is synchronous — no await between check and reservation, so
+    // concurrent requests cannot both pass before either records.
+    if (rawDedupKey !== undefined && provider !== undefined) {
+      const finalAccount = routing.account;
+      const accountPart = finalAccount !== undefined ? `:${finalAccount}` : "";
+      const dedupKey = `${provider.kind}${accountPart}:${rawDedupKey}`;
+      const beginResult = idempotencyStore.tryBegin(dedupKey);
+      if (beginResult.state !== "ok") {
+        if (beginResult.state === "duplicate") {
+          return jsonResponse(200, { ok: true, duplicate: true });
+        }
+        const error =
+          beginResult.state === "in-flight"
+            ? "Delivery already in-flight, retry shortly"
+            : "Idempotency store at capacity, retry shortly";
+        return jsonResponse(503, { ok: false, error });
+      }
+      pendingDedupKey = dedupKey;
+      pendingToken = beginResult.token;
     }
 
     const frameId = nextFrameId();
@@ -552,41 +545,59 @@ export function createWebhookServer(
 
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
-    // After effectiveMaxDispatchMs (default: processingTtlMs), renewal stops so a
-    // hung handler's reservation eventually expires and provider retries are accepted.
-    // The dispatcher continues running — healthy dispatches that settle after the
-    // window still succeed and commit. Timer is cleared immediately on settlement.
+    // Race the dispatch against effectiveMaxDispatchMs: if the dispatch wins (normal
+    // path), we commit and return 200. If the timeout wins, we abort the reservation
+    // and return 503 so the provider retries with a fresh reservation. This prevents
+    // the lease from quietly expiring while the handler is still running, which would
+    // reopen the key for concurrent duplicate execution.
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
-    let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       const key = pendingDedupKey;
       const token = pendingToken;
       renewalTimer = setInterval(() => {
         idempotencyStore.renew(key, token);
       }, leaseRenewalMs);
-      maxDispatchTimer = setTimeout(() => {
-        // Stop renewing so the processing TTL counts down. A hung handler's
-        // reservation expires after processingTtlMs, unblocking provider retries.
-        // We do NOT abort: explicit abort immediately allows a concurrent
-        // duplicate; TTL expiry gives a bounded delay instead.
-        clearInterval(renewalTimer);
-      }, effectiveMaxDispatchMs);
     }
 
-    try {
-      await Promise.resolve(dispatcher(session, frame));
-    } catch (err: unknown) {
-      clearTimeout(maxDispatchTimer);
-      clearInterval(renewalTimer);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timeoutHandle = setTimeout(() => resolve("timeout"), effectiveMaxDispatchMs);
+    });
+
+    let dispatchError: unknown;
+    const dispatchPromise = (async (): Promise<"ok" | "error"> => {
+      try {
+        await Promise.resolve(dispatcher(session, frame));
+        return "ok";
+      } catch (err: unknown) {
+        dispatchError = err;
+        return "error";
+      }
+    })();
+
+    const result = await Promise.race([dispatchPromise, timeoutPromise]);
+    clearTimeout(timeoutHandle);
+    clearInterval(renewalTimer);
+
+    if (result === "timeout") {
+      // Abort the reservation so provider retries are immediately accepted.
+      // The original dispatcher may still be running in the background, but its
+      // eventual commit will be a no-op (token mismatch after abort).
+      if (pendingDedupKey !== undefined && pendingToken !== undefined) {
+        idempotencyStore.abort(pendingDedupKey, pendingToken);
+      }
+      return jsonResponse(503, { ok: false, error: "Dispatch timeout — retry shortly", frameId });
+    }
+
+    if (result === "error") {
       // Abort dedup reservation so provider can retry and be accepted.
       if (pendingDedupKey !== undefined && pendingToken !== undefined) {
         idempotencyStore.abort(pendingDedupKey, pendingToken);
       }
-      const message = err instanceof Error ? err.message : String(err);
+      const message =
+        dispatchError instanceof Error ? dispatchError.message : String(dispatchError);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
     }
-    clearTimeout(maxDispatchTimer);
-    clearInterval(renewalTimer);
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
     // Provider retries after transient failures will not be silently dropped.

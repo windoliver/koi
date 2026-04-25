@@ -1467,13 +1467,10 @@ describe("WebhookServer — generic provider dedup", () => {
 describe("WebhookServer — maxDispatchMs", () => {
   afterEach(() => {});
 
-  test("maxDispatchMs stops renewal but slow-success dispatch commits and returns 200", async () => {
-    // Dispatcher takes longer than maxDispatchMs — simulates a slow but healthy handler.
-    // Server should return 200 (commit) since the handler succeeded — the provider
-    // must not retry and cause duplicate side effects.
-    // Uses generic provider which provides a built-in dedupKey via X-Webhook-ID.
+  test("dispatch that finishes before maxDispatchMs commits and returns 200", async () => {
+    // Fast dispatch — completes well within maxDispatchMs. Server commits and returns 200.
     const secret = "test-secret";
-    const webhookId = "wh_timeout_test";
+    const webhookId = "wh_fast_test";
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const body = JSON.stringify({ action: "test" });
     const enc = new TextEncoder();
@@ -1491,27 +1488,20 @@ describe("WebhookServer — maxDispatchMs", () => {
     );
     const sig = `v1,${Buffer.from(rawSig).toString("base64")}`;
 
-    let resolveDispatch!: () => void;
-    const dispatchGate = new Promise<void>((res) => {
-      resolveDispatch = res;
-    });
-
     const srv = createWebhookServer(
       {
         port: 0,
         pathPrefix: "/webhook",
         providerRouting: true,
-        maxDispatchMs: 20,
+        maxDispatchMs: 500,
       },
-      async () => {
-        await dispatchGate; // blocks until we resolve it after timeout
-      },
+      async () => {}, // instant dispatch — well within 500ms window
       undefined,
       { generic: secret },
     );
     await srv.start();
 
-    const fetchPromise = fetch(`http://localhost:${srv.port()}/webhook/generic`, {
+    const res = await fetch(`http://localhost:${srv.port()}/webhook/generic`, {
       method: "POST",
       headers: {
         "X-Webhook-Signature": sig,
@@ -1521,22 +1511,68 @@ describe("WebhookServer — maxDispatchMs", () => {
       },
       body,
     });
-
-    // Wait for timeout to fire (maxDispatchMs=20ms), then unblock dispatcher
-    await new Promise<void>((res) => setTimeout(res, 50));
-    resolveDispatch();
-
-    const res = await fetchPromise;
-    // Slow but successful: must commit (200), not abort (503)
     expect(res.status).toBe(200);
     const b = (await res.json()) as { ok: boolean; frameId: string };
     expect(b.ok).toBe(true);
     srv.stop();
   });
 
-  test("hung dispatcher releases dedup key after maxDispatchMs + processingTtlMs", async () => {
-    // maxDispatchMs stops renewal; the processing TTL then counts down to zero.
-    // A second delivery of the same event must be accepted (ok) after that window.
+  test("dispatch that exceeds maxDispatchMs aborts reservation and returns 503", async () => {
+    // Slow dispatch — exceeds maxDispatchMs. Server aborts the dedup key and returns
+    // 503 so the provider can retry with a fresh reservation. This prevents the lease
+    // from quietly expiring while the handler is still running (duplicate dispatch window).
+    const secret = "test-secret";
+    const webhookId = "wh_slow_test";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = JSON.stringify({ action: "test" });
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const rawSig = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      enc.encode(`${webhookId}.${timestamp}.${body}`),
+    );
+    const sig = `v1,${Buffer.from(rawSig).toString("base64")}`;
+
+    const srv = createWebhookServer(
+      {
+        port: 0,
+        pathPrefix: "/webhook",
+        providerRouting: true,
+        maxDispatchMs: 20,
+      },
+      async () => new Promise<void>(() => {}), // never resolves — hung
+      undefined,
+      { generic: secret },
+    );
+    await srv.start();
+
+    const res = await fetch(`http://localhost:${srv.port()}/webhook/generic`, {
+      method: "POST",
+      headers: {
+        "X-Webhook-Signature": sig,
+        "X-Webhook-ID": webhookId,
+        "X-Webhook-Timestamp": timestamp,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    expect(res.status).toBe(503);
+    const b = (await res.json()) as { ok: boolean; error: string };
+    expect(b.ok).toBe(false);
+    expect(b.error).toMatch(/timeout/i);
+    srv.stop();
+  });
+
+  test("hung dispatcher releases dedup key immediately after maxDispatchMs via abort", async () => {
+    // maxDispatchMs fires → reservation is explicitly aborted (not left to expire).
+    // A second delivery of the same event is accepted as soon as the abort completes.
     const secret = "test-secret";
     const webhookId = "wh_hung_test";
     const timestamp = Math.floor(Date.now() / 1000).toString();
