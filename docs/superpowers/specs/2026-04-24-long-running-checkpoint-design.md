@@ -389,12 +389,36 @@ Behavior:
    input.sessionId`. forceReclaim is bound to the CURRENT active
    session; a mistyped or stale (harnessId, sessionId) pair must
    not be allowed to kill an unrelated worker or replay outcomes
-   from a different session. For `manualHandle` evidence, also
-   require `loadSession(prev.lastSessionId).workerHandle ===
-   input.evidence.handle` (durable binding check) — refuse with
-   `Err(STALE_SESSION)` on mismatch. The handle must match the one
-   the active snapshot recorded; the operator cannot supply an
-   arbitrary unrelated handle.
+   from a different session.
+
+   For `manualHandle` evidence, the binding check depends on which
+   missing-handle case is being recovered:
+   - **Session record exists with a workerHandle:** require
+     `loadSession(prev.lastSessionId).workerHandle ===
+     input.evidence.handle`. Mismatch → `Err(STALE_SESSION)`. The
+     operator cannot supply an unrelated handle.
+   - **Session record exists but workerHandle is undefined**
+     (legacy data, activation crash before persistence): the
+     operator-supplied handle is the only available authority. The
+     evidence MUST set `override: true` (see below) to acknowledge
+     the binding cannot be cryptographically verified; without
+     `override` the call returns `Err(WORKER_HANDLE_MISSING)`.
+   - **Session record itself is missing** (sustained NOT_FOUND
+     orphan): same as the no-workerHandle case — `override: true`
+     is required. The harness verifies fencing via
+     `(harnessId, prev.lastSessionId, prev.phase === "active")`
+     instead of the durable handle binding. The operator's
+     attestation is the recovery authority.
+
+   `ForceReclaimInput.evidence` for `manualHandle` therefore is:
+   `{ kind: "manualHandle"; handle: WorkerHandle; supervisor: Supervisor; override?: boolean }`.
+   `override: true` is required ONLY for the no-binding cases; the
+   admin API logs the override prominently so it appears in audit
+   trails. With `override`, forceReclaim still runs probe-then-kill
+   against the supplied handle (so an operator who supplies a
+   visibly-live worker still gets `RECLAIM_LIVE_OWNER`); the
+   override only relaxes the durable-binding requirement, not the
+   live-fence safety check.
 1b. **Mode fencing.** `hostConfirmedDead` evidence is ONLY accepted
    for harnesses configured with `trustedSingleProcess === true`.
    `manualHandle` evidence is ONLY accepted for harnesses with a
@@ -1307,12 +1331,27 @@ Unambiguous algorithm:
    - **Quiescent:** CAS-advance to `suspended` with
      `failureReason = "disposed before completion"`. Retry policy
      depends on mode:
-     - **Supervisor mode (default):** 4-try backoff (100/500/2500/
-       12500ms). On success, stop heartbeats and release store
-       references; return `Ok(undefined)`. On failure, stop
-       heartbeats anyway — the engine is confirmed stopped and TTL
-       staleness + supervisor `killAndConfirm` (no-op on a dead
-       process) will safely reclaim.
+     - **Supervisor mode (default):** dispose follows the SAME
+       durability protocol as pause: write a `harness-suspended`
+       `RecoveryOutcome` BEFORE the snapshot CAS, then 4-try
+       backoff (100/500/2500/12500ms). On CAS success, stop
+       heartbeats, release store references, return
+       `Ok({ kind: "disposed" })`. On 4-try exhaustion: keep
+       heartbeats running, transition `durability = "unhealthy"`,
+       durably call `markCleanupUnhealthy(sid,
+       "DISPOSE_WRITE_FAILED")`, schedule the same background
+       retry loop used for pause/terminal failures (15s
+       exponential, 5min cap; CAS uses the durable outcome record's
+       snapshotDelta). Public return is
+       `Err(CHECKPOINT_WRITE_FAILED, retryable: true)` — NOT `Ok`.
+       The host MUST treat this as "cleanup not yet durable" and
+       can either retry `dispose()` (which observes the latched
+       failure idempotently) or rely on the background authority
+       plus peer reclaimer to drive convergence. The previous
+       "stop heartbeats anyway and rely on TTL reclaim" semantics
+       were unsafe because they returned `Ok` while the chain was
+       still `active`; the new contract guarantees: callers seeing
+       `Ok` ALWAYS see a durably `suspended` snapshot.
      - **`trustedSingleProcess=true` mode:** no supervisor, so TTL
        reclaim is disabled. The dispose CAS MUST eventually succeed
        to avoid a permanent `active` wedge. Heartbeats continue
