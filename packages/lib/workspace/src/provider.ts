@@ -107,19 +107,23 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         const staleInfo = attached.get(agentId);
 
         // Scan for workspaces that survived a process restart (not in the in-memory map).
-        let staleInfo2 = staleInfo;
-        if (staleInfo2 === undefined && config.backend.findByAgentId) {
-          staleInfo2 = await config.backend.findByAgentId(agentId);
+        let recoveredInfo: WorkspaceInfo | undefined;
+        if (staleInfo === undefined && config.backend.findByAgentId) {
+          recoveredInfo = await config.backend.findByAgentId(agentId);
         }
 
+        const staleInfo2 = staleInfo ?? recoveredInfo;
+        const isFromCrashRecovery = staleInfo === undefined && recoveredInfo !== undefined;
+
         // Under "never" policy: reuse the preserved workspace rather than discarding it.
-        // Requires: healthy AND setup attestation (backend git ref, or filesystem marker for
-        // sandboxed backends). Attestation is written after postCreate completes; it is never
-        // written for unsandboxed backends without backend-level attestation support, so those
-        // always fall through to recreate. In-memory setupFailed catches in-process failures.
+        // In-process reuse (staleInfo from attached map) is always trusted.
+        // Crash-survivor reuse (from findByAgentId) requires a sandboxed backend:
+        // unsandboxed backends share git repo access with the workspace process, so
+        // both ownership (branch naming) and attestation (git refs) can be spoofed.
+        // For unsandboxed crash survivors, dispose and recreate instead.
         if (staleInfo2 !== undefined && policy === "never") {
           const wsId = staleInfo2.id;
-          if (!setupFailed.has(wsId)) {
+          if (!setupFailed.has(wsId) && (!isFromCrashRecovery || config.backend.isSandboxed)) {
             const [healthy, setupComplete] = await Promise.all([
               config.backend.isHealthy(wsId),
               isSetupComplete(staleInfo2),
@@ -131,7 +135,7 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           }
           setupFailed.delete(wsId);
           attached.delete(agentId);
-          // Unhealthy or setup incomplete — fall through to dispose + recreate
+          // Unhealthy, setup incomplete, or unsandboxed crash survivor — dispose + recreate
         }
 
         if (staleInfo2 !== undefined) {
