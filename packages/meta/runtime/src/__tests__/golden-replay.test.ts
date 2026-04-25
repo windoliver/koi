@@ -12813,6 +12813,156 @@ describe("Golden: @koi/toolsets", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler", () => {
+  test("submit returns a branded TaskId and task appears in query results", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const store = createSqliteTaskStore(db);
+    const scheduler = createScheduler(DEFAULT_SCHEDULER_CONFIG, store, async () => {});
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const input: import("@koi/core").EngineInput = { kind: "text", text: "hello" };
+
+    // submit with large delay so it stays pending and never dispatches
+    const id = await scheduler.submit(aid, input, "spawn", { delayMs: 3_600_000 });
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+
+    const tasks = await scheduler.query({ agentId: aid });
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]?.id).toBe(id);
+    expect(tasks[0]?.status).toBe("pending");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("cancel removes the task and returns true; re-cancel returns false", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const id = await scheduler.submit(aid, { kind: "text", text: "x" }, "spawn", {
+      delayMs: 3_600_000,
+    });
+
+    expect(await scheduler.cancel(id)).toBe(true);
+    // After cancel the task row is removed — re-cancel returns false (not in heap)
+    expect(await scheduler.cancel(id)).toBe(false);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler-provider
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler-provider", () => {
+  test("createSchedulerProvider returns 9 tools with correct descriptor names", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSchedulerProvider } = await import("@koi/scheduler-provider");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+    const tools = createSchedulerProvider(component);
+
+    expect(tools.length).toBe(9);
+    const names = tools.map((t) => t.descriptor.name);
+    expect(names).toContain("scheduler_submit");
+    expect(names).toContain("scheduler_cancel");
+    expect(names).toContain("scheduler_query");
+    expect(names).toContain("scheduler_stats");
+    expect(names).toContain("scheduler_schedule");
+    expect(names).toContain("scheduler_unschedule");
+    expect(names).toContain("scheduler_pause");
+    expect(names).toContain("scheduler_resume");
+    expect(names).toContain("scheduler_history");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("scheduler_submit + scheduler_query tools exercise the full component path", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSubmitTool, createQueryTool, createStatsTool } = await import(
+      "@koi/scheduler-provider"
+    );
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+
+    const submitTool = createSubmitTool(component);
+    const queryTool = createQueryTool(component);
+    const statsTool = createStatsTool(component);
+
+    const submitResult = (await submitTool.execute({
+      input: "run background analysis",
+      mode: "spawn",
+      delayMs: 3_600_000,
+    } as import("@koi/core").JsonObject)) as { taskId: string };
+    expect(typeof submitResult.taskId).toBe("string");
+
+    const queryResult = (await queryTool.execute({} as import("@koi/core").JsonObject)) as {
+      tasks: unknown[];
+      count: number;
+    };
+    expect(queryResult.count).toBe(1);
+    expect(Array.isArray(queryResult.tasks)).toBe(true);
+
+    const statsResult = (await statsTool.execute({} as import("@koi/core").JsonObject)) as {
+      pending: number;
+      running: number;
+    };
+    expect(statsResult.pending).toBe(1);
+    expect(statsResult.running).toBe(0);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/gateway — transport infrastructure, standalone API tests
 // (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
 // ---------------------------------------------------------------------------
