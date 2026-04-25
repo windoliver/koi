@@ -75,6 +75,11 @@ interface PersistedState {
   readonly deliveredDispatchIds: readonly string[];
 }
 
+// Unique per-process token written into the lock file alongside the PID.
+// Prevents false "live" detection when the OS reuses a PID from a crashed process:
+// a new process has a different token, so the old (pid, token) pair never matches.
+const PROCESS_SESSION_TOKEN = crypto.randomUUID();
+
 const VALID_TASK_STATUSES = new Set<string>([
   "pending",
   "running",
@@ -311,10 +316,14 @@ function saveStateSync(dbPath: string, state: PersistedState): void {
 // PID-based advisory lock for dbPath (single-writer invariant)
 // ---------------------------------------------------------------------------
 
-// Returns true when a process with the given PID is alive in this OS session.
-// Uses signal 0 — sends no signal but checks process existence via the kernel.
-// On POSIX: throws ESRCH if pid is not found, EPERM if found but not owned.
-function isProcessAlive(pid: number): boolean {
+// Returns true when the process identified by (pid, sessionToken) is the live owner of
+// the lock. Both components must match: PID alone is insufficient because the OS can
+// reuse a PID from a crashed process, making a stale lock appear live.
+function isLockOwnerAlive(pid: number, sessionToken: string): boolean {
+  if (sessionToken === PROCESS_SESSION_TOKEN && pid === process.pid) return true;
+  // Different session token → different process instance, even if PID matches.
+  if (sessionToken !== PROCESS_SESSION_TOKEN) return false;
+  // Same session token but different PID — should not happen, but treat as stale.
   try {
     process.kill(pid, 0);
     return true;
@@ -323,16 +332,26 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+function parseLockFile(content: string): { pid: number; sessionToken: string } | undefined {
+  const parts = content.trim().split(":");
+  if (parts.length < 2) return undefined;
+  const pid = Number.parseInt(parts[0] ?? "", 10);
+  const sessionToken = parts.slice(1).join(":");
+  if (Number.isNaN(pid) || sessionToken.length === 0) return undefined;
+  return { pid, sessionToken };
+}
+
 function acquireDbLock(dbPath: string): void {
   const lockPath = `${dbPath}.lock`;
+  const lockContent = `${process.pid}:${PROCESS_SESSION_TOKEN}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     let fd: number | undefined;
     try {
       // 'wx' = O_WRONLY | O_CREAT | O_EXCL — atomic on POSIX; fails EEXIST if another holder created the file.
       fd = openSync(lockPath, "wx");
-      // Write PID through the same fd before closing so the file is never empty.
+      // Write pid:sessionToken through the same fd before closing so the file is never empty.
       // An empty lock file would be misread as stale by competing processes.
-      writeSync(fd, String(process.pid));
+      writeSync(fd, lockContent);
       fsyncSync(fd);
       closeSync(fd);
       fd = undefined;
@@ -348,21 +367,21 @@ function acquireDbLock(dbPath: string): void {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
     // EEXIST: lock file exists — check whether the holder is alive.
-    let existingPid: number | undefined;
+    let existing: { pid: number; sessionToken: string } | undefined;
     try {
-      existingPid = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+      existing = parseLockFile(readFileSync(lockPath, "utf8"));
     } catch {
       // Lock file vanished between the open and the read — retry the atomic create.
       continue;
     }
-    if (!Number.isNaN(existingPid) && isProcessAlive(existingPid)) {
+    if (existing !== undefined && isLockOwnerAlive(existing.pid, existing.sessionToken)) {
       throw new Error(
-        `[temporal-scheduler] dbPath "${dbPath}" is already held by PID ${existingPid}. ` +
+        `[temporal-scheduler] dbPath "${dbPath}" is already held by PID ${existing.pid}. ` +
           "Only one scheduler instance may write to a given dbPath at a time. " +
           "Stop the other process or remove the stale lock file to continue.",
       );
     }
-    // Stale lock — unlink and retry the atomic O_EXCL create.
+    // Stale lock (dead PID or mismatched session token) — unlink and retry the atomic O_EXCL create.
     try {
       unlinkSync(lockPath);
     } catch {
@@ -377,11 +396,15 @@ function acquireDbLock(dbPath: string): void {
 
 function releaseDbLock(dbPath: string): void {
   const lockPath = `${dbPath}.lock`;
-  // Only remove the lock file if it still contains our PID (guard against a race
-  // where a stale-lock cleanup overwrote our entry and another process already holds it).
+  // Only remove the lock file if it still contains our (pid, sessionToken) pair,
+  // guarding against a race where stale-lock cleanup already replaced our entry.
   try {
-    const held = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
-    if (held === process.pid) {
+    const existing = parseLockFile(readFileSync(lockPath, "utf8"));
+    if (
+      existing !== undefined &&
+      existing.pid === process.pid &&
+      existing.sessionToken === PROCESS_SESSION_TOKEN
+    ) {
       unlinkSync(lockPath);
     }
   } catch {
@@ -1045,12 +1068,18 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           }
         }
 
-        if (skipCancel) {
-          // Idempotent spawn: workflow.start() threw but the workflow MAY already exist
-          // (ACK-lost scenario where Temporal accepted the start but the response was lost).
-          // Cancelling would kill a live execution. Instead, attach a getResult watcher using
-          // the requested workflowId so that if the workflow does exist it is tracked to
-          // completion; if it does not exist the watcher rejects and the task is marked failed.
+        // Recovery is only safe for genuinely ambiguous start failures where Temporal may
+        // have accepted the request (already-started, transport failures). For definite
+        // rejections (bad workflow type, auth, namespace — where nothing was enqueued),
+        // surface the original error so callers know the task was never created.
+        const isAmbiguousStart =
+          skipCancel &&
+          err instanceof Error &&
+          /already.?started|already.?running|already.?exists|workflow.*running/i.test(err.message);
+
+        if (isAmbiguousStart) {
+          // Idempotent spawn: workflow.start() threw "already started" — the workflow
+          // exists and is running. Attach a getResult watcher to track it to completion.
           // Do NOT throw: return the stable task ID so callers track lifecycle via events.
           const startedAt = now;
           const runningTask: ScheduledTask = { ...task, status: "running", startedAt };

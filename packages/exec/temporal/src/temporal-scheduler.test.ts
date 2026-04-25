@@ -835,9 +835,20 @@ describe("state persistence (dbPath)", () => {
   test("stale lock file (dead PID) is overwritten on startup", async () => {
     const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
     const { writeFileSync } = await import("node:fs");
-    // Write a lock file with PID 999999999 — virtually guaranteed not to exist.
-    writeFileSync(`${dbPath}.lock`, "999999999");
+    // Write a lock file with PID 999999999 and a foreign session token.
+    writeFileSync(`${dbPath}.lock`, "999999999:foreign-session-token");
     // Should not throw — stale lock is overwritten.
+    const s = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
+    await s[Symbol.asyncDispose]();
+  });
+
+  test("lock file with live PID but different session token is treated as stale (PID reuse)", async () => {
+    const dbPath = `/tmp/temporal-test-${crypto.randomUUID()}.json`;
+    const { writeFileSync } = await import("node:fs");
+    // Write a lock file with this process's own PID but a foreign session token.
+    // Simulates PID reuse: same PID, but a different process instance wrote the lock.
+    writeFileSync(`${dbPath}.lock`, `${process.pid}:foreign-session-token-not-ours`);
+    // Should not throw — same PID but different session token means stale.
     const s = createTemporalScheduler({ ...makeConfig(makeMockClient()), dbPath });
     await s[Symbol.asyncDispose]();
   });
@@ -1464,6 +1475,30 @@ describe("idempotencyKey", () => {
     const id1 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
     const id2 = await scheduler.submit(AGENT_ID, TEXT_INPUT, "dispatch");
     expect(id1).not.toBe(id2);
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+describe("idempotent spawn — definite rejection throws immediately", () => {
+  test("non-ambiguous start failure (e.g. auth error) throws rather than returning running state", async () => {
+    // A definite rejection (e.g. permission denied, bad workflow type) should NOT be
+    // treated as an ambiguous ACK-lost scenario. The task was never created.
+    const client = makeMockClient({
+      start: mock(async () => {
+        throw new Error("PERMISSION_DENIED: workflow type not registered");
+      }),
+    });
+    const events: string[] = [];
+    const scheduler = createTemporalScheduler(makeConfig(client));
+    scheduler.watch((e) => events.push(e.kind));
+    await expect(
+      scheduler.submit(AGENT_ID, TEXT_INPUT, "spawn", { idempotencyKey: "perm-denied" }),
+    ).rejects.toThrow("PERMISSION_DENIED");
+    // cancel must NOT be called (idempotencyKey present)
+    expect(client.workflow.cancel).not.toHaveBeenCalled();
+    // task should be failed, not running
+    const tasks = scheduler.query({});
+    expect(tasks[0]?.status).toBe("failed");
     await scheduler[Symbol.asyncDispose]();
   });
 });
