@@ -12893,6 +12893,257 @@ describe("Golden: @koi/governance-approval-tiers", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/temporal
+// Infrastructure L2 — Temporal-backed scheduler + spawn-ledger + worker factory.
+// No LLM required: tests exercise the contract shape via mocked Temporal clients.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/temporal", () => {
+  test("createTemporalSpawnLedger — acquire/release/capacity contract", async () => {
+    const { createTemporalSpawnLedger, DEFAULT_SPAWN_LEDGER_CONFIG } = await import(
+      "@koi/temporal"
+    );
+
+    const ledger = createTemporalSpawnLedger({ maxCapacity: 3 });
+
+    expect(ledger.capacity()).toBe(3);
+    expect(ledger.activeCount()).toBe(0);
+
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    expect(ledger.acquire()).toBe(true);
+    // At capacity — next acquire must fail
+    expect(ledger.acquire()).toBe(false);
+    expect(ledger.activeCount()).toBe(3);
+
+    ledger.release();
+    expect(ledger.activeCount()).toBe(2);
+    // After release a slot is free
+    expect(ledger.acquire()).toBe(true);
+
+    // Default config constant is correctly shaped
+    expect(DEFAULT_SPAWN_LEDGER_CONFIG.maxCapacity).toBeGreaterThan(0);
+  });
+
+  test("createTemporalScheduler — submit + cancel + query + stats via mocked client", async () => {
+    const { createTemporalScheduler } = await import("@koi/temporal");
+    const { mock } = await import("bun:test");
+    const { agentId } = await import("@koi/core");
+
+    // Minimal mock Temporal client — only workflow.start/describe/cancel/list
+    const workflowId = "wf-golden-1";
+    const agent = agentId("golden-agent");
+
+    const describeMock = mock(async (_id: string) => ({
+      status: "RUNNING" as const,
+      memo: {
+        agentId: agent,
+        workflowType: "temporal-task",
+        taskQueue: "golden-queue",
+        mode: "dispatch",
+        inputFingerprint: JSON.stringify({ kind: "text", text: "test" }),
+      },
+    }));
+    const cancelMock = mock(async () => {});
+    const client = {
+      workflow: {
+        start: mock(async () => ({ workflowId })),
+        describe: describeMock,
+        cancel: cancelMock,
+        list: mock(async () => []),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+        delete: mock(async () => {}),
+      },
+    };
+
+    const scheduler = createTemporalScheduler({
+      client,
+      taskQueue: "golden-queue",
+      workflowType: "temporal-task",
+    });
+
+    // submit a task
+    const id = await scheduler.submit(agent, { kind: "text", text: "test" }, "dispatch");
+    expect(typeof id).toBe("string");
+    expect(client.workflow.start).toHaveBeenCalledTimes(1);
+
+    // stats reflects submitted task
+    const s = scheduler.stats();
+    expect(s.pending + s.running).toBeGreaterThanOrEqual(1);
+
+    // query returns all tasks matching the filter
+    const tasks = await scheduler.query({});
+    expect(Array.isArray(tasks)).toBe(true);
+    const task = tasks.find((t) => t.id === id);
+    expect(task).toBeDefined();
+    if (task !== undefined) {
+      expect(["pending", "running", "completed", "failed", "dead_letter"]).toContain(task.status);
+    }
+
+    // cancel — should call describe then cancel
+    const cancelled = await scheduler.cancel(id);
+    expect(cancelled).toBe(true);
+    expect(cancelMock).toHaveBeenCalledTimes(1);
+
+    // asyncDispose does not throw
+    await scheduler[Symbol.asyncDispose]();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler", () => {
+  test("submit returns a branded TaskId and task appears in query results", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const store = createSqliteTaskStore(db);
+    const scheduler = createScheduler(DEFAULT_SCHEDULER_CONFIG, store, async () => {});
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const input: import("@koi/core").EngineInput = { kind: "text", text: "hello" };
+
+    // submit with large delay so it stays pending and never dispatches
+    const id = await scheduler.submit(aid, input, "spawn", { delayMs: 3_600_000 });
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+
+    const tasks = await scheduler.query({ agentId: aid });
+    expect(tasks.length).toBe(1);
+    expect(tasks[0]?.id).toBe(id);
+    expect(tasks[0]?.status).toBe("pending");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("cancel removes the task and returns true; re-cancel returns false", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore } = await import("@koi/scheduler");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+
+    const aid = agentId("golden-agent" as import("@koi/core").AgentId);
+    const id = await scheduler.submit(aid, { kind: "text", text: "x" }, "spawn", {
+      delayMs: 3_600_000,
+    });
+
+    expect(await scheduler.cancel(id)).toBe(true);
+    // After cancel the task row is removed — re-cancel returns false (not in heap)
+    expect(await scheduler.cancel(id)).toBe(false);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/scheduler-provider
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/scheduler-provider", () => {
+  test("createSchedulerProvider returns 9 tools with correct descriptor names", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSchedulerProvider } = await import("@koi/scheduler-provider");
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+    const tools = createSchedulerProvider(component);
+
+    expect(tools.length).toBe(9);
+    const names = tools.map((t) => t.descriptor.name);
+    expect(names).toContain("scheduler_submit");
+    expect(names).toContain("scheduler_cancel");
+    expect(names).toContain("scheduler_query");
+    expect(names).toContain("scheduler_stats");
+    expect(names).toContain("scheduler_schedule");
+    expect(names).toContain("scheduler_unschedule");
+    expect(names).toContain("scheduler_pause");
+    expect(names).toContain("scheduler_resume");
+    expect(names).toContain("scheduler_history");
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+
+  test("scheduler_submit + scheduler_query tools exercise the full component path", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { createScheduler, createSqliteTaskStore, createSchedulerComponent } = await import(
+      "@koi/scheduler"
+    );
+    const { createSubmitTool, createQueryTool, createStatsTool } = await import(
+      "@koi/scheduler-provider"
+    );
+    const { agentId, DEFAULT_SCHEDULER_CONFIG } = await import("@koi/core");
+
+    const db = new Database(":memory:");
+    const scheduler = createScheduler(
+      DEFAULT_SCHEDULER_CONFIG,
+      createSqliteTaskStore(db),
+      async () => {},
+    );
+    const component = createSchedulerComponent(
+      scheduler,
+      agentId("golden-agent" as import("@koi/core").AgentId),
+    );
+
+    const submitTool = createSubmitTool(component);
+    const queryTool = createQueryTool(component);
+    const statsTool = createStatsTool(component);
+
+    const submitResult = (await submitTool.execute({
+      input: "run background analysis",
+      mode: "spawn",
+      delayMs: 3_600_000,
+    } as import("@koi/core").JsonObject)) as { taskId: string };
+    expect(typeof submitResult.taskId).toBe("string");
+
+    const queryResult = (await queryTool.execute({} as import("@koi/core").JsonObject)) as {
+      tasks: unknown[];
+      count: number;
+    };
+    expect(queryResult.count).toBe(1);
+    expect(Array.isArray(queryResult.tasks)).toBe(true);
+
+    const statsResult = (await statsTool.execute({} as import("@koi/core").JsonObject)) as {
+      pending: number;
+      running: number;
+    };
+    expect(statsResult.pending).toBe(1);
+    expect(statsResult.running).toBe(0);
+
+    await scheduler[Symbol.asyncDispose]();
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/gateway — transport infrastructure, standalone API tests
 // (No cassette/LLM needed: gateway lives below the agent-loop tool surface)
 // ---------------------------------------------------------------------------
@@ -13048,5 +13299,80 @@ describe("Golden: @koi/ipc-local", () => {
 
     mailboxA.close();
     mailboxB.close();
+  });
+});
+
+// Golden: @koi/gateway-webhook
+// HTTP ingress server — sits outside the agent loop (no cassette needed).
+// Tests validate the public API surface: factory guards, idempotency store, and
+// provider signature helpers. None of these interact with the LLM or ATIF.
+describe("Golden: @koi/gateway-webhook", () => {
+  test("createWebhookServer factory guards — rejects misconfigured servers before binding", async () => {
+    const { createWebhookServer } = await import("@koi/gateway-webhook");
+
+    // No auth configured → must throw (fail-closed)
+    expect(() => createWebhookServer({ port: 0, pathPrefix: "/wh" }, () => {})).toThrow(
+      "no authentication configured",
+    );
+
+    // pathPrefix "/" → must throw (catch-all risk)
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/", allowUnauthenticated: true }, () => {}),
+    ).toThrow("pathPrefix cannot be");
+
+    // allowUnauthenticated: true satisfies the guard
+    expect(() =>
+      createWebhookServer({ port: 0, pathPrefix: "/wh", allowUnauthenticated: true }, () => {}),
+    ).not.toThrow();
+
+    // leaseRenewalMs required when custom idempotencyStore is injected
+    const stubStore = {
+      tryBegin: (_k: string) => ({ state: "ok" as const, token: "t" }),
+      renew: (_k: string, _t: string) => false,
+      commit: (_k: string, _t: string) => {},
+      abort: (_k: string, _t: string) => {},
+      prune: () => {},
+    };
+    expect(() =>
+      createWebhookServer(
+        { port: 0, pathPrefix: "/wh", allowUnauthenticated: true, idempotencyStore: stubStore },
+        () => {},
+      ),
+    ).toThrow("leaseRenewalMs is required");
+  });
+
+  test("createIdempotencyStore — four-method API prevents concurrent double-dispatch", async () => {
+    const { createIdempotencyStore } = await import("@koi/gateway-webhook");
+
+    const store = createIdempotencyStore({ ttlMs: 60_000, processingTtlMs: 30_000 });
+
+    // New key: ok + token
+    const r1 = store.tryBegin("evt-1");
+    expect(r1.state).toBe("ok");
+    const token = r1.state === "ok" ? r1.token : "";
+
+    // Same key while processing: in-flight (not duplicate, not ok)
+    expect(store.tryBegin("evt-1").state).toBe("in-flight");
+
+    // Commit → subsequent call is duplicate
+    store.commit("evt-1", token);
+    expect(store.tryBegin("evt-1").state).toBe("duplicate");
+
+    // Different key is independent
+    expect(store.tryBegin("evt-2").state).toBe("ok");
+
+    // Abort releases an in-flight reservation — retry accepted
+    const r3 = store.tryBegin("evt-3");
+    expect(r3.state).toBe("ok");
+    if (r3.state === "ok") store.abort("evt-3", r3.token);
+    expect(store.tryBegin("evt-3").state).toBe("ok");
+
+    // Stale abort after commit is a no-op (committed entry stays)
+    const r4 = store.tryBegin("evt-4");
+    if (r4.state === "ok") {
+      store.commit("evt-4", r4.token);
+      store.abort("evt-4", r4.token); // no-op
+    }
+    expect(store.tryBegin("evt-4").state).toBe("duplicate");
   });
 });

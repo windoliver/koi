@@ -247,6 +247,9 @@ export interface TaskScheduler extends AsyncDisposable {
     filter: TaskHistoryFilter,
   ) => readonly TaskRunRecord[] | Promise<readonly TaskRunRecord[]>;
   readonly watch: (listener: (event: SchedulerEvent) => void) => () => void;
+  readonly querySchedules: (
+    agentId: AgentId,
+  ) => readonly CronSchedule[] | Promise<readonly CronSchedule[]>;
 }
 
 // ---------------------------------------------------------------------------

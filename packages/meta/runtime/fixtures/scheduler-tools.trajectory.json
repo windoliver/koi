@@ -1,0 +1,888 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "scheduler-tools",
+  "agent": {
+    "name": "golden-scheduler-tools",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "scheduler_submit",
+        "description": "Submit a one-off task for immediate or delayed execution."
+      },
+      {
+        "name": "scheduler_query",
+        "description": "List your tasks. Filtered to your own tasks only."
+      },
+      {
+        "name": "scheduler_stats",
+        "description": "Get task and schedule counts scoped to your agent."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:42.390Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:42.391Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-25T04:52:42.393Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the scheduler_submit tool to submit a delayed task with input 'run nightly report' in spawn mode with a 3600000ms delay. Then use scheduler_query to list all pending tasks. Finally use scheduler_stats to report the current queue statistics.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 290,
+        "completion_tokens": 20
+      },
+      "duration_ms": 692,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "scheduler_submit",
+            "description": "Submit a one-off task for immediate or delayed execution."
+          },
+          {
+            "name": "scheduler_query",
+            "description": "List your tasks. Filtered to your own tasks only."
+          },
+          {
+            "name": "scheduler_stats",
+            "description": "Get task and schedule counts scoped to your agent."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "993d452d6accb8775a53f40b2b21f28c9533ea297236dea9a6291750fb302179",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-25T04:52:43.091Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_scheduler_submit_3",
+          "function_name": "scheduler_submit",
+          "arguments": {
+            "mode": "spawn",
+            "input": "run nightly report",
+            "delayMs": 3600000
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_scheduler_submit_3",
+            "content": "{\"taskId\":\"task_1777092763091_e9tei1hb\"}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "tool",
+      "timestamp": "2026-04-25T04:52:43.097Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_scheduler_query_4",
+          "function_name": "scheduler_query",
+          "arguments": {
+            "status": "pending"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_scheduler_query_4",
+            "content": "{\"tasks\":[{\"id\":\"task_1777092763091_e9tei1hb\",\"agentId\":\"golden-recorder\",\"input\":{\"kind\":\"text\",\"text\":\"run nightly report\"},\"mode\":\"spawn\",\"priority\":5,\"status\":\"pending\",\"createdAt\":1777092763091,\"retries\":0,\"maxRetries\":3,\"scheduledAt\":1777096363091}],\"count\":1}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 5,
+      "source": "tool",
+      "timestamp": "2026-04-25T04:52:43.103Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_scheduler_stats_5",
+          "function_name": "scheduler_stats",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_scheduler_stats_5",
+            "content": "{\"pending\":1,\"running\":0,\"completed\":0,\"failed\":0,\"deadLettered\":0,\"activeSchedules\":0,\"pausedSchedules\":0}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.104Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 695.1406669999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1777092763090,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.105Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "scheduler_submit({\"mode\":\"spawn\",\"input\":\"run nightly report\",\"delayMs\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 4.3474579999999605,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "scheduler_submit",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "_original_timestamp": 1777092763096,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.106Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "scheduler_query({\"status\":\"pending\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.5352080000000115,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "scheduler_query",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "_original_timestamp": 1777092763102,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.108Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "scheduler_stats({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.37570800000003146,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "scheduler_stats",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.109Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 695.121416,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 3,
+            "allowedCount": 3,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777092763089,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.110Z",
+      "model_name": "middleware:permissions",
+      "message": "scheduler_submit({\"mode\":\"spawn\",\"input\":\"run nightly report\",\"delayMs\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 3.386833000000024,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "scheduler_submit",
+            "resource": "scheduler_submit",
+            "toolInput": "{\"mode\":\"spawn\",\"input\":\"run nightly report\",\"delayMs\":3600000}",
+            "action": "allow",
+            "durationMs": 1,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777092763095,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.111Z",
+      "model_name": "middleware:permissions",
+      "message": "scheduler_query({\"status\":\"pending\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.4902079999999387,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "scheduler_query",
+            "resource": "scheduler_query",
+            "toolInput": "{\"status\":\"pending\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777092763101,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.112Z",
+      "model_name": "middleware:permissions",
+      "message": "scheduler_stats({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.3521249999998872,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "scheduler_stats",
+            "resource": "scheduler_stats",
+            "toolInput": "{}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1777092763107,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.113Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 694.269667,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777092763088,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.114Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 694.225917,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777092763087,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.115Z",
+      "model_name": "middleware:hooks",
+      "message": "scheduler_submit({\"mode\":\"spawn\",\"input\":\"run nightly report\",\"delayMs\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.8144580000000587,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "scheduler_submit",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777092763094,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.116Z",
+      "model_name": "middleware:hooks",
+      "message": "scheduler_query({\"status\":\"pending\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.4271249999999327,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "scheduler_query",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777092763100,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.117Z",
+      "model_name": "middleware:hooks",
+      "message": "scheduler_stats({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.31445800000005875,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "scheduler_stats",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777092763106,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.118Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 694.092666,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777092763086,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.119Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "scheduler_submit({\"mode\":\"spawn\",\"input\":\"run nightly report\",\"delayMs\":3600000})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.3757499999999254,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777092763093,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.120Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "scheduler_query({\"status\":\"pending\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.3815829999998641,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777092763099,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:43.121Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "scheduler_stats({})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 0.2826670000001741,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777092763105,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 23,
+      "source": "agent",
+      "timestamp": "2026-04-25T04:52:43.122Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"pending\":1,\"running\":0,\"completed\":0,\"failed\":0,\"deadLettered\":0,\"activeSchedules\":0,\"pausedSchedules\":0}",
+      "observation": {
+        "results": [
+          {
+            "content": "OK. I have submitted the delayed task, listed the pending tasks, and retrieved the scheduler statistics. The task 'run nightly report' with task ID task_1777092763091_e9tei1hb is pending. There is 1 pending task, 0 running, 0 completed, 0 failed, and 0 dead lettered tasks. There are 0 active and 0 paused schedules.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 462,
+        "completion_tokens": 93
+      },
+      "duration_ms": 1101,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 7,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "scheduler_submit",
+            "description": "Submit a one-off task for immediate or delayed execution."
+          },
+          {
+            "name": "scheduler_query",
+            "description": "List your tasks. Filtered to your own tasks only."
+          },
+          {
+            "name": "scheduler_stats",
+            "description": "Get task and schedule counts scoped to your agent."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "993d452d6accb8775a53f40b2b21f28c9533ea297236dea9a6291750fb302179",
+        "turnIndex": 1,
+        "_original_timestamp": 1777092763110
+      }
+    },
+    {
+      "step_id": 24,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:44.216Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 1115.147667,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 25,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:44.217Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 1115.127792,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 3,
+            "allowedCount": 3,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1777092764215,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 26,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:44.218Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 1114.975084,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1777092764214,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 27,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:44.219Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 1114.9485830000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1777092764213,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 28,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:44.220Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 1114.8866249999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1777092764212,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 29,
+      "source": "system",
+      "timestamp": "2026-04-25T04:52:44.221Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.010166000000026543,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "_original_timestamp": 1777092764218,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

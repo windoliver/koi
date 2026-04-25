@@ -96,6 +96,8 @@
     "@koi/session": "workspace:*",
     "@koi/skill-tool": "workspace:*",
     "@koi/skills-runtime": "workspace:*",
+    "@koi/scheduler": "workspace:*",
+    "@koi/scheduler-provider": "workspace:*",
     "@koi/snapshot-store-sqlite": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",

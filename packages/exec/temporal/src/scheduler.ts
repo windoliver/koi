@@ -1,0 +1,843 @@
+/**
+ * Temporal-backed TaskScheduler — implements L0 TaskScheduler contract.
+ *
+ * Bridges Koi task/cron definitions to Temporal Workflows and Schedules.
+ * All Temporal SDK types are hidden behind structural interfaces.
+ */
+
+import type {
+  AgentId,
+  ContentBlock,
+  CronSchedule,
+  EngineInput,
+  KoiError,
+  ScheduledTask,
+  ScheduleId,
+  SchedulerEvent,
+  SchedulerStats,
+  TaskId,
+  TaskOptions,
+  TaskRunRecord,
+  TaskScheduler,
+} from "@koi/core";
+import { agentId, scheduleId, taskId } from "@koi/core";
+
+// ---------------------------------------------------------------------------
+// Structural types (no @temporalio/* imports)
+// ---------------------------------------------------------------------------
+
+/** Terminal and in-progress states reported by Temporal workflow describe. */
+export type TemporalWorkflowStatus =
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED"
+  | "TERMINATED"
+  | "CONTINUED_AS_NEW"
+  | "TIMED_OUT";
+
+export interface WorkflowExecutionStatus {
+  readonly status: TemporalWorkflowStatus;
+  /** Epoch ms when execution started on a worker. */
+  readonly startTime?: number | undefined;
+  /** Epoch ms when execution reached a terminal state. */
+  readonly closeTime?: number | undefined;
+  /** Failure message for FAILED/TIMED_OUT workflows. */
+  readonly failure?: { readonly message: string } | undefined;
+  /** Memo fields written at workflow start — used for ownership verification. */
+  readonly memo?: Readonly<Record<string, unknown>> | undefined;
+}
+
+/** Subset of schedule state fetched for ownership verification on idempotent replay. */
+export interface ScheduleGetInfo {
+  readonly memo?: Readonly<Record<string, unknown>> | undefined;
+  readonly paused?: boolean | undefined;
+}
+
+/** Single workflow entry returned by list — used for bootstrap state reconstruction. */
+export interface WorkflowListEntry {
+  readonly workflowId: string;
+  readonly status: WorkflowExecutionStatus;
+}
+
+/** Single schedule entry returned by list — used for bootstrap state reconstruction. */
+export interface ScheduleListEntry {
+  readonly scheduleId: string;
+  readonly info: ScheduleGetInfo;
+}
+
+export interface TemporalClientLike {
+  readonly workflow: {
+    readonly start: (
+      workflowType: string,
+      options: Record<string, unknown>,
+    ) => Promise<{ readonly workflowId: string }>;
+    readonly cancel: (workflowId: string) => Promise<void>;
+    /**
+     * Fetch current execution status for a workflow by ID.
+     * Optional — when absent, task state is process-local only with no
+     * Temporal reconciliation.
+     */
+    readonly describe?: (workflowId: string) => Promise<WorkflowExecutionStatus>;
+    /**
+     * List workflows matching the given filter — used by bootstrap() to rebuild
+     * in-memory task state after a process restart.
+     */
+    readonly list?: (filter: {
+      readonly workflowType: string;
+      readonly taskQueue: string;
+    }) => Promise<readonly WorkflowListEntry[]>;
+  };
+  readonly schedule: {
+    readonly create: (scheduleId: string, options: Record<string, unknown>) => Promise<unknown>;
+    readonly delete: (scheduleId: string) => Promise<void>;
+    readonly pause: (scheduleId: string, note?: string) => Promise<void>;
+    readonly unpause: (scheduleId: string, note?: string) => Promise<void>;
+    /**
+     * Fetch existing schedule metadata for ownership verification on idempotent replay.
+     * Optional — when absent, stable-ID replays fail closed to prevent silent collisions.
+     */
+    readonly get?: (scheduleId: string) => Promise<ScheduleGetInfo>;
+    /** List all schedules — used by bootstrap() to rebuild in-memory schedule state. */
+    readonly list?: () => Promise<readonly ScheduleListEntry[]>;
+  };
+}
+
+export interface TemporalSchedulerConfig {
+  readonly client: TemporalClientLike;
+  readonly taskQueue: string;
+  readonly workflowType?: string | undefined;
+}
+
+/** Default retry budget forwarded to Temporal when the caller omits maxRetries. */
+export const DEFAULT_MAX_RETRIES = 3;
+
+// ---------------------------------------------------------------------------
+// Internal message format (workflow input)
+// ---------------------------------------------------------------------------
+
+interface WorkflowMessage {
+  readonly id: string;
+  readonly senderId: string;
+  readonly content: readonly ContentBlock[];
+  readonly timestamp: number;
+}
+
+function mapEngineInputToMessages(input: EngineInput, baseId: string): readonly WorkflowMessage[] {
+  const now = Date.now();
+  switch (input.kind) {
+    case "text":
+      return [
+        {
+          id: `${baseId}:0`,
+          senderId: "scheduler",
+          content: [{ kind: "text", text: input.text }],
+          timestamp: now,
+        },
+      ];
+    case "messages":
+      return input.messages.map(
+        (msg, i): WorkflowMessage => ({
+          id: `${baseId}:${i}`,
+          senderId: msg.senderId,
+          content: [...msg.content],
+          timestamp: msg.timestamp,
+        }),
+      );
+    case "resume":
+      return [
+        {
+          id: `${baseId}:resume`,
+          senderId: "scheduler",
+          content: [],
+          timestamp: now,
+          // Carry opaque resume state through to the workflow so it can restore checkpointed context
+          ...(input.state !== undefined && { resumeState: input.state }),
+        },
+      ];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function isAlreadyExistsError(e: unknown): boolean {
+  if (typeof e !== "object" || e === null) return false;
+  const r = e as Record<string, unknown>;
+  return (
+    r.name === "WorkflowExecutionAlreadyStartedError" ||
+    r.name === "AlreadyExistsError" ||
+    (typeof r.message === "string" &&
+      (r.message.includes("already exists") || r.message.includes("already started")))
+  );
+}
+
+// Strips non-serializable runtime fields (callHandlers etc.) before Temporal JSON serialization.
+function serializeEngineInput(input: EngineInput): Record<string, unknown> {
+  switch (input.kind) {
+    case "text":
+      return { kind: input.kind, text: input.text };
+    case "messages":
+      return { kind: input.kind, messages: [...input.messages] };
+    case "resume":
+      return { kind: input.kind, state: input.state };
+  }
+}
+
+function parseStoredEngineInput(fingerprint: string): EngineInput {
+  let v: unknown;
+  try {
+    v = JSON.parse(fingerprint);
+  } catch {
+    return { kind: "text", text: "" };
+  }
+  if (typeof v === "object" && v !== null) {
+    const r = v as Record<string, unknown>; // safe: just narrowed to object
+    if (r.kind === "text" && typeof r.text === "string") return { kind: "text", text: r.text };
+    if (r.kind === "resume") {
+      const s =
+        typeof r.state === "object" && r.state !== null ? (r.state as Record<string, unknown>) : {};
+      return {
+        kind: "resume",
+        state: { engineId: typeof s.engineId === "string" ? s.engineId : "", data: s.data },
+      };
+    }
+    if (r.kind === "messages" && Array.isArray(r.messages))
+      return { kind: "messages", messages: r.messages as unknown as readonly never[] };
+  }
+  return { kind: "text", text: "" };
+}
+
+// Verifies agentId + workflowType + taskQueue in memo before destructive ops.
+// Requires expectedAgentId — an undefined expected agent means the ID is unknown to this
+// scheduler (no ownership claim), so the operation is refused rather than accepted.
+function assertMemoOwner(
+  m: Readonly<Record<string, unknown>> | undefined,
+  rawId: string,
+  wfType: string,
+  queue: string,
+  expectedAgentId: AgentId | undefined,
+): void {
+  if (
+    expectedAgentId === undefined ||
+    m?.agentId !== expectedAgentId ||
+    m?.workflowType !== wfType ||
+    m?.taskQueue !== queue
+  ) {
+    throw new Error(`Operation refused: "${rawId}" not owned by this scheduler`);
+  }
+}
+
+type OwnershipClaim = Readonly<Record<string, unknown>>;
+
+function memoMatchesClaim(
+  memo: Readonly<Record<string, unknown>> | undefined,
+  claim: OwnershipClaim,
+): boolean {
+  if (memo === undefined) return false;
+  return Object.entries(claim).every(([k, v]) => memo[k] === v);
+}
+
+async function verifyWorkflowOwnership(
+  describeFn: (id: string) => Promise<WorkflowExecutionStatus>,
+  workflowId: string,
+  claim: OwnershipClaim,
+): Promise<WorkflowExecutionStatus> {
+  let info: WorkflowExecutionStatus;
+  try {
+    info = await describeFn(workflowId);
+  } catch {
+    throw new Error(`Cannot verify ownership of workflow "${workflowId}": describe call failed`);
+  }
+  if (!memoMatchesClaim(info.memo, claim)) {
+    throw new Error(
+      `Workflow ID collision: "${workflowId}" already exists with different configuration`,
+    );
+  }
+  return info;
+}
+
+async function verifyScheduleOwnership(
+  getFn: (id: string) => Promise<ScheduleGetInfo>,
+  rawId: string,
+  claim: OwnershipClaim,
+): Promise<void> {
+  let info: ScheduleGetInfo;
+  try {
+    info = await getFn(rawId);
+  } catch {
+    throw new Error(`Cannot verify ownership of schedule "${rawId}": get call failed`);
+  }
+  if (!memoMatchesClaim(info.memo, claim)) {
+    throw new Error(
+      `Schedule ID collision: "${rawId}" already exists with different configuration`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createTemporalScheduler(
+  config: TemporalSchedulerConfig,
+): TaskScheduler & { readonly bootstrap: () => Promise<void> } {
+  const workflowType = config.workflowType ?? "agentWorkflow";
+
+  const tasks = new Map<TaskId, ScheduledTask>();
+  const schedules = new Map<ScheduleId, CronSchedule>();
+  const history: TaskRunRecord[] = [];
+  const listeners = new Set<(event: SchedulerEvent) => void>();
+  // Per-task reconciliation promises: concurrent callers await the same promise instead of
+  // returning stale state while reconciliation is in-flight.
+  const reconcilePromises = new Map<TaskId, Promise<void>>();
+  // Bootstrap-restored IDs require remote re-verify on destructive ops (not locally submitted).
+  const bootstrappedTaskIds = new Set<TaskId>();
+  const bootstrappedScheduleIds = new Set<ScheduleId>();
+
+  function emit(event: SchedulerEvent): void {
+    for (const listener of listeners) listener(event);
+  }
+
+  function buildTask(
+    id: TaskId,
+    agentId: AgentId,
+    input: EngineInput,
+    mode: "spawn" | "dispatch",
+    options?: TaskOptions,
+  ): ScheduledTask {
+    return {
+      id,
+      agentId,
+      input,
+      mode,
+      priority: options?.priority ?? 5,
+      status: "pending",
+      createdAt: Date.now(),
+      scheduledAt: options?.delayMs !== undefined ? Date.now() + options.delayMs : undefined,
+      retries: 0,
+      maxRetries: options?.maxRetries ?? DEFAULT_MAX_RETRIES,
+      timeoutMs: options?.timeoutMs,
+      metadata: options?.metadata,
+    };
+  }
+
+  function recordTerminal(
+    id: TaskId,
+    current: ScheduledTask,
+    info: WorkflowExecutionStatus,
+    status: "completed" | "failed",
+    error?: string,
+  ): void {
+    const startedAt = info.startTime ?? current.startedAt ?? current.createdAt;
+    const completedAt = info.closeTime ?? Date.now();
+    history.push({
+      taskId: id,
+      agentId: current.agentId,
+      status,
+      startedAt,
+      completedAt,
+      durationMs: completedAt - startedAt,
+      retryAttempt: current.retries,
+      ...(error !== undefined && { error }),
+    });
+    tasks.delete(id);
+  }
+
+  // Reconciles a task against Temporal; deduplicates concurrent calls via per-task promises.
+  async function reconcileTask(id: TaskId, _task: ScheduledTask): Promise<void> {
+    const describeFn = config.client.workflow.describe;
+    if (describeFn === undefined) return;
+    const existing = reconcilePromises.get(id);
+    if (existing !== undefined) {
+      await existing;
+      return;
+    }
+    const promise = (async (): Promise<void> => {
+      let info: WorkflowExecutionStatus;
+      try {
+        info = await describeFn(id as string);
+      } catch (e: unknown) {
+        throw new Error(`Reconciliation failed for task "${String(id)}"`, { cause: e });
+      }
+      const current = tasks.get(id);
+      if (current === undefined) return;
+      switch (info.status) {
+        case "RUNNING":
+        case "CONTINUED_AS_NEW": {
+          if (current.status !== "running") {
+            tasks.set(id, {
+              ...current,
+              status: "running",
+              ...(info.startTime !== undefined && { startedAt: info.startTime }),
+            });
+            emit({ kind: "task:started", taskId: id });
+          }
+          break;
+        }
+        case "COMPLETED":
+          recordTerminal(id, current, info, "completed");
+          emit({ kind: "task:completed", taskId: id, result: undefined });
+          break;
+        case "FAILED":
+        case "TIMED_OUT": {
+          const msg =
+            info.failure?.message ??
+            (info.status === "TIMED_OUT" ? "workflow timed out" : "workflow failed");
+          const koiError: KoiError = {
+            code: info.status === "TIMED_OUT" ? "TIMEOUT" : "INTERNAL",
+            message: msg,
+            retryable: false,
+          };
+          recordTerminal(id, current, info, "failed", msg);
+          emit({ kind: "task:failed", taskId: id, error: koiError });
+          break;
+        }
+        case "TERMINATED":
+        case "CANCELLED":
+          recordTerminal(
+            id,
+            current,
+            info,
+            "failed",
+            info.status === "TERMINATED" ? "workflow terminated" : "workflow cancelled",
+          );
+          emit({ kind: "task:cancelled", taskId: id });
+          break;
+      }
+    })();
+    reconcilePromises.set(id, promise);
+    try {
+      await promise;
+    } finally {
+      reconcilePromises.delete(id);
+    }
+  }
+
+  // Reconciles all locally-tracked pending/running tasks against Temporal.
+  async function reconcileAll(): Promise<void> {
+    if (config.client.workflow.describe === undefined) return;
+    const active = [...tasks.entries()].filter(
+      ([, t]) => t.status === "pending" || t.status === "running",
+    );
+    await Promise.all(active.map(([id, task]) => reconcileTask(id, task)));
+  }
+
+  return {
+    async submit(agentId, input, mode, options): Promise<TaskId> {
+      const idempotencyKey =
+        typeof options?.metadata?.workflowId === "string" ? options.metadata.workflowId : undefined;
+      const rawId =
+        idempotencyKey ?? `task-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const id = taskId(rawId);
+      const task = buildTask(id, agentId, input, mode, options);
+      const messages = mapEngineInputToMessages(input, rawId);
+      // Always resolve effective retry budget — callers omitting maxRetries must not
+      // silently inherit a different Temporal default.
+      const effectiveMaxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
+      const inputFingerprint = JSON.stringify(serializeEngineInput(input));
+      let replayStatus: WorkflowExecutionStatus | undefined;
+      try {
+        await config.client.workflow.start(workflowType, {
+          taskQueue: config.taskQueue,
+          workflowId: rawId,
+          memo: {
+            agentId,
+            mode,
+            workflowType,
+            taskQueue: config.taskQueue,
+            inputFingerprint,
+            maxRetries: effectiveMaxRetries,
+            ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
+          },
+          args: [{ agentId, sessionId: rawId, messages, mode }],
+          ...(options?.delayMs !== undefined && { startDelay: options.delayMs }),
+          ...(options?.timeoutMs !== undefined && { workflowExecutionTimeout: options.timeoutMs }),
+          retryPolicy: { maximumAttempts: effectiveMaxRetries },
+        });
+      } catch (e: unknown) {
+        // Stable ID + already-exists → idempotent replay; verify ownership fail-closed.
+        if (idempotencyKey === undefined || !isAlreadyExistsError(e)) throw e;
+        const describeFn = config.client.workflow.describe;
+        if (describeFn === undefined) {
+          throw new Error(
+            `Stable workflow "${rawId}" already exists but describe() is not configured — cannot verify ownership`,
+          );
+        }
+        replayStatus = await verifyWorkflowOwnership(describeFn, rawId, {
+          agentId,
+          mode,
+          workflowType,
+          taskQueue: config.taskQueue,
+          inputFingerprint,
+          timeoutMs: options?.timeoutMs,
+          maxRetries: effectiveMaxRetries,
+        });
+      }
+
+      // Terminal replay — no phantom pending task.
+      if (replayStatus !== undefined) {
+        const s = replayStatus.status;
+        if (s !== "RUNNING" && s !== "CONTINUED_AS_NEW") return id;
+      }
+
+      // Guard against double-registration from concurrent or replayed submits.
+      if (!tasks.has(id)) {
+        tasks.set(id, task);
+        emit({ kind: "task:submitted", task });
+      }
+      return id;
+    },
+
+    async cancel(id): Promise<boolean> {
+      const describeFn = config.client.workflow.describe;
+      if (describeFn !== undefined) {
+        // Always verify when describe is available — prevents stale-cache ownership bypass.
+        let info: WorkflowExecutionStatus;
+        try {
+          info = await describeFn(String(id));
+        } catch {
+          throw new Error(`Cannot verify ownership: describe failed for "${String(id)}"`);
+        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          tasks.get(id)?.agentId,
+        );
+      } else if (!tasks.has(id) || bootstrappedTaskIds.has(id)) {
+        throw new Error(`Cannot verify ownership: describe not available for "${String(id)}"`);
+      }
+      try {
+        await config.client.workflow.cancel(id);
+        const task = tasks.get(id);
+        if (task !== undefined) {
+          const now = Date.now();
+          const startedAt = task.startedAt ?? task.createdAt;
+          history.push({
+            taskId: id,
+            agentId: task.agentId,
+            status: "failed",
+            startedAt,
+            completedAt: now,
+            durationMs: now - startedAt,
+            error: "workflow cancelled",
+            retryAttempt: task.retries,
+          });
+          tasks.delete(id);
+          emit({ kind: "task:cancelled", taskId: id });
+        }
+        return true;
+      } catch (_e: unknown) {
+        return false;
+      }
+    },
+
+    async schedule(expression, agentId, input, mode, options): Promise<ScheduleId> {
+      const idempotencyKey =
+        typeof options?.metadata?.scheduleId === "string" ? options.metadata.scheduleId : undefined;
+      const rawId =
+        idempotencyKey ?? `sched-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const id = scheduleId(rawId);
+      const effectiveMaxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
+      const inputFingerprint = JSON.stringify(serializeEngineInput(input));
+      try {
+        await config.client.schedule.create(rawId, {
+          spec: { cronExpressions: [expression], timezone: options?.timezone },
+          action: {
+            type: "startWorkflow",
+            workflowType,
+            taskQueue: config.taskQueue,
+            // Raw serialized input — each firing derives unique IDs/timestamps from its workflowId.
+            args: [{ agentId, input: serializeEngineInput(input), mode }],
+            ...(options?.timeoutMs !== undefined && {
+              workflowExecutionTimeout: options.timeoutMs,
+            }),
+            retryPolicy: { maximumAttempts: effectiveMaxRetries },
+          },
+          memo: {
+            agentId,
+            mode,
+            workflowType,
+            taskQueue: config.taskQueue,
+            expression,
+            inputFingerprint,
+            maxRetries: effectiveMaxRetries,
+            ...(options?.timezone !== undefined && { timezone: options.timezone }),
+            ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
+          },
+        });
+      } catch (e: unknown) {
+        // Stable ID + already-exists → idempotent replay; verify ownership fail-closed.
+        if (idempotencyKey === undefined || !isAlreadyExistsError(e)) throw e;
+        const getFn = config.client.schedule.get;
+        if (getFn === undefined) {
+          throw new Error(
+            `Stable schedule "${rawId}" already exists but schedule.get() is not configured — cannot verify ownership`,
+          );
+        }
+        await verifyScheduleOwnership(getFn, rawId, {
+          agentId,
+          mode,
+          workflowType,
+          taskQueue: config.taskQueue,
+          expression,
+          timezone: options?.timezone,
+          inputFingerprint,
+          timeoutMs: options?.timeoutMs,
+          maxRetries: effectiveMaxRetries,
+        });
+      }
+
+      const cronSchedule: CronSchedule = {
+        id,
+        expression,
+        agentId,
+        input,
+        mode,
+        taskOptions: options,
+        timezone: options?.timezone,
+        paused: false,
+      };
+      // Guard against double-registration on idempotent replay.
+      if (!schedules.has(id)) {
+        schedules.set(id, cronSchedule);
+        emit({ kind: "schedule:created", schedule: cronSchedule });
+      }
+      return id;
+    },
+
+    async unschedule(id): Promise<boolean> {
+      const getFn = config.client.schedule.get;
+      if (getFn !== undefined) {
+        let info: ScheduleGetInfo;
+        try {
+          info = await getFn(String(id));
+        } catch {
+          throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
+        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          schedules.get(id)?.agentId,
+        );
+      } else if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        throw new Error(`Cannot verify ownership: schedule.get not available for "${String(id)}"`);
+      }
+      try {
+        await config.client.schedule.delete(id);
+        schedules.delete(id);
+        emit({ kind: "schedule:removed", scheduleId: id });
+        return true;
+      } catch (_e: unknown) {
+        return false;
+      }
+    },
+
+    async pause(id): Promise<boolean> {
+      const getFn = config.client.schedule.get;
+      if (getFn !== undefined) {
+        let info: ScheduleGetInfo;
+        try {
+          info = await getFn(String(id));
+        } catch {
+          throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
+        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          schedules.get(id)?.agentId,
+        );
+      } else if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        throw new Error(`Cannot verify ownership: schedule.get not available for "${String(id)}"`);
+      }
+      try {
+        await config.client.schedule.pause(id);
+        const existing = schedules.get(id);
+        if (existing !== undefined) {
+          schedules.set(id, { ...existing, paused: true });
+          emit({ kind: "schedule:paused", scheduleId: id });
+        }
+        return true;
+      } catch (_e: unknown) {
+        return false;
+      }
+    },
+
+    async resume(id): Promise<boolean> {
+      const getFn = config.client.schedule.get;
+      if (getFn !== undefined) {
+        let info: ScheduleGetInfo;
+        try {
+          info = await getFn(String(id));
+        } catch {
+          throw new Error(`Cannot verify ownership: get failed for "${String(id)}"`);
+        }
+        assertMemoOwner(
+          info.memo,
+          String(id),
+          workflowType,
+          config.taskQueue,
+          schedules.get(id)?.agentId,
+        );
+      } else if (!schedules.has(id) || bootstrappedScheduleIds.has(id)) {
+        throw new Error(`Cannot verify ownership: schedule.get not available for "${String(id)}"`);
+      }
+      try {
+        await config.client.schedule.unpause(id);
+        const existing = schedules.get(id);
+        if (existing !== undefined) {
+          schedules.set(id, { ...existing, paused: false });
+          emit({ kind: "schedule:resumed", scheduleId: id });
+        }
+        return true;
+      } catch (_e: unknown) {
+        return false;
+      }
+    },
+
+    async query(filter): Promise<readonly ScheduledTask[]> {
+      await reconcileAll();
+      let results = [...tasks.values()];
+      if (filter.agentId !== undefined) {
+        results = results.filter((t) => t.agentId === filter.agentId);
+      }
+      if (filter.status !== undefined) {
+        const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
+        results = results.filter((t) => statuses.includes(t.status));
+      }
+      if (filter.priority !== undefined) {
+        const priority = filter.priority;
+        results = results.filter((t) => t.priority === priority);
+      }
+      if (filter.limit !== undefined) {
+        results = results.slice(0, filter.limit);
+      }
+      return results;
+    },
+
+    stats(): SchedulerStats {
+      const all = [...tasks.values()];
+      const allSchedules = [...schedules.values()];
+      // Terminal tasks are removed from `tasks` on completion — derive counts from history.
+      return {
+        pending: all.filter((t) => t.status === "pending").length,
+        running: all.filter((t) => t.status === "running").length,
+        completed: history.filter((r) => r.status === "completed").length,
+        failed: history.filter((r) => r.status === "failed").length,
+        deadLettered: all.filter((t) => t.status === "dead_letter").length,
+        activeSchedules: allSchedules.filter((s) => !s.paused).length,
+        pausedSchedules: allSchedules.filter((s) => s.paused).length,
+      };
+    },
+
+    async history(filter): Promise<readonly TaskRunRecord[]> {
+      // Reconcile before reading so completed/failed workflows are moved from
+      // `tasks` into `history` before we filter.
+      await reconcileAll();
+      let results = [...history];
+      if (filter.agentId !== undefined) {
+        results = results.filter((r) => r.agentId === filter.agentId);
+      }
+      if (filter.status !== undefined) {
+        results = results.filter((r) => r.status === filter.status);
+      }
+      if (filter.since !== undefined) {
+        const since = filter.since;
+        results = results.filter((r) => r.completedAt >= since);
+      }
+      if (filter.limit !== undefined) {
+        results = results.slice(0, filter.limit);
+      }
+      return results;
+    },
+
+    querySchedules(agentId: AgentId): readonly CronSchedule[] {
+      return [...schedules.values()].filter((s) => s.agentId === agentId);
+    },
+
+    watch(listener): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+
+    async bootstrap(): Promise<void> {
+      const [wfEntries, schedEntries] = await Promise.all([
+        config.client.workflow.list?.({ workflowType, taskQueue: config.taskQueue }) ??
+          Promise.resolve([]),
+        config.client.schedule.list?.() ?? Promise.resolve([]),
+      ]);
+      for (const entry of wfEntries) {
+        const m = entry.status.memo;
+        if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) continue;
+        const s = entry.status.status;
+        if (s !== "RUNNING" && s !== "CONTINUED_AS_NEW") continue;
+        const id = taskId(entry.workflowId);
+        if (tasks.has(id)) continue;
+        // Require full ownership memo — skip entries with missing fields rather than fabricate defaults.
+        if (typeof m.agentId !== "string" || m.agentId === "") continue;
+        if (m.mode !== "dispatch" && m.mode !== "spawn") continue;
+        if (typeof m.inputFingerprint !== "string") continue;
+        const rawAgentId = m.agentId;
+        const mode = m.mode;
+        const fp = m.inputFingerprint;
+        bootstrappedTaskIds.add(id);
+        tasks.set(id, {
+          id,
+          agentId: agentId(rawAgentId),
+          input: parseStoredEngineInput(fp),
+          mode,
+          priority: 5,
+          status: "running",
+          createdAt: entry.status.startTime ?? Date.now(),
+          startedAt: entry.status.startTime,
+          retries: 0,
+          maxRetries: typeof m.maxRetries === "number" ? m.maxRetries : DEFAULT_MAX_RETRIES,
+          timeoutMs: typeof m.timeoutMs === "number" ? m.timeoutMs : undefined,
+        });
+      }
+      for (const entry of schedEntries) {
+        const m = entry.info.memo;
+        if (m?.workflowType !== workflowType || m?.taskQueue !== config.taskQueue) continue;
+        const id = scheduleId(entry.scheduleId);
+        if (schedules.has(id)) continue;
+        // Require full ownership memo — skip entries with missing fields rather than fabricate defaults.
+        if (typeof m.agentId !== "string" || m.agentId === "") continue;
+        if (m.mode !== "dispatch" && m.mode !== "spawn") continue;
+        if (typeof m.inputFingerprint !== "string") continue;
+        if (typeof m.expression !== "string") continue;
+        const rawAgentId = m.agentId;
+        const mode = m.mode;
+        const fp = m.inputFingerprint;
+        bootstrappedScheduleIds.add(id);
+        schedules.set(id, {
+          id,
+          agentId: agentId(rawAgentId),
+          input: parseStoredEngineInput(fp),
+          mode,
+          expression: m.expression,
+          timezone: typeof m.timezone === "string" ? m.timezone : undefined,
+          paused: entry.info.paused === true,
+          taskOptions: undefined,
+        });
+      }
+    },
+
+    async [Symbol.asyncDispose](): Promise<void> {
+      listeners.clear();
+      tasks.clear();
+      schedules.clear();
+      bootstrappedTaskIds.clear();
+      bootstrappedScheduleIds.clear();
+      reconcilePromises.clear();
+    },
+  };
+}

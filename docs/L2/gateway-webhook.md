@@ -63,7 +63,29 @@ await webhook.start();
 
 | Type | Purpose |
 |------|---------|
-| `WebhookConfig` | Port + path prefix |
+| `WebhookConfig` | Port, path prefix, auth, idempotency options |
 | `WebhookServer` | HTTP server with start/stop/port |
-| `WebhookDispatcher` | `(session, frame) => void` — injected from gateway |
+| `WebhookDispatcher` | `(session, frame, signal?) => void` — injected from gateway |
 | `WebhookAuthenticator` | Optional request authentication |
+| `IdempotencyStore` | Pluggable dedup backend (default: in-memory) |
+
+---
+
+## Security Properties
+
+**Signature verification** (`signing.ts`) — HMAC-SHA256 over raw bytes (not re-encoded strings) for all four providers. Two-part streaming update via `node:crypto` `createHmac` eliminates the body-copy allocation of a concat buffer.
+
+| Provider | Header | Signing string |
+|----------|--------|----------------|
+| GitHub | `X-Hub-Signature-256` | raw body |
+| Slack | `X-Slack-Signature` | `v0:<ts>:<body>` |
+| Stripe | `Stripe-Signature` | `<ts>.<body>` |
+| Generic | `X-Webhook-Signature` | `<id>.<ts>.<body>` |
+
+All provider verifiers accept `rawBodyBytes?: Uint8Array` for byte-exact HMAC when the body has already been buffered as bytes.
+
+**Account binding** — `allowUnauthenticated` bypasses the no-auth guard only for non-provider routes. Provider routes with an account URL segment always require an authenticated account binding; `allowUnauthenticated` cannot override this.
+
+**Dispatcher cancellation** — `WebhookDispatcher` receives an `AbortSignal` that fires when `maxDispatchMs` expires. Dispatchers should honour it for cooperative timeout handling.
+
+**Idempotency** — four-phase protocol: `tryBegin` (reserve) → `renew` (heartbeat) → `commit`/`abort` (settle). Dedup keys are scoped by `provider + account` so the same event ID from two tenants dispatches both.

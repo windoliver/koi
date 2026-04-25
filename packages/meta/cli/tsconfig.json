@@ -30,6 +30,8 @@
     { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../security/violation-store-sqlite" },
+    { "path": "../../sched/scheduler" },
+    { "path": "../../sched/scheduler-provider" },
     { "path": "../../lib/tool-exec" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/checkpoint" },
