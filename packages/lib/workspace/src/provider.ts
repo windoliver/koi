@@ -82,6 +82,13 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     // always fall through to dispose+recreate — attestation is not needed.
   }
 
+  // Returns true when the backend uses attestation but cannot invalidate it — meaning crash-
+  // survivor reuse is unsafe because a mid-repair crash would leave a stale "setup complete"
+  // marker that the next restart would trust. Callers should dispose-and-recreate instead.
+  function attestationInvalidationUnavailable(): boolean {
+    return !!config.backend.verifySetupComplete && !config.backend.invalidateSetupComplete;
+  }
+
   // Removes the setup attestation so a mid-repair crash leaves the workspace unattested.
   // Only meaningful for sandboxed backends where attestation is checked on recovery.
   async function clearSetupComplete(ws: WorkspaceInfo): Promise<void> {
@@ -91,8 +98,8 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       // Filesystem marker case — force: true is safe when the file doesn't exist yet
       await rm(setupCompletePath(ws), { force: true });
     }
-    // Backend with verifySetupComplete but no invalidateSetupComplete: cannot clear.
-    // Such backends must implement invalidateSetupComplete to close this gap.
+    // Backends with verifySetupComplete but no invalidateSetupComplete are handled by
+    // attestationInvalidationUnavailable() — callers skip reuse and dispose-and-recreate.
   }
 
   async function isSetupComplete(ws: WorkspaceInfo): Promise<boolean> {
@@ -119,6 +126,12 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
     candidate: WorkspaceInfo,
   ): Promise<AttachResult | false> {
     const wsId = candidate.id;
+    // If the backend verifies setup but cannot invalidate it, we cannot safely clear the
+    // old attestation before rerunning postCreate. Reuse is unsafe — dispose and recreate.
+    if (attestationInvalidationUnavailable()) {
+      await tryDispose(wsId);
+      return false;
+    }
     if (setupFailed.has(wsId)) {
       await tryDispose(wsId);
       return false;
@@ -213,7 +226,11 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
           // using cleanupPolicy="never" must ensure postCreate is idempotent.
           if (staleInfo !== undefined) {
             const wsId = staleInfo.id;
-            if (!setupFailed.has(wsId) && (await config.backend.isHealthy(wsId))) {
+            if (
+              !setupFailed.has(wsId) &&
+              !attestationInvalidationUnavailable() &&
+              (await config.backend.isHealthy(wsId))
+            ) {
               // Invalidate attestation before repair — mirrors tryReuseCrashSurvivor.
               // If the process crashes during postCreate, a missing attestation prevents the
               // crash-survivor path from trusting a partially-repaired workspace on the next restart.
@@ -310,12 +327,18 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
         } else {
           // Non-"never" policy: dispose in-process workspace if present (it wasn't cleaned up
           // on last detach, e.g. because the previous tryDispose timed out).
+          // Apply the same liveness check as crash survivors: block only if the workspace
+          // is confirmed still alive, not on every transient timeout.
           if (staleInfo !== undefined) {
             const disposed = await tryDispose(staleInfo.id);
             if (!disposed) {
-              throw new Error(
-                `Cannot reattach agent ${agentId}: previous workspace ${staleInfo.id} could not be disposed`,
-              );
+              const stillAlive =
+                config.backend.isSandboxed || (await config.backend.isHealthy(staleInfo.id));
+              if (stillAlive) {
+                throw new Error(
+                  `Cannot reattach agent ${agentId}: previous workspace ${staleInfo.id} could not be disposed`,
+                );
+              }
             }
             attached.delete(agentId);
           }

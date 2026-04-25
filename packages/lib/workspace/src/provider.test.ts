@@ -529,6 +529,7 @@ describe("createWorkspaceProvider", () => {
       async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
         return true;
       },
+      async invalidateSetupComplete(_wsId: WorkspaceId): Promise<void> {},
     });
     const provider = createWorkspaceProvider({
       backend: backendWithFind,
@@ -625,6 +626,7 @@ describe("createWorkspaceProvider", () => {
       async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
         return true;
       },
+      async invalidateSetupComplete(_wsId: WorkspaceId): Promise<void> {},
     });
     const provider = createWorkspaceProvider({
       backend: backendWithFind,
@@ -736,6 +738,7 @@ describe("createWorkspaceProvider", () => {
       async verifySetupComplete(_wsId: WorkspaceId): Promise<boolean> {
         return true;
       },
+      async invalidateSetupComplete(_wsId: WorkspaceId): Promise<void> {},
     });
     const provider = createWorkspaceProvider({
       backend: backendWithFind,
