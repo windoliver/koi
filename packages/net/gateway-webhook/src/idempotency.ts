@@ -20,7 +20,7 @@
  * dispatch is in progress, so slow-but-healthy dispatches stay protected. Hung or
  * dead requests stop renewing and their entries eventually expire.
  *
- * At capacity (`maxSize`, default: 10 000), `tryBegin` returns `"capacity-exceeded"`
+ * At capacity (`maxSize`, default: 100 000), `tryBegin` returns `"capacity-exceeded"`
  * (503) — committed entries are NOT evicted to make room because eviction silently
  * drops replay protection and can cause duplicate side effects under load.
  *
@@ -29,12 +29,12 @@
  * `IdempotencyStore` against a shared/persistent backend.
  */
 
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
 // 5-minute processing TTL: long enough for most slow dispatchers, short enough
 // to recover from truly hung/crashed requests. The webhook server renews every
 // processingTtlMs/2 while dispatch is active, so this only triggers for dead requests.
 const DEFAULT_PROCESSING_TTL_MS = 5 * 60 * 1000;
-const DEFAULT_MAX_SIZE = 10_000;
+const DEFAULT_MAX_SIZE = 100_000;
 
 // Monotonic counter — simpler and cheaper than crypto.randomUUID() for tokens.
 // Unique within a process lifetime, which is all we need for in-memory stores.

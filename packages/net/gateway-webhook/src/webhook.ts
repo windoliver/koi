@@ -308,13 +308,12 @@ export function createWebhookServer(
       if (dedupKey === undefined && config.keyExtractor !== undefined) {
         dedupKey = await config.keyExtractor(provider.kind, request, rawBody);
       }
-      // Scope the dedup key with provider + URL account. Always include the URL
-      // account (even when not signature-verified) to prevent cross-tenant dedup
-      // collisions for deployments using shared secrets + authenticators. The
-      // account-binding check later ensures requests without a verified account
-      // are rejected before dispatch; the scope just keeps namespaces isolated.
-      // keyExtractor-supplied keys are the caller's responsibility to scope.
-      if (dedupKey !== undefined && verifyResult.dedupKey !== undefined) {
+      // Scope all dedup keys with provider + URL account — both provider-native IDs
+      // and keyExtractor-supplied keys. Always include the URL account (even when
+      // not signature-verified) to prevent cross-tenant collisions for deployments
+      // using shared secrets + authenticators. The account-binding check later
+      // ensures requests without a verified account are rejected before dispatch.
+      if (dedupKey !== undefined) {
         const accountPart = account !== undefined ? `:${account}` : "";
         dedupKey = `${provider.kind}${accountPart}:${dedupKey}`;
       }
@@ -456,32 +455,21 @@ export function createWebhookServer(
 
     // Renew the processing lease periodically while dispatch is active so a
     // slow-but-healthy dispatcher does not lose its reservation to a provider retry.
-    // maxDispatchMs stops renewal after the configured window — for truly hung
-    // dispatchers the processing TTL then expires on its own, releasing the key
-    // for provider retries. Actual cancellation requires cooperative AbortSignal
-    // support from the dispatcher; without it, only TTL-based expiry is available.
+    // Renewal runs until dispatch settles (success or error) — stopping early would
+    // let the processing TTL expire while the handler is still running, opening a
+    // concurrent-duplicate window if the provider retries before the handler finishes.
     let renewalTimer: ReturnType<typeof setInterval> | undefined;
-    let maxDispatchTimer: ReturnType<typeof setTimeout> | undefined;
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       const key = pendingDedupKey;
       const token = pendingToken;
       renewalTimer = setInterval(() => {
         idempotencyStore.renew(key, token);
       }, leaseRenewalMs);
-      if (config.maxDispatchMs !== undefined) {
-        maxDispatchTimer = setTimeout(() => {
-          // Stop renewing — the processing TTL now counts down. When it expires,
-          // provider retries will be accepted. Do NOT abort here: the handler is
-          // still running and aborting would create a concurrent-duplicate window.
-          clearInterval(renewalTimer);
-        }, config.maxDispatchMs);
-      }
     }
 
     try {
       await Promise.resolve(dispatcher(session, frame));
     } catch (err: unknown) {
-      clearTimeout(maxDispatchTimer);
       clearInterval(renewalTimer);
       // Abort dedup reservation so provider can retry and be accepted.
       if (pendingDedupKey !== undefined && pendingToken !== undefined) {
@@ -490,13 +478,10 @@ export function createWebhookServer(
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse(500, { ok: false, error: `Dispatch failed: ${message}`, frameId });
     }
-    clearTimeout(maxDispatchTimer);
     clearInterval(renewalTimer);
 
     // Commit dedup key only after full successful acceptance (auth + dispatch).
     // Provider retries after transient failures will not be silently dropped.
-    // Successful dispatch always commits — slow-but-healthy handlers that ran
-    // past maxDispatchMs still commit to prevent duplicate side effects on retry.
     if (pendingDedupKey !== undefined && pendingToken !== undefined) {
       idempotencyStore.commit(pendingDedupKey, pendingToken);
     }
