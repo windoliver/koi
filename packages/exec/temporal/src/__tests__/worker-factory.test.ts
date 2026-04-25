@@ -34,12 +34,16 @@ describe("createTemporalWorker", () => {
     expect(typeof handle.dispose).toBe("function");
   });
 
-  test("dispose without run: calls shutdown then connection.close", async () => {
+  test("dispose without run: starts worker to release connection reference, then shuts down", async () => {
     const innerWorker = { run: mock(async () => {}), shutdown: mock(() => {}) };
     const innerConnection = { close: mock(async () => {}) };
     const factory = mock(async () => ({ worker: innerWorker, connection: innerConnection }));
     const handle = await createTemporalWorker({ taskQueue: "q" }, {}, "/wf.js", factory);
     await handle.dispose();
+    // Real Temporal SDK: NativeConnection.close() throws "Cannot close connection
+    // while Workers hold a reference" until the worker is STOPPED. Must start +
+    // shutdown even if handle.run() was never called.
+    expect(innerWorker.run).toHaveBeenCalledTimes(1);
     expect(innerWorker.shutdown).toHaveBeenCalledTimes(1);
     expect(innerConnection.close).toHaveBeenCalledTimes(1);
   });

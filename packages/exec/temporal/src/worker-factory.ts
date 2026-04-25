@@ -128,16 +128,18 @@ export async function createTemporalWorker(
     },
 
     async dispose(): Promise<void> {
-      wrappedWorker.shutdown();
-      // Wait for the worker loop to drain before closing the transport.
-      // If run() was never called, shutdown is a no-op on a stopped worker.
-      if (runPromise !== undefined) {
-        await runPromise.catch(() => {
-          // Worker.run() rejects on unhandled errors — swallow here since we
-          // are shutting down intentionally and the error is surfaced to the
-          // caller of run().
-        });
+      if (runPromise === undefined) {
+        // Worker is INITIALIZED and holds a ref-count on the connection.
+        // NativeConnection.close() throws "Cannot close connection while Workers
+        // hold a reference" until the worker reaches STOPPED state. Start it
+        // now so shutdown() can transition it out of INITIALIZED and release
+        // the reference before we close the transport.
+        runPromise = worker.run();
       }
+      wrappedWorker.shutdown();
+      await runPromise.catch(() => {
+        // Swallow — shutting down intentionally; errors surfaced to run() caller.
+      });
       await connection.close();
     },
   };
