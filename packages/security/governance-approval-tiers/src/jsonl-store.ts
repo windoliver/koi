@@ -1,4 +1,4 @@
-import { appendFile, chmod, mkdir, stat } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { computeGrantKey } from "@koi/hash";
 import { applyAliases } from "./aliases.js";
@@ -89,27 +89,32 @@ export function createJsonlApprovalStore(config: JsonlApprovalStoreConfig): Appr
   }
 
   async function writeLine(line: string): Promise<void> {
-    // O_APPEND (via fs.appendFile) makes the kernel seek-to-end on every
-    // write(). On POSIX regular files, a single write() syscall of a
-    // small buffer is dispatched as one physical write — the kernel does
-    // not split it, and concurrent O_APPEND writers serialise via the
-    // file's append lock. Bounded rows therefore interleave cleanly at
-    // line boundaries with no inter-process race. The earlier
-    // read-modify-write strategy lost ~30% of writes under 2-process
-    // contention; O_APPEND with a row size guard is the fix.
+    // O_APPEND makes the kernel seek-to-end on every write(). On POSIX
+    // regular files, a single write() syscall of a small buffer is
+    // dispatched as one physical write — the kernel does not split it,
+    // and concurrent O_APPEND writers serialise via the file's append
+    // lock. Bounded rows therefore interleave cleanly at line boundaries
+    // with no inter-process race. The earlier read-modify-write strategy
+    // lost ~30% of writes under 2-process contention; O_APPEND with a
+    // row size guard is the fix.
+    //
+    // File permissions: open with explicit `0o600` so the create case
+    // never goes through the umask race window (umask 022 would create
+    // 0o644, briefly exposing the file to other local users between
+    // create and a separate chmod). Existing files (created under an
+    // older version, or by another tool) are tightened with `fchmod`
+    // BEFORE the first write of this process, not after, so a hostile
+    // local reader cannot snapshot the file mid-write.
     await mkdir(dirname(config.path), { recursive: true });
-    await appendFile(config.path, `${line}\n`);
-    // Restrict to owner-read/write. Newly-created files inherit the
-    // process umask; defensively chmod after every write so an existing
-    // file with weaker permissions is tightened too.
+    const handle = await open(config.path, "a", 0o600);
     try {
-      const s = await stat(config.path);
-      if ((s.mode & 0o777) !== 0o600) {
-        await chmod(config.path, 0o600);
-      }
-    } catch {
-      // Best-effort — failing to tighten permissions on the audit log
-      // must not break the durable write itself.
+      // fchmod is best-effort: failing to tighten an existing file must
+      // not break the durable write itself. The owner-mode default on
+      // create still covers the common path (no pre-existing file).
+      await handle.chmod(0o600).catch(() => undefined);
+      await handle.appendFile(`${line}\n`);
+    } finally {
+      await handle.close();
     }
   }
 

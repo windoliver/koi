@@ -37,6 +37,7 @@ import { createConfigManager } from "@koi/config";
 import type { BudgetConfig } from "@koi/context-manager";
 import type {
   Agent,
+  AgentId,
   ApprovalHandler,
   AuditSink,
   ComplianceRecorder,
@@ -2641,15 +2642,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // approvals to the store. Path defaults to ~/.koi/approvals.json; override
     // with KOI_APPROVALS_PATH for tests and sandboxed invocations.
     //
-    // Scope key for both writes and reads is `${hostId}:${cwdHash}` so:
-    //   1. Different logical agents cannot replay each other's approvals
-    //      even when (kind, payload) collide (codex round-1 finding).
-    //   2. The same logical agent matches across process restarts in the
-    //      SAME workspace — both pieces of the scope are deterministic.
+    // Scope key for both writes and reads is `${hostId}:${cwdHash}:${actor}` so:
+    //   1. The same logical host matches across process restarts in the SAME
+    //      workspace. `actor = hostId` for the live host agent (whose pid.id
+    //      is `crypto.randomUUID()` and CHANGES every launch — hence we
+    //      rewrite it to the manifest-derived stable hostId before keying).
+    //   2. Sub-agents/spawned children DON'T replay the host's grants. Their
+    //      `request.agentId !== livePidId`, so we keep the unstable
+    //      pid.id as the actor — a child's grant is bounded to its own
+    //      lifetime (the random UUID won't collide with any future child or
+    //      with the next launch's host) — codex round-4 actor boundary.
     //   3. Approvals do NOT cross workspaces: a user who approves
     //      "Bash: echo X" in /home/alice/projectA is re-prompted when
     //      they run the same command in /home/alice/projectB even with
-    //      the same hostId (codex round-3 finding).
+    //      the same hostId — codex round-3 workspace boundary.
     const approvalStore =
       governanceBackend !== undefined
         ? createJsonlApprovalStore({
@@ -2660,8 +2666,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       .update(config.cwd ?? process.cwd())
       .digest("hex")
       .slice(0, 16);
-    const stableScopeId = makeAgentId(`${hostId}:${workspaceFingerprint}`);
-    const resolveStableAgentId = (): typeof stableScopeId => stableScopeId;
+    const scopePrefix = `${hostId}:${workspaceFingerprint}`;
+    // Captured by the resolver closure; populated immediately after
+    // `createKoi` returns and before any verdict can be evaluated.
+    // No verdict path runs during construction, so the read-after-set
+    // ordering is guaranteed by the engine itself.
+    let livePidId: string | undefined;
+    const resolveStableAgentId = (reqOrGrant: { readonly agentId: AgentId }): AgentId => {
+      const actor =
+        livePidId !== undefined && reqOrGrant.agentId === livePidId ? hostId : reqOrGrant.agentId;
+      return makeAgentId(`${scopePrefix}:${actor}`);
+    };
     const wrappedGovernanceBackend =
       governanceBackend !== undefined && approvalStore !== undefined
         ? wrapBackendWithPersistedAllowlist(governanceBackend, approvalStore, {
@@ -2946,6 +2961,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // (only from a later `cycleSession()`), so this assignment
     // happens before any rotation can fire.
     runtimeForRotation = runtime;
+    // Publish the live host pid.id to the gov-12 scope resolver. The
+    // resolver rewrites only when `request.agentId === livePidId`, so
+    // sub-agents (which carry their own pid) keep their unstable UUID
+    // and stay isolated from the host's grants. No verdict path runs
+    // during `createKoi` itself, so this assignment lands before the
+    // first request can be evaluated.
+    livePidId = runtime.agent.pid.id;
 
     // Wrap runtime.dispose so manifest-middleware cleanup (audit sink
     // close, etc.) runs AFTER the engine's dispose path completes.
