@@ -180,6 +180,16 @@ function validatePersistedState(raw: unknown, dbPath: string): PersistedState {
       `[temporal-scheduler] deliveredDispatchIds in "${dbPath}" is present but not an array.`,
     );
   }
+  if (r.pendingSchedules !== undefined && !Array.isArray(r.pendingSchedules)) {
+    throw new Error(
+      `[temporal-scheduler] pendingSchedules in "${dbPath}" is present but not an array.`,
+    );
+  }
+  // Validate pendingSchedules entries with the same rigor as schedules — untrusted metadata
+  // rehydrates live schedule state on restart and must pass the same schema checks.
+  for (const entry of (r.pendingSchedules ?? []) as unknown[]) {
+    validatePersistedSchedule(entry, dbPath);
+  }
   for (const entry of r.tasks as unknown[]) {
     if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") {
       throw new Error(
@@ -1610,10 +1620,14 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
       //   with recurring schedule-fired inputs.
       let scheduleAction: Record<string, unknown>;
       if (mode === "spawn") {
+        // Use snapshotPayload (the already-cloned/validated copy) so the remote schedule
+        // definition is byte-for-byte identical to the persisted local metadata.
+        // Using the original scheduledPayload risks split-brain if the caller mutates
+        // the input after schedule() is called or a client wrapper serializes lazily.
         const spawnArgs: ScheduledSpawnArgs = {
           agentId,
           stateRefs: { lastTurnId: undefined, turnsProcessed: 0 },
-          input: scheduledPayload,
+          input: snapshotPayload,
         };
         scheduleAction = {
           type: "startWorkflow",
@@ -1632,7 +1646,7 @@ export function createTemporalScheduler(config: TemporalSchedulerConfig): TaskSc
           type: "sendSignal",
           workflowId: String(agentId),
           signalName: "scheduled-input",
-          args: [scheduledPayload],
+          args: [snapshotPayload], // same: use snapshot so remote and local payloads are identical
         };
       }
 
