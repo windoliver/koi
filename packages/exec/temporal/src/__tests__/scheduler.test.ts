@@ -1016,7 +1016,7 @@ describe("createTemporalScheduler", () => {
     await sched[Symbol.asyncDispose]();
   });
 
-  test("cancel() proceeds for unknown task when describe confirms matching ownership", async () => {
+  test("cancel() refuses unknown task — no local ownership claim, cannot verify agentId", async () => {
     const client: TemporalClientLike = {
       workflow: {
         start: mock(async () => ({ workflowId: "wf-1" })),
@@ -1035,8 +1035,8 @@ describe("createTemporalScheduler", () => {
     };
     const sched = createTemporalScheduler({ client, taskQueue: "test" });
     const foreignId = taskId("task-external-999");
-    const result = await sched.cancel(foreignId);
-    expect(result).toBe(true);
+    // Unknown IDs have no expected agentId — refuse rather than accept any agent on same queue.
+    await expect(sched.cancel(foreignId)).rejects.toThrow("Operation refused");
     await sched[Symbol.asyncDispose]();
   });
 
@@ -1311,6 +1311,58 @@ describe("createTemporalScheduler", () => {
     await sched.bootstrap();
     const restoredId = taskId("wf-restarted-1");
     await expect(sched.cancel(restoredId)).rejects.toThrow("Cannot verify ownership");
+    await sched[Symbol.asyncDispose]();
+  });
+
+  test("bootstrap() tolerates malformed inputFingerprint — skips bad entry, restores rest", async () => {
+    const client: TemporalClientLike = {
+      workflow: {
+        start: mock(async () => ({ workflowId: "wf-1" })),
+        cancel: mock(async () => {}),
+        list: mock(async () => [
+          {
+            workflowId: "wf-bad-fp",
+            status: {
+              status: "RUNNING" as const,
+              startTime: 1000,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                agentId: "agent-x",
+                mode: "spawn",
+                inputFingerprint: "{INVALID JSON{{",
+                maxRetries: 3,
+              },
+            },
+          },
+          {
+            workflowId: "wf-good",
+            status: {
+              status: "RUNNING" as const,
+              startTime: 2000,
+              memo: {
+                workflowType: "agentWorkflow",
+                taskQueue: "test",
+                agentId: "agent-x",
+                mode: "spawn",
+                inputFingerprint: JSON.stringify({ kind: "text", text: "ok" }),
+                maxRetries: 3,
+              },
+            },
+          },
+        ]),
+      },
+      schedule: {
+        create: mock(async () => {}),
+        delete: mock(async () => {}),
+        pause: mock(async () => {}),
+        unpause: mock(async () => {}),
+      },
+    };
+    const sched = createTemporalScheduler({ client, taskQueue: "test" });
+    await expect(sched.bootstrap()).resolves.toBeUndefined();
+    // Both entries processed: malformed fingerprint gets safe fallback input, bootstrap does not crash.
+    expect(sched.stats().running).toBe(2);
     await sched[Symbol.asyncDispose]();
   });
 

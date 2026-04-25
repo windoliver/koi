@@ -185,7 +185,12 @@ function serializeEngineInput(input: EngineInput): Record<string, unknown> {
 }
 
 function parseStoredEngineInput(fingerprint: string): EngineInput {
-  const v: unknown = JSON.parse(fingerprint);
+  let v: unknown;
+  try {
+    v = JSON.parse(fingerprint);
+  } catch {
+    return { kind: "text", text: "" };
+  }
   if (typeof v === "object" && v !== null) {
     const r = v as Record<string, unknown>; // safe: just narrowed to object
     if (r.kind === "text" && typeof r.text === "string") return { kind: "text", text: r.text };
@@ -204,6 +209,8 @@ function parseStoredEngineInput(fingerprint: string): EngineInput {
 }
 
 // Verifies agentId + workflowType + taskQueue in memo before destructive ops.
+// Requires expectedAgentId — an undefined expected agent means the ID is unknown to this
+// scheduler (no ownership claim), so the operation is refused rather than accepted.
 function assertMemoOwner(
   m: Readonly<Record<string, unknown>> | undefined,
   rawId: string,
@@ -211,9 +218,12 @@ function assertMemoOwner(
   queue: string,
   expectedAgentId: AgentId | undefined,
 ): void {
-  const agentOk =
-    expectedAgentId !== undefined ? m?.agentId === expectedAgentId : typeof m?.agentId === "string";
-  if (!agentOk || m?.workflowType !== wfType || m?.taskQueue !== queue) {
+  if (
+    expectedAgentId === undefined ||
+    m?.agentId !== expectedAgentId ||
+    m?.workflowType !== wfType ||
+    m?.taskQueue !== queue
+  ) {
     throw new Error(`Operation refused: "${rawId}" not owned by this scheduler`);
   }
 }
