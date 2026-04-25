@@ -387,6 +387,20 @@ as `dispose`:
      violation: a peer reclaiming later would replay already-emitted
      side effects.
 
+     **Terminal intent (durable).** Before the engine starts executing
+     a task's terminal branch (task-completion handler, final model
+     call, etc.), the caller MUST invoke
+     `harness.recordTerminalIntent(lease, taskId)`, which writes a
+     dedicated `TerminalIntent` record via
+     `sessionPersistence.recordTerminalIntent(sid, taskId, ts)`. This
+     is a separate durable write keyed by `(sessionId, taskId)`;
+     when any harness (same process or a reclaimer) performs
+     reclamation, it first reads all pending terminal intents and
+     treats those tasks as IF they had been marked terminal in the
+     task board, regardless of what the snapshot says. A fresh
+     process reclaiming a pre-terminal snapshot thus sees the intent
+     record and refuses to replay the terminal branch.
+
      **Terminal CAS authority.** The CAS itself takes the harness's
      internal head pointer + the next snapshot; it does not need a
      lease argument. Lease validation gates whether the public API
@@ -398,22 +412,15 @@ as `dispose`:
      CAS for as long as the harness object is alive. Heartbeats
      continue throughout so the harness stays non-reclaimable.
      `onDurabilityLost(TERMINAL_WRITE_FAILED)` is invoked on first
-     failure and on every backoff tick; the host sees the harness is
-     wedged and can decide to keep the process alive or SIGKILL.
-     `dispose()` called while in this state cancels the background
-     retry loop and returns `Err(TERMINAL_WRITE_FAILED)`. A fresh
-     process starting a new harness with the same `harnessId` sees
-     `phase === "active"` with stale heartbeat (after the terminating
-     process exits) and reclaims via standard supervisor-kill path —
-     but the peer sees the pre-terminal snapshot and may replay
-     work. That is an at-least-once outcome for side effects only
-     when the store is persistently unreachable across a process
-     lifetime; for durable harness state, the fresh process can
-     continue tasks that were already marked complete in the reclaimed
-     snapshot's task board (if the store caught up and the terminal
-     CAS happened before exit). If all retries genuinely fail and
-     process exits, tooling must reconcile task-board state against
-     external outcomes.
+     failure and on every backoff tick.
+
+     **Exactly-once across process death.** The combination of
+     `TerminalIntent` + background retry + reclaimer-side intent
+     replay guarantees exactly-once durable terminal state even if the
+     original process dies before the CAS succeeds: the reclaimer sees
+     the intent, does not re-execute, and CAS-advances to the terminal
+     phase itself (using the replay of the intent as evidence — same
+     durable-state contract, different actor).
    - **Abort timeout:** do NOT publish the target phase. Keep
      heartbeats alive. Start the same background cleanup watcher
      described in the dispose path: it polls the engine adapter's
@@ -855,11 +862,18 @@ Therefore the default path is:
 2. Invoke `onDurabilityLost` for host escalation.
 3. **Stop engine execution before giving up the lease.** The middleware
    calls a distinct internal entry point,
-   `harness._abortActiveAndRecover(lease, reason)`, that (a) fires the
-   lease's AbortSignal, (b) waits up to `abortTimeoutMs` for engine
-   quiescence, but **defers lease revocation until AFTER the recovery
-   CAS**. This privileged internal path is NOT exposed on the public
-   surface; only the middleware bundled with this package can call it.
+   `harness._abortActiveAndRecover(lease, reason)`, that:
+   (a) **immediately removes the lease from `activeLeases`** — any
+   subsequent public mutating API call with that lease returns
+   `STALE_SESSION`, closing the late-callback window during recovery;
+   (b) fires the lease's AbortSignal;
+   (c) transfers CAS authority to a private `RecoveryToken` held only
+   by this function — this token is what the recovery CAS uses,
+   decoupled from the revoked `SessionLease`;
+   (d) waits up to `abortTimeoutMs` for engine quiescence;
+   (e) attempts the recovery CAS using the `RecoveryToken`.
+   This privileged internal path is NOT exposed on the public surface;
+   only the middleware bundled with this package can call it.
    `abortActive(lease, reason)` remains the public, lease-revoking
    variant — it is used for callers that only need to stop execution
    and don't need the recovery CAS window.
@@ -1301,27 +1315,62 @@ The L2 package's design does not regress if this migration is deferred
 
 Additive changes required (part of the coordinated migration):
 
-1. `HarnessSnapshot.generation: number` — monotonic per harness, incremented on
-   every session transition. Drives lease fencing.
-2. `SnapshotChainStore.compareAndPut(expectedHead, next)` — CAS-conditioned
-   advance. Existing `put` is insufficient for exclusivity guarantees.
-3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal for
-   crash reclamation.
-4. `SessionStatus` gains `"starting"` between `idle` and `running` plus
-   `"abandoned"` as an advisory tombstone (monitoring/diagnostics
-   signal, not a reclaim fast-path — `setSessionStatus` is not
-   lease-fenced in L0, so reclaim still requires TTL-stale heartbeat
-   or sustained NOT_FOUND AND supervisor kill; see Reclaim).
+**`@koi/core` — `HarnessSnapshot` (harness.ts):**
+1. `generation: number` — monotonic per harness, incremented on every
+   session transition. Drives lease fencing.
+
+**`@koi/core` — `SnapshotChainStore` (snapshot-chain.ts):**
+2. Add a `ChainHead` opaque token type (branded string; encodes the
+   current chain position). Existing DAG-style API stays; we add:
+
+   ```ts
+   interface SnapshotChainStore<T> {
+     // existing API unchanged …
+     readonly latest: (chainId: ChainId) =>
+       | Promise<Result<{ readonly head: ChainHead; readonly snapshot: T }
+                        | undefined, KoiError>>
+       | Result<...>;
+     readonly compareAndPut: (
+       expected: ChainHead | undefined,        // undefined = chain empty
+       next: T,
+     ) => Promise<Result<{ readonly head: ChainHead }, KoiError>>
+        | Result<...>;
+     // compareAndPut error codes include:
+     //   CAS_MISMATCH (expected != current head; head returned)
+     //   IO_ERROR (store unhealthy)
+   }
+   ```
+
+   The spec uses `latest()` and `compareAndPut(prev.head, next)` throughout
+   — both must exist in L0 before implementation. Existing `put()` remains
+   for non-advancing writes (e.g. recording orphan snapshots during
+   reconciliation).
+
+**`@koi/core` — `SessionRecord`/`SessionStatus`/`SessionPersistence`
+(session.ts):**
+3. `SessionRecord.lastHeartbeatAt: number | undefined` — liveness signal.
+4. `SessionStatus` gains `"starting"` (between `idle` and `running`) and
+   `"abandoned"` (advisory tombstone; monitoring/diagnostics only —
+   reclaim still requires TTL-stale heartbeat or sustained NOT_FOUND
+   AND supervisor kill).
 5. `SessionPersistence.setHeartbeat(sessionId, timestampMs)` — dedicated
    cheap-write method so the heartbeat loop does not compete with full
    `saveSession` writes.
-6. `HarnessStatus.durability: "ok" | "unhealthy"` — observable degraded-state
-   signal. Hosts key automation (pager, SIGKILL escalation) off this field.
+6. `SessionPersistence.recordTerminalIntent(sid, taskId, ts)` +
+   `listTerminalIntents(sid)` — durable record of "this task's terminal
+   branch has started executing"; consulted by reclaimers to enforce
+   exactly-once across process death (see Terminal Intent in phase
+   machine).
+
+**`@koi/core` — `HarnessStatus` (harness.ts):**
+7. `durability: "ok" | "unhealthy"` — observable degraded-state signal.
+   Hosts key automation (pager, SIGKILL escalation) off this field.
    Default `"ok"`; flips to `"unhealthy"` on `ABORT_TIMEOUT` or sustained
    heartbeat-write failure. Transitions back to `"ok"` only on a clean
    `start()`/`resume()` with a fresh session.
 
 These land across the migration PRs listed above, not a single "prereq PR".
+Implementation of `@koi/long-running` is blocked on ALL of the above.
 
 ## Open Questions
 
