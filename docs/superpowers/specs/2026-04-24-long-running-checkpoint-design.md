@@ -426,12 +426,29 @@ as `dispose`:
      violation: a peer reclaiming later would replay already-emitted
      side effects.
 
+     **In-session vs session-ending updates.** `completeTask`,
+     `failTask`, and other task-board mutations have two distinct
+     paths depending on whether they end the current session:
+     - **In-session (non-terminal):** the task board still has
+       pending tasks after the update. The harness writes a regular
+       soft-checkpoint (CAS `active → active` with new task-board
+       state, lease still valid, engine still running, no quiesce).
+       No `TerminalOutcome` record. Heartbeats unchanged.
+     - **Session-ending (terminal):** the update would leave the
+       task board with no pending tasks (last task done) AND the
+       caller is `completeTask`/non-retryable `failTask`. OR the
+       caller is `fail`/timeout. Only these terminal callers run
+       the full quiesce-and-record flow below.
+
+     The harness internally classifies each mutation. Callers need
+     not know the difference; they always invoke `completeTask`/
+     `failTask`/`fail` and the harness routes correctly.
+
      **TerminalOutcome (durable, full-delta-carrying).** There is NO
-     caller-visible "record-intent-before-branch" API. Instead,
-     `completeTask(lease, id, result)`,
-     `failTask(lease, id, err)` (non-retryable only — see below),
-     `fail(lease, err)`, and timeout handlers internally use the
-     following ordering:
+     caller-visible "record-intent-before-branch" API. The terminal
+     path applies to: (a) `completeTask` that empties the task board,
+     (b) non-retryable `failTask` that empties the task board, (c)
+     any `fail(lease, err)` invocation, (d) timeout. Internally:
 
      1. Validate lease, revoke lease, quiesce engine (phase-machine
         steps 1–5).
@@ -452,15 +469,33 @@ as `dispose`:
 
         interface TerminalOutcome {
           readonly kind: TerminalOutcomeKind;
-          readonly seq: number;                           // monotonic per session
+          readonly seq: number;                          // monotonic per session
           readonly committedAt: number;
-          readonly snapshotDelta: HarnessSnapshot;        // the full next snapshot
+          readonly expectedHead: ChainHead | undefined;  // CAS authority for replay
+          readonly snapshotDelta: HarnessSnapshot;       // full next snapshot
+          readonly resultGeneration: number;             // snapshotDelta.generation
         }
         ```
-        Keyed by `(sessionId, seq)`. Carrying the full snapshot delta
-        is what makes exactly-once non-lossy: a reclaimer replays the
-        snapshot from the record, not a reconstructed-from-outcomes
-        partial view.
+        Keyed by `(sessionId, seq)`. Carries CAS authority via
+        `expectedHead` (the chain head this delta was built against)
+        plus `resultGeneration` (the delta's own generation). On
+        replay, the reclaimer:
+        - Reads the current chain head H.
+        - For each outcome in seq order: if
+          `outcome.resultGeneration <= currentSnapshot.generation`,
+          this outcome was already applied (idempotent skip). Else
+          if `outcome.expectedHead === H`, perform
+          `compareAndPut(H, outcome.snapshotDelta)`; advance H to
+          the result. Else if `outcome.expectedHead < H` (chain
+          advanced past this outcome's predecessor by a previous
+          replay step), still skip — the outcome is already
+          subsumed. Else (`expectedHead` references a head we don't
+          have, or CAS mismatches): return
+          `Err(REPLAY_AUTHORITY_MISMATCH)`. This rule makes replay
+          fully idempotent across crash points.
+        Carrying the full snapshot delta makes exactly-once
+        non-lossy: a reclaimer replays the snapshot from the record,
+        not a reconstructed-from-outcomes partial view.
      4. Attempt the snapshot CAS to `snapshotDelta`. If it succeeds
         the outcome record is redundant (matches the now-authoritative
         head). If it fails, the harness performs background CAS retry
@@ -1415,6 +1450,7 @@ All errors are `KoiError` from L0. Codes used:
 | `KILL_FAILED` | `supervisor.killAndConfirm` could not terminate the owner worker | true |
 | `RECLAIM_LIVE_OWNER` | supervisor reports owner is still alive despite TTL-stale heartbeat or NOT_FOUND; caller investigates | true |
 | `SUPERVISOR_UNHEALTHY` | `supervisor.probeAlive` returned IO_ERROR; reclaim aborted to avoid killing on a failed probe | true |
+| `REPLAY_AUTHORITY_MISMATCH` | TerminalOutcome.expectedHead does not match observed chain head and is not subsumed; replay aborted | false |
 | `RESUME_CORRUPT` | snapshot fails `isHarnessSnapshot` | false |
 
 ## References
@@ -1528,15 +1564,24 @@ Additive changes required (part of the coordinated migration):
    `ABORT_TIMEOUT` or sustained heartbeat-write failure. In-memory
    only; lost on process exit. Use #8 for cross-restart visibility.
 
-**`@koi/core` — `HarnessSnapshot` (harness.ts):**
-8. `cleanupHealth: "ok" | "unhealthy"` — DURABLE degraded-state
-   marker, persisted in the snapshot. Set to `"unhealthy"` whenever
-   the harness flips in-memory durability AND the next CAS write
-   succeeds (a breadcrumb that the run was wedged). Cleared to
-   `"ok"` on the next successful `resume()` that completes
-   reclamation cleanly. Hosts SHOULD page on
-   `cleanupHealth === "unhealthy"` regardless of process state — this
-   is the cross-restart escalation signal that survives crashes.
+**`@koi/core` — `SessionRecord` + `SessionPersistence` (session.ts):**
+8. `SessionRecord.cleanupHealth: "ok" | "unhealthy"` plus
+   `SessionPersistence.markCleanupUnhealthy(sid, reason)` — DURABLE
+   degraded-state marker on the session record (NOT the snapshot
+   chain). The harness writes via `markCleanupUnhealthy` whenever
+   the in-memory `durability` flips, regardless of snapshot-CAS
+   health. Placing this on the session record (independent durable
+   channel) means a snapshot-store outage does not also block the
+   cleanup-health breadcrumb: even when the harness is stuck
+   `active` because every snapshot CAS is failing, the session
+   record's `cleanupHealth = "unhealthy"` is observable across
+   process death. The session-record write itself can also fail; if
+   both stores are simultaneously unreachable, no breadcrumb exists
+   — but at that point the entire system is degraded and operators
+   should already be paging via supervisor/store monitoring.
+   Cleared to `"ok"` on the next successful `resume()` that
+   completes reclamation cleanly. Hosts SHOULD page on
+   `cleanupHealth === "unhealthy"` regardless of process state.
 
 These land across the migration PRs listed above, not a single "prereq PR".
 Implementation of `@koi/long-running` is blocked on ALL of the above.
