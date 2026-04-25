@@ -293,7 +293,17 @@ interface LongRunningHarness {
    * `completed` / `failed`, the lease parameter is optional (pass
    * `undefined`) because there is no active run to terminate.
    */
-  readonly dispose: (lease?: SessionLease) => Promise<Result<void, KoiError>>;
+  readonly dispose: (
+    lease?: SessionLease,
+    options?: {
+      /**
+       * Max time (ms) dispose() itself waits before returning. Background
+       * retry continues until CAS success (trustedSingleProcess) or the
+       * harness object is released. Default: abortTimeoutMs + 30_000.
+       */
+      readonly callerDeadlineMs?: number;
+    },
+  ) => Promise<Result<void, KoiError>>;
 }
 ```
 
@@ -957,11 +967,16 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
 - Fires soft checkpoint every `softCheckpointInterval` turns.
 - CAS success advances head; subsequent soft checkpoint uses new head.
 - Store I/O failure fails the turn with `CHECKPOINT_WRITE_FAILED`, invokes
-  `onDurabilityLost`, aborts the engine via lease signal, stops heartbeats,
-  marks session `idle`. No silent degradation. No continue-with-in-memory
-  escape hatch.
-- Engine refuses to abort within `abortTimeoutMs` → heartbeats continue and
-  session remains `running`; `onDurabilityLost` surfaced — host must SIGKILL.
+  `onDurabilityLost`, calls `_abortActiveAndRecover(...)` (internal
+  deferred-revocation variant) which aborts the engine then attempts the
+  recovery CAS to `suspended`. On CAS success: heartbeats stop and the
+  advisory `"abandoned"` status is written (best-effort, diagnostics only).
+  On CAS failure: heartbeats stop anyway — TTL-stale heartbeat + supervisor
+  kill will reclaim safely (engine is confirmed stopped). No silent
+  degradation. No continue-with-in-memory escape hatch.
+- Engine refuses to abort within `abortTimeoutMs` → heartbeats continue
+  indefinitely and session status is NOT changed from `"running"`;
+  `onDurabilityLost(ABORT_TIMEOUT)` surfaced — host must SIGKILL.
 - `saveState` thrown exception fails the turn cleanly (no snapshot written).
 - **Atomicity invariant:** simulated crash between put-payload and advance-pointer
   leaves store readable at prior snapshot.
@@ -1034,8 +1049,21 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   `abortActive` before TTL expires → no competing `resume()` can reclaim
   while execution is still ongoing.
 - **Heartbeat loop lifecycle:** heartbeat starts on `start()`/`resume()` and
-  stops on `pause()`/`fail()`/`dispose()`; no heartbeats emitted outside
-  active phase.
+  stops ONLY after engine quiescence is confirmed AND the resulting CAS
+  to a non-active phase succeeds. Specifically:
+  - `pause(lease, result)` quiesce-success → CAS `suspended` success → stop.
+  - `fail`/`completeTask → completed` quiesce-success → CAS success → stop.
+  - `dispose()` quiesce-success + supervisor mode → CAS retry-exhaust →
+    stop (TTL reclaim is safe because engine is already dead).
+  - `dispose()` quiesce-success + `trustedSingleProcess` → stop ONLY after
+    CAS eventually succeeds (background retry). Until success,
+    heartbeats continue.
+  - `dispose()`/`pause()`/`fail()` quiesce-TIMEOUT → heartbeats continue
+    indefinitely (engine is still running; host must SIGKILL).
+  - Terminal-write exhaust (TERMINAL_WRITE_FAILED with background retry)
+    → heartbeats continue until background CAS succeeds.
+  Verified by dedicated negative tests for each abort-timeout and
+  background-retry case.
 - **Lease forgery rejection (runtime):** a structurally-identical object
   constructed outside the harness (same `sessionId`, `generation`, and a
   caller-provided `AbortSignal`) is rejected because it is not in the
@@ -1110,11 +1138,12 @@ All tests use `bun:test`. Coverage threshold ≥ 80% enforced by `bunfig.toml`.
   heartbeat → harness calls `supervisor.killAndConfirm(lastSessionId)`
   BEFORE CAS → kill succeeds → CAS advances. Mock supervisor asserts
   ordering.
-- **Supervisor kill before orphan terminalize:** orphan-window elapses
+- **Supervisor kill before orphan recovery:** orphan-window elapses
   with NOT_FOUND → harness calls `killAndConfirm` → kill succeeds →
-  CAS to `failed`. If kill returns `RECLAIM_LIVE_OWNER` (worker still
-  alive despite missing record), harness does NOT terminalize and
-  returns the error retryable.
+  CAS to `suspended` with `ORPHAN_RECOVERED` (recoverable, NOT
+  terminal). If kill returns `RECLAIM_LIVE_OWNER` (worker still alive
+  despite missing record), harness does NOT CAS and returns the error
+  retryable.
 - **Supervisor kill failure aborts reclaim:** mock supervisor returns
   `Err(KILL_FAILED)` → reclaim does NOT CAS, harness state unchanged,
   error propagates to caller. (Regression against split-brain-on-
