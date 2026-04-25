@@ -108,8 +108,16 @@ export function createWorkspaceProvider(config: WorkspaceProviderConfig): Compon
       isSetupComplete(candidate),
     ]);
     if (!healthy || !setupComplete) {
+      const disposed = await tryDispose(wsId);
+      if (!disposed) {
+        // Cleanup failed — poison this workspace and refuse to proceed.
+        // Creating another workspace would violate the single-workspace-per-agent invariant.
+        setupFailed.add(wsId);
+        throw new Error(
+          `Workspace ${wsId} failed validation; cleanup also timed out: workspace is still alive`,
+        );
+      }
       setupFailed.delete(wsId);
-      await tryDispose(wsId);
       return false;
     }
     // Found a valid survivor — re-run postCreate to repair any setup drift

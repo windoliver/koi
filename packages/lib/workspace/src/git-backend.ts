@@ -89,7 +89,19 @@ export function createGitWorktreeBackend(config: GitWorktreeBackendConfig): Work
       const branchName = `workspace/${agentIdHex}/${id}`;
       const path = join(basePath, id);
 
-      await mkdir(basePath, { recursive: true });
+      try {
+        await mkdir(basePath, { recursive: true });
+      } catch (e: unknown) {
+        return {
+          ok: false,
+          error: {
+            code: "EXTERNAL",
+            message: `Failed to create worktree base directory ${basePath}: ${e instanceof Error ? e.message : String(e)}`,
+            retryable: false,
+            cause: e,
+          },
+        };
+      }
 
       const addResult = await runGit(["worktree", "add", "-b", branchName, path], config.repoPath);
       if (!addResult.ok) return addResult;
