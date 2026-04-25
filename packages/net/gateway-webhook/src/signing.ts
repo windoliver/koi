@@ -8,6 +8,8 @@
  * - Generic: X-Webhook-Signature: v1,<base64>  (Standard Webhooks spec)
  */
 
+import { createHmac } from "node:crypto";
+
 // ---------------------------------------------------------------------------
 // Timing-safe comparison
 // ---------------------------------------------------------------------------
@@ -24,17 +26,15 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function hmacSha256Hex(key: string, message: string): Promise<string> {
-  const enc = new TextEncoder();
-  const cryptoKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(key),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, enc.encode(message));
-  return Buffer.from(sig).toString("hex");
+// Compute HMAC-SHA256 over a prefix string plus an optional body chunk.
+// Two-part update avoids allocating a concat buffer for prefix+body:
+//   hmacSha256(secret, "v0:ts:", rawBodyBytes)  — no extra copy
+//   hmacSha256(secret, "", rawBody)              — body-only (GitHub)
+function hmacSha256(secret: string, prefix: string, body: string | Uint8Array): string {
+  const h = createHmac("sha256", secret);
+  if (prefix.length > 0) h.update(prefix);
+  h.update(body);
+  return h.digest("hex");
 }
 
 // ---------------------------------------------------------------------------
@@ -46,11 +46,12 @@ export async function verifyGitHubSignature(
   secret: string,
   rawBody: string,
   request: Request,
+  rawBodyBytes?: Uint8Array,
 ): Promise<boolean> {
   const header = request.headers.get("x-hub-signature-256");
   if (header === null) return false;
   const provided = header.startsWith("sha256=") ? header.slice(7) : header;
-  const expected = await hmacSha256Hex(secret, rawBody);
+  const expected = hmacSha256(secret, "", rawBodyBytes ?? rawBody);
   return timingSafeEqual(provided, expected);
 }
 
@@ -64,6 +65,7 @@ export async function verifySlackSignature(
   rawBody: string,
   request: Request,
   nowMs: number = Date.now(),
+  rawBodyBytes?: Uint8Array,
 ): Promise<boolean> {
   const tsHeader = request.headers.get("x-slack-request-timestamp");
   const sigHeader = request.headers.get("x-slack-signature");
@@ -75,9 +77,12 @@ export async function verifySlackSignature(
   // Reject replays older than 5 minutes
   if (Math.abs(nowMs / 1000 - tsSeconds) > 300) return false;
 
-  const signingString = `v0:${tsHeader}:${rawBody}`;
-  const expected = await hmacSha256Hex(secret, signingString);
   const provided = sigHeader.startsWith("v0=") ? sigHeader.slice(3) : sigHeader;
+  // Two-part update: prefix string + body bytes/string — no concat buffer allocated.
+  const expected =
+    rawBodyBytes !== undefined
+      ? hmacSha256(secret, `v0:${tsHeader}:`, rawBodyBytes)
+      : hmacSha256(secret, "", `v0:${tsHeader}:${rawBody}`);
   return timingSafeEqual(provided, expected);
 }
 
@@ -91,6 +96,7 @@ export async function verifyStripeSignature(
   rawBody: string,
   request: Request,
   nowMs: number = Date.now(),
+  rawBodyBytes?: Uint8Array,
 ): Promise<boolean> {
   const header = request.headers.get("stripe-signature");
   if (header === null) return false;
@@ -110,8 +116,11 @@ export async function verifyStripeSignature(
   if (!Number.isFinite(tsSeconds)) return false;
   if (Math.abs(nowMs / 1000 - tsSeconds) > 300) return false;
 
-  const signingString = `${timestamp}.${rawBody}`;
-  const expected = await hmacSha256Hex(secret, signingString);
+  // Two-part update: prefix string + body bytes/string — no concat buffer allocated.
+  const expected =
+    rawBodyBytes !== undefined
+      ? hmacSha256(secret, `${timestamp}.`, rawBodyBytes)
+      : hmacSha256(secret, "", `${timestamp}.${rawBody}`);
   return v1Sigs.some((sig) => timingSafeEqual(sig, expected));
 }
 
@@ -125,6 +134,7 @@ export async function verifyGenericSignature(
   rawBody: string,
   request: Request,
   nowMs: number = Date.now(),
+  rawBodyBytes?: Uint8Array,
 ): Promise<boolean> {
   const sigHeader = request.headers.get("x-webhook-signature");
   const webhookId = request.headers.get("x-webhook-id");
@@ -135,8 +145,11 @@ export async function verifyGenericSignature(
   if (!Number.isFinite(tsSeconds)) return false;
   if (Math.abs(nowMs / 1000 - tsSeconds) > 300) return false;
 
-  const signingString = `${webhookId}.${tsHeader}.${rawBody}`;
-  const expectedHex = await hmacSha256Hex(secret, signingString);
+  // Two-part update: prefix string + body bytes/string — no concat buffer allocated.
+  const expectedHex =
+    rawBodyBytes !== undefined
+      ? hmacSha256(secret, `${webhookId}.${tsHeader}.`, rawBodyBytes)
+      : hmacSha256(secret, "", `${webhookId}.${tsHeader}.${rawBody}`);
   const expectedB64 = Buffer.from(expectedHex, "hex").toString("base64");
 
   const provided = sigHeader.startsWith("v1,") ? sigHeader.slice(3) : sigHeader;
